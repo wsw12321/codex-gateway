@@ -1,0 +1,9 @@
+# NAME|immutable input tag. scripts/lock-images.sh resolves each tag to a
+# registry digest and writes deploy/images.lock.env. Changes require review.
+CADDY_IMAGE|docker.io/library/caddy:2.10.2-alpine
+POSTGRES_IMAGE|docker.io/library/postgres:17.6-alpine3.22
+GOLANG_IMAGE|docker.io/library/golang:1.24.6-bookworm
+CLIPROXY_GOLANG_IMAGE|docker.io/library/golang:1.26.0-bookworm
+RUNTIME_IMAGE|docker.io/library/alpine:3.22.1
+SQUID_IMAGE|docker.io/ubuntu/squid:6.6-24.04_beta
+TRIVY_IMAGE|docker.io/aquasec/trivy:0.64.1

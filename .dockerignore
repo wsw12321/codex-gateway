@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.codex
+.env
+backups
+deploy/secrets
+deploy/images.lock.env
+*.age
+*.dump
+*.log
+coverage.out
+sbom*.json
+

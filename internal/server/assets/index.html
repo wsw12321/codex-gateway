@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Personal Codex Gateway</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">PERSONAL CODEX GATEWAY</p>
+      <h1>把凭证留在边界内，把工作留在本地。</h1>
+    </div>
+    <button id="logout" class="quiet hidden" type="button">退出</button>
+  </header>
+
+  <main>
+    <section id="notice" class="notice hidden" role="status"></section>
+
+    <section id="login-view" class="panel hidden">
+      <p class="kicker">安全登录</p>
+      <h2>使用可发现 Passkey</h2>
+      <p>无需用户名或密码。浏览器会让你选择这个站点的 Passkey。</p>
+      <button id="login" type="button">使用 Passkey 登录</button>
+      <a href="/recover" class="secondary-link">使用恢复码</a>
+    </section>
+
+    <section id="join-view" class="panel hidden">
+      <p class="kicker">接受邀请</p>
+      <h2>创建本地身份</h2>
+      <form id="join-form">
+        <label>用户名 <input name="username" required minlength="3" maxlength="32" autocomplete="username"></label>
+        <label>显示名称 <input name="display_name" required maxlength="80" autocomplete="name"></label>
+        <button type="submit">创建 Passkey</button>
+      </form>
+    </section>
+
+    <section id="recover-view" class="panel hidden">
+      <p class="kicker">账号恢复</p>
+      <h2>使用一次性恢复码</h2>
+      <p>成功后旧会话和整批旧恢复码都会失效。</p>
+      <form id="recover-form">
+        <label>用户名 <input name="username" required autocomplete="username"></label>
+        <label>恢复码 <input name="recovery_code" required autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"></label>
+        <button type="submit">验证并创建新 Passkey</button>
+      </form>
+    </section>
+
+    <section id="recovery-codes" class="panel warning hidden">
+      <p class="kicker">只显示一次</p>
+      <h2>立即离线保存恢复码</h2>
+      <pre id="recovery-code-list"></pre>
+      <button id="codes-saved" type="button">我已安全保存</button>
+    </section>
+
+    <section id="dashboard" class="hidden">
+      <div class="hero-grid">
+        <article class="panel"><p class="kicker">当前身份</p><h2 id="whoami">—</h2><p id="role">—</p></article>
+        <article class="metric"><span>请求</span><strong id="metric-requests">0</strong><small>最近 7 天</small></article>
+        <article class="metric"><span>Token</span><strong id="metric-tokens">0</strong><small>input + output</small></article>
+        <article class="metric"><span>错误率</span><strong id="metric-errors">0%</strong><small>最近 500 条</small></article>
+      </div>
+
+      <div class="two-column">
+        <section class="panel">
+          <h2>设备</h2>
+          <form id="device-form" class="inline-form"><input name="name" required placeholder="例如：MacBook Pro"><button>添加</button></form>
+          <div id="devices" class="list"></div>
+        </section>
+        <section class="panel">
+          <h2>项目</h2>
+          <form id="project-form">
+            <label>标识 <input name="slug" required pattern="[a-z0-9_-]+" placeholder="gateway"></label>
+            <label>名称 <input name="name" required placeholder="Codex Gateway"></label>
+            <button>添加项目</button>
+          </form>
+          <div id="projects" class="list"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="section-title"><div><p class="kicker">设备凭证</p><h2>API Keys</h2></div><button id="reauth" class="quiet" type="button">再次验证 Passkey</button></div>
+        <form id="key-form" class="form-grid">
+          <label>名称 <input name="name" required placeholder="工作电脑默认 Key"></label>
+          <label>设备 <select name="device_id" id="key-device" required></select></label>
+          <label>默认项目 <select name="default_project_id" id="key-project"><option value="">unassigned</option></select></label>
+          <label>有效天数 <input name="expires_days" type="number" min="1" max="365" value="90"></label>
+          <label class="wide">模型白名单（逗号分隔；留空表示全部）<input name="models" placeholder="gpt-5.1-codex,gpt-5.1-codex-mini"></label>
+          <button type="submit">创建 API Key</button>
+        </form>
+        <div id="one-time-key" class="secret hidden"></div>
+        <div id="keys" class="list"></div>
+      </section>
+
+      <div class="two-column">
+        <section class="panel">
+          <h2>Passkeys</h2>
+          <div id="passkeys" class="list"></div>
+          <button id="add-passkey" type="button">添加 Passkey</button>
+        </section>
+        <section id="owner-tools" class="panel hidden">
+          <h2>Owner 工具</h2>
+          <button id="member-invite" type="button">生成 24 小时成员邀请</button>
+          <form id="recovery-invite-form" class="inline-form"><input name="target_username" placeholder="待恢复用户名" required><button>签发恢复邀请</button></form>
+          <div id="invite-result" class="secret hidden"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="section-title"><div><p class="kicker">仅元数据</p><h2>使用统计</h2></div><a href="/admin/usage.csv" class="button-link">导出 CSV</a></div>
+        <div class="metrics-row"><span>缓存率 <strong id="metric-cache">0%</strong></span><span>p95 TTFT <strong id="metric-ttft">0 ms</strong></span><span>p95 耗时 <strong id="metric-duration">0 ms</strong></span></div>
+        <div class="table-wrap"><table><thead><tr><th>时间</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>Token</th><th>TTFT</th></tr></thead><tbody id="usage-rows"></tbody></table></div>
+      </section>
+    </section>
+  </main>
+
+  <footer>不记录提示词、代码或响应正文。所有 Codex 文件与命令操作仍在本地设备执行。</footer>
+</body>
+</html>

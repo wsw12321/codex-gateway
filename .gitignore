@@ -1,0 +1,11 @@
+.env
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+backups/
+*.age
+*.dump
+*.sql
+*.log
+coverage.out
+sbom*.json
+.device-login.lock

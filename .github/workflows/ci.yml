@@ -1,0 +1,194 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.24.6'
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify Go toolchain sources agree
+        shell: bash
+        run: |
+          set -eu
+          test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
+          grep -q "^GOLANG_IMAGE|docker.io/library/golang:${GO_VERSION}-" deploy/images.sources
+      - name: Install locked Go toolchain
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Formatting
+        shell: bash
+        run: |
+          set -eu
+          test -z "$(gofmt -l .)"
+      - name: Unit tests
+        run: go test -count=1 ./...
+      - name: Race detector
+        run: go test -race -count=1 ./...
+      - name: Vet
+        run: go vet ./...
+
+  postgres-integration:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        postgres_image:
+          - docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    services:
+      postgres:
+        image: ${{ matrix.postgres_image }}
+        env:
+          POSTGRES_DB: gateway_test
+          POSTGRES_USER: gateway
+          POSTGRES_PASSWORD: integration-only-password
+          POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready --username=gateway --dbname=gateway_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify PostgreSQL service matches deployment lock
+        shell: bash
+        env:
+          CI_POSTGRES_IMAGE: ${{ matrix.postgres_image }}
+        run: |
+          set -eu
+          test "$(sed -n 's/^POSTGRES_IMAGE=//p' deploy/images.lock.env)" = "$CI_POSTGRES_IMAGE"
+      - name: Install locked Go toolchain
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: PostgreSQL integration tests
+        env:
+          TEST_DATABASE_URL: postgres://gateway:integration-only-password@127.0.0.1:5432/gateway_test?sslmode=disable
+        run: go test -count=1 -tags=integration ./internal/store
+
+  go-security:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install locked Go toolchain
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+      - name: gosec
+        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 ./...
+
+  supply-chain:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install locked Go toolchain
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: License policy
+        run: >-
+          go run github.com/google/go-licenses@v1.6.0 check ./...
+          --allowed_licenses=Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0
+      - name: Verify CLIProxyAPI notice and immutable source
+        shell: bash
+        run: |
+          set -eu
+          grep -q 'CLIProxyAPI v7.2.127' THIRD_PARTY_NOTICES
+          grep -q 'ecc9aa72b32f34b680d03b0724b531a21ae74472' THIRD_PARTY_NOTICES
+          grep -q 'ecc9aa72b32f34b680d03b0724b531a21ae74472' docker-compose.yml
+      - name: Generate CycloneDX SBOM
+        run: >-
+          go run github.com/anchore/syft/cmd/syft@v1.30.0
+          dir:. -o cyclonedx-json=sbom.cdx.json
+      - name: Upload SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sbom
+          path: sbom.cdx.json
+          if-no-files-found: error
+
+  containers:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install deployment validation tools
+        shell: bash
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install --yes jq skopeo
+      - name: Resolve and verify image locks
+        shell: bash
+        run: |
+          set -eu
+          ./scripts/lock-images.sh
+          git diff --exit-code -- deploy/images.lock.env
+      - name: Create non-production CI configuration
+        shell: bash
+        run: |
+          set -eu
+          cp deploy/env.example .env
+          ./scripts/bootstrap-secrets.sh
+      - name: Shell syntax
+        shell: bash
+        run: |
+          set -eu
+          for script in scripts/*.sh deploy/codex-compat/*.sh; do
+            case "$(sed -n '1p' "$script")" in
+              '#!/bin/sh') sh -n "$script" ;;
+              '#!/usr/bin/env bash') bash -n "$script" ;;
+              *) printf 'unsupported shell shebang: %s\n' "$script" >&2; exit 1 ;;
+            esac
+          done
+      - name: Compose syntax and deployment policy
+        shell: bash
+        run: |
+          set -eu
+          ./scripts/validate-compose.sh
+          ./scripts/compose.sh config --quiet
+      - name: Build immutable application images
+        shell: bash
+        run: |
+          set -eu
+          ./scripts/compose.sh build gateway codex-compat
+      - name: Scan application images with digest-locked Trivy
+        shell: bash
+        run: |
+          set -eu
+          set -a
+          . deploy/images.lock.env
+          set +a
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL codex-gateway-gateway:local
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL codex-gateway-compat:v7.2.127-ecc9aa72
