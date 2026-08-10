@@ -7,7 +7,7 @@ Codex CLI 与内部 Codex 兼容层之间增加设备级 API Key、项目归属�
 > [!WARNING]
 > 当前项目已完成代码与可丢弃环境中的自动化部署验收，但真实域名、Passkey 和
 > ChatGPT Pro 设备码登录仍需在目标 VPS 上人工验收。在完成这些步骤前尚不应
-> 直接用于生产，见[当前状态](#当前状态2026-08-10)。
+> 直接用于生产，见[当前状态](#当前状态2026-08-11)。
 
 Codex 的文件读取、命令执行和代码修改仍发生在客户端本地。Gateway 不保存
 提示词、源代码或模型回复，也不会在 Pro 凭证失效时自动回退到 Platform API。
@@ -18,7 +18,13 @@ Codex 的文件读取、命令执行和代码修改仍发生在客户端本地�
 本地 Codex CLI
       │ HTTPS + 每设备 API Key
       ▼
-    Caddy ──────────────── 仅发布主机 80/443
+Cloudflare Edge
+      │ Cloudflare Tunnel；服务器无 80/443 入站
+      ▼
+ cloudflared
+      │ 内部 HTTP
+      ▼
+    Caddy
       │
       ▼
   Go Gateway ───────────── PostgreSQL 17
@@ -37,15 +43,17 @@ Compose 中的服务职责如下：
 
 | 服务 | 职责 | 宿主机端口 |
 | --- | --- | --- |
-| `caddy` | TLS、HSTS/CSP、安全头、64 MiB 请求上限 | `80/tcp`、`443/tcp+udp` |
+| `cloudflared` | 唯一公网入口的出站 Tunnel connector | 无 |
+| `caddy` | 内部反向代理、安全头、64 MiB 请求上限和 SSE 刷新 | 无 |
 | `gateway` | 身份、Key、配额、统计、管理界面和固定 Responses 代理 | 无 |
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
 | `codex-compat` | 持有唯一 Pro OAuth 状态并适配 Codex 协议 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
 
-Gateway、PostgreSQL 和 sidecar 位于 Docker `internal` 网络。只有出口代理同时
-连接受限内部网络与外部网络；OAuth volume 只挂载给 sidecar，不进入数据库或
-备份。
+所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
+Caddy、Gateway、PostgreSQL 和 sidecar 位于 Docker `internal` 网络；只有
+`cloudflared` 和出口代理分别连接其所需的外部网络。OAuth volume 只挂载给
+sidecar，不进入数据库或备份。
 
 ## 核心能力
 
@@ -108,7 +116,7 @@ Token 总量按 input + output 结算；cached input 和 reasoning 是细分指�
 请求/首 Token/完成时间、TTFT、耗时、各类 Token、字节数和上游请求 ID。请求
 明细保留 90 天，安全审计保留 365 天，日/月聚合长期保留。
 
-## 当前状态（2026-08-10）
+## 当前状态（2026-08-11）
 
 ### 已实现
 
@@ -117,7 +125,8 @@ Token 总量按 input + output 结算；cached input 和 reasoning 是细分指�
 - Responses、compact、models 固定代理，普通响应和 SSE usage/TTFT 解析。
 - PostgreSQL 原子 RPM、并发、每日请求/Token 配额及长流 lease 续期。
 - usage 日/月聚合、精确筛选、CSV、审计、配额及上游告警。
-- Caddy、CLIProxyAPI、Squid 网络隔离、加密备份/恢复脚本和供应链锁定。
+- Cloudflare Tunnel、Caddy、CLIProxyAPI、Squid 网络隔离、加密备份/恢复脚本
+  和供应链锁定。
 
 ### 已验证
 
@@ -126,7 +135,7 @@ Token 总量按 input + output 结算；cached input 和 reasoning 是细分指�
   并已加入使用锁定 PostgreSQL digest 的 CI service。
 - Gateway 镜像与固定提交的 CLIProxyAPI 镜像构建成功。
 - Sidecar 可在无直接网络、只读根文件系统和非 root 条件下健康启动。
-- Compose 暴露面检查确认后端没有发布 `5432`、`8080`、`8317` 或 `3128`。
+- Compose 暴露面检查确认所有服务均未发布宿主机端口。
 - PostgreSQL 空 volume 首次初始化成功；四个后端服务均为 `healthy`，
   `/healthz` 与 `/readyz` 均返回 200，`schema_migrations`、`usage_monthly` 等
   应用表已创建。
@@ -152,7 +161,8 @@ POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=peer
 
 ### 仍需目标环境人工验收
 
-- 使用真实域名启动 Caddy，验证 ACME/TLS、80/443 暴露面和外部健康检查；
+- 使用真实域名和 Dashboard 托管的 Cloudflare Tunnel，验证外部 TLS、零宿主
+  端口暴露和外部健康检查；
 - 执行真实 ChatGPT Pro 设备码登录，验证模型列表和最小流式 Responses；
 - 初始化 Owner，完成 Passkey 注册、恢复码离线保存和一台真实 Codex 设备接入；
 - 按运维手册完成加密备份、恢复演练和生产监控检查。
@@ -162,37 +172,52 @@ POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=peer
 ### 前置条件
 
 - 一台可通过 SSH 管理的 Linux VPS；
-- 已指向 VPS 的域名，公网只开放 SSH、80 和 443；
+- Cloudflare 托管的域名和可创建 Dashboard Tunnel 的权限；
+- 公网入站只允许固定管理 IP 访问 SSH，80、443 和所有容器端口均关闭；
 - Docker Engine 与 Docker Compose v2；
-- `openssl`、`jq` 和 util-linux 的 `flock`；镜像升级时另需 `skopeo`、`crane`
-  或 Docker Buildx；
+- `openssl`、`jq`、`age`、`age-keygen` 和 util-linux 的 `flock`；镜像升级时另需
+  `skopeo`、`crane` 或 Docker Buildx；
 - 支持 WebAuthn 的浏览器与安全密钥或平台认证器；
 - 可用于设备码登录的个人 ChatGPT Pro 账号。
+
+不固定 CPU、内存或磁盘规格，应按实际负载容量规划。磁盘必须容纳 PostgreSQL、
+最近 14 组加密备份、当前和上一 revision 的镜像，并在上述内容全部存在时仍
+保留至少 20% 可用空间。
 
 > 自动化部署阻塞已经解决；下列流程仍必须在目标 VPS 使用真实域名、Passkey 和
 > Pro 账号完成后，才能视为生产验收通过。
 
-### 1. 配置域名与 secret 读取组
+### 1. 固定 revision 并配置站点
+
+生产构建必须在目标服务器的仓库 checkout 中完成。先检出已经审阅的 tag 或
+完整 Git commit，再把 `.env` 中的 `GATEWAY_IMAGE_TAG` 设为 release version 或
+完整 40 位 revision，`GATEWAY_VERSION` 设为显示版本，`GATEWAY_REVISION` 设为
+完整 commit。生产不得使用 `local`、`dev`、`latest` 或 `unknown`，并保留上一
+revision 的本地镜像以供无数据库迁移时快速回退。
 
 ```sh
 cp deploy/env.example .env
 chmod 0600 .env
-# 编辑 .env：设置真实 GATEWAY_DOMAIN
+# 编辑 .env：设置真实 GATEWAY_DOMAIN 和当前 revision 的版本字段
 # 把 GATEWAY_SECRET_GID 设置为专用部署用户的主组：id -g
 ```
 
 如 Compose 子网与主机已有网段冲突，必须在首次启动前同步调整内部子网、静态
-地址和 `GATEWAY_TRUSTED_PROXY_CIDRS`。Gateway 只应信任 Caddy 的固定 `/32`
-地址。
+地址、Caddy 信任的 cloudflared `/32`、`GATEWAY_TRUSTED_PROXY_CIDRS` 及部署
+校验中的对应不变量。Gateway 只应信任 Caddy 的固定 `/32` 地址。
 
-### 2. 生成服务 secret
+### 2. 生成服务 secret 并配置 Tunnel
 
 ```sh
 ./scripts/bootstrap-secrets.sh
 ```
 
 脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、API Key/token HMAC pepper 和
-Gateway 到 sidecar 的内部 Key，不输出内容。不要提交 `.env`、
+Gateway 到 sidecar 的内部 Key，不输出内容。在 Cloudflare Dashboard 创建
+Tunnel，把 Public Hostname 的 origin service 固定为 `http://caddy:80`，再将
+connector token 以精确 `0640` 保存为
+`deploy/secrets/cloudflared_tunnel_token`。Token 只能通过挂载的 secret 文件
+传给 `cloudflared`，不得写入 `.env`、命令参数或日志。不要提交 `.env`、
 `deploy/secrets/*`、OAuth 文件或备份。
 
 ### 3. 校验、构建和启动
@@ -208,7 +233,9 @@ Gateway 到 sidecar 的内部 Key，不输出内容。不要提交 `.env`、
 ./scripts/compose.sh ps
 ```
 
-最终应只有 Caddy 发布 80/443。`GET /healthz` 是进程存活探针，
+最终不应有任何 Compose 服务发布宿主机端口。Cloudflare 负责公网 TLS 和
+HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 SSH 入站。
+`GET /healthz` 是进程存活探针，
 `GET /readyz` 当前只检查 PostgreSQL 连接；它不验证 sidecar 或真实上游。
 
 ### 4. 登录唯一上游账号
@@ -325,6 +352,8 @@ docs/                    运维、客户端、安全与兼容层升级文档
   隐私和数据控制。
 - 单 VPS 是可用性单点；容器隔离不能抵御宿主机 root、Docker daemon 或内核被
   攻破。
+- 当前 age 密文、解密 identity 和恢复所需 secret 只保存在本机；它们能处理
+  数据库逻辑损坏和计划迁机，但不能在服务器或云盘整体丢失后恢复数据。
 - 请求正文虽然不落库，但在 TLS 终止和转发过程中会短暂存在于相关进程内存。
 
 详细的资产、信任边界、缓解措施和残余风险见
@@ -352,6 +381,9 @@ gateway version           显示版本与 revision
 ```
 
 OAuth volume 永不备份，灾备后必须重新执行设备码登录。
+生产数据库由固定 Compose 命名卷持久化；禁止执行
+`./scripts/compose.sh down -v`。每日 03:00 UTC 的本地 age 备份、14 组保留、
+每月/升级前恢复演练及计划迁机步骤见[部署与运维手册](docs/operations.md)。
 
 ## 许可证
 

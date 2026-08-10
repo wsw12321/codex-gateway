@@ -13,30 +13,41 @@ x-common-security: &common-security
   restart: unless-stopped
 
 services:
+  cloudflared:
+    <<: *common-security
+    image: ${CLOUDFLARED_IMAGE:?Run ./scripts/lock-images.sh first}
+    read_only: true
+    user: "65532:${GATEWAY_SECRET_GID:-1000}"
+    init: true
+    command:
+      - tunnel
+      - --metrics
+      - 127.0.0.1:2000
+      - run
+      - --token-file
+      - /run/secrets/cloudflared_tunnel_token
+    secrets:
+      - cloudflared_tunnel_token
+    networks:
+      tunnel_external: {}
+      edge_internal:
+        ipv4_address: 172.28.10.4
+    depends_on:
+      caddy:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+
   caddy:
     <<: *common-security
     image: ${CADDY_IMAGE:?Run ./scripts/lock-images.sh first}
     environment:
       GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?Set GATEWAY_DOMAIN in .env}
-    ports:
-      - target: 80
-        published: "80"
-        protocol: tcp
-        mode: host
-      - target: 443
-        published: "443"
-        protocol: tcp
-        mode: host
-      - target: 443
-        published: "443"
-        protocol: udp
-        mode: host
     volumes:
       - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      edge_public: {}
       edge_internal:
         ipv4_address: 172.28.10.2
     depends_on:
@@ -55,15 +66,15 @@ services:
 
   gateway:
     <<: *common-security
-    image: codex-gateway-gateway:${GATEWAY_IMAGE_TAG:-local}
+    image: codex-gateway-gateway:${GATEWAY_IMAGE_TAG:?Set GATEWAY_IMAGE_TAG in .env}
     build:
       context: .
       dockerfile: Dockerfile
       args:
         GOLANG_IMAGE: ${GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
         RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
-        VERSION: ${GATEWAY_VERSION:-dev}
-        REVISION: ${GATEWAY_REVISION:-unknown}
+        VERSION: ${GATEWAY_VERSION:?Set GATEWAY_VERSION in .env}
+        REVISION: ${GATEWAY_REVISION:?Set GATEWAY_REVISION in .env}
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true
@@ -214,7 +225,7 @@ services:
       start_period: 20s
 
 networks:
-  edge_public:
+  tunnel_external:
     driver: bridge
   edge_internal:
     driver: bridge
@@ -244,6 +255,8 @@ volumes:
   codex_oauth: {}
 
 secrets:
+  cloudflared_tunnel_token:
+    file: ./deploy/secrets/cloudflared_tunnel_token
   database_url:
     file: ./deploy/secrets/database_url
   postgres_password:

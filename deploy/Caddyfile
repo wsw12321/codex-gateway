@@ -1,17 +1,22 @@
 {
 	admin 127.0.0.1:2019
+	servers {
+		trusted_proxies static 172.28.10.4/32
+		trusted_proxies_strict
+		client_ip_headers CF-Connecting-IP
+	}
 }
 
-{$GATEWAY_DOMAIN} {
+http://{$GATEWAY_DOMAIN} {
 	encode zstd gzip
 
 	request_body {
-		max_size 64MB
+		max_size 64MiB
 	}
 
 	header {
 		-Server
-		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
 		Content-Security-Policy "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; upgrade-insecure-requests"
 		Permissions-Policy "camera=(), geolocation=(), microphone=(), payment=(), usb=()"
 		Referrer-Policy "no-referrer"
@@ -23,6 +28,9 @@
 
 	reverse_proxy gateway:8080 {
 		header_up -Forwarded
+		header_up -X-Forwarded-For
+		header_up X-Forwarded-For {http.request.client_ip}
+		header_up -CF-Connecting-IP
 		transport http {
 			keepalive 30s
 			read_buffer 64KiB

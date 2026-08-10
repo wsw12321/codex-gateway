@@ -21,6 +21,27 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Verify canonical database migrations are tracked
+        shell: bash
+        run: |
+          set -eu
+          found=0
+          for migration in internal/store/migrations/*.sql; do
+            test -f "$migration" || continue
+            found=1
+            git ls-files --error-unmatch -- "$migration" >/dev/null || {
+              printf 'canonical migration is not tracked: %s\n' "$migration" >&2
+              exit 1
+            }
+            if git check-ignore --quiet --no-index -- "$migration"; then
+              printf 'canonical migration is ignored: %s\n' "$migration" >&2
+              exit 1
+            fi
+          done
+          test "$found" -eq 1 || {
+            printf '%s\n' 'no canonical migrations found' >&2
+            exit 1
+          }
       - name: Verify Go toolchain sources agree
         shell: bash
         run: |
@@ -154,7 +175,19 @@ jobs:
         run: |
           set -eu
           cp deploy/env.example .env
+          ci_revision=0123456789abcdef0123456789abcdef01234567
+          ci_secret_gid=$(id -g)
+          sed -i \
+            -e 's/^GATEWAY_DOMAIN=.*/GATEWAY_DOMAIN=codex.ci.invalid/' \
+            -e "s/^GATEWAY_IMAGE_TAG=.*/GATEWAY_IMAGE_TAG=$ci_revision/" \
+            -e 's/^GATEWAY_VERSION=.*/GATEWAY_VERSION=ci/' \
+            -e "s/^GATEWAY_REVISION=.*/GATEWAY_REVISION=$ci_revision/" \
+            -e "s/^GATEWAY_SECRET_GID=.*/GATEWAY_SECRET_GID=$ci_secret_gid/" \
+            .env
           ./scripts/bootstrap-secrets.sh
+          printf '%s\n' 'ci-non-production-tunnel-token' > \
+            deploy/secrets/cloudflared_tunnel_token
+          chmod 0640 deploy/secrets/cloudflared_tunnel_token
       - name: Shell syntax
         shell: bash
         run: |
@@ -183,11 +216,12 @@ jobs:
           set -eu
           set -a
           . deploy/images.lock.env
+          . ./.env
           set +a
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
-            --severity HIGH,CRITICAL codex-gateway-gateway:local
+            --severity HIGH,CRITICAL "codex-gateway-gateway:$GATEWAY_IMAGE_TAG"
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \

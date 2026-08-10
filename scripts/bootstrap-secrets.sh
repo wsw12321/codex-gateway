@@ -53,6 +53,18 @@ create_random "$secret_dir/gateway_api_key_pepper" 32
 create_random "$secret_dir/gateway_session_secret" 32
 create_random "$secret_dir/sidecar_api_key" 32
 
+cloudflared_token=$secret_dir/cloudflared_tunnel_token
+if test -e "$cloudflared_token" || test -L "$cloudflared_token"; then
+    test -f "$cloudflared_token" && test ! -L "$cloudflared_token" || \
+        fail "refusing non-regular or symlink path $cloudflared_token"
+    test -s "$cloudflared_token" || \
+        fail "Cloudflare Tunnel token file is empty: $cloudflared_token"
+    chmod 0640 "$cloudflared_token"
+else
+    printf '%s\n' \
+        "bootstrap-secrets: add the Dashboard-managed Tunnel token to $cloudflared_token with mode 0640 before validation or startup" >&2
+fi
+
 postgres_password=$(tr -d '\r\n' < "$secret_dir/postgres_password")
 case "$postgres_password" in
     *[!A-Za-z0-9_-]*|'')

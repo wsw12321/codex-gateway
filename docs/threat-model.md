@@ -15,23 +15,27 @@ Platform API。
 
 ```text
 Internet
-  -> Caddy (edge_public + edge_internal)
-    -> Gateway (edge_internal + data_internal + compat_internal)
-      -> PostgreSQL (data_internal only)
-      -> CLIProxyAPI (compat_internal only)
-        -> Squid allowlist (compat_internal + egress_external)
-          -> auth.openai.com:443 / chatgpt.com:443
+  -> Cloudflare Edge (public TLS)
+    -> Cloudflare Tunnel (outbound connector)
+      -> Caddy (edge_internal only)
+        -> Gateway (edge_internal + data_internal + compat_internal)
+          -> PostgreSQL (data_internal only)
+          -> CLIProxyAPI (compat_internal only)
+            -> Squid allowlist (compat_internal + egress_external)
+              -> auth.openai.com:443 / chatgpt.com:443
 ```
 
-只有 Caddy 有宿主机发布端口。三个带 `internal: true` 的网络没有默认互联网
-路由。Sidecar 即使尝试绕过 `HTTP(S)_PROXY` 也没有直接出口；Squid 拒绝非
-CONNECT、非 443 和不在精确域名列表中的目的地。
+没有容器发布宿主机端口。`cloudflared` 只连接 Tunnel 出站网络和边缘内部网络，
+并把 Dashboard 中的 hostname 转给 `http://caddy:80`。其余带 `internal: true`
+的网络没有默认互联网路由。Sidecar 即使尝试绕过 `HTTP(S)_PROXY` 也没有直接
+出口；Squid 拒绝非 CONNECT、非 443 和不在精确域名列表中的目的地。
 
 ## 主要威胁与控制
 
 | 威胁 | 控制 | 验证方式 |
 | --- | --- | --- |
-| 公网扫描数据库/sidecar/代理 | 仅 Caddy 发布 80/443；独立 internal 网络 | `validate-compose.sh`、外部端口扫描 |
+| 扫描服务器公网 IP 绕过 Cloudflare | 所有服务零宿主端口；安全组只允许固定管理 IP 的 SSH | `validate-compose.sh`、外部端口扫描 |
+| Tunnel token 泄漏 | Dashboard token 仅存 `0640` secret，以 `--token-file` 挂载给非 root、只读的 connector | 文件/mount/进程参数和日志检查 |
 | API Key 数据库泄漏 | 只存 public ID、前缀和带 pepper 的 HMAC；原值只显示一次 | Key 创建/撤销与数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
 | Refresh token 并发复用 | 登录/升级锁；先停唯一实例；禁止共享卷的双实例 | 容器状态检查、运维演练 |
@@ -41,18 +45,19 @@ CONNECT、非 443 和不在精确域名列表中的目的地。
 | 超大正文/资源耗尽 | Caddy 与 Gateway 双重 64 MiB 上限；RPM、并发、日配额和全局流限制 | 限额与并发测试 |
 | 邀请/恢复 token 泄漏 | URL fragment、单次/短期 token、HMAC 存储；不启用访问日志 | 邀请复用测试、日志扫描 |
 | 会话劫持/CSRF | Secure、HttpOnly、SameSite=Strict；Origin/CSRF 校验；敏感操作 5 分钟内 Passkey 再验证 | 身份安全测试 |
-| 伪造来源 IP 绕过限速 | Gateway 只信任固定 Caddy `/32`；Caddy 不信任公网 XFF | 伪造 XFF 集成测试 |
+| 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 只信任固定 cloudflared `/32` 的 `CF-Connecting-IP`，重建 XFF；Gateway 只信任固定 Caddy `/32` | 伪造 CF/XFF 集成测试 |
 | 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；固定 CI 工具版本 | CI 和 lock diff 审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
 
 ## 容器权限
 
-Gateway 和 sidecar 使用 UID 10001、私有部署组、只读根文件系统、`no-new-privileges`
-和 drop-all capabilities。Sidecar 只有 OAuth volume 和两个小型 tmpfs 可写。
-OAuth 文件 umask 是 077。Caddy 仅保留绑定低端口所需的
-`NET_BIND_SERVICE`。PostgreSQL 和 Squid 保留各自官方镜像启动所需权限，
-但没有公网端口，且位于最小网络集合中。
+Gateway 和 sidecar 使用 UID 10001、私有部署组、只读根文件系统、
+`no-new-privileges` 和 drop-all capabilities。`cloudflared` 同样以非 root、
+只读根文件系统和 drop-all capabilities 运行。Sidecar 只有 OAuth volume 和
+两个小型 tmpfs 可写，OAuth 文件 umask 是 077。Caddy 仅保留绑定内部低端口
+所需的 `NET_BIND_SERVICE`。PostgreSQL 和 Squid 保留各自官方镜像启动所需
+权限，但没有公网端口，且位于最小网络集合中。
 
 内部 sidecar API Key 与用户 Key 完全不同。Gateway 在转发前丢弃用户
 Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access 且控制
@@ -64,18 +69,22 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
 - 安全审计保留 365 天。
 - 请求和响应正文不落库，因此不进入 `pg_dump`。
 - OAuth volume 永不备份；灾备后重新登录。
-- PostgreSQL 备份为 age 密文，恢复只在无网络临时容器中演练。
+- PostgreSQL 每日 03:00 UTC 生成本地 age 密文，保留最近 14 组；每月至少在
+  无网络临时容器中恢复演练一次，升级前追加一次。
 - 撤销的 API Key、恢复码和 session 立即失效；数据库保留最小审计引用。
 
 ## 残余风险
 
 - ChatGPT Pro 登录不是官方通用服务端 API，CLIProxyAPI 可能因上游协议改变而
   失效。控制是固定兼容版本、契约测试、人工冒烟和明确 503，而非静默回退。
-- TLS 终止和转发期间，Caddy/Gateway/sidecar 的进程内存可见瞬时内容。主机
-  root、Docker daemon 或内核被攻破后无法靠容器边界保密。
+- 公网 TLS 在 Cloudflare Edge 终止，Cloudflare 及转发链路上的
+  cloudflared/Caddy/Gateway/sidecar 可见必要的瞬时内容。主机 root、Docker
+  daemon 或内核被攻破后无法靠容器边界保密。
 - 精确域名 allowlist 仍信任这些域名的 DNS、证书和服务端。Squid 不做 TLS
   解密，因此不能检查加密路径，但也不会看到 OAuth 或提示词。
-- 单 VPS 是可用性单点。加密备份降低数据丢失影响，不能提供无中断故障转移。
+- 单服务器是可用性单点。本地 age 密文、解密 identity 和其他恢复 secret 会随
+  服务器或云盘整体丢失，因而只能处理数据库逻辑损坏和计划迁机，既不能提供
+  无中断故障转移，也不构成整机灾备。
 - Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。
 
 ## 安全验收
@@ -83,4 +92,5 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
 上线前至少完成：HTTP/SSE fuzz、CSRF/Origin、WebAuthn challenge 重放、路径
 穿越、SSRF、请求走私、伪造 XFF、无效 Key 限速、并发/日配额原子性、客户端
 断开取消、上游 401/429/超时映射，以及带 canary 的日志、数据库和备份敏感
-内容扫描。还需从公网验证 5432、8080、8317、3128 均不可达。
+内容扫描。还需伪造 `CF-Connecting-IP`/`X-Forwarded-For` 验证来源 IP 边界，
+并从公网确认服务器的 80、443、5432、8080、8317 和 3128 均不可达。

@@ -5,6 +5,7 @@ backups/
 *.age
 *.dump
 *.sql
+!internal/store/migrations/*.sql
 *.log
 coverage.out
 sbom*.json
