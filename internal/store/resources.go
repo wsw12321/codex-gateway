@@ -59,7 +59,7 @@ func (s *Store) ListDevices(ctx context.Context, userID string) ([]Device, error
 		return nil, mapDBError("list devices", err)
 	}
 	defer rows.Close()
-	var result []Device
+	result := make([]Device, 0)
 	for rows.Next() {
 		device, err := scanDevice(rows)
 		if err != nil {
@@ -146,7 +146,7 @@ func (s *Store) ListProjects(ctx context.Context, userID string) ([]Project, err
 		return nil, mapDBError("list projects", err)
 	}
 	defer rows.Close()
-	var result []Project
+	result := make([]Project, 0)
 	for rows.Next() {
 		project, err := scanProject(rows)
 		if err != nil {
@@ -301,7 +301,7 @@ func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error
 		return nil, mapDBError("list API keys", err)
 	}
 	defer rows.Close()
-	var result []APIKey
+	result := make([]APIKey, 0)
 	for rows.Next() {
 		key, err := scanAPIKeyCore(rows)
 		if err != nil {

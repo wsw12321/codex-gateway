@@ -22,12 +22,12 @@ func (s *Server) page(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) javascript(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(appJS)
 }
 
 func (s *Server) stylesheet(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=3600")
+	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(styleCSS)
 }

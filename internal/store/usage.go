@@ -211,7 +211,7 @@ func (s *Store) ListUsageRequests(ctx context.Context, filter UsageFilter) ([]Us
 		return nil, mapDBError("list usage requests", err)
 	}
 	defer rows.Close()
-	var result []UsageRequest
+	result := make([]UsageRequest, 0)
 	for rows.Next() {
 		request, err := scanUsageRequest(rows)
 		if err != nil {

@@ -365,7 +365,7 @@ func (s *Store) ListWebAuthnCredentials(ctx context.Context, userID string) ([]W
 		return nil, mapDBError("list WebAuthn credentials", err)
 	}
 	defer rows.Close()
-	var result []WebAuthnCredential
+	result := make([]WebAuthnCredential, 0)
 	for rows.Next() {
 		credential, err := scanCredential(rows)
 		if err != nil {

@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -57,6 +58,17 @@ func TestPostgresIntegration(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateProject: %v", err)
+	}
+	emptyKeys, err := s.ListAPIKeys(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListAPIKeys before creation: %v", err)
+	}
+	encodedKeys, err := json.Marshal(emptyKeys)
+	if err != nil {
+		t.Fatalf("marshal empty API key list: %v", err)
+	}
+	if string(encodedKeys) != "[]" {
+		t.Fatalf("empty API key list JSON = %s, want []", encodedKeys)
 	}
 	keyHash := make([]byte, 32)
 	keyHash[0] = 1

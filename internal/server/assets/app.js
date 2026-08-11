@@ -140,15 +140,19 @@ function option(value, label) {
 
 function renderState(value) {
   state = value;
+  const devices = Array.isArray(value.devices) ? value.devices : [];
+  const projects = Array.isArray(value.projects) ? value.projects : [];
+  const passkeys = Array.isArray(value.passkeys) ? value.passkeys : [];
+  const apiKeys = Array.isArray(value.api_keys) ? value.api_keys : [];
   show("dashboard"); show("logout"); hide("login-view");
   byId("whoami").textContent = value.user.display_name;
   byId("role").textContent = `${value.user.username} · ${value.user.role}`;
   if (value.user.role === "owner") show("owner-tools");
 
-  byId("devices").replaceChildren(...value.devices.map((d) => row(`${d.Name || d.name}`, d.status || d.Status)));
-  byId("projects").replaceChildren(...value.projects.map((p) => row(`${p.Name || p.name} · ${p.Slug || p.slug}`, p.status || p.Status)));
-  byId("passkeys").replaceChildren(...value.passkeys.map((p) => row(p.Nickname || p.nickname || "Passkey", "已注册")));
-  byId("keys").replaceChildren(...value.api_keys.map((key) => {
+  byId("devices").replaceChildren(...devices.map((d) => row(`${d.Name || d.name}`, d.status || d.Status)));
+  byId("projects").replaceChildren(...projects.map((p) => row(`${p.Name || p.name} · ${p.Slug || p.slug}`, p.status || p.Status)));
+  byId("passkeys").replaceChildren(...passkeys.map((p) => row(p.Nickname || p.nickname || "Passkey", "已注册")));
+  byId("keys").replaceChildren(...apiKeys.map((key) => {
     const id = key.ID || key.id;
     const item = row(`${key.Name || key.name} · ${key.KeyPrefix || key.key_prefix}`, key.Status || key.status);
     if ((key.Status || key.status) === "active") {
@@ -159,9 +163,9 @@ function renderState(value) {
   }));
 
   const deviceSelect = byId("key-device"); deviceSelect.replaceChildren();
-  for (const d of value.devices.filter((item) => (item.Status || item.status) === "active")) deviceSelect.append(option(d.ID || d.id, d.Name || d.name));
+  for (const d of devices.filter((item) => (item.Status || item.status) === "active")) deviceSelect.append(option(d.ID || d.id, d.Name || d.name));
   const projectSelect = byId("key-project"); projectSelect.replaceChildren(option("", "unassigned"));
-  for (const p of value.projects.filter((item) => (item.Status || item.status) === "active")) projectSelect.append(option(p.ID || p.id, `${p.Name || p.name} (${p.Slug || p.slug})`));
+  for (const p of projects.filter((item) => (item.Status || item.status) === "active")) projectSelect.append(option(p.ID || p.id, `${p.Name || p.name} (${p.Slug || p.slug})`));
 }
 
 function row(primary, secondary) {
@@ -188,7 +192,8 @@ async function refreshUsage() {
   byId("metric-cache").textContent = `${(s.cache_rate * 100).toFixed(1)}%`;
   byId("metric-ttft").textContent = `${s.p95_ttft_ms} ms`;
   byId("metric-duration").textContent = `${s.p95_duration_ms} ms`;
-  const rows = result.requests.map((item) => {
+  const requests = Array.isArray(result.requests) ? result.requests : [];
+  const rows = requests.map((item) => {
     const tr = document.createElement("tr");
     const values = [new Date(item.RequestedAt || item.requested_at).toLocaleString(), item.KeyPrefix || item.key_prefix,
       item.ProjectID || item.project_id || "unassigned", item.Model || item.model, item.State || item.state,
