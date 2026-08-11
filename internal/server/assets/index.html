@@ -3,119 +3,353 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Personal Codex Gateway</title>
+  <title>Codex Gateway 管理控制台</title>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
-  <header>
-    <div>
-      <p class="eyebrow">PERSONAL CODEX GATEWAY</p>
-      <h1>把凭证留在边界内，把工作留在本地。</h1>
-    </div>
-    <button id="logout" class="quiet hidden" type="button">退出</button>
-  </header>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <div id="notice" class="notice hidden" role="status" aria-live="polite" aria-atomic="true"></div>
+  <p id="operation-status" class="sr-only" role="status" aria-live="polite"></p>
 
-  <main>
-    <section id="notice" class="notice hidden" role="status"></section>
+  <main id="main-content" tabindex="-1">
+    <section id="auth" class="auth-shell" aria-label="身份验证">
+      <section id="login-view" class="panel auth-card hidden">
+        <div class="auth-mark" aria-hidden="true">CG</div>
+        <p class="eyebrow">CODEX GATEWAY</p>
+        <h1>安全进入你的工作边界</h1>
+        <p>使用本站 Passkey 登录，无需用户名或密码。</p>
+        <p id="login-error" class="form-message hidden" role="alert"></p>
+        <div class="auth-actions">
+          <button id="login" type="button">使用 Passkey 登录</button>
+          <a href="/recover">使用恢复码</a>
+        </div>
+      </section>
 
-    <section id="login-view" class="panel hidden">
-      <p class="kicker">安全登录</p>
-      <h2>使用可发现 Passkey</h2>
-      <p>无需用户名或密码。浏览器会让你选择这个站点的 Passkey。</p>
-      <button id="login" type="button">使用 Passkey 登录</button>
-      <a href="/recover" class="secondary-link">使用恢复码</a>
-    </section>
-
-    <section id="join-view" class="panel hidden">
-      <p class="kicker">接受邀请</p>
-      <h2>创建本地身份</h2>
-      <form id="join-form">
-        <label>用户名 <input name="username" required minlength="3" maxlength="32" autocomplete="username"></label>
-        <label>显示名称 <input name="display_name" required maxlength="80" autocomplete="name"></label>
-        <button type="submit">创建 Passkey</button>
-      </form>
-    </section>
-
-    <section id="recover-view" class="panel hidden">
-      <p class="kicker">账号恢复</p>
-      <h2>使用一次性恢复码</h2>
-      <p>成功后旧会话和整批旧恢复码都会失效。</p>
-      <form id="recover-form">
-        <label>用户名 <input name="username" required autocomplete="username"></label>
-        <label>恢复码 <input name="recovery_code" required autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX"></label>
-        <button type="submit">验证并创建新 Passkey</button>
-      </form>
-    </section>
-
-    <section id="recovery-codes" class="panel warning hidden">
-      <p class="kicker">只显示一次</p>
-      <h2>立即离线保存恢复码</h2>
-      <pre id="recovery-code-list"></pre>
-      <button id="codes-saved" type="button">我已安全保存</button>
-    </section>
-
-    <section id="dashboard" class="hidden">
-      <div class="hero-grid">
-        <article class="panel"><p class="kicker">当前身份</p><h2 id="whoami">—</h2><p id="role">—</p></article>
-        <article class="metric"><span>请求</span><strong id="metric-requests">0</strong><small>最近 7 天</small></article>
-        <article class="metric"><span>Token</span><strong id="metric-tokens">0</strong><small>input + output</small></article>
-        <article class="metric"><span>错误率</span><strong id="metric-errors">0%</strong><small>最近 500 条</small></article>
-      </div>
-
-      <div class="two-column">
-        <section class="panel">
-          <h2>设备</h2>
-          <form id="device-form" class="inline-form"><input name="name" required placeholder="例如：MacBook Pro"><button>添加</button></form>
-          <div id="devices" class="list"></div>
-        </section>
-        <section class="panel">
-          <h2>项目</h2>
-          <form id="project-form">
-            <label>标识 <input name="slug" required pattern="[a-z0-9_-]+" placeholder="gateway"></label>
-            <label>名称 <input name="name" required placeholder="Codex Gateway"></label>
-            <button>添加项目</button>
-          </form>
-          <div id="projects" class="list"></div>
-        </section>
-      </div>
-
-      <section class="panel">
-        <div class="section-title"><div><p class="kicker">设备凭证</p><h2>API Keys</h2></div><button id="reauth" class="quiet" type="button">再次验证 Passkey</button></div>
-        <form id="key-form" class="form-grid">
-          <label>名称 <input name="name" required placeholder="工作电脑默认 Key"></label>
-          <label>设备 <select name="device_id" id="key-device" required></select></label>
-          <label>默认项目 <select name="default_project_id" id="key-project"><option value="">unassigned</option></select></label>
-          <label>有效天数 <input name="expires_days" type="number" min="1" max="365" value="90"></label>
-          <label class="wide">模型白名单（逗号分隔；留空表示全部）<input name="models" placeholder="gpt-5.1-codex,gpt-5.1-codex-mini"></label>
-          <button type="submit">创建 API Key</button>
+      <section id="join-view" class="panel auth-card hidden">
+        <div class="auth-mark" aria-hidden="true">CG</div>
+        <p class="eyebrow" id="join-eyebrow">接受邀请</p>
+        <h1 id="join-title">创建本地身份</h1>
+        <p id="join-help">设置资料后，浏览器会引导你创建 Passkey。</p>
+        <form id="join-form">
+          <label id="join-username">用户名
+            <input name="username" required minlength="3" maxlength="32" autocomplete="username" placeholder="例如：lin">
+          </label>
+          <label id="join-display">显示名称
+            <input name="display_name" required maxlength="80" autocomplete="name" placeholder="例如：林舟">
+          </label>
+          <p class="form-message hidden" role="alert"></p>
+          <button type="submit">创建 Passkey</button>
         </form>
-        <div id="one-time-key" class="secret hidden"></div>
-        <div id="keys" class="list"></div>
       </section>
 
-      <div class="two-column">
-        <section class="panel">
-          <h2>Passkeys</h2>
-          <div id="passkeys" class="list"></div>
-          <button id="add-passkey" type="button">添加 Passkey</button>
-        </section>
-        <section id="owner-tools" class="panel hidden">
-          <h2>Owner 工具</h2>
-          <button id="member-invite" type="button">生成 24 小时成员邀请</button>
-          <form id="recovery-invite-form" class="inline-form"><input name="target_username" placeholder="待恢复用户名" required><button>签发恢复邀请</button></form>
-          <div id="invite-result" class="secret hidden"></div>
-        </section>
+      <section id="recover-view" class="panel auth-card hidden">
+        <div class="auth-mark" aria-hidden="true">CG</div>
+        <p class="eyebrow">账号恢复</p>
+        <h1>使用一次性恢复码</h1>
+        <p>成功后，旧会话和整批旧恢复码都会失效。</p>
+        <form id="recover-form">
+          <label>用户名
+            <input name="username" required autocomplete="username">
+          </label>
+          <label>恢复码
+            <input name="recovery_code" required autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
+          </label>
+          <p class="form-message hidden" role="alert"></p>
+          <button type="submit">验证并创建新 Passkey</button>
+        </form>
+        <a class="back-link" href="/">返回登录</a>
+      </section>
+    </section>
+
+    <section id="dashboard" class="app hidden" aria-label="Codex Gateway 管理控制台">
+      <aside>
+        <div class="brand">
+          <span aria-hidden="true">CG</span>
+          <div><strong>Codex Gateway</strong><small>管理控制台</small></div>
+        </div>
+        <nav aria-label="控制台分区">
+          <a href="#overview" data-view="overview">概览</a>
+          <a href="#resources" data-view="resources">资源</a>
+          <a href="#keys" data-view="keys">API Keys</a>
+          <a href="#security" data-view="security">账号安全</a>
+          <a href="#usage" data-view="usage">使用统计</a>
+        </nav>
+        <div class="profile">
+          <div><strong id="whoami">—</strong><small id="role">—</small></div>
+          <button id="logout" class="quiet" type="button">退出</button>
+        </div>
+      </aside>
+
+      <div class="workspace">
+        <header class="workspace-header">
+          <div>
+            <p class="eyebrow">PERSONAL CODEX GATEWAY</p>
+            <h1 id="page-title">概览</h1>
+          </div>
+          <span id="connection" class="connection" data-state="loading">正在连接</span>
+        </header>
+
+        <div id="content" tabindex="-1">
+          <p id="webauthn-warning" class="callout hidden" role="alert"></p>
+          <section class="view" data-section="overview" aria-labelledby="overview-title">
+            <h2 id="overview-title" class="sr-only">概览</h2>
+            <div class="metrics overview-metrics">
+              <article><span>最近 7 天请求</span><strong id="metric-requests">—</strong><small>完整筛选区间</small></article>
+              <article><span>Token</span><strong id="metric-tokens">—</strong><small>输入 + 输出</small></article>
+              <article><span>错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small></article>
+              <article><span>活跃 API Keys</span><strong id="metric-active-keys">—</strong><small>当前可使用</small></article>
+              <article class="owner-only hidden"><span>本月全员 Token</span><strong id="metric-global-tokens">—</strong><small>所有用户聚合</small></article>
+              <article class="owner-only hidden"><span>本月 API 等价估算</span><strong id="metric-global-cost">—</strong><small id="metric-global-coverage">仅已定价部分</small></article>
+            </div>
+
+            <div class="overview-grid">
+              <article class="panel">
+                <div class="panel-heading"><div><p class="eyebrow">WORKSPACE</p><h2>资源状态</h2></div></div>
+                <div id="resource-summary" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载资源…</div>
+              </article>
+              <article class="panel">
+                <div class="panel-heading"><div><p class="eyebrow">GET STARTED</p><h2>首次接入</h2></div><span id="onboarding-progress" class="badge">0 / 3</span></div>
+                <ol id="onboarding" class="checklist"></ol>
+              </article>
+              <article class="panel owner-only hidden">
+                <div class="panel-heading"><div><p class="eyebrow">OWNER</p><h2>开放告警</h2></div><a href="#security" class="subtle-link">安全工具</a></div>
+                <div id="alert-summary" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载告警…</div>
+              </article>
+              <article class="panel owner-only hidden">
+                <div class="panel-heading"><div><p class="eyebrow">ESTIMATE</p><h2>本月全员</h2></div><button class="text-button" type="button" data-usage-tab="global">查看汇总</button></div>
+                <div id="global-overview" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载全员统计…</div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view hidden" data-section="resources" aria-labelledby="resources-title">
+            <div class="section-head">
+              <div><p class="eyebrow">BOUNDARIES</p><h2 id="resources-title">设备与项目</h2><p>把凭证绑定到明确的设备和工作范围。</p></div>
+              <div class="button-group">
+                <button type="button" data-open="device-dialog">新增设备</button>
+                <button type="button" class="secondary" data-open="project-dialog">新增项目</button>
+              </div>
+            </div>
+            <div class="grid">
+              <article class="panel">
+                <div class="panel-heading"><h3>设备</h3><span id="device-count" class="badge">0</span></div>
+                <div id="devices" class="list loading" aria-live="polite" aria-busy="true">正在加载设备…</div>
+              </article>
+              <article class="panel">
+                <div class="panel-heading"><h3>项目</h3><span id="project-count" class="badge">0</span></div>
+                <div id="projects" class="list loading" aria-live="polite" aria-busy="true">正在加载项目…</div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view hidden" data-section="keys" aria-labelledby="keys-title">
+            <div class="section-head">
+              <div><p class="eyebrow">CREDENTIALS</p><h2 id="keys-title">API Keys</h2><p>每个 Key 绑定设备；秘密仅显示一次。</p></div>
+              <button id="new-key" type="button" data-open="key-dialog">创建 API Key</button>
+            </div>
+            <p id="key-guidance" class="callout hidden" role="status"></p>
+            <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
+          </section>
+
+          <section class="view hidden" data-section="security" aria-labelledby="security-title">
+            <div class="section-head">
+              <div><p class="eyebrow">IDENTITY</p><h2 id="security-title">账号安全</h2><p>管理登录凭证以及一次性邀请。</p></div>
+            </div>
+            <div class="grid security-grid">
+              <article class="panel">
+                <div class="panel-heading"><h3>Passkeys</h3><button id="add-passkey" type="button">新增 Passkey</button></div>
+                <div id="passkeys" class="list loading" aria-live="polite" aria-busy="true">正在加载 Passkeys…</div>
+              </article>
+              <article id="owner-tools" class="panel owner-only hidden">
+                <div class="panel-heading"><div><p class="eyebrow">OWNER ONLY</p><h3>邀请与恢复</h3></div></div>
+                <div class="tool-block">
+                  <h4>成员邀请</h4>
+                  <p>链接 24 小时内有效，且只能使用一次。</p>
+                  <button id="member-invite" type="button">生成成员邀请</button>
+                  <p id="member-invite-message" class="form-message hidden" role="alert"></p>
+                </div>
+                <form id="recovery-invite-form" class="tool-block">
+                  <h4>恢复邀请</h4>
+                  <p>为指定账号签发一次性 Passkey 恢复入口。</p>
+                  <label>待恢复用户名
+                    <input name="target_username" required autocomplete="off">
+                  </label>
+                  <p class="form-message hidden" role="alert"></p>
+                  <button type="submit">签发恢复邀请</button>
+                </form>
+              </article>
+            </div>
+          </section>
+
+          <section class="view hidden" data-section="usage" aria-labelledby="usage-title">
+            <div class="section-head">
+              <div><p class="eyebrow">METADATA ONLY</p><h2 id="usage-title">使用统计</h2><p>不包含提示词、代码或响应正文。</p></div>
+            </div>
+            <div class="tabs" role="tablist" aria-label="用量视图">
+              <button id="personal-tab" type="button" role="tab" aria-selected="true" aria-controls="personal-usage" class="active">个人明细</button>
+              <button id="global-tab" type="button" role="tab" aria-selected="false" aria-controls="global-usage" tabindex="-1" class="owner-only hidden">全员汇总</button>
+            </div>
+
+            <div id="personal-usage" role="tabpanel" aria-labelledby="personal-tab">
+              <div id="personal-scope" class="scope-banner hidden">
+                <span>正在查看 <strong id="personal-scope-name"></strong> 的明细</span>
+                <button id="clear-user-filter" type="button" class="text-button">返回我的明细</button>
+              </div>
+              <form id="usage-filter" class="filters">
+                <input name="user_id" type="hidden">
+                <label>从
+                  <input name="from" type="date">
+                </label>
+                <label>至
+                  <input name="until" type="date">
+                </label>
+                <label>设备
+                  <select name="device_id"><option value="">全部设备</option></select>
+                </label>
+                <label>API Key
+                  <select name="api_key_id"><option value="">全部 Keys</option></select>
+                </label>
+                <label>项目
+                  <select name="project_id"><option value="">全部项目</option></select>
+                </label>
+                <label>模型
+                  <input name="model" placeholder="精确模型名">
+                </label>
+                <label>请求状态
+                  <select name="state"><option value="">全部状态</option><option value="completed">completed</option><option value="failed">failed</option><option value="cancelled">cancelled</option><option value="in_progress">in_progress</option></select>
+                </label>
+                <label>HTTP 状态
+                  <input name="status" inputmode="numeric" placeholder="例如 429 或 4xx">
+                </label>
+                <div class="filter-actions">
+                  <button type="submit">应用筛选</button>
+                  <a id="csv-link" class="button secondary" href="/admin/usage.csv">导出 CSV</a>
+                </div>
+                <p class="form-message hidden" role="alert"></p>
+              </form>
+              <div id="personal-loading" class="inline-loading hidden" role="status">正在加载个人用量…</div>
+              <div class="metrics compact">
+                <article><span>请求</span><strong id="usage-requests">—</strong></article>
+                <article><span>缓存率</span><strong id="metric-cache">—</strong></article>
+                <article><span>p95 TTFT</span><strong id="metric-ttft">—</strong></article>
+                <article><span>p95 耗时</span><strong id="metric-duration">—</strong></article>
+              </div>
+              <div class="table-wrap panel">
+                <table>
+                  <caption>最多显示 500 条请求元数据；汇总卡基于完整筛选区间。</caption>
+                  <thead><tr><th>时间</th><th>设备</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>HTTP</th><th>Token</th></tr></thead>
+                  <tbody id="usage-rows"><tr><td colspan="8" class="table-message">正在加载…</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div id="global-usage" class="hidden" role="tabpanel" aria-labelledby="global-tab">
+              <form id="global-filter" class="filters global-filters">
+                <label>区间
+                  <select name="range"><option value="month">本月</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option><option value="all">全部历史</option></select>
+                </label>
+                <label>从
+                  <input name="from" type="date">
+                </label>
+                <label>至
+                  <input name="until" type="date">
+                </label>
+                <label>模型
+                  <input name="model" placeholder="精确模型名">
+                </label>
+                <div class="filter-actions"><button type="submit">应用筛选</button></div>
+                <p class="form-message hidden" role="alert"></p>
+              </form>
+              <div id="global-loading" class="inline-loading hidden" role="status">正在聚合全员用量…</div>
+              <div class="metrics compact global-metrics">
+                <article><span>已定价部分 USD</span><strong id="global-usd">—</strong><small>API 等价费用估算</small></article>
+                <article><span>已定价部分 CNY</span><strong id="global-cny">—</strong><small>固定汇率换算</small></article>
+                <article><span>Token</span><strong id="global-total-tokens">—</strong><small id="global-coverage">—</small></article>
+                <article><span>请求 / 用户</span><strong id="global-request-users">—</strong><small id="global-period">—</small></article>
+              </div>
+              <div id="pricing-note" class="pricing-note muted" role="note"></div>
+              <div class="table-wrap panel">
+                <table>
+                  <caption>按已定价部分费用降序；未配置价格的模型计入未定价 Token，不会静默按零价处理。</caption>
+                  <thead><tr><th>用户</th><th>请求</th><th>Token</th><th>USD / CNY 估算</th><th>使用占比</th><th>计价覆盖</th></tr></thead>
+                  <tbody id="global-rows"><tr><td colspan="6" class="table-message">选择“全员汇总”后加载。</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+        </div>
       </div>
-
-      <section class="panel">
-        <div class="section-title"><div><p class="kicker">仅元数据</p><h2>使用统计</h2></div><a href="/admin/usage.csv" class="button-link">导出 CSV</a></div>
-        <div class="metrics-row"><span>缓存率 <strong id="metric-cache">0%</strong></span><span>p95 TTFT <strong id="metric-ttft">0 ms</strong></span><span>p95 耗时 <strong id="metric-duration">0 ms</strong></span></div>
-        <div class="table-wrap"><table><thead><tr><th>时间</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>Token</th><th>TTFT</th></tr></thead><tbody id="usage-rows"></tbody></table></div>
-      </section>
     </section>
   </main>
 
-  <footer>不记录提示词、代码或响应正文。所有 Codex 文件与命令操作仍在本地设备执行。</footer>
+  <dialog id="device-dialog" aria-labelledby="device-dialog-title">
+    <form id="device-form">
+      <div class="dialog-heading"><p class="eyebrow">RESOURCE</p><h2 id="device-dialog-title">新增设备</h2><p>API Key 必须绑定到一台设备。</p></div>
+      <label>设备名称
+        <input name="name" required maxlength="80" autocomplete="off" placeholder="例如：MacBook Pro">
+      </label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">添加设备</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="project-dialog" aria-labelledby="project-dialog-title">
+    <form id="project-form">
+      <div class="dialog-heading"><p class="eyebrow">RESOURCE</p><h2 id="project-dialog-title">新增项目</h2><p>使用稳定 slug 标识你的工作范围。</p></div>
+      <label>Slug
+        <input name="slug" required maxlength="64" pattern="[a-z0-9_-]+" autocomplete="off" placeholder="gateway">
+      </label>
+      <label>名称
+        <input name="name" required maxlength="120" autocomplete="off" placeholder="Codex Gateway">
+      </label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">添加项目</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="key-dialog" aria-labelledby="key-dialog-title">
+    <form id="key-form">
+      <div class="dialog-heading"><p class="eyebrow">CREDENTIAL</p><h2 id="key-dialog-title">创建 API Key</h2><p>创建前会按需要求再次验证 Passkey。</p></div>
+      <label>名称
+        <input name="name" required maxlength="80" autocomplete="off" placeholder="工作电脑默认 Key">
+      </label>
+      <label>设备
+        <select name="device_id" id="key-device" required></select>
+      </label>
+      <label>默认项目
+        <select name="default_project_id" id="key-project"><option value="">未分配</option></select>
+      </label>
+      <label>有效天数
+        <input name="expires_days" type="number" min="1" max="365" value="90">
+      </label>
+      <label>模型范围
+        <input name="models" autocomplete="off" placeholder="逗号分隔；留空允许全部">
+      </label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">创建 Key</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="passkey-dialog" aria-labelledby="passkey-dialog-title">
+    <form id="passkey-form">
+      <div class="dialog-heading"><p class="eyebrow">IDENTITY</p><h2 id="passkey-dialog-title">新增 Passkey</h2><p>用昵称区分手机、安全密钥或其他设备。</p></div>
+      <label>昵称
+        <input name="nickname" required maxlength="80" autocomplete="off" placeholder="例如：手机">
+      </label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">继续</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="secret-dialog" class="secret-dialog" aria-labelledby="secret-title">
+    <div class="dialog-heading"><p class="eyebrow">ONLY ONCE</p><h2 id="secret-title">只显示一次</h2></div>
+    <p id="secret-description">请立即安全保存。关闭后内容会从页面清除，无法再次查看。</p>
+    <pre id="secret-value" tabindex="0"></pre>
+    <p id="secret-status" class="form-message hidden" role="status" aria-live="polite"></p>
+    <div class="actions"><button id="copy-secret" type="button" class="secondary">复制</button><button id="save-secret" type="button">我已安全保存并关闭</button></div>
+  </dialog>
+
+  <footer id="site-footer">仅记录运行与用量元数据，不记录提示词、代码或响应正文。</footer>
 </body>
 </html>

@@ -93,6 +93,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/state", s.requireSession(http.HandlerFunc(s.adminState)))
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
+	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 
 	s.mux.Handle("GET /v1/models", s.requireAPIKey(http.HandlerFunc(s.proxyModels)))

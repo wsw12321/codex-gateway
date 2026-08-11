@@ -28,7 +28,7 @@ func TestForwardStripsCredentialsAndParsesJSONUsage(t *testing.T) {
 	base, _ := url.Parse(upstream.URL)
 	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
 
-	req := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gpt-test"}`))
+	req := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gpt-requested"}`))
 	req.Header.Set("Authorization", "Bearer cgk_v1_public_secret")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("X-Forwarded-For", "203.0.113.1")
@@ -66,6 +66,23 @@ func TestForwardSSEUsageAcrossChunks(t *testing.T) {
 	}
 	if !strings.Contains(recorder.Body.String(), "response.completed") {
 		t.Fatal("SSE was not streamed")
+	}
+}
+
+func TestStreamJSONUsesNestedCompactResponseModel(t *testing.T) {
+	var forwarded strings.Builder
+	model, usage, err := streamJSON(&forwarded, strings.NewReader(
+		`{"type":"response.compaction","response":{"id":"r-compact","model":"gpt-actual-compact","usage":{"input_tokens":21,"input_tokens_details":{"cached_tokens":8},"output_tokens":5,"output_tokens_details":{"reasoning_tokens":4}}}}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model != "gpt-actual-compact" || usage.InputTokens != 21 || usage.CachedTokens != 8 ||
+		usage.OutputTokens != 5 || usage.ReasoningTokens != 4 {
+		t.Fatalf("unexpected compact metadata: model=%q usage=%+v", model, usage)
+	}
+	if !strings.Contains(forwarded.String(), `"gpt-actual-compact"`) {
+		t.Fatal("compact response was not forwarded")
 	}
 }
 

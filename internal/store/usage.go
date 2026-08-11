@@ -92,6 +92,7 @@ type CompleteUsageRequestParams struct {
 	RequestBytes      int64
 	ResponseBytes     int64
 	UpstreamRequestID string
+	ActualModel       string
 }
 
 func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRequestParams) (UsageRequest, error) {
@@ -107,6 +108,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 	if params.CompletedAt.IsZero() {
 		params.CompletedAt = s.now().UTC()
 	}
+	params.ActualModel = strings.TrimSpace(params.ActualModel)
 	request, err := scanUsageRequest(s.db.QueryRowContext(ctx, `
 		UPDATE usage_requests
 		SET state = $2, http_status = $3, error_code = $4,
@@ -118,7 +120,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 			duration_ms = ROUND(EXTRACT(EPOCH FROM ($6 - requested_at)) * 1000)::bigint,
 			input_tokens = $7, cached_input_tokens = $8, output_tokens = $9,
 			reasoning_tokens = $10, request_bytes = $11, response_bytes = $12,
-			upstream_request_id = $13
+			upstream_request_id = $13, model = COALESCE(NULLIF($14, ''), model)
 		WHERE request_id = $1 AND state = 'in_progress'
 		  AND $6 >= requested_at
 		  AND ($5::timestamptz IS NULL OR ($5 >= requested_at AND $5 <= $6))
@@ -126,7 +128,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		params.RequestID, params.State, params.HTTPStatus, valueOrNil(params.ErrorCode),
 		timeOrNil(params.FirstTokenAt), params.CompletedAt, params.InputTokens,
 		params.CachedInputTokens, params.OutputTokens, params.ReasoningTokens,
-		params.RequestBytes, params.ResponseBytes, valueOrNil(params.UpstreamRequestID),
+		params.RequestBytes, params.ResponseBytes, valueOrNil(params.UpstreamRequestID), params.ActualModel,
 	))
 	return request, mapDBError("complete usage request", err)
 }
@@ -251,6 +253,76 @@ func (s *Store) SummarizeUsageRequests(ctx context.Context, filter UsageFilter) 
 		&summary.P95TTFTMillis, &summary.P95DurationMillis,
 	)
 	return summary, mapDBError("summarize usage requests", err)
+}
+
+// GlobalUsage returns terminal usage grouped at the minimum granularity needed
+// for exact model pricing. In all-history mode, completed monthly aggregates
+// before liveFrom are combined with request metadata from liveFrom onward.
+func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model string, all bool, liveFrom time.Time) ([]GlobalUsageRow, error) {
+	model = strings.TrimSpace(model)
+	var source string
+	var args []any
+	if all {
+		if liveFrom.IsZero() || until.IsZero() || !liveFrom.Before(until) {
+			return nil, fmt.Errorf("%w: invalid all-history usage interval", ErrInvalid)
+		}
+		source = `
+			SELECT user_id, model, request_count, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens
+			FROM usage_monthly WHERE usage_month < $1::date
+			UNION ALL
+			SELECT user_id, model, 1::bigint, input_tokens, cached_input_tokens, output_tokens, reasoning_tokens
+			FROM usage_requests
+			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
+			  AND requested_at >= $2 AND requested_at < $3`
+		args = []any{liveFrom.Format("2006-01-02"), liveFrom, until}
+	} else {
+		if from.IsZero() || until.IsZero() || !from.Before(until) {
+			return nil, fmt.Errorf("%w: invalid bounded usage interval", ErrInvalid)
+		}
+		source = `
+			SELECT user_id, model, 1::bigint AS request_count, input_tokens,
+				cached_input_tokens, output_tokens, reasoning_tokens
+			FROM usage_requests
+			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
+			  AND requested_at >= $1 AND requested_at < $2`
+		args = []any{from, until}
+	}
+	modelClause := ""
+	if model != "" {
+		args = append(args, model)
+		modelClause = fmt.Sprintf(" WHERE source.model = $%d", len(args))
+	}
+	query := `WITH source AS (` + source + `), totals AS (
+		SELECT user_id, model, sum(request_count)::bigint request_count,
+			sum(input_tokens)::bigint input_tokens, sum(cached_input_tokens)::bigint cached_input_tokens,
+			sum(output_tokens)::bigint output_tokens, sum(reasoning_tokens)::bigint reasoning_tokens
+		FROM source` + modelClause + ` GROUP BY user_id, model)
+		SELECT u.id, u.username, u.display_name, COALESCE(t.model, ''),
+			COALESCE(t.request_count, 0), COALESCE(t.input_tokens, 0), COALESCE(t.cached_input_tokens, 0),
+			COALESCE(t.output_tokens, 0), COALESCE(t.reasoning_tokens, 0)
+		FROM users u LEFT JOIN totals t ON t.user_id = u.id
+		ORDER BY u.username, t.model`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, mapDBError("global usage", err)
+	}
+	defer rows.Close()
+	result := make([]GlobalUsageRow, 0)
+	for rows.Next() {
+		var value GlobalUsageRow
+		if err := rows.Scan(
+			&value.UserID, &value.Username, &value.DisplayName, &value.Model,
+			&value.RequestCount, &value.InputTokens, &value.CachedInputTokens,
+			&value.OutputTokens, &value.ReasoningTokens,
+		); err != nil {
+			return nil, fmt.Errorf("scan global usage: %w", err)
+		}
+		result = append(result, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate global usage: %w", err)
+	}
+	return result, nil
 }
 
 // AggregateUsageDay recomputes one complete local calendar day. Recomputing

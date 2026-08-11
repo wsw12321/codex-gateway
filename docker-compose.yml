@@ -81,6 +81,7 @@ services:
     environment:
       GATEWAY_LISTEN: ":8080"
       GATEWAY_PUBLIC_URL: https://${GATEWAY_DOMAIN:?Set GATEWAY_DOMAIN in .env}
+      GATEWAY_USAGE_PRICING_JSON: ${GATEWAY_USAGE_PRICING_JSON:?Set GATEWAY_USAGE_PRICING_JSON in .env}
       TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:-172.28.10.2/32}
       DATABASE_URL_FILE: /run/secrets/database_url
       KEY_HMAC_PEPPER_FILE: /run/secrets/gateway_api_key_pepper

@@ -211,4 +211,15 @@ func modelAllowed(model string, allowlist []string) bool {
 	return false
 }
 
+// recordedUpstreamModel accepts only the same bounded model syntax allowed on
+// requests. A malformed or missing upstream value falls back to the already
+// validated requested model in CompleteUsageRequest instead of leaving the
+// usage row stuck in progress on a database constraint failure.
+func recordedUpstreamModel(model string) string {
+	if !validModel(model) {
+		return ""
+	}
+	return model
+}
+
 func modelError(model string) error { return fmt.Errorf("model %q is not allowed", model) }

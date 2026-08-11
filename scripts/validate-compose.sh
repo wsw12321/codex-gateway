@@ -38,6 +38,47 @@ case "$gateway_domain" in
         ;;
 esac
 
+pricing_json=$(jq -er '
+  .services.gateway.environment.GATEWAY_USAGE_PRICING_JSON |
+  select(type == "string" and length > 0)
+' "$tmp") || fail 'GATEWAY_USAGE_PRICING_JSON must be set in .env'
+printf '%s\n' "$pricing_json" | jq -e '
+  def decimal:
+    type == "string" and
+    length > 0 and length <= 40 and
+    test("^(0|[1-9][0-9]*)(\\.[0-9]+)?$");
+  def bounded_decimal:
+    decimal and
+    test("^(?:[0-9]{1,9}(?:\\.[0-9]+)?|1000000000(?:\\.0+)?)$");
+  def snapshot_date:
+    type == "string" and
+    test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") and
+    ((try strptime("%Y-%m-%d") catch null) != null);
+  (keys | sort) == ["catalog_as_of", "fx_as_of", "models", "usd_cny_rate"] and
+  (.catalog_as_of | snapshot_date) and
+  (.fx_as_of | snapshot_date) and
+  (.usd_cny_rate | bounded_decimal and (test("^0(?:\\.0+)?$") | not)) and
+  (.models | type == "object" and length > 0 and length <= 1000) and
+  all(.models | to_entries[];
+    (.key |
+      length >= 1 and length <= 128 and
+      . != "exact-recorded-model" and
+      (startswith("replace-") | not) and
+      test("^[A-Za-z0-9._:-]+$")) and
+    (.value | type == "object") and
+    (.value | keys | sort) == [
+      "cached_input_usd_per_million",
+      "input_usd_per_million",
+      "output_usd_per_million"
+    ] and
+    (.value.input_usd_per_million | bounded_decimal) and
+    (.value.cached_input_usd_per_million | bounded_decimal) and
+    (.value.output_usd_per_million | bounded_decimal)
+  )
+' >/dev/null 2>&1 || \
+    fail 'GATEWAY_USAGE_PRICING_JSON must contain reviewed dates, FX rate, exact models, and decimal prices'
+unset pricing_json
+
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
 # host port. Only cloudflared and the Squid allowlist proxy may reach an
 # external Docker network, each through its dedicated egress network.
@@ -204,4 +245,4 @@ fi
 "$compose" run --rm --no-deps caddy caddy validate \
     --config /etc/caddy/Caddyfile --adapter caddyfile
 
-printf '%s\n' 'Compose ingress, network isolation, secrets, immutable revisions, Caddy policy, PostgreSQL SCRAM auth, and rendered image locks validated'
+printf '%s\n' 'Compose ingress, network isolation, secrets, immutable revisions, usage pricing, Caddy policy, PostgreSQL SCRAM auth, and rendered image locks validated'

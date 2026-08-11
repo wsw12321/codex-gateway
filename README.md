@@ -112,6 +112,12 @@ Token 总量按 input + output 结算；cached input 和 reasoning 是细分指�
 计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态过滤，展示请求
 数、Token、缓存率、错误率、p95 TTFT/耗时，并导出 CSV。
 
+Owner 的全员统计还会按部署时固定的价格目录和 USD/CNY 汇率展示“API 等价费用
+估算”。它只按记录中的精确模型名匹配价格；未匹配的模型单独计入未定价 Token
+和覆盖率，不会静默按零价形成完整总额。该估算不是真实费用或账单：当前上游是
+ChatGPT Pro OAuth，结果不代表实际结算，也不包含 Pro 订阅费、税费、基础设施或
+工具费用。历史区间始终按当前部署的价格快照重新估算。
+
 只保存以下调用元数据：身份与项目引用、Key 前缀、模型、端点、状态/错误码、
 请求/首 Token/完成时间、TTFT、耗时、各类 Token、字节数和上游请求 ID。请求
 明细保留 90 天，安全审计保留 365 天，日/月聚合长期保留。
@@ -198,9 +204,15 @@ revision 的本地镜像以供无数据库迁移时快速回退。
 ```sh
 cp deploy/env.example .env
 chmod 0600 .env
-# 编辑 .env：设置真实 GATEWAY_DOMAIN 和当前 revision 的版本字段
+# 编辑 .env：设置真实域名、当前 revision 和 GATEWAY_USAGE_PRICING_JSON
 # 把 GATEWAY_SECRET_GID 设置为专用部署用户的主组：id -g
 ```
+
+价格目录必须按记录中的精确模型名，使用
+[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 的每百万 Token
+价格填写；同时记录目录日期、固定 USD/CNY 汇率及其日期。示例中的日期、模型名
+和价格只是结构占位符，不能直接部署。完整估算口径和升级要求见
+[部署与运维手册](docs/operations.md#用量价格快照)。
 
 如 Compose 子网与主机已有网段冲突，必须在首次启动前同步调整内部子网、静态
 地址、Caddy 信任的 cloudflared `/32`、`GATEWAY_TRUSTED_PROXY_CIDRS` 及部署

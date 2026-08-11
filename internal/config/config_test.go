@@ -14,6 +14,7 @@ func TestLoadDefaults(t *testing.T) {
 	secret := base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))
 	t.Setenv("KEY_HMAC_PEPPER", secret)
 	t.Setenv("TOKEN_HMAC_PEPPER", secret)
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", `{"catalog_as_of":"2026-08-01","fx_as_of":"2026-08-01","usd_cny_rate":"7.20","models":{"gpt-test":{"input_usd_per_million":"1.25","cached_input_usd_per_million":"0.125","output_usd_per_million":"10"}}}`)
 
 	cfg, err := Load()
 	if err != nil {
@@ -37,8 +38,16 @@ func TestRejectsHTTPAndShortSecrets(t *testing.T) {
 	t.Setenv("SIDECAR_API_KEY", "internal-only")
 	t.Setenv("KEY_HMAC_PEPPER", base64.RawURLEncoding.EncodeToString([]byte("short")))
 	t.Setenv("TOKEN_HMAC_PEPPER", base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", validUsagePricingJSON)
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid configuration")
+	}
+}
+
+func TestLoadRequiresUsagePricing(t *testing.T) {
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", "")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected missing usage pricing to be rejected")
 	}
 }

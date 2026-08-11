@@ -35,6 +35,7 @@ var (
 	ErrInvalidCeremony    = errors.New("invalid or expired WebAuthn ceremony")
 	ErrInvalidUsername    = errors.New("invalid username")
 	ErrInvalidDisplayName = errors.New("invalid display name")
+	ErrInvalidNickname    = errors.New("invalid Passkey nickname")
 	ErrRecoveryRejected   = errors.New("recovery credentials rejected")
 	ErrTooManyCeremonies  = errors.New("too many pending WebAuthn ceremonies")
 )
@@ -290,6 +291,10 @@ func (s *Service) BeginAddCredential(ctx context.Context, userID string) (Ceremo
 }
 
 func (s *Service) FinishAddCredential(ctx context.Context, flowID string, credentialJSON []byte, nickname string) (store.WebAuthnCredential, error) {
+	nickname, err := validateCredentialNickname(nickname)
+	if err != nil {
+		return store.WebAuthnCredential{}, err
+	}
 	pending, err := s.challenges.take(flowID, pendingAddCredential)
 	if err != nil {
 		return store.WebAuthnCredential{}, err
@@ -491,6 +496,10 @@ func fromStoredCredential(value store.WebAuthnCredential) (webauthn.Credential, 
 }
 
 func (s *Service) addCredential(ctx context.Context, userID string, credential *webauthn.Credential, nickname string) (store.WebAuthnCredential, error) {
+	nickname, err := validateCredentialNickname(nickname)
+	if err != nil {
+		return store.WebAuthnCredential{}, err
+	}
 	credentialJSON, err := json.Marshal(credential)
 	if err != nil {
 		return store.WebAuthnCredential{}, fmt.Errorf("encode WebAuthn credential: %w", err)
@@ -504,7 +513,7 @@ func (s *Service) addCredential(ctx context.Context, userID string, credential *
 		SignCount: uint64(credential.Authenticator.SignCount), Transports: transports,
 		BackupEligible: credential.Flags.BackupEligible, BackupState: credential.Flags.BackupState,
 		Discoverable: true, AAGUID: formatUUID(credential.Authenticator.AAGUID),
-		Nickname: strings.TrimSpace(nickname),
+		Nickname: nickname,
 	})
 }
 
@@ -588,6 +597,14 @@ func validateNames(username, displayName string) (string, string, error) {
 		return "", "", ErrInvalidDisplayName
 	}
 	return username, displayName, nil
+}
+
+func validateCredentialNickname(nickname string) (string, error) {
+	nickname = strings.TrimSpace(nickname)
+	if nickname == "" || !utf8.ValidString(nickname) || utf8.RuneCountInString(nickname) > 80 {
+		return "", ErrInvalidNickname
+	}
+	return nickname, nil
 }
 
 func formatUUID(value []byte) string {

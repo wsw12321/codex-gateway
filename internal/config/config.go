@@ -48,6 +48,7 @@ type Config struct {
 	SessionMax    time.Duration
 	ReauthMaxAge  time.Duration
 	Limits        Limits
+	UsagePricing  UsagePricing
 	DevInsecure   bool
 }
 
@@ -68,6 +69,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	usagePricing, err := ParseUsagePricing(os.Getenv("GATEWAY_USAGE_PRICING_JSON"))
+	if err != nil {
+		return Config{}, err
+	}
 	cfg := Config{
 		ListenAddress: envDefault("GATEWAY_LISTEN", ":8080"),
 		DatabaseURL:   databaseURL,
@@ -76,6 +81,7 @@ func Load() (Config, error) {
 		SessionIdle:   12 * time.Hour,
 		SessionMax:    7 * 24 * time.Hour,
 		ReauthMaxAge:  5 * time.Minute,
+		UsagePricing:  usagePricing,
 		DevInsecure:   envBool("GATEWAY_DEV_INSECURE_HTTP", false),
 		Limits: Limits{
 			KeyRPM:             30,

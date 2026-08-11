@@ -2,6 +2,7 @@ package identity
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -38,6 +39,17 @@ func TestValidateNames(t *testing.T) {
 	for _, username := range []string{"ab", "0alice", "alice@example.com", "爱丽丝"} {
 		if _, _, err := validateNames(username, "Alice"); !errors.Is(err, ErrInvalidUsername) {
 			t.Fatalf("username %q was accepted", username)
+		}
+	}
+}
+
+func TestValidateCredentialNickname(t *testing.T) {
+	if got, err := validateCredentialNickname("  手机安全密钥  "); err != nil || got != "手机安全密钥" {
+		t.Fatalf("valid nickname = %q, %v", got, err)
+	}
+	for _, nickname := range []string{"", "   ", strings.Repeat("密", 81), string([]byte{0xff})} {
+		if _, err := validateCredentialNickname(nickname); !errors.Is(err, ErrInvalidNickname) {
+			t.Fatalf("nickname %q was accepted: %v", nickname, err)
 		}
 	}
 }

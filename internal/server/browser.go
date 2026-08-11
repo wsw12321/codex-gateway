@@ -308,7 +308,6 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := store.InvitationMember
 	targetID := ""
-	path := "/join"
 	if input.Kind == "recovery" {
 		kind = store.InvitationRecovery
 		target, err := s.store.GetUserByUsername(r.Context(), input.TargetUsername)
@@ -340,9 +339,17 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 		s.storeWriteError(w, r, "create invitation", err)
 		return
 	}
-	link := strings.TrimRight(s.config.PublicURL.String(), "/") + path + "#token=" + generated.Token
+	link := invitationLink(s.config.PublicURL.String(), generated.Token, kind)
 	s.audit(r, user.ID, sessionFrom(r.Context()).ID, "invitation.created", true, "invitation", invitation.ID, map[string]any{"kind": kind})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": invitation.ID, "link": link, "expires_at": invitation.ExpiresAt})
+}
+
+func invitationLink(publicURL, token, kind string) string {
+	fragment := "#token=" + token
+	if kind == store.InvitationRecovery {
+		fragment += "&kind=recovery"
+	}
+	return strings.TrimRight(publicURL, "/") + "/join" + fragment
 }
 
 func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
@@ -368,11 +375,121 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	session := sessionFrom(r.Context())
-	recent := session.RecentlyVerifiedAt != nil && time.Since(*session.RecentlyVerifiedAt) <= s.config.ReauthMaxAge
-	writeJSON(w, http.StatusOK, map[string]any{
-		"user": publicUser(user), "devices": devices, "projects": projects,
-		"api_keys": keys, "passkeys": credentials, "recently_verified": recent,
-	})
+	now := time.Now().UTC()
+	recent := false
+	var verificationExpires *time.Time
+	if session.RecentlyVerifiedAt != nil {
+		value := session.RecentlyVerifiedAt.Add(s.config.ReauthMaxAge)
+		if value.After(now) {
+			recent = true
+			verificationExpires = &value
+		}
+	}
+	writeJSON(w, http.StatusOK, newAdminStateResponse(
+		user, devices, projects, keys, credentials, recent, verificationExpires,
+	))
+}
+
+type adminStateResponse struct {
+	User                        adminUser      `json:"user"`
+	Devices                     []adminDevice  `json:"devices"`
+	Projects                    []adminProject `json:"projects"`
+	APIKeys                     []adminAPIKey  `json:"api_keys"`
+	Passkeys                    []adminPasskey `json:"passkeys"`
+	RecentlyVerified            bool           `json:"recently_verified"`
+	RecentVerificationExpiresAt *time.Time     `json:"recent_verification_expires_at"`
+}
+
+type adminUser struct {
+	ID          string `json:"id"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	Role        string `json:"role"`
+}
+
+type adminDevice struct {
+	ID         string     `json:"id"`
+	Name       string     `json:"name"`
+	Status     string     `json:"status"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastSeenAt *time.Time `json:"last_seen_at"`
+}
+
+type adminProject struct {
+	ID        string    `json:"id"`
+	Slug      string    `json:"slug"`
+	Name      string    `json:"name"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type adminAPIKey struct {
+	ID               string     `json:"id"`
+	Name             string     `json:"name"`
+	KeyPrefix        string     `json:"key_prefix"`
+	DeviceID         string     `json:"device_id"`
+	DefaultProjectID *string    `json:"default_project_id"`
+	Status           string     `json:"status"`
+	ModelAllowlist   []string   `json:"model_allowlist"`
+	CreatedAt        time.Time  `json:"created_at"`
+	ExpiresAt        time.Time  `json:"expires_at"`
+	LastUsedAt       *time.Time `json:"last_used_at"`
+}
+
+type adminPasskey struct {
+	ID             string     `json:"id"`
+	Nickname       string     `json:"nickname"`
+	BackupEligible bool       `json:"backup_eligible"`
+	BackupState    bool       `json:"backup_state"`
+	CreatedAt      time.Time  `json:"created_at"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+}
+
+func newAdminStateResponse(
+	user store.User,
+	devices []store.Device,
+	projects []store.Project,
+	keys []store.APIKey,
+	credentials []store.WebAuthnCredential,
+	recent bool,
+	verificationExpires *time.Time,
+) adminStateResponse {
+	response := adminStateResponse{
+		User: adminUser{
+			ID: user.ID, Username: user.Username, DisplayName: user.DisplayName, Role: user.Role,
+		},
+		Devices: make([]adminDevice, 0, len(devices)), Projects: make([]adminProject, 0, len(projects)),
+		APIKeys: make([]adminAPIKey, 0, len(keys)), Passkeys: make([]adminPasskey, 0, len(credentials)),
+		RecentlyVerified: recent, RecentVerificationExpiresAt: verificationExpires,
+	}
+	for _, value := range devices {
+		response.Devices = append(response.Devices, adminDevice{
+			ID: value.ID, Name: value.Name, Status: value.Status,
+			CreatedAt: value.CreatedAt, LastSeenAt: value.LastSeenAt,
+		})
+	}
+	for _, value := range projects {
+		response.Projects = append(response.Projects, adminProject{
+			ID: value.ID, Slug: value.Slug, Name: value.Name,
+			Status: value.Status, CreatedAt: value.CreatedAt,
+		})
+	}
+	for _, value := range keys {
+		models := append([]string{}, value.ModelAllowlist...)
+		response.APIKeys = append(response.APIKeys, adminAPIKey{
+			ID: value.ID, Name: value.Name, KeyPrefix: value.KeyPrefix,
+			DeviceID: value.DeviceID, DefaultProjectID: value.DefaultProjectID,
+			Status: value.Status, ModelAllowlist: models, CreatedAt: value.CreatedAt,
+			ExpiresAt: value.ExpiresAt, LastUsedAt: value.LastUsedAt,
+		})
+	}
+	for _, value := range credentials {
+		response.Passkeys = append(response.Passkeys, adminPasskey{
+			ID: value.ID, Nickname: value.Nickname, BackupEligible: value.BackupEligible,
+			BackupState: value.BackupState, CreatedAt: value.CreatedAt, LastUsedAt: value.LastUsedAt,
+		})
+	}
+	return response
 }
 
 func (s *Server) alertsJSON(w http.ResponseWriter, r *http.Request) {
@@ -397,6 +514,8 @@ func (s *Server) authenticationFailure(w http.ResponseWriter, r *http.Request, o
 		status, code, message = http.StatusConflict, "identity_conflict", "用户名或凭证已存在"
 	} else if errors.Is(err, identity.ErrInvalidUsername) || errors.Is(err, identity.ErrInvalidDisplayName) {
 		code, message = "invalid_profile", "用户名或显示名称格式无效"
+	} else if errors.Is(err, identity.ErrInvalidNickname) {
+		code, message = "invalid_passkey_nickname", "Passkey 昵称必须为 1 到 80 个字符"
 	}
 	httpx.WriteError(w, r, status, "authentication_error", code, message)
 }

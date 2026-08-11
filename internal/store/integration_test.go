@@ -107,13 +107,18 @@ func TestPostgresIntegration(t *testing.T) {
 		t.Fatalf("BeginUsageRequest: %v", err)
 	}
 	firstToken := now.Add(100 * time.Millisecond)
-	if _, err := s.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
+	completed, err := s.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
 		RequestID: requestID, State: "completed", HTTPStatus: 200,
 		FirstTokenAt: &firstToken, CompletedAt: now.Add(time.Second),
 		InputTokens: 60, CachedInputTokens: 20, OutputTokens: 20,
 		ReasoningTokens: 10, RequestBytes: 128, ResponseBytes: 256,
-	}); err != nil {
+		ActualModel: "gpt-5-codex-upstream",
+	})
+	if err != nil {
 		t.Fatalf("CompleteUsageRequest: %v", err)
+	}
+	if completed.Model != "gpt-5-codex-upstream" {
+		t.Fatalf("completed model = %q, want explicit upstream model", completed.Model)
 	}
 	if err := s.SettleQuota(ctx, requestID, 80, now.Add(time.Second)); err != nil {
 		t.Fatalf("SettleQuota: %v", err)
@@ -125,7 +130,8 @@ func TestPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListDailyUsage: %v", err)
 	}
-	if len(daily) != 1 || daily[0].RequestCount != 1 || daily[0].InputTokens != 60 {
+	if len(daily) != 1 || daily[0].RequestCount != 1 || daily[0].InputTokens != 60 ||
+		daily[0].Model != "gpt-5-codex-upstream" {
 		t.Fatalf("unexpected daily usage: %#v", daily)
 	}
 	if err := s.AggregateUsageMonth(ctx, now, "UTC"); err != nil {
@@ -135,7 +141,8 @@ func TestPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListMonthlyUsage: %v", err)
 	}
-	if len(monthly) != 1 || monthly[0].RequestCount != 1 || monthly[0].OutputTokens != 20 {
+	if len(monthly) != 1 || monthly[0].RequestCount != 1 || monthly[0].OutputTokens != 20 ||
+		monthly[0].Model != "gpt-5-codex-upstream" {
 		t.Fatalf("unexpected monthly usage: %#v", monthly)
 	}
 	summary, err := s.SummarizeUsageRequests(ctx, UsageFilter{UserID: user.ID})
@@ -144,6 +151,26 @@ func TestPostgresIntegration(t *testing.T) {
 	}
 	if summary.RequestCount != 1 || summary.InputTokens != 60 || summary.P95TTFTMillis != 100 {
 		t.Fatalf("unexpected usage summary: %#v", summary)
+	}
+
+	fallbackRequestID := "abcdef0123456789abcdef0123456789"
+	if _, err := s.BeginUsageRequest(ctx, BeginUsageRequestParams{
+		RequestID: fallbackRequestID, UserID: user.ID, DeviceID: device.ID, APIKeyID: key.ID,
+		ProjectID: project.ID, Model: "gpt-5-codex-requested", Endpoint: "responses",
+		RequestedAt: now.Add(2 * time.Second), RequestBytes: 2,
+	}); err != nil {
+		t.Fatalf("BeginUsageRequest for model fallback: %v", err)
+	}
+	fallback, err := s.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
+		RequestID: fallbackRequestID, State: "completed", HTTPStatus: 200,
+		CompletedAt: now.Add(3 * time.Second), RequestBytes: 2, ResponseBytes: 2,
+		ActualModel: "   ",
+	})
+	if err != nil {
+		t.Fatalf("CompleteUsageRequest for model fallback: %v", err)
+	}
+	if fallback.Model != "gpt-5-codex-requested" {
+		t.Fatalf("fallback model = %q, want requested model", fallback.Model)
 	}
 
 	if _, err := s.AppendAuditEvent(ctx, AppendAuditEventParams{

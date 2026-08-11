@@ -38,6 +38,53 @@ chmod 0600 .env
 `GATEWAY_TRUSTED_PROXY_CIDRS`，以及 `validate-compose.sh` 中验证这些地址的
 对应不变量。网关只应信任 Caddy 的单一 `/32` 地址。
 
+### 用量价格快照
+
+`GATEWAY_USAGE_PRICING_JSON` 是必填的非 secret 部署配置。Gateway 不在运行时
+联网抓取价格或汇率；操作者必须在启动前从
+[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 人工核对实际
+允许模型的价格，并选择、记录固定的 USD/CNY 汇率。`.env` 中必须把 JSON 写在
+一行；展开后的结构如下：
+
+```json
+{
+  "catalog_as_of": "YYYY-MM-DD",
+  "fx_as_of": "YYYY-MM-DD",
+  "usd_cny_rate": "7.20",
+  "models": {
+    "exact-recorded-model": {
+      "input_usd_per_million": "1.25",
+      "cached_input_usd_per_million": "0.125",
+      "output_usd_per_million": "10"
+    }
+  }
+}
+```
+
+以上日期、模型和价格仅说明格式，必须全部按经审阅的部署值替换。日期使用
+`YYYY-MM-DD`，汇率和价格必须是带引号的非负十进制字符串，汇率必须大于零；
+`models` 至少包含一个条目。模型键只做精确匹配，不支持别名、通配符或推测映射。
+官方价格页可能按服务层级、上下文长度或区域列出多组价格；运维方必须选择并在
+变更记录中注明本部署用于比较的那一组 input/cached input/output 单价。当前三价
+快照无法区分这些维度，也不估算独立的 cache-write 或工具调用价格，这正是界面
+必须始终标为参考估算而非完整账单的原因之一。
+设备码登录后还应把 `/v1/models` 与已审阅的允许模型集合和价格目录逐一核对；
+未配置价格的模型仍可统计，但只进入 `unpriced_models`、`unpriced_tokens` 和覆盖率。
+
+每个已定价模型的 USD 估算为：
+
+```text
+((input_tokens - cached_input_tokens) * input_price
+ + cached_input_tokens * cached_input_price
+ + output_tokens * output_price) / 1,000,000
+```
+
+`reasoning_tokens` 已包含在 output 中，不能再次计费。CNY 只按快照中的固定汇率
+换算。界面和接口中的金额只能称为“API 等价费用估算”：当前上游是 ChatGPT Pro
+OAuth，它不代表实际费用、账单或已花费，也不包含 Pro 订阅费、税费、基础设施
+或工具费用。历史用量总是按当前部署的快照重新估算，因此不是审计级历史账单；
+更新快照会同时改变所有历史区间的参考估值。
+
 ## 2. 供应链锁定
 
 `deploy/images.sources` 保存人工审阅的具体版本标签，
@@ -139,8 +186,8 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 
 `validate-compose.sh` 会检查：没有服务发布宿主机端口、内部网络隔离、
 `cloudflared` 与 Squid 只能连接各自需要的出站网络、PostgreSQL 本地初始化和
-host 连接都强制使用 SCRAM、sidecar 是只读且非 root、secret 权限及所有基础
-镜像的 SHA-256 digest。
+host 连接都强制使用 SCRAM、价格快照结构和占位符、sidecar 是只读且非 root、
+secret 权限及所有基础镜像的 SHA-256 digest。
 
 确认主机监听：
 
@@ -390,9 +437,13 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 
 ## 10. 升级和回滚
 
-升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。然后在
-服务器检出已审阅 revision、更新 `.env` 的三个版本字段、验证工作树为空并现场
-构建；不要覆盖或清理上一 revision 镜像。升级 CLIProxyAPI 前还必须：
+升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。升级到
+首次要求价格配置的 revision 前，必须先在 `.env` 填妥
+`GATEWAY_USAGE_PRICING_JSON`，否则新 Gateway 会拒绝启动。以后每次升级也应核对
+精确模型集合、官方价格目录日期、固定汇率及其日期；价格或汇率变化会用新快照
+重新估算全部历史，不得把升级前后数值当作连续的审计账单。然后在服务器检出
+已审阅 revision、更新 `.env` 的三个版本字段、验证工作树为空并现场构建；不要
+覆盖或清理上一 revision 镜像。升级 CLIProxyAPI 前还必须：
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
 2. 在 CI 运行 Responses 普通/SSE、compact、401、429、跨 chunk usage 和刷新
@@ -493,10 +544,14 @@ Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移
 4. 使用真实域名完成 Owner Passkey 注册、退出、重新登录和敏感操作再验证；
    错误 Origin 与跨站请求必须被拒绝，Cookie 保持 `Secure`、`HttpOnly`、
    `SameSite=Strict`。
-5. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
+5. 以 Owner 检查全员使用统计：价格目录元数据和固定汇率日期正确；已定价模型
+   的 USD/CNY 估算符合公式；在可丢弃验收环境用未定价模型记录确认它只增加未
+   定价 Token 和降低覆盖率，不得静默并入完整估算总额。确认所有金额均标为
+   “API 等价费用估算”，没有呈现为真实费用或账单。
+6. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
    两分钟的代表性长流不能被聚合或无故断开，客户端主动断开后上游请求和并发
    lease 会被取消或结算；响应不得被 Cloudflare 缓存。
-6. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
+7. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
    不出现测试 canary 的正文或凭证。
-7. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
+8. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
    手工运行一次每日备份任务和恢复演练，确认只保留最近 14 组完整文件对。

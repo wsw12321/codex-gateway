@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestExtractTopLevelModel(t *testing.T) {
 	for _, test := range []struct {
@@ -26,6 +29,17 @@ func TestRejectsNestedOrEscapedModel(t *testing.T) {
 	} {
 		if _, err := extractTopLevelModel([]byte(raw)); err == nil {
 			t.Fatalf("accepted %s", raw)
+		}
+	}
+}
+
+func TestRecordedUpstreamModelRejectsMalformedValues(t *testing.T) {
+	if got := recordedUpstreamModel("gpt-5.2-codex"); got != "gpt-5.2-codex" {
+		t.Fatalf("valid upstream model = %q", got)
+	}
+	for _, model := range []string{"", " gpt-5.2-codex ", "../../model", strings.Repeat("a", 129)} {
+		if got := recordedUpstreamModel(model); got != "" {
+			t.Fatalf("malformed upstream model %q was recorded as %q", model, got)
 		}
 	}
 }

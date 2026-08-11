@@ -5,7 +5,8 @@
 受保护资产包括 ChatGPT Pro OAuth/refresh token、设备 API Key、Passkey 公钥与
 challenge、恢复码、会话、数据库凭证、配额数据和安全审计。提示词、源代码和
 模型回复属于高敏感瞬时数据：可以在转发内存中短暂存在，但不得进入数据库、
-日志、备份或管理界面。
+日志、备份或管理界面。按用户聚合的用量和 API 等价费用估算也属于受限管理
+元数据，Member 只能查看自己的请求明细，只有 Owner 能查看全员汇总。
 
 部署假设账号和所有受邀设备都由同一订阅者控制。若让其他真实用户共用 Pro
 凭证，本威胁模型和订阅边界不再成立，必须改为每人独立上游凭证或官方
@@ -48,6 +49,8 @@ Internet
 | 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 只信任固定 cloudflared `/32` 的 `CF-Connecting-IP`，重建 XFF；Gateway 只信任固定 Caddy `/32` | 伪造 CF/XFF 集成测试 |
 | 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；固定 CI 工具版本 | CI 和 lock diff 审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
+| Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
+| 把参考估值误当真实账单 | 只使用固定快照精确匹配；未定价用量单列；界面/API 明示不含订阅、税费和基础设施且历史会重估 | 计价、覆盖率和管理台文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
 
 ## 容器权限

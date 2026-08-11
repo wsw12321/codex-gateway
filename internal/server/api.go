@@ -146,6 +146,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		InputTokens: result.Usage.InputTokens, CachedInputTokens: result.Usage.CachedTokens,
 		OutputTokens: result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
 		RequestBytes: actualRequestBytes, ResponseBytes: result.BytesOut, UpstreamRequestID: result.UpstreamRequestID,
+		ActualModel: recordedUpstreamModel(result.Model),
 	})
 	if completeErr != nil {
 		s.logger.Error("complete usage metadata", "request_id", requestID, "error_type", "database")

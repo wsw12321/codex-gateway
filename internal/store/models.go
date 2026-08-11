@@ -223,6 +223,18 @@ type UsageSummary struct {
 	P95DurationMillis int64
 }
 
+type GlobalUsageRow struct {
+	UserID            string
+	Username          string
+	DisplayName       string
+	Model             string
+	RequestCount      int64
+	InputTokens       int64
+	CachedInputTokens int64
+	OutputTokens      int64
+	ReasoningTokens   int64
+}
+
 type AuditEvent struct {
 	ID             int64
 	OccurredAt     time.Time
