@@ -88,15 +88,15 @@ func DefaultConfig(store DailyStore) Config {
 	return Config{
 		Key: Limits{
 			RequestsPerMinute: 30,
-			Concurrent:        4,
+			Concurrent:        16,
 			RequestsPerDay:    1_000,
 		},
 		User: Limits{
 			RequestsPerMinute: 60,
-			Concurrent:        8,
+			Concurrent:        16,
 			RequestsPerDay:    2_000,
 		},
-		GlobalConcurrent: 12,
+		GlobalConcurrent: 32,
 		DailyStore:       store,
 	}
 }

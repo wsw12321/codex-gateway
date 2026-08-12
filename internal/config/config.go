@@ -83,12 +83,12 @@ func Load() (Config, error) {
 		DevInsecure:   envBool("GATEWAY_DEV_INSECURE_HTTP", false),
 		Limits: Limits{
 			KeyRPM:             30,
-			KeyConcurrent:      4,
+			KeyConcurrent:      16,
 			KeyRequestsPerDay:  1000,
 			UserRPM:            60,
-			UserConcurrent:     8,
+			UserConcurrent:     16,
 			UserRequestsPerDay: 2000,
-			GlobalConcurrent:   12,
+			GlobalConcurrent:   32,
 		},
 	}
 

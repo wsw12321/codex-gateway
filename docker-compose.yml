@@ -89,6 +89,9 @@ services:
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
       GATEWAY_BODY_LIMIT_BYTES: "67108864"
+      LIMIT_KEY_CONCURRENT: "${LIMIT_KEY_CONCURRENT:-16}"
+      LIMIT_USER_CONCURRENT: "${LIMIT_USER_CONCURRENT:-16}"
+      LIMIT_GLOBAL_CONCURRENT: "${LIMIT_GLOBAL_CONCURRENT:-32}"
     secrets:
       - database_url
       - gateway_api_key_pepper

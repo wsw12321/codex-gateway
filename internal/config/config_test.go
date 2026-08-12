@@ -24,7 +24,8 @@ func TestLoadDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Limits.KeyConcurrent != 4 || cfg.Limits.GlobalConcurrent != 12 ||
+	if cfg.Limits.KeyConcurrent != 16 || cfg.Limits.UserConcurrent != 16 ||
+		cfg.Limits.GlobalConcurrent != 32 ||
 		cfg.Limits.KeyRequestsPerDay != 1000 || cfg.Limits.UserRequestsPerDay != 2000 {
 		t.Fatalf("unexpected limits: %+v", cfg.Limits)
 	}
