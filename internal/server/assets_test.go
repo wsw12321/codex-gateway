@@ -123,6 +123,18 @@ func TestGuideIncludesCodexGatewayConfiguration(t *testing.T) {
 	}
 }
 
+func TestGuideEndpointDoesNotInheritDashboardSidebarLayout(t *testing.T) {
+	t.Parallel()
+
+	stylesheet := string(styleCSS)
+	if strings.Contains(stylesheet, `.app aside`) {
+		t.Fatal("dashboard sidebar styles also match the guide endpoint aside")
+	}
+	if got := strings.Count(stylesheet, `.app > aside`); got != 3 {
+		t.Fatalf("direct dashboard sidebar selector count = %d, want 3", got)
+	}
+}
+
 func TestCodexShellSetupAddsOrReplacesOpenAIBaseURL(t *testing.T) {
 	t.Parallel()
 
