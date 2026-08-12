@@ -724,6 +724,7 @@ function renderGuide() {
   byId("guide-base-url").textContent = baseURL;
   byId("guide-shell-code").textContent = shellLines.join("\n");
   byId("guide-powershell-code").textContent = powershellLines.join("\n");
+  byId("guide-install-code").textContent = `curl -fsSL '${location.origin}/setup/configure-codex.sh' | sh`;
   byId("guide-config-code").textContent = [
     'model_provider = "gateway"',
     "",

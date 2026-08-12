@@ -207,12 +207,23 @@
               <li class="guide-step panel">
                 <div class="guide-step-marker" aria-hidden="true">3</div>
                 <div class="guide-step-body">
-                  <div class="guide-step-title"><div><p class="eyebrow">CONFIG.TOML</p><h3>配置自定义模型提供方</h3></div></div>
-                  <p>打开用户级 <code>~/.codex/config.toml</code>，将以下内容合并到现有配置中。不要覆盖你仍需保留的其他设置。</p>
+                  <div class="guide-step-title"><div><p class="eyebrow">CONFIG.TOML</p><h3>一键配置自定义模型提供方</h3></div></div>
+                  <p>macOS / Linux 在终端复制执行下面的命令；Windows 下载并运行批处理文件。脚本会更新用户级 <code>~/.codex/config.toml</code>，并在修改已有文件前创建 <code>config.toml.bak</code>。</p>
                   <div class="code-card">
-                    <div class="code-toolbar"><span>~/.codex/config.toml</span><button type="button" class="secondary copy-button" data-copy-target="guide-config-code">复制配置</button></div>
-                    <pre><code id="guide-config-code">正在生成…</code></pre>
+                    <div class="code-toolbar"><span>Codex CLI · macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-install-code">复制一键命令</button></div>
+                    <pre><code id="guide-install-code">正在生成…</code></pre>
                   </div>
+                  <div class="button-group guide-actions">
+                    <a id="guide-windows-download" class="button secondary" href="/setup/configure-codex.bat" download="configure-codex.bat">下载 Windows .bat</a>
+                  </div>
+                  <p class="guide-note">脚本只替换顶层 <code>model_provider</code> 和 <code>[model_providers.gateway]</code>，其他配置会保留。可在执行前展开下面的内容核对结果。</p>
+                  <details class="guide-platform">
+                    <summary>查看或手动复制 config.toml 配置</summary>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>~/.codex/config.toml</span><button type="button" class="secondary copy-button" data-copy-target="guide-config-code">复制配置</button></div>
+                      <pre><code id="guide-config-code">正在生成…</code></pre>
+                    </div>
+                  </details>
                   <p class="guide-note"><code>env_key</code> 让 Codex 从环境变量读取 Key；<code>env_http_headers</code> 仅在项目变量存在时发送项目头。</p>
                 </div>
               </li>
