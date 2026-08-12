@@ -155,7 +155,7 @@ func mapDBError(operation string, err error) error {
 		switch state.SQLState() {
 		case "23505": // unique_violation
 			return fmt.Errorf("%s: %w", operation, ErrConflict)
-		case "23502", "23503", "23514", "22P02", "22001":
+		case "23502", "23503", "23514", "22P02", "22001", "22003":
 			return fmt.Errorf("%s: %w", operation, ErrInvalid)
 		}
 	}

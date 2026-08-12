@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 const maxModelPrefix = 256 << 10
@@ -209,6 +211,11 @@ func modelAllowed(model string, allowlist []string) bool {
 		}
 	}
 	return false
+}
+
+func pricingForModel(pricing config.UsagePricing, model string) (config.ModelPricing, bool) {
+	value, ok := pricing.Models[model]
+	return value, ok
 }
 
 // recordedUpstreamModel accepts only the same bounded model syntax allowed on

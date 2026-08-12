@@ -4,20 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/billing"
 )
 
 const (
-	maxUsagePricingDecimalLength = 40
-	maxUsagePricingValue         = "1000000000"
-	maxUsagePricingModels        = 1000
+	maxUsagePricingModels = 1000
 )
 
 var (
-	plainDecimalPattern      = regexp.MustCompile(`^(0|[1-9][0-9]*)(\.[0-9]+)?$`)
 	usagePricingModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 )
 
@@ -56,7 +54,7 @@ func ParseUsagePricing(raw string) (UsagePricing, error) {
 	if _, err := time.Parse("2006-01-02", pricing.FXAsOf); err != nil {
 		return pricing, fmt.Errorf("pricing fx_as_of must be YYYY-MM-DD")
 	}
-	if err := validPositiveDecimal(pricing.USDCNYRate, false); err != nil {
+	if _, err := billing.ParseRate(pricing.USDCNYRate); err != nil {
 		return pricing, fmt.Errorf("pricing usd_cny_rate: %w", err)
 	}
 	if len(pricing.Models) == 0 {
@@ -74,7 +72,7 @@ func ParseUsagePricing(raw string) (UsagePricing, error) {
 			"cached_input_usd_per_million": price.CachedInputUSDPerMillion,
 			"output_usd_per_million":       price.OutputUSDPerMillion,
 		} {
-			if err := validPositiveDecimal(value, true); err != nil {
+			if _, err := billing.ParsePrice(value); err != nil {
 				return pricing, fmt.Errorf("pricing model %q %s: %w", model, field, err)
 			}
 		}
@@ -92,16 +90,4 @@ func requireJSONEOF(decoder *json.Decoder) error {
 		return fmt.Errorf("unexpected trailing JSON value")
 	}
 	return err
-}
-
-func validPositiveDecimal(value string, allowZero bool) error {
-	if len(value) == 0 || len(value) > maxUsagePricingDecimalLength || !plainDecimalPattern.MatchString(value) {
-		return fmt.Errorf("must be a plain non-negative decimal string")
-	}
-	r, ok := new(big.Rat).SetString(value)
-	maximum, _ := new(big.Rat).SetString(maxUsagePricingValue)
-	if !ok || r.Sign() < 0 || (!allowZero && r.Sign() == 0) || r.Cmp(maximum) > 0 {
-		return fmt.Errorf("must be a bounded non-negative decimal string")
-	}
-	return nil
 }

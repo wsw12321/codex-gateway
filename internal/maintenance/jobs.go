@@ -50,6 +50,11 @@ func (r Runner) runOnce(ctx context.Context) {
 		r.Logger.Error("invalid aggregation timezone")
 		return
 	}
+	// Terminal usage is the durable source of truth for both quota and billing.
+	// Repair it before any aggregation, stale-release or retention work.
+	if _, err := r.Store.RetryUnsettledRequests(ctx, 1000); err != nil {
+		r.Logger.Warn("request billing settlement recovery failed")
+	}
 	local := now.In(location)
 	yesterday := time.Date(local.Year(), local.Month(), local.Day()-1, 0, 0, 0, 0, location)
 	if err := r.Store.AggregateUsageDay(ctx, yesterday, r.Timezone); err != nil {

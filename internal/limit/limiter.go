@@ -78,11 +78,11 @@ func validateConfig(config Config) error {
 
 func invalidLimits(value Limits) bool {
 	return value.RequestsPerMinute < 0 || value.Concurrent < 0 ||
-		value.RequestsPerDay < 0 || value.TokensPerDay < 0
+		value.RequestsPerDay < 0
 }
 
 func hasDailyLimits(value Limits) bool {
-	return value.RequestsPerDay > 0 || value.TokensPerDay > 0
+	return value.RequestsPerDay > 0
 }
 
 // Acquire performs a non-blocking admission attempt. On success, the returned
@@ -240,50 +240,16 @@ func (l *Limiter) dailyReservations(identity Identity) []DailyReservation {
 	if hasDailyLimits(l.config.Key) {
 		reservations = append(reservations, DailyReservation{
 			Scope: ScopeKey, ID: identity.KeyID,
-			RequestLimit: l.config.Key.RequestsPerDay, TokenLimit: l.config.Key.TokensPerDay,
+			RequestLimit: l.config.Key.RequestsPerDay,
 		})
 	}
 	if hasDailyLimits(l.config.User) {
 		reservations = append(reservations, DailyReservation{
 			Scope: ScopeUser, ID: identity.UserID,
-			RequestLimit: l.config.User.RequestsPerDay, TokenLimit: l.config.User.TokensPerDay,
+			RequestLimit: l.config.User.RequestsPerDay,
 		})
 	}
 	return reservations
-}
-
-// RecordTokens durably applies actual input+output token usage to both active
-// daily scopes. Callers must not add cached-input or reasoning tokens a second
-// time. Token overage is recorded rather than rejected; the next Acquire call
-// is rejected, bounding overage by already-running requests.
-func (l *Limiter) RecordTokens(ctx context.Context, identity Identity, tokens int64) error {
-	if err := validateContext(ctx); err != nil {
-		return err
-	}
-	if identity.KeyID == "" || identity.UserID == "" {
-		return ErrInvalidIdentity
-	}
-	if tokens < 0 {
-		return ErrNegativeTokenCount
-	}
-	if tokens == 0 || l.config.DailyStore == nil {
-		return nil
-	}
-	usage := make([]DailyTokenUsage, 0, 2)
-	if hasDailyLimits(l.config.Key) {
-		usage = append(usage, DailyTokenUsage{Scope: ScopeKey, ID: identity.KeyID, Tokens: tokens})
-	}
-	if hasDailyLimits(l.config.User) {
-		usage = append(usage, DailyTokenUsage{Scope: ScopeUser, ID: identity.UserID, Tokens: tokens})
-	}
-	if len(usage) == 0 {
-		return nil
-	}
-	day := dayAt(l.clock.Now(), l.config.DayLocation)
-	if err := l.config.DailyStore.AddTokens(ctx, day, usage); err != nil {
-		return fmt.Errorf("record daily token usage: %w", err)
-	}
-	return nil
 }
 
 // Snapshot returns current in-process counters without mutating admission

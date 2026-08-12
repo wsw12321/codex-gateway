@@ -232,39 +232,6 @@ func TestDailyRequestLimitsAreDurableAndAtomic(t *testing.T) {
 	}
 }
 
-func TestDailyTokenOverageIsRecordedThenBlocks(t *testing.T) {
-	clock := &fakeClock{now: testTime()}
-	store := NewMemoryDailyStore()
-	limiter := mustLimiter(t, Config{
-		Key: Limits{TokensPerDay: 10}, User: Limits{TokensPerDay: 100},
-		DailyStore: store, Clock: clock,
-	})
-	identity := Identity{KeyID: "key", UserID: "user"}
-	release, err := limiter.Acquire(context.Background(), identity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := limiter.RecordTokens(context.Background(), identity, 11); err != nil {
-		t.Fatal(err)
-	}
-	release()
-	usage, err := store.Usage(context.Background(), Day("2026-08-10"), ScopeKey, identity.KeyID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if usage.Requests != 1 || usage.Tokens != 11 {
-		t.Fatalf("usage = %#v", usage)
-	}
-	if _, err := limiter.Acquire(context.Background(), identity); err == nil {
-		t.Fatal("token overage did not block the next request")
-	} else {
-		requireLimitError(t, err, ScopeKey, ReasonDailyTokens)
-	}
-	if err := limiter.RecordTokens(context.Background(), identity, -1); !errors.Is(err, ErrNegativeTokenCount) {
-		t.Fatalf("negative tokens error = %v", err)
-	}
-}
-
 type failingDailyStore struct {
 	calls atomic.Int64
 }
@@ -273,7 +240,6 @@ func (s *failingDailyStore) ReserveRequests(context.Context, Day, []DailyReserva
 	s.calls.Add(1)
 	return errors.New("database unavailable")
 }
-func (*failingDailyStore) AddTokens(context.Context, Day, []DailyTokenUsage) error { return nil }
 func (*failingDailyStore) Usage(context.Context, Day, Scope, string) (DailyUsage, error) {
 	return DailyUsage{}, nil
 }
@@ -303,7 +269,6 @@ func (*cancelStore) ReserveRequests(ctx context.Context, _ Day, _ []DailyReserva
 	<-ctx.Done()
 	return ctx.Err()
 }
-func (*cancelStore) AddTokens(context.Context, Day, []DailyTokenUsage) error { return nil }
 func (*cancelStore) Usage(context.Context, Day, Scope, string) (DailyUsage, error) {
 	return DailyUsage{}, nil
 }

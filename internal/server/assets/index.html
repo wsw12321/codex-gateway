@@ -72,6 +72,7 @@
           <a href="#overview" data-view="overview">概览</a>
           <a href="#resources" data-view="resources">资源</a>
           <a href="#keys" data-view="keys">API Keys</a>
+          <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
         </nav>
@@ -150,6 +151,120 @@
             </div>
             <p id="key-guidance" class="callout hidden" role="status"></p>
             <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
+          </section>
+
+          <section class="view hidden" data-section="billing" aria-labelledby="billing-title">
+            <div class="section-head">
+              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、滚动周期额度与实际结算流水；使用统计中的价格估算不等同于账单。</p></div>
+            </div>
+            <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
+            <div id="billing-owner-scope" class="scope-banner owner-only hidden">
+              <label for="billing-user-select">管理用户</label>
+              <select id="billing-user-select" aria-describedby="billing-scope-name"><option value="">正在加载用户…</option></select>
+              <span id="billing-scope-name">—</span>
+            </div>
+            <div class="metrics billing-metrics">
+              <article><span>现金余额</span><strong id="billing-cash-balance">—</strong><small>订阅额度用尽后使用</small></article>
+              <article><span>日订阅剩余</span><strong id="billing-day-remaining">—</strong><small id="billing-day-ends">未启用</small></article>
+              <article><span>周订阅剩余</span><strong id="billing-week-remaining">—</strong><small id="billing-week-ends">未启用</small></article>
+              <article><span>月订阅剩余</span><strong id="billing-month-remaining">—</strong><small id="billing-month-ends">未启用</small></article>
+            </div>
+
+            <article class="panel billing-period-panel">
+              <div class="panel-heading"><div><p class="eyebrow">ROLLING PERIODS</p><h3>当前周期</h3></div><span class="badge">日 → 周 → 月 → 余额</span></div>
+              <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
+            </article>
+
+            <div class="owner-only hidden billing-owner-tools">
+              <div class="billing-admin-grid">
+                <form id="billing-rate-form" class="panel billing-form">
+                  <div><p class="eyebrow">GLOBAL RATE</p><h3>充值汇率</h3><p>当前：<strong id="billing-current-rate">—</strong> USD/CNY。仅影响之后的充值，历史充值保留当时汇率快照。</p></div>
+                  <label>1 CNY 可兑换 USD
+                    <input name="usd_per_cny" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,12})?" autocomplete="off" placeholder="1.000000000000">
+                  </label>
+                  <label>操作原因
+                    <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明修改原因">
+                  </label>
+                  <p class="form-message hidden" role="alert"></p>
+                  <button type="submit">更新充值汇率</button>
+                </form>
+
+                <form id="billing-recharge-form" class="panel billing-form">
+                  <div><p class="eyebrow">RECHARGE</p><h3>CNY 充值</h3><p>按当前全局汇率换算并保存汇率快照。</p></div>
+                  <label>充值金额（CNY）
+                    <input name="cny_amount" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="100.00">
+                  </label>
+                  <label>操作原因
+                    <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明充值来源或用途">
+                  </label>
+                  <p class="form-message hidden" role="alert"></p>
+                  <button type="submit">为所选用户充值</button>
+                </form>
+
+                <form id="billing-adjustment-form" class="panel billing-form">
+                  <div><p class="eyebrow">CORRECTION</p><h3>余额调整</h3><p>输入带正负号的 USD 金额；负调整不得产生负余额。</p></div>
+                  <label>调整金额（USD）
+                    <input name="usd_amount" required inputmode="decimal" pattern="[-+]?(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="-5.00">
+                  </label>
+                  <label>操作原因
+                    <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明纠错依据">
+                  </label>
+                  <p class="form-message hidden" role="alert"></p>
+                  <button type="submit">调整所选用户余额</button>
+                </form>
+              </div>
+
+              <article class="panel billing-subscription-admin">
+                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置滚动周期</h3><p>保存会立即关闭旧周期并从当前时刻重开；停用会立即阻止新请求使用旧周期。</p></div></div>
+                <div class="billing-subscription-forms">
+                  <form id="billing-subscription-day" class="billing-subscription-form" data-tier="day">
+                    <div><h4>日订阅</h4><small>固定 24 小时</small></div>
+                    <label>周期额度（USD）
+                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="10.00">
+                    </label>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="day">立即停用</button></div>
+                  </form>
+                  <form id="billing-subscription-week" class="billing-subscription-form" data-tier="week">
+                    <div><h4>周订阅</h4><small>固定 7 天</small></div>
+                    <label>周期额度（USD）
+                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="50.00">
+                    </label>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="week">立即停用</button></div>
+                  </form>
+                  <form id="billing-subscription-month" class="billing-subscription-form" data-tier="month">
+                    <div><h4>月订阅</h4><small>固定 31 天</small></div>
+                    <label>周期额度（USD）
+                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="200.00">
+                    </label>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="month">立即停用</button></div>
+                  </form>
+                </div>
+              </article>
+            </div>
+
+            <article class="panel billing-ledger-panel">
+              <div class="panel-heading"><div><p class="eyebrow">AUDITABLE LEDGER</p><h3>账务流水</h3></div><span id="billing-ledger-page" class="badge">—</span></div>
+              <div class="table-wrap">
+                <table>
+                  <caption>仅包含金额、模型、Token、请求 ID 与操作原因等账务元数据，不包含请求或响应内容。</caption>
+                  <thead><tr><th>时间</th><th>类型</th><th>金额</th><th>说明</th><th>请求 / 模型</th></tr></thead>
+                  <tbody id="billing-ledger-rows"><tr><td colspan="5" class="table-message">正在加载账务流水…</td></tr></tbody>
+                </table>
+              </div>
+              <div class="billing-pagination"><button id="billing-ledger-prev" type="button" class="secondary" disabled>上一页</button><button id="billing-ledger-next" type="button" class="secondary" disabled>下一页</button></div>
+            </article>
           </section>
 
           <section class="view hidden" data-section="security" aria-labelledby="security-title">

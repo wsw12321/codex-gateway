@@ -24,11 +24,9 @@ type Limits struct {
 	KeyRPM             int
 	KeyConcurrent      int
 	KeyRequestsPerDay  int64
-	KeyTokensPerDay    int64
 	UserRPM            int
 	UserConcurrent     int
 	UserRequestsPerDay int64
-	UserTokensPerDay   int64
 	GlobalConcurrent   int
 }
 
@@ -87,11 +85,9 @@ func Load() (Config, error) {
 			KeyRPM:             30,
 			KeyConcurrent:      4,
 			KeyRequestsPerDay:  1000,
-			KeyTokensPerDay:    20_000_000,
 			UserRPM:            60,
 			UserConcurrent:     8,
 			UserRequestsPerDay: 2000,
-			UserTokensPerDay:   40_000_000,
 			GlobalConcurrent:   12,
 		},
 	}
@@ -135,9 +131,7 @@ func Load() (Config, error) {
 		dst  *int64
 	}{
 		{"LIMIT_KEY_REQUESTS_DAY", &cfg.Limits.KeyRequestsPerDay},
-		{"LIMIT_KEY_TOKENS_DAY", &cfg.Limits.KeyTokensPerDay},
 		{"LIMIT_USER_REQUESTS_DAY", &cfg.Limits.UserRequestsPerDay},
-		{"LIMIT_USER_TOKENS_DAY", &cfg.Limits.UserTokensPerDay},
 		{"GATEWAY_BODY_LIMIT_BYTES", &cfg.BodyLimit},
 	}
 	for _, item := range int64Values {

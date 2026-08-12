@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"testing"
 	"time"
@@ -84,6 +85,150 @@ func TestPostgresIntegration(t *testing.T) {
 	if _, err := s.LookupAPIKey(ctx, key.PublicID); err != nil {
 		t.Fatalf("LookupAPIKey: %v", err)
 	}
+	admissionUser, admissionDevice, admissionKey := billingIntegrationPrincipal(
+		t, ctx, s, "flow-"+user.ID[:8],
+	)
+
+	// Billing failure happens after the quota locks in AdmitRequest, but the
+	// shared transaction must roll every admission artifact back.
+	failedAdmissionID := "billingatomicfailure0123456789abcdef"
+	_, err = s.AdmitRequest(ctx, AdmitRequestParams{
+		Quota: ReserveQuotaParams{
+			RequestID: failedAdmissionID, UserID: admissionUser.ID, APIKeyID: admissionKey.ID,
+			Limits: QuotaLimits{
+				KeyRequestsPerMinute: 30, UserRequestsPerMinute: 60,
+				KeyConcurrent: 4, UserConcurrent: 8, GlobalConcurrent: 12,
+				KeyDailyRequests: 1000, UserDailyRequests: 2000,
+			},
+		},
+		Usage: BeginUsageRequestParams{
+			RequestID: failedAdmissionID, UserID: admissionUser.ID, DeviceID: admissionDevice.ID,
+			APIKeyID: admissionKey.ID, Model: "gpt-5-codex",
+			Endpoint: "responses", RequestBytes: 16,
+		},
+		Billing: &BillingReservationParams{
+			RequestID: failedAdmissionID, UserID: admissionUser.ID, APIKeyID: admissionKey.ID,
+			Model: "gpt-5-codex", InputUSDPerMillion: "1",
+			CachedInputUSDPerMillion: "0.1", OutputUSDPerMillion: "10",
+		},
+	})
+	var insufficient *InsufficientFundsError
+	if !errors.As(err, &insufficient) {
+		t.Fatalf("AdmitRequest without funds error = %v, want InsufficientFundsError", err)
+	}
+	var failedArtifacts int
+	if err := s.DB().QueryRowContext(ctx, `
+		SELECT (SELECT count(*) FROM quota_reservations WHERE request_id = $1)
+		     + (SELECT count(*) FROM usage_requests WHERE request_id = $1)
+		     + (SELECT count(*) FROM billing_reservations WHERE request_id = $1)`,
+		failedAdmissionID,
+	).Scan(&failedArtifacts); err != nil {
+		t.Fatalf("count failed admission artifacts: %v", err)
+	}
+	if failedArtifacts != 0 {
+		t.Fatalf("failed admission left %d durable artifacts", failedArtifacts)
+	}
+
+	// The model catalog endpoint still participates in traffic quotas but does
+	// not require or create monetary billing state, even at a zero balance.
+	modelsRequestID := "modelswithoutbalance0123456789abcdef"
+	modelsAt := now.Add(10 * time.Second)
+	if _, err := s.AdmitRequest(ctx, AdmitRequestParams{
+		Quota: ReserveQuotaParams{
+			RequestID: modelsRequestID, UserID: admissionUser.ID, APIKeyID: admissionKey.ID,
+			Now: modelsAt, Day: modelsAt, LeaseTTL: time.Minute,
+			Limits: QuotaLimits{
+				KeyRequestsPerMinute: 30, UserRequestsPerMinute: 60,
+				KeyConcurrent: 4, UserConcurrent: 8, GlobalConcurrent: 12,
+				KeyDailyRequests: 1000, UserDailyRequests: 2000,
+			},
+		},
+		Usage: BeginUsageRequestParams{
+			RequestID: modelsRequestID, UserID: admissionUser.ID, DeviceID: admissionDevice.ID,
+			APIKeyID: admissionKey.ID, Model: "catalog",
+			Endpoint: "models", RequestedAt: modelsAt,
+		},
+	}); err != nil {
+		t.Fatalf("AdmitRequest for models at zero balance: %v", err)
+	}
+	modelsCompletedAt := modelsAt.Add(time.Second)
+	completion := CompleteUsageRequestParams{
+		RequestID: modelsRequestID, State: "completed", HTTPStatus: 200,
+		CompletedAt: modelsCompletedAt,
+	}
+	if _, err := s.CompleteUsageRequest(ctx, completion); err != nil {
+		t.Fatalf("CompleteUsageRequest for models: %v", err)
+	}
+	if _, err := s.CompleteUsageRequest(ctx, completion); err != nil {
+		t.Fatalf("idempotent CompleteUsageRequest replay: %v", err)
+	}
+	differentFirstToken := modelsAt.Add(500 * time.Millisecond)
+	conflictingCompletion := completion
+	conflictingCompletion.FirstTokenAt = &differentFirstToken
+	if _, err := s.CompleteUsageRequest(ctx, conflictingCompletion); !errors.Is(err, ErrConflict) {
+		t.Fatalf("completion replay with a different first-token time error = %v, want ErrConflict", err)
+	}
+	if settled, err := s.RetryUnsettledRequests(ctx, 100); err != nil {
+		t.Fatalf("RetryUnsettledRequests: %v", err)
+	} else if settled != 1 {
+		t.Fatalf("settled terminal requests = %d, want 1", settled)
+	}
+	var quotaState string
+	var billingArtifacts int
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT state FROM quota_reservations WHERE request_id = $1`, modelsRequestID,
+	).Scan(&quotaState); err != nil {
+		t.Fatalf("read models quota state: %v", err)
+	}
+	if err := s.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM billing_reservations WHERE request_id = $1`, modelsRequestID,
+	).Scan(&billingArtifacts); err != nil {
+		t.Fatalf("count models billing artifacts: %v", err)
+	}
+	if quotaState != "settled" || billingArtifacts != 0 {
+		t.Fatalf("models settlement = quota %q, billing rows %d", quotaState, billingArtifacts)
+	}
+
+	// Stale cleanup may release only an in-progress request. It atomically
+	// terminalizes the metadata, so a late completion cannot overwrite it.
+	staleRequestID := "stalemodelsrequest0123456789abcdef"
+	staleAt := now.Add(-2 * time.Hour)
+	if _, err := s.AdmitRequest(ctx, AdmitRequestParams{
+		Quota: ReserveQuotaParams{
+			RequestID: staleRequestID, UserID: admissionUser.ID, APIKeyID: admissionKey.ID,
+			Now: staleAt, Day: staleAt, LeaseTTL: time.Minute,
+			Limits: QuotaLimits{
+				KeyRequestsPerMinute: 30, UserRequestsPerMinute: 60,
+				KeyConcurrent: 4, UserConcurrent: 8, GlobalConcurrent: 12,
+				KeyDailyRequests: 1000, UserDailyRequests: 2000,
+			},
+		},
+		Usage: BeginUsageRequestParams{
+			RequestID: staleRequestID, UserID: admissionUser.ID, DeviceID: admissionDevice.ID,
+			APIKeyID: admissionKey.ID, Model: "catalog",
+			Endpoint: "models", RequestedAt: staleAt,
+		},
+	}); err != nil {
+		t.Fatalf("AdmitRequest for stale cleanup: %v", err)
+	}
+	if released, err := s.ReleaseStaleQuotaReservations(ctx, now.Add(-time.Hour), 100); err != nil {
+		t.Fatalf("ReleaseStaleQuotaReservations: %v", err)
+	} else if released != 1 {
+		t.Fatalf("released stale requests = %d, want 1", released)
+	}
+	staleUsage, err := s.GetUsageRequest(ctx, staleRequestID)
+	if err != nil {
+		t.Fatalf("GetUsageRequest after stale cleanup: %v", err)
+	}
+	if staleUsage.State != "cancelled" || staleUsage.ErrorCode == nil || *staleUsage.ErrorCode != "reservation_released" {
+		t.Fatalf("stale usage was not terminalized: %#v", staleUsage)
+	}
+	if _, err := s.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
+		RequestID: staleRequestID, State: "completed", HTTPStatus: 200,
+		CompletedAt: now,
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("late stale completion error = %v, want ErrConflict", err)
+	}
 
 	requestID := "0123456789abcdef0123456789abcdef"
 	_, err = s.ReserveQuota(ctx, ReserveQuotaParams{
@@ -93,7 +238,6 @@ func TestPostgresIntegration(t *testing.T) {
 			KeyRequestsPerMinute: 30, UserRequestsPerMinute: 60,
 			KeyConcurrent: 4, UserConcurrent: 8, GlobalConcurrent: 12,
 			KeyDailyRequests: 1000, UserDailyRequests: 2000,
-			KeyDailyTokens: 20_000_000, UserDailyTokens: 40_000_000,
 		},
 	})
 	if err != nil {

@@ -31,6 +31,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	requestedAt := time.Now().UTC()
 	model := fixedModel
 	var body *countingBody
+	var modelPricingInput, modelPricingCached, modelPricingOutput string
 	if r.Method == http.MethodPost {
 		var err error
 		model, body, err = prepareModelBody(w, r, s.config.BodyLimit)
@@ -47,6 +48,14 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "model_not_allowed", "此 API Key 不允许使用该模型")
 			return
 		}
+		price, ok := pricingForModel(s.config.UsagePricing, model)
+		if !ok {
+			writeModelPricingNotFound(w, r)
+			return
+		}
+		modelPricingInput = price.InputUSDPerMillion
+		modelPricingCached = price.CachedInputUSDPerMillion
+		modelPricingOutput = price.OutputUSDPerMillion
 	}
 
 	project, err := s.resolveAPIProject(r, key)
@@ -60,12 +69,43 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	}
 
 	requestID := httpx.RequestID(r.Context())
-	quota, err := s.store.ReserveQuota(r.Context(), store.ReserveQuotaParams{
-		RequestID: requestID, UserID: key.UserID, APIKeyID: key.ID,
-		Day: requestedAt, Now: requestedAt, ReservedTokens: 0, LeaseTTL: 5 * time.Minute,
-		Limits: s.quotaLimits(key),
+	projectID := ""
+	if project != nil {
+		projectID = project.ID
+	}
+	requestBytes := int64(0)
+	if r.ContentLength > 0 {
+		requestBytes = r.ContentLength
+	}
+	var billingReservation *store.BillingReservationParams
+	if r.Method == http.MethodPost {
+		billingReservation = &store.BillingReservationParams{
+			RequestID: requestID, UserID: key.UserID, APIKeyID: key.ID, Model: model,
+			InputUSDPerMillion:       modelPricingInput,
+			CachedInputUSDPerMillion: modelPricingCached,
+			OutputUSDPerMillion:      modelPricingOutput,
+			Now:                      requestedAt,
+		}
+	}
+	_, err = s.store.AdmitRequest(r.Context(), store.AdmitRequestParams{
+		Quota: store.ReserveQuotaParams{
+			RequestID: requestID, UserID: key.UserID, APIKeyID: key.ID,
+			Day: requestedAt, Now: requestedAt, ReservedTokens: 0, LeaseTTL: 5 * time.Minute,
+			Limits: s.quotaLimits(key),
+		},
+		Usage: store.BeginUsageRequestParams{
+			RequestID: requestID, UserID: key.UserID, DeviceID: key.DeviceID,
+			APIKeyID: key.ID, ProjectID: projectID, Model: model, Endpoint: endpoint,
+			RequestedAt: requestedAt, RequestBytes: requestBytes,
+		},
+		Billing: billingReservation,
 	})
 	if err != nil {
+		var insufficient *store.InsufficientFundsError
+		if errors.As(err, &insufficient) {
+			writeInsufficientQuota(w, r, insufficient.RetryAfter)
+			return
+		}
 		var exceeded *store.QuotaExceededError
 		if errors.As(err, &exceeded) {
 			retry := int(math.Ceil(exceeded.RetryAfter.Seconds()))
@@ -78,37 +118,20 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		internalError(s, w, r, "reserve quota", err)
 		return
 	}
-	quotaFinished := false
+	forwardingStarted := false
 	defer func() {
-		if !quotaFinished {
+		if !forwardingStarted {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 			defer cancel()
-			_ = s.store.ReleaseQuota(ctx, quota.RequestID, time.Now().UTC())
+			_ = s.store.ReleaseRequest(ctx, requestID, time.Now().UTC())
 		}
 	}()
 
-	projectID := ""
-	if project != nil {
-		projectID = project.ID
-	}
-	requestBytes := int64(0)
-	if r.ContentLength > 0 {
-		requestBytes = r.ContentLength
-	}
-	_, err = s.store.BeginUsageRequest(r.Context(), store.BeginUsageRequestParams{
-		RequestID: requestID, UserID: key.UserID, DeviceID: key.DeviceID,
-		APIKeyID: key.ID, ProjectID: projectID, Model: model, Endpoint: endpoint,
-		RequestedAt: requestedAt, RequestBytes: requestBytes,
-	})
-	if err != nil {
-		internalError(s, w, r, "begin usage request", err)
-		return
-	}
-
 	stopRenewal := make(chan struct{})
 	go s.renewQuotaLease(requestID, stopRenewal)
+	defer close(stopRenewal)
+	forwardingStarted = true
 	result, failure := s.upstream.Forward(r.Context(), w, r, upstreamPath)
-	close(stopRenewal)
 
 	completedAt := time.Now().UTC()
 	effectiveStatus := result.StatusCode
@@ -140,27 +163,72 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
-	_, completeErr := s.store.CompleteUsageRequest(writeCtx, store.CompleteUsageRequestParams{
+	completion := store.CompleteUsageRequestParams{
 		RequestID: requestID, State: state, HTTPStatus: effectiveStatus,
 		ErrorCode: errorCode, FirstTokenAt: timeOrNilValue(result.FirstTokenAt), CompletedAt: completedAt,
 		InputTokens: result.Usage.InputTokens, CachedInputTokens: result.Usage.CachedTokens,
 		OutputTokens: result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
 		RequestBytes: actualRequestBytes, ResponseBytes: result.BytesOut, UpstreamRequestID: result.UpstreamRequestID,
 		ActualModel: recordedUpstreamModel(result.Model),
+	}
+	completeErr := retryUsageCompletion(writeCtx, 3, 50*time.Millisecond, func(ctx context.Context) error {
+		_, err := s.store.CompleteUsageRequest(ctx, completion)
+		return err
 	})
 	if completeErr != nil {
 		s.logger.Error("complete usage metadata", "request_id", requestID, "error_type", "database")
 	}
-	if err := s.store.SettleQuota(writeCtx, requestID, result.Usage.Total(), completedAt); err != nil {
-		s.logger.Error("settle quota", "request_id", requestID, "error_type", "database")
-	} else {
-		quotaFinished = true
-		s.createQuotaThresholdAlerts(writeCtx, key, completedAt)
+	if completeErr == nil {
+		if err := s.store.SettleRequest(writeCtx, requestID, completedAt); err != nil {
+			s.logger.Error("settle request", "request_id", requestID, "error_type", "database")
+		} else {
+			s.createQuotaThresholdAlerts(writeCtx, key, completedAt)
+		}
 	}
 	_ = s.store.RecordAPIKeyUse(writeCtx, key.ID, key.DeviceID, completedAt)
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
 	}
+}
+
+func writeModelPricingNotFound(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_pricing_not_found", "模型未记录计费价格，请联系管理员")
+}
+
+func writeInsufficientQuota(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	if retryAfter > 0 {
+		retry := int(math.Ceil(retryAfter.Seconds()))
+		w.Header().Set("Retry-After", strconv.Itoa(max(retry, 1)))
+	}
+	httpx.WriteError(w, r, http.StatusTooManyRequests, "insufficient_quota", "insufficient_quota", "可用额度不足")
+}
+
+func retryUsageCompletion(ctx context.Context, attempts int, delay time.Duration, complete func(context.Context) error) error {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var err error
+	for attempt := 0; attempt < attempts; attempt++ {
+		err = complete(ctx)
+		if err == nil || errors.Is(err, store.ErrInvalid) || errors.Is(err, store.ErrConflict) ||
+			errors.Is(err, store.ErrNotFound) || errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
+		if attempt+1 == attempts {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
 }
 
 func (s *Server) createQuotaExceededAlert(ctx context.Context, key store.APIKey, requestID string, day time.Time, exceeded *store.QuotaExceededError) {
@@ -187,19 +255,15 @@ func (s *Server) createQuotaThresholdAlerts(ctx context.Context, key store.APIKe
 	}
 	limits := s.quotaLimits(key)
 	for _, counter := range counters {
-		requestLimit, tokenLimit := limits.KeyDailyRequests, limits.KeyDailyTokens
+		requestLimit := limits.KeyDailyRequests
 		if counter.ScopeType == "user" {
-			requestLimit, tokenLimit = limits.UserDailyRequests, limits.UserDailyTokens
+			requestLimit = limits.UserDailyRequests
 		}
 		percent := int64(0)
 		dimension := "daily_requests"
 		current, limitValue := counter.RequestsReserved, requestLimit
 		if requestLimit > 0 {
 			percent = counter.RequestsReserved * 100 / requestLimit
-		}
-		if tokenLimit > 0 && counter.TokensUsed*100/tokenLimit > percent {
-			percent = counter.TokensUsed * 100 / tokenLimit
-			dimension, current, limitValue = "daily_tokens", counter.TokensUsed, tokenLimit
 		}
 		threshold := int64(0)
 		if percent >= 100 {
@@ -253,7 +317,6 @@ func (s *Server) quotaLimits(key store.APIKey) store.QuotaLimits {
 		KeyConcurrent: int64(s.config.Limits.KeyConcurrent), UserConcurrent: int64(s.config.Limits.UserConcurrent),
 		GlobalConcurrent: int64(s.config.Limits.GlobalConcurrent),
 		KeyDailyRequests: s.config.Limits.KeyRequestsPerDay, UserDailyRequests: s.config.Limits.UserRequestsPerDay,
-		KeyDailyTokens: s.config.Limits.KeyTokensPerDay, UserDailyTokens: s.config.Limits.UserTokensPerDay,
 	}
 	if key.RPMLimit != nil {
 		limits.KeyRequestsPerMinute = int64(*key.RPMLimit)
@@ -263,9 +326,6 @@ func (s *Server) quotaLimits(key store.APIKey) store.QuotaLimits {
 	}
 	if key.DailyRequestLimit != nil {
 		limits.KeyDailyRequests = int64(*key.DailyRequestLimit)
-	}
-	if key.DailyTokenLimit != nil {
-		limits.KeyDailyTokens = *key.DailyTokenLimit
 	}
 	return limits
 }

@@ -3,6 +3,8 @@ package server
 import (
 	"strings"
 	"testing"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 func TestExtractTopLevelModel(t *testing.T) {
@@ -17,6 +19,20 @@ func TestExtractTopLevelModel(t *testing.T) {
 		got, err := extractTopLevelModel([]byte(test.raw))
 		if err != nil || got != test.model {
 			t.Fatalf("extract %s: got %q, %v", test.raw, got, err)
+		}
+	}
+}
+
+func TestPricingForModelRequiresExactCatalogEntry(t *testing.T) {
+	pricing := config.UsagePricing{Models: map[string]config.ModelPricing{
+		"gpt-exact": {InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0.1", OutputUSDPerMillion: "10"},
+	}}
+	if _, ok := pricingForModel(pricing, "gpt-exact"); !ok {
+		t.Fatal("exact pricing entry was not found")
+	}
+	for _, model := range []string{"GPT-EXACT", "gpt-exact-latest", " gpt-exact"} {
+		if _, ok := pricingForModel(pricing, model); ok {
+			t.Fatalf("non-exact model %q matched pricing catalog", model)
 		}
 	}
 }

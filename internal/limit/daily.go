@@ -20,27 +20,17 @@ var (
 type Day string
 
 // DailyReservation asks a store to atomically admit one request. RequestLimit
-// and TokenLimit are checked against current durable usage; zero disables that
-// check. The request count is incremented only if every reservation is allowed.
+// is checked against current durable usage; zero disables the check. The
+// request count is incremented only if every reservation is allowed.
 type DailyReservation struct {
 	Scope        Scope
 	ID           string
 	RequestLimit int64
-	TokenLimit   int64
-}
-
-// DailyTokenUsage is actual post-response token usage. AddTokens must always
-// record it, including the bounded overage created by already-running requests.
-type DailyTokenUsage struct {
-	Scope  Scope
-	ID     string
-	Tokens int64
 }
 
 // DailyUsage is durable usage for one day and scope.
 type DailyUsage struct {
 	Requests int64
-	Tokens   int64
 }
 
 // DailyLimitError is returned by DailyStore.ReserveRequests when no mutation
@@ -62,12 +52,10 @@ func (e *DailyLimitError) Error() string {
 
 // DailyStore is the persistence seam for restart-safe quotas. Implementations
 // must make each ReserveRequests call transactional: either all scope counters
-// increment once, or none do. AddTokens must likewise apply all increments or
-// none. A PostgreSQL implementation should use a transaction and row locks (or
-// equivalent atomic UPSERT logic).
+// increment once, or none do. A PostgreSQL implementation should use a
+// transaction and row locks (or equivalent atomic UPSERT logic).
 type DailyStore interface {
 	ReserveRequests(ctx context.Context, day Day, reservations []DailyReservation) error
-	AddTokens(ctx context.Context, day Day, usage []DailyTokenUsage) error
 	Usage(ctx context.Context, day Day, scope Scope, id string) (DailyUsage, error)
 }
 
@@ -117,12 +105,6 @@ func (s *MemoryDailyStore) ReserveRequests(ctx context.Context, day Day, reserva
 				Current: current.Requests, Limit: reservation.RequestLimit,
 			}
 		}
-		if reservation.TokenLimit > 0 && current.Tokens >= reservation.TokenLimit {
-			return &DailyLimitError{
-				Scope: reservation.Scope, ID: reservation.ID, Reason: ReasonDailyTokens,
-				Current: current.Tokens, Limit: reservation.TokenLimit,
-			}
-		}
 		if current.Requests == math.MaxInt64 {
 			return ErrCounterOverflow
 		}
@@ -131,41 +113,6 @@ func (s *MemoryDailyStore) ReserveRequests(ctx context.Context, day Day, reserva
 		key := dailyKey{day: day, scope: reservation.Scope, id: reservation.ID}
 		current := s.usage[key]
 		current.Requests++
-		s.usage[key] = current
-	}
-	return nil
-}
-
-func (s *MemoryDailyStore) AddTokens(ctx context.Context, day Day, usage []DailyTokenUsage) error {
-	if err := validateContext(ctx); err != nil {
-		return err
-	}
-	if err := validateDay(day); err != nil {
-		return err
-	}
-	if err := validateTokenUsage(usage); err != nil {
-		return err
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if s.usage == nil {
-		s.usage = make(map[dailyKey]DailyUsage)
-	}
-	for _, increment := range usage {
-		key := dailyKey{day: day, scope: increment.Scope, id: increment.ID}
-		current := s.usage[key]
-		if increment.Tokens > math.MaxInt64-current.Tokens {
-			return ErrCounterOverflow
-		}
-	}
-	for _, increment := range usage {
-		key := dailyKey{day: day, scope: increment.Scope, id: increment.ID}
-		current := s.usage[key]
-		current.Tokens += increment.Tokens
 		s.usage[key] = current
 	}
 	return nil
@@ -220,26 +167,7 @@ func validateReservations(entries []DailyReservation) error {
 	}
 	seen := make(map[identity]struct{}, len(entries))
 	for _, entry := range entries {
-		if !validDailyScope(entry.Scope) || entry.ID == "" || entry.RequestLimit < 0 || entry.TokenLimit < 0 {
-			return ErrInvalidDailyEntry
-		}
-		key := identity{scope: entry.Scope, id: entry.ID}
-		if _, exists := seen[key]; exists {
-			return ErrDuplicateDailyEntry
-		}
-		seen[key] = struct{}{}
-	}
-	return nil
-}
-
-func validateTokenUsage(entries []DailyTokenUsage) error {
-	type identity struct {
-		scope Scope
-		id    string
-	}
-	seen := make(map[identity]struct{}, len(entries))
-	for _, entry := range entries {
-		if !validDailyScope(entry.Scope) || entry.ID == "" || entry.Tokens < 0 {
+		if !validDailyScope(entry.Scope) || entry.ID == "" || entry.RequestLimit < 0 {
 			return ErrInvalidDailyEntry
 		}
 		key := identity{scope: entry.Scope, id: entry.ID}

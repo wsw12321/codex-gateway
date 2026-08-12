@@ -3,7 +3,6 @@ package limit
 import (
 	"context"
 	"errors"
-	"math"
 	"sync"
 	"testing"
 )
@@ -47,36 +46,20 @@ func TestMemoryDailyStoreValidationAndAtomicity(t *testing.T) {
 	}
 }
 
-func TestMemoryDailyStoreTokenOverflowIsAtomic(t *testing.T) {
-	store := NewMemoryDailyStore()
-	day := Day("2026-08-10")
-	store.usage[dailyKey{day: day, scope: ScopeUser, id: "user"}] = DailyUsage{Tokens: math.MaxInt64}
-	err := store.AddTokens(context.Background(), day, []DailyTokenUsage{
-		{Scope: ScopeKey, ID: "key", Tokens: 1},
-		{Scope: ScopeUser, ID: "user", Tokens: 1},
-	})
-	if !errors.Is(err, ErrCounterOverflow) {
-		t.Fatalf("overflow error = %v", err)
-	}
-	usage, _ := store.Usage(context.Background(), day, ScopeKey, "key")
-	if usage.Tokens != 0 {
-		t.Fatalf("overflow partially added tokens: %#v", usage)
-	}
-}
-
 func TestMemoryDailyStoreIsRaceSafe(t *testing.T) {
 	store := NewMemoryDailyStore()
 	day := Day("2026-08-10")
 	const workers = 32
 	const increments = 100
+	entry := []DailyReservation{{Scope: ScopeKey, ID: "key", RequestLimit: workers * increments}}
 	var wait sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
 			for j := 0; j < increments; j++ {
-				if err := store.AddTokens(context.Background(), day, []DailyTokenUsage{{Scope: ScopeKey, ID: "key", Tokens: 1}}); err != nil {
-					t.Errorf("AddTokens: %v", err)
+				if err := store.ReserveRequests(context.Background(), day, entry); err != nil {
+					t.Errorf("ReserveRequests: %v", err)
 					return
 				}
 			}
@@ -87,7 +70,7 @@ func TestMemoryDailyStoreIsRaceSafe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if usage.Tokens != workers*increments {
-		t.Fatalf("tokens = %d", usage.Tokens)
+	if usage.Requests != workers*increments {
+		t.Fatalf("requests = %d", usage.Requests)
 	}
 }

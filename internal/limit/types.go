@@ -19,7 +19,6 @@ var (
 	ErrInvalidConfig      = errors.New("invalid limiter configuration")
 	ErrInvalidIdentity    = errors.New("key and user IDs are required")
 	ErrDailyStoreRequired = errors.New("daily limits require a persistent DailyStore")
-	ErrNegativeTokenCount = errors.New("token count cannot be negative")
 	ErrNilContext         = errors.New("nil context")
 )
 
@@ -39,7 +38,6 @@ const (
 	ReasonRPM           Reason = "requests_per_minute"
 	ReasonConcurrency   Reason = "concurrency"
 	ReasonDailyRequests Reason = "daily_requests"
-	ReasonDailyTokens   Reason = "daily_tokens"
 )
 
 // Identity is the authenticated key/user pair being admitted.
@@ -53,7 +51,6 @@ type Limits struct {
 	RequestsPerMinute int
 	Concurrent        int
 	RequestsPerDay    int64
-	TokensPerDay      int64
 }
 
 // Clock makes boundary behavior deterministic in tests.
@@ -93,13 +90,11 @@ func DefaultConfig(store DailyStore) Config {
 			RequestsPerMinute: 30,
 			Concurrent:        4,
 			RequestsPerDay:    1_000,
-			TokensPerDay:      20_000_000,
 		},
 		User: Limits{
 			RequestsPerMinute: 60,
 			Concurrent:        8,
 			RequestsPerDay:    2_000,
-			TokensPerDay:      40_000_000,
 		},
 		GlobalConcurrent: 12,
 		DailyStore:       store,

@@ -47,6 +47,8 @@ func TestParseUsagePricingRejectsInvalidValues(t *testing.T) {
 		"invalid FX date":     `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-02-30","usd_cny_rate":"7","models":{` + validModel + `}}`,
 		"negative FX":         `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"-7","models":{` + validModel + `}}`,
 		"zero FX":             `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"0","models":{` + validModel + `}}`,
+		"FX over scale":       `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"0.0000000000001","models":{` + validModel + `}}`,
+		"FX integer overflow": `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"1000000000000000000","models":{` + validModel + `}}`,
 		"exponent":            `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7e0","models":{` + validModel + `}}`,
 		"leading decimal":     `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":".7","models":{` + validModel + `}}`,
 		"leading zero":        `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"07","models":{` + validModel + `}}`,
@@ -57,8 +59,8 @@ func TestParseUsagePricingRejectsInvalidValues(t *testing.T) {
 		"oversized model":     `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"` + strings.Repeat("m", 129) + `":{"input_usd_per_million":"1","cached_input_usd_per_million":"0","output_usd_per_million":"1"}}}`,
 		"missing model price": `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"x":{"input_usd_per_million":"1","output_usd_per_million":"1"}}}`,
 		"negative price":      `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"x":{"input_usd_per_million":"-1","cached_input_usd_per_million":"0","output_usd_per_million":"1"}}}`,
-		"huge price":          `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"x":{"input_usd_per_million":"1000000000.0000001","cached_input_usd_per_million":"0","output_usd_per_million":"1"}}}`,
-		"oversized decimal":   `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"` + strings.Repeat("1", maxUsagePricingDecimalLength+1) + `","models":{` + validModel + `}}`,
+		"price over scale":    `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"x":{"input_usd_per_million":"0.0000000000001","cached_input_usd_per_million":"0","output_usd_per_million":"1"}}}`,
+		"price overflow":      `{"catalog_as_of":"2026-01-01","fx_as_of":"2026-01-01","usd_cny_rate":"7","models":{"x":{"input_usd_per_million":"1000000000000000000","cached_input_usd_per_million":"0","output_usd_per_million":"1"}}}`,
 	}
 	for name, raw := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -100,21 +102,21 @@ func usagePricingJSONWithModels(t *testing.T, count int) string {
 	return string(encoded)
 }
 
-func TestParseUsagePricingAllowsZeroPricesAndExactSmallDecimals(t *testing.T) {
+func TestParseUsagePricingAllowsNumericSnapshotBoundaries(t *testing.T) {
 	pricing, err := ParseUsagePricing(`{
 		"catalog_as_of":"2026-01-01",
 		"fx_as_of":"2026-01-02",
-		"usd_cny_rate":"0.000000000000000001",
+		"usd_cny_rate":"999999999999999999.999999999999",
 		"models":{"free-model":{
 			"input_usd_per_million":"0",
-			"cached_input_usd_per_million":"0.000000000000000001",
-			"output_usd_per_million":"0"
+			"cached_input_usd_per_million":"0.000000000001",
+			"output_usd_per_million":"999999999999999999.999999999999"
 		}}
 	}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := pricing.Models["free-model"].CachedInputUSDPerMillion; got != "0.000000000000000001" {
+	if got := pricing.Models["free-model"].CachedInputUSDPerMillion; got != "0.000000000001" {
 		t.Fatalf("cached input price = %q", got)
 	}
 }

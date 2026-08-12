@@ -919,6 +919,121 @@ code {
   margin: .2rem 0;
 }
 
+.billing-period-panel,
+.billing-ledger-panel {
+  margin-bottom: 1rem;
+}
+
+.billing-owner-tools {
+  margin-bottom: 1rem;
+}
+
+.billing-admin-grid,
+.billing-subscription-forms,
+.subscription-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.subscription-card,
+.billing-subscription-form {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  padding: 1rem;
+  background: var(--surface-soft);
+}
+
+.subscription-card {
+  display: grid;
+  gap: .5rem;
+}
+
+.subscription-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+}
+
+.subscription-card strong,
+.subscription-card small {
+  display: block;
+}
+
+.subscription-card > strong {
+  font-size: 1.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.subscription-card small,
+.billing-subscription-form small {
+  color: var(--muted);
+}
+
+.billing-form,
+.billing-subscription-form {
+  display: grid;
+  align-content: start;
+  gap: .8rem;
+}
+
+.billing-form p,
+.billing-subscription-admin .panel-heading p {
+  margin: .25rem 0 0;
+}
+
+.billing-form > button {
+  align-self: end;
+}
+
+.billing-subscription-admin {
+  margin-top: 1rem;
+}
+
+.billing-subscription-form .actions {
+  justify-content: flex-start;
+  margin-top: 0;
+}
+
+.billing-subscription-form .actions > * {
+  flex: 1 1 8rem;
+}
+
+#billing-owner-scope label {
+  flex: 0 0 auto;
+}
+
+#billing-user-select {
+  min-width: min(22rem, 100%);
+  margin: 0;
+}
+
+#billing-scope-name {
+  min-width: 0;
+  margin-left: auto;
+  color: var(--muted);
+  text-align: right;
+}
+
+.billing-ledger-panel .table-wrap {
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+}
+
+.billing-ledger-panel .money-cell > span:first-child {
+  color: var(--text);
+  font-weight: 750;
+}
+
+.billing-pagination {
+  display: flex;
+  justify-content: flex-end;
+  gap: .6rem;
+  margin-top: 1rem;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -1028,6 +1143,12 @@ dialog form {
   .global-filters {
     grid-template-columns: repeat(3, minmax(9rem, 1fr));
   }
+
+  .billing-admin-grid,
+  .billing-subscription-forms,
+  .subscription-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 850px) {
@@ -1105,6 +1226,12 @@ dialog form {
     grid-template-columns: 1fr;
   }
 
+  .billing-admin-grid,
+  .billing-subscription-forms,
+  .subscription-list {
+    grid-template-columns: 1fr;
+  }
+
   .filters,
   .global-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1166,6 +1293,15 @@ dialog form {
   .auth-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  #billing-user-select {
+    min-width: 0;
+  }
+
+  #billing-scope-name {
+    margin-left: 0;
+    text-align: left;
   }
 
   .actions > * {

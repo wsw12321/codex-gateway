@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -41,15 +42,32 @@ type BeginUsageRequestParams struct {
 }
 
 func (s *Store) BeginUsageRequest(ctx context.Context, params BeginUsageRequestParams) (UsageRequest, error) {
+	var err error
+	params, err = s.normalizeBeginUsageRequest(params)
+	if err != nil {
+		return UsageRequest{}, err
+	}
+	return beginUsageRequestTx(ctx, s.db, params)
+}
+
+type queryRower interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func (s *Store) normalizeBeginUsageRequest(params BeginUsageRequestParams) (BeginUsageRequestParams, error) {
 	params.Model = strings.TrimSpace(params.Model)
 	if params.RequestID == "" || params.UserID == "" || params.DeviceID == "" ||
 		params.APIKeyID == "" || params.Model == "" || params.RequestBytes < 0 {
-		return UsageRequest{}, fmt.Errorf("%w: invalid usage request metadata", ErrInvalid)
+		return params, fmt.Errorf("%w: invalid usage request metadata", ErrInvalid)
 	}
 	if params.RequestedAt.IsZero() {
 		params.RequestedAt = s.now().UTC()
 	}
-	request, err := scanUsageRequest(s.db.QueryRowContext(ctx, `
+	return params, nil
+}
+
+func beginUsageRequestTx(ctx context.Context, queryer queryRower, params BeginUsageRequestParams) (UsageRequest, error) {
+	request, err := scanUsageRequest(queryer.QueryRowContext(ctx, `
 		INSERT INTO usage_requests
 			(request_id, user_id, device_id, api_key_id, key_prefix, project_id,
 			 model, endpoint, requested_at, request_bytes)
@@ -96,7 +114,8 @@ type CompleteUsageRequestParams struct {
 }
 
 func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRequestParams) (UsageRequest, error) {
-	if params.State != "completed" && params.State != "failed" && params.State != "cancelled" {
+	if params.RequestID == "" ||
+		(params.State != "completed" && params.State != "failed" && params.State != "cancelled") {
 		return UsageRequest{}, fmt.Errorf("%w: invalid terminal usage state", ErrInvalid)
 	}
 	if params.HTTPStatus < 100 || params.HTTPStatus > 599 || params.InputTokens < 0 ||
@@ -109,6 +128,12 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		params.CompletedAt = s.now().UTC()
 	}
 	params.ActualModel = strings.TrimSpace(params.ActualModel)
+	args := []any{
+		params.RequestID, params.State, params.HTTPStatus, valueOrNil(params.ErrorCode),
+		timeOrNil(params.FirstTokenAt), params.CompletedAt, params.InputTokens,
+		params.CachedInputTokens, params.OutputTokens, params.ReasoningTokens,
+		params.RequestBytes, params.ResponseBytes, valueOrNil(params.UpstreamRequestID), params.ActualModel,
+	}
 	request, err := scanUsageRequest(s.db.QueryRowContext(ctx, `
 		UPDATE usage_requests
 		SET state = $2, http_status = $3, error_code = $4,
@@ -125,12 +150,45 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		  AND $6 >= requested_at
 		  AND ($5::timestamptz IS NULL OR ($5 >= requested_at AND $5 <= $6))
 		RETURNING `+usageRequestColumns,
-		params.RequestID, params.State, params.HTTPStatus, valueOrNil(params.ErrorCode),
-		timeOrNil(params.FirstTokenAt), params.CompletedAt, params.InputTokens,
-		params.CachedInputTokens, params.OutputTokens, params.ReasoningTokens,
-		params.RequestBytes, params.ResponseBytes, valueOrNil(params.UpstreamRequestID), params.ActualModel,
+		args...,
 	))
-	return request, mapDBError("complete usage request", err)
+	mapped := mapDBError("complete usage request", err)
+	if mapped == nil {
+		return request, nil
+	}
+	if !errors.Is(mapped, ErrNotFound) {
+		return UsageRequest{}, mapped
+	}
+
+	// Completion may have committed even if the caller observed a transient
+	// connection error. Accept an exact terminal replay so the server can retry
+	// metadata persistence without risking a conflicting second completion.
+	request, err = scanUsageRequest(s.db.QueryRowContext(ctx, `
+		SELECT `+usageRequestColumns+` FROM usage_requests
+		WHERE request_id = $1 AND state = $2 AND http_status = $3
+		  AND error_code IS NOT DISTINCT FROM $4::text
+		  AND completed_at = $6::timestamptz
+		  AND input_tokens = $7 AND cached_input_tokens = $8
+		  AND output_tokens = $9 AND reasoning_tokens = $10
+		  AND request_bytes = $11 AND response_bytes = $12
+		  AND upstream_request_id IS NOT DISTINCT FROM $13::text
+		  AND first_token_at IS NOT DISTINCT FROM $5::timestamptz
+		  AND ($14::text = '' OR model = $14)`, args...,
+	))
+	if err == nil {
+		return request, nil
+	}
+	replayErr := mapDBError("replay usage completion", err)
+	if !errors.Is(replayErr, ErrNotFound) {
+		return UsageRequest{}, replayErr
+	}
+	var existingState string
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT state FROM usage_requests WHERE request_id = $1`, params.RequestID,
+	).Scan(&existingState); err == nil && existingState != "in_progress" {
+		return UsageRequest{}, fmt.Errorf("complete usage request differently: %w", ErrConflict)
+	}
+	return UsageRequest{}, mapped
 }
 
 func (s *Store) GetUsageRequest(ctx context.Context, requestID string) (UsageRequest, error) {
@@ -520,8 +578,16 @@ func (s *Store) DeleteUsageRequestsBefore(ctx context.Context, before time.Time,
 	result, err := s.db.ExecContext(ctx, `
 		DELETE FROM usage_requests
 		WHERE id IN (
-			SELECT id FROM usage_requests
-			WHERE completed_at < $1
+			SELECT u.id FROM usage_requests u
+			WHERE u.completed_at < $1
+			  AND NOT EXISTS (
+				SELECT 1 FROM quota_reservations q
+				WHERE q.request_id = u.request_id AND q.state = 'reserved'
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM billing_reservations b
+				WHERE b.request_id = u.request_id AND b.state = 'reserved'
+			  )
 			ORDER BY completed_at LIMIT $2
 		)`, before, limit,
 	)

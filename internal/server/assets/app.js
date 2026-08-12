@@ -6,6 +6,7 @@ const sectionTitles = {
   overview: "概览",
   resources: "资源",
   keys: "API Keys",
+  billing: "额度与订阅",
   security: "账号安全",
   usage: "使用统计",
 };
@@ -26,6 +27,19 @@ let secretAfterClose = null;
 let personalRequestSequence = 0;
 let globalRequestSequence = 0;
 let checkingSession = false;
+let billingDetail = null;
+let billingUsers = [];
+let billingSettings = null;
+let billingLedgerOffset = 0;
+let billingLedgerNextOffset = 0;
+let billingRequestSequence = 0;
+
+const billingLedgerPageSize = 50;
+const billingTiers = [
+  {id: "day", label: "日订阅", duration: "24 小时"},
+  {id: "week", label: "周订阅", duration: "7 天"},
+  {id: "month", label: "月订阅", duration: "31 天"},
+];
 
 function show(target) {
   const element = typeof target === "string" ? byId(target) : target;
@@ -101,6 +115,11 @@ function formatMoney(value, currency) {
   let fraction = (match[3] || "").padEnd(2, "0");
   while (fraction.length > 2 && fraction.endsWith("0")) fraction = fraction.slice(0, -1);
   return `${sign}${currency === "USD" ? "US$" : "¥"}${whole}.${fraction}`;
+}
+
+function formatUSD(value, fallback = "—") {
+  if (value == null || String(value).trim() === "") return fallback;
+  return formatMoney(String(value), "USD");
 }
 
 function formatDateTime(value, fallback = "从未使用") {
@@ -223,6 +242,11 @@ function handleUnauthorized() {
   secretAfterClose = null;
   state = null;
   overviewSummary = null;
+  billingDetail = null;
+  billingUsers = [];
+  billingSettings = null;
+  billingLedgerOffset = 0;
+  billingLedgerNextOffset = 0;
   all("dialog[open]").forEach((dialog) => dialog.close());
   clearSensitiveDOM();
   hide("dashboard");
@@ -236,13 +260,22 @@ function handleUnauthorized() {
     "metric-requests", "metric-tokens", "metric-errors", "metric-active-keys",
     "metric-global-tokens", "metric-global-cost", "usage-requests", "metric-cache",
     "metric-ttft", "metric-duration", "global-usd", "global-cny",
-    "global-total-tokens", "global-request-users",
+    "global-total-tokens", "global-request-users", "billing-cash-balance",
+    "billing-day-remaining", "billing-week-remaining", "billing-month-remaining",
   ]) byId(id).textContent = "—";
   byId("resource-summary").replaceChildren();
   byId("onboarding").replaceChildren();
   byId("alert-summary").replaceChildren();
   byId("global-overview").replaceChildren();
   byId("pricing-note").replaceChildren();
+  byId("billing-subscriptions").replaceChildren(element("div", {className: "empty", text: "登录后加载。"}));
+  byId("billing-ledger-rows").replaceChildren(tableMessage(5, "登录后加载账务流水。"));
+  byId("billing-current-rate").textContent = "—";
+  byId("billing-user-select").replaceChildren(option("", "登录后加载用户"));
+  byId("billing-ledger-page").textContent = "—";
+  byId("billing-ledger-prev").disabled = true;
+  byId("billing-ledger-next").disabled = true;
+  for (const tier of billingTiers) byId(`billing-${tier.id}-ends`).textContent = "未启用";
   hide("personal-scope");
   byId("usage-rows").replaceChildren(tableMessage(8, "登录后加载使用明细。"));
   byId("global-rows").replaceChildren(tableMessage(6, "登录后加载全员汇总。"));
@@ -794,6 +827,404 @@ function setTableBusy(tbody, columns, message) {
   tbody.replaceChildren(tableMessage(columns, message));
 }
 
+function normalizeBillingUser(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const nested = source.user && typeof source.user === "object" ? source.user : {};
+  return {
+    ...nested,
+    ...source,
+    id: nested.id || source.user_id || source.id || "",
+    username: nested.username || source.username || "",
+    display_name: nested.display_name || source.display_name || "",
+    role: nested.role || source.role || "",
+    status: nested.status || source.status || "",
+  };
+}
+
+function billingUserForDetail(detail = billingDetail) {
+  if (detail?.user) return normalizeBillingUser(detail.user);
+  const direct = normalizeBillingUser(detail);
+  if (direct.id) return direct;
+  const selected = byId("billing-user-select")?.value;
+  return billingUsers.find((item) => item.id === selected) || normalizeBillingUser(state?.user);
+}
+
+function billingSubscriptions(detail = billingDetail) {
+  const source = detail?.subscriptions || detail?.account?.subscriptions || {};
+  if (Array.isArray(source)) {
+    return Object.fromEntries(source.map((item) => [field(item, "tier", "kind"), item]));
+  }
+  return source && typeof source === "object" ? source : {};
+}
+
+function billingSubscription(detail, tier) {
+  const subscription = billingSubscriptions(detail)[tier];
+  return subscription && typeof subscription === "object" ? subscription : null;
+}
+
+function billingSubscriptionEnabled(subscription) {
+  if (!subscription) return false;
+  if (subscription.enabled != null) return subscription.enabled === true;
+  if (subscription.status) return subscription.status === "active";
+  return Boolean(subscription.period_ends_at);
+}
+
+function billingCashBalance(detail = billingDetail) {
+  return detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd ?? "0";
+}
+
+function billingEntries(detail = billingDetail) {
+  const entries = detail?.ledger_entries || detail?.entries || [];
+  return Array.isArray(entries) ? entries : [];
+}
+
+function billingTypeLabel(type) {
+  return ({
+    recharge: "充值",
+    cash_recharge: "充值",
+    adjustment: "余额调整",
+    cash_adjustment: "余额调整",
+    usage: "用量扣费",
+    usage_charge: "用量扣费",
+    recharge_rate: "充值汇率调整",
+    subscription_set: "订阅重开",
+    subscription_disable: "订阅停用",
+    subscription_renewal: "订阅续期",
+    subscription_created: "订阅启用",
+    subscription_updated: "订阅重开",
+    subscription_disabled: "订阅停用",
+    subscription_period_opened: "订阅周期",
+  })[type] || type || "账务记录";
+}
+
+function renderBillingSubscriptions(detail) {
+  const container = byId("billing-subscriptions");
+  container.classList.remove("loading");
+  container.setAttribute("aria-busy", "false");
+  const cards = billingTiers.map((tier) => {
+    const subscription = billingSubscription(detail, tier.id);
+    const enabled = billingSubscriptionEnabled(subscription);
+    const quota = subscription?.quota_usd;
+    const remaining = subscription?.remaining_usd;
+    const header = element("header", {},
+      element("strong", {text: tier.label}),
+      statusBadge(enabled ? "active" : "disabled"),
+    );
+    return element("div", {className: "subscription-card"},
+      header,
+      element("strong", {text: enabled ? formatUSD(remaining, formatUSD("0")) : "未启用"}),
+      element("small", {text: enabled ? `周期额度：${formatUSD(quota, "—")} · 固定 ${tier.duration}` : `固定 ${tier.duration}滚动周期`}),
+      element("small", {text: enabled ? `开始：${formatDateTime(subscription?.period_started_at, "—")}` : "剩余额度不会结转"}),
+      element("small", {text: enabled ? `续期：${formatDateTime(subscription?.period_ends_at, "—")}` : "Owner 可随时启用"}),
+    );
+  });
+  container.replaceChildren(...cards);
+}
+
+function renderBillingLedger(detail) {
+  const entries = billingEntries(detail);
+  const tbody = byId("billing-ledger-rows");
+  tbody.closest("table")?.setAttribute("aria-busy", "false");
+  if (!entries.length) {
+    tbody.replaceChildren(tableMessage(5, "当前页没有账务流水。"));
+  } else {
+    tbody.replaceChildren(...entries.map((entry) => {
+      const type = String(field(entry, "entry_type", "kind", "type") || "");
+      const amount = field(entry, "amount_usd", "charged_usd", "actual_cost_usd");
+      const money = element("td", {className: "money-cell"},
+        element("span", {text: formatUSD(amount)}),
+      );
+      const balance = field(entry, "balance_after_usd", "cash_balance_after_usd");
+      const actual = field(entry, "actual_cost_usd");
+      const charged = field(entry, "charged_usd");
+      const uncovered = field(entry, "uncovered_usd");
+      if (balance != null) money.append(element("small", {text: `现金余额：${formatUSD(balance)}`}));
+      if (actual != null && String(actual) !== String(amount)) money.append(element("small", {text: `实际成本：${formatUSD(actual)}`}));
+      if (charged != null && String(charged) !== String(amount)) money.append(element("small", {text: `已扣额度：${formatUSD(charged)}`}));
+      if (uncovered != null && String(uncovered) !== "0" && String(uncovered) !== "0.000000000000") {
+        money.append(element("small", {text: `未覆盖：${formatUSD(uncovered)}`}));
+      }
+
+      const description = element("td", {className: "money-cell"},
+        element("span", {text: field(entry, "reason", "description") || "—"}),
+      );
+      const cnyAmount = field(entry, "cny_amount");
+      const rate = field(entry, "usd_per_cny", "usd_per_cny_snapshot", "recharge_rate");
+      if (cnyAmount != null) {
+        const rateText = rate == null ? "" : ` × ${String(rate)} USD/CNY`;
+        description.append(element("small", {text: `${formatMoney(cnyAmount, "CNY")}${rateText}`}));
+      } else if (rate != null) {
+        description.append(element("small", {text: `新汇率：${String(rate)} USD/CNY`}));
+      }
+      const subscriptionTier = field(entry, "subscription_tier");
+      if (subscriptionTier != null) {
+        const tier = billingTiers.find((item) => item.id === subscriptionTier);
+        description.append(element("small", {text: tier?.label || String(subscriptionTier)}));
+      }
+
+      const request = element("td", {className: "money-cell"});
+      const requestID = field(entry, "request_id");
+      const model = field(entry, "model");
+      request.append(requestID ? element("code", {text: requestID}) : element("span", {text: "—"}));
+      if (model) request.append(element("small", {text: String(model)}));
+      const tokenParts = [];
+      for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存"], ["output_tokens", "输出"]]) {
+        const value = field(entry, name);
+        if (value != null) tokenParts.push(`${label} ${String(value)}`);
+      }
+      if (tokenParts.length) request.append(element("small", {text: tokenParts.join(" · ")}));
+
+      const label = billingTypeLabel(type);
+      const typeCell = element("td", {className: "money-cell"}, element("span", {text: label}));
+      if (type && label !== type) typeCell.append(element("small", {text: type}));
+      return element("tr", {},
+        element("td", {text: formatDateTime(field(entry, "occurred_at", "created_at"), "—")}),
+        typeCell,
+        money,
+        description,
+        request,
+      );
+    }));
+  }
+
+  const pagination = detail?.pagination || {};
+  const offsetValue = Number(pagination.offset ?? billingLedgerOffset);
+  const offset = Number.isFinite(offsetValue) && offsetValue >= 0 ? offsetValue : billingLedgerOffset;
+  const limitValue = Number(pagination.limit ?? billingLedgerPageSize);
+  const limit = Number.isFinite(limitValue) && limitValue > 0 ? limitValue : billingLedgerPageSize;
+  const totalValue = Number(pagination.total ?? pagination.total_count);
+  const explicitMore = pagination.has_more ?? pagination.has_next;
+  const nextValue = Number(pagination.next_offset);
+  billingLedgerOffset = offset;
+  billingLedgerNextOffset = Number.isFinite(nextValue) && nextValue > offset ? nextValue : offset + limit;
+  let hasMore = typeof explicitMore === "boolean" ? explicitMore : entries.length === limit;
+  if (Number.isFinite(totalValue) && totalValue >= 0) hasMore = offset + entries.length < totalValue;
+  const page = Math.floor(offset / limit) + 1;
+  const pages = Number.isFinite(totalValue) && totalValue > 0 ? Math.ceil(totalValue / limit) : null;
+  byId("billing-ledger-page").textContent = pages ? `${page} / ${pages}` : `第 ${page} 页`;
+  byId("billing-ledger-prev").disabled = offset <= 0;
+  byId("billing-ledger-prev").dataset.offset = String(Math.max(0, offset - limit));
+  byId("billing-ledger-next").disabled = !hasMore;
+  byId("billing-ledger-next").dataset.offset = String(billingLedgerNextOffset);
+}
+
+function renderBillingAdminValues(detail) {
+  if (state?.user?.role !== "owner") return;
+  for (const tier of billingTiers) {
+    const subscription = billingSubscription(detail, tier.id);
+    const form = byId(`billing-subscription-${tier.id}`);
+    if (document.activeElement !== form.elements.quota_usd) {
+      form.elements.quota_usd.value = subscription?.quota_usd == null ? "" : String(subscription.quota_usd);
+    }
+    form.querySelector("[data-disable-subscription]").disabled = !billingSubscriptionEnabled(subscription);
+  }
+}
+
+function renderBillingDetail(detail) {
+  billingDetail = detail || {};
+  const user = billingUserForDetail(detail);
+  const cash = billingCashBalance(detail);
+  byId("billing-cash-balance").textContent = formatUSD(cash, formatUSD("0"));
+  if (state?.user?.role === "owner") {
+    byId("billing-scope-name").textContent = user.id === state.user.id
+      ? `${user.display_name || user.username || "当前用户"} · 当前登录用户`
+      : `${user.display_name || user.username || user.id} · ${user.username || user.id}`;
+  }
+  for (const tier of billingTiers) {
+    const subscription = billingSubscription(detail, tier.id);
+    const enabled = billingSubscriptionEnabled(subscription);
+    byId(`billing-${tier.id}-remaining`).textContent = enabled
+      ? formatUSD(subscription?.remaining_usd, formatUSD("0")) : "未启用";
+    byId(`billing-${tier.id}-ends`).textContent = enabled
+      ? `续期：${formatDateTime(subscription?.period_ends_at, "—")}` : `固定 ${tier.duration}`;
+  }
+  renderBillingSubscriptions(detail);
+  renderBillingLedger(detail);
+  renderBillingAdminValues(detail);
+}
+
+function renderBillingUsers(result) {
+  const values = Array.isArray(result) ? result : (result?.users || result?.items || []);
+  const unique = new Map();
+  for (const value of Array.isArray(values) ? values : []) {
+    const user = normalizeBillingUser(value);
+    if (user.id) unique.set(user.id, user);
+  }
+  const current = normalizeBillingUser(state?.user);
+  if (current.id && !unique.has(current.id)) unique.set(current.id, current);
+  billingUsers = Array.from(unique.values()).sort((left, right) =>
+    String(left.username || left.display_name).localeCompare(String(right.username || right.display_name), "zh-CN"));
+  const select = byId("billing-user-select");
+  const previous = select.value || billingUserForDetail()?.id || state?.user?.id || "";
+  select.replaceChildren(...billingUsers.map((user) => option(
+    user.id,
+    `${user.display_name || user.username || user.id} (${user.username || user.id}) · ${formatUSD(user.cash_balance_usd, formatUSD("0"))}`,
+  )));
+  if (billingUsers.some((user) => user.id === previous)) select.value = previous;
+  else if (billingUsers.length) select.value = billingUsers[0].id;
+}
+
+function renderBillingSettings(result) {
+  billingSettings = result?.settings || result || {};
+  const rate = billingSettings.usd_per_cny;
+  byId("billing-current-rate").textContent = rate == null ? "—" : String(rate);
+  const input = byId("billing-rate-form").elements.usd_per_cny;
+  if (document.activeElement !== input) input.value = rate == null ? "" : String(rate);
+}
+
+function selectedBillingUserID() {
+  if (state?.user?.role !== "owner") return state?.user?.id || "";
+  return byId("billing-user-select").value || state?.user?.id || "";
+}
+
+function billingDetailPath(userID) {
+  if (!userID || userID === state?.user?.id) return "/admin/billing/me";
+  return `/admin/billing/users/${encodeURIComponent(userID)}`;
+}
+
+async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
+  if (!userID) throw new Error("无法确定要查看的账务用户。");
+  const sequence = ++billingRequestSequence;
+  billingLedgerOffset = Math.max(0, Number(offset) || 0);
+  show("billing-loading");
+  setTableBusy(byId("billing-ledger-rows"), 5, "正在加载账务流水…");
+  const query = new URLSearchParams({limit: String(billingLedgerPageSize), offset: String(billingLedgerOffset)});
+  try {
+    const result = await api(`${billingDetailPath(userID)}?${query}`);
+    if (sequence !== billingRequestSequence) return;
+    renderBillingDetail(result);
+  } catch (error) {
+    if (sequence === billingRequestSequence) {
+      billingDetail = null;
+      byId("billing-subscriptions").classList.remove("loading");
+      byId("billing-subscriptions").setAttribute("aria-busy", "false");
+      byId("billing-subscriptions").replaceChildren(emptyState(`额度加载失败：${friendlyError(error)}`));
+      byId("billing-ledger-rows").closest("table")?.setAttribute("aria-busy", "false");
+      byId("billing-ledger-rows").replaceChildren(tableMessage(5, friendlyError(error)));
+    }
+    throw error;
+  } finally {
+    if (sequence === billingRequestSequence) hide("billing-loading");
+  }
+}
+
+async function loadBillingUsers() {
+  const result = await api("/admin/billing/users");
+  renderBillingUsers(result);
+}
+
+async function loadBillingSettings() {
+  const result = await api("/admin/billing/settings");
+  renderBillingSettings(result);
+}
+
+async function loadBillingDashboard() {
+  const tasks = [loadBillingDetail(state.user.id, 0)];
+  if (state.user.role === "owner") {
+    tasks.push(
+      loadBillingSettings().catch((error) => {
+        setLocalMessage(byId("billing-rate-form"), `充值汇率加载失败：${friendlyError(error)}`);
+      }),
+      loadBillingUsers().catch((error) => {
+        byId("billing-user-select").replaceChildren(option("", "用户列表加载失败"));
+        notice(`账务用户列表加载失败：${friendlyError(error)}`, "error");
+      }),
+    );
+  }
+  await Promise.all(tasks);
+}
+
+function billingReason(form) {
+  const reason = String(new FormData(form).get("reason") || "").trim();
+  if (!reason) throw new Error("必须填写操作原因。");
+  return reason;
+}
+
+async function billingMutation(path, method, payload) {
+  if (state?.user?.role !== "owner") throw new Error("仅 Owner 可执行此账务操作。");
+  if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
+  const input = {...payload, operation_id: crypto.randomUUID()};
+  const body = JSON.stringify(input);
+  return sensitiveAction(() => api(path, {method, body}));
+}
+
+async function refreshManagedBilling(userID = selectedBillingUserID()) {
+  await Promise.all([
+    loadBillingDetail(userID, 0),
+    loadBillingUsers().catch((error) => notice(`用户余额摘要刷新失败：${friendlyError(error)}`, "error")),
+  ]);
+}
+
+async function updateBillingRate(event) {
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  await billingMutation("/admin/billing/settings/recharge-rate", "PUT", {
+    usd_per_cny: String(data.get("usd_per_cny") || "").trim(),
+    reason: billingReason(form),
+  });
+  form.elements.reason.value = "";
+  await loadBillingSettings();
+  notice("充值汇率已更新；历史充值汇率快照保持不变。", "ok");
+}
+
+async function rechargeBillingUser(event) {
+  const form = event.currentTarget;
+  const userID = selectedBillingUserID();
+  const data = new FormData(form);
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/recharges`, "POST", {
+    cny_amount: String(data.get("cny_amount") || "").trim(),
+    reason: billingReason(form),
+  });
+  form.reset();
+  await refreshManagedBilling(userID);
+  notice("充值已入账并记录汇率快照。", "ok");
+}
+
+async function adjustBillingUser(event) {
+  const form = event.currentTarget;
+  const userID = selectedBillingUserID();
+  const data = new FormData(form);
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/adjustments`, "POST", {
+    usd_amount: String(data.get("usd_amount") || "").trim(),
+    reason: billingReason(form),
+  });
+  form.reset();
+  await refreshManagedBilling(userID);
+  notice("余额调整已记入不可变账务流水。", "ok");
+}
+
+async function updateBillingSubscription(event) {
+  const form = event.currentTarget;
+  const tier = form.dataset.tier;
+  if (!billingTiers.some((item) => item.id === tier)) throw new Error("订阅档位无效。");
+  const userID = selectedBillingUserID();
+  const data = new FormData(form);
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "PUT", {
+    quota_usd: String(data.get("quota_usd") || "").trim(),
+    reason: billingReason(form),
+  });
+  form.elements.reason.value = "";
+  await refreshManagedBilling(userID);
+  notice(`${billingTiers.find((item) => item.id === tier).label}已从当前时刻重开。`, "ok");
+}
+
+async function disableBillingSubscription(button) {
+  const tier = button.dataset.disableSubscription;
+  const form = button.closest("form");
+  const reason = billingReason(form);
+  if (!window.confirm(`停用${billingTiers.find((item) => item.id === tier)?.label || "订阅"}后，新请求将立即无法使用当前周期。确定继续？`)) return;
+  const userID = selectedBillingUserID();
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "DELETE", {reason});
+  form.elements.reason.value = "";
+  await refreshManagedBilling(userID);
+  notice("订阅已立即停用。", "ok");
+}
+
+async function changeBillingLedgerPage(offset) {
+  await loadBillingDetail(selectedBillingUserID(), Math.max(0, Number(offset) || 0));
+  announce("账务流水已更新。");
+}
+
 function usageNameMaps() {
   return {
     devices: new Map((state?.devices || []).map((item) => [item.id, item.name])),
@@ -1144,6 +1575,9 @@ async function loadDashboard() {
       byId("metric-errors").textContent = "—";
       notice(`个人用量加载失败：${friendlyError(error)}`, "error");
     }),
+    loadBillingDashboard().catch((error) => {
+      notice(`额度与订阅加载失败：${friendlyError(error)}`, "error");
+    }),
   ];
   if (state.user.role === "owner") {
     tasks.push(
@@ -1209,6 +1643,12 @@ function bindUI() {
   bindAsync("project-form", "submit", (event) => submitResource(event, "/admin/projects", "项目已添加。"), "添加中…");
   bindAsync("key-form", "submit", createKey, "创建中…");
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
+  bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
+  bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
+  bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
+  for (const tier of billingTiers) {
+    bindAsync(`billing-subscription-${tier.id}`, "submit", updateBillingSubscription, "保存中…");
+  }
   bindAsync("member-invite", "click", () => invite("member"), "生成中…");
   bindAsync("recovery-invite-form", "submit", (event) => {
     const username = String(new FormData(event.currentTarget).get("target_username") || "").trim();
@@ -1223,6 +1663,29 @@ function bindUI() {
     await loadGlobalUsage(globalQueryFromForm(), false);
     announce("全员使用统计已更新。");
   }, "聚合中…");
+  bindAsync("billing-user-select", "change", async (event) => {
+    const userID = event.currentTarget.value;
+    if (!userID) return;
+    billingLedgerOffset = 0;
+    all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
+    await loadBillingDetail(userID, 0);
+    announce("所选用户的额度与账务流水已更新。");
+  });
+
+  all("[data-disable-subscription]").forEach((button) => button.addEventListener("click", () => {
+    runButton(button, () => disableBillingSubscription(button), "停用中…").then(() => {
+      if (billingDetail) renderBillingAdminValues(billingDetail);
+    });
+  }));
+  for (const [id, fallback] of [["billing-ledger-prev", 0], ["billing-ledger-next", billingLedgerNextOffset]]) {
+    const button = byId(id);
+    button.addEventListener("click", () => {
+      const offset = Number(button.dataset.offset ?? fallback);
+      runButton(button, () => changeBillingLedgerPage(offset), "加载中…").then(() => {
+        if (billingDetail) renderBillingLedger(billingDetail);
+      });
+    });
+  }
 
   all("[data-open]").forEach((button) => button.addEventListener("click", () => {
     if (!button.disabled) openDialog(button.dataset.open);
