@@ -72,6 +72,7 @@
           <a href="#overview" data-view="overview">概览</a>
           <a href="#resources" data-view="resources">资源</a>
           <a href="#keys" data-view="keys">API Keys</a>
+          <a href="#guide" data-view="guide">使用指导</a>
           <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
@@ -151,6 +152,95 @@
             </div>
             <p id="key-guidance" class="callout hidden" role="status"></p>
             <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
+          </section>
+
+          <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
+            <div class="section-head guide-heading">
+              <div><p class="eyebrow">CODEX SETUP</p><h2 id="guide-title">在 Codex 中使用本 Gateway</h2><p>按照下面四步完成配置。示例地址已自动使用当前站点域名。</p></div>
+              <span class="badge">约 3 分钟</span>
+            </div>
+
+            <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
+              <div><span>当前 API 地址</span><code id="guide-base-url">正在生成…</code></div>
+              <button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button>
+            </aside>
+
+            <ol class="guide-steps">
+              <li class="guide-step panel">
+                <div class="guide-step-marker" aria-hidden="true">1</div>
+                <div class="guide-step-body">
+                  <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3>准备设备、项目和 API Key</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
+                  <p>API Key 必须绑定设备，且秘密只显示一次。项目是可选的；未指定时使用 Key 的默认项目。</p>
+                  <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
+                  <div class="button-group guide-actions">
+                    <a class="button secondary" href="#resources">管理设备与项目</a>
+                    <a class="button" href="#keys">创建 API Key</a>
+                  </div>
+                </div>
+              </li>
+
+              <li class="guide-step panel">
+                <div class="guide-step-marker" aria-hidden="true">2</div>
+                <div class="guide-step-body">
+                  <div class="guide-step-title"><div><p class="eyebrow">CREDENTIALS</p><h3>把凭证注入启动 Codex 的终端</h3></div></div>
+                  <p>选择本次请求使用的项目，然后在同一个终端中安全输入刚创建的 Key。Key 不会出现在输入画面或命令历史中。</p>
+                  <label class="guide-project-label" for="guide-project-select">请求项目
+                    <select id="guide-project-select"><option value="">不指定（使用 Key 默认项目）</option></select>
+                  </label>
+
+                  <div class="code-card">
+                    <div class="code-toolbar"><span>macOS / Linux · Bash 或 Zsh</span><button type="button" class="secondary copy-button" data-copy-target="guide-shell-code">复制</button></div>
+                    <pre><code id="guide-shell-code">正在生成…</code></pre>
+                  </div>
+
+                  <details class="guide-platform">
+                    <summary>使用 Windows PowerShell</summary>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>PowerShell</span><button type="button" class="secondary copy-button" data-copy-target="guide-powershell-code">复制</button></div>
+                      <pre><code id="guide-powershell-code">正在生成…</code></pre>
+                    </div>
+                  </details>
+                  <p class="guide-warning">不要把 API Key 写入 Git 仓库、项目 <code>.env</code>、Shell 配置文件或命令历史。需要长期保存时，请使用操作系统凭据库或受控的 Secret Manager。</p>
+                </div>
+              </li>
+
+              <li class="guide-step panel">
+                <div class="guide-step-marker" aria-hidden="true">3</div>
+                <div class="guide-step-body">
+                  <div class="guide-step-title"><div><p class="eyebrow">CONFIG.TOML</p><h3>配置自定义模型提供方</h3></div></div>
+                  <p>打开用户级 <code>~/.codex/config.toml</code>，将以下内容合并到现有配置中。不要覆盖你仍需保留的其他设置。</p>
+                  <div class="code-card">
+                    <div class="code-toolbar"><span>~/.codex/config.toml</span><button type="button" class="secondary copy-button" data-copy-target="guide-config-code">复制配置</button></div>
+                    <pre><code id="guide-config-code">正在生成…</code></pre>
+                  </div>
+                  <p class="guide-note"><code>env_key</code> 让 Codex 从环境变量读取 Key；<code>env_http_headers</code> 仅在项目变量存在时发送项目头。</p>
+                </div>
+              </li>
+
+              <li class="guide-step panel">
+                <div class="guide-step-marker" aria-hidden="true">4</div>
+                <div class="guide-step-body">
+                  <div class="guide-step-title"><div><p class="eyebrow">VERIFY</p><h3>启动并验证</h3></div></div>
+                  <p>在设置环境变量的同一个终端中启动 Codex，并发起一个简单请求。成功后可在“使用统计”中看到请求元数据。</p>
+                  <div class="code-card compact-code">
+                    <div class="code-toolbar"><span>终端</span><button type="button" class="secondary copy-button" data-copy-target="guide-start-code">复制</button></div>
+                    <pre><code id="guide-start-code">codex</code></pre>
+                  </div>
+                  <div class="guide-troubleshooting">
+                    <h4>遇到问题？</h4>
+                    <dl>
+                      <div><dt><code>401 invalid_api_key</code></dt><dd>确认 Key 已在当前终端设置、尚未过期且未被撤销。</dd></div>
+                      <div><dt><code>400 invalid_project</code></dt><dd>确认所选项目仍为活跃状态，且属于当前账号。</dd></div>
+                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单；Gateway 仅支持 Responses 协议。</dd></div>
+                    </dl>
+                  </div>
+                  <div class="button-group guide-actions">
+                    <a class="button secondary" href="#usage">查看使用统计</a>
+                    <a class="button secondary" href="#keys">管理 API Keys</a>
+                  </div>
+                </div>
+              </li>
+            </ol>
           </section>
 
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">

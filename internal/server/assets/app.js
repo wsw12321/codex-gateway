@@ -6,6 +6,7 @@ const sectionTitles = {
   overview: "概览",
   resources: "资源",
   keys: "API Keys",
+  guide: "使用指导",
   billing: "额度与订阅",
   security: "账号安全",
   usage: "使用统计",
@@ -224,6 +225,23 @@ async function runButton(button, handler, busyLabel = "处理中…") {
     if (!setLocalMessage(button, message)) notice(message, "error");
   } finally {
     setBusy(button, false);
+  }
+}
+
+async function copyText(value) {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (_) {
+    const temporary = element("textarea", {className: "sr-only"});
+    temporary.value = value;
+    temporary.readOnly = true;
+    document.body.append(temporary);
+    try {
+      temporary.select();
+      if (!document.execCommand("copy")) throw new Error("浏览器拒绝复制，请手动选择内容。");
+    } finally {
+      temporary.remove();
+    }
   }
 }
 
@@ -524,7 +542,7 @@ function renderOnboarding() {
     {done: Boolean(state?.api_keys?.length), title: "创建 API Key", detail: "秘密只会显示一次", section: "keys"},
     {
       done: Number(overviewSummary?.requests || 0) > 0 || Boolean(state?.api_keys?.some((key) => key.last_used_at)),
-      title: "完成首次请求", detail: "验证代理与用量记录", section: "usage",
+      title: "配置 Codex 并完成首次请求", detail: "按使用指导接入 Gateway", section: "guide",
     },
   ];
   const list = byId("onboarding");
@@ -668,6 +686,70 @@ function renderSelects() {
     byId("key-guidance").textContent = "创建 API Key 前，请先在“资源”中添加一台活跃设备。";
     show("key-guidance");
   }
+
+  const guideProject = byId("guide-project-select");
+  const selectedGuideProject = guideProject.value;
+  fillSelect(guideProject, "不指定（使用 Key 默认项目）", activeProjects, (item) => `${item.name} (${item.slug})`);
+  if (activeProjects.some((item) => item.id === selectedGuideProject)) guideProject.value = selectedGuideProject;
+  renderGuide();
+}
+
+function selectedGuideProject() {
+  const selectedID = byId("guide-project-select").value;
+  return state?.projects?.find((project) => project.id === selectedID && project.status === "active") || null;
+}
+
+function renderGuide() {
+  const baseURL = `${location.origin}/v1`;
+  const project = selectedGuideProject();
+  const projectSlug = project?.slug || "";
+  const shellLines = [
+    "read -rsp 'Gateway API Key: ' CODEX_GATEWAY_API_KEY",
+    "export CODEX_GATEWAY_API_KEY",
+    "echo",
+  ];
+  const powershellLines = [
+    '$secureKey = Read-Host "Gateway API Key" -AsSecureString',
+    '$credential = [System.Net.NetworkCredential]::new("", $secureKey)',
+    '$env:CODEX_GATEWAY_API_KEY = $credential.Password',
+  ];
+  if (projectSlug) {
+    shellLines.push(`export CODEX_GATEWAY_PROJECT='${projectSlug}'`);
+    powershellLines.push(`$env:CODEX_GATEWAY_PROJECT = "${projectSlug}"`);
+  } else {
+    shellLines.push("unset CODEX_GATEWAY_PROJECT");
+    powershellLines.push("Remove-Item Env:CODEX_GATEWAY_PROJECT -ErrorAction SilentlyContinue");
+  }
+
+  byId("guide-base-url").textContent = baseURL;
+  byId("guide-shell-code").textContent = shellLines.join("\n");
+  byId("guide-powershell-code").textContent = powershellLines.join("\n");
+  byId("guide-config-code").textContent = [
+    'model_provider = "gateway"',
+    "",
+    "[model_providers.gateway]",
+    'name = "Personal Codex Gateway"',
+    `base_url = "${baseURL}"`,
+    'env_key = "CODEX_GATEWAY_API_KEY"',
+    'wire_api = "responses"',
+    'env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }',
+    "request_max_retries = 2",
+    "stream_max_retries = 2",
+  ].join("\n");
+
+  if (!state) return;
+  const activeDevices = state.devices.filter((item) => item.status === "active").length;
+  const activeProjects = state.projects.filter((item) => item.status === "active").length;
+  const activeKeys = state.api_keys.filter((item) => item.status === "active").length;
+  const ready = activeDevices > 0 && activeKeys > 0;
+  const badge = byId("guide-resource-badge");
+  badge.textContent = ready ? "可以开始配置" : "需要准备资源";
+  badge.dataset.status = ready ? "active" : "in_progress";
+  byId("guide-resource-status").replaceChildren(
+    summaryItem("活跃设备", formatInteger(activeDevices)),
+    summaryItem("活跃项目（可选）", formatInteger(activeProjects)),
+    summaryItem("活跃 API Keys", formatInteger(activeKeys)),
+  );
 }
 
 function renderState(value) {
@@ -1718,24 +1800,21 @@ function bindUI() {
   byId("usage-filter").addEventListener("input", updateCSVLink);
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
+  byId("guide-project-select").addEventListener("change", renderGuide);
   window.addEventListener("hashchange", () => routeFromHash(true));
+
+  all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {
+    runButton(button, async () => {
+      const target = byId(button.dataset.copyTarget);
+      if (!target) throw new Error("找不到要复制的内容。");
+      await copyText(target.textContent);
+      announce("内容已复制到剪贴板。");
+    }, "复制中…");
+  }));
 
   byId("copy-secret").addEventListener("click", () => runButton(byId("copy-secret"), async () => {
     const value = byId("secret-value").textContent;
-    try {
-      await navigator.clipboard.writeText(value);
-    } catch (_) {
-      const temporary = element("textarea", {className: "sr-only"});
-      temporary.value = value;
-      temporary.readOnly = true;
-      document.body.append(temporary);
-      try {
-        temporary.select();
-        if (!document.execCommand("copy")) throw new Error("浏览器拒绝复制，请手动选择内容。");
-      } finally {
-        temporary.remove();
-      }
-    }
+    await copyText(value);
     setLocalMessage(byId("secret-dialog"), "已复制到剪贴板。", "ok");
   }, "复制中…"));
   byId("save-secret").addEventListener("click", () => byId("secret-dialog").close());

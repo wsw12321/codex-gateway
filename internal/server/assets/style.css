@@ -766,6 +766,233 @@ code {
   color: #c4e4ff;
 }
 
+.guide-heading {
+  margin-bottom: 1rem;
+}
+
+.guide-endpoint {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid rgb(110 231 193 / 28%);
+  border-radius: .9rem;
+  padding: .9rem 1rem;
+  background: rgb(110 231 193 / 5%);
+}
+
+.guide-endpoint > div {
+  min-width: 0;
+}
+
+.guide-endpoint span,
+.guide-endpoint code {
+  display: block;
+}
+
+.guide-endpoint span {
+  margin-bottom: .2rem;
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.guide-endpoint code {
+  overflow-wrap: anywhere;
+  color: #bdf5d7;
+}
+
+.guide-steps {
+  display: grid;
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guide-step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.6rem minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.guide-step-marker {
+  display: grid;
+  width: 2.55rem;
+  height: 2.55rem;
+  place-items: center;
+  border: 1px solid rgb(110 231 193 / 35%);
+  border-radius: .8rem;
+  color: var(--accent-ink);
+  background: var(--accent);
+  font-size: 1.05rem;
+  font-weight: 900;
+}
+
+.guide-step-body {
+  min-width: 0;
+}
+
+.guide-step-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: .6rem;
+}
+
+.guide-step-title h3 {
+  margin-top: .25rem;
+  font-size: 1.18rem;
+}
+
+.guide-step-body > p {
+  margin: .35rem 0 1rem;
+}
+
+.guide-resource-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .8rem;
+  margin: 1rem 0;
+}
+
+.guide-resource-status .summary-item {
+  display: grid;
+  gap: .2rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  padding: .75rem;
+  background: var(--surface-soft);
+}
+
+.guide-resource-status .summary-item strong {
+  font-size: 1.15rem;
+}
+
+.guide-actions {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.guide-project-label {
+  width: min(30rem, 100%);
+  margin-bottom: 1rem;
+}
+
+.code-card {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: .85rem;
+  background: #070b10;
+}
+
+.code-toolbar {
+  display: flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: .5rem .65rem .5rem 1rem;
+  color: var(--muted);
+  background: #0d131b;
+  font-size: .8rem;
+  font-weight: 700;
+}
+
+.copy-button {
+  min-height: 2rem;
+  padding: .35rem .65rem;
+  font-size: .78rem;
+}
+
+.code-card pre {
+  max-width: 100%;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem;
+  color: #c8e6fb;
+  line-height: 1.65;
+  tab-size: 2;
+}
+
+.code-card code {
+  color: inherit;
+  font-size: .84rem;
+  white-space: pre;
+}
+
+.compact-code {
+  width: min(30rem, 100%);
+}
+
+.guide-platform {
+  margin-top: .8rem;
+}
+
+.guide-platform summary {
+  width: fit-content;
+  padding: .35rem 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.guide-platform .code-card {
+  margin-top: .55rem;
+}
+
+.guide-warning,
+.guide-note {
+  border-left: 3px solid var(--warning);
+  padding: .65rem .8rem;
+  color: #f4dfaa;
+  background: rgb(255 209 102 / 5%);
+}
+
+.guide-note {
+  border-left-color: var(--info);
+  color: #c4e4ff;
+  background: rgb(124 196 255 / 5%);
+}
+
+.guide-troubleshooting {
+  margin: 1rem 0;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.guide-troubleshooting dl {
+  display: grid;
+  gap: .55rem;
+  margin: .75rem 0 0;
+}
+
+.guide-troubleshooting dl > div {
+  display: grid;
+  grid-template-columns: minmax(10rem, .35fr) minmax(0, 1fr);
+  gap: 1rem;
+  border-bottom: 1px solid rgb(38 52 69 / 70%);
+  padding: .55rem 0;
+}
+
+.guide-troubleshooting dl > div:last-child {
+  border-bottom: 0;
+}
+
+.guide-troubleshooting dt {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.guide-troubleshooting dd {
+  margin: 0;
+  color: var(--muted);
+}
+
 .scope-banner {
   display: flex;
   align-items: center;
@@ -1293,6 +1520,29 @@ dialog form {
   .auth-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .guide-endpoint,
+  .guide-step-title {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .guide-endpoint .copy-button {
+    width: 100%;
+  }
+
+  .guide-step {
+    grid-template-columns: 1fr;
+  }
+
+  .guide-resource-status {
+    grid-template-columns: 1fr;
+  }
+
+  .guide-troubleshooting dl > div {
+    grid-template-columns: 1fr;
+    gap: .2rem;
   }
 
   #billing-user-select {

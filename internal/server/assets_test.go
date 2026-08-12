@@ -75,11 +75,37 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 		t.Fatal("dashboard stylesheet contains an external asset hook")
 	}
 	for _, required := range []string{
-		`href="#overview"`, `href="#resources"`, `href="#keys"`, `href="#billing"`, `href="#security"`, `href="#usage"`,
+		`href="#overview"`, `href="#resources"`, `href="#keys"`, `href="#guide"`, `href="#billing"`, `href="#security"`, `href="#usage"`,
 		`id="secret-dialog"`, `id="operation-status"`, `class="skip-link"`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("dashboard HTML is missing %s", required)
+		}
+	}
+}
+
+func TestGuideIncludesCodexGatewayConfiguration(t *testing.T) {
+	t.Parallel()
+
+	html := string(indexHTML)
+	javascript := string(appJS)
+	for _, required := range []string{
+		`data-section="guide"`, `id="guide-base-url"`, `id="guide-project-select"`,
+		`id="guide-shell-code"`, `id="guide-powershell-code"`, `id="guide-config-code"`,
+		`~/.codex/config.toml`, `不要把 API Key 写入 Git 仓库`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("Codex guide HTML is missing %s", required)
+		}
+	}
+	for _, required := range []string{
+		`guide: "使用指导"`, `function renderGuide()`, `` + "`base_url = \"${baseURL}\"`" + ``,
+		`'env_key = "CODEX_GATEWAY_API_KEY"'`, `'wire_api = "responses"'`,
+		`'env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }'`,
+		`all("[data-copy-target]")`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("Codex guide JavaScript is missing %s", required)
 		}
 	}
 }
