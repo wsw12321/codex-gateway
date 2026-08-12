@@ -35,60 +35,39 @@ if [ ! -f "$source_file" ]; then
     source_file=/dev/null
 fi
 
-awk '
+awk -v gateway_base_url="$gateway_base_url" '
 BEGIN {
-    in_gateway = 0
-    seen_section = 0
-    wrote_provider = 0
+    in_root = 1
+    found = 0
+    replacement = "openai_base_url = \"" gateway_base_url "\""
 }
 {
     line = $0
-    if (in_gateway) {
-        if (line ~ /^[[:space:]]*\[/) {
-            in_gateway = 0
+    if (in_root && line ~ /^[[:space:]]*\[/) {
+        in_root = 0
+    }
+    if (in_root && line ~ /^[[:space:]]*openai_base_url[[:space:]]*=/) {
+        if (!found) {
+            lines[NR] = replacement
+            found = 1
         } else {
-            next
-        }
-    }
-    if (line ~ /^[[:space:]]*\[model_providers\.gateway\][[:space:]]*(#.*)?$/) {
-        in_gateway = 1
-        next
-    }
-    if (!seen_section && line ~ /^[[:space:]]*\[/) {
-        if (!wrote_provider) {
-            print "model_provider = \"gateway\""
-            print ""
-            wrote_provider = 1
-        }
-        seen_section = 1
-    }
-    if (!seen_section && line ~ /^[[:space:]]*model_provider[[:space:]]*=/) {
-        if (!wrote_provider) {
-            print "model_provider = \"gateway\""
-            wrote_provider = 1
+            skipped[NR] = 1
         }
         next
     }
-    print line
+    lines[NR] = line
 }
 END {
-    if (!wrote_provider) {
-        print ""
-        print "model_provider = \"gateway\""
+    if (!found) {
+        print replacement
+    }
+    for (line_number = 1; line_number <= NR; line_number++) {
+        if (!skipped[line_number]) {
+            print lines[line_number]
+        }
     }
 }
 ' "$source_file" > "$temporary_file"
-
-printf '%s\n' \
-    '' \
-    '[model_providers.gateway]' \
-    'name = "Personal Codex Gateway"' \
-    "base_url = \"$gateway_base_url\"" \
-    'env_key = "CODEX_GATEWAY_API_KEY"' \
-    'wire_api = "responses"' \
-    'env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }' \
-    'request_max_retries = 2' \
-    'stream_max_retries = 2' >> "$temporary_file"
 
 mv "$temporary_file" "$config_file"
 trap - EXIT HUP INT TERM

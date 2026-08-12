@@ -687,56 +687,15 @@ function renderSelects() {
     show("key-guidance");
   }
 
-  const guideProject = byId("guide-project-select");
-  const selectedGuideProject = guideProject.value;
-  fillSelect(guideProject, "不指定（使用 Key 默认项目）", activeProjects, (item) => `${item.name} (${item.slug})`);
-  if (activeProjects.some((item) => item.id === selectedGuideProject)) guideProject.value = selectedGuideProject;
   renderGuide();
-}
-
-function selectedGuideProject() {
-  const selectedID = byId("guide-project-select").value;
-  return state?.projects?.find((project) => project.id === selectedID && project.status === "active") || null;
 }
 
 function renderGuide() {
   const baseURL = `${location.origin}/v1`;
-  const project = selectedGuideProject();
-  const projectSlug = project?.slug || "";
-  const shellLines = [
-    "read -rsp 'Gateway API Key: ' CODEX_GATEWAY_API_KEY",
-    "export CODEX_GATEWAY_API_KEY",
-    "echo",
-  ];
-  const powershellLines = [
-    '$secureKey = Read-Host "Gateway API Key" -AsSecureString',
-    '$credential = [System.Net.NetworkCredential]::new("", $secureKey)',
-    '$env:CODEX_GATEWAY_API_KEY = $credential.Password',
-  ];
-  if (projectSlug) {
-    shellLines.push(`export CODEX_GATEWAY_PROJECT='${projectSlug}'`);
-    powershellLines.push(`$env:CODEX_GATEWAY_PROJECT = "${projectSlug}"`);
-  } else {
-    shellLines.push("unset CODEX_GATEWAY_PROJECT");
-    powershellLines.push("Remove-Item Env:CODEX_GATEWAY_PROJECT -ErrorAction SilentlyContinue");
-  }
 
   byId("guide-base-url").textContent = baseURL;
-  byId("guide-shell-code").textContent = shellLines.join("\n");
-  byId("guide-powershell-code").textContent = powershellLines.join("\n");
   byId("guide-install-code").textContent = `curl -fsSL '${location.origin}/setup/configure-codex.sh' | sh`;
-  byId("guide-config-code").textContent = [
-    'model_provider = "gateway"',
-    "",
-    "[model_providers.gateway]",
-    'name = "Personal Codex Gateway"',
-    `base_url = "${baseURL}"`,
-    'env_key = "CODEX_GATEWAY_API_KEY"',
-    'wire_api = "responses"',
-    'env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }',
-    "request_max_retries = 2",
-    "stream_max_retries = 2",
-  ].join("\n");
+  byId("guide-config-code").textContent = `openai_base_url = "${baseURL}"`;
 
   if (!state) return;
   const activeDevices = state.devices.filter((item) => item.status === "active").length;
@@ -1801,7 +1760,6 @@ function bindUI() {
   byId("usage-filter").addEventListener("input", updateCSVLink);
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
-  byId("guide-project-select").addEventListener("change", renderGuide);
   window.addEventListener("hashchange", () => routeFromHash(true));
 
   all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {

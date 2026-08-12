@@ -877,11 +877,6 @@ code {
   justify-content: flex-start;
 }
 
-.guide-project-label {
-  width: min(30rem, 100%);
-  margin-bottom: 1rem;
-}
-
 .code-card {
   overflow: hidden;
   border: 1px solid var(--line-strong);

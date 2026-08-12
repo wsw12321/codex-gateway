@@ -294,32 +294,22 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 
 ## Codex CLI 配置
 
-每台设备创建不同的 API Key，并保存在该设备的安全环境中：
-
-```sh
-export CODEX_GATEWAY_API_KEY='cgk_v1_...'
-export CODEX_GATEWAY_PROJECT='my-project'
-```
-
-在 Codex 配置中加入：
+每台设备创建不同的 API Key，需要区分项目时为 Key 设置默认项目。管理界面的
+“使用指导”可直接生成适用于当前部署地址的一键配置命令；也可以手工在
+`~/.codex/config.toml` 的最前面加入：
 
 ```toml
-model_provider = "gateway"
-
-[model_providers.gateway]
-name = "Personal Codex Gateway"
-base_url = "https://codex.example.com/v1"
-env_key = "CODEX_GATEWAY_API_KEY"
-wire_api = "responses"
-env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }
-request_max_retries = 2
-stream_max_retries = 2
+openai_base_url = "https://codex.example.com/v1"
 ```
 
-将域名替换为真实部署域名。若没有 `X-Codex-Project`，Gateway 使用 Key 的默认
-项目；Key 也没有默认项目时记为 `unassigned`。显式提供未知或跨账号项目会返回
-`400 invalid_project`。不要把 Key 写进可提交的 TOML、项目 `.env`、shell
-profile 或命令历史。详见 [客户端配置](docs/client-config.md)。
+将域名替换为真实部署域名，然后执行 `codex login --with-api-key` 并按照 Codex
+CLI 的输入流程提供 Gateway API Key。Gateway 使用 Key 的默认项目；Key 没有默认
+项目时记为 `unassigned`。不要把 Key 写进可提交的 TOML、项目 `.env`、shell
+profile 或命令历史。
+
+一键脚本只维护顶层 `openai_base_url`，不会删除旧版脚本生成的
+`model_provider = "gateway"` 或 `[model_providers.gateway]`。如果本机仍显式启用了
+旧 provider，请手工处理该旧配置。详见 [客户端配置](docs/client-config.md)。
 
 ## 开发与验证
 

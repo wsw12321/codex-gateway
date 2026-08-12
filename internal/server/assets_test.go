@@ -96,19 +96,16 @@ func TestGuideIncludesCodexGatewayConfiguration(t *testing.T) {
 	html := string(indexHTML)
 	javascript := string(appJS)
 	for _, required := range []string{
-		`data-section="guide"`, `id="guide-base-url"`, `id="guide-project-select"`,
-		`id="guide-shell-code"`, `id="guide-powershell-code"`, `id="guide-install-code"`, `id="guide-config-code"`,
+		`data-section="guide"`, `id="guide-base-url"`, `id="guide-install-code"`, `id="guide-config-code"`,
 		`id="guide-windows-download"`, `href="/setup/configure-codex.bat"`,
-		`~/.codex/config.toml`, `不要把 API Key 写入 Git 仓库`,
+		`~/.codex/config.toml`, `codex login --with-api-key`, `不要把 API Key 写入 Git 仓库`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("Codex guide HTML is missing %s", required)
 		}
 	}
 	for _, required := range []string{
-		`guide: "使用指导"`, `function renderGuide()`, `` + "`base_url = \"${baseURL}\"`" + ``,
-		`'env_key = "CODEX_GATEWAY_API_KEY"'`, `'wire_api = "responses"'`,
-		`'env_http_headers = { "X-Codex-Project" = "CODEX_GATEWAY_PROJECT" }'`,
+		`guide: "使用指导"`, `function renderGuide()`, `` + "`openai_base_url = \"${baseURL}\"`" + ``,
 		`/setup/configure-codex.sh`,
 		`all("[data-copy-target]")`,
 	} {
@@ -116,49 +113,132 @@ func TestGuideIncludesCodexGatewayConfiguration(t *testing.T) {
 			t.Fatalf("Codex guide JavaScript is missing %s", required)
 		}
 	}
+	for _, forbidden := range []string{
+		`id="guide-project-select"`, `id="guide-shell-code"`, `id="guide-powershell-code"`,
+		`CODEX_GATEWAY_API_KEY`, `CODEX_GATEWAY_PROJECT`,
+	} {
+		if strings.Contains(html, forbidden) || strings.Contains(javascript, forbidden) {
+			t.Fatalf("Codex guide still contains obsolete configuration %s", forbidden)
+		}
+	}
 }
 
-func TestCodexShellSetupUpdatesOnlyGatewayConfiguration(t *testing.T) {
+func TestCodexShellSetupAddsOrReplacesOpenAIBaseURL(t *testing.T) {
 	t.Parallel()
 
-	configDir := t.TempDir()
-	configPath := filepath.Join(configDir, "config.toml")
-	original := "approval_policy = \"on-request\"\nmodel_provider = \"old\"\n\n[model_providers.other]\nname = \"Other\"\n\n[model_providers.gateway]\nbase_url = \"https://old.example/v1\"\n"
-	if err := os.WriteFile(configPath, []byte(original), 0o600); err != nil {
-		t.Fatal(err)
+	const baseURL = "https://gateway.example/v1"
+	tests := []struct {
+		name     string
+		original *string
+		verify   func(*testing.T, string)
+	}{
+		{
+			name: "new file",
+			verify: func(t *testing.T, configured string) {
+				if configured != `openai_base_url = "`+baseURL+"\"\n" {
+					t.Fatalf("new configuration = %q", configured)
+				}
+			},
+		},
+		{
+			name:     "missing setting",
+			original: stringPointerValue("approval_policy = \"on-request\"\n\n[model_providers.gateway]\nbase_url = \"https://legacy.example/v1\"\n"),
+			verify: func(t *testing.T, configured string) {
+				if !strings.HasPrefix(configured, `openai_base_url = "`+baseURL+"\"\n") {
+					t.Fatalf("openai_base_url was not inserted first:\n%s", configured)
+				}
+				for _, legacy := range []string{
+					`approval_policy = "on-request"`, `[model_providers.gateway]`, `base_url = "https://legacy.example/v1"`,
+				} {
+					if !strings.Contains(configured, legacy) {
+						t.Fatalf("legacy configuration %q was removed:\n%s", legacy, configured)
+					}
+				}
+			},
+		},
+		{
+			name:     "existing top level setting",
+			original: stringPointerValue("approval_policy = \"on-request\"\nopenai_base_url = \"https://old.example/v1\" # old\n\n[features]\nresponses = true\n"),
+			verify: func(t *testing.T, configured string) {
+				if !strings.HasPrefix(configured, "approval_policy") {
+					t.Fatalf("existing setting was not replaced in place:\n%s", configured)
+				}
+				if strings.Contains(configured, "https://old.example/v1") || strings.Count(configured, "openai_base_url =") != 1 {
+					t.Fatalf("existing setting was not replaced exactly once:\n%s", configured)
+				}
+			},
+		},
+		{
+			name:     "comment and nested setting",
+			original: stringPointerValue("# openai_base_url = \"https://comment.example/v1\"\n[profile.local]\nopenai_base_url = \"https://nested.example/v1\"\n"),
+			verify: func(t *testing.T, configured string) {
+				if !strings.HasPrefix(configured, `openai_base_url = "`+baseURL+"\"\n") {
+					t.Fatalf("top-level setting was not inserted:\n%s", configured)
+				}
+				for _, preserved := range []string{"https://comment.example/v1", "https://nested.example/v1"} {
+					if !strings.Contains(configured, preserved) {
+						t.Fatalf("non-top-level setting %q was changed:\n%s", preserved, configured)
+					}
+				}
+			},
+		},
 	}
 
-	command := exec.Command("sh", "-s", "--", "https://gateway.example/v1")
-	command.Stdin = strings.NewReader(string(codexShellSetupScript))
-	command.Env = []string{
-		"CODEX_HOME=" + configDir,
-		"HOME=" + t.TempDir(),
-		"PATH=" + os.Getenv("PATH"),
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			configDir := t.TempDir()
+			configPath := filepath.Join(configDir, "config.toml")
+			if test.original != nil {
+				if err := os.WriteFile(configPath, []byte(*test.original), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			runCodexShellSetup(t, configDir, baseURL)
+			configured, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configuredValue := string(configured)
+			test.verify(t, configuredValue)
+
+			backup, err := os.ReadFile(configPath + ".bak")
+			if test.original == nil {
+				if !os.IsNotExist(err) {
+					t.Fatalf("new configuration unexpectedly has a backup: %v", err)
+				}
+			} else if err != nil || string(backup) != *test.original {
+				t.Fatalf("backup does not match original: err=%v backup=%q", err, backup)
+			}
+
+			runCodexShellSetup(t, configDir, baseURL)
+			configuredAgain, err := os.ReadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(configuredAgain) != configuredValue {
+				t.Fatalf("repeated setup changed configuration:\nfirst:\n%s\nsecond:\n%s", configuredValue, configuredAgain)
+			}
+			backup, err = os.ReadFile(configPath + ".bak")
+			if err != nil || string(backup) != configuredValue {
+				t.Fatalf("repeated setup backup does not match previous configuration: err=%v backup=%q", err, backup)
+			}
+		})
 	}
+}
+
+func runCodexShellSetup(t *testing.T, configDir, baseURL string) {
+	t.Helper()
+	command := exec.Command("sh", "-s", "--", baseURL)
+	command.Stdin = strings.NewReader(string(codexShellSetupScript))
+	command.Env = []string{"CODEX_HOME=" + configDir, "HOME=" + t.TempDir(), "PATH=" + os.Getenv("PATH")}
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("configure script failed: %v\n%s", err, output)
 	}
-
-	configured, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := string(configured)
-	for _, required := range []string{
-		`approval_policy = "on-request"`, `[model_providers.other]`, `name = "Other"`,
-		`model_provider = "gateway"`, `[model_providers.gateway]`, `base_url = "https://gateway.example/v1"`,
-	} {
-		if !strings.Contains(value, required) {
-			t.Fatalf("configured TOML is missing %q:\n%s", required, value)
-		}
-	}
-	if strings.Contains(value, "https://old.example/v1") || strings.Count(value, `[model_providers.gateway]`) != 1 {
-		t.Fatalf("old or duplicate Gateway configuration remains:\n%s", value)
-	}
-	if _, err := os.Stat(configPath + ".bak"); err != nil {
-		t.Fatalf("configuration backup was not created: %v", err)
-	}
 }
+
+func stringPointerValue(value string) *string { return &value }
 
 func TestCodexSetupDownloadsUseConfiguredPublicURL(t *testing.T) {
 	t.Parallel()
@@ -177,6 +257,9 @@ func TestCodexSetupDownloadsUseConfiguredPublicURL(t *testing.T) {
 	if body := shellRecorder.Body.String(); !strings.Contains(body, "https://codex.example.test/v1") || strings.Contains(body, codexGatewayBaseURLPlaceholder) {
 		t.Fatalf("shell setup contains an unexpected base URL:\n%s", body)
 	}
+	if body := shellRecorder.Body.String(); !strings.Contains(body, `openai_base_url`) || strings.Contains(body, `[model_providers.gateway]`) {
+		t.Fatal("shell setup does not use the simplified openai_base_url configuration")
+	}
 
 	windowsRecorder := httptest.NewRecorder()
 	server.codexWindowsSetup(windowsRecorder, httptest.NewRequest("GET", "/setup/configure-codex.bat", nil))
@@ -189,6 +272,9 @@ func TestCodexSetupDownloadsUseConfiguredPublicURL(t *testing.T) {
 	}
 	if !strings.Contains(windowsSetup, `:POWERSHELL`) || !strings.Contains(windowsSetup, `config.toml.bak`) {
 		t.Fatal("Windows setup is missing its embedded PowerShell configurator")
+	}
+	if !strings.Contains(windowsSetup, `openai_base_url`) || strings.Contains(windowsSetup, `[model_providers.gateway]`) {
+		t.Fatal("Windows setup does not use the simplified openai_base_url configuration")
 	}
 }
 
