@@ -437,6 +437,13 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 出现 `upstream_reauthentication_required` 时停止调用并重新执行设备码登录。
 不要启用 Platform API 自动回退；这会改变计费边界。
 
+新 Codex 会话可能先记录一次 `GET /v1/responses` 的
+`426 responses_websocket_unsupported`，紧接着以 `POST /v1/responses` 的
+HTTPS/SSE 继续。这是预期的传输协商，不是 Cloudflare 缓冲、上游中断或需要告警
+的 Gateway 故障。合法探测只应有一次 426，且不应出现对应的 usage、配额预留、
+计费或 sidecar 请求；若客户端仍显示 `Reconnecting... n/5`，先核对新 revision
+是否已部署、GET 是否到达 Gateway，以及返回体错误码是否被中间代理改写。
+
 ## 10. 升级和回滚
 
 升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。升级到
@@ -449,7 +456,8 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
 2. 在 CI 运行 Responses 普通/SSE、compact、401、429、跨 chunk usage 和刷新
-   token 契约测试。
+   token 契约测试，并确认认证后的 Responses WebSocket 探测返回一次 426 后立即
+   降级到 HTTPS/SSE。
 3. 持有 `.device-login.lock` 的 `flock` 并停止生产 sidecar，确保没有两个实例
    共享 token。
 4. 用测试 OAuth 状态完成契约验证，再进行一次人工 Pro 冒烟。

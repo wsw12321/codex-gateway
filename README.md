@@ -76,15 +76,19 @@ sidecar，不进入数据库或备份。
 
 ### 代理接口
 
-首版只开放 Codex 所需的三个路径：
+首版只开放 Codex 所需的数据接口和 WebSocket 协商入口：
 
+- `GET /v1/responses`（仅协商；认证后固定返回 `426`）
 - `POST /v1/responses`
 - `POST /v1/responses/compact`
 - `GET /v1/models`
 
 Responses 支持普通 JSON 和 SSE。Gateway 会丢弃客户端的 `Authorization`、
 Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调用 sidecar。
-不开放 WebSocket、Chat Completions、CORS 或任意 URL 反向代理。
+不开放 WebSocket、Chat Completions、CORS 或任意 URL 反向代理。Codex 首次尝试
+Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
+`426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
+不进入上游转发、配额、计费、并发租约或 usage 统计。
 
 每个响应都带 `X-Gateway-Request-ID`。错误采用 OpenAI 风格 JSON，并返回稳定的
 `type`、`code`、安全消息和 `request_id`。常见映射包括：
@@ -95,6 +99,7 @@ Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调�
 | `401` | API Key 无效或已过期 |
 | `403` | 用户/Key 已禁用，或模型不在白名单 |
 | `413 request_too_large` | 请求超过 64 MiB |
+| `426 responses_websocket_unsupported` | WebSocket 不受支持，客户端应改用 HTTPS/SSE |
 | `429` | RPM、并发、每日请求或 USD 额度不足 |
 | `503 upstream_reauthentication_required` | Pro OAuth 需要重新登录 |
 | `502/504` | 清洗后的上游网络、协议或超时错误 |

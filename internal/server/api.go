@@ -18,6 +18,17 @@ func (s *Server) proxyModels(w http.ResponseWriter, r *http.Request) {
 	s.proxyCodex(w, r, "/v1/models", "models", "catalog")
 }
 
+func (s *Server) responsesWebSocketUnsupported(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteError(
+		w,
+		r,
+		http.StatusUpgradeRequired,
+		"invalid_request_error",
+		"responses_websocket_unsupported",
+		"此网关不支持 Responses WebSocket，请改用 HTTPS/SSE",
+	)
+}
+
 func (s *Server) proxyResponses(w http.ResponseWriter, r *http.Request) {
 	s.proxyCodex(w, r, "/v1/responses", "responses", "")
 }

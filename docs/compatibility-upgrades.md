@@ -6,6 +6,9 @@
 
 升级候选必须先在隔离环境覆盖以下契约：
 
+- 认证后的 `GET /v1/responses` 返回一次
+  `426 responses_websocket_unsupported` 后客户端立即改用 HTTPS/SSE，探测不进入
+  usage、配额、计费、并发租约或 sidecar；
 - 非流式和 SSE `POST /v1/responses`；
 - `POST /v1/responses/compact`；
 - 模型列表；
@@ -22,4 +25,3 @@
 失败回滚时先停止候选实例，再启动旧实例。任何时刻都不允许两个 sidecar
 共享同一个 refresh token。若 token 已因候选版本失效，保持服务关闭并重新
 执行 `scripts/codex-device-login.sh`。
-

@@ -26,11 +26,17 @@ profile、命令历史或项目 `.env`。设备丢失时在另一台已认证设
 `[model_providers.gateway]`。如果本机仍显式启用了旧 provider，请手工处理该旧
 配置，以免它继续优先于 `openai_base_url` 生效。
 
-首版只支持：
+支持的数据请求为：
 
 - `POST /v1/responses`
 - `POST /v1/responses/compact`
 - `GET /v1/models`
 
-不支持 WebSocket、Chat Completions 或任意 URL 代理。Gateway 仅转发模型请求；
-Codex 的文件读取、命令执行和代码修改仍发生在本地设备。
+`openai_base_url` 覆盖的是 Codex 内置 `openai` provider 的地址。Codex 可能在新
+会话开始时先用受同一 API Key 保护的 `GET /v1/responses` 探测 Responses
+WebSocket；Gateway 会返回一次 `426 responses_websocket_unsupported`，客户端随即
+改用正常的 `POST /v1/responses` HTTPS/SSE。这是预期的传输协商，不消耗配额、
+余额或并发名额，也不会产生 usage 记录或请求 sidecar。
+
+Gateway 不实现真正的 WebSocket、Chat Completions 或任意 URL 代理。Codex 的
+文件读取、命令执行和代码修改仍发生在本地设备。

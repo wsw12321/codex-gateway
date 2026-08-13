@@ -113,6 +113,7 @@ func (s *Server) routes() {
 	s.mux.Handle("DELETE /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingSubscription)))))
 
 	s.mux.Handle("GET /v1/models", s.requireAPIKey(http.HandlerFunc(s.proxyModels)))
+	s.mux.Handle("GET /v1/responses", s.requireAPIKey(http.HandlerFunc(s.responsesWebSocketUnsupported)))
 	s.mux.Handle("POST /v1/responses", s.requireAPIKey(http.HandlerFunc(s.proxyResponses)))
 	s.mux.Handle("POST /v1/responses/compact", s.requireAPIKey(http.HandlerFunc(s.proxyCompact)))
 }
