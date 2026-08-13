@@ -165,6 +165,14 @@ label {
   font-weight: 600;
 }
 
+.auth-method-form {
+  display: grid;
+  gap: .8rem;
+  margin-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1.25rem;
+}
+
 :focus-visible {
   outline: 3px solid var(--info);
   outline-offset: 3px;

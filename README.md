@@ -1,5 +1,9 @@
 # Personal Codex Gateway
 
+浏览器身份支持邀请制 Passkey 或“用户名 + 密码”注册与登录。每个用户可持有多枚 Passkey 和一个 Argon2id 密码凭据，并可在近期身份验证后添加另一种方式。密码使用 64 MiB、3 轮、并行度 2 的 Argon2id；在线尝试受 IP、路径和用户名摘要限流保护。
+
+账号恢复可选择新增 Passkey 或设置新密码。恢复会撤销旧会话、轮换恢复码，但保留未被选择替换的现有登录方式；API Key 不会自动撤销。
+
 面向单台公网 VPS、单个订阅者自有设备的 Codex Responses 网关。它在本地
 Codex CLI 与内部 Codex 兼容层之间增加设备级 API Key、项目归属、持久化限额、
 纯元数据统计、Passkey 身份管理和安全审计。

@@ -18,19 +18,29 @@
         <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow">CODEX GATEWAY</p>
         <h1>安全进入你的工作边界</h1>
-        <p>使用本站 Passkey 登录，无需用户名或密码。</p>
+        <p>使用 Passkey，或使用用户名与密码登录。</p>
         <p id="login-error" class="form-message hidden" role="alert"></p>
         <div class="auth-actions">
           <button id="login" type="button">使用 Passkey 登录</button>
           <a href="/recover">使用恢复码</a>
         </div>
+        <form id="password-login-form" class="auth-method-form">
+          <label>用户名
+            <input name="username" required autocomplete="username">
+          </label>
+          <label>密码
+            <input name="password" type="password" required autocomplete="current-password">
+          </label>
+          <p class="form-message hidden" role="alert"></p>
+          <button type="submit" class="secondary">使用密码登录</button>
+        </form>
       </section>
 
       <section id="join-view" class="panel auth-card hidden">
         <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow" id="join-eyebrow">接受邀请</p>
         <h1 id="join-title">创建本地身份</h1>
-        <p id="join-help">设置资料后，浏览器会引导你创建 Passkey。</p>
+        <p id="join-help">设置资料后，选择 Passkey 或密码作为首个登录方式。</p>
         <form id="join-form">
           <label id="join-username">用户名
             <input name="username" required minlength="3" maxlength="32" autocomplete="username" placeholder="例如：lin">
@@ -38,8 +48,19 @@
           <label id="join-display">显示名称
             <input name="display_name" required maxlength="80" autocomplete="name" placeholder="例如：林舟">
           </label>
+          <label>登录方式
+            <select name="login_method"><option value="passkey">Passkey</option><option value="password">用户名 + 密码</option></select>
+          </label>
+          <div class="password-fields hidden">
+            <label>新密码
+              <input name="password" type="password" minlength="8" maxlength="512" autocomplete="new-password">
+            </label>
+            <label>再次输入新密码
+              <input name="password_confirmation" type="password" minlength="8" maxlength="512" autocomplete="new-password">
+            </label>
+          </div>
           <p class="form-message hidden" role="alert"></p>
-          <button type="submit">创建 Passkey</button>
+          <button type="submit">完成注册</button>
         </form>
       </section>
 
@@ -47,7 +68,7 @@
         <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow">账号恢复</p>
         <h1>使用一次性恢复码</h1>
-        <p>成功后，旧会话和整批旧恢复码都会失效。</p>
+        <p>成功后，旧会话和整批旧恢复码都会失效；未选择的既有登录方式会保留。</p>
         <form id="recover-form">
           <label>用户名
             <input name="username" required autocomplete="username">
@@ -55,8 +76,19 @@
           <label>恢复码
             <input name="recovery_code" required autocomplete="one-time-code" placeholder="XXXX-XXXX-XXXX-XXXX-XXXX-XXXX">
           </label>
+          <label>新的登录凭据
+            <select name="login_method"><option value="passkey">新增 Passkey</option><option value="password">设置新密码</option></select>
+          </label>
+          <div class="password-fields hidden">
+            <label>新密码
+              <input name="password" type="password" minlength="8" maxlength="512" autocomplete="new-password">
+            </label>
+            <label>再次输入新密码
+              <input name="password_confirmation" type="password" minlength="8" maxlength="512" autocomplete="new-password">
+            </label>
+          </div>
           <p class="form-message hidden" role="alert"></p>
-          <button type="submit">验证并创建新 Passkey</button>
+          <button type="submit">恢复账号</button>
         </form>
         <a class="back-link" href="/">返回登录</a>
       </section>
@@ -360,6 +392,10 @@
                 <div class="panel-heading"><h3>Passkeys</h3><button id="add-passkey" type="button">新增 Passkey</button></div>
                 <div id="passkeys" class="list loading" aria-live="polite" aria-busy="true">正在加载 Passkeys…</div>
               </article>
+              <article class="panel">
+                <div class="panel-heading"><h3>密码</h3><button id="set-password" type="button">设置或更改密码</button></div>
+                <div id="password-status" class="summary-list">正在加载密码状态…</div>
+              </article>
               <article id="owner-tools" class="panel owner-only hidden">
                 <div class="panel-heading"><div><p class="eyebrow">OWNER ONLY</p><h3>邀请与恢复</h3></div></div>
                 <div class="tool-block">
@@ -538,6 +574,34 @@
       </label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">继续</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="password-dialog" aria-labelledby="password-dialog-title">
+    <form id="password-form">
+      <div class="dialog-heading"><p class="eyebrow">IDENTITY</p><h2 id="password-dialog-title">设置或更改密码</h2><p>保存后，除当前会话外的其他会话会立即失效。</p></div>
+      <label>新密码
+        <input name="password" type="password" required minlength="8" maxlength="512" autocomplete="new-password">
+      </label>
+      <label>再次输入新密码
+        <input name="password_confirmation" type="password" required minlength="8" maxlength="512" autocomplete="new-password">
+      </label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存密码</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="reauth-dialog" aria-labelledby="reauth-dialog-title">
+    <form id="reauth-form">
+      <div class="dialog-heading"><p class="eyebrow">VERIFY</p><h2 id="reauth-dialog-title">再次验证身份</h2><p>选择一种现有登录方式以解锁敏感操作。</p></div>
+      <label>验证方式
+        <select name="method"><option value="passkey">Passkey</option><option value="password">密码</option></select>
+      </label>
+      <div class="reauth-password hidden"><label>密码
+        <input name="password" type="password" autocomplete="current-password">
+      </label></div>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">验证</button></div>
     </form>
   </dialog>
 

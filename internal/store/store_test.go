@@ -19,8 +19,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 2 {
-		t.Fatalf("migration count = %d, want 2", len(migrations))
+	if len(migrations) != 3 {
+		t.Fatalf("migration count = %d, want 3", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -37,6 +37,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		"billing_subscriptions", "billing_subscription_periods",
 		"billing_ledger_entries", "billing_cash_credit_lots",
 		"billing_reservations", "billing_charge_allocations",
+		"password_credentials",
 	} {
 		needle := "CREATE TABLE " + table
 		if !strings.Contains(sql, needle) {
@@ -109,7 +110,7 @@ func TestSafeMetadataRejectsSecretBearingKeys(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("safe metadata rejected: %v", err)
 	}
-	for _, key := range []string{"authorization", "refresh_token", "request_body", "source_code"} {
+	for _, key := range []string{"authorization", "refresh_token", "request_body", "source_code", "password", "encoded_hash", "phc"} {
 		_, err := marshalSafeMetadata(map[string]any{key: "must-not-be-stored"})
 		if !errors.Is(err, ErrInvalid) {
 			t.Errorf("metadata key %q error = %v, want ErrInvalid", key, err)
@@ -142,6 +143,16 @@ func TestQuotaExceededError(t *testing.T) {
 	}
 	if err := enforceQuota("key", "daily_requests", 0, 1_000_000, 1, time.Hour); err != nil {
 		t.Fatalf("zero (unlimited) quota failed: %v", err)
+	}
+}
+
+func TestComparePasswordHashCAS(t *testing.T) {
+	t.Parallel()
+	if err := ComparePasswordHash("same", "same"); err != nil {
+		t.Fatalf("matching hash rejected: %v", err)
+	}
+	if err := ComparePasswordHash("changed", "old"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed hash error = %v, want ErrConflict", err)
 	}
 }
 
@@ -260,7 +271,15 @@ func TestBillingMigrationEnforcesAuditAndAdmissionBindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	billingSQL := migrations[len(migrations)-1].SQL
+	var billingSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0002_billing.sql" {
+			billingSQL = migration.SQL
+		}
+	}
+	if billingSQL == "" {
+		t.Fatal("0002_billing.sql is missing")
+	}
 	for _, required := range []string{
 		"NUMERIC(30,12)",
 		"ends_at = starts_at + INTERVAL '24 hours'",

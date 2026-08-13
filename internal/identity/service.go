@@ -38,6 +38,7 @@ var (
 	ErrInvalidNickname    = errors.New("invalid Passkey nickname")
 	ErrRecoveryRejected   = errors.New("recovery credentials rejected")
 	ErrTooManyCeremonies  = errors.New("too many pending WebAuthn ceremonies")
+	ErrInvalidCredentials = errors.New("invalid credentials")
 )
 
 type Config struct {
@@ -126,6 +127,7 @@ type pendingCeremony struct {
 	invitationHash []byte
 	username       string
 	displayName    string
+	recoveryHash   []byte
 	expiresAt      time.Time
 }
 
@@ -190,32 +192,31 @@ func (s *Service) FinishInvitationRegistration(ctx context.Context, flowID strin
 	}
 	now := s.now().UTC()
 	if pending.kind == pendingRecoveryInvitation {
-		user := pending.user.record
-		if _, err := s.store.ConsumeInvitation(ctx, pending.invitationHash, user.ID, now); err != nil {
-			return RegistrationResult{}, err
-		}
-		return s.finishRecoveredAccount(ctx, user, credential, sourceIP, userAgent)
+		return s.completeRecovery(ctx, pending.user.record.ID, nil, pending.invitationHash, credential, "恢复 Passkey", sourceIP, userAgent)
 	}
-
-	user, err := s.store.CreateUserFromInvitation(ctx, pending.invitationHash, store.CreateUserParams{
-		Username: pending.username, DisplayName: pending.displayName,
-		WebAuthnUserID: append([]byte(nil), pending.user.record.WebAuthnUserID...),
+	recoveryPlain, recoveryHashes, err := s.generateRecoveryCodes()
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	token, sessionParams, err := s.newSessionParams("", sourceIP, userAgent, now)
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	credentialParams, err := s.webAuthnCredentialParams("", credential, "首个 Passkey")
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	user, _, err := s.store.CompleteInvitationRegistration(ctx, store.CompleteInvitationParams{
+		InvitationHash: pending.invitationHash,
+		User: store.CreateUserParams{Username: pending.username, DisplayName: pending.displayName,
+			WebAuthnUserID: append([]byte(nil), pending.user.record.WebAuthnUserID...)},
+		Credential:     store.IdentityCredential{WebAuthnCredential: &credentialParams},
+		RecoveryHashes: recoveryHashes, Session: sessionParams,
 	})
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	if _, err := s.addCredential(ctx, user.ID, credential, "首个 Passkey"); err != nil {
-		return RegistrationResult{}, fmt.Errorf("save initial Passkey: %w", err)
-	}
-	codes, err := s.replaceRecoveryCodes(ctx, user.ID)
-	if err != nil {
-		return RegistrationResult{}, err
-	}
-	token, _, err := s.createSession(ctx, user.ID, sourceIP, userAgent, now)
-	if err != nil {
-		return RegistrationResult{}, err
-	}
-	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: codes}, nil
+	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: recoveryPlain}, nil
 }
 
 func (s *Service) BeginLogin() (Ceremony, error) {
@@ -306,8 +307,8 @@ func (s *Service) FinishAddCredential(ctx context.Context, flowID string, creden
 	return s.addCredential(ctx, pending.user.record.ID, credential, nickname)
 }
 
-// BeginRecovery consumes a recovery code before issuing a new registration
-// challenge. Abandoning the ceremony therefore cannot leave a reusable code.
+// BeginRecovery validates a recovery code without consuming it. Completion
+// locks and consumes it atomically with all replacement identity state.
 func (s *Service) BeginRecovery(ctx context.Context, username, code string) (Ceremony, error) {
 	user, err := s.store.GetUserByUsername(ctx, strings.TrimSpace(username))
 	if err != nil || user.Status != store.StatusActive {
@@ -321,11 +322,12 @@ func (s *Service) BeginRecovery(ctx context.Context, username, code string) (Cer
 	if err != nil {
 		return Ceremony{}, err
 	}
-	consumed, err := s.store.ConsumeRecoveryCode(ctx, user.ID, digest[:], s.now().UTC())
-	if err != nil || !consumed {
+	// A read-only existence check is deliberately generic; completion is the
+	// authoritative compare-and-set under a row lock.
+	if _, err := s.store.GetUnusedRecoveryCode(ctx, user.ID, digest[:]); err != nil {
 		return Ceremony{}, ErrRecoveryRejected
 	}
-	return s.beginExistingRegistration(ctx, user.ID, pendingRecovery, nil)
+	return s.beginExistingRecoveryRegistration(ctx, user.ID, digest[:])
 }
 
 func (s *Service) FinishRecovery(ctx context.Context, flowID string, credentialJSON []byte, sourceIP net.IP, userAgent string) (RegistrationResult, error) {
@@ -337,29 +339,45 @@ func (s *Service) FinishRecovery(ctx context.Context, flowID string, credentialJ
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	return s.finishRecoveredAccount(ctx, pending.user.record, credential, sourceIP, userAgent)
+	return s.completeRecovery(ctx, pending.user.record.ID, pending.recoveryHash, nil, credential, "恢复 Passkey", sourceIP, userAgent)
 }
 
-func (s *Service) finishRecoveredAccount(ctx context.Context, user store.User, credential *webauthn.Credential, sourceIP net.IP, userAgent string) (RegistrationResult, error) {
-	if _, err := s.addCredential(ctx, user.ID, credential, "恢复 Passkey"); err != nil {
-		return RegistrationResult{}, err
-	}
+func (s *Service) completeRecovery(ctx context.Context, userID string, recoveryHash, invitationHash []byte, credential *webauthn.Credential, nickname string, sourceIP net.IP, userAgent string) (RegistrationResult, error) {
 	now := s.now().UTC()
-	if _, err := s.store.RevokeUserSessions(ctx, user.ID, "account_recovery", now); err != nil {
-		return RegistrationResult{}, err
-	}
-	codes, err := s.replaceRecoveryCodes(ctx, user.ID)
+	plain, hashes, err := s.generateRecoveryCodes()
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	token, session, err := s.createSession(ctx, user.ID, sourceIP, userAgent, now)
+	token, sessionParams, err := s.newSessionParams(userID, sourceIP, userAgent, now)
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	if err := s.store.MarkSessionVerified(ctx, session.ID, now); err != nil {
+	credentialParams, err := s.webAuthnCredentialParams(userID, credential, nickname)
+	if err != nil {
 		return RegistrationResult{}, err
 	}
-	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: codes}, nil
+	user, _, err := s.store.CompleteAccountRecovery(ctx, store.CompleteRecoveryParams{
+		UserID: userID, RecoveryHash: recoveryHash, InvitationHash: invitationHash,
+		Credential:     store.IdentityCredential{WebAuthnCredential: &credentialParams},
+		RecoveryHashes: hashes, Session: sessionParams, At: now,
+	})
+	if err != nil {
+		return RegistrationResult{}, err
+	}
+	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: plain}, nil
+}
+
+func (s *Service) beginExistingRecoveryRegistration(ctx context.Context, userID string, recoveryHash []byte) (Ceremony, error) {
+	ceremony, err := s.beginExistingRegistration(ctx, userID, pendingRecovery, nil)
+	if err != nil {
+		return Ceremony{}, err
+	}
+	s.challenges.mu.Lock()
+	pending := s.challenges.entries[ceremony.FlowID]
+	pending.recoveryHash = append([]byte(nil), recoveryHash...)
+	s.challenges.entries[ceremony.FlowID] = pending
+	s.challenges.mu.Unlock()
+	return ceremony, nil
 }
 
 func (s *Service) beginExistingRegistration(ctx context.Context, userID string, kind pendingKind, invitationHash []byte) (Ceremony, error) {
@@ -496,25 +514,33 @@ func fromStoredCredential(value store.WebAuthnCredential) (webauthn.Credential, 
 }
 
 func (s *Service) addCredential(ctx context.Context, userID string, credential *webauthn.Credential, nickname string) (store.WebAuthnCredential, error) {
-	nickname, err := validateCredentialNickname(nickname)
+	params, err := s.webAuthnCredentialParams(userID, credential, nickname)
 	if err != nil {
 		return store.WebAuthnCredential{}, err
 	}
+	return s.store.AddWebAuthnCredential(ctx, params)
+}
+
+func (s *Service) webAuthnCredentialParams(userID string, credential *webauthn.Credential, nickname string) (store.AddWebAuthnCredentialParams, error) {
+	nickname, err := validateCredentialNickname(nickname)
+	if err != nil {
+		return store.AddWebAuthnCredentialParams{}, err
+	}
 	credentialJSON, err := json.Marshal(credential)
 	if err != nil {
-		return store.WebAuthnCredential{}, fmt.Errorf("encode WebAuthn credential: %w", err)
+		return store.AddWebAuthnCredentialParams{}, fmt.Errorf("encode WebAuthn credential: %w", err)
 	}
 	transports := make([]string, 0, len(credential.Transport))
 	for _, transport := range credential.Transport {
 		transports = append(transports, string(transport))
 	}
-	return s.store.AddWebAuthnCredential(ctx, store.AddWebAuthnCredentialParams{
+	return store.AddWebAuthnCredentialParams{
 		UserID: userID, CredentialID: credential.ID, CredentialJSON: credentialJSON,
 		SignCount: uint64(credential.Authenticator.SignCount), Transports: transports,
 		BackupEligible: credential.Flags.BackupEligible, BackupState: credential.Flags.BackupState,
 		Discoverable: true, AAGUID: formatUUID(credential.Authenticator.AAGUID),
 		Nickname: nickname,
-	})
+	}, nil
 }
 
 func (s *Service) persistCredentialUse(ctx context.Context, credential *webauthn.Credential) error {
@@ -532,20 +558,9 @@ func (s *Service) persistCredentialUse(ctx context.Context, credential *webauthn
 }
 
 func (s *Service) replaceRecoveryCodes(ctx context.Context, userID string) ([]string, error) {
-	generated, err := security.GenerateRecoveryCodes()
+	plaintext, hashes, err := s.generateRecoveryCodes()
 	if err != nil {
 		return nil, err
-	}
-	hashes := make([][]byte, 0, len(generated))
-	plaintext := make([]string, 0, len(generated))
-	for _, code := range generated {
-		digest, err := security.PepperTokenDigest(s.config.TokenPepper, code.Digest)
-		if err != nil {
-			return nil, err
-		}
-		hashCopy := append([]byte(nil), digest[:]...)
-		hashes = append(hashes, hashCopy)
-		plaintext = append(plaintext, code.Code)
 	}
 	if _, err := s.store.ReplaceRecoveryCodes(ctx, userID, hashes); err != nil {
 		return nil, err
@@ -553,33 +568,58 @@ func (s *Service) replaceRecoveryCodes(ctx context.Context, userID string) ([]st
 	return plaintext, nil
 }
 
+func (s *Service) generateRecoveryCodes() ([]string, [][]byte, error) {
+	generated, err := security.GenerateRecoveryCodes()
+	if err != nil {
+		return nil, nil, err
+	}
+	hashes := make([][]byte, 0, len(generated))
+	plaintext := make([]string, 0, len(generated))
+	for _, code := range generated {
+		digest, err := security.PepperTokenDigest(s.config.TokenPepper, code.Digest)
+		if err != nil {
+			return nil, nil, err
+		}
+		hashCopy := append([]byte(nil), digest[:]...)
+		hashes = append(hashes, hashCopy)
+		plaintext = append(plaintext, code.Code)
+	}
+	return plaintext, hashes, nil
+}
+
 func (s *Service) createSession(ctx context.Context, userID string, sourceIP net.IP, userAgent string, now time.Time) (string, store.Session, error) {
-	generated, err := security.GenerateOpaqueToken(security.SessionToken)
+	token, params, err := s.newSessionParams(userID, sourceIP, userAgent, now)
 	if err != nil {
 		return "", store.Session{}, err
+	}
+	session, err := s.store.CreateSession(ctx, params)
+	return token, session, err
+}
+
+func (s *Service) newSessionParams(userID string, sourceIP net.IP, userAgent string, now time.Time) (string, store.CreateSessionParams, error) {
+	generated, err := security.GenerateOpaqueToken(security.SessionToken)
+	if err != nil {
+		return "", store.CreateSessionParams{}, err
 	}
 	digest, err := security.PepperTokenDigest(s.config.TokenPepper, generated.Digest)
 	if err != nil {
-		return "", store.Session{}, err
+		return "", store.CreateSessionParams{}, err
 	}
 	csrf := make([]byte, 32)
 	if _, err := rand.Read(csrf); err != nil {
-		return "", store.Session{}, err
+		return "", store.CreateSessionParams{}, err
 	}
 	ua := sha256.Sum256([]byte(userAgent))
 	ip := ""
 	if sourceIP != nil {
 		ip = sourceIP.String()
 	}
-	session, err := s.store.CreateSession(ctx, store.CreateSessionParams{
+	params := store.CreateSessionParams{
 		UserID: userID, TokenHash: digest[:], CSRFSecret: csrf,
 		SourceIP: ip, UserAgentHash: ua[:], CreatedAt: now,
 		IdleExpiresAt: now.Add(s.config.SessionIdle), AbsoluteExpiresAt: now.Add(s.config.SessionMax),
-	})
-	if err != nil {
-		return "", store.Session{}, err
 	}
-	return generated.Token, session, nil
+	return generated.Token, params, nil
 }
 
 func validateNames(username, displayName string) (string, string, error) {

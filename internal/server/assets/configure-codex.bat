@@ -14,6 +14,7 @@ pause
 exit /b 1
 
 :POWERSHELL
+# Existing configuration is backed up as config.toml.bak before changes.
 $ErrorActionPreference = 'Stop'
 $GatewayBaseURL = '__CODEX_GATEWAY_BASE_URL__'.TrimEnd('/')
 if ($GatewayBaseURL -notmatch '^https?://') {

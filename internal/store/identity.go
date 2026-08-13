@@ -94,6 +94,30 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, e
 	return user, mapDBError("get user by username", err)
 }
 
+const passwordCredentialColumns = `user_id, encoded_hash, created_at, updated_at, last_used_at`
+
+func scanPasswordCredential(row rowScanner) (PasswordCredential, error) {
+	var credential PasswordCredential
+	err := row.Scan(&credential.UserID, &credential.EncodedHash, &credential.CreatedAt,
+		&credential.UpdatedAt, &credential.LastUsedAt)
+	return credential, err
+}
+
+func (s *Store) GetPasswordCredential(ctx context.Context, userID string) (PasswordCredential, error) {
+	credential, err := scanPasswordCredential(s.db.QueryRowContext(ctx,
+		`SELECT `+passwordCredentialColumns+` FROM password_credentials WHERE user_id = $1`, userID))
+	return credential, mapDBError("get password credential", err)
+}
+
+func (s *Store) LoginMethods(ctx context.Context, userID string) (LoginMethods, error) {
+	var methods LoginMethods
+	err := s.db.QueryRowContext(ctx, `
+		SELECT EXISTS (SELECT 1 FROM webauthn_credentials WHERE user_id = $1),
+		       EXISTS (SELECT 1 FROM password_credentials WHERE user_id = $1)`, userID,
+	).Scan(&methods.Passkey, &methods.Password)
+	return methods, mapDBError("get login methods", err)
+}
+
 func (s *Store) GetUserByWebAuthnID(ctx context.Context, webauthnUserID []byte) (User, error) {
 	user, err := scanUser(s.db.QueryRowContext(ctx,
 		`SELECT `+userColumns+` FROM users WHERE webauthn_user_id = $1`, webauthnUserID,
@@ -456,6 +480,12 @@ func (s *Store) ConsumeRecoveryCode(ctx context.Context, userID string, codeHash
 		return false, fmt.Errorf("consume recovery code rows affected: %w", err)
 	}
 	return n == 1, nil
+}
+
+func (s *Store) GetUnusedRecoveryCode(ctx context.Context, userID string, codeHash []byte) (string, error) {
+	var id string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM recovery_codes WHERE user_id=$1 AND code_hash=$2 AND used_at IS NULL`, userID, codeHash).Scan(&id)
+	return id, mapDBError("get recovery code", err)
 }
 
 type CreateSessionParams struct {

@@ -23,6 +23,7 @@ const (
 	sessionContextKey requestContextKey = iota
 	userContextKey
 	apiKeyContextKey
+	passwordLoginContextKey
 )
 
 type statusRecorder struct {
@@ -84,7 +85,7 @@ func (s *Server) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {
-			httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "session_required", "请先使用 Passkey 登录")
+			httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "session_required", "请先登录")
 			return
 		}
 		rawDigest, err := security.DigestOpaqueToken(security.SessionToken, cookie.Value)
@@ -124,7 +125,7 @@ func (s *Server) requireRecentVerification(next http.Handler) http.Handler {
 		session := sessionFrom(r.Context())
 		now := time.Now().UTC()
 		if session.RecentlyVerifiedAt == nil || now.Sub(*session.RecentlyVerifiedAt) > s.config.ReauthMaxAge {
-			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "recent_passkey_verification_required", "此操作需要在 5 分钟内再次验证 Passkey")
+			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "recent_identity_verification_required", "此操作需要在 5 分钟内再次验证身份")
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -63,6 +63,21 @@ type WebAuthnCredential struct {
 	LastUsedAt     *time.Time
 }
 
+// PasswordCredential contains a password verifier and must never be serialized
+// into an HTTP response, audit event, or log record.
+type PasswordCredential struct {
+	UserID      string
+	EncodedHash string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	LastUsedAt  *time.Time
+}
+
+type LoginMethods struct {
+	Passkey  bool `json:"passkey"`
+	Password bool `json:"password"`
+}
+
 type Session struct {
 	ID                 string
 	UserID             string
@@ -297,7 +312,7 @@ const maxMetadataBytes = 32 << 10
 var forbiddenMetadataKeys = []string{
 	"authorization", "cookie", "prompt", "request_body", "response_body",
 	"api_key", "access_token", "refresh_token", "oauth_token", "secret",
-	"source_code", "response_text",
+	"source_code", "response_text", "password", "encoded_hash", "phc",
 }
 
 func marshalSafeMetadata(value map[string]any) ([]byte, error) {

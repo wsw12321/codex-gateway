@@ -37,6 +37,7 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 			CredentialJSON: []byte("sensitive-credential-json"), SignCount: 42, Transports: []string{"internal"},
 			Nickname: "Phone", BackupEligible: true, BackupState: true, CreatedAt: now, LastUsedAt: &lastUsed,
 		}},
+		store.LoginMethods{Passkey: true, Password: true},
 		true,
 		&now,
 	)
@@ -60,8 +61,9 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJSONKeys(t, document,
-		"api_keys", "devices", "passkeys", "projects", "recent_verification_expires_at", "recently_verified", "user",
+		"api_keys", "devices", "login_methods", "passkeys", "projects", "recent_verification_expires_at", "recently_verified", "user",
 	)
+	assertJSONKeys(t, document["login_methods"].(map[string]any), "passkey", "password")
 	assertJSONKeys(t, document["user"].(map[string]any), "display_name", "id", "role", "username")
 	assertJSONKeys(t, document["devices"].([]any)[0].(map[string]any), "created_at", "id", "last_seen_at", "name", "status")
 	assertJSONKeys(t, document["projects"].([]any)[0].(map[string]any), "created_at", "id", "name", "slug", "status")
@@ -77,7 +79,7 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 }
 
 func TestAdminStateDTOUsesArraysAndNullAssociations(t *testing.T) {
-	response := newAdminStateResponse(store.User{}, nil, nil, nil, nil, false, nil)
+	response := newAdminStateResponse(store.User{}, nil, nil, nil, nil, store.LoginMethods{}, false, nil)
 	raw, err := json.Marshal(response)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +92,7 @@ func TestAdminStateDTOUsesArraysAndNullAssociations(t *testing.T) {
 
 	response = newAdminStateResponse(
 		store.User{}, nil, nil,
-		[]store.APIKey{{ModelAllowlist: []string{}}}, nil, false, nil,
+		[]store.APIKey{{ModelAllowlist: []string{}}}, nil, store.LoginMethods{}, false, nil,
 	)
 	raw, err = json.Marshal(response)
 	if err != nil {

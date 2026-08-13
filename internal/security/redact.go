@@ -31,8 +31,9 @@ var (
 	apiKeyPattern              = regexp.MustCompile(`\bcgk_v1_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]+`)
 	opaquePattern              = regexp.MustCompile(`\bcg[isr]_v1_[A-Za-z0-9_-]+`)
 	recoveryCodePattern        = regexp.MustCompile(`\b[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){5}\b`)
+	passwordPHCPattern         = regexp.MustCompile(`\$argon2id\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/=_-]+\$[A-Za-z0-9+/=_-]+`)
 	authSchemePattern          = regexp.MustCompile(`(?i)\b(?:Bearer|Basic)\s+[^\s,;]+`)
-	sensitiveParamPattern      = regexp.MustCompile(`(?i)(\b(?:access_token|refresh_token|id_token|api[_-]?key|token|session|invitation|recovery|code)=)[^&#\s]+`)
+	sensitiveParamPattern      = regexp.MustCompile(`(?i)(\b(?:access_token|refresh_token|id_token|api[_-]?key|token|session|invitation|recovery|code|password)=)[^&#\s]+`)
 	sensitiveHeaderLinePattern = regexp.MustCompile(`(?im)^((?:authorization|proxy-authorization|authentication-info|cookie|set-cookie|api-key|x-api-key|x-auth-token|x-access-token|x-refresh-token|x-codex-api-key|x-openai-api-key|openai-api-key|x-goog-api-key|sec-websocket-protocol)\s*:\s*).*$`)
 )
 
@@ -81,6 +82,7 @@ func RedactText(value string) string {
 	value = apiKeyPattern.ReplaceAllString(value, RedactedValue)
 	value = opaquePattern.ReplaceAllString(value, RedactedValue)
 	value = recoveryCodePattern.ReplaceAllString(value, RedactedValue)
+	value = passwordPHCPattern.ReplaceAllString(value, RedactedValue)
 	value = authSchemePattern.ReplaceAllString(value, RedactedValue)
 	value = sensitiveParamPattern.ReplaceAllString(value, "${1}"+RedactedValue)
 	return value

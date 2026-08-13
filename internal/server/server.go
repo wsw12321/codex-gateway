@@ -80,10 +80,14 @@ func (s *Server) routes() {
 	s.publicPOST("/auth/register/finish", s.finishRegistration)
 	s.publicPOST("/auth/recovery/begin", s.beginRecovery)
 	s.publicPOST("/auth/recovery/finish", s.finishRecovery)
+	s.publicPOST("/auth/password/register", s.passwordRegister)
+	s.mux.Handle("POST /auth/password/login", s.browserOrigin(s.limitBrowserAttempts(s.limitPasswordLogin(http.HandlerFunc(s.passwordLogin)))))
+	s.publicPOST("/auth/password/recovery", s.passwordRecovery)
 
 	s.browserPOST("/auth/logout", s.requireSession(http.HandlerFunc(s.logout)))
 	s.browserPOST("/auth/reauth/begin", s.requireSession(http.HandlerFunc(s.beginReauthentication)))
 	s.browserPOST("/auth/reauth/finish", s.requireSession(http.HandlerFunc(s.finishReauthentication)))
+	s.browserPOST("/auth/password/reauth", s.requireSession(s.limitPasswordReauth(http.HandlerFunc(s.passwordReauthenticate))))
 	s.browserPOST("/admin/devices", s.requireSession(http.HandlerFunc(s.createDevice)))
 	s.browserPOST("/admin/projects", s.requireSession(http.HandlerFunc(s.createProject)))
 	s.browserPOST("/admin/api-keys", s.requireRecentVerification(http.HandlerFunc(s.createAPIKey)))
@@ -92,6 +96,7 @@ func (s *Server) routes() {
 	s.browserPOST("/admin/invitations", s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createInvitation))))
 
 	s.mux.Handle("DELETE /admin/api-keys/{id}", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.revokeAPIKey))))
+	s.mux.Handle("PUT /admin/password", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.putPassword))))
 	s.mux.Handle("GET /admin/state", s.requireSession(http.HandlerFunc(s.adminState)))
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
@@ -192,4 +197,38 @@ func (s *Server) limitBrowserAttempts(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func (s *Server) limitPasswordLogin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input passwordLoginRequest
+		if err := decodeJSON(w, r, &input, 64<<10); err != nil {
+			badJSON(w, r, err)
+			return
+		}
+		key := "password-login:" + safeIP(r.Context()) + ":" + identity.PasswordUsernameDigest(input.Username)
+		if ok, retry := s.attempts.allow(key, 5, time.Minute); !ok {
+			writeAuthRateLimit(w, r, retry)
+			return
+		}
+		ctx := context.WithValue(r.Context(), passwordLoginContextKey, input)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func (s *Server) limitPasswordReauth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session := sessionFrom(r.Context())
+		key := "password-reauth:" + safeIP(r.Context()) + ":" + session.ID
+		if ok, retry := s.attempts.allow(key, 5, time.Minute); !ok {
+			writeAuthRateLimit(w, r, retry)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func writeAuthRateLimit(w http.ResponseWriter, r *http.Request, retry int) {
+	w.Header().Set("Retry-After", integerString(retry))
+	httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "authentication_rate_limited", "尝试次数过多，请稍后重试")
 }

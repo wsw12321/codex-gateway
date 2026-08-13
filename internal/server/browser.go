@@ -374,6 +374,11 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "list Passkeys", err)
 		return
 	}
+	methods, err := s.store.LoginMethods(r.Context(), user.ID)
+	if err != nil {
+		internalError(s, w, r, "get login methods", err)
+		return
+	}
 	session := sessionFrom(r.Context())
 	now := time.Now().UTC()
 	recent := false
@@ -386,18 +391,19 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, newAdminStateResponse(
-		user, devices, projects, keys, credentials, recent, verificationExpires,
+		user, devices, projects, keys, credentials, methods, recent, verificationExpires,
 	))
 }
 
 type adminStateResponse struct {
-	User                        adminUser      `json:"user"`
-	Devices                     []adminDevice  `json:"devices"`
-	Projects                    []adminProject `json:"projects"`
-	APIKeys                     []adminAPIKey  `json:"api_keys"`
-	Passkeys                    []adminPasskey `json:"passkeys"`
-	RecentlyVerified            bool           `json:"recently_verified"`
-	RecentVerificationExpiresAt *time.Time     `json:"recent_verification_expires_at"`
+	User                        adminUser          `json:"user"`
+	Devices                     []adminDevice      `json:"devices"`
+	Projects                    []adminProject     `json:"projects"`
+	APIKeys                     []adminAPIKey      `json:"api_keys"`
+	Passkeys                    []adminPasskey     `json:"passkeys"`
+	LoginMethods                store.LoginMethods `json:"login_methods"`
+	RecentlyVerified            bool               `json:"recently_verified"`
+	RecentVerificationExpiresAt *time.Time         `json:"recent_verification_expires_at"`
 }
 
 type adminUser struct {
@@ -451,6 +457,7 @@ func newAdminStateResponse(
 	projects []store.Project,
 	keys []store.APIKey,
 	credentials []store.WebAuthnCredential,
+	methods store.LoginMethods,
 	recent bool,
 	verificationExpires *time.Time,
 ) adminStateResponse {
@@ -460,6 +467,7 @@ func newAdminStateResponse(
 		},
 		Devices: make([]adminDevice, 0, len(devices)), Projects: make([]adminProject, 0, len(projects)),
 		APIKeys: make([]adminAPIKey, 0, len(keys)), Passkeys: make([]adminPasskey, 0, len(credentials)),
+		LoginMethods:     methods,
 		RecentlyVerified: recent, RecentVerificationExpiresAt: verificationExpires,
 	}
 	for _, value := range devices {

@@ -323,3 +323,26 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 		}
 	}
 }
+
+func TestPasswordIdentityUIIncludesFallbackAndSafeSessionHandling(t *testing.T) {
+	t.Parallel()
+	html := string(indexHTML)
+	javascript := string(appJS)
+	for _, required := range []string{
+		`id="password-login-form"`, `name="login_method"`, `id="password-dialog"`,
+		`id="reauth-dialog"`, `id="password-status"`, `autocomplete="current-password"`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Errorf("identity UI is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`/auth/password/login`, `/auth/password/register`, `/auth/password/recovery`,
+		`/auth/password/reauth`, `/admin/password`, `recent_identity_verification_required`,
+		`["session_required", "invalid_session"].includes`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Errorf("identity JavaScript is missing %q", required)
+		}
+	}
+}

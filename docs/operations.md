@@ -1,5 +1,7 @@
 # 部署与运维手册
 
+`0003_password_credentials.sql` 是 forward-only 迁移。部署前先备份 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动。密码哈希属于敏感数据，不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和并行度 2，不需要新增部署 secret。
+
 本项目按单台 Linux 云服务器、单个 ChatGPT Pro 上游账号设计。Cloudflare
 Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 服务均不得
 发布宿主机端口。服务器只接受固定管理 IP 的 SSH 入站。所有命令都应从目标

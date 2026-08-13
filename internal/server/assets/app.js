@@ -34,6 +34,8 @@ let billingSettings = null;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
+let reauthResolve = null;
+let reauthReject = null;
 
 const billingLedgerPageSize = 50;
 const billingTiers = [
@@ -300,7 +302,7 @@ function handleUnauthorized() {
   for (const id of ["devices", "projects", "keys", "passkeys"]) {
     byId(id).replaceChildren(element("div", {className: "empty", text: "登录后加载。"}));
   }
-  if (!checkingSession) notice("登录会话已失效，请重新使用 Passkey 登录。", "error", true);
+  if (!checkingSession) notice("登录会话已失效，请重新登录。", "error", true);
 }
 
 async function api(path, options = {}) {
@@ -316,7 +318,7 @@ async function api(path, options = {}) {
   }
   const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
   if (!response.ok) {
-    if (response.status === 401) handleUnauthorized();
+    if (response.status === 401 && ["session_required", "invalid_session"].includes(body?.error?.code)) handleUnauthorized();
     const error = new Error(body?.error?.message || `请求失败 (${response.status})`);
     error.code = body?.error?.code;
     error.status = response.status;
@@ -411,7 +413,17 @@ async function login() {
   location.assign("/#overview");
 }
 
+async function passwordLogin(event) {
+  const data = Object.fromEntries(new FormData(event.currentTarget));
+  await api("/auth/password/login", {method: "POST", body: JSON.stringify(data)});
+  location.assign("/#overview");
+}
+
 async function reauthenticate() {
+	return chooseReauthentication();
+}
+
+async function passkeyReauthenticate() {
   const ceremony = await api("/auth/reauth/begin", {method: "POST", body: "{}"});
   const credential = await getPasskey(ceremony);
   await api("/auth/reauth/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})});
@@ -420,6 +432,44 @@ async function reauthenticate() {
     state.recent_verification_expires_at = null;
   }
   notice("Passkey 二次验证成功，敏感操作已临时解锁。", "ok");
+}
+
+function chooseReauthentication() {
+  const dialog = byId("reauth-dialog");
+  const select = byId("reauth-form").elements.method;
+  const methods = state?.login_methods || {};
+  all("option", select).forEach((option) => {
+    option.disabled = !methods[option.value] || (option.value === "passkey" && !webAuthnSupported());
+  });
+  const available = all("option", select).find((option) => !option.disabled);
+  if (!available) return Promise.reject(new Error("账号没有当前可用的二次验证方式。"));
+  select.value = available.value;
+  syncReauthMethod();
+  dialog.showModal();
+  return new Promise((resolve, reject) => { reauthResolve = resolve; reauthReject = reject; });
+}
+
+function syncReauthMethod() {
+  const password = byId("reauth-form").elements.method.value === "password";
+  byId("reauth-form").querySelector(".reauth-password").classList.toggle("hidden", !password);
+  byId("reauth-form").elements.password.required = password;
+}
+
+async function submitReauthentication(event) {
+  const form = event.currentTarget;
+  const method = form.elements.method.value;
+  if (method === "password") {
+    await api("/auth/password/reauth", {method: "POST", body: JSON.stringify({password: form.elements.password.value})});
+    notice("密码二次验证成功，敏感操作已临时解锁。", "ok");
+  } else {
+    await passkeyReauthenticate();
+  }
+  if (state) { state.recently_verified = true; state.recent_verification_expires_at = null; }
+  const resolve = reauthResolve;
+  reauthResolve = reauthReject = null;
+  form.reset();
+  form.closest("dialog").close();
+  resolve?.();
 }
 
 function verificationIsRecent() {
@@ -433,7 +483,7 @@ async function sensitiveAction(operation) {
   try {
     return await operation();
   } catch (error) {
-    if (error.code !== "recent_passkey_verification_required") throw error;
+    if (error.code !== "recent_identity_verification_required") throw error;
     if (state) state.recently_verified = false;
     await reauthenticate();
     return operation();
@@ -470,6 +520,24 @@ async function register(event) {
   if (!invitationToken) throw new Error("邀请链接缺少令牌，或链接已被浏览器清理。");
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.invitation_token = invitationToken;
+  if (data.login_method === "password") {
+    if (data.password !== data.password_confirmation) throw new Error("两次输入的新密码不一致。");
+    delete data.login_method;
+    delete data.password_confirmation;
+    if (invitationKind === "recovery") {
+      delete data.username;
+      delete data.display_name;
+      const result = await api("/auth/password/recovery", {method: "POST", body: JSON.stringify(data)});
+      finishWithRecoveryCodes(result.recovery_codes);
+      return;
+    }
+    const result = await api("/auth/password/register", {method: "POST", body: JSON.stringify(data)});
+    finishWithRecoveryCodes(result.recovery_codes);
+    return;
+  }
+  delete data.login_method;
+  delete data.password;
+  delete data.password_confirmation;
   const ceremony = await api("/auth/register/begin", {method: "POST", body: JSON.stringify(data)});
   const credential = await createPasskey(ceremony);
   const result = await api("/auth/register/finish", {
@@ -480,6 +548,17 @@ async function register(event) {
 
 async function recover(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget));
+  if (data.login_method === "password") {
+    if (data.password !== data.password_confirmation) throw new Error("两次输入的新密码不一致。");
+    delete data.login_method;
+    delete data.password_confirmation;
+    const result = await api("/auth/password/recovery", {method: "POST", body: JSON.stringify(data)});
+    finishWithRecoveryCodes(result.recovery_codes);
+    return;
+  }
+  delete data.login_method;
+  delete data.password;
+  delete data.password_confirmation;
   const ceremony = await api("/auth/recovery/begin", {method: "POST", body: JSON.stringify(data)});
   const credential = await createPasskey(ceremony);
   const result = await api("/auth/recovery/finish", {
@@ -662,6 +741,15 @@ function renderPasskeys() {
   }));
 }
 
+function renderLoginMethods() {
+  const methods = state.login_methods || {passkey: state.passkeys.length > 0, password: false};
+  byId("password-status").replaceChildren(
+    summaryItem("密码登录", methods.password ? "已设置" : "未设置"),
+    summaryItem("Passkey 登录", methods.passkey ? "已设置" : "未设置"),
+  );
+  byId("set-password").textContent = methods.password ? "更改密码" : "设置密码";
+}
+
 function renderSelects() {
   const activeDevices = state.devices.filter((item) => item.status === "active");
   const activeProjects = state.projects.filter((item) => item.status === "active");
@@ -719,6 +807,7 @@ function renderState(value) {
     projects: Array.isArray(value.projects) ? value.projects : [],
     api_keys: Array.isArray(value.api_keys) ? value.api_keys : [],
     passkeys: Array.isArray(value.passkeys) ? value.passkeys : [],
+    login_methods: value.login_methods || {},
   };
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
@@ -733,6 +822,7 @@ function renderState(value) {
   renderProjects();
   renderAPIKeys();
   renderPasskeys();
+  renderLoginMethods();
   renderSelects();
   renderResourceSummary();
   renderOnboarding();
@@ -802,6 +892,17 @@ async function addPasskey(event) {
   form.reset();
   form.closest("dialog")?.close();
   notice("新的 Passkey 已添加。", "ok");
+  await refreshAfterMutation();
+}
+
+async function setPassword(event) {
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  if (data.password !== data.password_confirmation) throw new Error("两次输入的新密码不一致。");
+  await sensitiveAction(() => api("/admin/password", {method: "PUT", body: JSON.stringify({password: data.password})}));
+  form.reset();
+  form.closest("dialog")?.close();
+  notice("密码已保存，其他会话已撤销。", "ok");
   await refreshAfterMutation();
 }
 
@@ -1652,7 +1753,7 @@ function configureInvitationView() {
       input.required = false;
       input.disabled = true;
     }
-    form.querySelector("button[type=submit]").textContent = "创建新的 Passkey";
+    form.querySelector("button[type=submit]").textContent = "恢复账号";
   }
   if (!invitationToken) {
     setLocalMessage(form, "邀请链接缺少令牌，无法继续。请向 Owner 重新索取链接。");
@@ -1664,17 +1765,21 @@ function applyWebAuthnSupport() {
   if (webAuthnSupported()) return;
   const message = "此浏览器不支持 WebAuthn Passkey。请使用支持 Passkey 的现代浏览器，并确认站点通过 HTTPS 访问。";
   const visibleAuth = all("#login-view, #join-view, #recover-view").find((view) => !view.classList.contains("hidden"));
-  if (visibleAuth) setLocalMessage(visibleAuth, message);
+  if (visibleAuth) notice(message + "你仍可使用密码。", "info");
   byId("webauthn-warning").textContent = message;
   show("webauthn-warning");
   for (const id of ["login", "add-passkey"]) byId(id).disabled = true;
-  all("#join-form button[type=submit], #recover-form button[type=submit], #passkey-form button[type=submit]").forEach((button) => {
-    button.disabled = true;
+  byId("passkey-form").querySelector("button[type=submit]").disabled = true;
+  all("#join-form select[name=login_method], #recover-form select[name=login_method]").forEach((select) => {
+    select.querySelector('option[value="passkey"]').disabled = true;
+    select.value = "password";
+    select.dispatchEvent(new Event("change"));
   });
 }
 
 function bindUI() {
   bindAsync("login", "click", login, "等待 Passkey…");
+  bindAsync("password-login-form", "submit", passwordLogin, "登录中…");
   bindAsync("join-form", "submit", register, "等待 Passkey…");
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
@@ -1685,6 +1790,8 @@ function bindUI() {
   bindAsync("project-form", "submit", (event) => submitResource(event, "/admin/projects", "项目已添加。"), "添加中…");
   bindAsync("key-form", "submit", createKey, "创建中…");
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
+  bindAsync("password-form", "submit", setPassword, "保存中…");
+  bindAsync("reauth-form", "submit", submitReauthentication, "验证中…");
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
@@ -1736,6 +1843,22 @@ function bindUI() {
   all("dialog").forEach((dialog) => dialog.addEventListener("close", () => setLocalMessage(dialog)));
 
   byId("add-passkey").addEventListener("click", () => openDialog("passkey-dialog"));
+  byId("set-password").addEventListener("click", () => openDialog("password-dialog"));
+  byId("reauth-form").elements.method.addEventListener("change", syncReauthMethod);
+  byId("reauth-dialog").addEventListener("close", () => {
+    if (!reauthReject) return;
+    const reject = reauthReject;
+    reauthResolve = reauthReject = null;
+    reject(new Error("身份验证已取消。"));
+  });
+  all("#join-form select[name=login_method], #recover-form select[name=login_method]").forEach((select) => {
+    select.addEventListener("change", () => {
+      const fields = select.closest("form").querySelector(".password-fields");
+      const password = select.value === "password";
+      fields.classList.toggle("hidden", !password);
+      all("input", fields).forEach((input) => { input.required = password; });
+    });
+  });
   byId("personal-tab").addEventListener("click", () => showUsageTab("personal"));
   byId("global-tab").addEventListener("click", () => showUsageTab("global"));
   for (const tab of [byId("personal-tab"), byId("global-tab")]) {
