@@ -410,13 +410,18 @@ async function login() {
   const ceremony = await api("/auth/login/begin", {method: "POST", body: "{}"});
   const credential = await getPasskey(ceremony);
   await api("/auth/login/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})});
-  location.assign("/#overview");
+  await finishLogin();
 }
 
 async function passwordLogin(event) {
   const data = Object.fromEntries(new FormData(event.currentTarget));
   await api("/auth/password/login", {method: "POST", body: JSON.stringify(data)});
-  location.assign("/#overview");
+  await finishLogin();
+}
+
+async function finishLogin() {
+  history.replaceState(null, "", "/#overview");
+  await loadDashboard();
 }
 
 async function reauthenticate() {

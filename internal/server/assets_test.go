@@ -340,9 +340,13 @@ func TestPasswordIdentityUIIncludesFallbackAndSafeSessionHandling(t *testing.T) 
 		`/auth/password/login`, `/auth/password/register`, `/auth/password/recovery`,
 		`/auth/password/reauth`, `/admin/password`, `recent_identity_verification_required`,
 		`["session_required", "invalid_session"].includes`,
+		`async function finishLogin()`, `await finishLogin();`, `await loadDashboard();`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Errorf("identity JavaScript is missing %q", required)
 		}
+	}
+	if strings.Count(javascript, `location.assign("/#overview")`) != 1 {
+		t.Error("login must update the dashboard in place; only recovery-code confirmation may navigate to /#overview")
 	}
 }
