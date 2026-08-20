@@ -167,7 +167,8 @@ func globalUsageIntegrationKey(
 	key, err := repository.CreateAPIKey(ctx, CreateAPIKeyParams{
 		PublicID:  "globalkey" + suffix,
 		KeyPrefix: "cgk_gu_" + suffix,
-		KeyHash:   hash[:], UserID: user.ID, DeviceID: device.ID,
+		KeyHash:   hash[:], SecretCiphertext: []byte{1},
+		UserID: user.ID, DeviceID: device.ID,
 		Name:      "global-usage-" + suffix,
 		CreatedAt: now, ExpiresAt: now.Add(90 * 24 * time.Hour),
 	})

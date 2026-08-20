@@ -6,12 +6,13 @@
 和错误密码统一执行同成本验证并返回 `invalid_credentials`，并受每 IP/路径
 20 次/分钟及 IP + 规范化用户名摘要 5 次/分钟限制。
 
-恢复码只在新凭据、恢复码轮换和新会话能够原子提交时消费。恢复撤销旧会话但保留未选择的既有登录方式，也不撤销 API Key。设置或更改密码保留当前会话及其近期验证时间，撤销其他会话。
+恢复码只在新凭据、恢复码轮换和新会话能够原子提交时消费。恢复撤销旧会话但保留未选择的既有登录方式，也不自动停用或删除 API Key。设置或更改密码保留当前会话及其近期验证时间，撤销其他会话。
 
 ## 范围和安全目标
 
-受保护资产包括 ChatGPT Pro OAuth/refresh token、设备 API Key、Passkey 公钥与
-challenge、恢复码、会话、数据库凭证、配额数据和安全审计。提示词、源代码和
+受保护资产包括 ChatGPT Pro OAuth/refresh token、设备 API Key、独立 API Key
+加密密钥、Passkey 公钥与 challenge、恢复码、会话、数据库凭证、配额数据和
+安全审计。提示词、源代码和
 模型回复属于高敏感瞬时数据：可以在转发内存或受限 tmpfs 中短暂存在，但不得
 进入数据库、日志、备份或管理界面。按用户聚合的用量和
 “OpenAI API Token 等价成本”也属于受限管理元数据，Member 只能查看自己的
@@ -46,7 +47,7 @@ Internet
 | --- | --- | --- |
 | 扫描服务器公网 IP 绕过 Cloudflare | 所有服务零宿主端口；安全组只允许固定管理 IP 的 SSH | `validate-compose.sh`、外部端口扫描 |
 | Tunnel token 泄漏 | Dashboard token 仅存 `0640` secret，以 `--token-file` 挂载给非 root、只读的 connector | 文件/mount/进程参数和日志检查 |
-| API Key 数据库泄漏 | 只存 public ID、前缀和带 pepper 的 HMAC；原值只显示一次 | Key 创建/撤销与数据库检查 |
+| API Key 数据库泄漏 | HMAC 用于认证；新 Key 的版本化 AES-256-GCM 密文使用仅挂载给 Gateway 的独立密钥，AAD 绑定用户和 Public ID，查看要求近期二次验证 | 加密篡改/AAD 测试、管理响应和数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
 | Refresh token 并发复用 | 登录/升级锁；先停唯一实例；禁止共享卷的双实例 | 容器状态检查、运维演练 |
 | OAuth 文件权限放宽或 symlink | 启动时要求 UID 10001、regular file、精确 `0600` | `verify-oauth-permissions.sh` |
@@ -85,7 +86,8 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
 - OAuth volume 永不备份；灾备后重新登录。
 - PostgreSQL 每日 03:00 UTC 生成本地 age 密文，保留最近 14 组；每月至少在
   无网络临时容器中恢复演练一次，升级前追加一次。
-- 撤销的 API Key、恢复码和 session 立即失效；数据库保留最小审计引用。
+- 停用的 API Key 立即拒绝新认证；永久删除移除活动凭证及密文，但数据库保留不含
+  秘密的最小历史引用，以维持既有用量、账务、配额和审计完整性。
 
 ## 残余风险
 
@@ -99,6 +101,8 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
 - 单服务器是可用性单点。本地 age 密文、解密 identity 和其他恢复 secret 会随
   服务器或云盘整体丢失，因而只能处理数据库逻辑损坏和计划迁机，既不能提供
   无中断故障转移，也不构成整机灾备。
+- 本版本不支持 API Key 加密密钥轮换。数据库备份不包含该部署 secret；密钥丢失或
+  被替换后，HMAC 认证资料仍无法用于还原明文，新 Key 的查看操作会失败。
 - Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。
 
 ## 安全验收

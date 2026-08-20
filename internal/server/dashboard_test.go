@@ -21,6 +21,19 @@ func TestSummarizeUsageDoesNotDoubleCountCachedOrReasoning(t *testing.T) {
 	}
 }
 
+func TestSummaryFromStorePreservesExactChargedUSD(t *testing.T) {
+	summary := summaryFromStore(store.UsageSummary{
+		RequestCount: 2, InputTokens: 100, CachedInputTokens: 80,
+		OutputTokens: 50, ReasoningTokens: 25, ChargedUSD: "123456789.000001",
+	})
+	if summary.Tokens != 150 {
+		t.Fatalf("tokens = %d, want input + output only", summary.Tokens)
+	}
+	if summary.ChargedUSD != "123456789.000001" {
+		t.Fatalf("charged_usd = %q, want exact database string", summary.ChargedUSD)
+	}
+}
+
 func TestPercentile95NearestRank(t *testing.T) {
 	values := make([]int64, 100)
 	for i := range values {

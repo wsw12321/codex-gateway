@@ -334,6 +334,24 @@ jq -e '
   ((.services.gateway.ports // []) | length == 0)
 ' "$tmp" >/dev/null
 
+jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
+  .services.gateway.environment.API_KEY_ENCRYPTION_KEY_FILE ==
+    "/run/secrets/gateway_api_key_encryption_key" and
+  (.services.gateway.environment.API_KEY_ENCRYPTION_KEY == null) and
+  .secrets.gateway_api_key_encryption_key.file == $encryption_key_file and
+  ([.services.gateway.secrets[] | .source] | sort) == [
+    "database_url",
+    "gateway_api_key_encryption_key",
+    "gateway_api_key_pepper",
+    "gateway_session_secret",
+    "sidecar_api_key"
+  ] and
+  ([.services | to_entries[] |
+    select(any(.value.secrets[]?; .source == "gateway_api_key_encryption_key")) |
+    .key]) == ["gateway"]
+' "$tmp" >/dev/null || \
+    fail 'API key encryption key must be mounted only into Gateway through its required file setting'
+
 # prepareModelBody admits at most four simultaneous 64 MiB request files.
 # Require a private, non-executable 320 MiB tmpfs: four full spools plus one
 # body-sized margin for filesystem accounting and cleanup overlap.
@@ -351,6 +369,7 @@ test "$(jq -r '.services.cloudflared.user | split(":")[1]' "$tmp")" = "$secret_g
 for secret_name in \
     cloudflared_tunnel_token \
     postgres_password \
+    gateway_api_key_encryption_key \
     gateway_api_key_pepper \
     gateway_session_secret \
     sidecar_api_key \
@@ -365,7 +384,16 @@ do
     test "$(stat -c '%g' "$secret")" = "$secret_gid" || \
         fail "secret group must match GATEWAY_SECRET_GID=$secret_gid: $secret"
 done
-unset gateway_domain secret secret_gid secret_name
+
+api_key_encryption_key=$(cat "$secret_dir/gateway_api_key_encryption_key")
+case "$api_key_encryption_key" in
+    *[!A-Za-z0-9_-]*|'')
+        fail 'gateway_api_key_encryption_key must be unpadded URL-safe Base64'
+        ;;
+esac
+test "${#api_key_encryption_key}" -eq 43 || \
+    fail 'gateway_api_key_encryption_key must decode to exactly 32 bytes'
+unset api_key_encryption_key gateway_domain secret secret_gid secret_name
 
 # The official PostgreSQL entrypoint connects over the local socket as the
 # configured database user while creating POSTGRES_DB. Peer authentication

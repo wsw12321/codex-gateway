@@ -75,7 +75,8 @@ func TestPostgresIntegration(t *testing.T) {
 	keyHash[0] = 1
 	key, err := s.CreateAPIKey(ctx, CreateAPIKeyParams{
 		PublicID: "integration01", KeyPrefix: "cgk_v1_integ", KeyHash: keyHash,
-		UserID: user.ID, DeviceID: device.ID, DefaultProjectID: project.ID,
+		SecretCiphertext: []byte{1},
+		UserID:           user.ID, DeviceID: device.ID, DefaultProjectID: project.ID,
 		Name: "integration-key", ModelAllowlist: []string{"gpt-5-codex"},
 		CreatedAt: now, ExpiresAt: now.Add(90 * 24 * time.Hour),
 	})

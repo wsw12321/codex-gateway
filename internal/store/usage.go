@@ -88,7 +88,7 @@ func beginUsageRequestTx(ctx context.Context, queryer queryRower, params BeginUs
 			 model, requested_model, requested_service_tier, pricing_rule_version,
 			 endpoint, requested_at, request_bytes)
 		SELECT $1, $2, $3, k.id, k.key_prefix, $5, $6, $6, $7, $8, $9, $10, $11
-		FROM api_keys k
+		FROM api_key_history k
 		WHERE k.id = $4 AND k.user_id = $2 AND k.device_id = $3
 		RETURNING `+usageRequestColumns,
 		params.RequestID, params.UserID, params.DeviceID, params.APIKeyID,
@@ -244,48 +244,54 @@ type UsageFilter struct {
 	Offset      int
 }
 
-func usageFilterWhere(filter UsageFilter) ([]string, []any) {
+func usageFilterWhere(filter UsageFilter, alias string) ([]string, []any) {
 	where := []string{"1 = 1"}
 	args := make([]any, 0, 12)
+	column := func(name string) string {
+		if alias == "" {
+			return name
+		}
+		return alias + "." + name
+	}
 	add := func(condition string, value any) {
 		args = append(args, value)
 		where = append(where, fmt.Sprintf(condition, len(args)))
 	}
 	if filter.From != nil {
-		add("requested_at >= $%d", *filter.From)
+		add(column("requested_at")+" >= $%d", *filter.From)
 	}
 	if filter.Until != nil {
-		add("requested_at < $%d", *filter.Until)
+		add(column("requested_at")+" < $%d", *filter.Until)
 	}
 	if filter.UserID != "" {
-		add("user_id = $%d", filter.UserID)
+		add(column("user_id")+" = $%d", filter.UserID)
 	}
 	if filter.DeviceID != "" {
-		add("device_id = $%d", filter.DeviceID)
+		add(column("device_id")+" = $%d", filter.DeviceID)
 	}
 	if filter.APIKeyID != "" {
-		add("api_key_id = $%d", filter.APIKeyID)
+		add(column("api_key_id")+" = $%d", filter.APIKeyID)
 	}
 	if filter.ProjectID != "" {
-		add("project_id = $%d", filter.ProjectID)
+		add(column("project_id")+" = $%d", filter.ProjectID)
 	}
 	if filter.Model != "" {
-		add("model = $%d", filter.Model)
+		add(column("model")+" = $%d", filter.Model)
 	}
 	if filter.State != "" {
-		add("state = $%d", filter.State)
+		add(column("state")+" = $%d", filter.State)
 	}
 	if filter.HTTPStatus != 0 {
-		add("http_status = $%d", filter.HTTPStatus)
+		add(column("http_status")+" = $%d", filter.HTTPStatus)
 	}
 	if filter.StatusClass != 0 {
-		add("http_status / 100 = $%d", filter.StatusClass)
+		add(column("http_status")+" / 100 = $%d", filter.StatusClass)
 	}
 	return where, args
 }
 
 func (s *Store) ListUsageRequests(ctx context.Context, filter UsageFilter) ([]UsageRequest, error) {
-	where, args := usageFilterWhere(filter)
+	where, args := usageFilterWhere(filter, "u")
 	if filter.Limit <= 0 || filter.Limit > 500 {
 		filter.Limit = 100
 	}
@@ -293,7 +299,7 @@ func (s *Store) ListUsageRequests(ctx context.Context, filter UsageFilter) ([]Us
 		filter.Offset = 0
 	}
 	args = append(args, filter.Limit, filter.Offset)
-	query := `SELECT ` + usageRequestColumns + ` FROM usage_requests WHERE ` +
+	query := `SELECT ` + usageRequestColumns + ` FROM usage_requests u WHERE ` +
 		strings.Join(where, " AND ") + fmt.Sprintf(
 		` ORDER BY requested_at DESC, id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args),
 	)
@@ -319,29 +325,33 @@ func (s *Store) ListUsageRequests(ctx context.Context, filter UsageFilter) ([]Us
 // SummarizeUsageRequests computes exact totals over the entire filtered
 // interval. Detail pagination therefore never makes dashboard totals drift.
 func (s *Store) SummarizeUsageRequests(ctx context.Context, filter UsageFilter) (UsageSummary, error) {
-	where, args := usageFilterWhere(filter)
+	where, args := usageFilterWhere(filter, "u")
 	query := `SELECT
 		count(*)::bigint,
-		count(*) FILTER (WHERE state <> 'completed' OR http_status >= 400)::bigint,
-		COALESCE(sum(input_tokens), 0)::bigint,
-		COALESCE(sum(cached_input_tokens), 0)::bigint,
-		COALESCE(sum(cache_write_tokens), 0)::bigint,
-		COALESCE(sum(output_tokens), 0)::bigint,
-		COALESCE(sum(reasoning_tokens), 0)::bigint,
-		COALESCE(sum(request_bytes), 0)::bigint,
-		COALESCE(sum(response_bytes), 0)::bigint,
-		COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms)
-			FILTER (WHERE ttft_ms IS NOT NULL)), 0)::bigint,
-		COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
-			FILTER (WHERE duration_ms IS NOT NULL)), 0)::bigint
-		FROM usage_requests WHERE ` + strings.Join(where, " AND ")
+		count(*) FILTER (WHERE u.state <> 'completed' OR u.http_status >= 400)::bigint,
+		COALESCE(sum(u.input_tokens), 0)::bigint,
+		COALESCE(sum(u.cached_input_tokens), 0)::bigint,
+		COALESCE(sum(u.cache_write_tokens), 0)::bigint,
+		COALESCE(sum(u.output_tokens), 0)::bigint,
+		COALESCE(sum(u.reasoning_tokens), 0)::bigint,
+		COALESCE(sum(u.request_bytes), 0)::bigint,
+		COALESCE(sum(u.response_bytes), 0)::bigint,
+		COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY u.ttft_ms)
+			FILTER (WHERE u.ttft_ms IS NOT NULL)), 0)::bigint,
+		COALESCE(ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY u.duration_ms)
+			FILTER (WHERE u.duration_ms IS NOT NULL)), 0)::bigint,
+		COALESCE(sum(l.charged_usd), 0::numeric)::text
+		FROM usage_requests u
+		LEFT JOIN billing_ledger_entries l
+			ON l.request_id = u.request_id AND l.entry_type = 'usage_charge'
+		WHERE ` + strings.Join(where, " AND ")
 	var summary UsageSummary
 	err := s.db.QueryRowContext(ctx, query, args...).Scan(
 		&summary.RequestCount, &summary.ErrorCount, &summary.InputTokens,
 		&summary.CachedInputTokens, &summary.CacheWriteTokens,
 		&summary.OutputTokens, &summary.ReasoningTokens,
 		&summary.RequestBytes, &summary.ResponseBytes,
-		&summary.P95TTFTMillis, &summary.P95DurationMillis,
+		&summary.P95TTFTMillis, &summary.P95DurationMillis, &summary.ChargedUSD,
 	)
 	return summary, mapDBError("summarize usage requests", err)
 }

@@ -1380,7 +1380,8 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	}
 	if byName["0001_initial.sql"] == "" || byName["0002_billing.sql"] == "" ||
 		byName["0004_subscription_period_limits.sql"] == "" ||
-		byName["0005_official_token_pricing.sql"] == "" {
+		byName["0005_official_token_pricing.sql"] == "" ||
+		byName["0006_api_key_lifecycle.sql"] == "" {
 		t.Fatalf("billing migration set is incomplete: %v", byName)
 	}
 	if _, err := connection.ExecContext(ctx, byName["0001_initial.sql"]); err != nil {
@@ -1584,6 +1585,37 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 
 	if _, err := connection.ExecContext(ctx, byName["0005_official_token_pricing.sql"]); err != nil {
 		t.Fatalf("apply isolated 0005: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `UPDATE api_keys
+		SET status='revoked',revoked_at=$2,revoke_reason='migration test'
+		WHERE id=$1`, legacyKeyID, migrationNow); err != nil {
+		t.Fatalf("revoke pre-0006 API key: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, byName["0006_api_key_lifecycle.sql"]); err != nil {
+		t.Fatalf("apply isolated 0006: %v", err)
+	}
+	var activeKeyCount, historyCount int
+	var secretAvailable bool
+	if err := connection.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM api_keys WHERE id=$1),
+		(SELECT count(*) FROM api_key_history WHERE id=$1),
+		EXISTS (SELECT 1 FROM api_keys WHERE id=$1 AND secret_ciphertext IS NOT NULL)`,
+		legacyKeyID,
+	).Scan(&activeKeyCount, &historyCount, &secretAvailable); err != nil {
+		t.Fatalf("read migrated API key lifecycle: %v", err)
+	}
+	if activeKeyCount != 0 || historyCount != 1 || secretAvailable {
+		t.Fatalf("migrated API key lifecycle = active %d history %d secret %v, want 0/1/false",
+			activeKeyCount, historyCount, secretAvailable)
+	}
+	if _, err := connection.ExecContext(ctx, `UPDATE api_key_history
+		SET key_prefix='mutated-prefix' WHERE id=$1`, legacyKeyID); err == nil {
+		t.Fatal("immutable API key history accepted an update")
+	}
+	if _, err := connection.ExecContext(ctx,
+		`DELETE FROM api_key_history WHERE id=$1`, legacyKeyID,
+	); err == nil {
+		t.Fatal("immutable API key history accepted a delete")
 	}
 	var pricingVersion int
 	var billingMode, inputPrice, cachedPrice, outputPrice string

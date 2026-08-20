@@ -19,8 +19,9 @@ openai_base_url = "https://codex.example.com/v1"
 
 把域名替换为实际部署域名，然后执行 `codex login --with-api-key` 并按照 Codex
 CLI 的输入流程提供 Gateway API Key。不要把 Key 写进可提交的 TOML、shell
-profile、命令历史或项目 `.env`。设备丢失时在另一台已认证设备上立即撤销该
-设备的 Key 和会话。
+profile、命令历史或项目 `.env`。设备丢失时在另一台已认证设备上立即停用或永久
+删除该设备的 Key，并撤销对应会话。停用可在设备找回后重新启用；删除不可恢复，
+但既有用量和账务历史仍保留安全引用。
 
 脚本不会删除旧版生成的 `model_provider = "gateway"` 或
 `[model_providers.gateway]`。如果本机仍显式启用了旧 provider，请手工处理该旧

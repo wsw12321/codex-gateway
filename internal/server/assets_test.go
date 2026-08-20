@@ -356,3 +356,40 @@ func TestPasswordIdentityUIIncludesFallbackAndSafeSessionHandling(t *testing.T) 
 		t.Error("login must update the dashboard in place; only recovery-code confirmation may navigate to /#overview")
 	}
 }
+
+func TestAPIKeyLifecycleAndPersonalUsageDashboard(t *testing.T) {
+	t.Parallel()
+
+	html := string(indexHTML)
+	javascript := string(appJS)
+	stylesheet := string(styleCSS)
+	for _, required := range []string{
+		`id="usage-tokens"`, `id="usage-charged-usd"`, `id="personal-usage-metrics"`,
+		`id="secret-eyebrow"`, `403 key_disabled`, `实际扣款`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Errorf("API key/usage dashboard HTML is missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`/reveal`, `/status`, `method: "DELETE"`, `async function revealKey(key)`,
+		`async function changeKeyStatus(key, status)`, `async function deleteKey(key)`,
+		`state.api_keys = state.api_keys.filter`, `sensitiveAction(() => api(`,
+		`formatMoney(summary.charged_usd, "USD")`, `resetPersonalUsageSummary()`,
+		`clearSensitiveDOM();`, `secretDismissible`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Errorf("API key/usage dashboard JavaScript is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		`Number(summary.charged_usd)`, `parseFloat(summary.charged_usd)`, `async function revokeKey`,
+	} {
+		if strings.Contains(javascript, forbidden) {
+			t.Errorf("API key/usage dashboard contains obsolete or lossy code %q", forbidden)
+		}
+	}
+	if !strings.Contains(stylesheet, `.list-actions {`) || !strings.Contains(stylesheet, `flex-wrap: wrap;`) {
+		t.Error("API key action layout does not wrap multiple lifecycle buttons")
+	}
+}

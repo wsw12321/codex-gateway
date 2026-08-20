@@ -34,13 +34,13 @@ var (
 	ErrPepperTooShort = fmt.Errorf("API key pepper must contain at least %d bytes", MinimumPepperBytes)
 )
 
-// APIKeyDigest is the HMAC-SHA256 value stored for an API key. The plaintext
-// key must only be returned once, at creation time.
+// APIKeyDigest is the HMAC-SHA256 value stored for an API key. Plaintext may
+// only be returned through the dedicated, recently reverified reveal flow.
 type APIKeyDigest [sha256.Size]byte
 
-// GeneratedAPIKey contains the one-time plaintext value and its non-secret
-// lookup/logging fields. Token is sensitive and must never be persisted or
-// logged.
+// GeneratedAPIKey contains the plaintext value and its non-secret lookup and
+// logging fields. Token is sensitive and must never be logged or persisted
+// outside the dedicated authenticated-encryption column.
 type GeneratedAPIKey struct {
 	Token    string
 	PublicID string

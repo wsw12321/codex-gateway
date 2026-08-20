@@ -13,7 +13,6 @@ const (
 
 	StatusActive   = "active"
 	StatusDisabled = "disabled"
-	StatusRevoked  = "revoked"
 
 	InvitationOwnerBootstrap = "owner_bootstrap"
 	InvitationMember         = "member"
@@ -134,12 +133,39 @@ type APIKey struct {
 	CreatedAt          time.Time
 	ExpiresAt          time.Time
 	LastUsedAt         *time.Time
-	RevokedAt          *time.Time
-	RevokeReason       string
+	SecretAvailable    bool
 	RotatedFromID      *string
 	UserStatus         string
 	DeviceStatus       string
 	DefaultProjectSlug *string
+}
+
+// APIKeyHistory is the non-secret durable identity retained after an active
+// credential is deleted. It is safe to use for accounting and audit metadata.
+type APIKeyHistory struct {
+	ID        string
+	UserID    string
+	DeviceID  string
+	KeyPrefix string
+	CreatedAt time.Time
+}
+
+// APIKeySecret contains sensitive persistence material used only by the
+// explicit reveal flow. It must never be serialized into ordinary management
+// state, logs, audit metadata, or error messages.
+type APIKeySecret struct {
+	ID               string
+	UserID           string
+	PublicID         string
+	KeyPrefix        string
+	KeyHash          []byte
+	SecretCiphertext []byte
+}
+
+func (APIKeySecret) String() string   { return "store.APIKeySecret{<redacted>}" }
+func (APIKeySecret) GoString() string { return "store.APIKeySecret{<redacted>}" }
+func (APIKeySecret) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("store: API key secret cannot be serialized")
 }
 
 type UsageRequest struct {
@@ -248,6 +274,7 @@ type UsageSummary struct {
 	ResponseBytes     int64
 	P95TTFTMillis     int64
 	P95DurationMillis int64
+	ChargedUSD        string
 }
 
 type GlobalUsageRow struct {

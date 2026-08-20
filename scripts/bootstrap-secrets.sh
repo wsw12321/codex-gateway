@@ -47,9 +47,47 @@ create_random() {
     trap - EXIT HUP INT TERM
 }
 
+create_base64url() {
+    target=$1
+    bytes=$2
+    if test -e "$target" || test -L "$target"; then
+        test -f "$target" && test ! -L "$target" || \
+            fail "refusing non-regular or symlink path $target"
+        chmod 0640 "$target"
+        return
+    fi
+
+    target_name=${target##*/}
+    tmp=$(mktemp "$secret_dir/.${target_name}.tmp.XXXXXX")
+    trap 'test -z "${tmp:-}" || rm -f "$tmp"' EXIT HUP INT TERM
+    encoded_random=$(openssl rand -base64 "$bytes")
+    encoded_random=$(printf '%s' "$encoded_random" | tr '+/' '-_' | tr -d '=')
+    printf '%s\n' "$encoded_random" > "$tmp"
+    unset encoded_random
+    chmod 0640 "$tmp"
+    mv -f "$tmp" "$target"
+    tmp=
+    trap - EXIT HUP INT TERM
+}
+
+validate_base64url_32() {
+    target=$1
+    encoded_value=$(cat "$target")
+    case "$encoded_value" in
+        *[!A-Za-z0-9_-]*|'')
+            fail "API key encryption key must be unpadded URL-safe Base64: $target"
+            ;;
+    esac
+    test "${#encoded_value}" -eq 43 || \
+        fail "API key encryption key must decode to exactly 32 bytes: $target"
+    unset encoded_value
+}
+
 require_command openssl
 create_random "$secret_dir/postgres_password" 32
 create_random "$secret_dir/gateway_api_key_pepper" 32
+create_base64url "$secret_dir/gateway_api_key_encryption_key" 32
+validate_base64url_32 "$secret_dir/gateway_api_key_encryption_key"
 create_random "$secret_dir/gateway_session_secret" 32
 create_random "$secret_dir/sidecar_api_key" 32
 
@@ -91,6 +129,7 @@ unset postgres_password
 
 for secret_name in \
     postgres_password \
+    gateway_api_key_encryption_key \
     gateway_api_key_pepper \
     gateway_session_secret \
     sidecar_api_key \

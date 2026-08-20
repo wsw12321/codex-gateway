@@ -110,6 +110,212 @@ func TestResponsesWebSocketNegotiationRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestAPIKeyAuthenticationLifecycleStates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*responsesWebSocketTestDatabase)
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name: "disabled key is identified without accepting requests",
+			configure: func(database *responsesWebSocketTestDatabase) {
+				database.status = store.StatusDisabled
+			},
+			wantStatus: http.StatusForbidden,
+			wantCode:   "key_disabled",
+		},
+		{
+			name: "expired key is invalid",
+			configure: func(database *responsesWebSocketTestDatabase) {
+				database.expiresAt = time.Now().UTC().Add(-time.Minute)
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "invalid_api_key",
+		},
+		{
+			name: "deleted key is unknown",
+			configure: func(database *responsesWebSocketTestDatabase) {
+				database.exists = false
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantCode:   "invalid_api_key",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			harness := newResponsesWebSocketTestHarness(t)
+			test.configure(harness.database)
+			request := httptest.NewRequest(http.MethodGet, "/v1/responses", nil)
+			request.Header.Set("Authorization", "Bearer "+harness.apiKey)
+			recorder := httptest.NewRecorder()
+
+			harness.handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.wantStatus)
+			}
+			var body httpx.ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Error.Code != test.wantCode {
+				t.Fatalf("error code = %q, want %q", body.Error.Code, test.wantCode)
+			}
+			if got := harness.upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+func TestAPIKeyLifecycleRoutesRequireSession(t *testing.T) {
+	t.Parallel()
+
+	server := &Server{
+		config:   config.Config{RPOrigins: []string{"https://gateway.example"}},
+		mux:      http.NewServeMux(),
+		attempts: newAttemptLimiter(),
+	}
+	server.routes()
+	for _, route := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodPost, path: "/admin/api-keys/key-id/reveal", body: "{}"},
+		{method: http.MethodPut, path: "/admin/api-keys/key-id/status", body: `{"status":"disabled"}`},
+		{method: http.MethodDelete, path: "/admin/api-keys/key-id"},
+	} {
+		request := httptest.NewRequest(route.method, route.path, strings.NewReader(route.body))
+		request.Header.Set("Origin", "https://gateway.example")
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+		recorder := httptest.NewRecorder()
+
+		server.mux.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status = %d, want %d", route.method, route.path, recorder.Code, http.StatusUnauthorized)
+			continue
+		}
+		var body httpx.ErrorBody
+		if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+			t.Errorf("%s %s decode error response: %v", route.method, route.path, err)
+		} else if body.Error.Code != "session_required" {
+			t.Errorf("%s %s error code = %q, want session_required", route.method, route.path, body.Error.Code)
+		}
+	}
+}
+
+func TestRevealAPIKeyValidatesStoredSecret(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		configure  func(*responsesWebSocketTestHarness)
+		wantStatus int
+		wantCode   string
+		wantSecret bool
+	}{
+		{name: "valid encrypted secret", wantStatus: http.StatusOK, wantSecret: true},
+		{
+			name: "legacy key has no encrypted secret",
+			configure: func(harness *responsesWebSocketTestHarness) {
+				harness.database.secretCiphertext = nil
+			},
+			wantStatus: http.StatusConflict,
+			wantCode:   "api_key_secret_unavailable",
+		},
+		{
+			name: "tampered ciphertext fails closed",
+			configure: func(harness *responsesWebSocketTestHarness) {
+				tampered := append([]byte(nil), harness.database.secretCiphertext...)
+				tampered[len(tampered)-1] ^= 0xff
+				harness.database.secretCiphertext = tampered
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "internal_error",
+		},
+		{
+			name: "stored digest mismatch fails closed",
+			configure: func(harness *responsesWebSocketTestHarness) {
+				harness.database.keyHash = bytes.Repeat([]byte{0x7f}, len(harness.database.keyHash))
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   "internal_error",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			harness := newResponsesWebSocketTestHarness(t)
+			if test.configure != nil {
+				test.configure(&harness)
+			}
+			request := httptest.NewRequest(http.MethodPost, "/admin/api-keys/key-id/reveal", strings.NewReader("{}"))
+			request.SetPathValue("id", harness.database.keyID)
+			request = request.WithContext(context.WithValue(
+				request.Context(), userContextKey, store.User{ID: harness.database.userID},
+			))
+			recorder := httptest.NewRecorder()
+
+			harness.server.revealAPIKey(recorder, request)
+
+			if recorder.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", recorder.Code, test.wantStatus)
+			}
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if test.wantSecret {
+				var body map[string]string
+				if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+					t.Fatalf("decode reveal response: %v", err)
+				}
+				if body["api_key"] != harness.apiKey {
+					t.Fatal("reveal response did not return the verified API key")
+				}
+				return
+			}
+			if strings.Contains(recorder.Body.String(), harness.apiKey) {
+				t.Fatal("failed reveal leaked plaintext API key")
+			}
+			var body httpx.ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Error.Code != test.wantCode {
+				t.Fatalf("error code = %q, want %q", body.Error.Code, test.wantCode)
+			}
+		})
+	}
+}
+
+func TestSetAPIKeyStatusRejectsUnknownStatus(t *testing.T) {
+	t.Parallel()
+
+	request := httptest.NewRequest(http.MethodPut, "/admin/api-keys/key-id/status", strings.NewReader(`{"status":"revoked"}`))
+	request.SetPathValue("id", "key-id")
+	recorder := httptest.NewRecorder()
+
+	(&Server{}).setAPIKeyStatus(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	var body httpx.ErrorBody
+	if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if body.Error.Code != "invalid_api_key_status" {
+		t.Fatalf("error code = %q, want invalid_api_key_status", body.Error.Code)
+	}
+}
+
 func TestResponsesRejectsUnknownModelBeforeServiceTier(t *testing.T) {
 	t.Parallel()
 
@@ -218,9 +424,23 @@ func newResponsesWebSocketTestHarness(t *testing.T) responsesWebSocketTestHarnes
 	if err != nil {
 		t.Fatalf("hash API key: %v", err)
 	}
+	encryptionKey := bytes.Repeat([]byte{0x42}, security.APIKeyEncryptionKeyBytes)
+	ciphertext, err := security.EncryptAPIKeySecret(
+		encryptionKey, "user-id", generated.PublicID, generated.Token,
+	)
+	if err != nil {
+		t.Fatalf("encrypt API key: %v", err)
+	}
 	database := &responsesWebSocketTestDatabase{
-		publicID: generated.PublicID,
-		keyHash:  append([]byte(nil), digest[:]...),
+		keyID:            "key-id",
+		userID:           "user-id",
+		publicID:         generated.PublicID,
+		keyPrefix:        generated.Prefix,
+		keyHash:          append([]byte(nil), digest[:]...),
+		secretCiphertext: append([]byte(nil), ciphertext...),
+		status:           store.StatusActive,
+		expiresAt:        time.Now().UTC().Add(time.Hour),
+		exists:           true,
 	}
 	db := sql.OpenDB(responsesWebSocketTestConnector{database: database})
 	t.Cleanup(func() { _ = db.Close() })
@@ -232,7 +452,7 @@ func newResponsesWebSocketTestHarness(t *testing.T) responsesWebSocketTestHarnes
 	}
 
 	server := &Server{
-		config: config.Config{KeyPepper: pepper},
+		config: config.Config{KeyPepper: pepper, APIKeyEncryptionKey: encryptionKey},
 		store:  store.New(db),
 		upstream: gatewayproxy.NewWithHTTPClient(upstreamURL, "internal-test-token", &http.Client{
 			Transport: responsesWebSocketTestRoundTripper{calls: upstreamCalls},
@@ -261,10 +481,17 @@ func (t responsesWebSocketTestRoundTripper) RoundTrip(*http.Request) (*http.Resp
 }
 
 type responsesWebSocketTestDatabase struct {
-	mu       sync.Mutex
-	queries  []string
-	publicID string
-	keyHash  []byte
+	mu               sync.Mutex
+	queries          []string
+	keyID            string
+	userID           string
+	publicID         string
+	keyPrefix        string
+	keyHash          []byte
+	secretCiphertext []byte
+	status           string
+	expiresAt        time.Time
+	exists           bool
 }
 
 func (d *responsesWebSocketTestDatabase) recordQuery(query string) {
@@ -315,17 +542,31 @@ func (c responsesWebSocketTestConn) Begin() (driver.Tx, error) {
 
 func (c responsesWebSocketTestConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	c.database.recordQuery(query)
-	if !strings.Contains(query, "FROM api_keys k") || len(args) != 1 || args[0].Value != c.database.publicID {
+	if strings.Contains(query, "SELECT id, user_id, public_id, key_prefix, key_hash, secret_ciphertext") {
+		if len(args) != 2 || args[0].Value != c.database.keyID ||
+			args[1].Value != c.database.userID || !c.database.exists {
+			return &responsesWebSocketTestRows{columns: make([]string, 6)}, nil
+		}
+		return &responsesWebSocketTestRows{
+			columns: make([]string, 6),
+			values: [][]driver.Value{{
+				c.database.keyID, c.database.userID, c.database.publicID,
+				c.database.keyPrefix, c.database.keyHash, c.database.secretCiphertext,
+			}},
+		}, nil
+	}
+	if !strings.Contains(query, "FROM api_keys k") || len(args) != 1 ||
+		args[0].Value != c.database.publicID || !c.database.exists {
 		return &responsesWebSocketTestRows{}, nil
 	}
 	now := time.Now().UTC()
 	return &responsesWebSocketTestRows{
-		columns: make([]string, 23),
+		columns: make([]string, 22),
 		values: [][]driver.Value{{
-			"key-id", c.database.publicID, "cgk_v1_test_", c.database.keyHash,
-			"user-id", "device-id", nil, "Codex CLI", store.StatusActive,
-			[]byte("[]"), nil, nil, nil, nil, now, now.Add(time.Hour), nil, nil,
-			"", nil, store.StatusActive, store.StatusActive, nil,
+			c.database.keyID, c.database.publicID, c.database.keyPrefix, c.database.keyHash,
+			c.database.userID, "device-id", nil, "Codex CLI", c.database.status,
+			[]byte("[]"), nil, nil, nil, nil, now, c.database.expiresAt, nil, true,
+			nil, store.StatusActive, store.StatusActive, nil,
 		}},
 	}, nil
 }

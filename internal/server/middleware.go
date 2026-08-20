@@ -186,12 +186,12 @@ func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 			return
 		}
 		now := time.Now().UTC()
-		if key.Status == store.StatusRevoked || !key.ExpiresAt.After(now) {
-			s.rejectAPIKey(w, r, "revoked_or_expired_key")
+		if key.Status == store.StatusDisabled {
+			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "key_disabled", "API Key 已被禁用")
 			return
 		}
-		if key.Status != store.StatusActive {
-			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "key_disabled", "API Key 已被禁用")
+		if key.Status != store.StatusActive || !key.ExpiresAt.After(now) {
+			s.rejectAPIKey(w, r, "inactive_or_expired_key")
 			return
 		}
 		if key.UserStatus != store.StatusActive {

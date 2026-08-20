@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	defaultBodyLimit = int64(64 << 20)
-	minSecretBytes   = 32
+	defaultBodyLimit         = int64(64 << 20)
+	minSecretBytes           = 32
+	apiKeyEncryptionKeyBytes = 32
 )
 
 type Limits struct {
@@ -31,23 +32,24 @@ type Limits struct {
 }
 
 type Config struct {
-	ListenAddress string
-	PublicURL     *url.URL
-	RPID          string
-	RPOrigins     []string
-	DatabaseURL   string
-	SidecarURL    *url.URL
-	SidecarToken  string
-	KeyPepper     []byte
-	TokenPepper   []byte
-	TrustedProxy  []*net.IPNet
-	BodyLimit     int64
-	SessionIdle   time.Duration
-	SessionMax    time.Duration
-	ReauthMaxAge  time.Duration
-	Limits        Limits
-	UsagePricing  UsagePricing
-	DevInsecure   bool
+	ListenAddress       string
+	PublicURL           *url.URL
+	RPID                string
+	RPOrigins           []string
+	DatabaseURL         string
+	SidecarURL          *url.URL
+	SidecarToken        string
+	KeyPepper           []byte
+	TokenPepper         []byte
+	APIKeyEncryptionKey []byte
+	TrustedProxy        []*net.IPNet
+	BodyLimit           int64
+	SessionIdle         time.Duration
+	SessionMax          time.Duration
+	ReauthMaxAge        time.Duration
+	Limits              Limits
+	UsagePricing        UsagePricing
+	DevInsecure         bool
 }
 
 func Load() (Config, error) {
@@ -64,6 +66,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	tokenPepper, err := envOrFile("TOKEN_HMAC_PEPPER")
+	if err != nil {
+		return Config{}, err
+	}
+	apiKeyEncryptionKey, err := envOrFile("API_KEY_ENCRYPTION_KEY")
 	if err != nil {
 		return Config{}, err
 	}
@@ -105,6 +111,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.TokenPepper, err = decodeSecret("TOKEN_HMAC_PEPPER", tokenPepper); err != nil {
+		return Config{}, err
+	}
+	if cfg.APIKeyEncryptionKey, err = decodeExactSecret("API_KEY_ENCRYPTION_KEY", apiKeyEncryptionKey, apiKeyEncryptionKeyBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.TrustedProxy, err = parseCIDRs(os.Getenv("TRUSTED_PROXY_CIDRS")); err != nil {
@@ -168,6 +177,9 @@ func (c Config) Validate() error {
 	if len(c.KeyPepper) < minSecretBytes || len(c.TokenPepper) < minSecretBytes {
 		return errors.New("HMAC peppers must be at least 32 bytes")
 	}
+	if len(c.APIKeyEncryptionKey) != apiKeyEncryptionKeyBytes {
+		return fmt.Errorf("API_KEY_ENCRYPTION_KEY must decode to exactly %d bytes", apiKeyEncryptionKeyBytes)
+	}
 	if c.SidecarToken == "" {
 		return errors.New("SIDECAR_API_KEY is required")
 	}
@@ -204,6 +216,21 @@ func decodeSecret(name, raw string) ([]byte, error) {
 	}
 	if err != nil || len(b) < minSecretBytes {
 		return nil, fmt.Errorf("%s must be base64-encoded and at least %d bytes", name, minSecretBytes)
+	}
+	return b, nil
+}
+
+func decodeExactSecret(name, raw string, size int) ([]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	b, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		b, err = base64.StdEncoding.DecodeString(raw)
+	}
+	if err != nil || len(b) != size {
+		return nil, fmt.Errorf("%s must be base64-encoded and decode to exactly %d bytes", name, size)
 	}
 	return b, nil
 }

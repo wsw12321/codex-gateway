@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -264,10 +265,18 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "hash API key", err)
 		return
 	}
+	ciphertext, err := security.EncryptAPIKeySecret(
+		s.config.APIKeyEncryptionKey, user.ID, generated.PublicID, generated.Token,
+	)
+	if err != nil {
+		internalError(s, w, r, "encrypt API key", err)
+		return
+	}
 	now := time.Now().UTC()
 	key, err := s.store.CreateAPIKey(r.Context(), store.CreateAPIKeyParams{
 		PublicID: generated.PublicID, KeyPrefix: generated.Prefix, KeyHash: digest[:],
-		UserID: user.ID, DeviceID: device.ID, DefaultProjectID: input.DefaultProjectID,
+		SecretCiphertext: ciphertext,
+		UserID:           user.ID, DeviceID: device.ID, DefaultProjectID: input.DefaultProjectID,
 		Name: strings.TrimSpace(input.Name), ModelAllowlist: input.Models,
 		CreatedAt: now, ExpiresAt: now.Add(time.Duration(input.ExpiresDays) * 24 * time.Hour),
 	})
@@ -282,18 +291,97 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"id": key.ID, "api_key": generated.Token, "prefix": generated.Prefix,
-		"expires_at": key.ExpiresAt, "warning": "API Key 只显示这一次。",
+		"expires_at": key.ExpiresAt, "warning": "请安全保存 API Key；之后可在二次验证后再次查看。",
 	})
 }
 
-func (s *Server) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+func (s *Server) revealAPIKey(w http.ResponseWriter, r *http.Request) {
 	keyID := r.PathValue("id")
 	user := userFrom(r.Context())
-	if err := s.store.RevokeAPIKey(r.Context(), user.ID, keyID, "user_revoked", time.Now().UTC()); err != nil {
-		s.storeWriteError(w, r, "revoke API key", err)
+	secret, err := s.store.GetAPIKeySecret(r.Context(), user.ID, keyID)
+	if err != nil {
+		s.storeWriteError(w, r, "get API key secret", err)
 		return
 	}
-	s.audit(r, user.ID, sessionFrom(r.Context()).ID, "api_key.revoked", true, "api_key", keyID, nil)
+	if len(secret.SecretCiphertext) == 0 {
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "api_key_secret_unavailable", "此 API Key 创建于加密保存功能上线前，无法查看完整值")
+		return
+	}
+	if !hmac.Equal([]byte(secret.ID), []byte(keyID)) ||
+		!hmac.Equal([]byte(secret.UserID), []byte(user.ID)) {
+		internalError(s, w, r, "validate API key secret owner", errors.New("stored API key secret owner mismatch"))
+		return
+	}
+	plaintext, err := security.DecryptAPIKeySecret(
+		s.config.APIKeyEncryptionKey, user.ID, secret.PublicID, secret.SecretCiphertext,
+	)
+	if err != nil {
+		internalError(s, w, r, "decrypt API key", err)
+		return
+	}
+	var expected security.APIKeyDigest
+	if len(secret.KeyHash) != len(expected) {
+		internalError(s, w, r, "validate API key secret", errors.New("stored API key digest has invalid length"))
+		return
+	}
+	copy(expected[:], secret.KeyHash)
+	parsed, verified, err := security.VerifyAPIKey(s.config.KeyPepper, plaintext, expected)
+	if err != nil {
+		internalError(s, w, r, "verify API key secret", err)
+		return
+	}
+	if !verified ||
+		!hmac.Equal([]byte(parsed.PublicID), []byte(secret.PublicID)) ||
+		!hmac.Equal([]byte(parsed.Prefix()), []byte(secret.KeyPrefix)) {
+		internalError(s, w, r, "validate API key secret", errors.New("stored API key secret failed verification"))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"api_key": plaintext})
+}
+
+func (s *Server) setAPIKeyStatus(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(w, r, &input, 32<<10); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	if input.Status != store.StatusActive && input.Status != store.StatusDisabled {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_api_key_status", "API Key 状态只能为 active 或 disabled")
+		return
+	}
+	user := userFrom(r.Context())
+	key, changed, err := s.store.SetAPIKeyStatus(
+		r.Context(), user.ID, r.PathValue("id"), input.Status, time.Now().UTC(),
+	)
+	if errors.Is(err, store.ErrAPIKeyExpired) {
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "api_key_expired", "已过期的 API Key 无法重新启用")
+		return
+	}
+	if err != nil {
+		s.storeWriteError(w, r, "set API key status", err)
+		return
+	}
+	if changed {
+		eventType := "api_key.enabled"
+		if input.Status == store.StatusDisabled {
+			eventType = "api_key.disabled"
+		}
+		s.audit(r, user.ID, sessionFrom(r.Context()).ID, eventType, true, "api_key", key.ID, map[string]any{"prefix": key.KeyPrefix})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "status": key.Status})
+}
+
+func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	keyID := r.PathValue("id")
+	user := userFrom(r.Context())
+	history, err := s.store.DeleteAPIKey(r.Context(), user.ID, keyID)
+	if err != nil {
+		s.storeWriteError(w, r, "delete API key", err)
+		return
+	}
+	s.audit(r, user.ID, sessionFrom(r.Context()).ID, "api_key.deleted", true, "api_key", history.ID, map[string]any{"prefix": history.KeyPrefix})
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
@@ -436,6 +524,7 @@ type adminAPIKey struct {
 	DeviceID         string     `json:"device_id"`
 	DefaultProjectID *string    `json:"default_project_id"`
 	Status           string     `json:"status"`
+	SecretAvailable  bool       `json:"secret_available"`
 	ModelAllowlist   []string   `json:"model_allowlist"`
 	CreatedAt        time.Time  `json:"created_at"`
 	ExpiresAt        time.Time  `json:"expires_at"`
@@ -487,7 +576,8 @@ func newAdminStateResponse(
 		response.APIKeys = append(response.APIKeys, adminAPIKey{
 			ID: value.ID, Name: value.Name, KeyPrefix: value.KeyPrefix,
 			DeviceID: value.DeviceID, DefaultProjectID: value.DefaultProjectID,
-			Status: value.Status, ModelAllowlist: models, CreatedAt: value.CreatedAt,
+			Status: value.Status, SecretAvailable: value.SecretAvailable,
+			ModelAllowlist: models, CreatedAt: value.CreatedAt,
 			ExpiresAt: value.ExpiresAt, LastUsedAt: value.LastUsedAt,
 		})
 	}

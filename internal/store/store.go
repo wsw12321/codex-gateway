@@ -20,6 +20,7 @@ var (
 	ErrInvalid               = errors.New("store: invalid input")
 	ErrInvitationUnavailable = errors.New("store: invitation unavailable")
 	ErrQuotaExceeded         = errors.New("store: quota exceeded")
+	ErrAPIKeyExpired         = errors.New("store: API key expired")
 )
 
 // Config controls the database/sql pool. DriverName defaults to pgx. The

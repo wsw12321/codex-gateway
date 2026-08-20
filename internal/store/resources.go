@@ -176,6 +176,7 @@ type CreateAPIKeyParams struct {
 	PublicID          string
 	KeyPrefix         string
 	KeyHash           []byte
+	SecretCiphertext  []byte
 	UserID            string
 	DeviceID          string
 	DefaultProjectID  string
@@ -193,7 +194,7 @@ type CreateAPIKeyParams struct {
 const apiKeyCoreColumns = `id, public_id, key_prefix, key_hash, user_id, device_id,
 	default_project_id, name, status, to_json(model_allowlist)::text,
 	rpm_limit, concurrent_limit, daily_request_limit, daily_token_limit,
-	created_at, expires_at, last_used_at, revoked_at, revoke_reason, rotated_from_id`
+	created_at, expires_at, last_used_at, secret_ciphertext IS NOT NULL, rotated_from_id`
 
 func scanAPIKeyCore(row rowScanner) (APIKey, error) {
 	var key APIKey
@@ -202,8 +203,8 @@ func scanAPIKeyCore(row rowScanner) (APIKey, error) {
 		&key.ID, &key.PublicID, &key.KeyPrefix, &key.KeyHash, &key.UserID, &key.DeviceID,
 		&key.DefaultProjectID, &key.Name, &key.Status, &allowlist, &key.RPMLimit,
 		&key.ConcurrentLimit, &key.DailyRequestLimit, &key.DailyTokenLimit,
-		&key.CreatedAt, &key.ExpiresAt, &key.LastUsedAt, &key.RevokedAt,
-		&key.RevokeReason, &key.RotatedFromID,
+		&key.CreatedAt, &key.ExpiresAt, &key.LastUsedAt, &key.SecretAvailable,
+		&key.RotatedFromID,
 	)
 	if err == nil {
 		err = unmarshalStringArray(allowlist, &key.ModelAllowlist)
@@ -211,9 +212,19 @@ func scanAPIKeyCore(row rowScanner) (APIKey, error) {
 	return key, err
 }
 
+func scanAPIKeyHistory(row rowScanner) (APIKeyHistory, error) {
+	var history APIKeyHistory
+	err := row.Scan(
+		&history.ID, &history.UserID, &history.DeviceID,
+		&history.KeyPrefix, &history.CreatedAt,
+	)
+	return history, err
+}
+
 func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (APIKey, error) {
 	params.Name = strings.TrimSpace(params.Name)
-	if len(params.KeyHash) != 32 || params.PublicID == "" || params.KeyPrefix == "" ||
+	if len(params.KeyHash) != 32 || len(params.SecretCiphertext) == 0 ||
+		params.PublicID == "" || params.KeyPrefix == "" ||
 		params.UserID == "" || params.DeviceID == "" || params.Name == "" {
 		return APIKey{}, fmt.Errorf("%w: invalid API key metadata", ErrInvalid)
 	}
@@ -238,20 +249,34 @@ func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (AP
 	if err != nil {
 		return APIKey{}, err
 	}
-	key, err := scanAPIKeyCore(s.db.QueryRowContext(ctx, `
-		INSERT INTO api_keys
-			(id, public_id, key_prefix, key_hash, user_id, device_id,
-			 default_project_id, name, model_allowlist, rpm_limit, concurrent_limit,
-			 daily_request_limit, daily_token_limit, created_at, expires_at, rotated_from_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-			ARRAY(SELECT jsonb_array_elements_text($9::jsonb)), $10, $11, $12, $13, $14, $15, $16)
-		RETURNING `+apiKeyCoreColumns,
-		params.ID, params.PublicID, params.KeyPrefix, params.KeyHash, params.UserID,
-		params.DeviceID, valueOrNil(params.DefaultProjectID), params.Name, allowlist,
-		params.RPMLimit, params.ConcurrentLimit, params.DailyRequestLimit,
-		params.DailyTokenLimit, params.CreatedAt, params.ExpiresAt, valueOrNil(params.RotatedFromID),
-	))
-	return key, mapDBError("create API key", err)
+	var key APIKey
+	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO api_key_history (id, user_id, device_id, key_prefix, created_at)
+			VALUES ($1, $2, $3, $4, $5)`,
+			params.ID, params.UserID, params.DeviceID, params.KeyPrefix, params.CreatedAt,
+		); err != nil {
+			return mapDBError("create API key history", err)
+		}
+		var insertErr error
+		key, insertErr = scanAPIKeyCore(tx.QueryRowContext(ctx, `
+			INSERT INTO api_keys
+				(id, public_id, key_prefix, key_hash, secret_ciphertext, user_id, device_id,
+				 default_project_id, name, model_allowlist, rpm_limit, concurrent_limit,
+				 daily_request_limit, daily_token_limit, created_at, expires_at, rotated_from_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+				ARRAY(SELECT jsonb_array_elements_text($10::jsonb)), $11, $12, $13, $14, $15, $16, $17)
+			RETURNING `+apiKeyCoreColumns,
+			params.ID, params.PublicID, params.KeyPrefix, params.KeyHash,
+			params.SecretCiphertext, params.UserID, params.DeviceID,
+			valueOrNil(params.DefaultProjectID), params.Name, allowlist,
+			params.RPMLimit, params.ConcurrentLimit, params.DailyRequestLimit,
+			params.DailyTokenLimit, params.CreatedAt, params.ExpiresAt,
+			valueOrNil(params.RotatedFromID),
+		))
+		return mapDBError("create API key", insertErr)
+	})
+	return key, err
 }
 
 // LookupAPIKey returns key material plus the owning user/device state in one
@@ -264,8 +289,8 @@ func (s *Store) LookupAPIKey(ctx context.Context, publicID string) (APIKey, erro
 		SELECT k.id, k.public_id, k.key_prefix, k.key_hash, k.user_id, k.device_id,
 			k.default_project_id, k.name, k.status, to_json(k.model_allowlist)::text,
 			k.rpm_limit, k.concurrent_limit, k.daily_request_limit, k.daily_token_limit,
-			k.created_at, k.expires_at, k.last_used_at, k.revoked_at, k.revoke_reason,
-			k.rotated_from_id, u.status, d.status, p.slug
+			k.created_at, k.expires_at, k.last_used_at,
+			k.secret_ciphertext IS NOT NULL, k.rotated_from_id, u.status, d.status, p.slug
 		FROM api_keys k
 		JOIN users u ON u.id = k.user_id
 		JOIN devices d ON d.id = k.device_id AND d.user_id = k.user_id
@@ -275,8 +300,8 @@ func (s *Store) LookupAPIKey(ctx context.Context, publicID string) (APIKey, erro
 		&key.ID, &key.PublicID, &key.KeyPrefix, &key.KeyHash, &key.UserID, &key.DeviceID,
 		&key.DefaultProjectID, &key.Name, &key.Status, &allowlist, &key.RPMLimit,
 		&key.ConcurrentLimit, &key.DailyRequestLimit, &key.DailyTokenLimit,
-		&key.CreatedAt, &key.ExpiresAt, &key.LastUsedAt, &key.RevokedAt,
-		&key.RevokeReason, &key.RotatedFromID, &key.UserStatus, &key.DeviceStatus,
+		&key.CreatedAt, &key.ExpiresAt, &key.LastUsedAt, &key.SecretAvailable,
+		&key.RotatedFromID, &key.UserStatus, &key.DeviceStatus,
 		&key.DefaultProjectSlug,
 	)
 	if err == nil {
@@ -315,34 +340,105 @@ func (s *Store) ListAPIKeys(ctx context.Context, userID string) ([]APIKey, error
 	return result, nil
 }
 
-func (s *Store) RevokeAPIKey(ctx context.Context, userID, keyID, reason string, at time.Time) error {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE api_keys
-		SET status = 'revoked', revoked_at = $4, revoke_reason = $3
-		WHERE id = $1 AND user_id = $2 AND status <> 'revoked'`, keyID, userID, reason, at,
-	)
-	if err != nil {
-		return mapDBError("revoke API key", err)
+// GetAPIKeySecret is the only store method that loads encrypted API key
+// material. Callers must decrypt and independently verify the canonical key,
+// public ID and stored HMAC before returning plaintext.
+func (s *Store) GetAPIKeySecret(ctx context.Context, userID, keyID string) (APIKeySecret, error) {
+	if userID == "" || keyID == "" {
+		return APIKeySecret{}, fmt.Errorf("%w: API key owner and id are required", ErrInvalid)
 	}
-	return requireAffected("revoke API key", result)
+	var secret APIKeySecret
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, user_id, public_id, key_prefix, key_hash, secret_ciphertext
+		FROM api_keys WHERE id = $1 AND user_id = $2`, keyID, userID,
+	).Scan(
+		&secret.ID, &secret.UserID, &secret.PublicID, &secret.KeyPrefix,
+		&secret.KeyHash, &secret.SecretCiphertext,
+	)
+	return secret, mapDBError("get API key secret", err)
+}
+
+// SetAPIKeyStatus changes an active credential between active and disabled.
+// The bool reports whether a database mutation was necessary.
+func (s *Store) SetAPIKeyStatus(
+	ctx context.Context,
+	userID, keyID, status string,
+	at time.Time,
+) (APIKey, bool, error) {
+	status = strings.TrimSpace(status)
+	if userID == "" || keyID == "" || (status != StatusActive && status != StatusDisabled) {
+		return APIKey{}, false, fmt.Errorf("%w: invalid API key status", ErrInvalid)
+	}
+	if at.IsZero() {
+		at = s.now().UTC()
+	} else {
+		at = at.UTC()
+	}
+	var key APIKey
+	changed := false
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		current, err := scanAPIKeyCore(tx.QueryRowContext(ctx, `
+			SELECT `+apiKeyCoreColumns+` FROM api_keys
+			WHERE id = $1 AND user_id = $2 FOR UPDATE`, keyID, userID,
+		))
+		if err != nil {
+			return mapDBError("lock API key status", err)
+		}
+		if current.Status == status {
+			key = current
+			return nil
+		}
+		if status == StatusActive && !current.ExpiresAt.After(at) {
+			return fmt.Errorf("enable API key: %w", ErrAPIKeyExpired)
+		}
+		key, err = scanAPIKeyCore(tx.QueryRowContext(ctx, `
+			UPDATE api_keys SET status = $3
+			WHERE id = $1 AND user_id = $2
+			RETURNING `+apiKeyCoreColumns, keyID, userID, status,
+		))
+		if err != nil {
+			return mapDBError("set API key status", err)
+		}
+		changed = true
+		return nil
+	})
+	if err != nil {
+		return APIKey{}, false, err
+	}
+	return key, changed, nil
+}
+
+// DeleteAPIKey permanently removes authentication and management material but
+// leaves its immutable history identity available to existing accounting rows.
+func (s *Store) DeleteAPIKey(ctx context.Context, userID, keyID string) (APIKeyHistory, error) {
+	if userID == "" || keyID == "" {
+		return APIKeyHistory{}, fmt.Errorf("%w: API key owner and id are required", ErrInvalid)
+	}
+	history, err := scanAPIKeyHistory(s.db.QueryRowContext(ctx, `
+		WITH deleted AS (
+			DELETE FROM api_keys WHERE id = $1 AND user_id = $2
+			RETURNING id
+		)
+		SELECT h.id, h.user_id, h.device_id, h.key_prefix, h.created_at
+		FROM api_key_history h JOIN deleted d ON d.id = h.id`, keyID, userID,
+	))
+	return history, mapDBError("delete API key", err)
 }
 
 func (s *Store) RecordAPIKeyUse(ctx context.Context, keyID, deviceID string, at time.Time) error {
 	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		keyResult, err := tx.ExecContext(ctx,
+		_, err := tx.ExecContext(ctx,
 			`UPDATE api_keys SET last_used_at = $2 WHERE id = $1`, keyID, at,
 		)
 		if err != nil {
 			return mapDBError("record API key use", err)
 		}
-		if err := requireAffected("record API key use", keyResult); err != nil {
-			return err
-		}
 		deviceResult, err := tx.ExecContext(ctx, `
 			UPDATE devices SET last_seen_at = $2
 			WHERE id = $1 AND EXISTS (
-				SELECT 1 FROM api_keys k
-				WHERE k.id = $3 AND k.device_id = devices.id
+				SELECT 1 FROM api_key_history h
+				WHERE h.id = $3 AND h.device_id = devices.id
+				  AND h.user_id = devices.user_id
 			)`, deviceID, at, keyID,
 		)
 		if err != nil {

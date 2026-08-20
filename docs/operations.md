@@ -1,12 +1,16 @@
 # 部署与运维手册
 
-`0003_password_credentials.sql`、`0004_subscription_period_limits.sql` 和
-`0005_official_token_pricing.sql` 都是 forward-only 迁移。部署前先备份
+`0003_password_credentials.sql`、`0004_subscription_period_limits.sql`、
+`0005_official_token_pricing.sql` 和 `0006_api_key_lifecycle.sql` 都是 forward-only
+迁移。部署前先备份
 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不能只切回旧镜像。
 `0004` 会把所有当时仍启用且未到期的订阅设为 `1/1`，保留现有额度、余额和周期
 起止时间，并在原 `period_ends_at` 自动失效；已经越过结束时间但仍标记启用的
 记录会按原结束时间关闭。`0005` 增加 OpenAI API Token 等价成本 v2 所需的服务层、
-上下文、缓存写入和不可变 ledger 元数据，不重算或更新历史流水。密码哈希属于敏感数据，
+上下文、缓存写入和不可变 ledger 元数据，不重算或更新历史流水。`0006` 为既有 Key
+回填不含秘密的历史引用，迁移账务、用量、配额和审计外键，增加可空密文字段，删除旧
+`revoked` 凭证并把活动状态收紧为 `active`/`disabled`；迁移前 Key 的密文保持为空。
+密码哈希属于敏感数据，
 不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和
 并行度 2，不需要新增部署 secret。
 
@@ -181,8 +185,11 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ./scripts/bootstrap-secrets.sh
 ```
 
-脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、两个 HMAC pepper 和
-Gateway 到 sidecar 的内部随机密钥，不会显示密钥。Compose 通过
+脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、两个 HMAC pepper、独立的 API Key
+加密密钥和 Gateway 到 sidecar 的内部随机密钥，不会显示密钥。API Key 加密密钥
+位于 `deploy/secrets/gateway_api_key_encryption_key`，是恰好 32 个随机字节的无填充
+URL-safe Base64 编码。脚本只在文件不存在时创建它；已有文件会被保留并校验，不能
+通过重新运行脚本轮换密钥。Compose 通过
 `/run/secrets` 文件传入，禁止复制到 `.env`、命令行或工单。
 
 本机 Compose 以只读 bind mount 实现 secret，长语法的所有权映射通常会被
@@ -190,6 +197,12 @@ Gateway 到 sidecar 的内部随机密钥，不会显示密钥。Compose 通过
 主组（运行 `id -g` 获取）。Gateway 和 sidecar 仍以非 root UID 10001 运行，
 仅通过这个组读取 `0640` secret；文件绝不能放宽为全局可读。生产主机不应让
 其他交互用户加入该组。OAuth 卷不使用此机制，仍严格为 UID 10001、`0600`。
+
+`API_KEY_ENCRYPTION_KEY`/`API_KEY_ENCRYPTION_KEY_FILE` 是 Gateway 启动必填配置，
+部署固定使用 `_FILE`。它必须与 HMAC pepper 独立生成，仅挂载给 Gateway，禁止写入
+`.env`、日志、审计 metadata、命令行或工单。本版本不支持密钥轮换；丢失或替换该
+文件会使数据库中的 API Key 密文无法解密。数据库备份和恢复必须配套保管并恢复同一
+份 secret。
 
 初始化 age 备份密钥：
 
@@ -262,7 +275,8 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 `validate-compose.sh` 会检查：没有服务发布宿主机端口、内部网络隔离、
 `cloudflared` 与 Squid 只能连接各自需要的出站网络、PostgreSQL 本地初始化和
 host 连接都强制使用 SCRAM、v2 价格目录结构和必要占位符、sidecar 是只读且非
-root、secret 权限及所有基础镜像的 SHA-256 digest。
+root、API Key 加密 secret 的格式和仅 Gateway 挂载、其他 secret 权限及所有基础
+镜像的 SHA-256 digest。
 
 确认主机监听：
 
@@ -320,15 +334,17 @@ OAuth 卷不属于备份。灾备恢复、卷损坏或 refresh token 失效后�
 只在 SSH 终端中运行，并把完整链接直接交给 Owner；链接中的令牌必须位于
 URL fragment，不能作为 query string。
 
-Owner 完成 Passkey 注册后，邀请、恢复、API Key 创建/撤销和敏感操作都在
-HTTPS 管理界面完成。API Key 只显示一次。不要截图、记录或通过聊天系统转发
+Owner 完成 Passkey 注册后，邀请、恢复、API Key 创建、查看、启停、删除和其他
+敏感操作都在 HTTPS 管理界面完成并要求近期二次验证。新创建的 API Key 可在再次
+验证后查看；迁移前 Key 因没有密文会明确显示不可查看。不要截图、记录或通过聊天系统转发
 API Key、恢复码、邀请 fragment 或 Passkey challenge。
 
 ## 7. 客户端接入
 
 客户端配置见 [client-config.md](client-config.md)。每台设备使用独立 Key，
-通过环境变量传给 Codex CLI。撤销测试应确认只有目标 Key 立即收到 401/403，
-其他设备不受影响。
+通过 Codex CLI 的安全输入流程配置。停用测试应确认只有目标 Key 立即收到
+`403 key_disabled`，重新启用后恢复；永久删除后列表中不再出现且新认证立即失败，
+其他设备以及既有用量和账务历史不受影响。
 
 ## 8. 加密备份和恢复演练
 
@@ -342,6 +358,11 @@ API Key、恢复码、邀请 fragment 或 Passkey challenge。
 写 SHA-256 校验文件。默认输出到被 Git 忽略的 `backups/`；也可通过
 `BACKUP_DIR` 指向本机另一受限目录。目录必须为部署用户所有、模式 `0700`，
 备份与校验文件必须为 `0600`。当前方案不把它们复制到异地。
+
+数据库备份包含新 Key 的 AES-GCM 密文，但不包含
+`deploy/secrets/gateway_api_key_encryption_key`。恢复演练只能证明数据库内容可恢复；
+生产恢复和计划迁机还必须通过单独受保护的 secret 交接恢复完全相同的加密密钥。
+使用另一把格式正确的 32 字节密钥可能通过启动配置检查，但查看 Key 时会完整性校验失败。
 
 生产要求每日 03:00 UTC 备份，并且**只有新备份成功后**才删除旧文件，最终
 保留按 UTC 文件名排序的最近 14 组完整 `.dump.age`/`.sha256` 对。为 cron 和
@@ -524,7 +545,10 @@ HTTPS/SSE 继续。这是预期的传输协商，不是 Cloudflare 缓冲、上�
 `GATEWAY_USAGE_PRICING_JSON`，否则新 Gateway 会拒绝启动。以后每次升级也应核对
 精确模型集合、官方价格目录日期、固定汇率及其日期。v2 价格变更只影响变更后
 创建的 reservation；已经结算的 USD 成本来自不可变 ledger，不会按新 JSON
-重算。当前固定汇率仅影响 CNY 展示。然后在服务器检出已审阅 revision、更新
+重算。当前固定汇率仅影响 CNY 展示。升级到 `0006` 的 revision 还必须在任何新
+Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-secrets.sh`，生成
+并保管必填的 `gateway_api_key_encryption_key`；配置加载发生在迁移前，缺少该文件时
+迁移命令也会拒绝启动。然后在服务器检出已审阅 revision、更新
 `.env` 的三个版本字段、验证工作树为空并现场构建；不要覆盖或清理上一 revision
 镜像。升级 CLIProxyAPI 前还必须：
 
@@ -618,6 +642,40 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
    PostgreSQL 卷，核对 migration ledger 和金额后再让旧 revision 连接新卷；
    不得删除迁移记录、反向修改 schema 或让旧二进制连接已应用 `0005` 的卷。
 
+### 升级到 `0006_api_key_lifecycle.sql`
+
+`0006` 把可认证的活动凭证与长期账务/用量引用分开，并为新创建 Key 增加加密保存。
+迁移前 Key 仍使用原 HMAC 正常认证，但没有可恢复的明文，因此管理界面会标记为不可
+查看。迁移会永久删除原先状态为 `revoked` 的活动凭证行；对应安全历史引用继续保留。
+按以下顺序升级：
+
+1. 停止 Tunnel、Caddy 和 Gateway 写入，生成新的数据库加密备份并完成恢复演练。
+   记录 `api_keys` 总数、各状态数量，以及用量、账务、配额和审计表中 API Key 引用
+   的行数，作为迁移前基线。
+2. 检出已审阅 revision 后，先执行新版 `./scripts/bootstrap-secrets.sh`。确认
+   `deploy/secrets/gateway_api_key_encryption_key` 是非 symlink regular file、模式
+   `0640`、组与 `GATEWAY_SECRET_GID` 一致，并将同一份文件纳入受保护的恢复 secret
+   交接；不得从 HMAC pepper 派生、复制或替换它。
+3. 更新 `.env` 中三个版本字段，执行 `./scripts/validate-compose.sh`，再构建 Gateway。
+   校验必须确认加密密钥只挂载给 Gateway，且内容是表示 32 字节的无填充 URL-safe
+   Base64。
+4. PostgreSQL 保持 healthy、旧 Gateway 保持停止，显式执行迁移：
+
+   ```sh
+   ./scripts/compose.sh run --rm --no-deps gateway migrate
+   ```
+
+5. 确认 `schema_migrations` 中存在 `0006_api_key_lifecycle.sql`；每个迁移前 Key 都有
+   对应历史引用，活动状态只剩 `active`/`disabled`，旧 `revoked` 行已从活动凭证表
+   删除，迁移前活动 Key 的密文字段为空。再次核对步骤 1 的用量、账务、配额和审计
+   引用，历史行不得丢失或变成孤儿。
+6. 启动 Gateway 和 Caddy 后，验证迁移前 Key 仍可认证但查看返回
+   `api_key_secret_unavailable`；创建新 Key 后验证查看、停用、重新启用和永久删除，
+   并确认删除不会移除既有用量或账务历史。全部通过后最后恢复 Tunnel。
+7. `0006` 写入后禁止旧二进制连接该数据库卷。需要回退时停止所有写入，将升级前
+   备份恢复到新的隔离数据库卷，再切换旧 revision；不得删除迁移记录或手工反向
+   修改生产 schema。
+
 ## 11. 计划迁机
 
 计划迁机使用数据库逻辑备份，不复制运行中的 PostgreSQL 原始 volume，也不
@@ -637,8 +695,9 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
    ```
 
    记录最后一组 `.dump.age` 及其 `.sha256`，旧服务器保持停止状态。
-3. 通过经过认证的加密通道，把 `.env`、`deploy/secrets/`（包括 age identity 和
-   Tunnel token）以及最终备份文件对复制到新服务器的相同相对路径。恢复
+3. 通过经过认证的加密通道，把 `.env`、`deploy/secrets/`（包括 age identity、
+   Tunnel token 和完全相同的 `gateway_api_key_encryption_key`）以及最终备份文件对
+   复制到新服务器的相同相对路径。恢复
    `.env` 的 `0600`、`deploy/secrets` 目录的 `0700`、服务/Tunnel secret 的
    `0640`、age key 文件与备份文件的 `0600`。把 `.env` 中
    `GATEWAY_SECRET_GID` 更新为新部署用户的主组并将 service secret 设为该组；
@@ -702,16 +761,20 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
 4. 使用真实域名完成 Owner Passkey 注册、退出、重新登录和敏感操作再验证；
    错误 Origin 与跨站请求必须被拒绝，Cookie 保持 `Secure`、`HttpOnly`、
    `SameSite=Strict`。
-5. 以 Owner 检查全员使用统计：目录/汇率日期正确，USD 等于不可变 ledger 合计，
+5. 创建新 API Key，确认普通管理状态不含明文或密文、近期二次验证后可重复查看，
+   停用立即返回 `403 key_disabled`、重新启用恢复、永久删除后列表和新认证均不可见；
+   升级环境还应确认迁移前 Key 显示为不可查看。关闭查看弹窗和退出登录后页面不得
+   保留 Key 明文。
+6. 以 Owner 检查全员使用统计：目录/汇率日期正确，USD 等于不可变 ledger 合计，
    `actual_cost_usd = charged_usd + uncovered_usd`，`estimated_usd` 与
    `actual_cost_usd` 相同。分别核对服务层、短/长上下文、cache-write Token 和
    兜底原因；修改测试环境当前价格 JSON 后，历史 ledger USD 必须不变。未配置
    模型必须在转发前返回 `model_pricing_not_found`。确认所有金额均标为
    “OpenAI API Token 等价成本”，没有呈现为 OpenAI 实际账单。
-6. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
+7. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
    两分钟的代表性长流不能被聚合或无故断开，客户端主动断开后上游请求和并发
    lease 会被取消或结算；响应不得被 Cloudflare 缓存。
-7. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
+8. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
    不出现测试 canary 的正文或凭证。
-8. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
+9. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
    手工运行一次每日备份任务和恢复演练，确认只保留最近 14 组完整文件对。

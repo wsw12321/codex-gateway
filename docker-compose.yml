@@ -85,6 +85,7 @@ services:
       TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:-172.28.10.2/32}
       DATABASE_URL_FILE: /run/secrets/database_url
       KEY_HMAC_PEPPER_FILE: /run/secrets/gateway_api_key_pepper
+      API_KEY_ENCRYPTION_KEY_FILE: /run/secrets/gateway_api_key_encryption_key
       TOKEN_HMAC_PEPPER_FILE: /run/secrets/gateway_session_secret
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
@@ -94,6 +95,7 @@ services:
       LIMIT_GLOBAL_CONCURRENT: "${LIMIT_GLOBAL_CONCURRENT:-32}"
     secrets:
       - database_url
+      - gateway_api_key_encryption_key
       - gateway_api_key_pepper
       - gateway_session_secret
       - sidecar_api_key
@@ -269,6 +271,8 @@ secrets:
     file: ./deploy/secrets/postgres_password
   gateway_api_key_pepper:
     file: ./deploy/secrets/gateway_api_key_pepper
+  gateway_api_key_encryption_key:
+    file: ./deploy/secrets/gateway_api_key_encryption_key
   gateway_session_secret:
     file: ./deploy/secrets/gateway_session_secret
   sidecar_api_key:

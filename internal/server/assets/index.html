@@ -179,7 +179,7 @@
 
           <section class="view hidden" data-section="keys" aria-labelledby="keys-title">
             <div class="section-head">
-              <div><p class="eyebrow">CREDENTIALS</p><h2 id="keys-title">API Keys</h2><p>每个 Key 绑定设备；秘密仅显示一次。</p></div>
+              <div><p class="eyebrow">CREDENTIALS</p><h2 id="keys-title">API Keys</h2><p>每个 Key 绑定设备；新 Key 可在二次验证后安全查看。</p></div>
               <button id="new-key" type="button" data-open="key-dialog">创建 API Key</button>
             </div>
             <p id="key-guidance" class="callout hidden" role="status"></p>
@@ -202,7 +202,7 @@
                 <div class="guide-step-marker" aria-hidden="true">1</div>
                 <div class="guide-step-body">
                   <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3>准备设备和 API Key</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
-                  <p>API Key 必须绑定设备，且秘密只显示一次。需要区分项目时，请在创建 Key 时设置默认项目。</p>
+                  <p>API Key 必须绑定设备。新创建的 Key 可在二次验证后再次查看；需要区分项目时，请设置默认项目。</p>
                   <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
                   <div class="button-group guide-actions">
                     <a class="button secondary" href="#resources">管理设备与项目</a>
@@ -255,7 +255,8 @@
                   <div class="guide-troubleshooting">
                     <h4>遇到问题？</h4>
                     <dl>
-                      <div><dt><code>401 invalid_api_key</code></dt><dd>重新执行 Codex 登录，并确认 Key 尚未过期或被撤销。</dd></div>
+                      <div><dt><code>401 invalid_api_key</code></dt><dd>重新执行 Codex 登录，并确认 Key 尚未过期或被删除。</dd></div>
+                      <div><dt><code>403 key_disabled</code></dt><dd>在 API Keys 页面重新启用该 Key，或改用其他活跃 Key。</dd></div>
                       <div><dt><code>400 invalid_project</code></dt><dd>确认 API Key 的默认项目仍为活跃状态，且属于当前账号。</dd></div>
                       <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单；Gateway 仅支持 Responses 协议。</dd></div>
                     </dl>
@@ -473,8 +474,10 @@
                 <p class="form-message hidden" role="alert"></p>
               </form>
               <div id="personal-loading" class="inline-loading hidden" role="status">正在加载个人用量…</div>
-              <div class="metrics compact">
+              <div id="personal-usage-metrics" class="metrics compact" aria-live="polite" aria-busy="true">
                 <article><span>请求</span><strong id="usage-requests">—</strong></article>
+                <article><span>Token</span><strong id="usage-tokens">—</strong><small>输入 + 输出</small></article>
+                <article><span>实际扣款</span><strong id="usage-charged-usd">—</strong><small>已结算 usage ledger</small></article>
                 <article><span>缓存率</span><strong id="metric-cache">—</strong></article>
                 <article><span>缓存写入 Token</span><strong id="metric-cache-write">—</strong></article>
                 <article><span>p95 TTFT</span><strong id="metric-ttft">—</strong></article>
@@ -617,7 +620,7 @@
   </dialog>
 
   <dialog id="secret-dialog" class="secret-dialog" aria-labelledby="secret-title">
-    <div class="dialog-heading"><p class="eyebrow">ONLY ONCE</p><h2 id="secret-title">只显示一次</h2></div>
+    <div class="dialog-heading"><p id="secret-eyebrow" class="eyebrow">ONLY ONCE</p><h2 id="secret-title">只显示一次</h2></div>
     <p id="secret-description">请立即安全保存。关闭后内容会从页面清除，无法再次查看。</p>
     <pre id="secret-value" tabindex="0"></pre>
     <p id="secret-status" class="form-message hidden" role="status" aria-live="polite"></p>

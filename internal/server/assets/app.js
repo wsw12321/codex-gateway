@@ -25,6 +25,7 @@ let state = null;
 let overviewSummary = null;
 let noticeTimer = 0;
 let secretAfterClose = null;
+let secretDismissible = false;
 let personalRequestSequence = 0;
 let globalRequestSequence = 0;
 let checkingSession = false;
@@ -250,9 +251,12 @@ async function copyText(value) {
 function clearSensitiveDOM() {
   const dialog = byId("secret-dialog");
   secretAfterClose = null;
+  secretDismissible = false;
   byId("secret-value").textContent = "";
+  byId("secret-eyebrow").textContent = "ONLY ONCE";
   byId("secret-title").textContent = "只显示一次";
   byId("secret-description").textContent = "请立即安全保存。关闭后内容会从页面清除，无法再次查看。";
+  byId("save-secret").textContent = "我已安全保存并关闭";
   setLocalMessage(dialog);
   if (dialog.open) dialog.close();
 }
@@ -260,6 +264,9 @@ function clearSensitiveDOM() {
 function handleUnauthorized() {
   invitationToken = "";
   secretAfterClose = null;
+  personalRequestSequence++;
+  globalRequestSequence++;
+  billingRequestSequence++;
   state = null;
   overviewSummary = null;
   billingDetail = null;
@@ -297,6 +304,8 @@ function handleUnauthorized() {
   byId("billing-ledger-next").disabled = true;
   for (const tier of billingTiers) byId(`billing-${tier.id}-ends`).textContent = "未启用";
   hide("personal-scope");
+  resetPersonalUsageSummary();
+  hide("personal-loading");
   byId("usage-rows").replaceChildren(tableMessage(8, "登录后加载使用明细。"));
   byId("global-rows").replaceChildren(tableMessage(6, "登录后加载全员汇总。"));
   for (const id of ["devices", "projects", "keys", "passkeys"]) {
@@ -495,15 +504,18 @@ async function sensitiveAction(operation) {
   }
 }
 
-function showSecret(title, value, description, afterClose = null) {
+function showSecret(title, value, description, afterClose = null, dismissible = false) {
   const dialog = byId("secret-dialog");
   if (dialog.open) {
     secretAfterClose = null;
     dialog.close();
   }
+  secretDismissible = dismissible;
+  byId("secret-eyebrow").textContent = dismissible ? "REVEAL" : "ONLY ONCE";
   byId("secret-title").textContent = title;
   byId("secret-description").textContent = description;
   byId("secret-value").textContent = value;
+  byId("save-secret").textContent = dismissible ? "关闭" : "我已安全保存并关闭";
   setLocalMessage(dialog);
   secretAfterClose = afterClose;
   dialog.showModal();
@@ -623,7 +635,7 @@ function renderResourceSummary() {
 function renderOnboarding() {
   const steps = [
     {done: Boolean(state?.devices?.length), title: "添加一台设备", detail: "为 API Key 建立清晰归属", section: "resources"},
-    {done: Boolean(state?.api_keys?.length), title: "创建 API Key", detail: "秘密只会显示一次", section: "keys"},
+    {done: Boolean(state?.api_keys?.length), title: "创建 API Key", detail: "二次验证后可再次查看", section: "keys"},
     {
       done: Number(overviewSummary?.requests || 0) > 0 || Boolean(state?.api_keys?.some((key) => key.last_used_at)),
       title: "配置 Codex 并完成首次请求", detail: "按使用指导接入 Gateway", section: "guide",
@@ -695,7 +707,7 @@ function renderAPIKeys() {
   if (!keys.length) {
     const hasDevice = state.devices.some((item) => item.status === "active");
     container.replaceChildren(emptyState(
-      hasDevice ? "还没有 API Key。创建后，秘密只会显示一次。" : "还没有 API Key，且当前没有活跃设备。",
+      hasDevice ? "还没有 API Key。新 Key 可在二次验证后查看。" : "还没有 API Key，且当前没有活跃设备。",
       hasDevice ? "创建 API Key" : "先建设备",
       () => hasDevice ? openDialog("key-dialog") : (location.hash = "resources"),
     ));
@@ -706,11 +718,19 @@ function renderAPIKeys() {
       element("strong", {text: key.name}), element("code", {text: key.key_prefix}), statusBadge(key.status),
     );
     const actions = element("div", {className: "list-actions"});
-    if (key.status === "active") {
-      const revoke = element("button", {type: "button", className: "danger", text: "撤销"});
-      revoke.addEventListener("click", () => runButton(revoke, () => revokeKey(key.id), "撤销中…"));
-      actions.append(revoke);
+    if (key.secret_available) {
+      const reveal = element("button", {type: "button", className: "secondary", text: "查看"});
+      reveal.addEventListener("click", () => runButton(reveal, () => revealKey(key), "解密中…"));
+      actions.append(reveal);
     }
+    const nextStatus = key.status === "active" ? "disabled" : "active";
+    const status = element("button", {
+      type: "button", className: "secondary", text: nextStatus === "active" ? "启用" : "停用",
+    });
+    status.addEventListener("click", () => runButton(status, () => changeKeyStatus(key, nextStatus), nextStatus === "active" ? "启用中…" : "停用中…"));
+    const remove = element("button", {type: "button", className: "danger", text: "删除"});
+    remove.addEventListener("click", () => runButton(remove, () => deleteKey(key), "删除中…"));
+    actions.append(status, remove);
     const allowlist = Array.isArray(key.model_allowlist) && key.model_allowlist.length ? key.model_allowlist.join(", ") : "全部模型";
     const detail = element("div", {className: "list-detail"},
       element("span", {text: `设备：${devices.get(key.device_id) || key.device_id}`}),
@@ -719,6 +739,7 @@ function renderAPIKeys() {
       element("span", {text: `到期：${formatDateTime(key.expires_at, "—")}`}),
       element("span", {text: `最后使用：${formatDateTime(key.last_used_at)}`}),
       element("span", {text: `创建：${formatDateTime(key.created_at, "—")}`}),
+      ...(!key.secret_available ? [element("span", {text: "完整值：历史 Key 无法查看"})] : []),
     );
     return element("div", {className: "list-row"}, title, actions, detail);
   }));
@@ -872,15 +893,52 @@ async function createKey(event) {
   showSecret(
     "保存 API Key",
     result.api_key || "",
-    `API Key ${result.prefix || ""} 只显示这一次。请复制到目标设备并安全保存。`,
+    `API Key ${result.prefix || ""} 已加密保存。请复制到目标设备；之后可通过二次验证再次查看。`,
+    null,
+    true,
   );
+  result.api_key = "";
   await refreshAfterMutation();
 }
 
-async function revokeKey(id) {
-  if (!window.confirm("撤销后 API Key 会立即失效，且无法恢复。确定继续？")) return;
-  await sensitiveAction(() => api(`/admin/api-keys/${encodeURIComponent(id)}`, {method: "DELETE", body: "{}"}));
-  notice("API Key 已撤销。", "ok");
+async function revealKey(key) {
+  const result = await sensitiveAction(() => api(
+    `/admin/api-keys/${encodeURIComponent(key.id)}/reveal`, {method: "POST", body: "{}"},
+  ));
+  showSecret(
+    `查看 ${key.name}`,
+    result.api_key || "",
+    `这是 API Key ${key.key_prefix}。关闭弹窗后，完整值会立即从页面清除。`,
+    null,
+    true,
+  );
+  result.api_key = "";
+}
+
+function renderAPIKeyMutation() {
+  renderAPIKeys();
+  renderSelects();
+  renderResourceSummary();
+  renderOnboarding();
+}
+
+async function changeKeyStatus(key, status) {
+  if (status === "disabled" && !window.confirm("停用后，该 API Key 的新请求会立即被拒绝。确定继续？")) return;
+  await sensitiveAction(() => api(`/admin/api-keys/${encodeURIComponent(key.id)}/status`, {
+    method: "PUT", body: JSON.stringify({status}),
+  }));
+  key.status = status;
+  renderAPIKeyMutation();
+  notice(`API Key 已${status === "active" ? "启用" : "停用"}。`, "ok");
+  await refreshAfterMutation();
+}
+
+async function deleteKey(key) {
+  if (!window.confirm("删除后，API Key 会立即失效，且凭证和完整值无法恢复。既有用量与账务历史仍会保留。确定永久删除？")) return;
+  await sensitiveAction(() => api(`/admin/api-keys/${encodeURIComponent(key.id)}`, {method: "DELETE"}));
+  state.api_keys = state.api_keys.filter((item) => item.id !== key.id);
+  renderAPIKeyMutation();
+  notice("API Key 已永久删除。", "ok");
   await refreshAfterMutation();
 }
 
@@ -1423,13 +1481,24 @@ function usageNameMaps() {
   };
 }
 
+function resetPersonalUsageSummary(value = "—", busy = false) {
+  for (const id of [
+    "usage-requests", "usage-tokens", "usage-charged-usd", "metric-cache",
+    "metric-cache-write", "metric-ttft", "metric-duration",
+  ]) byId(id).textContent = value;
+  byId("personal-usage-metrics").setAttribute("aria-busy", busy ? "true" : "false");
+}
+
 function renderPersonalUsage(result, updateOverview) {
   const summary = result.summary || {};
   byId("usage-requests").textContent = formatInteger(summary.requests);
+  byId("usage-tokens").textContent = formatInteger(summary.tokens);
+  byId("usage-charged-usd").textContent = formatMoney(summary.charged_usd, "USD");
   byId("metric-cache").textContent = formatPercent(summary.cache_rate);
   byId("metric-cache-write").textContent = formatInteger(summary.cache_write_tokens);
   byId("metric-ttft").textContent = `${formatInteger(summary.p95_ttft_ms)} ms`;
   byId("metric-duration").textContent = `${formatInteger(summary.p95_duration_ms)} ms`;
+  byId("personal-usage-metrics").setAttribute("aria-busy", "false");
   if (updateOverview) {
     overviewSummary = summary;
     byId("metric-requests").textContent = formatInteger(summary.requests);
@@ -1481,6 +1550,7 @@ async function loadPersonalUsage(query, updateOverview = false) {
   const sequence = ++personalRequestSequence;
   const loading = byId("personal-loading");
   show(loading);
+  resetPersonalUsageSummary("加载中…", true);
   setTableBusy(byId("usage-rows"), 8, "正在加载使用明细…");
   const suffix = querySuffix(query);
   try {
@@ -1489,6 +1559,7 @@ async function loadPersonalUsage(query, updateOverview = false) {
     renderPersonalUsage(result, updateOverview);
   } catch (error) {
     if (sequence === personalRequestSequence) {
+      resetPersonalUsageSummary();
       byId("usage-rows").closest("table")?.setAttribute("aria-busy", "false");
       byId("usage-rows").replaceChildren(tableMessage(8, friendlyError(error)));
     }
@@ -1851,6 +1922,12 @@ function bindUI() {
   bindAsync("join-form", "submit", register, "等待 Passkey…");
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
+    personalRequestSequence++;
+    globalRequestSequence++;
+    billingRequestSequence++;
+    resetPersonalUsageSummary();
+    hide("personal-loading");
+    clearSensitiveDOM();
     await api("/auth/logout", {method: "POST", body: "{}"});
     location.assign("/");
   }, "正在退出…");
@@ -1971,13 +2048,17 @@ function bindUI() {
   byId("secret-dialog").addEventListener("close", () => {
     const afterClose = secretAfterClose;
     secretAfterClose = null;
+    secretDismissible = false;
     byId("secret-value").textContent = "";
+    byId("secret-eyebrow").textContent = "ONLY ONCE";
     byId("secret-title").textContent = "只显示一次";
     byId("secret-description").textContent = "";
+    byId("save-secret").textContent = "我已安全保存并关闭";
     setLocalMessage(byId("secret-dialog"));
     if (afterClose) afterClose();
   });
   byId("secret-dialog").addEventListener("cancel", (event) => {
+    if (secretDismissible) return;
     event.preventDefault();
     setLocalMessage(byId("secret-dialog"), "请先安全保存内容，再使用“我已安全保存并关闭”确认。");
   });

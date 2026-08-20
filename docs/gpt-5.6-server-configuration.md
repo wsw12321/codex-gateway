@@ -138,6 +138,10 @@ JSON 必须保持在同一行。
 ./scripts/bootstrap-secrets.sh
 ```
 
+脚本还会生成仅供 Gateway 使用的
+`deploy/secrets/gateway_api_key_encryption_key`：内容是恰好 32 个随机字节的无填充
+URL-safe Base64。已有文件必须保留；本版本不支持重新生成或轮换该密钥。
+
 Cloudflare Tunnel token 不得写入 `.env`。把它保存为
 `deploy/secrets/cloudflared_tunnel_token`，属主为部署用户、属组为部署组、权限为
 `0640`。然后执行：
@@ -155,14 +159,15 @@ Cloudflare Tunnel token 不得写入 `.env`。把它保存为
 ./scripts/smoke-sidecar.sh
 ```
 
-首次启动后确认 `schema_migrations` 包含
-`0005_official_token_pricing.sql`，再按本页模型集合做结算冒烟。已有旧数据库升级
-不能直接套用上述首次启动流程，必须执行运维手册的
-[7 步停写迁移](operations.md#升级到-0005_official_token_pricingsql)。
+首次启动后确认 `schema_migrations` 包含 `0005_official_token_pricing.sql` 和
+`0006_api_key_lifecycle.sql`，再按本页模型集合做结算冒烟。已有旧数据库升级不能
+直接套用上述首次启动流程，必须依次执行运维手册的
+[价格迁移](operations.md#升级到-0005_official_token_pricingsql)和
+[API Key 生命周期迁移](operations.md#升级到-0006_api_key_lifecyclesql)。
 
 ## 已运行服务器只更新价格目录
 
-本节只适用于已经确认应用 `0005`、且二进制已经支持 v2 的服务器。首次从 v1
+本节只适用于已经确认应用 `0005` 和 `0006`、且二进制已经支持 v2 的服务器。首次从 v1
 升级必须使用上述停写迁移。后续只调整官方价格或固定汇率时，先备份现有配置，
 然后只把模板中的 `GATEWAY_USAGE_PRICING_JSON` 合并到服务器 `.env`；不要覆盖
 服务器自己的域名、revision、GID、网段或并发参数。

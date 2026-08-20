@@ -31,6 +31,7 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 			KeyHash: []byte("sensitive-key-hash"), UserID: "sensitive-user-id", DeviceID: "device-id",
 			DefaultProjectID: &projectID, Name: "CLI", Status: store.StatusActive,
 			ModelAllowlist: nil, CreatedAt: now, ExpiresAt: now.Add(24 * time.Hour), LastUsedAt: &lastUsed,
+			SecretAvailable: true,
 		}},
 		[]store.WebAuthnCredential{{
 			ID: "passkey-id", UserID: "sensitive-user-id", CredentialID: []byte("sensitive-credential-id"),
@@ -50,6 +51,7 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 		"KeyHash", "key_hash", "CredentialJSON", "credential_json", "CredentialID", "credential_id",
 		"sensitive-key-hash", "sensitive-credential-json", "sensitive-credential-id", "sensitive-user-id",
 		"sign_count", "public_id", "user_id", "rotated_from_id", "revoke_reason", "aaguid", "transports",
+		"secret_ciphertext", "sensitive-plaintext-api-key",
 	} {
 		if strings.Contains(string(raw), forbidden) {
 			t.Fatalf("admin state leaked forbidden field or value %q: %s", forbidden, raw)
@@ -68,13 +70,16 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 	assertJSONKeys(t, document["devices"].([]any)[0].(map[string]any), "created_at", "id", "last_seen_at", "name", "status")
 	assertJSONKeys(t, document["projects"].([]any)[0].(map[string]any), "created_at", "id", "name", "slug", "status")
 	assertJSONKeys(t, document["api_keys"].([]any)[0].(map[string]any),
-		"created_at", "default_project_id", "device_id", "expires_at", "id", "key_prefix", "last_used_at", "model_allowlist", "name", "status",
+		"created_at", "default_project_id", "device_id", "expires_at", "id", "key_prefix", "last_used_at", "model_allowlist", "name", "secret_available", "status",
 	)
 	assertJSONKeys(t, document["passkeys"].([]any)[0].(map[string]any),
 		"backup_eligible", "backup_state", "created_at", "id", "last_used_at", "nickname",
 	)
 	if models := document["api_keys"].([]any)[0].(map[string]any)["model_allowlist"]; models == nil || len(models.([]any)) != 0 {
 		t.Fatalf("empty model_allowlist = %#v, want []", models)
+	}
+	if available := document["api_keys"].([]any)[0].(map[string]any)["secret_available"]; available != true {
+		t.Fatalf("secret_available = %#v, want true", available)
 	}
 }
 
@@ -99,7 +104,8 @@ func TestAdminStateDTOUsesArraysAndNullAssociations(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := string(raw); !strings.Contains(got, `"default_project_id":null`) ||
-		!strings.Contains(got, `"last_used_at":null`) {
+		!strings.Contains(got, `"last_used_at":null`) ||
+		!strings.Contains(got, `"secret_available":false`) {
 		t.Fatalf("nullable API key associations were not encoded as null: %s", got)
 	}
 }

@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -22,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 5 {
-		t.Fatalf("migration count = %d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("migration count = %d, want 6", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -31,7 +33,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	}
 	for _, table := range []string{
 		"users", "invitations", "webauthn_credentials", "recovery_codes",
-		"sessions", "devices", "projects", "api_keys", "usage_requests",
+		"sessions", "devices", "projects", "api_keys", "api_key_history", "usage_requests",
 		"usage_daily", "audit_events", "alerts", "quota_locks",
 		"usage_monthly",
 		"quota_counters", "quota_rate_windows", "quota_reservations",
@@ -128,6 +130,61 @@ func TestTotalTokensDoesNotDoubleCountCachedOrReasoning(t *testing.T) {
 	}
 	if got := request.TotalTokens(); got != 140 {
 		t.Fatalf("TotalTokens = %d, want 140", got)
+	}
+}
+
+func TestAPIKeySecretFormattingRedactsMaterial(t *testing.T) {
+	t.Parallel()
+	secret := APIKeySecret{
+		ID: "key-id", PublicID: "public-id", KeyPrefix: "cgk_v1_public-id_",
+		KeyHash: []byte("hash-material"), SecretCiphertext: []byte("cipher-material"),
+	}
+	for _, formatted := range []string{
+		fmt.Sprintf("%v", secret), fmt.Sprintf("%+v", secret), fmt.Sprintf("%#v", secret),
+	} {
+		if strings.Contains(formatted, "hash-material") || strings.Contains(formatted, "cipher-material") {
+			t.Fatalf("APIKeySecret formatting exposed sensitive material: %s", formatted)
+		}
+		if !strings.Contains(formatted, "<redacted>") {
+			t.Fatalf("APIKeySecret formatting was not explicitly redacted: %s", formatted)
+		}
+	}
+	if _, err := json.Marshal(secret); err == nil {
+		t.Fatal("APIKeySecret unexpectedly allowed JSON serialization")
+	}
+}
+
+func TestCreateAPIKeyRequiresEncryptedSecret(t *testing.T) {
+	t.Parallel()
+	storeWithoutDB := New(nil)
+	if _, err := storeWithoutDB.CreateAPIKey(context.Background(), CreateAPIKeyParams{
+		PublicID: "public-id", KeyPrefix: "cgk_v1_public-id_", KeyHash: make([]byte, 32),
+		UserID: "user-id", DeviceID: "device-id", Name: "missing ciphertext",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("CreateAPIKey without ciphertext error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestUsageFilterWhereQualifiesSharedColumns(t *testing.T) {
+	t.Parallel()
+	from := time.Now().UTC().Add(-time.Hour)
+	until := from.Add(time.Hour)
+	where, args := usageFilterWhere(UsageFilter{
+		From: &from, Until: &until, UserID: "user", DeviceID: "device",
+		APIKeyID: "key", ProjectID: "project", Model: "model", State: "completed",
+		HTTPStatus: 200, StatusClass: 2,
+	}, "u")
+	joined := strings.Join(where, " AND ")
+	for _, column := range []string{
+		"u.requested_at", "u.user_id", "u.device_id", "u.api_key_id",
+		"u.project_id", "u.model", "u.state", "u.http_status",
+	} {
+		if !strings.Contains(joined, column) {
+			t.Errorf("qualified usage filter is missing %q: %s", column, joined)
+		}
+	}
+	if len(args) != 10 {
+		t.Fatalf("usage filter argument count = %d, want 10", len(args))
 	}
 }
 
@@ -406,6 +463,50 @@ func TestOfficialTokenPricingMigrationIsForwardOnlyAndVersionCompatible(t *testi
 	}
 	if strings.Contains(migrationSQL, "{1,256}") {
 		t.Fatal("official token pricing migration uses an unsupported PostgreSQL regex repetition bound")
+	}
+}
+
+func TestAPIKeyLifecycleMigrationRetainsOnlyImmutableSafeHistory(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0006_api_key_lifecycle.sql" {
+			migrationSQL = migration.SQL
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0006_api_key_lifecycle.sql is missing")
+	}
+	for _, required := range []string{
+		"CREATE TABLE api_key_history",
+		"INSERT INTO api_key_history",
+		"ADD COLUMN secret_ciphertext BYTEA",
+		"api_keys_history_owner_fk",
+		"api_keys_rotated_from_history_fk",
+		"REFERENCES api_key_history(id, user_id, device_id)",
+		"REFERENCES api_key_history(id, user_id)",
+		"gateway_reject_api_key_history_mutation",
+		"BEFORE UPDATE OR DELETE ON api_key_history",
+		"DELETE FROM api_keys WHERE status = 'revoked'",
+		"status IN ('active', 'disabled')",
+		"DROP COLUMN revoked_at",
+		"DROP COLUMN revoke_reason",
+	} {
+		if !strings.Contains(migrationSQL, required) {
+			t.Errorf("API key lifecycle migration is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"UPDATE billing_ledger_entries", "DELETE FROM billing_ledger_entries",
+		"DELETE FROM api_key_history",
+	} {
+		if strings.Contains(migrationSQL, forbidden) {
+			t.Errorf("API key lifecycle migration contains forbidden history mutation %q", forbidden)
+		}
 	}
 }
 

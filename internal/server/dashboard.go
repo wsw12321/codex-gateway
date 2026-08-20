@@ -15,6 +15,7 @@ import (
 type usageSummary struct {
 	Requests          int64   `json:"requests"`
 	Tokens            int64   `json:"tokens"`
+	ChargedUSD        string  `json:"charged_usd"`
 	InputTokens       int64   `json:"input_tokens"`
 	CachedInputTokens int64   `json:"cached_input_tokens"`
 	CacheWriteTokens  int64   `json:"cache_write_tokens"`
@@ -149,7 +150,7 @@ func parseDashboardTime(value string, endOfDay bool) (time.Time, error) {
 }
 
 func summarizeUsage(requests []store.UsageRequest) usageSummary {
-	var summary usageSummary
+	summary := usageSummary{ChargedUSD: "0"}
 	var errorsCount int64
 	var ttft, duration []int64
 	for _, request := range requests {
@@ -183,7 +184,8 @@ func summarizeUsage(requests []store.UsageRequest) usageSummary {
 
 func summaryFromStore(value store.UsageSummary) usageSummary {
 	summary := usageSummary{
-		Requests: value.RequestCount, InputTokens: value.InputTokens,
+		Requests: value.RequestCount, ChargedUSD: value.ChargedUSD,
+		InputTokens:       value.InputTokens,
 		CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
 		CacheWriteTokens: value.CacheWriteTokens,
 		ReasoningTokens:  value.ReasoningTokens,

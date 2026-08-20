@@ -5,7 +5,7 @@
 密码使用 64 MiB、3 轮、并行度 2 的 Argon2id；在线尝试受 IP、路径和用户名
 摘要限流保护。
 
-账号恢复可选择新增 Passkey 或设置新密码。恢复会撤销旧会话、轮换恢复码，但保留未被选择替换的现有登录方式；API Key 不会自动撤销。
+账号恢复可选择新增 Passkey 或设置新密码。恢复会撤销旧会话、轮换恢复码，但保留未被选择替换的现有登录方式；API Key 不会自动停用或删除。
 
 面向单台公网 VPS、单个订阅者自有设备的 Codex Responses 网关。它在本地
 Codex CLI 与内部 Codex 兼容层之间增加设备级 API Key、项目归属、持久化限额、
@@ -68,12 +68,13 @@ sidecar，不进入数据库或备份。
 
 - 无密码、无公开注册的邀请制身份系统；Owner 初始化链接只能从 SSH 终端生成。
 - 可发现 Passkey 登录、多 Passkey、WebAuthn RP/Origin 校验及 challenge 防重放。
-- API Key 创建/撤销、邀请和恢复等敏感操作要求 5 分钟内再次验证 Passkey。
+- API Key 创建、查看、启停、删除以及邀请和恢复等敏感操作要求 5 分钟内再次验证。
 - 每批生成 10 个一次性恢复码；Owner 可签发恢复邀请。
 - 服务端随机会话，12 小时空闲和 7 天绝对过期；Cookie 使用 `Secure`、
   `HttpOnly`、`SameSite=Strict`。
-- 设备 Key 格式为 `cgk_v1_<public-id>_<256-bit-secret>`，原值只显示一次；
-  数据库仅保存 public ID、显示前缀和带服务端 pepper 的 HMAC-SHA256。
+- 设备 Key 格式为 `cgk_v1_<public-id>_<256-bit-secret>`；数据库保存用于认证的
+  peppered HMAC-SHA256，新创建 Key 还以独立密钥进行版本化 AES-256-GCM 加密，
+  因而可在近期二次验证后再次查看。迁移前 Key 没有密文，仍可使用但无法查看原值。
 - 每个 Key 必须绑定用户和设备，可设置默认项目、到期时间、模型白名单和独立
   限额；默认 90 天，最长 365 天。
 
@@ -100,7 +101,7 @@ Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 | --- | --- |
 | `400 invalid_project` | 显式项目不存在或不属于当前用户 |
 | `401` | API Key 无效或已过期 |
-| `403` | 用户/Key 已禁用，或模型不在白名单 |
+| `403` | 用户或 Key 已禁用，或模型不在白名单 |
 | `413 request_too_large` | 请求超过 64 MiB |
 | `426 responses_websocket_unsupported` | WebSocket 不受支持，客户端应改用 HTTPS/SSE |
 | `429` | RPM、并发、每日请求或 USD 额度不足 |
@@ -122,8 +123,8 @@ lease，客户端断开会取消上游请求并释放租约，异常退出的遗
 
 Token 总量按 input + output 结算；cached input、cache write 和 reasoning 是细分
 指标，不重复计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态
-过滤，展示请求数、Token、缓存率、缓存写入量、错误率、p95 TTFT/耗时，并导出
-CSV。
+过滤，展示请求数、Token、实际扣款、缓存率、缓存写入量、错误率、p95 TTFT/耗时，
+并导出 CSV；实际扣款来自筛选区间内已结算的 `usage_charge` ledger。
 
 ### 额度与订阅计费
 
@@ -278,8 +279,11 @@ Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`�
 ./scripts/bootstrap-secrets.sh
 ```
 
-脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、API Key/token HMAC pepper 和
-Gateway 到 sidecar 的内部 Key，不输出内容。在 Cloudflare Dashboard 创建
+脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、API Key/token HMAC pepper、
+独立的 32 字节 API Key 加密密钥和 Gateway 到 sidecar 的内部 Key，不输出内容。
+加密密钥以无填充 URL-safe Base64 保存在
+`deploy/secrets/gateway_api_key_encryption_key`，不得复制到 `.env`，也不得在没有
+密钥轮换方案时重新生成。在 Cloudflare Dashboard 创建
 Tunnel，把 Public Hostname 的 origin service 固定为 `http://caddy:80`，再将
 connector token 以精确 `0640` 保存为
 `deploy/secrets/cloudflared_tunnel_token`。Token 只能通过挂载的 secret 文件
@@ -327,12 +331,14 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 完整上线、设备登录、备份、恢复与升级流程见
 [部署与运维手册](docs/operations.md)。
 
-升级到 `0004_subscription_period_limits.sql` 或
-`0005_official_token_pricing.sql` 前必须完成加密备份和恢复演练。迁移是
+升级到 `0004_subscription_period_limits.sql`、`0005_official_token_pricing.sql`
+或 `0006_api_key_lifecycle.sql` 前必须完成加密备份和恢复演练。迁移是
 forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；回滚必须
 停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。`0005`
 的停写、核账、迁移和模型冒烟 7 步见
 [升级到 OpenAI API Token 等价成本 v2](docs/operations.md#升级到-0005_official_token_pricingsql)。
+`0006` 上线前还必须先生成并安全保存独立 API Key 加密 secret；数据库备份不包含
+该文件，恢复或迁机必须携带同一份密钥。
 
 ## Codex CLI 配置
 
