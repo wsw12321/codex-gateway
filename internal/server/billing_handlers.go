@@ -31,7 +31,8 @@ type adjustmentInput struct {
 
 type subscriptionInput struct {
 	billingOperationInput
-	QuotaUSD string `json:"quota_usd"`
+	QuotaUSD    string `json:"quota_usd"`
+	PeriodCount *int   `json:"period_count"`
 }
 
 func (s *Server) billingMe(w http.ResponseWriter, r *http.Request) {
@@ -78,7 +79,9 @@ func billingSubscriptionsResponse(values []store.BillingSubscriptionState) map[s
 		result[value.Tier] = map[string]any{
 			"id": value.ID, "tier": value.Tier, "enabled": value.Enabled,
 			"quota_usd": value.AllowanceUSD, "remaining_usd": value.RemainingUSD,
-			"period_id": value.PeriodID, "period_started_at": value.PeriodStartsAt,
+			"period_count": value.PeriodCount, "current_period_number": value.CurrentPeriodNumber,
+			"expires_at": value.ExpiresAt,
+			"period_id":  value.PeriodID, "period_started_at": value.PeriodStartsAt,
 			"period_ends_at": value.PeriodEndsAt, "updated_at": value.UpdatedAt,
 		}
 	}
@@ -172,6 +175,7 @@ func (s *Server) putBillingSubscription(w http.ResponseWriter, r *http.Request) 
 	value, err := s.store.PutSubscription(r.Context(), store.PutSubscriptionParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
 		UserID:             r.PathValue("user_id"), Tier: tier, AllowanceUSD: input.QuotaUSD,
+		PeriodCount: *input.PeriodCount,
 	})
 	if err != nil {
 		s.billingStoreError(w, r, "put billing subscription", err)
@@ -218,6 +222,10 @@ func (s *Server) decodeBillingWrite(w http.ResponseWriter, r *http.Request, dest
 		operation = value.billingOperationInput
 	case *subscriptionInput:
 		operation = value.billingOperationInput
+		if value.PeriodCount == nil || *value.PeriodCount < 0 || *value.PeriodCount > 99 {
+			s.billingInputError(w, r)
+			return false
+		}
 	default:
 		internalError(s, w, r, "decode billing operation", errInvalidBillingOperation)
 		return false

@@ -55,6 +55,9 @@ func (r Runner) runOnce(ctx context.Context) {
 	if _, err := r.Store.RetryUnsettledRequests(ctx, 1000); err != nil {
 		r.Logger.Warn("request billing settlement recovery failed")
 	}
+	if _, err := r.Store.ExpireBillingSubscriptions(ctx, now, 1000); err != nil {
+		r.Logger.Warn("finite subscription expiry convergence failed")
+	}
 	local := now.In(location)
 	yesterday := time.Date(local.Year(), local.Month(), local.Day()-1, 0, 0, 0, 0, location)
 	if err := r.Store.AggregateUsageDay(ctx, yesterday, r.Timezone); err != nil {

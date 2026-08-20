@@ -47,6 +47,44 @@ func TestDecodeBillingWriteRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestDecodeBillingSubscriptionRequiresIntegerPeriodCount(t *testing.T) {
+	t.Parallel()
+
+	const operationID = "550e8400-e29b-41d4-a716-446655440000"
+	for _, test := range []struct {
+		name            string
+		periodJSON      string
+		wantOK          bool
+		wantCode        string
+		wantPeriodCount int
+	}{
+		{name: "missing", wantCode: "invalid_billing_operation"},
+		{name: "negative", periodJSON: `,"period_count":-1`, wantCode: "invalid_billing_operation"},
+		{name: "over maximum", periodJSON: `,"period_count":100`, wantCode: "invalid_billing_operation"},
+		{name: "fractional", periodJSON: `,"period_count":1.5`, wantCode: "invalid_json"},
+		{name: "string", periodJSON: `,"period_count":"1"`, wantCode: "invalid_json"},
+		{name: "finite", periodJSON: `,"period_count":99`, wantOK: true, wantPeriodCount: 99},
+		{name: "unlimited", periodJSON: `,"period_count":0`, wantOK: true, wantPeriodCount: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := `{"operation_id":"` + operationID + `","reason":"required","quota_usd":"1"` + test.periodJSON + `}`
+			request := httptest.NewRequest(http.MethodPut, "/admin/billing/users/user/subscriptions/day", strings.NewReader(body))
+			response := httptest.NewRecorder()
+			var input subscriptionInput
+			ok := (&Server{}).decodeBillingWrite(response, request, &input)
+			if ok != test.wantOK {
+				t.Fatalf("decode ok = %v, want %v; status=%d body=%s", ok, test.wantOK, response.Code, response.Body.String())
+			}
+			if test.wantCode != "" && !strings.Contains(response.Body.String(), `"code":"`+test.wantCode+`"`) {
+				t.Fatalf("response does not contain code %q: status=%d body=%s", test.wantCode, response.Code, response.Body.String())
+			}
+			if test.wantOK && (input.PeriodCount == nil || *input.PeriodCount != test.wantPeriodCount) {
+				t.Fatalf("decoded period count = %#v, want %d", input.PeriodCount, test.wantPeriodCount)
+			}
+		})
+	}
+}
+
 func TestBillingStoreErrorMapsQuotaAndIdempotencyFailures(t *testing.T) {
 	t.Parallel()
 
@@ -110,11 +148,17 @@ func TestValidateBillingOperation(t *testing.T) {
 func TestBillingStateResponseKeepsMoneyAsJSONStrings(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(2 * 24 * time.Hour)
 	state := store.BillingState{
 		UserID: "user-id", BalanceUSD: "12.340000000000", LedgerTotal: 1,
 		Subscriptions: []store.BillingSubscriptionState{{
 			Tier: "day", Enabled: true, AllowanceUSD: "5.000000000000",
-			RemainingUSD: "4.500000000000", PeriodStartsAt: &now, PeriodEndsAt: &now,
+			RemainingUSD: "4.500000000000", PeriodCount: 0, CurrentPeriodNumber: 3,
+			PeriodStartsAt: &now, PeriodEndsAt: &now,
+		}, {
+			Tier: "week", Enabled: true, AllowanceUSD: "8.000000000000",
+			RemainingUSD: "8.000000000000", PeriodCount: 2, CurrentPeriodNumber: 1,
+			ExpiresAt: &expiresAt, PeriodStartsAt: &now, PeriodEndsAt: &now,
 		}},
 		Ledger: []store.BillingLedgerEntry{{
 			ID: 1, EntryType: "recharge", AmountUSD: "12.340000000000",
@@ -130,6 +174,12 @@ func TestBillingStateResponseKeepsMoneyAsJSONStrings(t *testing.T) {
 		`"cash_balance_usd":"12.340000000000"`,
 		`"quota_usd":"5.000000000000"`,
 		`"remaining_usd":"4.500000000000"`,
+		`"period_count":0`,
+		`"current_period_number":3`,
+		`"expires_at":null`,
+		`"period_count":2`,
+		`"current_period_number":1`,
+		`"expires_at":"2026-08-14T12:00:00Z"`,
 		`"amount_usd":"12.340000000000"`,
 	} {
 		if !strings.Contains(text, expected) {

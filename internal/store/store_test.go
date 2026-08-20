@@ -19,8 +19,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 3 {
-		t.Fatalf("migration count = %d, want 3", len(migrations))
+	if len(migrations) != 4 {
+		t.Fatalf("migration count = %d, want 4", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -264,6 +264,32 @@ func TestBillingAllocationArithmeticKeepsTwelveDecimalPlaces(t *testing.T) {
 	}
 }
 
+func TestValidateBillingPeriodCount(t *testing.T) {
+	t.Parallel()
+	for _, value := range []int{0, 1, 99} {
+		if err := validateBillingPeriodCount(value); err != nil {
+			t.Errorf("period count %d rejected: %v", value, err)
+		}
+	}
+	for _, value := range []int{-1, 100} {
+		if err := validateBillingPeriodCount(value); !errors.Is(err, ErrInvalid) {
+			t.Errorf("period count %d error = %v, want ErrInvalid", value, err)
+		}
+	}
+}
+
+func TestBillingSubscriptionExpiryUsesPeriodSnapshot(t *testing.T) {
+	t.Parallel()
+	start := time.Date(2026, time.August, 18, 12, 0, 0, 0, time.UTC)
+	if expiry := billingSubscriptionExpiry(start, 24*time.Hour, 2, 4); expiry == nil ||
+		!expiry.Equal(start.Add(3*24*time.Hour)) {
+		t.Fatalf("finite expiry = %v, want %v", expiry, start.Add(3*24*time.Hour))
+	}
+	if expiry := billingSubscriptionExpiry(start, 24*time.Hour, 9, 0); expiry != nil {
+		t.Fatalf("unlimited expiry = %v, want nil", expiry)
+	}
+}
+
 func TestBillingMigrationEnforcesAuditAndAdmissionBindings(t *testing.T) {
 	t.Parallel()
 
@@ -301,6 +327,38 @@ func TestBillingMigrationEnforcesAuditAndAdmissionBindings(t *testing.T) {
 	for _, forbidden := range []string{"request_payload", "response_payload", "raw_payload"} {
 		if strings.Contains(strings.ToLower(billingSQL), forbidden) {
 			t.Errorf("billing migration stores forbidden payload field %q", forbidden)
+		}
+	}
+}
+
+func TestSubscriptionPeriodLimitMigrationIsForwardOnlyAndConstrained(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0004_subscription_period_limits.sql" {
+			migrationSQL = migration.SQL
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0004_subscription_period_limits.sql is missing")
+	}
+	for _, required := range []string{
+		"period_count BETWEEN 0 AND 99",
+		"current_period_number >= 1",
+		"period_number >= 1",
+		"expires_at = p.ends_at",
+		"disabled_at = p.ends_at",
+		"SET closed_at = p.ends_at",
+		"WHERE enabled AND period_count > 0",
+		"CREATE TABLE billing_subscription_operation_snapshots",
+		"billing_subscription_operation_snapshots_immutable",
+	} {
+		if !strings.Contains(migrationSQL, required) {
+			t.Errorf("subscription period limit migration is missing %q", required)
 		}
 	}
 }

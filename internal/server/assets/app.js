@@ -1017,6 +1017,27 @@ function billingSubscriptionEnabled(subscription) {
   return Boolean(subscription.period_ends_at);
 }
 
+function billingSubscriptionPeriod(subscription) {
+  const count = Number(subscription?.period_count);
+  const current = Number(subscription?.current_period_number);
+  return {
+    count: Number.isInteger(count) && count >= 0 && count <= 99 ? count : 0,
+    current: Number.isInteger(current) && current >= 1 ? current : 1,
+  };
+}
+
+function billingPeriodProgress(subscription) {
+  const period = billingSubscriptionPeriod(subscription);
+  return period.count === 0
+    ? `第 ${period.current} 个周期 · 无限期`
+    : `当前第 ${period.current}/${period.count} 个周期`;
+}
+
+function billingPeriodEndLabel(subscription) {
+  const period = billingSubscriptionPeriod(subscription);
+  return period.count > 0 && period.current >= period.count ? "本周期结束（最终失效）" : "本周期结束";
+}
+
 function billingCashBalance(detail = billingDetail) {
   return detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd ?? "0";
 }
@@ -1062,8 +1083,10 @@ function renderBillingSubscriptions(detail) {
       header,
       element("strong", {text: enabled ? formatUSD(remaining, formatUSD("0")) : "未启用"}),
       element("small", {text: enabled ? `周期额度：${formatUSD(quota, "—")} · 固定 ${tier.duration}` : `固定 ${tier.duration}滚动周期`}),
-      element("small", {text: enabled ? `开始：${formatDateTime(subscription?.period_started_at, "—")}` : "剩余额度不会结转"}),
-      element("small", {text: enabled ? `续期：${formatDateTime(subscription?.period_ends_at, "—")}` : "Owner 可随时启用"}),
+      element("small", {text: enabled ? billingPeriodProgress(subscription) : "剩余额度不会结转"}),
+      element("small", {text: enabled ? `开始：${formatDateTime(subscription?.period_started_at, "—")}` : "Owner 可随时启用"}),
+      element("small", {text: enabled ? `${billingPeriodEndLabel(subscription)}：${formatDateTime(subscription?.period_ends_at, "—")}` : "周期数可设为 1–99 或 0（无限期）"}),
+      element("small", {text: enabled ? `最终失效：${subscription?.expires_at ? formatDateTime(subscription.expires_at, "—") : "无限期"}` : ""}),
     );
   });
   container.replaceChildren(...cards);
@@ -1164,6 +1187,9 @@ function renderBillingAdminValues(detail) {
     if (document.activeElement !== form.elements.quota_usd) {
       form.elements.quota_usd.value = subscription?.quota_usd == null ? "" : String(subscription.quota_usd);
     }
+    if (document.activeElement !== form.elements.period_count) {
+      form.elements.period_count.value = subscription?.id ? String(subscription.period_count ?? 1) : "1";
+    }
     form.querySelector("[data-disable-subscription]").disabled = !billingSubscriptionEnabled(subscription);
   }
 }
@@ -1184,7 +1210,8 @@ function renderBillingDetail(detail) {
     byId(`billing-${tier.id}-remaining`).textContent = enabled
       ? formatUSD(subscription?.remaining_usd, formatUSD("0")) : "未启用";
     byId(`billing-${tier.id}-ends`).textContent = enabled
-      ? `续期：${formatDateTime(subscription?.period_ends_at, "—")}` : `固定 ${tier.duration}`;
+      ? `${billingPeriodProgress(subscription)} · ${billingPeriodEndLabel(subscription)}：${formatDateTime(subscription?.period_ends_at, "—")} · 最终失效：${subscription?.expires_at ? formatDateTime(subscription.expires_at, "—") : "无限期"}`
+      : `固定 ${tier.duration}`;
   }
   renderBillingSubscriptions(detail);
   renderBillingLedger(detail);
@@ -1288,6 +1315,12 @@ function billingReason(form) {
   return reason;
 }
 
+function billingPeriodCount(form) {
+  const value = String(new FormData(form).get("period_count") || "").trim();
+  if (!/^(0|[1-9][0-9]?)$/.test(value)) throw new Error("周期数必须是 0–99 的整数；0 表示无限期。");
+  return Number(value);
+}
+
 async function billingMutation(path, method, payload) {
   if (state?.user?.role !== "owner") throw new Error("仅 Owner 可执行此账务操作。");
   if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
@@ -1349,6 +1382,7 @@ async function updateBillingSubscription(event) {
   const data = new FormData(form);
   await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "PUT", {
     quota_usd: String(data.get("quota_usd") || "").trim(),
+    period_count: billingPeriodCount(form),
     reason: billingReason(form),
   });
   form.elements.reason.value = "";

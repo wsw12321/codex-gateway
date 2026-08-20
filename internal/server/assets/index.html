@@ -271,7 +271,7 @@
 
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">
             <div class="section-head">
-              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、滚动周期额度与实际结算流水；使用统计中的价格估算不等同于账单。</p></div>
+              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、有限或无限周期额度与实际结算流水；使用统计中的价格估算不等同于账单。</p></div>
             </div>
             <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
             <div id="billing-owner-scope" class="scope-banner owner-only hidden">
@@ -331,12 +331,15 @@
               </div>
 
               <article class="panel billing-subscription-admin">
-                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置滚动周期</h3><p>保存会立即关闭旧周期并从当前时刻重开；停用会立即阻止新请求使用旧周期。</p></div></div>
+                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置订阅周期</h3><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。</p></div></div>
                 <div class="billing-subscription-forms">
                   <form id="billing-subscription-day" class="billing-subscription-form" data-tier="day">
                     <div><h4>日订阅</h4><small>固定 24 小时</small></div>
                     <label>周期额度（USD）
                       <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="10.00">
+                    </label>
+                    <label>周期数（0 表示无限期）
+                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
                     </label>
                     <label>操作原因
                       <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
@@ -349,6 +352,9 @@
                     <label>周期额度（USD）
                       <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="50.00">
                     </label>
+                    <label>周期数（0 表示无限期）
+                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
+                    </label>
                     <label>操作原因
                       <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
                     </label>
@@ -359,6 +365,9 @@
                     <div><h4>月订阅</h4><small>固定 31 天</small></div>
                     <label>周期额度（USD）
                       <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="200.00">
+                    </label>
+                    <label>周期数（0 表示无限期）
+                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
                     </label>
                     <label>操作原因
                       <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">

@@ -119,6 +119,12 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 		admission.Usage, txErr = beginUsageRequestTx(ctx, tx, usage)
 		return txErr
 	})
+	var insufficient *InsufficientFundsError
+	if params.Billing != nil && errors.As(err, &insufficient) {
+		if convergeErr := s.convergeBillingSubscriptions(ctx, quota.UserID, quota.Now); convergeErr != nil {
+			return RequestAdmission{}, convergeErr
+		}
+	}
 	return admission, err
 }
 

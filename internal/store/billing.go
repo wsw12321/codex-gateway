@@ -37,15 +37,18 @@ type BillingSettings struct {
 }
 
 type BillingSubscriptionState struct {
-	ID             string     `json:"id,omitempty"`
-	Tier           string     `json:"tier"`
-	Enabled        bool       `json:"enabled"`
-	AllowanceUSD   string     `json:"allowance_usd"`
-	RemainingUSD   string     `json:"remaining_usd"`
-	PeriodID       *string    `json:"period_id,omitempty"`
-	PeriodStartsAt *time.Time `json:"period_starts_at,omitempty"`
-	PeriodEndsAt   *time.Time `json:"period_ends_at,omitempty"`
-	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+	ID                  string     `json:"id,omitempty"`
+	Tier                string     `json:"tier"`
+	Enabled             bool       `json:"enabled"`
+	AllowanceUSD        string     `json:"allowance_usd"`
+	RemainingUSD        string     `json:"remaining_usd"`
+	PeriodCount         int        `json:"period_count"`
+	CurrentPeriodNumber int        `json:"current_period_number"`
+	ExpiresAt           *time.Time `json:"expires_at"`
+	PeriodID            *string    `json:"period_id,omitempty"`
+	PeriodStartsAt      *time.Time `json:"period_starts_at,omitempty"`
+	PeriodEndsAt        *time.Time `json:"period_ends_at,omitempty"`
+	UpdatedAt           *time.Time `json:"updated_at,omitempty"`
 }
 
 type BillingLedgerEntry struct {
@@ -159,6 +162,7 @@ type PutSubscriptionParams struct {
 	UserID       string
 	Tier         string
 	AllowanceUSD string
+	PeriodCount  int
 }
 
 type DeleteSubscriptionParams struct {
@@ -178,6 +182,22 @@ func billingPeriodDuration(tier string) (time.Duration, error) {
 	default:
 		return 0, fmt.Errorf("%w: invalid subscription tier", ErrInvalid)
 	}
+}
+
+func validateBillingPeriodCount(periodCount int) error {
+	if periodCount < 0 || periodCount > 99 {
+		return fmt.Errorf("%w: subscription period count must be between 0 and 99", ErrInvalid)
+	}
+	return nil
+}
+
+func billingSubscriptionExpiry(periodStart time.Time, duration time.Duration, periodNumber, periodCount int) *time.Time {
+	if periodCount == 0 {
+		return nil
+	}
+	remainingPeriods := periodCount - periodNumber + 1
+	expiresAt := periodStart.Add(time.Duration(remainingPeriods) * duration)
+	return &expiresAt
 }
 
 func normalizedBillingTime(value time.Time, now func() time.Time) time.Time {
@@ -244,6 +264,12 @@ func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationPar
 		reservation, err = reserveBillingTx(ctx, tx, params)
 		return err
 	})
+	var insufficient *InsufficientFundsError
+	if errors.As(err, &insufficient) {
+		if convergeErr := s.convergeBillingSubscriptions(ctx, params.UserID, params.Now); convergeErr != nil {
+			return BillingReservation{}, convergeErr
+		}
+	}
 	return reservation, err
 }
 
@@ -276,7 +302,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	).Scan(&balance, &nextSequence); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
-	if err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
+	if _, err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
 		return BillingReservation{}, err
 	}
 	periods := map[string]*string{BillingTierDay: nil, BillingTierWeek: nil, BillingTierMonth: nil}
@@ -328,7 +354,8 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			SELECT min(p.ends_at)
 			FROM billing_subscriptions s
 			JOIN billing_subscription_periods p ON p.id = s.current_period_id
-			WHERE s.user_id = $1 AND s.enabled AND p.ends_at > $2`, params.UserID, params.Now,
+			WHERE s.user_id = $1 AND s.enabled AND p.ends_at > $2
+			  AND (s.period_count = 0 OR s.current_period_number < s.period_count)`, params.UserID, params.Now,
 		).Scan(&renewal)
 		if err != nil {
 			return BillingReservation{}, mapDBError("read billing retry time", err)
@@ -353,19 +380,22 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	return reservation, mapDBError("insert billing reservation", err)
 }
 
-func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) error {
+func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (int, error) {
 	rows, err := tx.QueryContext(ctx, `
-		SELECT s.id, s.tier, s.allowance_usd::text, p.id, p.ends_at
+		SELECT s.id, s.tier, s.allowance_usd::text, s.period_count,
+			s.current_period_number, s.expires_at, p.id, p.ends_at
 		FROM billing_subscriptions s
 		JOIN billing_subscription_periods p ON p.id = s.current_period_id
 		WHERE s.user_id = $1 AND s.enabled
 		ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END
 		FOR UPDATE OF s, p`, userID)
 	if err != nil {
-		return mapDBError("lock billing subscriptions", err)
+		return 0, mapDBError("lock billing subscriptions", err)
 	}
 	type expired struct {
 		subscriptionID, tier, allowance, periodID string
+		periodCount, periodNumber                 int
+		expiresAt                                 sql.NullTime
 		end                                       time.Time
 	}
 	var values []expired
@@ -373,9 +403,10 @@ func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, 
 		var value expired
 		var periodID sql.NullString
 		var end sql.NullTime
-		if err := rows.Scan(&value.subscriptionID, &value.tier, &value.allowance, &periodID, &end); err != nil {
+		if err := rows.Scan(&value.subscriptionID, &value.tier, &value.allowance,
+			&value.periodCount, &value.periodNumber, &value.expiresAt, &periodID, &end); err != nil {
 			_ = rows.Close()
-			return fmt.Errorf("scan billing subscription: %w", err)
+			return 0, fmt.Errorf("scan billing subscription: %w", err)
 		}
 		if !periodID.Valid || !end.Valid || !end.Time.After(at) {
 			value.periodID = periodID.String
@@ -384,45 +415,75 @@ func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, 
 		}
 	}
 	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close billing subscriptions: %w", err)
+		return 0, fmt.Errorf("close billing subscriptions: %w", err)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate billing subscriptions: %w", err)
+		return 0, fmt.Errorf("iterate billing subscriptions: %w", err)
 	}
+	disabled := 0
 	for _, value := range values {
+		if value.periodCount > 0 && value.expiresAt.Valid && !value.expiresAt.Time.After(at) {
+			if value.periodID != "" {
+				closedAt := value.end
+				if closedAt.IsZero() || closedAt.After(value.expiresAt.Time) {
+					closedAt = value.expiresAt.Time
+				}
+				if _, err := tx.ExecContext(ctx, `
+					UPDATE billing_subscription_periods
+					SET closed_at = $2, close_reason = 'expired'
+					WHERE id = $1 AND closed_at IS NULL`, value.periodID, closedAt); err != nil {
+					return disabled, mapDBError("close expired finite billing period", err)
+				}
+			}
+			if _, err := tx.ExecContext(ctx, `
+				UPDATE billing_subscriptions
+				SET enabled = false, disabled_at = expires_at, updated_at = $2
+				WHERE id = $1 AND enabled`, value.subscriptionID, at); err != nil {
+				return disabled, mapDBError("expire finite billing subscription", err)
+			}
+			disabled++
+			continue
+		}
 		if value.periodID != "" {
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE billing_subscription_periods
 				SET closed_at = $2, close_reason = 'expired'
-				WHERE id = $1 AND closed_at IS NULL`, value.periodID, at); err != nil {
-				return mapDBError("close expired billing period", err)
+				WHERE id = $1 AND closed_at IS NULL`, value.periodID, value.end); err != nil {
+				return disabled, mapDBError("close expired billing period", err)
 			}
 		}
 		duration, _ := billingPeriodDuration(value.tier)
-		periodStart := at
-		if !value.end.IsZero() {
-			periodStart = value.end
-			if !periodStart.After(at) {
-				periodStart = periodStart.Add((at.Sub(periodStart) / duration) * duration)
-			}
+		advance := 1
+		periodStart := value.end
+		if periodStart.IsZero() {
+			periodStart = at
+		} else {
+			advance += int(at.Sub(periodStart) / duration)
+			periodStart = periodStart.Add(time.Duration(advance-1) * duration)
+		}
+		periodNumber := value.periodNumber + advance
+		if value.periodCount > 0 && periodNumber > value.periodCount {
+			return disabled, fmt.Errorf("subscription advanced past configured period count: %w", ErrConflict)
 		}
 		periodID, err := newUUID()
 		if err != nil {
-			return err
+			return disabled, err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO billing_subscription_periods
 				(id, subscription_id, user_id, tier, starts_at, ends_at,
-				 allowance_usd, remaining_usd, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,$8)`,
+				 allowance_usd, remaining_usd, period_number, period_count, created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,$8,$9,$10)`,
 			periodID, value.subscriptionID, userID, value.tier,
-			periodStart, periodStart.Add(duration), value.allowance, at); err != nil {
-			return mapDBError("create renewed billing period", err)
+			periodStart, periodStart.Add(duration), value.allowance,
+			periodNumber, value.periodCount, at); err != nil {
+			return disabled, mapDBError("create renewed billing period", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
-			UPDATE billing_subscriptions SET current_period_id = $2, updated_at = $3
-			WHERE id = $1`, value.subscriptionID, periodID, at); err != nil {
-			return mapDBError("activate renewed billing period", err)
+			UPDATE billing_subscriptions
+			SET current_period_id = $2, current_period_number = $3, updated_at = $4
+			WHERE id = $1`, value.subscriptionID, periodID, periodNumber, at); err != nil {
+			return disabled, mapDBError("activate renewed billing period", err)
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO billing_ledger_entries
@@ -430,10 +491,124 @@ func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, 
 				 subscription_period_id, reason, created_at)
 			VALUES ($1,'subscription_renewal',$2::numeric,$3,$4,'automatic renewal',$5)`,
 			userID, value.allowance, value.tier, periodID, at); err != nil {
-			return mapDBError("record subscription renewal", err)
+			return disabled, mapDBError("record subscription renewal", err)
 		}
 	}
-	return nil
+	return disabled, nil
+}
+
+func expireBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (int, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT s.id, s.expires_at, p.id, p.ends_at
+		FROM billing_subscriptions s
+		JOIN billing_subscription_periods p ON p.id = s.current_period_id
+		WHERE s.user_id = $1 AND s.enabled AND s.period_count > 0
+		  AND s.expires_at <= $2
+		ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END
+		FOR UPDATE OF s, p`, userID, at)
+	if err != nil {
+		return 0, mapDBError("lock expired finite billing subscriptions", err)
+	}
+	type expiredSubscription struct {
+		id, periodID            string
+		expiresAt, periodEndsAt time.Time
+	}
+	var values []expiredSubscription
+	for rows.Next() {
+		var value expiredSubscription
+		if err := rows.Scan(&value.id, &value.expiresAt,
+			&value.periodID, &value.periodEndsAt); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan expired finite billing subscription: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close expired finite billing subscriptions: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate expired finite billing subscriptions: %w", err)
+	}
+	for _, value := range values {
+		closedAt := value.periodEndsAt
+		if closedAt.After(value.expiresAt) {
+			closedAt = value.expiresAt
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscription_periods
+			SET closed_at = $2, close_reason = 'expired'
+			WHERE id = $1 AND closed_at IS NULL`, value.periodID, closedAt); err != nil {
+			return 0, mapDBError("close converged finite billing period", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions
+			SET enabled = false, disabled_at = expires_at, updated_at = $2
+			WHERE id = $1 AND enabled`, value.id, at); err != nil {
+			return 0, mapDBError("converge finite billing subscription expiry", err)
+		}
+	}
+	return len(values), nil
+}
+
+// ExpireBillingSubscriptions converges finite subscriptions that reached their
+// scheduled final boundary without a concurrent admission or billing read.
+// Each user is processed under the standard billing-account lock so this job
+// serializes with subscription writes, admissions and settlements.
+func (s *Store) ExpireBillingSubscriptions(ctx context.Context, at time.Time, limit int) (int, error) {
+	if limit <= 0 || limit > 10_000 {
+		limit = 1000
+	}
+	at = normalizedBillingTime(at, s.now)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT DISTINCT user_id
+		FROM billing_subscriptions
+		WHERE enabled AND period_count > 0 AND expires_at <= $1
+		ORDER BY user_id
+		LIMIT $2`, at, limit)
+	if err != nil {
+		return 0, mapDBError("list expired billing subscriptions", err)
+	}
+	var userIDs []string
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan expired billing subscription user: %w", err)
+		}
+		userIDs = append(userIDs, userID)
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close expired billing subscription users: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate expired billing subscription users: %w", err)
+	}
+
+	disabled := 0
+	for _, userID := range userIDs {
+		count, err := s.convergeBillingSubscriptionsCount(ctx, userID, at)
+		if err != nil {
+			return disabled, err
+		}
+		disabled += count
+	}
+	return disabled, nil
+}
+
+func (s *Store) convergeBillingSubscriptions(ctx context.Context, userID string, at time.Time) error {
+	_, err := s.convergeBillingSubscriptionsCount(ctx, userID, at)
+	return err
+}
+
+func (s *Store) convergeBillingSubscriptionsCount(ctx context.Context, userID string, at time.Time) (int, error) {
+	var count int
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockBillingAccountTx(ctx, tx, userID); err != nil {
+			return err
+		}
+		var err error
+		count, err = expireBillingSubscriptionsTx(ctx, tx, userID, at)
+		return err
+	})
+	return count, err
 }
 
 const billingLedgerColumns = `id, user_id, operation_id, entry_type,
@@ -469,7 +644,7 @@ func billingOperationFingerprint(values ...string) []byte {
 }
 
 func claimBillingOperationTx(ctx context.Context, tx *sql.Tx, params BillingWriteParams,
-	operationType, targetUserID string, fingerprint []byte) (bool, *int64, error) {
+	operationType, targetUserID string, fingerprint []byte, compatibleFingerprints ...[]byte) (bool, *int64, error) {
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO billing_operations
 			(operation_id, operation_type, actor_user_id, target_user_id, reason,
@@ -498,8 +673,12 @@ func claimBillingOperationTx(ctx context.Context, tx *sql.Tx, params BillingWrit
 	).Scan(&storedType, &actor, &storedTarget, &storedFingerprint, &ledgerID); err != nil {
 		return false, nil, mapDBError("read billing operation replay", err)
 	}
+	fingerprintMatches := bytes.Equal(storedFingerprint, fingerprint)
+	for _, compatible := range compatibleFingerprints {
+		fingerprintMatches = fingerprintMatches || bytes.Equal(storedFingerprint, compatible)
+	}
 	if storedType != operationType || actor != params.ActorUserID ||
-		storedTarget.String != targetUserID || !bytes.Equal(storedFingerprint, fingerprint) || !ledgerID.Valid {
+		storedTarget.String != targetUserID || !fingerprintMatches || !ledgerID.Valid {
 		return false, nil, fmt.Errorf("billing operation replay mismatch: %w", ErrConflict)
 	}
 	return false, &ledgerID.Int64, nil
@@ -843,11 +1022,15 @@ func (s *Store) AdjustUserBalance(ctx context.Context, params AdjustUserBalanceP
 func subscriptionStateFromPeriodRow(row rowScanner) (BillingSubscriptionState, error) {
 	var value BillingSubscriptionState
 	var periodID sql.NullString
-	var startsAt, endsAt sql.NullTime
+	var startsAt, endsAt, expiresAt sql.NullTime
 	var remaining sql.NullString
 	var updatedAt time.Time
 	err := row.Scan(&value.ID, &value.Tier, &value.Enabled, &value.AllowanceUSD,
+		&value.PeriodCount, &value.CurrentPeriodNumber, &expiresAt,
 		&periodID, &startsAt, &endsAt, &remaining, &updatedAt)
+	if expiresAt.Valid {
+		value.ExpiresAt = &expiresAt.Time
+	}
 	value.PeriodID = nullableString(periodID)
 	if startsAt.Valid {
 		value.PeriodStartsAt = &startsAt.Time
@@ -875,23 +1058,39 @@ func subscriptionOperationStateTx(ctx context.Context, tx *sql.Tx, entry Billing
 		return BillingSubscriptionState{}, fmt.Errorf("subscription operation ledger is incomplete: %w", ErrConflict)
 	}
 	var subscriptionID string
-	var startsAt, endsAt *time.Time
+	var startsAt, endsAt, expiresAt *time.Time
+	var periodNumber, periodCount int
 	if entry.SubscriptionPeriodID != nil {
 		var startValue, endValue time.Time
 		if err := tx.QueryRowContext(ctx, `
-			SELECT subscription_id, starts_at, ends_at
+			SELECT subscription_id, starts_at, ends_at, period_number, period_count
 			FROM billing_subscription_periods
 			WHERE id = $1 AND user_id = $2 AND tier = $3`,
 			*entry.SubscriptionPeriodID, *entry.UserID, *entry.SubscriptionTier,
-		).Scan(&subscriptionID, &startValue, &endValue); err != nil {
+		).Scan(&subscriptionID, &startValue, &endValue, &periodNumber, &periodCount); err != nil {
 			return BillingSubscriptionState{}, mapDBError("read subscription operation period", err)
 		}
 		startsAt, endsAt = &startValue, &endValue
+		duration, err := billingPeriodDuration(*entry.SubscriptionTier)
+		if err != nil {
+			return BillingSubscriptionState{}, err
+		}
+		expiresAt = billingSubscriptionExpiry(startValue, duration, periodNumber, periodCount)
 	} else {
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM billing_subscriptions
-			WHERE user_id = $1 AND tier = $2`, *entry.UserID, *entry.SubscriptionTier,
-		).Scan(&subscriptionID); err != nil {
-			return BillingSubscriptionState{}, mapDBError("read subscription operation", err)
+		var expiry sql.NullTime
+		err := tx.QueryRowContext(ctx, `SELECT subscription_id, period_count,
+			current_period_number, expires_at
+			FROM billing_subscription_operation_snapshots
+			WHERE ledger_entry_id = $1`, entry.ID,
+		).Scan(&subscriptionID, &periodCount, &periodNumber, &expiry)
+		if errors.Is(err, sql.ErrNoRows) {
+			return BillingSubscriptionState{}, fmt.Errorf("subscription operation snapshot is incomplete: %w", ErrConflict)
+		}
+		if err != nil {
+			return BillingSubscriptionState{}, mapDBError("read subscription operation snapshot", err)
+		}
+		if expiry.Valid {
+			expiresAt = &expiry.Time
 		}
 	}
 	remaining := "0.000000000000"
@@ -900,15 +1099,18 @@ func subscriptionOperationStateTx(ctx context.Context, tx *sql.Tx, entry Billing
 	}
 	updatedAt := entry.CreatedAt
 	return BillingSubscriptionState{
-		ID:             subscriptionID,
-		Tier:           *entry.SubscriptionTier,
-		Enabled:        enabled,
-		AllowanceUSD:   entry.AmountUSD,
-		RemainingUSD:   remaining,
-		PeriodID:       entry.SubscriptionPeriodID,
-		PeriodStartsAt: startsAt,
-		PeriodEndsAt:   endsAt,
-		UpdatedAt:      &updatedAt,
+		ID:                  subscriptionID,
+		Tier:                *entry.SubscriptionTier,
+		Enabled:             enabled,
+		AllowanceUSD:        entry.AmountUSD,
+		RemainingUSD:        remaining,
+		PeriodCount:         periodCount,
+		CurrentPeriodNumber: periodNumber,
+		ExpiresAt:           expiresAt,
+		PeriodID:            entry.SubscriptionPeriodID,
+		PeriodStartsAt:      startsAt,
+		PeriodEndsAt:        endsAt,
+		UpdatedAt:           &updatedAt,
 	}, nil
 }
 
@@ -924,6 +1126,9 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 	if err != nil {
 		return state, err
 	}
+	if err := validateBillingPeriodCount(params.PeriodCount); err != nil {
+		return state, err
+	}
 	allowance, err := decimal.ParseInput(params.AllowanceUSD, false, false)
 	if err != nil {
 		return state, fmt.Errorf("%w: invalid subscription allowance", ErrInvalid)
@@ -931,13 +1136,27 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 	params.At = normalizedBillingTime(params.At, s.now)
 	params.Reason = strings.TrimSpace(params.Reason)
 	fingerprint := billingOperationFingerprint("subscription_set", params.ActorUserID,
-		params.UserID, params.Tier, params.Reason, allowance)
+		params.UserID, params.Tier, params.Reason, allowance, fmt.Sprintf("%d", params.PeriodCount))
+	var compatibleFingerprints [][]byte
+	if params.PeriodCount == 1 {
+		// Before finite-period subscriptions, subscription_set fingerprints did
+		// not include a period count. Existing subscriptions migrate to 1/1, so
+		// accept that exact legacy request only when the caller explicitly sends
+		// the migrated one-period configuration.
+		compatibleFingerprints = append(compatibleFingerprints, billingOperationFingerprint(
+			"subscription_set", params.ActorUserID, params.UserID, params.Tier, params.Reason, allowance))
+	}
+	var expiresAt *time.Time
+	if params.PeriodCount > 0 {
+		value := params.At.Add(time.Duration(params.PeriodCount) * duration)
+		expiresAt = &value
+	}
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := lockBillingAccountTx(ctx, tx, params.UserID); err != nil {
 			return err
 		}
 		created, replayID, err := claimBillingOperationTx(ctx, tx, params.BillingWriteParams,
-			"subscription_set", params.UserID, fingerprint)
+			"subscription_set", params.UserID, fingerprint, compatibleFingerprints...)
 		if err != nil {
 			return err
 		}
@@ -962,9 +1181,11 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 				return err
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions
-				(id,user_id,tier,enabled,allowance_usd,created_at,updated_at)
-				VALUES ($1,$2,$3,true,$4::numeric,$5,$5)`, subscriptionID,
-				params.UserID, params.Tier, allowance, params.At); err != nil {
+				(id,user_id,tier,enabled,allowance_usd,period_count,
+				 current_period_number,expires_at,created_at,updated_at)
+				VALUES ($1,$2,$3,true,$4::numeric,$5,1,$6,$7,$7)`, subscriptionID,
+				params.UserID, params.Tier, allowance, params.PeriodCount,
+				timeOrNil(expiresAt), params.At); err != nil {
 				return mapDBError("create billing subscription", err)
 			}
 		case err != nil:
@@ -986,15 +1207,17 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscription_periods
 			(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,
-			 remaining_usd,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,$5)`, periodID,
+			 remaining_usd,period_number,period_count,created_at)
+			VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,1,$8,$5)`, periodID,
 			subscriptionID, params.UserID, params.Tier, params.At,
-			params.At.Add(duration), allowance); err != nil {
+			params.At.Add(duration), allowance, params.PeriodCount); err != nil {
 			return mapDBError("create subscription period", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET enabled = true,
-			allowance_usd = $2::numeric, current_period_id = $3, disabled_at = NULL,
-			updated_at = $4 WHERE id = $1`, subscriptionID, allowance, periodID, params.At); err != nil {
+			allowance_usd = $2::numeric, period_count = $3, current_period_number = 1,
+			expires_at = $4, current_period_id = $5, disabled_at = NULL,
+			updated_at = $6 WHERE id = $1`, subscriptionID, allowance, params.PeriodCount,
+			timeOrNil(expiresAt), periodID, params.At); err != nil {
 			return mapDBError("activate billing subscription", err)
 		}
 		entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `
@@ -1013,7 +1236,7 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 		if err := appendBillingAuditTx(ctx, tx, params.BillingWriteParams,
 			"billing.subscription_updated", "subscription", params.UserID+":"+params.Tier,
 			map[string]any{"operation_id": params.OperationID, "tier": params.Tier,
-				"allowance_usd": allowance}); err != nil {
+				"allowance_usd": allowance, "period_count": params.PeriodCount}); err != nil {
 			return err
 		}
 		state, err = subscriptionOperationStateTx(ctx, tx, entry, true)
@@ -1056,11 +1279,15 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 		}
 		var subscriptionID, allowance string
 		var periodID sql.NullString
+		var expiresAt sql.NullTime
+		var periodCount, periodNumber int
 		var enabled bool
 		if err := tx.QueryRowContext(ctx, `SELECT id, allowance_usd::text,
-			enabled, current_period_id FROM billing_subscriptions
+			enabled, current_period_id, period_count, current_period_number, expires_at
+			FROM billing_subscriptions
 			WHERE user_id = $1 AND tier = $2 FOR UPDATE`, params.UserID, params.Tier,
-		).Scan(&subscriptionID, &allowance, &enabled, &periodID); err != nil {
+		).Scan(&subscriptionID, &allowance, &enabled, &periodID, &periodCount,
+			&periodNumber, &expiresAt); err != nil {
 			return mapDBError("lock subscription for disable", err)
 		}
 		if enabled && periodID.Valid {
@@ -1075,7 +1302,8 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET enabled = false,
-			disabled_at = $2, updated_at = $2 WHERE id = $1`, subscriptionID, params.At); err != nil {
+			disabled_at = CASE WHEN enabled THEN $2 ELSE disabled_at END,
+			updated_at = $2 WHERE id = $1`, subscriptionID, params.At); err != nil {
 			return mapDBError("disable billing subscription", err)
 		}
 		entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `
@@ -1087,6 +1315,14 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 			allowance, params.Tier, periodID, params.Reason, params.ActorUserID, params.At))
 		if err != nil {
 			return mapDBError("record subscription disable ledger", err)
+		}
+		if !periodID.Valid {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscription_operation_snapshots
+				(ledger_entry_id, subscription_id, period_count, current_period_number, expires_at)
+				VALUES ($1,$2,$3,$4,$5)`, entry.ID, subscriptionID, periodCount,
+				periodNumber, expiresAt); err != nil {
+				return mapDBError("record subscription operation snapshot", err)
+			}
 		}
 		if err := finishBillingOperationTx(ctx, tx, params.OperationID, entry.ID); err != nil {
 			return err
@@ -1118,11 +1354,12 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 			&state.UserID, &state.Username, &state.DisplayName, &state.BalanceUSD); err != nil {
 			return mapDBError("lock billing state account", err)
 		}
-		if err := rollBillingSubscriptionsTx(ctx, tx, userID, s.now().UTC()); err != nil {
+		if _, err := rollBillingSubscriptionsTx(ctx, tx, userID, s.now().UTC()); err != nil {
 			return err
 		}
 		rows, err := tx.QueryContext(ctx, `
-			SELECT s.id, s.tier, s.enabled, s.allowance_usd::text, p.id,
+			SELECT s.id, s.tier, s.enabled, s.allowance_usd::text,
+				s.period_count, s.current_period_number, s.expires_at, p.id,
 				p.starts_at, p.ends_at, p.remaining_usd::text, s.updated_at
 			FROM billing_subscriptions s
 			LEFT JOIN billing_subscription_periods p ON p.id = s.current_period_id

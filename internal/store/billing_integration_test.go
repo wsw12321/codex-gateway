@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -193,7 +194,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		firstAt := now.Add(10 * time.Second)
 		first, err := repository.PutSubscription(ctx, PutSubscriptionParams{
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "start day plan", firstAt),
-			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5",
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5", PeriodCount: 5,
 		})
 		if err != nil {
 			t.Fatalf("PutSubscription(first): %v", err)
@@ -201,7 +202,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		secondAt := firstAt.Add(time.Hour)
 		secondParams := PutSubscriptionParams{
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "change day plan", secondAt),
-			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "7",
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "7", PeriodCount: 2,
 		}
 		second, err := repository.PutSubscription(ctx, secondParams)
 		if err != nil {
@@ -216,7 +217,10 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			second.ID == "" || replay.ID != second.ID ||
 			second.RemainingUSD != "7.000000000000" || second.PeriodStartsAt == nil ||
 			!second.PeriodStartsAt.Equal(secondAt) || second.PeriodEndsAt == nil ||
-			!second.PeriodEndsAt.Equal(secondAt.Add(24*time.Hour)) {
+			!second.PeriodEndsAt.Equal(secondAt.Add(24*time.Hour)) || second.PeriodCount != 2 ||
+			second.CurrentPeriodNumber != 1 || second.ExpiresAt == nil ||
+			!second.ExpiresAt.Equal(secondAt.Add(48*time.Hour)) || replay.PeriodCount != 2 ||
+			replay.ExpiresAt == nil || !replay.ExpiresAt.Equal(*second.ExpiresAt) {
 			t.Fatalf("subscription was not reopened immediately: first=%+v second=%+v replay=%+v", first, second, replay)
 		}
 		var oldClosed time.Time
@@ -266,8 +270,14 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatalf("PutSubscription replay after charge: %v", err)
 		}
 		if putReplayAfterCharge.ID != second.ID ||
-			putReplayAfterCharge.RemainingUSD != second.RemainingUSD {
+			putReplayAfterCharge.RemainingUSD != second.RemainingUSD ||
+			putReplayAfterCharge.PeriodCount != second.PeriodCount {
 			t.Fatalf("subscription replay changed after charge: first=%+v replay=%+v", second, putReplayAfterCharge)
+		}
+		periodConflict := secondParams
+		periodConflict.PeriodCount = 3
+		if _, err := repository.PutSubscription(ctx, periodConflict); !errors.Is(err, ErrConflict) {
+			t.Fatalf("period-count replay mismatch error = %v, want ErrConflict", err)
 		}
 		deleteReplay, err := repository.DeleteSubscription(ctx, deleteParams)
 		if err != nil {
@@ -296,6 +306,442 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		}
 		if state.Subscriptions[0].Enabled || state.Subscriptions[0].RemainingUSD != "0.000000000000" {
 			t.Fatalf("disabled subscription exposes unusable quota: %+v", state.Subscriptions[0])
+		}
+	})
+
+	t.Run("periodless legacy disable replay keeps its operation snapshot", func(t *testing.T) {
+		user := globalUsageIntegrationUser(t, ctx, repository, "bill-periodless-"+suffix, UserRoleMember)
+		base := now.Add(5 * time.Hour)
+		legacyExpiry := base.Add(-time.Hour)
+		subscriptionID, err := newUUID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.db.ExecContext(ctx, `INSERT INTO billing_subscriptions
+			(id,user_id,tier,enabled,allowance_usd,period_count,current_period_number,
+			 expires_at,created_at,updated_at,disabled_at)
+			VALUES ($1,$2,'month',false,5,1,1,$3,$4,$4,$3)`, subscriptionID,
+			user.ID, legacyExpiry, base.Add(-2*time.Hour)); err != nil {
+			t.Fatalf("create periodless legacy subscription: %v", err)
+		}
+
+		deleteParams := DeleteSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "replay periodless disable", base),
+			UserID:             user.ID, Tier: BillingTierMonth,
+		}
+		first, err := repository.DeleteSubscription(ctx, deleteParams)
+		if err != nil {
+			t.Fatalf("DeleteSubscription(periodless): %v", err)
+		}
+		if first.PeriodID != nil || first.PeriodCount != 1 || first.CurrentPeriodNumber != 1 ||
+			first.ExpiresAt == nil || !first.ExpiresAt.Equal(legacyExpiry) {
+			t.Fatalf("periodless disable response = %+v", first)
+		}
+
+		reopened, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "reopen periodless subscription", base.Add(time.Hour)),
+			UserID:             user.ID, Tier: BillingTierMonth, AllowanceUSD: "9", PeriodCount: 3,
+		})
+		if err != nil {
+			t.Fatalf("PutSubscription(after periodless disable): %v", err)
+		}
+		if reopened.PeriodCount != 3 || reopened.ExpiresAt == nil || reopened.ExpiresAt.Equal(legacyExpiry) {
+			t.Fatalf("reopened subscription did not change configuration: %+v", reopened)
+		}
+
+		replay, err := repository.DeleteSubscription(ctx, deleteParams)
+		if err != nil {
+			t.Fatalf("DeleteSubscription(periodless replay): %v", err)
+		}
+		if replay.ID != first.ID || replay.PeriodID != nil ||
+			replay.PeriodCount != first.PeriodCount ||
+			replay.CurrentPeriodNumber != first.CurrentPeriodNumber ||
+			replay.ExpiresAt == nil || !replay.ExpiresAt.Equal(*first.ExpiresAt) {
+			t.Fatalf("periodless disable replay changed after reopen: first=%+v replay=%+v", first, replay)
+		}
+	})
+
+	t.Run("legacy subscription set fingerprint replays only as migrated one period", func(t *testing.T) {
+		user := globalUsageIntegrationUser(t, ctx, repository, "bill-legacy-set-"+suffix, UserRoleMember)
+		base := now.Add(6 * time.Hour)
+		write := billingIntegrationWrite(t, owner.ID, "replay legacy subscription set", base)
+		params := PutSubscriptionParams{
+			BillingWriteParams: write,
+			UserID:             user.ID, Tier: BillingTierWeek, AllowanceUSD: "7", PeriodCount: 1,
+		}
+		first, err := repository.PutSubscription(ctx, params)
+		if err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		legacyFingerprint := billingOperationFingerprint("subscription_set", owner.ID,
+			user.ID, BillingTierWeek, write.Reason, params.AllowanceUSD)
+		if _, err := repository.db.ExecContext(ctx, `UPDATE billing_operations
+			SET request_fingerprint = $2 WHERE operation_id = $1`,
+			write.OperationID, legacyFingerprint); err != nil {
+			t.Fatalf("simulate pre-0004 subscription fingerprint: %v", err)
+		}
+
+		replay, err := repository.PutSubscription(ctx, params)
+		if err != nil {
+			t.Fatalf("PutSubscription(legacy replay): %v", err)
+		}
+		if replay.ID != first.ID || replay.PeriodCount != 1 || replay.CurrentPeriodNumber != 1 ||
+			replay.PeriodID == nil || first.PeriodID == nil || *replay.PeriodID != *first.PeriodID ||
+			replay.ExpiresAt == nil || first.ExpiresAt == nil || !replay.ExpiresAt.Equal(*first.ExpiresAt) {
+			t.Fatalf("legacy subscription replay changed: first=%+v replay=%+v", first, replay)
+		}
+		var periods int
+		if err := repository.db.QueryRowContext(ctx, `SELECT count(*)
+			FROM billing_subscription_periods WHERE subscription_id = $1`, first.ID).Scan(&periods); err != nil {
+			t.Fatalf("count legacy replay periods: %v", err)
+		}
+		if periods != 1 {
+			t.Fatalf("legacy replay period rows = %d, want 1", periods)
+		}
+
+		mismatch := params
+		mismatch.PeriodCount = 2
+		if _, err := repository.PutSubscription(ctx, mismatch); !errors.Is(err, ErrConflict) {
+			t.Fatalf("legacy replay with period_count=2 error = %v, want ErrConflict", err)
+		}
+	})
+
+	t.Run("one finite period expires at its original boundary and bound work settles", func(t *testing.T) {
+		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "finite-one-"+suffix)
+		base := now.Add(10 * 24 * time.Hour)
+		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "one finite day", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 1,
+		})
+		if err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		if created.ExpiresAt == nil || !created.ExpiresAt.Equal(base.Add(24*time.Hour)) ||
+			created.CurrentPeriodNumber != 1 || created.PeriodCount != 1 {
+			t.Fatalf("created finite subscription = %+v", created)
+		}
+
+		boundRequestID := billingIntegrationRequestID(suffix, "finite-one-bound", 1)
+		if _, err := repository.ReserveBilling(ctx, BillingReservationParams{
+			RequestID: boundRequestID, UserID: user.ID, APIKeyID: key.ID,
+			Model: "billing-priced-model", InputUSDPerMillion: "1",
+			CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+			Now: base.Add(24*time.Hour - time.Second),
+		}); err != nil {
+			t.Fatalf("ReserveBilling(before expiry): %v", err)
+		}
+		expiredRequestID := billingIntegrationRequestID(suffix, "finite-one-expired", 1)
+		_, err = repository.ReserveBilling(ctx, BillingReservationParams{
+			RequestID: expiredRequestID, UserID: user.ID, APIKeyID: key.ID,
+			Model: "billing-priced-model", InputUSDPerMillion: "1",
+			CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+			Now: base.Add(24 * time.Hour),
+		})
+		var insufficient *InsufficientFundsError
+		if !errors.As(err, &insufficient) {
+			t.Fatalf("ReserveBilling(at expiry) error = %v, want InsufficientFundsError", err)
+		}
+
+		var enabled bool
+		var disabledAt, expiresAt, closedAt time.Time
+		var remaining string
+		var renewalCount int
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled, s.disabled_at,
+			s.expires_at, p.closed_at, p.remaining_usd::text,
+			(SELECT count(*) FROM billing_ledger_entries l
+			 WHERE l.user_id = s.user_id AND l.subscription_tier = s.tier
+			   AND l.entry_type = 'subscription_renewal')
+			FROM billing_subscriptions s
+			JOIN billing_subscription_periods p ON p.id = s.current_period_id
+			WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&enabled, &disabledAt, &expiresAt, &closedAt, &remaining, &renewalCount); err != nil {
+			t.Fatalf("read expired finite subscription: %v", err)
+		}
+		wantExpiry := base.Add(24 * time.Hour)
+		if enabled || !disabledAt.Equal(wantExpiry) || !expiresAt.Equal(wantExpiry) ||
+			!closedAt.Equal(wantExpiry) || remaining != "2.000000000000" || renewalCount != 0 {
+			t.Fatalf("expired finite state = enabled %v disabled %v expires %v closed %v remaining %s renewals %d",
+				enabled, disabledAt, expiresAt, closedAt, remaining, renewalCount)
+		}
+
+		requestedAt := base.Add(24*time.Hour - time.Second)
+		billingIntegrationComplete(t, ctx, repository, user, device, key,
+			boundRequestID, requestedAt, 1_000_000, "")
+		settled, err := repository.SettleBilling(ctx, boundRequestID, wantExpiry.Add(time.Second))
+		if err != nil {
+			t.Fatalf("SettleBilling(bound before expiry): %v", err)
+		}
+		if settled.ChargedUSD == nil || *settled.ChargedUSD != "1.000000000000" {
+			t.Fatalf("expired bound period did not settle: %+v", settled)
+		}
+	})
+
+	t.Run("failed admission rolls back quota and converges finite expiry", func(t *testing.T) {
+		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "finite-admission-"+suffix)
+		base := now.Add(15 * 24 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "one finite admission day", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 1,
+		}); err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+
+		expiresAt := base.Add(24 * time.Hour)
+		requestID := billingIntegrationRequestID(suffix, "finite-admission-expired", 1)
+		_, err := repository.AdmitRequest(ctx,
+			billingIntegrationAdmission(user, device, key, requestID, expiresAt))
+		var insufficient *InsufficientFundsError
+		if !errors.As(err, &insufficient) {
+			t.Fatalf("AdmitRequest(at expiry) error = %v, want InsufficientFundsError", err)
+		}
+
+		var enabled bool
+		var disabledAt, closedAt time.Time
+		var quotaReservations, billingReservations, usageRequests int
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled, s.disabled_at,
+			p.closed_at,
+			(SELECT count(*) FROM quota_reservations q WHERE q.request_id = $2),
+			(SELECT count(*) FROM billing_reservations b WHERE b.request_id = $2),
+			(SELECT count(*) FROM usage_requests u WHERE u.request_id = $2)
+			FROM billing_subscriptions s
+			JOIN billing_subscription_periods p ON p.id = s.current_period_id
+			WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID, requestID,
+		).Scan(&enabled, &disabledAt, &closedAt, &quotaReservations,
+			&billingReservations, &usageRequests); err != nil {
+			t.Fatalf("read failed-admission expiry state: %v", err)
+		}
+		if enabled || !disabledAt.Equal(expiresAt) || !closedAt.Equal(expiresAt) {
+			t.Fatalf("failed admission expiry = enabled %v disabled %v closed %v, want false %v %v",
+				enabled, disabledAt, closedAt, expiresAt, expiresAt)
+		}
+		if quotaReservations != 0 || billingReservations != 0 || usageRequests != 0 {
+			t.Fatalf("failed admission left request rows = quota %d billing %d usage %d",
+				quotaReservations, billingReservations, usageRequests)
+		}
+	})
+
+	t.Run("finite periods renew exactly to their configured limit", func(t *testing.T) {
+		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-three-"+suffix)
+		base := now.Add(20 * 24 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "three finite days", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "1", PeriodCount: 3,
+		}); err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		for period := 2; period <= 3; period++ {
+			requestID := billingIntegrationRequestID(suffix, "finite-three", period)
+			if _, err := repository.ReserveBilling(ctx, BillingReservationParams{
+				RequestID: requestID, UserID: user.ID, APIKeyID: key.ID,
+				Model: "billing-priced-model", InputUSDPerMillion: "1",
+				CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+				Now: base.Add(time.Duration(period-1) * 24 * time.Hour),
+			}); err != nil {
+				t.Fatalf("ReserveBilling(period %d): %v", period, err)
+			}
+		}
+		_, err := repository.ReserveBilling(ctx, BillingReservationParams{
+			RequestID: billingIntegrationRequestID(suffix, "finite-three-expired", 1),
+			UserID:    user.ID, APIKeyID: key.ID, Model: "billing-priced-model",
+			InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+			Now: base.Add(3 * 24 * time.Hour),
+		})
+		var insufficient *InsufficientFundsError
+		if !errors.As(err, &insufficient) {
+			t.Fatalf("final boundary error = %v, want InsufficientFundsError", err)
+		}
+		var enabled bool
+		var current, renewals, periods int
+		var disabledAt time.Time
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled,
+			s.current_period_number, s.disabled_at,
+			(SELECT count(*) FROM billing_ledger_entries l
+			 WHERE l.user_id = s.user_id AND l.subscription_tier = s.tier
+			   AND l.entry_type = 'subscription_renewal'),
+			(SELECT count(*) FROM billing_subscription_periods p
+			 WHERE p.subscription_id = s.id)
+			FROM billing_subscriptions s WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&enabled, &current, &disabledAt, &renewals, &periods); err != nil {
+			t.Fatalf("read finite renewal counts: %v", err)
+		}
+		if enabled || current != 3 || renewals != 2 || periods != 3 ||
+			!disabledAt.Equal(base.Add(3*24*time.Hour)) {
+			t.Fatalf("finite renewal state = enabled %v current %d renewals %d periods %d disabled %v",
+				enabled, current, renewals, periods, disabledAt)
+		}
+	})
+
+	t.Run("idle periods advance the sequence without changing final expiry", func(t *testing.T) {
+		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-idle-"+suffix)
+		base := now.Add(30 * 24 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "five finite days", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "4", PeriodCount: 5,
+		}); err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		if _, err := repository.ReserveBilling(ctx, BillingReservationParams{
+			RequestID: billingIntegrationRequestID(suffix, "finite-idle", 1),
+			UserID:    user.ID, APIKeyID: key.ID, Model: "billing-priced-model",
+			InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+			Now: base.Add(3*24*time.Hour + time.Hour),
+		}); err != nil {
+			t.Fatalf("ReserveBilling(after idle periods): %v", err)
+		}
+		var current, periodNumber, periodCount, periodRows int
+		var startsAt, expiresAt time.Time
+		var remaining string
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.current_period_number,
+			s.expires_at, p.period_number, p.period_count, p.starts_at,
+			p.remaining_usd::text,
+			(SELECT count(*) FROM billing_subscription_periods allp
+			 WHERE allp.subscription_id = s.id)
+			FROM billing_subscriptions s
+			JOIN billing_subscription_periods p ON p.id = s.current_period_id
+			WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&current, &expiresAt, &periodNumber, &periodCount, &startsAt, &remaining, &periodRows); err != nil {
+			t.Fatalf("read idle-period state: %v", err)
+		}
+		if current != 4 || periodNumber != 4 || periodCount != 5 || periodRows != 2 ||
+			!startsAt.Equal(base.Add(3*24*time.Hour)) || !expiresAt.Equal(base.Add(5*24*time.Hour)) ||
+			remaining != "4.000000000000" {
+			t.Fatalf("idle-period state = current %d snapshot %d/%d rows %d starts %v expires %v remaining %s",
+				current, periodNumber, periodCount, periodRows, startsAt, expiresAt, remaining)
+		}
+	})
+
+	t.Run("zero period count remains unlimited across idle periods", func(t *testing.T) {
+		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "unlimited-"+suffix)
+		base := now.Add(40 * 24 * time.Hour)
+		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "unlimited day", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "3", PeriodCount: 0,
+		})
+		if err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		if created.ExpiresAt != nil || created.PeriodCount != 0 {
+			t.Fatalf("unlimited response = %+v", created)
+		}
+		if _, err := repository.ReserveBilling(ctx, BillingReservationParams{
+			RequestID: billingIntegrationRequestID(suffix, "unlimited-idle", 1),
+			UserID:    user.ID, APIKeyID: key.ID, Model: "billing-priced-model",
+			InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+			Now: base.Add(200*24*time.Hour + time.Hour),
+		}); err != nil {
+			t.Fatalf("ReserveBilling(unlimited after idle): %v", err)
+		}
+		var enabled bool
+		var current, snapshotCount int
+		var expiresAt sql.NullTime
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled,
+			s.current_period_number, s.expires_at, p.period_count
+			FROM billing_subscriptions s
+			JOIN billing_subscription_periods p ON p.id = s.current_period_id
+			WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&enabled, &current, &expiresAt, &snapshotCount); err != nil {
+			t.Fatalf("read unlimited state: %v", err)
+		}
+		if !enabled || current != 201 || expiresAt.Valid || snapshotCount != 0 {
+			t.Fatalf("unlimited state = enabled %v current %d expires %v snapshot %d",
+				enabled, current, expiresAt, snapshotCount)
+		}
+	})
+
+	t.Run("concurrent boundaries do not duplicate renewal or cross the limit", func(t *testing.T) {
+		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-concurrent-"+suffix)
+		base := now.Add(50 * 24 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "two concurrent days", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 2,
+		}); err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		runConcurrent := func(label string, at time.Time, wantInsufficient bool) {
+			t.Helper()
+			errorsByRequest := make(chan error, 2)
+			var group sync.WaitGroup
+			for index := 1; index <= 2; index++ {
+				index := index
+				group.Add(1)
+				go func() {
+					defer group.Done()
+					_, err := repository.ReserveBilling(ctx, BillingReservationParams{
+						RequestID: billingIntegrationRequestID(suffix, label, index),
+						UserID:    user.ID, APIKeyID: key.ID, Model: "billing-priced-model",
+						InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
+						Now: at,
+					})
+					errorsByRequest <- err
+				}()
+			}
+			group.Wait()
+			close(errorsByRequest)
+			for err := range errorsByRequest {
+				var insufficient *InsufficientFundsError
+				if (!wantInsufficient && err != nil) ||
+					(wantInsufficient && !errors.As(err, &insufficient)) {
+					t.Fatalf("concurrent %s error = %v, want insufficient %v", label, err, wantInsufficient)
+				}
+			}
+		}
+		runConcurrent("finite-concurrent-renew", base.Add(24*time.Hour), false)
+		runConcurrent("finite-concurrent-expire", base.Add(48*time.Hour), true)
+
+		var enabled bool
+		var current, renewals, periods int
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled,
+			s.current_period_number,
+			(SELECT count(*) FROM billing_ledger_entries l
+			 WHERE l.user_id = s.user_id AND l.subscription_tier = s.tier
+			   AND l.entry_type = 'subscription_renewal'),
+			(SELECT count(*) FROM billing_subscription_periods p
+			 WHERE p.subscription_id = s.id)
+			FROM billing_subscriptions s WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&enabled, &current, &renewals, &periods); err != nil {
+			t.Fatalf("read concurrent subscription state: %v", err)
+		}
+		if enabled || current != 2 || renewals != 1 || periods != 2 {
+			t.Fatalf("concurrent subscription state = enabled %v current %d renewals %d periods %d",
+				enabled, current, renewals, periods)
+		}
+	})
+
+	t.Run("maintenance converges untouched finite subscriptions at planned expiry", func(t *testing.T) {
+		user := globalUsageIntegrationUser(t, ctx, repository, "bill-maintenance-"+suffix, UserRoleMember)
+		base := now.Add(60 * 24 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "four untouched days", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "6", PeriodCount: 4,
+		}); err != nil {
+			t.Fatalf("PutSubscription: %v", err)
+		}
+		expiresAt := base.Add(4 * 24 * time.Hour)
+		count, err := repository.ExpireBillingSubscriptions(ctx, expiresAt.Add(time.Hour), 1000)
+		if err != nil {
+			t.Fatalf("ExpireBillingSubscriptions: %v", err)
+		}
+		if count < 1 {
+			t.Fatalf("expired subscription count = %d, want at least 1", count)
+		}
+		var enabled bool
+		var current, periodNumber, periodCount int
+		var disabledAt, startsAt, endsAt, closedAt time.Time
+		if err := repository.db.QueryRowContext(ctx, `SELECT s.enabled,
+			s.current_period_number, s.disabled_at, p.period_number, p.period_count,
+			p.starts_at, p.ends_at, p.closed_at
+			FROM billing_subscriptions s
+			JOIN billing_subscription_periods p ON p.id = s.current_period_id
+			WHERE s.user_id = $1 AND s.tier = 'day'`, user.ID,
+		).Scan(&enabled, &current, &disabledAt, &periodNumber, &periodCount,
+			&startsAt, &endsAt, &closedAt); err != nil {
+			t.Fatalf("read maintenance-expired subscription: %v", err)
+		}
+		if enabled || current != 1 || periodNumber != current || periodCount != 4 ||
+			!startsAt.Equal(base) || !endsAt.Equal(base.Add(24*time.Hour)) ||
+			!closedAt.Equal(endsAt) || !disabledAt.Equal(expiresAt) {
+			t.Fatalf("maintenance expiry = enabled %v current %d snapshot %d/%d starts %v ends %v closed %v disabled %v",
+				enabled, current, periodNumber, periodCount, startsAt, endsAt, closedAt, disabledAt)
 		}
 	})
 
@@ -606,7 +1052,8 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	for _, migration := range migrations {
 		byName[migration.Name] = migration.SQL
 	}
-	if byName["0001_initial.sql"] == "" || byName["0002_billing.sql"] == "" {
+	if byName["0001_initial.sql"] == "" || byName["0002_billing.sql"] == "" ||
+		byName["0004_subscription_period_limits.sql"] == "" {
 		t.Fatalf("billing migration set is incomplete: %v", byName)
 	}
 	if _, err := connection.ExecContext(ctx, byName["0001_initial.sql"]); err != nil {
@@ -643,6 +1090,119 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	}
 	if legacyBalance != "0.000000000000" || newBalance != "0.000000000000" {
 		t.Fatalf("initial balances = legacy %s, new %s", legacyBalance, newBalance)
+	}
+
+	migrationNow := time.Now().UTC().Truncate(time.Microsecond)
+	activeSubscriptionID, _ := newUUID()
+	activePeriodID, _ := newUUID()
+	activeStart := migrationNow.Add(-time.Hour)
+	activeEnd := activeStart.Add(24 * time.Hour)
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_subscriptions
+		(id,user_id,tier,enabled,allowance_usd,created_at,updated_at)
+		VALUES ($1,$2,'day',true,5,$3,$3)`, activeSubscriptionID, legacyID, activeStart); err != nil {
+		t.Fatalf("create active pre-0004 subscription: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_subscription_periods
+		(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,created_at)
+		VALUES ($1,$2,$3,'day',$4,$5,5,3.5,$4)`, activePeriodID,
+		activeSubscriptionID, legacyID, activeStart, activeEnd); err != nil {
+		t.Fatalf("create active pre-0004 period: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `UPDATE billing_subscriptions
+		SET current_period_id = $2 WHERE id = $1`, activeSubscriptionID, activePeriodID); err != nil {
+		t.Fatalf("bind active pre-0004 period: %v", err)
+	}
+
+	expiredSubscriptionID, _ := newUUID()
+	expiredPeriodID, _ := newUUID()
+	expiredStart := migrationNow.Add(-8 * 24 * time.Hour)
+	expiredEnd := expiredStart.Add(7 * 24 * time.Hour)
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_subscriptions
+		(id,user_id,tier,enabled,allowance_usd,created_at,updated_at)
+		VALUES ($1,$2,'week',true,8,$3,$3)`, expiredSubscriptionID, newID, expiredStart); err != nil {
+		t.Fatalf("create expired pre-0004 subscription: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_subscription_periods
+		(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,created_at)
+		VALUES ($1,$2,$3,'week',$4,$5,8,6,$4)`, expiredPeriodID,
+		expiredSubscriptionID, newID, expiredStart, expiredEnd); err != nil {
+		t.Fatalf("create expired pre-0004 period: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `UPDATE billing_subscriptions
+		SET current_period_id = $2 WHERE id = $1`, expiredSubscriptionID, expiredPeriodID); err != nil {
+		t.Fatalf("bind expired pre-0004 period: %v", err)
+	}
+
+	periodlessSubscriptionID, _ := newUUID()
+	periodlessDisabledAt := migrationNow.Add(-2 * time.Hour)
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_subscriptions
+		(id,user_id,tier,enabled,allowance_usd,created_at,updated_at,disabled_at)
+		VALUES ($1,$2,'month',false,9,$3,$3,$3)`, periodlessSubscriptionID,
+		legacyID, periodlessDisabledAt); err != nil {
+		t.Fatalf("create disabled periodless pre-0004 subscription: %v", err)
+	}
+	var periodlessLedgerID int64
+	if err := connection.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries
+		(user_id,entry_type,amount_usd,subscription_tier,reason,created_at)
+		VALUES ($1,'subscription_disable',9,'month','legacy periodless disable',$2)
+		RETURNING id`, legacyID, periodlessDisabledAt).Scan(&periodlessLedgerID); err != nil {
+		t.Fatalf("create periodless pre-0004 disable ledger: %v", err)
+	}
+
+	if _, err := connection.ExecContext(ctx, byName["0004_subscription_period_limits.sql"]); err != nil {
+		t.Fatalf("apply isolated 0004: %v", err)
+	}
+	var activeEnabled bool
+	var activePeriodCount, activeNumber, activeSnapshotCount, activeSnapshotNumber int
+	var migratedStart, migratedEnd, activeExpiry time.Time
+	var activeRemaining string
+	if err := connection.QueryRowContext(ctx, `SELECT s.enabled, s.period_count,
+		s.current_period_number, s.expires_at, p.starts_at, p.ends_at,
+		p.remaining_usd::text, p.period_count, p.period_number
+		FROM billing_subscriptions s
+		JOIN billing_subscription_periods p ON p.id = s.current_period_id
+		WHERE s.id = $1`, activeSubscriptionID).Scan(&activeEnabled, &activePeriodCount,
+		&activeNumber, &activeExpiry, &migratedStart, &migratedEnd, &activeRemaining,
+		&activeSnapshotCount, &activeSnapshotNumber); err != nil {
+		t.Fatalf("read migrated active subscription: %v", err)
+	}
+	if !activeEnabled || activePeriodCount != 1 || activeNumber != 1 ||
+		activeSnapshotCount != 1 || activeSnapshotNumber != 1 ||
+		!activeExpiry.Equal(activeEnd) || !migratedStart.Equal(activeStart) ||
+		!migratedEnd.Equal(activeEnd) || activeRemaining != "3.500000000000" {
+		t.Fatalf("migrated active subscription changed: enabled %v period %d/%d snapshot %d/%d expiry %v start %v end %v remaining %s",
+			activeEnabled, activeNumber, activePeriodCount, activeSnapshotNumber,
+			activeSnapshotCount, activeExpiry, migratedStart, migratedEnd, activeRemaining)
+	}
+	var expiredEnabled bool
+	var disabledAt, closedAt, expiredExpiry time.Time
+	var closeReason string
+	if err := connection.QueryRowContext(ctx, `SELECT s.enabled, s.disabled_at,
+		s.expires_at, p.closed_at, p.close_reason
+		FROM billing_subscriptions s
+		JOIN billing_subscription_periods p ON p.id = s.current_period_id
+		WHERE s.id = $1`, expiredSubscriptionID).Scan(&expiredEnabled, &disabledAt,
+		&expiredExpiry, &closedAt, &closeReason); err != nil {
+		t.Fatalf("read migrated expired subscription: %v", err)
+	}
+	if expiredEnabled || !disabledAt.Equal(expiredEnd) || !expiredExpiry.Equal(expiredEnd) ||
+		!closedAt.Equal(expiredEnd) || closeReason != "expired" {
+		t.Fatalf("migrated expired subscription = enabled %v disabled %v expiry %v closed %v reason %q",
+			expiredEnabled, disabledAt, expiredExpiry, closedAt, closeReason)
+	}
+	var snapshotPeriodCount, snapshotPeriodNumber int
+	var snapshotExpiry time.Time
+	if err := connection.QueryRowContext(ctx, `SELECT period_count,
+		current_period_number, expires_at
+		FROM billing_subscription_operation_snapshots
+		WHERE ledger_entry_id = $1`, periodlessLedgerID,
+	).Scan(&snapshotPeriodCount, &snapshotPeriodNumber, &snapshotExpiry); err != nil {
+		t.Fatalf("read migrated periodless operation snapshot: %v", err)
+	}
+	if snapshotPeriodCount != 1 || snapshotPeriodNumber != 1 ||
+		!snapshotExpiry.Equal(periodlessDisabledAt) {
+		t.Fatalf("migrated periodless snapshot = period %d/%d expiry %v, want 1/1 %v",
+			snapshotPeriodNumber, snapshotPeriodCount, snapshotExpiry, periodlessDisabledAt)
 	}
 }
 

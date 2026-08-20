@@ -1,6 +1,12 @@
 # 部署与运维手册
 
-`0003_password_credentials.sql` 是 forward-only 迁移。部署前先备份 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动。密码哈希属于敏感数据，不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和并行度 2，不需要新增部署 secret。
+`0003_password_credentials.sql` 和 `0004_subscription_period_limits.sql` 都是
+forward-only 迁移。部署前先备份 PostgreSQL；迁移后旧二进制会因未知迁移保护
+而拒绝启动，不能只切回旧镜像。`0004` 会把所有当时仍启用且未到期的订阅设为
+`1/1`，保留现有额度、余额和周期起止时间，并在原 `period_ends_at` 自动失效；
+已经越过结束时间但仍标记启用的记录会按原结束时间关闭。密码哈希属于敏感数据，
+不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和
+并行度 2，不需要新增部署 secret。
 
 本项目按单台 Linux 云服务器、单个 ChatGPT Pro 上游账号设计。Cloudflare
 Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 服务均不得
@@ -469,6 +475,25 @@ Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移
 二进制；必须停止写入，把升级前已演练的备份恢复到新的隔离数据库卷，验证后
 再让旧 revision 切换到该卷。不得对生产卷手工删除 migration ledger 或反向
 修改 schema。
+
+### 升级到 `0004_subscription_period_limits.sql`
+
+`0004` 改变订阅运行语义，不能直接二进制回滚。升级时按以下顺序执行：
+
+1. 运行 `./scripts/backup-postgres.sh` 生成新的加密备份，并立即对该备份运行
+   `./scripts/restore-drill.sh <backup>`；恢复演练失败时停止升级。
+2. 检出已审阅 revision，确认工作树为空；更新 `.env` 中的
+   `GATEWAY_IMAGE_TAG`、`GATEWAY_VERSION` 和完整 `GATEWAY_REVISION`。
+3. 执行 `./scripts/validate-compose.sh` 和
+   `./scripts/compose.sh build gateway`。
+4. 执行 `./scripts/compose.sh up -d --no-deps gateway`。新 Gateway 会在监听前
+   以单个数据库事务应用 `0004`。
+5. 检查 `./scripts/compose.sh ps`、Gateway 日志、公开 `/healthz` 和 `/readyz`，
+   并确认 `schema_migrations` 中存在 `0004_subscription_period_limits.sql`。
+6. 在管理台抽查升级前的启用订阅：应显示为第 `1/1` 个周期，当前周期起止时间、
+   周期剩余额度均与升级前一致，最终失效时间等于原周期结束时间。
+7. 若必须回滚，先停止所有写入，将升级前已演练的备份恢复到新的隔离数据库卷，
+   验证后再让旧 revision 切换到该卷。不得让旧二进制连接已经应用 `0004` 的卷。
 
 ## 11. 计划迁机
 
