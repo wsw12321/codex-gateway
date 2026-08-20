@@ -84,10 +84,10 @@ func Load() (Config, error) {
 		Limits: Limits{
 			KeyRPM:             30,
 			KeyConcurrent:      16,
-			KeyRequestsPerDay:  1000,
+			KeyRequestsPerDay:  10000,
 			UserRPM:            60,
 			UserConcurrent:     16,
-			UserRequestsPerDay: 2000,
+			UserRequestsPerDay: 20000,
 			GlobalConcurrent:   32,
 		},
 	}
