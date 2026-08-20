@@ -115,6 +115,37 @@ func TestCalculateCostRejectsInvalidInputsAndOverflow(t *testing.T) {
 	}
 }
 
+func TestCalculateCostV2CacheWriteModes(t *testing.T) {
+	t.Parallel()
+	separate, err := CalculateCostV2(
+		1_000_000, 200_000, 300_000, 100_000, "separate",
+		"5", "0.5", "6.25", "30",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if separate != "7.475000000000" {
+		t.Fatalf("separate cost = %s", separate)
+	}
+	included, err := CalculateCostV2(
+		1_000_000, 200_000, 300_000, 100_000, "included_in_input",
+		"5", "0.5", "0", "30",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if included != "7.100000000000" {
+		t.Fatalf("included cost = %s", included)
+	}
+}
+
+func TestCalculateCostV2RejectsOverlappingSeparateCategories(t *testing.T) {
+	t.Parallel()
+	if _, err := CalculateCostV2(100, 80, 21, 0, "separate", "1", "1", "1", "1"); !errors.Is(err, ErrInvalidDecimal) {
+		t.Fatalf("overlapping categories error = %v", err)
+	}
+}
+
 func TestMultiplyToAmountValidatesAndRounds(t *testing.T) {
 	t.Parallel()
 	got, err := MultiplyToAmount("10.123456", "0.123456789012")

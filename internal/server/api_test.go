@@ -110,8 +110,96 @@ func TestResponsesWebSocketNegotiationRequiresAPIKey(t *testing.T) {
 	}
 }
 
+func TestResponsesRejectsUnknownModelBeforeServiceTier(t *testing.T) {
+	t.Parallel()
+
+	pricing, err := config.ParseUsagePricing(`{
+		"schema_version":2,
+		"catalog_as_of":"2026-08-20",
+		"fx_as_of":"2026-08-20",
+		"usd_cny_rate":"7.2",
+		"fallback_policy":{
+			"unknown_service_tier":"max_published",
+			"missing_price_combination":"max_published",
+			"missing_cache_write_tokens":"all_uncached_as_write"
+		},
+		"models":{"gpt-known":{
+			"cache_write_mode":"included_in_input",
+			"max_input_tokens":272000,
+			"long_context_threshold_tokens":272000,
+			"service_tiers":{"standard":{"short":{
+				"input_usd_per_million":"1",
+				"cached_input_usd_per_million":"0.1",
+				"output_usd_per_million":"2"
+			}}}
+		}}
+	}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lateUltrafast := `{"model":"gpt-known","input":"` + strings.Repeat("x", maxModelPrefix+1024) + `","service_tier":"ultrafast"}`
+
+	for _, test := range []struct {
+		name     string
+		body     string
+		wantCode string
+	}{
+		{
+			name:     "unknown model takes precedence over otherwise valid tier",
+			body:     `{"model":"gpt-unknown","service_tier":"priority","input":[]}`,
+			wantCode: "model_pricing_not_found",
+		},
+		{
+			name:     "unknown model also takes precedence over ultrafast",
+			body:     `{"model":"gpt-unknown","service_tier":"ultrafast","input":[]}`,
+			wantCode: "model_pricing_not_found",
+		},
+		{
+			name:     "ultrafast is rejected for known model",
+			body:     `{"model":"gpt-known","service_tier":"ultrafast","input":[]}`,
+			wantCode: "service_tier_not_supported",
+		},
+		{
+			name:     "ultrafast after former routing prefix is rejected",
+			body:     lateUltrafast,
+			wantCode: "service_tier_not_supported",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			harness := newResponsesWebSocketTestHarness(t)
+			harness.server.config.BodyLimit = 64 << 20
+			harness.server.config.UsagePricing = pricing
+			request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer "+harness.apiKey)
+			recorder := httptest.NewRecorder()
+
+			harness.handler.ServeHTTP(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+			}
+			var body httpx.ErrorBody
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatalf("decode error response: %v", err)
+			}
+			if body.Error.Code != test.wantCode {
+				t.Fatalf("error code = %q, want %q", body.Error.Code, test.wantCode)
+			}
+			if got := harness.upstreamCalls.Load(); got != 0 {
+				t.Fatalf("upstream calls = %d, want 0", got)
+			}
+			if queries := harness.database.queriesSnapshot(); len(queries) != 1 ||
+				!strings.Contains(queries[0], "FROM api_keys k") {
+				t.Fatalf("database queries = %#v, want only API key authentication", queries)
+			}
+		})
+	}
+}
+
 type responsesWebSocketTestHarness struct {
 	handler       http.Handler
+	server        *Server
 	apiKey        string
 	database      *responsesWebSocketTestDatabase
 	upstreamCalls *atomic.Int64
@@ -156,6 +244,7 @@ func newResponsesWebSocketTestHarness(t *testing.T) responsesWebSocketTestHarnes
 	server.routes()
 	return responsesWebSocketTestHarness{
 		handler:       server.Handler(),
+		server:        server,
 		apiKey:        generated.Token,
 		database:      database,
 		upstreamCalls: upstreamCalls,

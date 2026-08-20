@@ -1139,11 +1139,19 @@ function renderBillingLedger(detail) {
       request.append(requestID ? element("code", {text: requestID}) : element("span", {text: "—"}));
       if (model) request.append(element("small", {text: String(model)}));
       const tokenParts = [];
-      for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存"], ["output_tokens", "输出"]]) {
+      for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存读取"], ["cache_write_tokens", "缓存写入"], ["output_tokens", "输出"]]) {
         const value = field(entry, name);
         if (value != null) tokenParts.push(`${label} ${String(value)}`);
       }
       if (tokenParts.length) request.append(element("small", {text: tokenParts.join(" · ")}));
+      const pricingParts = [];
+      for (const [name, label] of [["pricing_service_tier", "计价层"], ["context_class", "上下文"], ["cache_write_mode", "写入模式"]]) {
+        const value = field(entry, name);
+        if (value) pricingParts.push(`${label} ${String(value)}`);
+      }
+      const fallback = field(entry, "pricing_fallback_reason");
+      if (fallback) pricingParts.push(`兜底 ${String(fallback)}`);
+      if (pricingParts.length) request.append(element("small", {text: pricingParts.join(" · ")}));
 
       const label = billingTypeLabel(type);
       const typeCell = element("td", {className: "money-cell"}, element("span", {text: label}));
@@ -1419,6 +1427,7 @@ function renderPersonalUsage(result, updateOverview) {
   const summary = result.summary || {};
   byId("usage-requests").textContent = formatInteger(summary.requests);
   byId("metric-cache").textContent = formatPercent(summary.cache_rate);
+  byId("metric-cache-write").textContent = formatInteger(summary.cache_write_tokens);
   byId("metric-ttft").textContent = `${formatInteger(summary.p95_ttft_ms)} ms`;
   byId("metric-duration").textContent = `${formatInteger(summary.p95_duration_ms)} ms`;
   if (updateOverview) {
@@ -1451,7 +1460,14 @@ function renderPersonalUsage(result, updateOverview) {
       element("td", {text: names.devices.get(deviceID) || deviceID || "—"}),
       element("td", {text: names.keys.get(keyID) || keyPrefix}),
       element("td", {text: projectID ? (names.projects.get(projectID) || projectID) : "未分配"}),
-      element("td", {}, element("code", {text: field(request, "model", "Model") || "—"})),
+      element("td", {},
+        element("code", {text: field(request, "model", "Model") || "—"}),
+        element("small", {text: [
+          field(request, "pricing_service_tier", "PricingServiceTier"),
+          field(request, "context_class", "ContextClass"),
+          field(request, "pricing_fallback_reason", "PricingFallbackReason"),
+        ].filter(Boolean).join(" · ")}),
+      ),
       element("td", {}, statusBadge(requestState)),
       element("td", {text: field(request, "http_status", "HTTPStatus") ?? "—"}),
       element("td", {text: formatInteger(inputTokens + outputTokens)}),
@@ -1495,8 +1511,8 @@ function renderGlobalOverview(result) {
   const usage = summary.usage || {};
   const coverage = summary.pricing_coverage || "0";
   byId("metric-global-tokens").textContent = formatInteger(usage.tokens);
-  byId("metric-global-cost").textContent = formatMoney(usage.estimated_usd, "USD");
-  byId("metric-global-coverage").textContent = `${formatPercent(coverage)} 已定价 · 仅供参考`;
+  byId("metric-global-cost").textContent = formatMoney(usage.actual_cost_usd ?? usage.estimated_usd, "USD");
+  byId("metric-global-coverage").textContent = `${formatPercent(coverage)} ledger 覆盖`;
   const container = byId("global-overview");
   container.classList.remove("loading");
   container.setAttribute("aria-busy", "false");
@@ -1548,7 +1564,8 @@ async function drillDownUser(user) {
 function renderGlobalUsage(result) {
   const summary = result.summary || {};
   const usage = summary.usage || {};
-  byId("global-usd").textContent = formatMoney(usage.estimated_usd, "USD");
+  byId("global-usd").textContent = formatMoney(usage.actual_cost_usd ?? usage.estimated_usd, "USD");
+  byId("global-charge-detail").textContent = `已扣 ${formatMoney(usage.charged_usd, "USD")} · 未覆盖 ${formatMoney(usage.uncovered_usd, "USD")}`;
   byId("global-cny").textContent = formatMoney(usage.estimated_cny, "CNY");
   byId("global-total-tokens").textContent = formatInteger(usage.tokens);
   byId("global-coverage").textContent = `${formatPercent(summary.pricing_coverage)} 已定价 · ${formatInteger(usage.unpriced_tokens)} 未定价 Token`;
@@ -1560,9 +1577,21 @@ function renderGlobalUsage(result) {
   const rateLine = `价格目录：${pricing.catalog_as_of || "未标注"} · USD/CNY 固定汇率 ${pricing.usd_cny_rate || "—"}（${pricing.fx_as_of || "未标注"}）`;
   const models = Array.isArray(pricing.unpriced_models) ? pricing.unpriced_models : [];
   note.replaceChildren(
-    element("p", {text: pricing.disclaimer || "API 等价费用估算，不代表实际费用或账单。"}),
+    element("p", {text: pricing.disclaimer || "OpenAI API Token 等价成本，不代表 OpenAI 实际账单。"}),
     element("p", {text: rateLine}),
-    element("p", {text: models.length ? `未配置价格的模型：${models.join(", ")}` : "当前区间内所有有用量模型均有精确价格匹配。"}),
+    element("p", {text: models.length ? `缺少 ledger 覆盖的模型：${models.join(", ")}` : "当前区间内所有 Token 均可与不可变 ledger 对账。"}),
+  );
+
+  const breakdown = result.breakdown || {};
+  const breakdownNode = byId("pricing-breakdown");
+  const formatDimension = (title, values) => {
+    const rows = Array.isArray(values) ? values : [];
+    return element("p", {text: `${title}：${rows.length ? rows.map((item) => `${item.value} ${formatInteger(item.requests)} 次 / 写入 ${formatInteger(item.cache_write_tokens)} Token / ${formatMoney(item.actual_cost_usd, "USD")}`).join("；") : "无"}`});
+  };
+  breakdownNode.replaceChildren(
+    formatDimension("服务层", breakdown.service_tiers),
+    formatDimension("上下文档位", breakdown.context_classes),
+    formatDimension("保守兜底", breakdown.fallbacks),
   );
 
   const users = Array.isArray(result.users) ? result.users : [];
@@ -1588,7 +1617,7 @@ function renderGlobalUsage(result) {
     );
     drill.addEventListener("click", () => runButton(drill, () => drillDownUser(user), "加载中…"));
     const money = element("td", {className: "money-cell"},
-      element("span", {text: formatMoney(userUsage.estimated_usd, "USD")}),
+      element("span", {text: formatMoney(userUsage.actual_cost_usd ?? userUsage.estimated_usd, "USD")}),
       element("small", {text: formatMoney(userUsage.estimated_cny, "CNY")}),
     );
     const coverageCell = element("td", {className: "coverage-cell"},

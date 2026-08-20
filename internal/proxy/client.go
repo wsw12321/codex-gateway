@@ -43,10 +43,12 @@ var allowedRequestHeaders = map[string]struct{}{
 }
 
 type Usage struct {
-	InputTokens     int64
-	CachedTokens    int64
-	OutputTokens    int64
-	ReasoningTokens int64
+	InputTokens             int64
+	CachedTokens            int64
+	CacheWriteTokens        int64
+	CacheWriteTokensPresent bool
+	OutputTokens            int64
+	ReasoningTokens         int64
 }
 
 func (u Usage) Total() int64 { return u.InputTokens + u.OutputTokens }
@@ -55,6 +57,7 @@ type Result struct {
 	StatusCode        int
 	ContentType       string
 	Model             string
+	ServiceTier       string
 	UpstreamRequestID string
 	Usage             Usage
 	BytesOut          int64
@@ -154,9 +157,9 @@ func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *h
 	timed := &timedWriter{writer: w}
 
 	if mediaType == "text/event-stream" {
-		result.Model, result.Usage, result.FirstTokenAt, err = streamSSE(timed, response.Body)
+		result.Model, result.ServiceTier, result.Usage, result.FirstTokenAt, err = streamSSE(timed, response.Body)
 	} else {
-		result.Model, result.Usage, err = streamJSON(timed, response.Body)
+		result.Model, result.ServiceTier, result.Usage, err = streamJSON(timed, response.Body)
 	}
 	result.BytesOut = timed.bytes.Load()
 	result.FirstByteAt = timed.firstByte
@@ -238,7 +241,8 @@ type usageFields struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
 	InputDetails struct {
-		CachedTokens int64 `json:"cached_tokens"`
+		CachedTokens     int64  `json:"cached_tokens"`
+		CacheWriteTokens *int64 `json:"cache_write_tokens"`
 	} `json:"input_tokens_details"`
 	OutputDetails struct {
 		ReasoningTokens int64 `json:"reasoning_tokens"`
@@ -246,44 +250,50 @@ type usageFields struct {
 }
 
 type responseEnvelope struct {
-	Type     string      `json:"type"`
-	ID       string      `json:"id"`
-	Model    string      `json:"model"`
-	Usage    usageFields `json:"usage"`
-	Response *struct {
-		ID    string      `json:"id"`
-		Model string      `json:"model"`
-		Usage usageFields `json:"usage"`
+	Type        string      `json:"type"`
+	ID          string      `json:"id"`
+	Model       string      `json:"model"`
+	ServiceTier string      `json:"service_tier"`
+	Usage       usageFields `json:"usage"`
+	Response    *struct {
+		ID          string      `json:"id"`
+		Model       string      `json:"model"`
+		ServiceTier string      `json:"service_tier"`
+		Usage       usageFields `json:"usage"`
 	} `json:"response"`
 }
 
-func streamJSON(dst io.Writer, src io.Reader) (string, Usage, error) {
+func streamJSON(dst io.Writer, src io.Reader) (string, string, Usage, error) {
 	envelope := responseEnvelope{}
 	decoder := json.NewDecoder(io.TeeReader(src, dst))
 	if err := decoder.Decode(&envelope); err != nil {
-		return "", Usage{}, err
+		return "", "", Usage{}, err
 	}
 	// Decode may stop immediately after the JSON value. Forward any bytes the
 	// decoder has not read yet (typically trailing whitespace) without ever
 	// buffering the response body.
 	if _, err := io.Copy(dst, src); err != nil {
-		return envelope.Model, convertUsage(envelope.Usage), err
+		return envelope.Model, envelope.ServiceTier, convertUsage(envelope.Usage), err
 	}
 	if envelope.Response != nil {
 		if envelope.Model == "" {
 			envelope.Model = envelope.Response.Model
 		}
-		if envelope.Usage.InputTokens == 0 && envelope.Usage.OutputTokens == 0 {
+		if envelope.ServiceTier == "" {
+			envelope.ServiceTier = envelope.Response.ServiceTier
+		}
+		if !usagePresent(envelope.Usage) {
 			envelope.Usage = envelope.Response.Usage
 		}
 	}
-	return envelope.Model, convertUsage(envelope.Usage), nil
+	return envelope.Model, envelope.ServiceTier, convertUsage(envelope.Usage), nil
 }
 
-func streamSSE(dst io.Writer, src io.Reader) (string, Usage, time.Time, error) {
+func streamSSE(dst io.Writer, src io.Reader) (string, string, Usage, time.Time, error) {
 	reader := bufio.NewReaderSize(src, 64<<10)
 	var event bytes.Buffer
 	var model string
+	var serviceTier string
 	var usage Usage
 	var firstToken time.Time
 	discardEvent := false
@@ -291,16 +301,19 @@ func streamSSE(dst io.Writer, src io.Reader) (string, Usage, time.Time, error) {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
 			if _, writeErr := dst.Write(line); writeErr != nil {
-				return model, usage, firstToken, writeErr
+				return model, serviceTier, usage, firstToken, writeErr
 			}
 			trimmed := bytes.TrimRight(line, "\r\n")
 			if len(trimmed) == 0 {
 				if !discardEvent {
-					if parsedModel, parsedUsage, tokenDelta, ok := parseSSEData(event.Bytes()); ok {
+					if parsedModel, parsedTier, parsedUsage, tokenDelta, ok := parseSSEData(event.Bytes()); ok {
 						if parsedModel != "" {
 							model = parsedModel
 						}
-						if parsedUsage.InputTokens != 0 || parsedUsage.OutputTokens != 0 {
+						if parsedTier != "" {
+							serviceTier = parsedTier
+						}
+						if usageValuePresent(parsedUsage) {
 							usage = parsedUsage
 						}
 						if tokenDelta && firstToken.IsZero() {
@@ -326,11 +339,14 @@ func streamSSE(dst io.Writer, src io.Reader) (string, Usage, time.Time, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				if event.Len() > 0 && !discardEvent {
-					if parsedModel, parsedUsage, tokenDelta, ok := parseSSEData(event.Bytes()); ok {
+					if parsedModel, parsedTier, parsedUsage, tokenDelta, ok := parseSSEData(event.Bytes()); ok {
 						if parsedModel != "" {
 							model = parsedModel
 						}
-						if parsedUsage.InputTokens != 0 || parsedUsage.OutputTokens != 0 {
+						if parsedTier != "" {
+							serviceTier = parsedTier
+						}
+						if usageValuePresent(parsedUsage) {
 							usage = parsedUsage
 						}
 						if tokenDelta && firstToken.IsZero() {
@@ -338,37 +354,52 @@ func streamSSE(dst io.Writer, src io.Reader) (string, Usage, time.Time, error) {
 						}
 					}
 				}
-				return model, usage, firstToken, nil
+				return model, serviceTier, usage, firstToken, nil
 			}
-			return model, usage, firstToken, err
+			return model, serviceTier, usage, firstToken, err
 		}
 	}
 }
 
-func parseSSEData(data []byte) (string, Usage, bool, bool) {
+func parseSSEData(data []byte) (string, string, Usage, bool, bool) {
 	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
-		return "", Usage{}, false, false
+		return "", "", Usage{}, false, false
 	}
 	var envelope responseEnvelope
 	if err := json.Unmarshal(data, &envelope); err != nil {
-		return "", Usage{}, false, false
+		return "", "", Usage{}, false, false
 	}
 	tokenDelta := strings.HasSuffix(envelope.Type, ".delta") &&
 		(strings.HasPrefix(envelope.Type, "response.output_") || strings.HasPrefix(envelope.Type, "response.reasoning_"))
 	if envelope.Response != nil {
-		return envelope.Response.Model, convertUsage(envelope.Response.Usage), tokenDelta, true
+		return envelope.Response.Model, envelope.Response.ServiceTier,
+			convertUsage(envelope.Response.Usage), tokenDelta, true
 	}
-	if envelope.Usage.InputTokens != 0 || envelope.Usage.OutputTokens != 0 {
-		return envelope.Model, convertUsage(envelope.Usage), tokenDelta, true
+	if usagePresent(envelope.Usage) || envelope.Model != "" || envelope.ServiceTier != "" {
+		return envelope.Model, envelope.ServiceTier, convertUsage(envelope.Usage), tokenDelta, true
 	}
-	return "", Usage{}, tokenDelta, tokenDelta
+	return "", "", Usage{}, tokenDelta, tokenDelta
 }
 
 func convertUsage(value usageFields) Usage {
+	cacheWriteTokens := int64(0)
+	cacheWritePresent := value.InputDetails.CacheWriteTokens != nil
+	if cacheWritePresent {
+		cacheWriteTokens = *value.InputDetails.CacheWriteTokens
+	}
 	return Usage{
 		InputTokens: value.InputTokens, CachedTokens: value.InputDetails.CachedTokens,
+		CacheWriteTokens: cacheWriteTokens, CacheWriteTokensPresent: cacheWritePresent,
 		OutputTokens: value.OutputTokens, ReasoningTokens: value.OutputDetails.ReasoningTokens,
 	}
+}
+
+func usagePresent(value usageFields) bool {
+	return value.InputTokens != 0 || value.OutputTokens != 0 || value.InputDetails.CacheWriteTokens != nil
+}
+
+func usageValuePresent(value Usage) bool {
+	return value.InputTokens != 0 || value.OutputTokens != 0 || value.CacheWriteTokensPresent
 }
 
 func sanitizeUpstreamFailure(response *http.Response) *Failure {
@@ -470,5 +501,7 @@ func isTimeout(err error) bool {
 }
 
 func (u Usage) String() string {
-	return fmt.Sprintf("input=%d cached=%d output=%d reasoning=%d", u.InputTokens, u.CachedTokens, u.OutputTokens, u.ReasoningTokens)
+	return fmt.Sprintf("input=%d cached=%d cache_write=%d cache_write_present=%t output=%d reasoning=%d",
+		u.InputTokens, u.CachedTokens, u.CacheWriteTokens, u.CacheWriteTokensPresent,
+		u.OutputTokens, u.ReasoningTokens)
 }

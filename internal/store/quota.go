@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -95,8 +96,14 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 		return RequestAdmission{}, fmt.Errorf("%w: unsupported usage endpoint", ErrInvalid)
 	}
 	if params.Billing != nil {
+		if params.Billing.PricingRuleVersion == 0 {
+			params.Billing.PricingRuleVersion = 1
+		}
+		params.Billing.RequestedServiceTier = strings.TrimSpace(params.Billing.RequestedServiceTier)
 		if params.Billing.RequestID != quota.RequestID || params.Billing.UserID != quota.UserID ||
-			params.Billing.APIKeyID != quota.APIKeyID || params.Billing.Model != usage.Model {
+			params.Billing.APIKeyID != quota.APIKeyID || params.Billing.Model != usage.Model ||
+			params.Billing.PricingRuleVersion != usage.PricingRuleVersion ||
+			strings.TrimSpace(params.Billing.RequestedServiceTier) != usage.RequestedServiceTier {
 			return RequestAdmission{}, fmt.Errorf("%w: inconsistent billing admission", ErrInvalid)
 		}
 		params.Billing.Now = quota.Now

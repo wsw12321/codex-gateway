@@ -123,6 +123,48 @@ func CalculateCost(inputTokens, cachedInputTokens, outputTokens int64, inputPric
 	return roundAmount(total)
 }
 
+// CalculateCostV2 applies the four-price official-token-equivalent snapshot.
+// In separate mode cache writes are their own input category. In
+// included_in_input mode cache-write metadata is retained for audit but is
+// already covered by the ordinary non-cached input price.
+func CalculateCostV2(
+	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int64,
+	cacheWriteMode, inputPrice, cachedPrice, cacheWritePrice, outputPrice string,
+) (string, error) {
+	if inputTokens < 0 || cachedInputTokens < 0 || cacheWriteTokens < 0 || outputTokens < 0 ||
+		cachedInputTokens > inputTokens {
+		return "", fmt.Errorf("invalid token counts: %w", ErrInvalidDecimal)
+	}
+	if cacheWriteMode != "separate" && cacheWriteMode != "included_in_input" {
+		return "", fmt.Errorf("invalid cache write mode: %w", ErrInvalidDecimal)
+	}
+	if cacheWriteMode == "separate" && cacheWriteTokens > inputTokens-cachedInputTokens {
+		return "", fmt.Errorf("invalid cache write token counts: %w", ErrInvalidDecimal)
+	}
+	values := []string{inputPrice, cachedPrice, cacheWritePrice, outputPrice}
+	prices := make([]*big.Rat, len(values))
+	for index, value := range values {
+		canonical, err := ParsePrice(value)
+		if err != nil {
+			return "", fmt.Errorf("invalid price: %w", err)
+		}
+		parsed, _ := new(big.Rat).SetString(canonical)
+		prices[index] = parsed
+	}
+	ordinary := inputTokens - cachedInputTokens
+	if cacheWriteMode == "separate" {
+		ordinary -= cacheWriteTokens
+	}
+	total := new(big.Rat).Mul(big.NewRat(ordinary, 1), prices[0])
+	total.Add(total, new(big.Rat).Mul(big.NewRat(cachedInputTokens, 1), prices[1]))
+	if cacheWriteMode == "separate" {
+		total.Add(total, new(big.Rat).Mul(big.NewRat(cacheWriteTokens, 1), prices[2]))
+	}
+	total.Add(total, new(big.Rat).Mul(big.NewRat(outputTokens, 1), prices[3]))
+	total.Quo(total, big.NewRat(1_000_000, 1))
+	return roundAmount(total)
+}
+
 func roundAmount(value *big.Rat) (string, error) {
 	result := roundFixed(value, AmountScale)
 	if _, err := parseBounded(result, AmountScale, true, true); err != nil {

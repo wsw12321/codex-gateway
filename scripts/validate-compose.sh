@@ -8,6 +8,7 @@ env_file=$root/.env
 compose=$root/scripts/compose.sh
 caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
+pricing_template=$root/deploy/pricing-v2.example.json
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -42,7 +43,9 @@ pricing_json=$(jq -er '
   .services.gateway.environment.GATEWAY_USAGE_PRICING_JSON |
   select(type == "string" and length > 0)
 ' "$tmp") || fail 'GATEWAY_USAGE_PRICING_JSON must be set in .env'
-printf '%s\n' "$pricing_json" | jq -e '
+pricing_validator='
+  def exact_keys($expected):
+    type == "object" and ((keys | sort) == ($expected | sort));
   def decimal:
     type == "string" and
     length > 0 and length <= 40 and
@@ -54,30 +57,172 @@ printf '%s\n' "$pricing_json" | jq -e '
     type == "string" and
     test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") and
     ((try strptime("%Y-%m-%d") catch null) != null);
-  (keys | sort) == ["catalog_as_of", "fx_as_of", "models", "usd_cny_rate"] and
-  (.catalog_as_of | snapshot_date) and
-  (.fx_as_of | snapshot_date) and
-  (.usd_cny_rate | bounded_decimal and (test("^0(?:\\.0+)?$") | not)) and
-  (.models | type == "object" and length > 0 and length <= 1000) and
-  all(.models | to_entries[];
-    (.key |
-      length >= 1 and length <= 128 and
-      . != "exact-recorded-model" and
-      (startswith("replace-") | not) and
-      test("^[A-Za-z0-9._:-]+$")) and
-    (.value | type == "object") and
-    (.value | keys | sort) == [
+  def positive_price:
+    bounded_decimal and (tonumber > 0);
+  def separate_price:
+    exact_keys([
+      "cache_write_usd_per_million",
       "cached_input_usd_per_million",
       "input_usd_per_million",
       "output_usd_per_million"
-    ] and
-    (.value.input_usd_per_million | bounded_decimal) and
-    (.value.cached_input_usd_per_million | bounded_decimal) and
-    (.value.output_usd_per_million | bounded_decimal)
-  )
-' >/dev/null 2>&1 || \
-    fail 'GATEWAY_USAGE_PRICING_JSON must contain reviewed dates, FX rate, exact models, and decimal prices'
-unset pricing_json
+    ]) and
+    (.input_usd_per_million | positive_price) and
+    (.cached_input_usd_per_million | positive_price) and
+    (.cache_write_usd_per_million | positive_price) and
+    (.output_usd_per_million | positive_price);
+  def included_price:
+    exact_keys([
+      "cached_input_usd_per_million",
+      "input_usd_per_million",
+      "output_usd_per_million"
+    ]) and
+    (.input_usd_per_million | positive_price) and
+    (.cached_input_usd_per_million | positive_price) and
+    (.output_usd_per_million | positive_price);
+  def zero_included_price:
+    exact_keys([
+      "cached_input_usd_per_million",
+      "input_usd_per_million",
+      "output_usd_per_million"
+    ]) and
+    all(.[]; bounded_decimal and (tonumber == 0));
+  def separate_long_tier:
+    exact_keys(["long", "short"]) and
+    (.short | separate_price) and
+    (.long | separate_price);
+  def included_long_tier:
+    exact_keys(["long", "short"]) and
+    (.short | included_price) and
+    (.long | included_price);
+  def included_short_tier:
+    exact_keys(["short"]) and (.short | included_price);
+  def gpt56_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "separate" and
+    .max_input_tokens == 1050000 and
+    .long_context_threshold_tokens == 272000 and
+    .long_context_threshold_tokens < .max_input_tokens and
+    (.service_tiers |
+      exact_keys(["fast", "flex", "standard"]) and
+      all(.[]; separate_long_tier));
+  def long_included_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "included_in_input" and
+    .max_input_tokens == 1050000 and
+    .long_context_threshold_tokens == 272000 and
+    .long_context_threshold_tokens < .max_input_tokens and
+    (.service_tiers |
+      exact_keys(["fast", "flex", "standard"]) and
+      (.standard | included_long_tier) and
+      (.flex | included_long_tier) and
+      (.fast | included_short_tier));
+  def mini_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "included_in_input" and
+    .max_input_tokens == 272000 and
+    .long_context_threshold_tokens == 272000 and
+    (.service_tiers |
+      exact_keys(["fast", "flex", "standard"]) and
+      all(.[]; included_short_tier));
+  def internal_zero_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "included_in_input" and
+    .max_input_tokens == 272000 and
+    .long_context_threshold_tokens == 272000 and
+    (.service_tiers |
+      exact_keys(["standard"]) and
+      (.standard | exact_keys(["short"]) and (.short | zero_included_price)));
+  exact_keys([
+    "catalog_as_of",
+    "fallback_policy",
+    "fx_as_of",
+    "models",
+    "schema_version",
+    "usd_cny_rate"
+  ]) and
+  .schema_version == 2 and
+  (.catalog_as_of | snapshot_date) and
+  (.fx_as_of | snapshot_date) and
+  (.usd_cny_rate | bounded_decimal and (test("^0(?:\\.0+)?$") | not)) and
+  (.fallback_policy |
+    exact_keys([
+      "missing_cache_write_tokens",
+      "missing_price_combination",
+      "unknown_service_tier"
+    ]) and
+    .unknown_service_tier == "max_published" and
+    .missing_price_combination == "max_published" and
+    .missing_cache_write_tokens == "all_uncached_as_write") and
+  (.models |
+    exact_keys([
+      "codex-auto-review",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.5",
+      "gpt-5.6-luna",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra"
+    ]) and
+    (.["gpt-5.6-sol"] | gpt56_model) and
+    (.["gpt-5.6-terra"] | gpt56_model) and
+    (.["gpt-5.6-luna"] | gpt56_model) and
+    (.["gpt-5.5"] | long_included_model) and
+    (.["gpt-5.4"] | long_included_model) and
+    (.["gpt-5.4-mini"] | mini_model) and
+    (.["codex-auto-review"] | internal_zero_model))
+'
+printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
+    fail 'GATEWAY_USAGE_PRICING_JSON must be the strict reviewed schema v2 pricing catalog'
+
+# Keep the readable canonical template and the validator in lockstep. These
+# negative checks guard the v2 tagged union against accidentally accepting a
+# v1 price field, an incomplete fallback policy, a mismatched cache-write mode,
+# or an unpublished service tier.
+test -r "$pricing_template" || fail "pricing template is missing: $pricing_template"
+jq -e "$pricing_validator" "$pricing_template" >/dev/null 2>&1 || \
+    fail 'deploy/pricing-v2.example.json does not pass the production pricing validator'
+reject_pricing_mutation() {
+    pricing_mutation=$1
+    pricing_rejection=$2
+    if jq "$pricing_mutation" "$pricing_template" |
+        jq -e "$pricing_validator" >/dev/null 2>&1
+    then
+        fail "pricing validator accepted $pricing_rejection"
+    fi
+}
+reject_pricing_mutation \
+    '.models["gpt-5.6-sol"].input_usd_per_million = "5"' \
+    'a mixed-in v1 price field'
+reject_pricing_mutation \
+    'del(.fallback_policy)' \
+    'a missing fallback policy'
+reject_pricing_mutation \
+    '.models["gpt-5.6-sol"].cache_write_mode = "included_in_input"' \
+    'an invalid cache-write mode'
+reject_pricing_mutation \
+    '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
+    'an unpublished service tier'
+unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
 # host port. Only cloudflared and the Squid allowlist proxy may reach an
@@ -189,6 +334,17 @@ jq -e '
   ((.services.gateway.ports // []) | length == 0)
 ' "$tmp" >/dev/null
 
+# prepareModelBody admits at most four simultaneous 64 MiB request files.
+# Require a private, non-executable 320 MiB tmpfs: four full spools plus one
+# body-sized margin for filesystem accounting and cleanup overlap.
+jq -e '
+  .services.gateway.environment.GATEWAY_BODY_LIMIT_BYTES == "67108864" and
+  .services.gateway.tmpfs == [
+    "/tmp:rw,noexec,nosuid,nodev,size=320m,mode=0700,uid=10001,gid=10001"
+  ]
+' "$tmp" >/dev/null || \
+    fail 'Gateway must use the reviewed 64 MiB body limit and secure 320 MiB /tmp tmpfs'
+
 secret_gid=$(jq -r '.services.gateway.user | split(":")[1]' "$tmp")
 test "$(jq -r '.services.cloudflared.user | split(":")[1]' "$tmp")" = "$secret_gid" || \
     fail 'cloudflared and gateway must use the same configured secret GID'
@@ -245,4 +401,6 @@ fi
 "$compose" run --rm --no-deps caddy caddy validate \
     --config /etc/caddy/Caddyfile --adapter caddyfile
 
-printf '%s\n' 'Compose ingress, network isolation, secrets, immutable revisions, usage pricing, Caddy policy, PostgreSQL SCRAM auth, and rendered image locks validated'
+printf '%s\n' \
+    'Compose ingress, network isolation, secrets, and immutable revisions validated' \
+    'Pricing v2, request tmpfs, Caddy policy, PostgreSQL SCRAM auth, and image locks validated'

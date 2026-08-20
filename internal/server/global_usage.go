@@ -24,12 +24,16 @@ type pricedUsage struct {
 	Tokens            int64  `json:"tokens"`
 	InputTokens       int64  `json:"input_tokens"`
 	CachedInputTokens int64  `json:"cached_input_tokens"`
+	CacheWriteTokens  int64  `json:"cache_write_tokens"`
 	OutputTokens      int64  `json:"output_tokens"`
 	ReasoningTokens   int64  `json:"reasoning_tokens"`
 	PricedTokens      int64  `json:"priced_tokens"`
 	UnpricedTokens    int64  `json:"unpriced_tokens"`
 	EstimatedUSD      string `json:"estimated_usd"`
 	EstimatedCNY      string `json:"estimated_cny"`
+	ActualCostUSD     string `json:"actual_cost_usd"`
+	ChargedUSD        string `json:"charged_usd"`
+	UncoveredUSD      string `json:"uncovered_usd"`
 }
 
 type globalUserUsage struct {
@@ -57,10 +61,24 @@ type globalUsagePeriod struct {
 }
 
 type globalUsageResponse struct {
-	Period  globalUsagePeriod  `json:"period"`
-	Summary globalUsageSummary `json:"summary"`
-	Users   []globalUserUsage  `json:"users"`
-	Pricing globalPricingMeta  `json:"pricing"`
+	Period    globalUsagePeriod      `json:"period"`
+	Summary   globalUsageSummary     `json:"summary"`
+	Users     []globalUserUsage      `json:"users"`
+	Pricing   globalPricingMeta      `json:"pricing"`
+	Breakdown globalPricingBreakdown `json:"breakdown"`
+}
+
+type globalPricingDimension struct {
+	Value            string `json:"value"`
+	Requests         int64  `json:"requests"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	ActualCostUSD    string `json:"actual_cost_usd"`
+}
+
+type globalPricingBreakdown struct {
+	ServiceTiers   []globalPricingDimension `json:"service_tiers"`
+	ContextClasses []globalPricingDimension `json:"context_classes"`
+	Fallbacks      []globalPricingDimension `json:"fallbacks"`
 }
 
 type globalPricingMeta struct {
@@ -80,8 +98,10 @@ type globalUsageQuery struct {
 }
 
 type usageAccumulator struct {
-	usage pricedUsage
-	usd   *big.Rat
+	usage        pricedUsage
+	actualUSD    *big.Rat
+	chargedUSD   *big.Rat
+	uncoveredUSD *big.Rat
 }
 
 type userUsageAccumulator struct {
@@ -105,11 +125,19 @@ func (s *Server) globalUsageJSON(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "global usage", err)
 		return
 	}
+	breakdownRows, err := s.store.GlobalPricingBreakdown(
+		r.Context(), query.From, query.Until, query.Model, query.All,
+	)
+	if err != nil {
+		internalError(s, w, r, "global pricing breakdown", err)
+		return
+	}
 	response, err := summarizeGlobalUsage(rows, s.config.UsagePricing)
 	if err != nil {
 		internalError(s, w, r, "price global usage", err)
 		return
 	}
+	response.Breakdown = formatGlobalPricingBreakdown(breakdownRows)
 	response.Period = globalUsagePeriod{
 		Until: query.Until,
 		All:   query.All,
@@ -120,6 +148,29 @@ func (s *Server) globalUsageJSON(w http.ResponseWriter, r *http.Request) {
 		response.Period.From = &from
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func formatGlobalPricingBreakdown(rows []store.GlobalPricingBreakdownRow) globalPricingBreakdown {
+	result := globalPricingBreakdown{
+		ServiceTiers:   make([]globalPricingDimension, 0),
+		ContextClasses: make([]globalPricingDimension, 0),
+		Fallbacks:      make([]globalPricingDimension, 0),
+	}
+	for _, row := range rows {
+		value := globalPricingDimension{
+			Value: row.Value, Requests: row.RequestCount,
+			CacheWriteTokens: row.CacheWriteTokens, ActualCostUSD: row.ActualCostUSD,
+		}
+		switch row.Dimension {
+		case "service_tier":
+			result.ServiceTiers = append(result.ServiceTiers, value)
+		case "context_class":
+			result.ContextClasses = append(result.ContextClasses, value)
+		case "fallback":
+			result.Fallbacks = append(result.Fallbacks, value)
+		}
+	}
+	return result
 }
 
 func parseGlobalUsageQuery(now time.Time, values url.Values) (globalUsageQuery, error) {
@@ -245,10 +296,10 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 		if user.username != row.Username || user.displayName != row.DisplayName {
 			return globalUsageResponse{}, fmt.Errorf("inconsistent user metadata for %q", row.UserID)
 		}
-		if err := addUsageRow(&user.usage, row, pricing.Models, unpricedModels); err != nil {
+		if err := addUsageRow(&user.usage, row, unpricedModels); err != nil {
 			return globalUsageResponse{}, err
 		}
-		if err := addUsageRow(&total, row, pricing.Models, nil); err != nil {
+		if err := addUsageRow(&total, row, nil); err != nil {
 			return globalUsageResponse{}, err
 		}
 	}
@@ -266,7 +317,7 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 			PricingCoverage: ratioString(usage.PricedTokens, usage.Tokens),
 			PricingStatus:   pricingStatus(usage),
 		})
-		userExactUSD[accumulator.id] = new(big.Rat).Set(accumulator.usage.usd)
+		userExactUSD[accumulator.id] = new(big.Rat).Set(accumulator.usage.actualUSD)
 	}
 	sort.Slice(users, func(i, j int) bool {
 		comparison := userExactUSD[users[i].ID].Cmp(userExactUSD[users[j].ID])
@@ -300,6 +351,19 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 	if err != nil {
 		return globalUsageResponse{}, err
 	}
+	totalUsage.ActualCostUSD = totalUsage.EstimatedUSD
+	totalUsage.ChargedUSD, err = sumUserAmounts(users, func(usage pricedUsage) string {
+		return usage.ChargedUSD
+	})
+	if err != nil {
+		return globalUsageResponse{}, err
+	}
+	totalUsage.UncoveredUSD, err = sumUserAmounts(users, func(usage pricedUsage) string {
+		return usage.UncoveredUSD
+	})
+	if err != nil {
+		return globalUsageResponse{}, err
+	}
 	return globalUsageResponse{
 		Summary: globalUsageSummary{
 			Usage:           totalUsage,
@@ -313,23 +377,26 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 			FXAsOf:         pricing.FXAsOf,
 			USDCNYRate:     pricing.USDCNYRate,
 			UnpricedModels: models,
-			Disclaimer:     "API 等价费用估算，不代表实际账单；仅按配置的输入、缓存输入和输出 Token 比较价计算，不含 ChatGPT Pro 订阅费、税费、基础设施、工具、缓存写入、服务层级或区域附加项。历史用量按当前价格快照重新估算。",
+			Disclaimer:     "OpenAI API Token 等价成本，不代表 OpenAI 实际账单；USD 金额来自不可变用量 ledger，包含已应用的服务层、上下文档位、缓存读取与缓存写入规则。ChatGPT Pro 订阅、工具、区域、税费和基础设施不在本报表范围内。",
 		},
 	}, nil
 }
 
 func newUsageAccumulator() usageAccumulator {
-	return usageAccumulator{usd: new(big.Rat)}
+	return usageAccumulator{
+		actualUSD: new(big.Rat), chargedUSD: new(big.Rat), uncoveredUSD: new(big.Rat),
+	}
 }
 
 func addUsageRow(
 	destination *usageAccumulator,
 	row store.GlobalUsageRow,
-	prices map[string]config.ModelPricing,
 	unpricedModels map[string]struct{},
 ) error {
 	if row.RequestCount < 0 || row.InputTokens < 0 || row.CachedInputTokens < 0 ||
-		row.OutputTokens < 0 || row.ReasoningTokens < 0 || row.CachedInputTokens > row.InputTokens {
+		row.CacheWriteTokens < 0 || row.OutputTokens < 0 || row.ReasoningTokens < 0 ||
+		row.CachedInputTokens > row.InputTokens ||
+		row.CacheWriteTokens > row.InputTokens-row.CachedInputTokens || row.LedgerTokens < 0 {
 		return errors.New("invalid global usage metrics")
 	}
 	if err := addUsageMetric(&destination.usage.Requests, row.RequestCount); err != nil {
@@ -339,6 +406,9 @@ func addUsageRow(
 		return err
 	}
 	if err := addUsageMetric(&destination.usage.CachedInputTokens, row.CachedInputTokens); err != nil {
+		return err
+	}
+	if err := addUsageMetric(&destination.usage.CacheWriteTokens, row.CacheWriteTokens); err != nil {
 		return err
 	}
 	if err := addUsageMetric(&destination.usage.OutputTokens, row.OutputTokens); err != nil {
@@ -355,25 +425,43 @@ func addUsageRow(
 		return err
 	}
 
-	price, priced := prices[row.Model]
-	if row.Model == "" || !priced {
-		if err := addUsageMetric(&destination.usage.UnpricedTokens, tokens); err != nil {
-			return err
-		}
-		if unpricedModels != nil && row.Model != "" && (row.RequestCount > 0 || tokens > 0) {
-			unpricedModels[row.Model] = struct{}{}
-		}
-		return nil
-	}
-	usd, err := estimateUSD(row, price)
-	if err != nil {
-		return fmt.Errorf("price model %q: %w", row.Model, err)
-	}
-	if err := addUsageMetric(&destination.usage.PricedTokens, tokens); err != nil {
+	pricedTokens := min(row.LedgerTokens, tokens)
+	if err := addUsageMetric(&destination.usage.PricedTokens, pricedTokens); err != nil {
 		return err
 	}
-	destination.usd.Add(destination.usd, usd)
+	unpricedTokens := tokens - pricedTokens
+	if err := addUsageMetric(&destination.usage.UnpricedTokens, unpricedTokens); err != nil {
+		return err
+	}
+	if unpricedModels != nil && row.Model != "" && unpricedTokens > 0 {
+		unpricedModels[row.Model] = struct{}{}
+	}
+	actual, err := parseLedgerDecimal(row.ActualCostUSD)
+	if err != nil {
+		return fmt.Errorf("parse ledger actual cost for model %q: %w", row.Model, err)
+	}
+	charged, err := parseLedgerDecimal(row.ChargedUSD)
+	if err != nil {
+		return fmt.Errorf("parse ledger charged cost for model %q: %w", row.Model, err)
+	}
+	uncovered, err := parseLedgerDecimal(row.UncoveredUSD)
+	if err != nil {
+		return fmt.Errorf("parse ledger uncovered cost for model %q: %w", row.Model, err)
+	}
+	if new(big.Rat).Add(new(big.Rat).Set(charged), uncovered).Cmp(actual) != 0 {
+		return fmt.Errorf("ledger cost does not reconcile for model %q", row.Model)
+	}
+	destination.actualUSD.Add(destination.actualUSD, actual)
+	destination.chargedUSD.Add(destination.chargedUSD, charged)
+	destination.uncoveredUSD.Add(destination.uncoveredUSD, uncovered)
 	return nil
+}
+
+func parseLedgerDecimal(value string) (*big.Rat, error) {
+	if value == "" {
+		value = "0"
+	}
+	return parseDecimal(value)
 }
 
 func addUsageMetric(destination *int64, value int64) error {
@@ -383,31 +471,6 @@ func addUsageMetric(destination *int64, value int64) error {
 	}
 	*destination += value
 	return nil
-}
-
-func estimateUSD(row store.GlobalUsageRow, price config.ModelPricing) (*big.Rat, error) {
-	if row.InputTokens < 0 || row.CachedInputTokens < 0 || row.OutputTokens < 0 ||
-		row.CachedInputTokens > row.InputTokens {
-		return nil, errors.New("invalid token metrics")
-	}
-	inputPrice, err := parseDecimal(price.InputUSDPerMillion)
-	if err != nil {
-		return nil, fmt.Errorf("invalid input price: %w", err)
-	}
-	cachedPrice, err := parseDecimal(price.CachedInputUSDPerMillion)
-	if err != nil {
-		return nil, fmt.Errorf("invalid cached input price: %w", err)
-	}
-	outputPrice, err := parseDecimal(price.OutputUSDPerMillion)
-	if err != nil {
-		return nil, fmt.Errorf("invalid output price: %w", err)
-	}
-
-	uncachedInput := row.InputTokens - row.CachedInputTokens
-	value := new(big.Rat).Mul(big.NewRat(uncachedInput, 1), inputPrice)
-	value.Add(value, new(big.Rat).Mul(big.NewRat(row.CachedInputTokens, 1), cachedPrice))
-	value.Add(value, new(big.Rat).Mul(big.NewRat(row.OutputTokens, 1), outputPrice))
-	return value.Quo(value, big.NewRat(1_000_000, 1)), nil
 }
 
 func parseDecimal(value string) (*big.Rat, error) {
@@ -436,8 +499,11 @@ func parseDecimal(value string) (*big.Rat, error) {
 
 func finalizeUsage(accumulator usageAccumulator, rate *big.Rat) pricedUsage {
 	usage := accumulator.usage
-	usage.EstimatedUSD = accumulator.usd.FloatString(moneyDecimalPlaces)
-	cny := new(big.Rat).Mul(accumulator.usd, rate)
+	usage.ActualCostUSD = accumulator.actualUSD.FloatString(moneyDecimalPlaces)
+	usage.EstimatedUSD = usage.ActualCostUSD
+	usage.ChargedUSD = accumulator.chargedUSD.FloatString(moneyDecimalPlaces)
+	usage.UncoveredUSD = accumulator.uncoveredUSD.FloatString(moneyDecimalPlaces)
+	cny := new(big.Rat).Mul(accumulator.actualUSD, rate)
 	usage.EstimatedCNY = cny.FloatString(moneyDecimalPlaces)
 	return usage
 }
@@ -462,7 +528,7 @@ func ratioString(value, total int64) string {
 }
 
 func pricingStatus(usage pricedUsage) string {
-	if usage.Tokens == 0 {
+	if usage.Tokens == 0 && usage.ActualCostUSD == "0.000000" {
 		return "no_usage"
 	}
 	if usage.UnpricedTokens == 0 {

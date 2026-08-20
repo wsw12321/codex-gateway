@@ -41,32 +41,60 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	key := apiKeyFrom(r.Context())
 	requestedAt := time.Now().UTC()
 	model := fixedModel
+	requestedServiceTier := ""
 	var body *countingBody
 	var modelPricingInput, modelPricingCached, modelPricingOutput string
+	var pricingSnapshot []byte
+	var cacheWriteMode, billingMode string
+	pricingRuleVersion := s.config.UsagePricing.SchemaVersion
 	if r.Method == http.MethodPost {
-		var err error
-		model, body, err = prepareModelBody(w, r, s.config.BodyLimit)
+		routing, parsedBody, err := s.prepareModelBody(w, r, s.config.BodyLimit)
 		if err != nil {
 			var maxBytes *http.MaxBytesError
-			if errors.As(err, &maxBytes) {
+			switch {
+			case errors.As(err, &maxBytes):
 				httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", "请求体超过 64 MiB 限制")
-			} else {
-				httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_required", "请求必须在 JSON 顶层前部包含有效 model")
+			case errors.Is(err, errRequestBodySpoolBusy):
+				w.Header().Set("Retry-After", "1")
+				httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "request_spool_busy", "网关正在处理过多大型请求，请稍后重试")
+			case errors.Is(err, errRequestBodySpool):
+				internalError(s, w, r, "spool request body", err)
+			default:
+				httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_required", "请求必须在 JSON 顶层包含唯一且有效的 model")
 			}
 			return
 		}
+		model, requestedServiceTier, body = routing.Model, routing.ServiceTier, parsedBody
+		defer func() { _ = body.Close() }()
 		if !modelAllowed(model, key.ModelAllowlist) {
 			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "model_not_allowed", "此 API Key 不允许使用该模型")
 			return
 		}
-		price, ok := pricingForModel(s.config.UsagePricing, model)
+		priceSnapshot, price, ok, err := s.config.UsagePricing.ModelSnapshot(model)
+		if err != nil {
+			internalError(s, w, r, "snapshot model pricing", err)
+			return
+		}
 		if !ok {
 			writeModelPricingNotFound(w, r)
 			return
 		}
-		modelPricingInput = price.InputUSDPerMillion
-		modelPricingCached = price.CachedInputUSDPerMillion
-		modelPricingOutput = price.OutputUSDPerMillion
+		if err := s.config.UsagePricing.ValidateRequestedServiceTier(model, requestedServiceTier); err != nil {
+			writeServiceTierNotSupported(w, r)
+			return
+		}
+		if pricingRuleVersion == 1 {
+			modelPricingInput = price.InputUSDPerMillion
+			modelPricingCached = price.CachedInputUSDPerMillion
+			modelPricingOutput = price.OutputUSDPerMillion
+		} else {
+			pricingSnapshot = priceSnapshot
+			cacheWriteMode = price.CacheWriteMode
+			billingMode = store.BillingModeOpenAIAPIEquivalent
+			if model == "codex-auto-review" {
+				billingMode = store.BillingModeInternalZero
+			}
+		}
 	}
 
 	project, err := s.resolveAPIProject(r, key)
@@ -95,7 +123,18 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			InputUSDPerMillion:       modelPricingInput,
 			CachedInputUSDPerMillion: modelPricingCached,
 			OutputUSDPerMillion:      modelPricingOutput,
+			PricingRuleVersion:       pricingRuleVersion,
+			BillingMode:              billingMode,
+			PricingCatalogAsOf:       s.config.UsagePricing.CatalogAsOf,
+			PricingModel:             model,
+			PricingSnapshot:          pricingSnapshot,
+			CacheWriteMode:           cacheWriteMode,
+			RequestedServiceTier:     requestedServiceTier,
 			Now:                      requestedAt,
+		}
+		if pricingRuleVersion == 1 {
+			billingReservation.PricingCatalogAsOf = ""
+			billingReservation.PricingModel = ""
 		}
 	}
 	_, err = s.store.AdmitRequest(r.Context(), store.AdmitRequestParams{
@@ -107,7 +146,9 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		Usage: store.BeginUsageRequestParams{
 			RequestID: requestID, UserID: key.UserID, DeviceID: key.DeviceID,
 			APIKeyID: key.ID, ProjectID: projectID, Model: model, Endpoint: endpoint,
-			RequestedAt: requestedAt, RequestBytes: requestBytes,
+			RequestedServiceTier: requestedServiceTier,
+			PricingRuleVersion:   pricingRuleVersion,
+			RequestedAt:          requestedAt, RequestBytes: requestBytes,
 		},
 		Billing: billingReservation,
 	})
@@ -178,9 +219,12 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		RequestID: requestID, State: state, HTTPStatus: effectiveStatus,
 		ErrorCode: errorCode, FirstTokenAt: timeOrNilValue(result.FirstTokenAt), CompletedAt: completedAt,
 		InputTokens: result.Usage.InputTokens, CachedInputTokens: result.Usage.CachedTokens,
-		OutputTokens: result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
+		CacheWriteTokens:        result.Usage.CacheWriteTokens,
+		CacheWriteTokensPresent: result.Usage.CacheWriteTokensPresent,
+		OutputTokens:            result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
 		RequestBytes: actualRequestBytes, ResponseBytes: result.BytesOut, UpstreamRequestID: result.UpstreamRequestID,
-		ActualModel: recordedUpstreamModel(result.Model),
+		ActualModel:       recordedUpstreamModel(result.Model),
+		ActualServiceTier: recordedUpstreamServiceTier(result.ServiceTier),
 	}
 	completeErr := retryUsageCompletion(writeCtx, 3, 50*time.Millisecond, func(ctx context.Context) error {
 		_, err := s.store.CompleteUsageRequest(ctx, completion)
@@ -204,6 +248,10 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 
 func writeModelPricingNotFound(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_pricing_not_found", "模型未记录计费价格，请联系管理员")
+}
+
+func writeServiceTierNotSupported(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "service_tier_not_supported", "请求的服务层级未配置计费规则")
 }
 
 func writeInsufficientQuota(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {

@@ -3,9 +3,12 @@ package store
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 type testSQLStateError string
@@ -19,8 +22,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 4 {
-		t.Fatalf("migration count = %d, want 4", len(migrations))
+	if len(migrations) != 5 {
+		t.Fatalf("migration count = %d, want 5", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -359,6 +362,113 @@ func TestSubscriptionPeriodLimitMigrationIsForwardOnlyAndConstrained(t *testing.
 	} {
 		if !strings.Contains(migrationSQL, required) {
 			t.Errorf("subscription period limit migration is missing %q", required)
+		}
+	}
+}
+
+func TestOfficialTokenPricingMigrationIsForwardOnlyAndVersionCompatible(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0005_official_token_pricing.sql" {
+			migrationSQL = migration.SQL
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0005_official_token_pricing.sql is missing")
+	}
+	for _, required := range []string{
+		"ADD COLUMN cache_write_tokens BIGINT NOT NULL DEFAULT 0",
+		"ADD COLUMN pricing_rule_version INTEGER NOT NULL DEFAULT 1",
+		"ADD COLUMN billing_mode TEXT NOT NULL DEFAULT 'legacy'",
+		"ADD COLUMN pricing_snapshot JSONB",
+		"billing_mode = 'internal_zero'",
+		"pricing_rule_version = 1 AND billing_mode = 'legacy'",
+		"pricing_rule_version = 2 AND billing_mode <> 'legacy'",
+		"cached_input_tokens + cache_write_tokens <= input_tokens",
+		"usage_requested_at TIMESTAMPTZ",
+		"applied_cache_write_usd_per_million NUMERIC(30,12)",
+		"pricing_fallback_reason TEXT",
+		"char_length(pricing_fallback_reason) BETWEEN 1 AND 256",
+		"pricing_fallback_reason ~ '^[a-z0-9_,.-]+$'",
+	} {
+		if !strings.Contains(migrationSQL, required) {
+			t.Errorf("official token pricing migration is missing %q", required)
+		}
+	}
+	immutableHistoryUpdate := regexp.MustCompile(`(?i)\bUPDATE\s+(usage_requests|billing_reservations|billing_ledger_entries)\b`)
+	if match := immutableHistoryUpdate.FindString(migrationSQL); match != "" {
+		t.Fatalf("official token pricing migration rewrites historical accounting rows with %q", match)
+	}
+	if strings.Contains(migrationSQL, "{1,256}") {
+		t.Fatal("official token pricing migration uses an unsupported PostgreSQL regex repetition bound")
+	}
+}
+
+func TestPricingRuleIsZeroChecksEveryPublishedComponent(t *testing.T) {
+	t.Parallel()
+	price := func(input, cached, write, output string) config.TokenPricing {
+		return config.TokenPricing{
+			InputUSDPerMillion: input, CachedInputUSDPerMillion: cached,
+			CacheWriteUSDPerMillion: &write, OutputUSDPerMillion: output,
+		}
+	}
+	rule := func(short config.TokenPricing) config.ModelPricing {
+		return config.ModelPricing{
+			CacheWriteMode: config.CacheWriteSeparate, MaxInputTokens: 1_050_000,
+			LongContextThresholdTokens: 272_000,
+			ServiceTiers: map[string]config.ServiceTierPricing{
+				config.PricingTierStandard: {Short: &short},
+			},
+		}
+	}
+	if !pricingRuleIsZero(rule(price("0", "0.000", "0", "0"))) {
+		t.Fatal("all-zero published prices were not accepted as internal zero pricing")
+	}
+	for name, nonzero := range map[string]config.TokenPricing{
+		"input":       price("1", "0", "0", "0"),
+		"cached":      price("0", "0.1", "0", "0"),
+		"cache write": price("0", "0", "0.01", "0"),
+		"output":      price("0", "0", "0", "2"),
+	} {
+		if pricingRuleIsZero(rule(nonzero)) {
+			t.Errorf("%s price was incorrectly accepted as internal zero pricing", name)
+		}
+	}
+	included := config.ModelPricing{
+		CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 272_000,
+		LongContextThresholdTokens: 272_000,
+		ServiceTiers: map[string]config.ServiceTierPricing{
+			config.PricingTierStandard: {Short: &config.TokenPricing{
+				InputUSDPerMillion: "0", CachedInputUSDPerMillion: "0",
+				OutputUSDPerMillion: "0",
+			}},
+		},
+	}
+	if !pricingRuleIsZero(included) {
+		t.Fatal("included-in-input all-zero pricing was not accepted")
+	}
+}
+
+func TestGlobalPricingBreakdownSQLQualifiesFallbackValues(t *testing.T) {
+	t.Parallel()
+	query := globalPricingBreakdownSQL("TRUE")
+	for _, required := range []string{
+		"AS fallback(value)",
+		"fallback.value::text",
+		"GROUP BY fallback.value",
+	} {
+		if !strings.Contains(query, required) {
+			t.Errorf("global pricing breakdown query is missing %q", required)
+		}
+	}
+	for _, ambiguous := range []string{" reason::text", "GROUP BY reason"} {
+		if strings.Contains(query, ambiguous) {
+			t.Errorf("global pricing breakdown query contains ambiguous alias %q", ambiguous)
 		}
 	}
 }

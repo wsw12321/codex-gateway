@@ -26,7 +26,7 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Limits.KeyConcurrent != 16 || cfg.Limits.UserConcurrent != 16 ||
 		cfg.Limits.GlobalConcurrent != 32 ||
-		cfg.Limits.KeyRequestsPerDay != 1000 || cfg.Limits.UserRequestsPerDay != 2000 {
+		cfg.Limits.KeyRequestsPerDay != 10000 || cfg.Limits.UserRequestsPerDay != 20000 {
 		t.Fatalf("unexpected limits: %+v", cfg.Limits)
 	}
 	if cfg.BodyLimit != 64<<20 {

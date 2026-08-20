@@ -15,6 +15,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 func TestBillingPostgresIntegration(t *testing.T) {
@@ -1021,6 +1022,331 @@ func TestBillingPostgresIntegration(t *testing.T) {
 				actualCost, charged, uncovered)
 		}
 	})
+
+	t.Run("v2 internal zero admits without funds and settles concurrently", func(t *testing.T) {
+		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "iz-"+suffix)
+		base := now.Add(120 * time.Hour)
+		model := "codex-auto-review"
+		snapshot := billingIntegrationV2Snapshot(t, model, config.ModelPricing{
+			CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 272_000,
+			LongContextThresholdTokens: 272_000,
+			ServiceTiers: map[string]config.ServiceTierPricing{
+				config.PricingTierStandard: {Short: &config.TokenPricing{
+					InputUSDPerMillion: "0", CachedInputUSDPerMillion: "0",
+					OutputUSDPerMillion: "0",
+				}},
+			},
+		})
+		requestID := billingIntegrationRequestID(suffix, "internal-zero", 1)
+		params := billingIntegrationAdmission(user, device, key, requestID, base)
+		params.Usage.Model = model
+		params.Usage.RequestedServiceTier = "default"
+		params.Usage.PricingRuleVersion = config.PricingSchemaV2
+		params.Billing = &BillingReservationParams{
+			RequestID: requestID, UserID: user.ID, APIKeyID: key.ID, Model: model,
+			PricingRuleVersion: config.PricingSchemaV2, BillingMode: BillingModeInternalZero,
+			PricingCatalogAsOf: "2026-08-20", PricingModel: model,
+			PricingSnapshot: snapshot, CacheWriteMode: config.CacheWriteIncludedInInput,
+			RequestedServiceTier: "default", Now: base,
+		}
+		admission, err := repository.AdmitRequest(ctx, params)
+		if err != nil {
+			t.Fatalf("AdmitRequest(internal zero without funds): %v", err)
+		}
+		if admission.Billing == nil || admission.Billing.DayPeriodID != nil ||
+			admission.Billing.WeekPeriodID != nil || admission.Billing.MonthPeriodID != nil ||
+			admission.Billing.CashLotCutoff != nil {
+			t.Fatalf("internal-zero admission unexpectedly bound funds: %+v", admission.Billing)
+		}
+		if _, err := repository.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
+			RequestID: requestID, State: "completed", HTTPStatus: 200,
+			CompletedAt: base.Add(time.Second), InputTokens: 120,
+			CachedInputTokens: 20, CacheWriteTokens: 30, CacheWriteTokensPresent: true,
+			OutputTokens: 40, ActualModel: model,
+		}); err != nil {
+			t.Fatalf("CompleteUsageRequest(internal zero): %v", err)
+		}
+		start := make(chan struct{})
+		errorsByAttempt := make([]error, 2)
+		var wait sync.WaitGroup
+		for index := range errorsByAttempt {
+			wait.Add(1)
+			go func(index int) {
+				defer wait.Done()
+				<-start
+				errorsByAttempt[index] = repository.SettleRequest(ctx, requestID, base.Add(2*time.Second))
+			}(index)
+		}
+		close(start)
+		wait.Wait()
+		for index, err := range errorsByAttempt {
+			if err != nil {
+				t.Fatalf("concurrent internal-zero settlement %d: %v", index, err)
+			}
+		}
+		var ledgerCount int
+		var amount, charged, uncovered, balance string
+		var inputTokens, cachedTokens, cacheWriteTokens, outputTokens, actualQuotaTokens int64
+		var pricingTier, contextClass, cacheWriteMode string
+		var pricingVersion int
+		if err := repository.db.QueryRowContext(ctx, `SELECT
+			(SELECT count(*) FROM billing_ledger_entries WHERE request_id = $1),
+			l.amount_usd::text,l.charged_usd::text,l.uncovered_usd::text,
+			l.input_tokens,l.cached_input_tokens,l.cache_write_tokens,l.output_tokens,
+			l.pricing_service_tier,l.context_class,l.cache_write_mode,l.pricing_rule_version,
+			(SELECT balance_usd::text FROM billing_accounts WHERE user_id = $2),
+			q.actual_tokens
+			FROM billing_ledger_entries l JOIN quota_reservations q USING (request_id)
+			WHERE l.request_id = $1`, requestID, user.ID,
+		).Scan(&ledgerCount, &amount, &charged, &uncovered, &inputTokens, &cachedTokens,
+			&cacheWriteTokens, &outputTokens, &pricingTier, &contextClass, &cacheWriteMode,
+			&pricingVersion, &balance, &actualQuotaTokens); err != nil {
+			t.Fatalf("read internal-zero settlement: %v", err)
+		}
+		if ledgerCount != 1 || amount != "0.000000000000" || charged != "0.000000000000" ||
+			uncovered != "0.000000000000" || balance != "0.000000000000" ||
+			inputTokens != 120 || cachedTokens != 20 || cacheWriteTokens != 30 || outputTokens != 40 ||
+			actualQuotaTokens != 160 || pricingTier != config.PricingTierStandard ||
+			contextClass != config.ContextClassShort || cacheWriteMode != config.CacheWriteIncludedInInput ||
+			pricingVersion != config.PricingSchemaV2 {
+			t.Fatalf("internal-zero settlement mismatch: ledger=%d amount=%s charged=%s uncovered=%s balance=%s tokens=%d/%d/%d/%d quota=%d tier=%s context=%s cache=%s version=%d",
+				ledgerCount, amount, charged, uncovered, balance, inputTokens, cachedTokens,
+				cacheWriteTokens, outputTokens, actualQuotaTokens, pricingTier, contextClass,
+				cacheWriteMode, pricingVersion)
+		}
+		var completedRequests, usedTokens int64
+		if err := repository.db.QueryRowContext(ctx, `SELECT requests_completed,tokens_used
+			FROM quota_counters WHERE quota_day=$1::date AND scope_type='user' AND scope_id=$2`,
+			base, user.ID).Scan(&completedRequests, &usedTokens); err != nil {
+			t.Fatalf("read internal-zero user quota: %v", err)
+		}
+		if completedRequests != 1 || usedTokens != 160 {
+			t.Fatalf("internal-zero quota = requests %d tokens %d, want 1/160",
+				completedRequests, usedTokens)
+		}
+	})
+
+	t.Run("v2 fallback persists applied prices through usage retention", func(t *testing.T) {
+		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "v2-fallback-"+suffix)
+		base := now.Add(144 * time.Hour)
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "fund v2 fallback test", base),
+			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5",
+		}); err != nil {
+			t.Fatalf("PutSubscription(v2 fallback): %v", err)
+		}
+		writePrice := func(value string) *string { return &value }
+		model := "gpt-v2-priced"
+		snapshot := billingIntegrationV2Snapshot(t, model, config.ModelPricing{
+			CacheWriteMode: config.CacheWriteSeparate, MaxInputTokens: 1_050_000,
+			LongContextThresholdTokens: 272_000,
+			ServiceTiers: map[string]config.ServiceTierPricing{
+				config.PricingTierStandard: {Short: &config.TokenPricing{
+					InputUSDPerMillion: "5", CachedInputUSDPerMillion: "0.5",
+					CacheWriteUSDPerMillion: writePrice("6.25"), OutputUSDPerMillion: "30",
+				}},
+				config.PricingTierFlex: {Short: &config.TokenPricing{
+					InputUSDPerMillion: "2.5", CachedInputUSDPerMillion: "0.25",
+					CacheWriteUSDPerMillion: writePrice("3.125"), OutputUSDPerMillion: "15",
+				}},
+				config.PricingTierFast: {Short: &config.TokenPricing{
+					InputUSDPerMillion: "10", CachedInputUSDPerMillion: "1",
+					CacheWriteUSDPerMillion: writePrice("12.5"), OutputUSDPerMillion: "60",
+				}},
+			},
+		})
+		requestID := billingIntegrationRequestID(suffix, "v2-fallback", 1)
+		params := billingIntegrationAdmission(user, device, key, requestID, base.Add(time.Second))
+		params.Usage.Model = model
+		params.Usage.RequestedServiceTier = "flex"
+		params.Usage.PricingRuleVersion = config.PricingSchemaV2
+		params.Billing = &BillingReservationParams{
+			RequestID: requestID, UserID: user.ID, APIKeyID: key.ID, Model: model,
+			PricingRuleVersion: config.PricingSchemaV2,
+			BillingMode:        BillingModeOpenAIAPIEquivalent, PricingCatalogAsOf: "2026-08-20",
+			PricingModel: model, PricingSnapshot: snapshot,
+			CacheWriteMode: config.CacheWriteSeparate, RequestedServiceTier: "flex",
+			Now: base.Add(time.Second),
+		}
+		if _, err := repository.AdmitRequest(ctx, params); err != nil {
+			t.Fatalf("AdmitRequest(v2 fallback): %v", err)
+		}
+		actualModel := "gpt-v2-upstream"
+		completedAt := base.Add(2 * time.Second)
+		if _, err := repository.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
+			RequestID: requestID, State: "completed", HTTPStatus: 200,
+			CompletedAt: completedAt, InputTokens: 100_000, CachedInputTokens: 10_000,
+			OutputTokens: 10_000, ActualModel: actualModel,
+		}); err != nil {
+			t.Fatalf("CompleteUsageRequest(v2 fallback): %v", err)
+		}
+		if err := repository.SettleRequest(ctx, requestID, base.Add(3*time.Second)); err != nil {
+			t.Fatalf("SettleRequest(v2 fallback): %v", err)
+		}
+		fallbackReason := "missing_cache_write_tokens,missing_service_tier"
+		var actualCost, charged, uncovered, reservationFallback string
+		var actualCacheWrite int64
+		var appliedInput, appliedCached, appliedWrite, appliedOutput string
+		var pricingTier, contextClass string
+		if err := repository.db.QueryRowContext(ctx, `SELECT actual_cost_usd::text,
+			charged_usd::text,uncovered_usd::text,actual_cache_write_tokens,
+			applied_input_usd_per_million::text,applied_cached_input_usd_per_million::text,
+			applied_cache_write_usd_per_million::text,applied_output_usd_per_million::text,
+			pricing_service_tier,context_class,pricing_fallback_reason
+			FROM billing_reservations WHERE request_id=$1`, requestID,
+		).Scan(&actualCost, &charged, &uncovered, &actualCacheWrite, &appliedInput,
+			&appliedCached, &appliedWrite, &appliedOutput, &pricingTier, &contextClass,
+			&reservationFallback); err != nil {
+			t.Fatalf("read v2 fallback reservation: %v", err)
+		}
+		if actualCost != "1.735000000000" || charged != "1.735000000000" ||
+			uncovered != "0.000000000000" || actualCacheWrite != 90_000 ||
+			appliedInput != "10.000000000000" || appliedCached != "1.000000000000" ||
+			appliedWrite != "12.500000000000" || appliedOutput != "60.000000000000" ||
+			pricingTier != config.PricingTierMaxPublished || contextClass != config.ContextClassShort ||
+			reservationFallback != fallbackReason {
+			t.Fatalf("v2 fallback reservation mismatch: cost=%s/%s/%s write=%d prices=%s/%s/%s/%s tier=%s context=%s fallback=%s",
+				actualCost, charged, uncovered, actualCacheWrite, appliedInput, appliedCached,
+				appliedWrite, appliedOutput, pricingTier, contextClass, reservationFallback)
+		}
+		var usageCacheWrite int64
+		var usageCacheWritePresent bool
+		var usagePricingTier, usageContext, usageFallback string
+		if err := repository.db.QueryRowContext(ctx, `SELECT cache_write_tokens,
+			cache_write_tokens_present,pricing_service_tier,context_class,pricing_fallback_reason
+			FROM usage_requests WHERE request_id=$1`, requestID,
+		).Scan(&usageCacheWrite, &usageCacheWritePresent, &usagePricingTier,
+			&usageContext, &usageFallback); err != nil {
+			t.Fatalf("read v2 fallback usage metadata: %v", err)
+		}
+		if usageCacheWrite != 90_000 || usageCacheWritePresent ||
+			usagePricingTier != config.PricingTierMaxPublished ||
+			usageContext != config.ContextClassShort || usageFallback != fallbackReason {
+			t.Fatalf("v2 fallback usage mismatch: write=%d present=%t tier=%s context=%s fallback=%s",
+				usageCacheWrite, usageCacheWritePresent, usagePricingTier, usageContext, usageFallback)
+		}
+		var ledgerID int64
+		var ledgerActualModel, ledgerRequestedTier, ledgerPricingTier, ledgerFallback string
+		var ledgerUsageAt time.Time
+		if err := repository.db.QueryRowContext(ctx, `SELECT id,actual_model,
+			requested_service_tier,pricing_service_tier,pricing_fallback_reason,usage_requested_at
+			FROM billing_ledger_entries WHERE request_id=$1`, requestID,
+		).Scan(&ledgerID, &ledgerActualModel, &ledgerRequestedTier, &ledgerPricingTier,
+			&ledgerFallback, &ledgerUsageAt); err != nil {
+			t.Fatalf("read v2 fallback ledger metadata: %v", err)
+		}
+		if ledgerActualModel != actualModel || ledgerRequestedTier != "flex" ||
+			ledgerPricingTier != config.PricingTierMaxPublished || ledgerFallback != fallbackReason ||
+			!ledgerUsageAt.Equal(base.Add(time.Second)) {
+			t.Fatalf("v2 fallback ledger metadata = model %s requested %s pricing %s fallback %s usage %v",
+				ledgerActualModel, ledgerRequestedTier, ledgerPricingTier, ledgerFallback, ledgerUsageAt)
+		}
+		if _, err := repository.db.ExecContext(ctx, `UPDATE billing_ledger_entries
+			SET actual_cost_usd=999 WHERE id=$1`, ledgerID); err == nil {
+			t.Fatal("immutable usage ledger unexpectedly allowed an amount update")
+		}
+		if err := repository.AggregateUsageMonth(ctx, base, "UTC"); err != nil {
+			t.Fatalf("AggregateUsageMonth(v2 retention): %v", err)
+		}
+		deleted, err := repository.DeleteUsageRequestsBefore(ctx, completedAt.Add(91*24*time.Hour), 100_000)
+		if err != nil {
+			t.Fatalf("DeleteUsageRequestsBefore(v2 retention): %v", err)
+		}
+		if deleted < 1 {
+			t.Fatalf("retention deleted %d usage rows, want at least the v2 request", deleted)
+		}
+		var usageCount int
+		if err := repository.db.QueryRowContext(ctx, `SELECT count(*) FROM usage_requests
+			WHERE request_id=$1`, requestID).Scan(&usageCount); err != nil {
+			t.Fatalf("count retained v2 usage detail: %v", err)
+		}
+		if usageCount != 0 {
+			t.Fatalf("v2 usage detail count after retention = %d, want zero", usageCount)
+		}
+		var retainedCost, retainedFallback string
+		var retainedWrite int64
+		if err := repository.db.QueryRowContext(ctx, `SELECT actual_cost_usd::text,
+			cache_write_tokens,pricing_fallback_reason FROM billing_ledger_entries WHERE id=$1`,
+			ledgerID).Scan(&retainedCost, &retainedWrite, &retainedFallback); err != nil {
+			t.Fatalf("read immutable ledger after retention: %v", err)
+		}
+		if retainedCost != "1.735000000000" || retainedWrite != 90_000 || retainedFallback != fallbackReason {
+			t.Fatalf("ledger after retention = cost %s write %d fallback %s",
+				retainedCost, retainedWrite, retainedFallback)
+		}
+		var monthlyInput, monthlyCached, monthlyWrite, monthlyOutput int64
+		if err := repository.db.QueryRowContext(ctx, `SELECT coalesce(sum(input_tokens),0),
+			coalesce(sum(cached_input_tokens),0),coalesce(sum(cache_write_tokens),0),
+			coalesce(sum(output_tokens),0) FROM usage_monthly
+			WHERE user_id=$1 AND model=$2`, user.ID, actualModel,
+		).Scan(&monthlyInput, &monthlyCached, &monthlyWrite, &monthlyOutput); err != nil {
+			t.Fatalf("read monthly usage after retention: %v", err)
+		}
+		if monthlyInput != 100_000 || monthlyCached != 10_000 ||
+			monthlyWrite != 90_000 || monthlyOutput != 10_000 {
+			t.Fatalf("monthly usage after retention = %d/%d/%d/%d",
+				monthlyInput, monthlyCached, monthlyWrite, monthlyOutput)
+		}
+		liveFrom := time.Date(base.Year(), base.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+		reportRows, err := repository.GlobalUsage(ctx, time.Time{},
+			completedAt.Add(91*24*time.Hour), actualModel, true, liveFrom)
+		if err != nil {
+			t.Fatalf("GlobalUsage(after retention): %v", err)
+		}
+		report := findGlobalUsageIntegrationRow(t, reportRows, user.ID)
+		if report.RequestCount != 1 || report.InputTokens != 100_000 ||
+			report.CachedInputTokens != 10_000 || report.CacheWriteTokens != 90_000 ||
+			report.OutputTokens != 10_000 || report.LedgerTokens != 110_000 ||
+			report.ActualCostUSD != "1.735000000000" ||
+			report.ChargedUSD != "1.735000000000" || report.UncoveredUSD != "0.000000000000" {
+			t.Fatalf("global usage after retention did not reconcile monthly tokens and immutable ledger: %+v",
+				report)
+		}
+		breakdown, err := repository.GlobalPricingBreakdown(ctx,
+			base.Add(-time.Second), completedAt.Add(91*24*time.Hour), actualModel, false)
+		if err != nil {
+			t.Fatalf("GlobalPricingBreakdown(after retention): %v", err)
+		}
+		wantBreakdown := map[string]bool{
+			"service_tier/" + config.PricingTierMaxPublished: false,
+			"context_class/" + config.ContextClassShort:      false,
+			"fallback/missing_cache_write_tokens":            false,
+			"fallback/missing_service_tier":                  false,
+		}
+		for _, row := range breakdown {
+			key := row.Dimension + "/" + row.Value
+			if _, ok := wantBreakdown[key]; ok && row.RequestCount == 1 &&
+				row.CacheWriteTokens == 90_000 && row.ActualCostUSD == "1.735000000000" {
+				wantBreakdown[key] = true
+			}
+		}
+		for key, found := range wantBreakdown {
+			if !found {
+				t.Errorf("missing immutable pricing breakdown %s in %+v", key, breakdown)
+			}
+		}
+	})
+}
+
+func billingIntegrationV2Snapshot(t *testing.T, model string, rule config.ModelPricing) []byte {
+	t.Helper()
+	pricing := config.UsagePricing{
+		SchemaVersion: config.PricingSchemaV2,
+		FallbackPolicy: config.PricingFallbackPolicy{
+			UnknownServiceTier:      config.FallbackMaxPublished,
+			MissingPriceCombination: config.FallbackMaxPublished,
+			MissingCacheWriteTokens: config.FallbackAllUncachedAsWrite,
+		},
+		Models: map[string]config.ModelPricing{model: rule},
+	}
+	snapshot, _, ok, err := pricing.ModelSnapshot(model)
+	if err != nil || !ok {
+		t.Fatalf("build v2 pricing snapshot for %s: ok=%t err=%v", model, ok, err)
+	}
+	if _, err := config.ParsePricingSnapshot(snapshot); err != nil {
+		t.Fatalf("validate v2 pricing snapshot for %s: %v", model, err)
+	}
+	return snapshot
 }
 
 func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repository *Store, suffix string) {
@@ -1053,7 +1379,8 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 		byName[migration.Name] = migration.SQL
 	}
 	if byName["0001_initial.sql"] == "" || byName["0002_billing.sql"] == "" ||
-		byName["0004_subscription_period_limits.sql"] == "" {
+		byName["0004_subscription_period_limits.sql"] == "" ||
+		byName["0005_official_token_pricing.sql"] == "" {
 		t.Fatalf("billing migration set is incomplete: %v", byName)
 	}
 	if _, err := connection.ExecContext(ctx, byName["0001_initial.sql"]); err != nil {
@@ -1203,6 +1530,144 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 		!snapshotExpiry.Equal(periodlessDisabledAt) {
 		t.Fatalf("migrated periodless snapshot = period %d/%d expiry %v, want 1/1 %v",
 			snapshotPeriodNumber, snapshotPeriodCount, snapshotExpiry, periodlessDisabledAt)
+	}
+
+	legacyDeviceID, _ := newUUID()
+	legacyKeyID, _ := newUUID()
+	legacyKeyHash := sha256.Sum256([]byte("pre-0005-key-" + suffix))
+	legacyKeyPrefix := "cgk_mig_" + suffix
+	if _, err := connection.ExecContext(ctx, `INSERT INTO devices
+		(id,user_id,name,created_at,updated_at)
+		VALUES ($1,$2,$3,$4,$4)`, legacyDeviceID, legacyID,
+		"pre-0005-device-"+suffix, migrationNow); err != nil {
+		t.Fatalf("create pre-0005 device: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `INSERT INTO api_keys
+		(id,public_id,key_prefix,key_hash,user_id,device_id,name,created_at,expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, legacyKeyID,
+		"migrationkey"+suffix, legacyKeyPrefix, legacyKeyHash[:], legacyID,
+		legacyDeviceID, "pre-0005-key", migrationNow, migrationNow.Add(90*24*time.Hour)); err != nil {
+		t.Fatalf("create pre-0005 API key: %v", err)
+	}
+	legacyRequestID := "pre-0005-v1-" + suffix
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_reservations
+		(request_id,user_id,api_key_id,requested_model,input_usd_per_million,
+		 cached_input_usd_per_million,output_usd_per_million,day_period_id,created_at)
+		VALUES ($1,$2,$3,'legacy-priced-model',2,0.5,3,$4,$5)`,
+		legacyRequestID, legacyID, legacyKeyID, activePeriodID, migrationNow); err != nil {
+		t.Fatalf("create pre-0005 v1 reservation: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, `INSERT INTO usage_requests
+		(request_id,user_id,device_id,api_key_id,key_prefix,model,endpoint,requested_at)
+		VALUES ($1,$2,$3,$4,$5,'legacy-priced-model','responses',$6)`,
+		legacyRequestID, legacyID, legacyDeviceID, legacyKeyID,
+		legacyKeyPrefix, migrationNow); err != nil {
+		t.Fatalf("create pre-0005 in-flight usage: %v", err)
+	}
+	historicalRequestID := "pre-0005-ledger-" + suffix
+	if _, err := connection.ExecContext(ctx, `INSERT INTO billing_ledger_entries
+		(user_id,entry_type,amount_usd,cash_delta_usd,request_id,model,input_tokens,
+		 cached_input_tokens,output_tokens,actual_cost_usd,charged_usd,uncovered_usd,
+		 reason,created_at)
+		VALUES ($1,'usage_charge',1.25,0,$2,'historic-model',1000000,0,0,
+		 1.25,1.25,0,'pre-0005 immutable history',$3)`,
+		legacyID, historicalRequestID, migrationNow.Add(-time.Minute)); err != nil {
+		t.Fatalf("create pre-0005 historical ledger: %v", err)
+	}
+	var ledgerCountBefore int64
+	var ledgerAmountBefore string
+	if err := connection.QueryRowContext(ctx, `SELECT count(*),
+		coalesce(sum(amount_usd),0)::text FROM billing_ledger_entries`,
+	).Scan(&ledgerCountBefore, &ledgerAmountBefore); err != nil {
+		t.Fatalf("snapshot pre-0005 ledger totals: %v", err)
+	}
+
+	if _, err := connection.ExecContext(ctx, byName["0005_official_token_pricing.sql"]); err != nil {
+		t.Fatalf("apply isolated 0005: %v", err)
+	}
+	var pricingVersion int
+	var billingMode, inputPrice, cachedPrice, outputPrice string
+	var catalog, pricingModel, snapshot, cacheWriteMode sql.NullString
+	if err := connection.QueryRowContext(ctx, `SELECT pricing_rule_version,billing_mode,
+		input_usd_per_million::text,cached_input_usd_per_million::text,
+		output_usd_per_million::text,pricing_catalog_as_of::text,pricing_model,
+		pricing_snapshot::text,cache_write_mode
+		FROM billing_reservations WHERE request_id = $1`, legacyRequestID,
+	).Scan(&pricingVersion, &billingMode, &inputPrice, &cachedPrice, &outputPrice,
+		&catalog, &pricingModel, &snapshot, &cacheWriteMode); err != nil {
+		t.Fatalf("read migrated v1 reservation: %v", err)
+	}
+	if pricingVersion != config.PricingSchemaV1 || billingMode != BillingModeLegacy ||
+		inputPrice != "2.000000000000" || cachedPrice != "0.500000000000" ||
+		outputPrice != "3.000000000000" || catalog.Valid || pricingModel.Valid ||
+		snapshot.Valid || cacheWriteMode.Valid {
+		t.Fatalf("migrated v1 reservation changed pricing: version=%d mode=%s prices=%s/%s/%s catalog=%v model=%v snapshot=%v cache=%v",
+			pricingVersion, billingMode, inputPrice, cachedPrice, outputPrice,
+			catalog, pricingModel, snapshot, cacheWriteMode)
+	}
+	var ledgerCountAfter int64
+	var ledgerAmountAfter string
+	if err := connection.QueryRowContext(ctx, `SELECT count(*),
+		coalesce(sum(amount_usd),0)::text FROM billing_ledger_entries`,
+	).Scan(&ledgerCountAfter, &ledgerAmountAfter); err != nil {
+		t.Fatalf("read post-0005 ledger totals: %v", err)
+	}
+	if ledgerCountAfter != ledgerCountBefore || ledgerAmountAfter != ledgerAmountBefore {
+		t.Fatalf("0005 rewrote immutable ledger totals: before=%d/%s after=%d/%s",
+			ledgerCountBefore, ledgerAmountBefore, ledgerCountAfter, ledgerAmountAfter)
+	}
+	var historicalVersion int
+	var historicalUsageAt sql.NullTime
+	var historicalAppliedPrice sql.NullString
+	if err := connection.QueryRowContext(ctx, `SELECT pricing_rule_version,
+		usage_requested_at,applied_input_usd_per_million::text
+		FROM billing_ledger_entries WHERE request_id = $1`, historicalRequestID,
+	).Scan(&historicalVersion, &historicalUsageAt, &historicalAppliedPrice); err != nil {
+		t.Fatalf("read migrated historical ledger metadata: %v", err)
+	}
+	if historicalVersion != config.PricingSchemaV1 || historicalUsageAt.Valid || historicalAppliedPrice.Valid {
+		t.Fatalf("historical ledger was relabeled: version=%d usage_at=%v applied=%v",
+			historicalVersion, historicalUsageAt, historicalAppliedPrice)
+	}
+
+	settledAt := migrationNow.Add(time.Second)
+	if _, err := connection.ExecContext(ctx, `UPDATE usage_requests
+		SET state='completed',http_status=200,completed_at=$2,input_tokens=1000000,
+		cached_input_tokens=0,output_tokens=0
+		WHERE request_id=$1`, legacyRequestID, settledAt); err != nil {
+		t.Fatalf("complete migrated v1 usage: %v", err)
+	}
+	tx, err := connection.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin migrated v1 settlement: %v", err)
+	}
+	settled, settleErr := settleBillingTx(ctx, tx, legacyRequestID, settledAt.Add(time.Second))
+	if settleErr != nil {
+		_ = tx.Rollback()
+		t.Fatalf("settle migrated v1 reservation: %v", settleErr)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit migrated v1 settlement: %v", err)
+	}
+	if settled.PricingRuleVersion != config.PricingSchemaV1 ||
+		settled.ActualCostUSD == nil || *settled.ActualCostUSD != "2.000000000000" ||
+		settled.ChargedUSD == nil || *settled.ChargedUSD != "2.000000000000" ||
+		settled.UncoveredUSD == nil || *settled.UncoveredUSD != "0.000000000000" ||
+		settled.ActualCacheWriteTokens != nil || settled.AppliedInputUSDPerMillion != nil {
+		t.Fatalf("migrated v1 settlement used v2 semantics: %+v", settled)
+	}
+	var settledLedgerCount int
+	var settledLedgerVersion int
+	var settledLedgerApplied sql.NullString
+	if err := connection.QueryRowContext(ctx, `SELECT count(*),min(pricing_rule_version),
+		min(applied_input_usd_per_million)::text
+		FROM billing_ledger_entries WHERE request_id = $1`, legacyRequestID,
+	).Scan(&settledLedgerCount, &settledLedgerVersion, &settledLedgerApplied); err != nil {
+		t.Fatalf("read migrated v1 settlement ledger: %v", err)
+	}
+	if settledLedgerCount != 1 || settledLedgerVersion != config.PricingSchemaV1 || settledLedgerApplied.Valid {
+		t.Fatalf("migrated v1 ledger = count %d version %d applied %v",
+			settledLedgerCount, settledLedgerVersion, settledLedgerApplied)
 	}
 }
 

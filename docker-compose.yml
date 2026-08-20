@@ -98,7 +98,9 @@ services:
       - gateway_session_secret
       - sidecar_api_key
     tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=0700,uid=10001,gid=10001
+      # Four concurrent 64 MiB request spools plus one body-sized margin for
+      # filesystem/accounting overhead and cleanup overlap.
+      - /tmp:rw,noexec,nosuid,nodev,size=320m,mode=0700,uid=10001,gid=10001
     networks:
       edge_internal:
         ipv4_address: 172.28.10.3

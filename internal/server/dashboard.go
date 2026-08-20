@@ -17,6 +17,7 @@ type usageSummary struct {
 	Tokens            int64   `json:"tokens"`
 	InputTokens       int64   `json:"input_tokens"`
 	CachedInputTokens int64   `json:"cached_input_tokens"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens"`
 	OutputTokens      int64   `json:"output_tokens"`
 	ReasoningTokens   int64   `json:"reasoning_tokens"`
 	CacheRate         float64 `json:"cache_rate"`
@@ -61,17 +62,25 @@ func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	writer := csv.NewWriter(w)
 	_ = writer.Write([]string{
-		"request_id", "user_id", "device_id", "key_prefix", "project_id", "model", "endpoint",
+		"request_id", "user_id", "device_id", "key_prefix", "project_id", "requested_model", "model",
+		"requested_service_tier", "actual_service_tier", "pricing_service_tier", "context_class",
+		"pricing_rule_version", "pricing_fallback_reason", "endpoint",
 		"state", "http_status", "error_code", "requested_at", "ttft_ms", "duration_ms",
-		"input_tokens", "cached_input_tokens", "output_tokens", "reasoning_tokens",
+		"input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_tokens_present",
+		"output_tokens", "reasoning_tokens",
 		"request_bytes", "response_bytes", "upstream_request_id",
 	})
 	for _, request := range requests {
 		_ = writer.Write([]string{
 			request.RequestID, request.UserID, request.DeviceID, request.KeyPrefix, stringPointer(request.ProjectID),
-			request.Model, request.Endpoint, request.State, intPointer(request.HTTPStatus), stringPointer(request.ErrorCode),
+			stringPointer(request.RequestedModel), request.Model,
+			stringPointer(request.RequestedServiceTier), stringPointer(request.ActualServiceTier),
+			stringPointer(request.PricingServiceTier), stringPointer(request.ContextClass),
+			strconv.Itoa(request.PricingRuleVersion), stringPointer(request.PricingFallbackReason),
+			request.Endpoint, request.State, intPointer(request.HTTPStatus), stringPointer(request.ErrorCode),
 			request.RequestedAt.Format(time.RFC3339Nano), int64Pointer(request.TTFTMillis), int64Pointer(request.DurationMillis),
 			strconv.FormatInt(request.InputTokens, 10), strconv.FormatInt(request.CachedInputTokens, 10),
+			strconv.FormatInt(request.CacheWriteTokens, 10), strconv.FormatBool(request.CacheWriteTokensPresent),
 			strconv.FormatInt(request.OutputTokens, 10), strconv.FormatInt(request.ReasoningTokens, 10),
 			strconv.FormatInt(request.RequestBytes, 10), strconv.FormatInt(request.ResponseBytes, 10),
 			stringPointer(request.UpstreamRequestID),
@@ -147,6 +156,7 @@ func summarizeUsage(requests []store.UsageRequest) usageSummary {
 		summary.Requests++
 		summary.InputTokens += request.InputTokens
 		summary.CachedInputTokens += request.CachedInputTokens
+		summary.CacheWriteTokens += request.CacheWriteTokens
 		summary.OutputTokens += request.OutputTokens
 		summary.ReasoningTokens += request.ReasoningTokens
 		if request.State != "completed" || (request.HTTPStatus != nil && *request.HTTPStatus >= 400) {
@@ -175,8 +185,9 @@ func summaryFromStore(value store.UsageSummary) usageSummary {
 	summary := usageSummary{
 		Requests: value.RequestCount, InputTokens: value.InputTokens,
 		CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
-		ReasoningTokens: value.ReasoningTokens,
-		P95TTFTMillis:   value.P95TTFTMillis, P95DurationMillis: value.P95DurationMillis,
+		CacheWriteTokens: value.CacheWriteTokens,
+		ReasoningTokens:  value.ReasoningTokens,
+		P95TTFTMillis:    value.P95TTFTMillis, P95DurationMillis: value.P95DurationMillis,
 	}
 	summary.Tokens = summary.InputTokens + summary.OutputTokens
 	if summary.InputTokens > 0 {

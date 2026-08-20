@@ -27,6 +27,9 @@ type Server struct {
 	logger   *slog.Logger
 	mux      *http.ServeMux
 	attempts *attemptLimiter
+
+	spoolOnce  sync.Once
+	spoolSlots chan struct{}
 }
 
 func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Server, error) {
@@ -49,6 +52,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(),
+		spoolSlots: make(chan struct{}, maxConcurrentRequestSpools),
 	}
 	s.routes()
 	return s, nil

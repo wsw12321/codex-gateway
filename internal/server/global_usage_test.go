@@ -29,38 +29,14 @@ func testUsagePricing() config.UsagePricing {
 	}
 }
 
-func TestEstimateUSDDoesNotDoubleCountCachedOrReasoning(t *testing.T) {
-	row := store.GlobalUsageRow{
-		InputTokens:       1_000_000,
-		CachedInputTokens: 800_000,
-		OutputTokens:      100_000,
-		ReasoningTokens:   90_000,
-	}
-	price := testUsagePricing().Models["priced"]
-	estimate, err := estimateUSD(row, price)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := estimate.FloatString(moneyDecimalPlaces); got != "1.280000" {
-		t.Fatalf("estimate = %s", got)
-	}
-	row.ReasoningTokens = 0
-	withoutReasoning, err := estimateUSD(row, price)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if estimate.Cmp(withoutReasoning) != 0 {
-		t.Fatal("reasoning tokens were charged separately from output tokens")
-	}
-}
-
-func TestSummarizeGlobalUsagePricesKnownModelsAndReportsCoverage(t *testing.T) {
+func TestSummarizeGlobalUsageUsesLedgerAmountsAndReportsCoverage(t *testing.T) {
 	pricing := testUsagePricing()
 	rows := []store.GlobalUsageRow{
 		{
 			UserID: "user-a", Username: "alice", DisplayName: "Alice", Model: "priced",
 			RequestCount: 2, InputTokens: 1_000_000, CachedInputTokens: 800_000,
-			OutputTokens: 100_000, ReasoningTokens: 90_000,
+			OutputTokens: 100_000, ReasoningTokens: 90_000, LedgerTokens: 1_100_000,
+			ActualCostUSD: "1.28", ChargedUSD: "1.20", UncoveredUSD: "0.08",
 		},
 		{
 			UserID: "user-a", Username: "alice", DisplayName: "Alice", Model: "unknown-z",
@@ -107,14 +83,9 @@ func TestSummarizeGlobalUsagePricesKnownModelsAndReportsCoverage(t *testing.T) {
 func TestSummarizeGlobalUsageReconcilesRoundedUserAmounts(t *testing.T) {
 	pricing := testUsagePricing()
 	pricing.USDCNYRate = "1"
-	pricing.Models["priced"] = config.ModelPricing{
-		InputUSDPerMillion:       "0.5",
-		CachedInputUSDPerMillion: "0",
-		OutputUSDPerMillion:      "0",
-	}
 	rows := []store.GlobalUsageRow{
-		{UserID: "b", Username: "b", DisplayName: "B", Model: "priced", RequestCount: 1, InputTokens: 1},
-		{UserID: "a", Username: "a", DisplayName: "A", Model: "priced", RequestCount: 1, InputTokens: 1},
+		{UserID: "b", Username: "b", DisplayName: "B", Model: "priced", RequestCount: 1, InputTokens: 1, LedgerTokens: 1, ActualCostUSD: "0.0000005", ChargedUSD: "0.0000005", UncoveredUSD: "0"},
+		{UserID: "a", Username: "a", DisplayName: "A", Model: "priced", RequestCount: 1, InputTokens: 1, LedgerTokens: 1, ActualCostUSD: "0.0000005", ChargedUSD: "0.0000005", UncoveredUSD: "0"},
 	}
 
 	response, err := summarizeGlobalUsage(rows, pricing)
@@ -138,24 +109,33 @@ func TestSummarizeGlobalUsageReconcilesRoundedUserAmounts(t *testing.T) {
 	}
 }
 
-func TestEstimateUSDHandlesLargeTokenCounts(t *testing.T) {
-	const maximumInt64 = int64(^uint64(0) >> 1)
-	row := store.GlobalUsageRow{InputTokens: maximumInt64}
-	price := config.ModelPricing{
-		InputUSDPerMillion:       "1",
-		CachedInputUSDPerMillion: "0",
-		OutputUSDPerMillion:      "0",
+func TestSummarizeGlobalUsageIgnoresMutableModelPrices(t *testing.T) {
+	rows := []store.GlobalUsageRow{{
+		UserID: "user", Username: "user", DisplayName: "User", Model: "priced",
+		RequestCount: 1, InputTokens: 100, OutputTokens: 10, LedgerTokens: 110,
+		ActualCostUSD: "0.25", ChargedUSD: "0.2", UncoveredUSD: "0.05",
+	}}
+	first := testUsagePricing()
+	second := testUsagePricing()
+	second.Models["priced"] = config.ModelPricing{
+		InputUSDPerMillion: "999", CachedInputUSDPerMillion: "999", OutputUSDPerMillion: "999",
 	}
-	estimate, err := estimateUSD(row, price)
+	a, err := summarizeGlobalUsage(rows, first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := estimate.FloatString(moneyDecimalPlaces); got != "9223372036854.775807" {
-		t.Fatalf("large estimate = %s", got)
+	b, err := summarizeGlobalUsage(rows, second)
+	if err != nil {
+		t.Fatal(err)
 	}
+	if a.Summary.Usage.ActualCostUSD != "0.250000" || a.Summary.Usage != b.Summary.Usage {
+		t.Fatalf("mutable catalog changed ledger report: a=%+v b=%+v", a.Summary.Usage, b.Summary.Usage)
+	}
+}
 
+func TestSummarizeGlobalUsageRejectsTokenTotalOverflow(t *testing.T) {
+	const maximumInt64 = int64(^uint64(0) >> 1)
 	pricing := testUsagePricing()
-	pricing.Models["priced"] = price
 	if _, err := summarizeGlobalUsage([]store.GlobalUsageRow{{
 		UserID: "user", Username: "user", DisplayName: "User", Model: "priced",
 		RequestCount: 1, InputTokens: maximumInt64, OutputTokens: 1,

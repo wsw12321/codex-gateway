@@ -1,10 +1,12 @@
 # 部署与运维手册
 
-`0003_password_credentials.sql` 和 `0004_subscription_period_limits.sql` 都是
-forward-only 迁移。部署前先备份 PostgreSQL；迁移后旧二进制会因未知迁移保护
-而拒绝启动，不能只切回旧镜像。`0004` 会把所有当时仍启用且未到期的订阅设为
-`1/1`，保留现有额度、余额和周期起止时间，并在原 `period_ends_at` 自动失效；
-已经越过结束时间但仍标记启用的记录会按原结束时间关闭。密码哈希属于敏感数据，
+`0003_password_credentials.sql`、`0004_subscription_period_limits.sql` 和
+`0005_official_token_pricing.sql` 都是 forward-only 迁移。部署前先备份
+PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不能只切回旧镜像。
+`0004` 会把所有当时仍启用且未到期的订阅设为 `1/1`，保留现有额度、余额和周期
+起止时间，并在原 `period_ends_at` 自动失效；已经越过结束时间但仍标记启用的
+记录会按原结束时间关闭。`0005` 增加 OpenAI API Token 等价成本 v2 所需的服务层、
+上下文、缓存写入和不可变 ledger 元数据，不重算或更新历史流水。密码哈希属于敏感数据，
 不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和
 并行度 2，不需要新增部署 secret。
 
@@ -50,48 +52,113 @@ chmod 0600 .env
 
 `GATEWAY_USAGE_PRICING_JSON` 是必填的非 secret 部署配置。Gateway 不在运行时
 联网抓取价格或汇率；操作者必须在启动前从
-[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 人工核对实际
-允许模型的价格，并选择、记录固定的 USD/CNY 汇率。`.env` 中必须把 JSON 写在
-一行；展开后的结构如下：
+[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 人工核对所有
+允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
+完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
+`deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
+`.env` 中的 JSON 必须保持一行；v2 的结构如下（片段不能单独部署）：
 
 ```json
 {
-  "catalog_as_of": "YYYY-MM-DD",
-  "fx_as_of": "YYYY-MM-DD",
+  "schema_version": 2,
+  "catalog_as_of": "2026-08-20",
+  "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
+  "fallback_policy": {
+    "unknown_service_tier": "max_published",
+    "missing_price_combination": "max_published",
+    "missing_cache_write_tokens": "all_uncached_as_write"
+  },
   "models": {
-    "exact-recorded-model": {
-      "input_usd_per_million": "1.25",
-      "cached_input_usd_per_million": "0.125",
-      "output_usd_per_million": "10"
+    "gpt-5.6-sol": {
+      "cache_write_mode": "separate",
+      "max_input_tokens": 1050000,
+      "long_context_threshold_tokens": 272000,
+      "service_tiers": {
+        "standard": {
+          "short": {
+            "input_usd_per_million": "5",
+            "cached_input_usd_per_million": "0.5",
+            "cache_write_usd_per_million": "6.25",
+            "output_usd_per_million": "30"
+          },
+          "long": {
+            "input_usd_per_million": "10",
+            "cached_input_usd_per_million": "1",
+            "cache_write_usd_per_million": "12.5",
+            "output_usd_per_million": "45"
+          }
+        }
+      }
     }
   }
 }
 ```
 
-以上日期、模型和价格仅说明格式，必须全部按经审阅的部署值替换。日期使用
-`YYYY-MM-DD`，汇率和价格必须是带引号的非负十进制字符串，汇率必须大于零；
-`models` 至少包含一个条目。模型键只做精确匹配，不支持别名、通配符或推测映射。
-官方价格页可能按服务层级、上下文长度或区域列出多组价格；运维方必须选择并在
-变更记录中注明本部署用于比较的那一组 input/cached input/output 单价。当前三价
-快照无法区分这些维度，也不估算独立的 cache-write 或工具调用价格，这正是界面
-必须始终标为参考估算而非完整账单的原因之一。
-设备码登录后还应把 `/v1/models` 与已审阅的允许模型集合和价格目录逐一核对；
-未配置价格的模型仍可统计，但只进入 `unpriced_models`、`unpriced_tokens` 和覆盖率。
+完整模板覆盖 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、
+`gpt-5.4`、`gpt-5.4-mini` 和内部零价 `codex-auto-review`。GPT-5.2 等不在目录
+中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
+用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
+API Key 白名单逐一核对。
 
-每个已定价模型的 USD 估算为：
+v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
+`schema_version` 的配置仍按 v1 解析，只用于过渡和升级时结算已经执行中的 v1
+reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的非负十进制字符串，
+汇率必须大于零。每次变更都应保存审阅来源、完整 JSON、目录日期和汇率日期。
+
+服务层和上下文选择规则如下：
+
+- 请求或响应 `default`/`standard` 对应 Standard，`flex` 对应 Flex，
+  `priority`/`fast` 对应 Fast。显式请求 Ultrafast 或其他未配置层级会在转发前
+  返回 `service_tier_not_supported`。
+- `input_tokens <= 272000` 使用 `short`，`input_tokens > 272000` 使用 `long`。
+  GPT-5.4-mini 的官方最大输入为 272000，只配置短档；若上游仍报告更大输入，
+  作为缺失价格组合使用最高已公布分量并明确标记兜底。
+- 响应缺失服务层时记录 `missing_service_tier`，响应层级未知时记录
+  `unknown_service_tier`；二者都在当前上下文档位按各价格分量的最高已公布值
+  结算。指定模型/层级/档位缺少组合时记录 `missing_price_combination`，并在该
+  模型所有已公布组合中逐分量取最高值。
+- GPT-5.5 和 GPT-5.4 的 Fast 长上下文未公布，分别兜底为
+  `12.5 / 1.25 / 75` 和 `5 / 0.5 / 30`（输入/缓存读取/输出，每百万 Token）。
+  这属于本地保守兜底，不伪装成官方精确价格。
+
+GPT-5.6 使用 `cache_write_mode=separate`，缓存写入是独立计费类别：
 
 ```text
-((input_tokens - cached_input_tokens) * input_price
- + cached_input_tokens * cached_input_price
- + output_tokens * output_price) / 1,000,000
+ordinary = input_tokens - cached_input_tokens - cache_write_tokens
+cost = (ordinary * input_price
+      + cached_input_tokens * cached_input_price
+      + cache_write_tokens * cache_write_price
+      + output_tokens * output_price) / 1,000,000
 ```
 
-`reasoning_tokens` 已包含在 output 中，不能再次计费。CNY 只按快照中的固定汇率
-换算。界面和接口中的金额只能称为“API 等价费用估算”：当前上游是 ChatGPT Pro
-OAuth，它不代表实际费用、账单或已花费，也不包含 Pro 订阅费、税费、基础设施
-或工具费用。历史用量总是按当前部署的快照重新估算，因此不是审计级历史账单；
-更新快照会同时改变所有历史区间的参考估值。
+GPT-5.5、GPT-5.4 和 GPT-5.4-mini 使用
+`cache_write_mode=included_in_input`，cache-write Token 仍包含在普通非缓存输入中，
+不额外收费：
+
+```text
+ordinary = input_tokens - cached_input_tokens
+cost = (ordinary * input_price
+      + cached_input_tokens * cached_input_price
+      + output_tokens * output_price) / 1,000,000
+```
+
+若 GPT-5.6 响应没有给出 cache-write 字段，结算会把全部非缓存输入视为缓存写入，
+记录 `missing_cache_write_tokens`。`reasoning_tokens` 已包含在 output 中，不能再次
+计费。最终金额沿用系统规则保留 12 位小数。
+
+准入时会把请求模型的完整 v2 规则和目录日期保存在 reservation；结算后把实际
+模型、请求/实际/最终计价服务层、上下文档位、cache-write 模式和 Token、最终应用
+四价及兜底原因写入不可变 `billing_ledger_entries`。全员报表的 USD 金额汇总该
+ledger，修改当前价格 JSON 不会改变历史 USD；Token 数量继续来自 usage 明细和
+日/月聚合。接口中的 `estimated_usd` 是 `actual_cost_usd` 的兼容别名，另有
+`charged_usd` 和 `uncovered_usd`。CNY 只按当前配置的固定汇率换算 ledger USD。
+
+界面和接口中的金额只能称为“OpenAI API Token 等价成本”，不能称为 OpenAI
+实际账单：当前上游是 ChatGPT Pro OAuth，而且 `codex-auto-review` 零价与上述
+保守兜底都是本地策略；Pro 订阅费、工具、区域、Batch、Ultrafast、税费和基础
+设施成本均不在范围内。完整价格表和缓存语义见
+[GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
 
 ## 2. 供应链锁定
 
@@ -194,8 +261,8 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 
 `validate-compose.sh` 会检查：没有服务发布宿主机端口、内部网络隔离、
 `cloudflared` 与 Squid 只能连接各自需要的出站网络、PostgreSQL 本地初始化和
-host 连接都强制使用 SCRAM、价格快照结构和占位符、sidecar 是只读且非 root、
-secret 权限及所有基础镜像的 SHA-256 digest。
+host 连接都强制使用 SCRAM、v2 价格目录结构和必要占位符、sidecar 是只读且非
+root、secret 权限及所有基础镜像的 SHA-256 digest。
 
 确认主机监听：
 
@@ -455,10 +522,11 @@ HTTPS/SSE 继续。这是预期的传输协商，不是 Cloudflare 缓冲、上�
 升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。升级到
 首次要求价格配置的 revision 前，必须先在 `.env` 填妥
 `GATEWAY_USAGE_PRICING_JSON`，否则新 Gateway 会拒绝启动。以后每次升级也应核对
-精确模型集合、官方价格目录日期、固定汇率及其日期；价格或汇率变化会用新快照
-重新估算全部历史，不得把升级前后数值当作连续的审计账单。然后在服务器检出
-已审阅 revision、更新 `.env` 的三个版本字段、验证工作树为空并现场构建；不要
-覆盖或清理上一 revision 镜像。升级 CLIProxyAPI 前还必须：
+精确模型集合、官方价格目录日期、固定汇率及其日期。v2 价格变更只影响变更后
+创建的 reservation；已经结算的 USD 成本来自不可变 ledger，不会按新 JSON
+重算。当前固定汇率仅影响 CNY 展示。然后在服务器检出已审阅 revision、更新
+`.env` 的三个版本字段、验证工作树为空并现场构建；不要覆盖或清理上一 revision
+镜像。升级 CLIProxyAPI 前还必须：
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
 2. 在 CI 运行 Responses 普通/SSE、compact、401、429、跨 chunk usage 和刷新
@@ -494,6 +562,61 @@ Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移
    周期剩余额度均与升级前一致，最终失效时间等于原周期结束时间。
 7. 若必须回滚，先停止所有写入，将升级前已演练的备份恢复到新的隔离数据库卷，
    验证后再让旧 revision 切换到该卷。不得让旧二进制连接已经应用 `0004` 的卷。
+
+### 升级到 `0005_official_token_pricing.sql`
+
+`0005` 是从旧三价 reservation 过渡到 OpenAI API Token 等价成本 v2 的
+forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger；旧 reservation
+仍按准入时的 v1 三价结算。必须在一个停写窗口内一次完成以下 7 步：
+
+1. 停止公网入口和 Gateway 写入；保持 PostgreSQL 运行，不得让旧 Gateway 继续
+   创建 reservation：
+
+   ```sh
+   ./scripts/compose.sh stop cloudflared
+   ./scripts/compose.sh stop caddy gateway
+   ```
+
+2. 运行 `./scripts/backup-postgres.sh` 生成新的加密备份，并立即执行
+   `./scripts/restore-drill.sh <backup>`。恢复演练成功后，记录
+   `billing_ledger_entries` 中 `usage_charge` 的行数以及 `actual_cost_usd`、
+   `charged_usd`、`uncovered_usd` 三项合计，作为迁移前核账基线；任何一项无法
+   取得或备份无法恢复都停止升级。在受控的 PostgreSQL 管理会话中执行并保存：
+
+   ```sql
+   SELECT count(*) AS usage_rows,
+          COALESCE(sum(actual_cost_usd), 0) AS actual_cost_usd,
+          COALESCE(sum(charged_usd), 0) AS charged_usd,
+          COALESCE(sum(uncovered_usd), 0) AS uncovered_usd
+   FROM billing_ledger_entries
+   WHERE entry_type = 'usage_charge';
+   ```
+
+3. 检出已审阅 revision，确认工作树为空；将 `.env` 的
+   `GATEWAY_USAGE_PRICING_JSON` 一次性替换为
+   `deploy/pricing-v2.example.json` 的完整单行矩阵，并复核目录/汇率日期。同步
+   更新三个版本字段，运行 `./scripts/validate-compose.sh`，再执行
+   `./scripts/compose.sh build gateway`。不要分批部署只有部分模型或部分服务层的
+   目录。
+4. PostgreSQL 保持 healthy、旧 Gateway 保持停止，用新镜像显式执行迁移：
+
+   ```sh
+   ./scripts/compose.sh run --rm --no-deps gateway migrate
+   ```
+
+5. 确认 `schema_migrations` 中存在 `0005_official_token_pricing.sql`，再次查询步骤
+   2 的旧 ledger 行数和三项金额合计，必须逐项完全相同。抽查历史
+   `usage_charge` 的 `pricing_rule_version=1`，新增 v2 元数据保持空值；不得为追求
+   “完整”而更新历史流水。
+6. 先启动 Gateway 和 Caddy，确认健康后分别用 GPT-5.6、GPT-5.5、GPT-5.4、
+   GPT-5.4-mini 做受控 Responses 结算冒烟，并验证 Standard/Flex/Fast、
+   `272000`/`272001` 边界、cache-write 与兜底统计。用无余额测试用户验证
+   `codex-auto-review` 能写入 Token 和零金额 ledger、但不扣任何 USD 额度；全部
+   通过后最后启动 Tunnel，恢复公网调用并再做一次外部健康和最小请求验证。
+7. `0005` 写入后，禁止任何旧二进制直接连接该数据库卷。若必须回退，先停止
+   Tunnel、Caddy、Gateway 和其他写入，把步骤 2 的升级前备份恢复到**新的**
+   PostgreSQL 卷，核对 migration ledger 和金额后再让旧 revision 连接新卷；
+   不得删除迁移记录、反向修改 schema 或让旧二进制连接已应用 `0005` 的卷。
 
 ## 11. 计划迁机
 
@@ -579,10 +702,12 @@ Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移
 4. 使用真实域名完成 Owner Passkey 注册、退出、重新登录和敏感操作再验证；
    错误 Origin 与跨站请求必须被拒绝，Cookie 保持 `Secure`、`HttpOnly`、
    `SameSite=Strict`。
-5. 以 Owner 检查全员使用统计：价格目录元数据和固定汇率日期正确；已定价模型
-   的 USD/CNY 估算符合公式；在可丢弃验收环境用未定价模型记录确认它只增加未
-   定价 Token 和降低覆盖率，不得静默并入完整估算总额。确认所有金额均标为
-   “API 等价费用估算”，没有呈现为真实费用或账单。
+5. 以 Owner 检查全员使用统计：目录/汇率日期正确，USD 等于不可变 ledger 合计，
+   `actual_cost_usd = charged_usd + uncovered_usd`，`estimated_usd` 与
+   `actual_cost_usd` 相同。分别核对服务层、短/长上下文、cache-write Token 和
+   兜底原因；修改测试环境当前价格 JSON 后，历史 ledger USD 必须不变。未配置
+   模型必须在转发前返回 `model_pricing_not_found`。确认所有金额均标为
+   “OpenAI API Token 等价成本”，没有呈现为 OpenAI 实际账单。
 6. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
    两分钟的代表性长流不能被聚合或无故断开，客户端主动断开后上游请求和并发
    lease 会被取消或结算；响应不得被 Cloudflare 缓存。

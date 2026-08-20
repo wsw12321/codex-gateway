@@ -13,12 +13,17 @@ import (
 	"time"
 
 	decimal "github.com/wsw/codex-gateway/internal/billing"
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 const (
 	BillingTierDay   = "day"
 	BillingTierWeek  = "week"
 	BillingTierMonth = "month"
+
+	BillingModeLegacy              = "legacy"
+	BillingModeOpenAIAPIEquivalent = "openai_api_token_equivalent"
+	BillingModeInternalZero        = "internal_zero"
 )
 
 // InsufficientFundsError is returned when a billed endpoint has no positive
@@ -52,28 +57,43 @@ type BillingSubscriptionState struct {
 }
 
 type BillingLedgerEntry struct {
-	ID                   int64     `json:"id"`
-	UserID               *string   `json:"user_id,omitempty"`
-	OperationID          *string   `json:"operation_id,omitempty"`
-	EntryType            string    `json:"entry_type"`
-	AmountUSD            string    `json:"amount_usd"`
-	CashDeltaUSD         string    `json:"cash_delta_usd"`
-	BalanceAfterUSD      *string   `json:"balance_after_usd,omitempty"`
-	CNYAmount            *string   `json:"cny_amount,omitempty"`
-	USDPerCNYSnapshot    *string   `json:"usd_per_cny_snapshot,omitempty"`
-	SubscriptionTier     *string   `json:"subscription_tier,omitempty"`
-	SubscriptionPeriodID *string   `json:"subscription_period_id,omitempty"`
-	RequestID            *string   `json:"request_id,omitempty"`
-	Model                *string   `json:"model,omitempty"`
-	InputTokens          *int64    `json:"input_tokens,omitempty"`
-	CachedInputTokens    *int64    `json:"cached_input_tokens,omitempty"`
-	OutputTokens         *int64    `json:"output_tokens,omitempty"`
-	ActualCostUSD        *string   `json:"actual_cost_usd,omitempty"`
-	ChargedUSD           *string   `json:"charged_usd,omitempty"`
-	UncoveredUSD         *string   `json:"uncovered_usd,omitempty"`
-	Reason               string    `json:"reason"`
-	ActorUserID          *string   `json:"actor_user_id,omitempty"`
-	CreatedAt            time.Time `json:"created_at"`
+	ID                              int64      `json:"id"`
+	UserID                          *string    `json:"user_id,omitempty"`
+	OperationID                     *string    `json:"operation_id,omitempty"`
+	EntryType                       string     `json:"entry_type"`
+	AmountUSD                       string     `json:"amount_usd"`
+	CashDeltaUSD                    string     `json:"cash_delta_usd"`
+	BalanceAfterUSD                 *string    `json:"balance_after_usd,omitempty"`
+	CNYAmount                       *string    `json:"cny_amount,omitempty"`
+	USDPerCNYSnapshot               *string    `json:"usd_per_cny_snapshot,omitempty"`
+	SubscriptionTier                *string    `json:"subscription_tier,omitempty"`
+	SubscriptionPeriodID            *string    `json:"subscription_period_id,omitempty"`
+	RequestID                       *string    `json:"request_id,omitempty"`
+	Model                           *string    `json:"model,omitempty"`
+	ActualModel                     *string    `json:"actual_model,omitempty"`
+	InputTokens                     *int64     `json:"input_tokens,omitempty"`
+	CachedInputTokens               *int64     `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens                *int64     `json:"cache_write_tokens,omitempty"`
+	OutputTokens                    *int64     `json:"output_tokens,omitempty"`
+	CacheWriteMode                  *string    `json:"cache_write_mode,omitempty"`
+	RequestedServiceTier            *string    `json:"requested_service_tier,omitempty"`
+	ActualServiceTier               *string    `json:"actual_service_tier,omitempty"`
+	PricingServiceTier              *string    `json:"pricing_service_tier,omitempty"`
+	ContextClass                    *string    `json:"context_class,omitempty"`
+	PricingRuleVersion              int        `json:"pricing_rule_version"`
+	PricingCatalogAsOf              *string    `json:"pricing_catalog_as_of,omitempty"`
+	AppliedInputUSDPerMillion       *string    `json:"applied_input_usd_per_million,omitempty"`
+	AppliedCachedInputUSDPerMillion *string    `json:"applied_cached_input_usd_per_million,omitempty"`
+	AppliedCacheWriteUSDPerMillion  *string    `json:"applied_cache_write_usd_per_million,omitempty"`
+	AppliedOutputUSDPerMillion      *string    `json:"applied_output_usd_per_million,omitempty"`
+	PricingFallbackReason           *string    `json:"pricing_fallback_reason,omitempty"`
+	UsageRequestedAt                *time.Time `json:"usage_requested_at,omitempty"`
+	ActualCostUSD                   *string    `json:"actual_cost_usd,omitempty"`
+	ChargedUSD                      *string    `json:"charged_usd,omitempty"`
+	UncoveredUSD                    *string    `json:"uncovered_usd,omitempty"`
+	Reason                          string     `json:"reason"`
+	ActorUserID                     *string    `json:"actor_user_id,omitempty"`
+	CreatedAt                       time.Time  `json:"created_at"`
 }
 
 type BillingState struct {
@@ -104,30 +124,54 @@ type BillingReservationParams struct {
 	InputUSDPerMillion       string
 	CachedInputUSDPerMillion string
 	OutputUSDPerMillion      string
+	PricingRuleVersion       int
+	BillingMode              string
+	PricingCatalogAsOf       string
+	PricingModel             string
+	PricingSnapshot          []byte
+	CacheWriteMode           string
+	RequestedServiceTier     string
 	Now                      time.Time
 }
 
 type BillingReservation struct {
-	RequestID                string     `json:"request_id"`
-	UserID                   string     `json:"user_id"`
-	APIKeyID                 string     `json:"api_key_id"`
-	Model                    string     `json:"model"`
-	InputUSDPerMillion       string     `json:"input_usd_per_million"`
-	CachedInputUSDPerMillion string     `json:"cached_input_usd_per_million"`
-	OutputUSDPerMillion      string     `json:"output_usd_per_million"`
-	DayPeriodID              *string    `json:"day_period_id,omitempty"`
-	WeekPeriodID             *string    `json:"week_period_id,omitempty"`
-	MonthPeriodID            *string    `json:"month_period_id,omitempty"`
-	CashLotCutoff            *int64     `json:"cash_lot_cutoff,omitempty"`
-	State                    string     `json:"state"`
-	ActualInputTokens        *int64     `json:"actual_input_tokens,omitempty"`
-	ActualCachedInputTokens  *int64     `json:"actual_cached_input_tokens,omitempty"`
-	ActualOutputTokens       *int64     `json:"actual_output_tokens,omitempty"`
-	ActualCostUSD            *string    `json:"actual_cost_usd,omitempty"`
-	ChargedUSD               *string    `json:"charged_usd,omitempty"`
-	UncoveredUSD             *string    `json:"uncovered_usd,omitempty"`
-	CreatedAt                time.Time  `json:"created_at"`
-	SettledAt                *time.Time `json:"settled_at,omitempty"`
+	RequestID                       string          `json:"request_id"`
+	UserID                          string          `json:"user_id"`
+	APIKeyID                        string          `json:"api_key_id"`
+	Model                           string          `json:"model"`
+	InputUSDPerMillion              string          `json:"input_usd_per_million"`
+	CachedInputUSDPerMillion        string          `json:"cached_input_usd_per_million"`
+	OutputUSDPerMillion             string          `json:"output_usd_per_million"`
+	PricingRuleVersion              int             `json:"pricing_rule_version"`
+	BillingMode                     string          `json:"billing_mode"`
+	PricingCatalogAsOf              *string         `json:"pricing_catalog_as_of,omitempty"`
+	PricingModel                    *string         `json:"pricing_model,omitempty"`
+	PricingSnapshot                 json.RawMessage `json:"pricing_snapshot,omitempty"`
+	CacheWriteMode                  *string         `json:"cache_write_mode,omitempty"`
+	RequestedServiceTier            *string         `json:"requested_service_tier,omitempty"`
+	ActualServiceTier               *string         `json:"actual_service_tier,omitempty"`
+	PricingServiceTier              *string         `json:"pricing_service_tier,omitempty"`
+	ActualModel                     *string         `json:"actual_model,omitempty"`
+	ContextClass                    *string         `json:"context_class,omitempty"`
+	ActualCacheWriteTokens          *int64          `json:"actual_cache_write_tokens,omitempty"`
+	AppliedInputUSDPerMillion       *string         `json:"applied_input_usd_per_million,omitempty"`
+	AppliedCachedInputUSDPerMillion *string         `json:"applied_cached_input_usd_per_million,omitempty"`
+	AppliedCacheWriteUSDPerMillion  *string         `json:"applied_cache_write_usd_per_million,omitempty"`
+	AppliedOutputUSDPerMillion      *string         `json:"applied_output_usd_per_million,omitempty"`
+	PricingFallbackReason           *string         `json:"pricing_fallback_reason,omitempty"`
+	DayPeriodID                     *string         `json:"day_period_id,omitempty"`
+	WeekPeriodID                    *string         `json:"week_period_id,omitempty"`
+	MonthPeriodID                   *string         `json:"month_period_id,omitempty"`
+	CashLotCutoff                   *int64          `json:"cash_lot_cutoff,omitempty"`
+	State                           string          `json:"state"`
+	ActualInputTokens               *int64          `json:"actual_input_tokens,omitempty"`
+	ActualCachedInputTokens         *int64          `json:"actual_cached_input_tokens,omitempty"`
+	ActualOutputTokens              *int64          `json:"actual_output_tokens,omitempty"`
+	ActualCostUSD                   *string         `json:"actual_cost_usd,omitempty"`
+	ChargedUSD                      *string         `json:"charged_usd,omitempty"`
+	UncoveredUSD                    *string         `json:"uncovered_usd,omitempty"`
+	CreatedAt                       time.Time       `json:"created_at"`
+	SettledAt                       *time.Time      `json:"settled_at,omitempty"`
 }
 
 type BillingWriteParams struct {
@@ -233,12 +277,36 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 	var value BillingReservation
 	var day, week, month sql.NullString
 	var cutoff sql.NullInt64
-	var inputTokens, cachedTokens, outputTokens sql.NullInt64
+	var inputPrice, cachedPrice, outputPrice sql.NullString
+	var catalog, pricingModel, cacheWriteMode, requestedTier, actualTier sql.NullString
+	var pricingTier, actualModel, contextClass, fallbackReason sql.NullString
+	var inputTokens, cachedTokens, cacheWriteTokens, outputTokens sql.NullInt64
+	var appliedInput, appliedCached, appliedCacheWrite, appliedOutput sql.NullString
 	var actualCost, charged, uncovered sql.NullString
+	var snapshot []byte
 	err := row.Scan(&value.RequestID, &value.UserID, &value.APIKeyID, &value.Model,
-		&value.InputUSDPerMillion, &value.CachedInputUSDPerMillion, &value.OutputUSDPerMillion,
-		&day, &week, &month, &cutoff, &value.State, &inputTokens, &cachedTokens,
+		&inputPrice, &cachedPrice, &outputPrice, &value.PricingRuleVersion,
+		&value.BillingMode, &catalog, &pricingModel, &snapshot, &cacheWriteMode,
+		&requestedTier, &actualTier, &pricingTier, &actualModel, &contextClass,
+		&cacheWriteTokens, &appliedInput, &appliedCached, &appliedCacheWrite,
+		&appliedOutput, &fallbackReason, &day, &week, &month, &cutoff,
+		&value.State, &inputTokens, &cachedTokens,
 		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt)
+	value.InputUSDPerMillion, value.CachedInputUSDPerMillion = inputPrice.String, cachedPrice.String
+	value.OutputUSDPerMillion = outputPrice.String
+	value.PricingCatalogAsOf, value.PricingModel = nullableString(catalog), nullableString(pricingModel)
+	if len(snapshot) > 0 {
+		value.PricingSnapshot = append(json.RawMessage(nil), snapshot...)
+	}
+	value.CacheWriteMode = nullableString(cacheWriteMode)
+	value.RequestedServiceTier, value.ActualServiceTier = nullableString(requestedTier), nullableString(actualTier)
+	value.PricingServiceTier, value.ActualModel = nullableString(pricingTier), nullableString(actualModel)
+	value.ContextClass, value.PricingFallbackReason = nullableString(contextClass), nullableString(fallbackReason)
+	value.ActualCacheWriteTokens = nullableInt64(cacheWriteTokens)
+	value.AppliedInputUSDPerMillion = nullableString(appliedInput)
+	value.AppliedCachedInputUSDPerMillion = nullableString(appliedCached)
+	value.AppliedCacheWriteUSDPerMillion = nullableString(appliedCacheWrite)
+	value.AppliedOutputUSDPerMillion = nullableString(appliedOutput)
 	value.DayPeriodID, value.WeekPeriodID, value.MonthPeriodID = nullableString(day), nullableString(week), nullableString(month)
 	value.CashLotCutoff = nullableInt64(cutoff)
 	value.ActualInputTokens, value.ActualCachedInputTokens = nullableInt64(inputTokens), nullableInt64(cachedTokens)
@@ -249,8 +317,14 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 
 const billingReservationColumns = `request_id, user_id, api_key_id, requested_model,
 	input_usd_per_million::text, cached_input_usd_per_million::text,
-	output_usd_per_million::text, day_period_id, week_period_id, month_period_id,
-	cash_lot_cutoff, state, actual_input_tokens, actual_cached_input_tokens,
+	output_usd_per_million::text, pricing_rule_version, billing_mode,
+	pricing_catalog_as_of::text, pricing_model, pricing_snapshot, cache_write_mode,
+	requested_service_tier, actual_service_tier, pricing_service_tier, actual_model,
+	context_class, actual_cache_write_tokens, applied_input_usd_per_million::text,
+	applied_cached_input_usd_per_million::text, applied_cache_write_usd_per_million::text,
+	applied_output_usd_per_million::text, pricing_fallback_reason,
+	day_period_id, week_period_id, month_period_id, cash_lot_cutoff, state,
+	actual_input_tokens, actual_cached_input_tokens,
 	actual_output_tokens, actual_cost_usd::text, charged_usd::text,
 	uncovered_usd::text, created_at, settled_at`
 
@@ -278,16 +352,55 @@ func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationPar
 // forward, then snapshots only the sources that exist at admission time.
 func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservationParams) (BillingReservation, error) {
 	params.Model = strings.TrimSpace(params.Model)
+	params.PricingModel = strings.TrimSpace(params.PricingModel)
+	params.RequestedServiceTier = strings.TrimSpace(params.RequestedServiceTier)
+	if params.PricingRuleVersion == 0 {
+		params.PricingRuleVersion = config.PricingSchemaV1
+	}
 	if params.RequestID == "" || params.UserID == "" || params.APIKeyID == "" || params.Model == "" {
 		return BillingReservation{}, fmt.Errorf("%w: invalid billing reservation", ErrInvalid)
 	}
-	prices := []*string{&params.InputUSDPerMillion, &params.CachedInputUSDPerMillion, &params.OutputUSDPerMillion}
-	for _, price := range prices {
-		value, err := decimal.ParsePrice(*price)
-		if err != nil {
-			return BillingReservation{}, fmt.Errorf("%w: invalid price snapshot", ErrInvalid)
+	switch params.PricingRuleVersion {
+	case config.PricingSchemaV1:
+		if params.BillingMode == "" {
+			params.BillingMode = BillingModeLegacy
 		}
-		*price = value
+		if params.BillingMode != BillingModeLegacy || params.PricingCatalogAsOf != "" ||
+			params.PricingModel != "" || len(params.PricingSnapshot) != 0 || params.CacheWriteMode != "" {
+			return BillingReservation{}, fmt.Errorf("%w: invalid v1 pricing snapshot", ErrInvalid)
+		}
+		prices := []*string{&params.InputUSDPerMillion, &params.CachedInputUSDPerMillion, &params.OutputUSDPerMillion}
+		for _, price := range prices {
+			value, err := decimal.ParsePrice(*price)
+			if err != nil {
+				return BillingReservation{}, fmt.Errorf("%w: invalid price snapshot", ErrInvalid)
+			}
+			*price = value
+		}
+	case config.PricingSchemaV2:
+		if params.BillingMode != BillingModeOpenAIAPIEquivalent && params.BillingMode != BillingModeInternalZero {
+			return BillingReservation{}, fmt.Errorf("%w: invalid v2 billing mode", ErrInvalid)
+		}
+		if params.InputUSDPerMillion != "" || params.CachedInputUSDPerMillion != "" || params.OutputUSDPerMillion != "" ||
+			params.PricingCatalogAsOf == "" || params.PricingModel == "" || len(params.PricingSnapshot) == 0 {
+			return BillingReservation{}, fmt.Errorf("%w: invalid v2 pricing snapshot", ErrInvalid)
+		}
+		if _, err := time.Parse("2006-01-02", params.PricingCatalogAsOf); err != nil {
+			return BillingReservation{}, fmt.Errorf("%w: invalid pricing catalog date", ErrInvalid)
+		}
+		snapshot, err := config.ParsePricingSnapshot(params.PricingSnapshot)
+		if err != nil || snapshot.Model != params.PricingModel || params.PricingModel != params.Model ||
+			snapshot.Rule.CacheWriteMode != params.CacheWriteMode {
+			return BillingReservation{}, fmt.Errorf("%w: inconsistent v2 pricing snapshot", ErrInvalid)
+		}
+		if params.BillingMode == BillingModeInternalZero && !pricingRuleIsZero(snapshot.Rule) {
+			return BillingReservation{}, fmt.Errorf("%w: internal zero pricing must contain only zero prices", ErrInvalid)
+		}
+	default:
+		return BillingReservation{}, fmt.Errorf("%w: unsupported pricing rule version", ErrInvalid)
+	}
+	if len(params.RequestedServiceTier) > 32 {
+		return BillingReservation{}, fmt.Errorf("%w: invalid requested service tier", ErrInvalid)
 	}
 	if params.Now.IsZero() {
 		params.Now = time.Now().UTC()
@@ -346,7 +459,8 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			cashCutoff = &cutoff
 		}
 	}
-	if periods[BillingTierDay] == nil && periods[BillingTierWeek] == nil &&
+	if params.BillingMode != BillingModeInternalZero &&
+		periods[BillingTierDay] == nil && periods[BillingTierWeek] == nil &&
 		periods[BillingTierMonth] == nil && cashCutoff == nil {
 		retry := time.Duration(0)
 		var renewal sql.NullTime
@@ -371,13 +485,41 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		INSERT INTO billing_reservations
 			(request_id, user_id, api_key_id, requested_model,
 			 input_usd_per_million, cached_input_usd_per_million, output_usd_per_million,
+			 pricing_rule_version, billing_mode, pricing_catalog_as_of, pricing_model,
+			 pricing_snapshot, cache_write_mode, requested_service_tier,
 			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at)
-		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10,$11,$12)
+		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
-		params.InputUSDPerMillion, params.CachedInputUSDPerMillion, params.OutputUSDPerMillion,
-		periods[BillingTierDay], periods[BillingTierWeek], periods[BillingTierMonth], cashCutoff, params.Now))
+		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
+		valueOrNil(params.OutputUSDPerMillion), params.PricingRuleVersion, params.BillingMode,
+		valueOrNil(params.PricingCatalogAsOf), valueOrNil(params.PricingModel),
+		valueOrNil(string(params.PricingSnapshot)), valueOrNil(params.CacheWriteMode),
+		valueOrNil(params.RequestedServiceTier), periods[BillingTierDay], periods[BillingTierWeek],
+		periods[BillingTierMonth], cashCutoff, params.Now))
 	return reservation, mapDBError("insert billing reservation", err)
+}
+
+func pricingRuleIsZero(rule config.ModelPricing) bool {
+	for _, tier := range rule.ServiceTiers {
+		for _, price := range []*config.TokenPricing{tier.Short, tier.Long} {
+			if price == nil {
+				continue
+			}
+			values := []string{price.InputUSDPerMillion, price.CachedInputUSDPerMillion, price.OutputUSDPerMillion}
+			if price.CacheWriteUSDPerMillion != nil {
+				values = append(values, *price.CacheWriteUSDPerMillion)
+			}
+			for _, value := range values {
+				canonical, err := decimal.ParsePrice(value)
+				if err != nil || canonical != "0" {
+					return false
+				}
+			}
+		}
+	}
+	return true
 }
 
 func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (int, error) {
@@ -616,23 +758,48 @@ const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 	cny_amount::text, usd_per_cny_snapshot::text, subscription_tier,
 	subscription_period_id, request_id, model, input_tokens,
 	cached_input_tokens, output_tokens, actual_cost_usd::text,
-	charged_usd::text, uncovered_usd::text, reason, actor_user_id, created_at`
+	charged_usd::text, uncovered_usd::text, reason, actor_user_id, created_at,
+	usage_requested_at, actual_model, cache_write_tokens, cache_write_mode,
+	requested_service_tier, actual_service_tier, pricing_service_tier,
+	context_class, pricing_rule_version, pricing_catalog_as_of::text,
+	applied_input_usd_per_million::text, applied_cached_input_usd_per_million::text,
+	applied_cache_write_usd_per_million::text, applied_output_usd_per_million::text,
+	pricing_fallback_reason`
 
 func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var value BillingLedgerEntry
 	var userID, operationID, balance, cny, rate, tier, periodID sql.NullString
 	var requestID, model, cost, charged, uncovered, actorID sql.NullString
-	var input, cached, output sql.NullInt64
+	var usageRequestedAt sql.NullTime
+	var actualModel, cacheWriteMode, requestedTier, actualTier, pricingTier sql.NullString
+	var contextClass, pricingCatalog, appliedInput, appliedCached sql.NullString
+	var appliedCacheWrite, appliedOutput, fallbackReason sql.NullString
+	var input, cached, cacheWrite, output sql.NullInt64
 	err := row.Scan(&value.ID, &userID, &operationID, &value.EntryType,
 		&value.AmountUSD, &value.CashDeltaUSD, &balance, &cny, &rate, &tier,
 		&periodID, &requestID, &model, &input, &cached, &output, &cost,
-		&charged, &uncovered, &value.Reason, &actorID, &value.CreatedAt)
+		&charged, &uncovered, &value.Reason, &actorID, &value.CreatedAt,
+		&usageRequestedAt, &actualModel, &cacheWrite, &cacheWriteMode,
+		&requestedTier, &actualTier, &pricingTier, &contextClass,
+		&value.PricingRuleVersion, &pricingCatalog, &appliedInput, &appliedCached,
+		&appliedCacheWrite, &appliedOutput, &fallbackReason)
 	value.UserID, value.OperationID = nullableString(userID), nullableString(operationID)
 	value.BalanceAfterUSD, value.CNYAmount = nullableString(balance), nullableString(cny)
 	value.USDPerCNYSnapshot, value.SubscriptionTier = nullableString(rate), nullableString(tier)
 	value.SubscriptionPeriodID, value.RequestID = nullableString(periodID), nullableString(requestID)
 	value.Model, value.ActorUserID = nullableString(model), nullableString(actorID)
 	value.InputTokens, value.CachedInputTokens, value.OutputTokens = nullableInt64(input), nullableInt64(cached), nullableInt64(output)
+	value.CacheWriteTokens = nullableInt64(cacheWrite)
+	if usageRequestedAt.Valid {
+		value.UsageRequestedAt = &usageRequestedAt.Time
+	}
+	value.ActualModel, value.CacheWriteMode = nullableString(actualModel), nullableString(cacheWriteMode)
+	value.RequestedServiceTier, value.ActualServiceTier = nullableString(requestedTier), nullableString(actualTier)
+	value.PricingServiceTier, value.ContextClass = nullableString(pricingTier), nullableString(contextClass)
+	value.PricingCatalogAsOf = nullableString(pricingCatalog)
+	value.AppliedInputUSDPerMillion, value.AppliedCachedInputUSDPerMillion = nullableString(appliedInput), nullableString(appliedCached)
+	value.AppliedCacheWriteUSDPerMillion, value.AppliedOutputUSDPerMillion = nullableString(appliedCacheWrite), nullableString(appliedOutput)
+	value.PricingFallbackReason = nullableString(fallbackReason)
 	value.ActualCostUSD, value.ChargedUSD, value.UncoveredUSD = nullableString(cost), nullableString(charged), nullableString(uncovered)
 	return value, err
 }
@@ -1552,18 +1719,67 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	if reservation.State == "released" {
 		return BillingReservation{}, fmt.Errorf("settle released billing reservation: %w", ErrConflict)
 	}
-	var inputTokens, cachedTokens, outputTokens int64
+	var usageRequestedAt time.Time
+	var actualModel string
+	var actualServiceTier sql.NullString
+	var inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64
+	var cacheWriteTokensPresent bool
 	if err := tx.QueryRowContext(ctx, `
-		SELECT input_tokens, cached_input_tokens, output_tokens
+		SELECT requested_at, model, actual_service_tier, input_tokens,
+			cached_input_tokens, cache_write_tokens, cache_write_tokens_present,
+			output_tokens
 		FROM usage_requests WHERE request_id = $1 AND state <> 'in_progress'
-		FOR UPDATE`, requestID).Scan(&inputTokens, &cachedTokens, &outputTokens); err != nil {
+		FOR UPDATE`, requestID).Scan(&usageRequestedAt, &actualModel, &actualServiceTier,
+		&inputTokens, &cachedTokens, &cacheWriteTokens, &cacheWriteTokensPresent,
+		&outputTokens); err != nil {
 		return BillingReservation{}, mapDBError("read terminal usage for billing", err)
 	}
-	cost, err := decimal.CalculateCost(inputTokens, cachedTokens, outputTokens,
-		reservation.InputUSDPerMillion, reservation.CachedInputUSDPerMillion,
-		reservation.OutputUSDPerMillion)
+	var decision config.PricingDecision
+	pricingFallbackReason := ""
+	var cost string
+	if reservation.PricingRuleVersion == config.PricingSchemaV1 {
+		cost, err = decimal.CalculateCost(inputTokens, cachedTokens, outputTokens,
+			reservation.InputUSDPerMillion, reservation.CachedInputUSDPerMillion,
+			reservation.OutputUSDPerMillion)
+	} else {
+		snapshot, snapshotErr := config.ParsePricingSnapshot(reservation.PricingSnapshot)
+		if snapshotErr != nil {
+			return BillingReservation{}, fmt.Errorf("parse request pricing snapshot: %w", snapshotErr)
+		}
+		selectionTier := actualServiceTier.String
+		if reservation.BillingMode == BillingModeInternalZero {
+			selectionTier = "default"
+		}
+		decision, err = snapshot.Select(selectionTier, inputTokens)
+		if err == nil && snapshot.Rule.CacheWriteMode == config.CacheWriteSeparate && !cacheWriteTokensPresent {
+			cacheWriteTokens = inputTokens - cachedTokens
+			decision.FallbackReason = config.AppendFallbackReason(
+				decision.FallbackReason, config.FallbackMissingCacheWriteTokens,
+			)
+		}
+		if err == nil {
+			cost, err = decimal.CalculateCostV2(
+				inputTokens, cachedTokens, cacheWriteTokens, outputTokens,
+				snapshot.Rule.CacheWriteMode, decision.InputUSDPerMillion,
+				decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion,
+				decision.OutputUSDPerMillion,
+			)
+			pricingFallbackReason = decision.FallbackReason
+		}
+	}
 	if err != nil {
 		return BillingReservation{}, fmt.Errorf("calculate request cost: %w", err)
+	}
+	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE usage_requests SET cache_write_tokens = $2,
+				pricing_service_tier = $3, context_class = $4,
+				pricing_fallback_reason = $5
+			WHERE request_id = $1`, requestID, cacheWriteTokens,
+			decision.PricingServiceTier, decision.ContextClass,
+			valueOrNil(pricingFallbackReason)); err != nil {
+			return BillingReservation{}, mapDBError("record usage pricing decision", err)
+		}
 	}
 	remaining, charged := cost, "0.000000000000"
 	allocationOrder := 0
@@ -1686,25 +1902,90 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 		RETURNING balance_usd::text`, reservation.UserID, cashCharged, at).Scan(&balanceAfter); err != nil {
 		return BillingReservation{}, mapDBError("debit billing account", err)
 	}
+	var ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens any
+	var ledgerCacheWriteMode, ledgerRequestedTier, ledgerActualTier any
+	var ledgerPricingTier, ledgerContextClass, ledgerCatalog any
+	var ledgerAppliedInput, ledgerAppliedCached, ledgerAppliedCacheWrite, ledgerAppliedOutput any
+	var ledgerFallback any
+	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
+		ledgerRequestedAt = usageRequestedAt
+		ledgerActualModel = actualModel
+		ledgerCacheWriteTokens = cacheWriteTokens
+		ledgerCacheWriteMode = pointerDatabaseValue(reservation.CacheWriteMode)
+		ledgerRequestedTier = pointerDatabaseValue(reservation.RequestedServiceTier)
+		ledgerActualTier = valueOrNil(actualServiceTier.String)
+		ledgerPricingTier = decision.PricingServiceTier
+		ledgerContextClass = decision.ContextClass
+		ledgerCatalog = pointerDatabaseValue(reservation.PricingCatalogAsOf)
+		ledgerAppliedInput = decision.InputUSDPerMillion
+		ledgerAppliedCached = decision.CachedInputUSDPerMillion
+		ledgerAppliedCacheWrite = decision.CacheWriteUSDPerMillion
+		ledgerAppliedOutput = decision.OutputUSDPerMillion
+		ledgerFallback = valueOrNil(pricingFallbackReason)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO billing_ledger_entries
 			(user_id, entry_type, amount_usd, cash_delta_usd, balance_after_usd,
 			 request_id, model, input_tokens, cached_input_tokens, output_tokens,
-			 actual_cost_usd, charged_usd, uncovered_usd, reason, created_at)
+			 actual_cost_usd, charged_usd, uncovered_usd, reason, created_at,
+			 usage_requested_at, actual_model, cache_write_tokens, cache_write_mode,
+			 requested_service_tier, actual_service_tier, pricing_service_tier,
+			 context_class, pricing_rule_version, pricing_catalog_as_of,
+			 applied_input_usd_per_million, applied_cached_input_usd_per_million,
+			 applied_cache_write_usd_per_million, applied_output_usd_per_million,
+			 pricing_fallback_reason)
 		VALUES ($1,'usage_charge',$2::numeric,-$3::numeric,$4::numeric,$5,$6,$7,$8,$9,
-			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12)`,
+			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12,
+			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::date,$23::numeric,$24::numeric,
+			$25::numeric,$26::numeric,$27)`,
 		reservation.UserID, cost, cashCharged, balanceAfter, requestID, reservation.Model,
-		inputTokens, cachedTokens, outputTokens, charged, remaining, at); err != nil {
+		inputTokens, cachedTokens, outputTokens, charged, remaining, at,
+		ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens, ledgerCacheWriteMode,
+		ledgerRequestedTier, ledgerActualTier, ledgerPricingTier, ledgerContextClass,
+		reservation.PricingRuleVersion, ledgerCatalog, ledgerAppliedInput, ledgerAppliedCached,
+		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback); err != nil {
 		return BillingReservation{}, mapDBError("record usage billing ledger", err)
+	}
+	var settledCacheWrite, settledActualTier, settledPricingTier, settledActualModel any
+	var settledContext, settledAppliedInput, settledAppliedCached, settledAppliedCacheWrite any
+	var settledAppliedOutput, settledFallback any
+	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
+		settledCacheWrite = cacheWriteTokens
+		settledActualTier = valueOrNil(actualServiceTier.String)
+		settledPricingTier = decision.PricingServiceTier
+		settledActualModel = actualModel
+		settledContext = decision.ContextClass
+		settledAppliedInput = decision.InputUSDPerMillion
+		settledAppliedCached = decision.CachedInputUSDPerMillion
+		settledAppliedCacheWrite = decision.CacheWriteUSDPerMillion
+		settledAppliedOutput = decision.OutputUSDPerMillion
+		settledFallback = valueOrNil(pricingFallbackReason)
 	}
 	reservation, err = scanBillingReservation(tx.QueryRowContext(ctx, `
 		UPDATE billing_reservations SET state = 'settled', actual_input_tokens = $2,
 			actual_cached_input_tokens = $3, actual_output_tokens = $4,
 			actual_cost_usd = $5::numeric, charged_usd = $6::numeric,
-			uncovered_usd = $7::numeric, settled_at = $8
+			uncovered_usd = $7::numeric, settled_at = $8,
+			actual_cache_write_tokens = $9, actual_service_tier = $10,
+			pricing_service_tier = $11, actual_model = $12, context_class = $13,
+			applied_input_usd_per_million = $14::numeric,
+			applied_cached_input_usd_per_million = $15::numeric,
+			applied_cache_write_usd_per_million = $16::numeric,
+			applied_output_usd_per_million = $17::numeric,
+			pricing_fallback_reason = $18
 		WHERE request_id = $1 RETURNING `+billingReservationColumns,
-		requestID, inputTokens, cachedTokens, outputTokens, cost, charged, remaining, at))
+		requestID, inputTokens, cachedTokens, outputTokens, cost, charged, remaining, at,
+		settledCacheWrite, settledActualTier, settledPricingTier, settledActualModel,
+		settledContext, settledAppliedInput, settledAppliedCached, settledAppliedCacheWrite,
+		settledAppliedOutput, settledFallback))
 	return reservation, mapDBError("settle billing reservation", err)
+}
+
+func pointerDatabaseValue(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
 }
 
 func (s *Store) ReleaseBilling(ctx context.Context, requestID string, at time.Time) error {

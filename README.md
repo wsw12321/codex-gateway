@@ -1,6 +1,9 @@
 # Personal Codex Gateway
 
-浏览器身份支持邀请制 Passkey 或“用户名 + 密码”注册与登录。每个用户可持有多枚 Passkey 和一个 Argon2id 密码凭据，并可在近期身份验证后添加另一种方式。密码使用 64 MiB、3 轮、并行度 2 的 Argon2id；在线尝试受 IP、路径和用户名摘要限流保护。
+浏览器身份支持邀请制 Passkey 或“用户名 + 密码”注册与登录。每个用户可持有
+多枚 Passkey 和一个 Argon2id 密码凭据，并可在近期身份验证后添加另一种方式。
+密码使用 64 MiB、3 轮、并行度 2 的 Argon2id；在线尝试受 IP、路径和用户名
+摘要限流保护。
 
 账号恢复可选择新增 Passkey 或设置新密码。恢复会撤销旧会话、轮换恢复码，但保留未被选择替换的现有登录方式；API Key 不会自动撤销。
 
@@ -11,7 +14,7 @@ Codex CLI 与内部 Codex 兼容层之间增加设备级 API Key、项目归属�
 > [!WARNING]
 > 当前项目已完成代码与可丢弃环境中的自动化部署验收，但真实域名、Passkey 和
 > ChatGPT Pro 设备码登录仍需在目标 VPS 上人工验收。在完成这些步骤前尚不应
-> 直接用于生产，见[当前状态](#当前状态2026-08-11)。
+> 直接用于生产，见[当前状态](#当前状态2026-08-20)。
 
 Codex 的文件读取、命令执行和代码修改仍发生在客户端本地。Gateway 不保存
 提示词、源代码或模型回复，也不会在 Pro 凭证失效时自动回退到 Platform API。
@@ -113,29 +116,36 @@ lease，客户端断开会取消上游请求并释放租约，异常退出的遗
 
 | 作用域 | RPM | 并发 | 请求/日 |
 | --- | ---: | ---: | ---: |
-| 每个 Key | 30 | 16 | 1,000 |
-| 每个用户聚合 | 60 | 16 | 2,000 |
+| 每个 Key | 30 | 16 | 10,000 |
+| 每个用户聚合 | 60 | 16 | 20,000 |
 | 单 Pro 上游全局 | — | 32 | — |
 
-Token 总量按 input + output 结算；cached input 和 reasoning 是细分指标，不重复
-计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态过滤，展示请求
-数、Token、缓存率、错误率、p95 TTFT/耗时，并导出 CSV。
+Token 总量按 input + output 结算；cached input、cache write 和 reasoning 是细分
+指标，不重复计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态
+过滤，展示请求数、Token、缓存率、缓存写入量、错误率、p95 TTFT/耗时，并导出
+CSV。
 
 ### 额度与订阅计费
 
-所有用户（包括 Owner）都需要可用的 USD 额度才能调用 Responses 和 compact；
-`GET /v1/models` 不计费。现金余额和日、周、月三档订阅分别记录，固定滚动周期为
-24 小时、7 天和 31 天。每档订阅必须设置 `period_count`：`1–99` 表示有限周期，
-在第 n 个周期结束时自动停用；`0` 表示无限期并保持滚动续期。跨过无人使用的
-周期时会直接推进到正确的周期序号，不为旧周期补发或结转额度。实际请求完成后
-按“日订阅 → 周订阅 → 月订阅 → 现金”
-原子分摊，周期余额不结转，也不会出现负现金余额。请求只可使用准入时存在的
-周期和现金 credit lot，因此后续充值、续期或修改订阅不会被旧请求追扣。
+一般 Responses 和 compact 请求都需要可用的 USD 额度；`GET /v1/models` 不计费。
+`codex-auto-review` 是显式的内部零价治理流量，可以在没有资金来源时创建零价
+reservation，照常记录 Token 和零金额 ledger；它不扣日、周、月或现金额度，但
+仍计入普通请求和 Token 配额。现金余额和日、周、月三档订阅分别记录，固定滚动
+周期为 24 小时、7 天和 31 天。每档订阅必须设置 `period_count`：`1–99` 表示有限
+周期，在第 n 个周期结束时自动停用；`0` 表示无限期并保持滚动续期。跨过无人
+使用的周期时会直接推进到正确的周期序号，不为旧周期补发或结转额度。非零价
+请求完成后按“日订阅 → 周订阅 → 月订阅 → 现金”原子分摊，周期余额不结转，也
+不会出现负现金余额。请求只可使用准入时存在的周期和现金 credit lot，因此后续
+充值、续期或修改订阅不会被旧请求追扣。
 
-请求按客户端提交的精确模型在准入时保存输入、缓存输入和输出价格快照；上游返回
-不同模型不会改变账单。未配置价格的模型返回 `400 model_pricing_not_found`，没有
-正额度来源时返回 `429 insufficient_quota`。单次或并发请求超过准入时绑定额度时，
-账务流水会分别记录实际成本、已扣金额和未覆盖金额，不透支也不延后追扣。
+价格配置 v2 按客户端提交的精确模型，在准入时保存该模型完整的服务层、上下文
+档位、缓存读取和缓存写入规则。结算会记录上游实际模型和实际服务层，并按实际
+输入 Token 在 `272000`/`272001` 边界选择短档或长档；上游返回不同模型不会把
+准入时的计价模型悄然换成另一个目录项。未配置模型返回
+`400 model_pricing_not_found`，显式请求未配置的服务层在转发前返回
+`400 service_tier_not_supported`，非零价请求没有正额度来源时返回
+`429 insufficient_quota`。单次或并发请求超过准入时绑定额度时，账务流水会分别
+记录实际成本、已扣金额和未覆盖金额，不透支也不延后追扣。
 
 管理台的“额度与订阅”区域允许成员只读查看余额、三档周期和长期账务流水。Owner
 在近期 Passkey 验证后可按当时充值汇率进行 CNY 充值、执行带原因的正负 USD 调整、
@@ -144,18 +154,24 @@ Token 总量按 input + output 结算；cached input 和 reasoning 是细分指�
 周期额度并从第 1 个周期重开。成员和 Owner 都能看到当前周期序号、总周期数、
 本周期结束时间及有限订阅的最终失效时间。金额在 JSON 中始终使用十进制字符串。
 
-Owner 的全员统计还会按部署时固定的价格目录和 USD/CNY 汇率展示“API 等价费用
-估算”。它只按记录中的精确模型名匹配价格；未匹配的模型单独计入未定价 Token
-和覆盖率，不会静默按零价形成完整总额。该估算不是真实费用或账单：当前上游是
-ChatGPT Pro OAuth，结果不代表实际结算，也不包含 Pro 订阅费、税费、基础设施或
-工具费用。历史区间始终按当前部署的价格快照重新估算。
+Owner 的全员统计展示“OpenAI API Token 等价成本”。USD 金额汇总长期保留且
+不可变的 `usage_charge` ledger，不再用当前 `.env` 价格重算历史；Token 数量仍
+来自 usage 明细或日/月聚合。接口保留 `estimated_usd` 作为兼容别名，并同时返回
+`actual_cost_usd`、`charged_usd` 和 `uncovered_usd`；管理台还按最终计价服务层、
+短/长上下文、cache-write Token 和保守兜底原因单独统计。CNY 仅按当前配置中
+带日期的固定汇率换算不可变 USD 成本。
 
-只保存以下调用元数据：身份与项目引用、Key 前缀、模型、端点、状态/错误码、
+这些数值不能称为 OpenAI 实际账单：当前上游是 ChatGPT Pro OAuth，内部零价和
+保守兜底也属于本地策略；报表不包含 Pro 订阅费、工具、区域、Batch、Ultrafast、
+税费或基础设施成本。修改当前价格 JSON 不会改变已经写入 ledger 的 USD 金额。
+
+只保存以下调用元数据：身份与项目引用、Key 前缀、请求/实际模型、请求/实际及
+最终计价服务层、上下文档位、计价规则版本和兜底原因、端点、状态/错误码、
 请求/首 Token/完成时间、TTFT、耗时、各类 Token、字节数和上游请求 ID。请求
 明细保留 90 天，安全审计保留 365 天，日/月聚合和不含请求/响应内容的账务流水
-长期保留。
+长期保留；因此明细过期后仍可用不可变 ledger 对账。
 
-## 当前状态（2026-08-11）
+## 当前状态（2026-08-20）
 
 ### 已实现
 
@@ -164,6 +180,8 @@ ChatGPT Pro OAuth，结果不代表实际结算，也不包含 Pro 订阅费、�
 - Responses、compact、models 固定代理，普通响应和 SSE usage/TTFT 解析。
 - PostgreSQL 原子 RPM、并发、每日请求配额及长流 lease 续期。
 - usage 日/月聚合、精确筛选、CSV、审计、配额及上游告警。
+- OpenAI API Token 等价成本 v2：多模型、Standard/Flex/Fast、短/长上下文、
+  GPT-5.6 独立 cache-write、保守兜底及不可变 ledger 报表。
 - Cloudflare Tunnel、Caddy、CLIProxyAPI、Squid 网络隔离、加密备份/恢复脚本
   和供应链锁定。
 
@@ -241,10 +259,13 @@ chmod 0600 .env
 # 把 GATEWAY_SECRET_GID 设置为专用部署用户的主组：id -g
 ```
 
-价格目录必须按记录中的精确模型名，使用
-[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 的每百万 Token
-价格填写；同时记录目录日期、固定 USD/CNY 汇率及其日期。示例中的日期、模型名
-和价格只是结构占位符，不能直接部署。完整估算口径和升级要求见
+`deploy/env.example` 已包含
+[deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
+覆盖 GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini 和内部零价
+`codex-auto-review`。部署前仍必须对照
+[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 复核每百万
+Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`；不要把 v1
+三价字段混入 v2。完整口径和升级要求见
 [部署与运维手册](docs/operations.md#用量价格快照)。
 
 如 Compose 子网与主机已有网段冲突，必须在首次启动前同步调整内部子网、静态
@@ -306,9 +327,12 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 完整上线、设备登录、备份、恢复与升级流程见
 [部署与运维手册](docs/operations.md)。
 
-升级到 `0004_subscription_period_limits.sql` 前必须完成加密备份和恢复演练。
-该迁移是 forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；
-回滚必须停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。
+升级到 `0004_subscription_period_limits.sql` 或
+`0005_official_token_pricing.sql` 前必须完成加密备份和恢复演练。迁移是
+forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；回滚必须
+停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。`0005`
+的停写、核账、迁移和模型冒烟 7 步见
+[升级到 OpenAI API Token 等价成本 v2](docs/operations.md#升级到-0005_official_token_pricingsql)。
 
 ## Codex CLI 配置
 

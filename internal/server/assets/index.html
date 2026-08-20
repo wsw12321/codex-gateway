@@ -476,6 +476,7 @@
               <div class="metrics compact">
                 <article><span>请求</span><strong id="usage-requests">—</strong></article>
                 <article><span>缓存率</span><strong id="metric-cache">—</strong></article>
+                <article><span>缓存写入 Token</span><strong id="metric-cache-write">—</strong></article>
                 <article><span>p95 TTFT</span><strong id="metric-ttft">—</strong></article>
                 <article><span>p95 耗时</span><strong id="metric-duration">—</strong></article>
               </div>
@@ -507,16 +508,17 @@
               </form>
               <div id="global-loading" class="inline-loading hidden" role="status">正在聚合全员用量…</div>
               <div class="metrics compact global-metrics">
-                <article><span>已定价部分 USD</span><strong id="global-usd">—</strong><small>API 等价费用估算</small></article>
-                <article><span>已定价部分 CNY</span><strong id="global-cny">—</strong><small>固定汇率换算</small></article>
+                <article><span>Token 等价成本 USD</span><strong id="global-usd">—</strong><small id="global-charge-detail">不可变 ledger</small></article>
+                <article><span>等价成本 CNY</span><strong id="global-cny">—</strong><small>当前固定汇率换算</small></article>
                 <article><span>Token</span><strong id="global-total-tokens">—</strong><small id="global-coverage">—</small></article>
                 <article><span>请求 / 用户</span><strong id="global-request-users">—</strong><small id="global-period">—</small></article>
               </div>
               <div id="pricing-note" class="pricing-note muted" role="note"></div>
+              <div id="pricing-breakdown" class="pricing-note muted" role="note"></div>
               <div class="table-wrap panel">
                 <table>
-                  <caption>按已定价部分费用降序；未配置价格的模型计入未定价 Token，不会静默按零价处理。</caption>
-                  <thead><tr><th>用户</th><th>请求</th><th>Token</th><th>USD / CNY 估算</th><th>使用占比</th><th>计价覆盖</th></tr></thead>
+                  <caption>按不可变 ledger 的 Token 等价成本降序；兼容字段 estimated_usd 与 actual_cost_usd 相同。</caption>
+                  <thead><tr><th>用户</th><th>请求</th><th>Token</th><th>USD / CNY 等价成本</th><th>使用占比</th><th>计价覆盖</th></tr></thead>
                   <tbody id="global-rows"><tr><td colspan="6" class="table-message">选择“全员汇总”后加载。</td></tr></tbody>
                 </table>
               </div>

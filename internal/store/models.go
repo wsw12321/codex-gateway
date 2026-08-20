@@ -143,30 +143,39 @@ type APIKey struct {
 }
 
 type UsageRequest struct {
-	ID                int64
-	RequestID         string
-	UserID            string
-	DeviceID          string
-	APIKeyID          string
-	KeyPrefix         string
-	ProjectID         *string
-	Model             string
-	Endpoint          string
-	State             string
-	HTTPStatus        *int
-	ErrorCode         *string
-	RequestedAt       time.Time
-	FirstTokenAt      *time.Time
-	CompletedAt       *time.Time
-	TTFTMillis        *int64
-	DurationMillis    *int64
-	InputTokens       int64
-	CachedInputTokens int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	RequestBytes      int64
-	ResponseBytes     int64
-	UpstreamRequestID *string
+	ID                      int64
+	RequestID               string
+	UserID                  string
+	DeviceID                string
+	APIKeyID                string
+	KeyPrefix               string
+	ProjectID               *string
+	Model                   string
+	RequestedModel          *string
+	RequestedServiceTier    *string
+	ActualServiceTier       *string
+	Endpoint                string
+	State                   string
+	HTTPStatus              *int
+	ErrorCode               *string
+	RequestedAt             time.Time
+	FirstTokenAt            *time.Time
+	CompletedAt             *time.Time
+	TTFTMillis              *int64
+	DurationMillis          *int64
+	InputTokens             int64
+	CachedInputTokens       int64
+	CacheWriteTokens        int64
+	CacheWriteTokensPresent bool
+	OutputTokens            int64
+	ReasoningTokens         int64
+	RequestBytes            int64
+	ResponseBytes           int64
+	UpstreamRequestID       *string
+	PricingRuleVersion      int
+	PricingServiceTier      *string
+	ContextClass            *string
+	PricingFallbackReason   *string
 }
 
 // TotalTokens follows the gateway accounting rule: cached input is already a
@@ -187,6 +196,7 @@ type DailyUsage struct {
 	ErrorCount        int64
 	InputTokens       int64
 	CachedInputTokens int64
+	CacheWriteTokens  int64
 	OutputTokens      int64
 	ReasoningTokens   int64
 	RequestBytes      int64
@@ -216,6 +226,7 @@ type MonthlyUsage struct {
 	ErrorCount        int64
 	InputTokens       int64
 	CachedInputTokens int64
+	CacheWriteTokens  int64
 	OutputTokens      int64
 	ReasoningTokens   int64
 	RequestBytes      int64
@@ -230,6 +241,7 @@ type UsageSummary struct {
 	ErrorCount        int64
 	InputTokens       int64
 	CachedInputTokens int64
+	CacheWriteTokens  int64
 	OutputTokens      int64
 	ReasoningTokens   int64
 	RequestBytes      int64
@@ -246,8 +258,21 @@ type GlobalUsageRow struct {
 	RequestCount      int64
 	InputTokens       int64
 	CachedInputTokens int64
+	CacheWriteTokens  int64
 	OutputTokens      int64
 	ReasoningTokens   int64
+	ActualCostUSD     string
+	ChargedUSD        string
+	UncoveredUSD      string
+	LedgerTokens      int64
+}
+
+type GlobalPricingBreakdownRow struct {
+	Dimension        string
+	Value            string
+	RequestCount     int64
+	CacheWriteTokens int64
+	ActualCostUSD    string
 }
 
 type AuditEvent struct {

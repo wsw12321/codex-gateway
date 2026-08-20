@@ -1,6 +1,10 @@
 # 威胁模型
 
-成员可使用可发现 Passkey 或用户名密码登录。密码以无 pepper 的 Argon2id PHC 保存（64 MiB、3 轮、并行度 2、随机 16 字节 salt、32 字节输出），PHC 在分配资源前执行严格参数上限检查；哈希最多两个并发槽。未知用户、无密码、禁用用户和错误密码统一执行同成本验证并返回 `invalid_credentials`，并受每 IP/路径 20 次/分钟及 IP + 规范化用户名摘要 5 次/分钟限制。
+成员可使用可发现 Passkey 或用户名密码登录。密码以无 pepper 的 Argon2id PHC
+保存（64 MiB、3 轮、并行度 2、随机 16 字节 salt、32 字节输出），PHC 在分配
+资源前执行严格参数上限检查；哈希最多两个并发槽。未知用户、无密码、禁用用户
+和错误密码统一执行同成本验证并返回 `invalid_credentials`，并受每 IP/路径
+20 次/分钟及 IP + 规范化用户名摘要 5 次/分钟限制。
 
 恢复码只在新凭据、恢复码轮换和新会话能够原子提交时消费。恢复撤销旧会话但保留未选择的既有登录方式，也不撤销 API Key。设置或更改密码保留当前会话及其近期验证时间，撤销其他会话。
 
@@ -8,9 +12,10 @@
 
 受保护资产包括 ChatGPT Pro OAuth/refresh token、设备 API Key、Passkey 公钥与
 challenge、恢复码、会话、数据库凭证、配额数据和安全审计。提示词、源代码和
-模型回复属于高敏感瞬时数据：可以在转发内存中短暂存在，但不得进入数据库、
-日志、备份或管理界面。按用户聚合的用量和 API 等价费用估算也属于受限管理
-元数据，Member 只能查看自己的请求明细，只有 Owner 能查看全员汇总。
+模型回复属于高敏感瞬时数据：可以在转发内存或受限 tmpfs 中短暂存在，但不得
+进入数据库、日志、备份或管理界面。按用户聚合的用量和
+“OpenAI API Token 等价成本”也属于受限管理元数据，Member 只能查看自己的
+请求明细，只有 Owner 能查看全员汇总。
 
 部署假设账号和所有受邀设备都由同一订阅者控制。若让其他真实用户共用 Pro
 凭证，本威胁模型和订阅边界不再成立，必须改为每人独立上游凭证或官方
@@ -50,11 +55,11 @@ Internet
 | 超大正文/资源耗尽 | Caddy 与 Gateway 双重 64 MiB 上限；RPM、并发、日配额和全局流限制 | 限额与并发测试 |
 | 邀请/恢复 token 泄漏 | URL fragment、单次/短期 token、HMAC 存储；不启用访问日志 | 邀请复用测试、日志扫描 |
 | 会话劫持/CSRF | Secure、HttpOnly、SameSite=Strict；Origin/CSRF 校验；敏感操作 5 分钟内 Passkey 再验证 | 身份安全测试 |
-| 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 只信任固定 cloudflared `/32` 的 `CF-Connecting-IP`，重建 XFF；Gateway 只信任固定 Caddy `/32` | 伪造 CF/XFF 集成测试 |
+| 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 与 Gateway 只信任各自上游的固定 `/32`，并重建 XFF | CF/XFF 伪造测试 |
 | 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；固定 CI 工具版本 | CI 和 lock diff 审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
 | Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
-| 把参考估值误当真实账单 | 只使用固定快照精确匹配；未定价用量单列；界面/API 明示不含订阅、税费和基础设施且历史会重估 | 计价、覆盖率和管理台文案测试 |
+| 把 OpenAI API Token 等价成本误当 OpenAI 实际账单 | 准入固化 v2 规则，ledger 不可变；界面/API 明示 Pro OAuth、内部零价和兜底边界 | v2 计价、ledger 和文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
 
 ## 容器权限
@@ -62,9 +67,10 @@ Internet
 Gateway 和 sidecar 使用 UID 10001、私有部署组、只读根文件系统、
 `no-new-privileges` 和 drop-all capabilities。`cloudflared` 同样以非 root、
 只读根文件系统和 drop-all capabilities 运行。Sidecar 只有 OAuth volume 和
-两个小型 tmpfs 可写，OAuth 文件 umask 是 077。Caddy 仅保留绑定内部低端口
-所需的 `NET_BIND_SERVICE`。PostgreSQL 和 Squid 保留各自官方镜像启动所需
-权限，但没有公网端口，且位于最小网络集合中。
+两个小型 tmpfs 可写，OAuth 文件 umask 是 077。Gateway 只有私有 `/tmp` tmpfs
+可写，并以 4 个并发槽限制完整请求体的转发前扫描文件。Caddy 仅保留绑定内部
+低端口所需的 `NET_BIND_SERVICE`。PostgreSQL 和 Squid 保留各自官方镜像启动
+所需权限，但没有公网端口，且位于最小网络集合中。
 
 内部 sidecar API Key 与用户 Key 完全不同。Gateway 在转发前丢弃用户
 Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access 且控制
@@ -72,7 +78,8 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
 
 ## 数据生命周期
 
-- 请求明细元数据保留 90 天，日/月聚合长期保留。
+- 请求明细元数据保留 90 天，日/月聚合及不含内容的不可变账务 ledger 长期保留；
+  明细过期后仍可按 ledger 对账。
 - 安全审计保留 365 天。
 - 请求和响应正文不落库，因此不进入 `pg_dump`。
 - OAuth volume 永不备份；灾备后重新登录。
