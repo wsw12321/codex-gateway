@@ -11,6 +11,7 @@ import (
 )
 
 func TestForwardStripsCredentialsAndParsesJSONUsage(t *testing.T) {
+	const affinityScope = "0123456789012345678901234567890123456789012"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer internal-secret" {
 			t.Errorf("authorization = %q", got)
@@ -21,7 +22,14 @@ func TestForwardStripsCredentialsAndParsesJSONUsage(t *testing.T) {
 		if got := r.Header.Get("X-Forwarded-For"); got != "" {
 			t.Errorf("forwarded header leaked: %q", got)
 		}
+		if got := r.Header.Get(affinityHeader); got != affinityScope {
+			t.Errorf("affinity scope = %q", got)
+		}
+		if got := r.Header.Get(upstreamAccountHeader); got != "" {
+			t.Errorf("caller-controlled account trace leaked upstream: %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(upstreamAccountHeader, "0123456789abcdef")
 		_, _ = io.WriteString(w, `{"id":"r1","model":"gpt-test","service_tier":"priority","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":2},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":3}}}`)
 	}))
 	defer upstream.Close()
@@ -32,16 +40,62 @@ func TestForwardStripsCredentialsAndParsesJSONUsage(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer cgk_v1_public_secret")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("X-Forwarded-For", "203.0.113.1")
+	req.Header.Set(upstreamAccountHeader, "fedcba9876543210")
 	recorder := httptest.NewRecorder()
-	result, failure := client.Forward(context.Background(), recorder, req, "/v1/responses")
+	result, failure := client.ForwardWithOptions(context.Background(), recorder, req, "/v1/responses", ForwardOptions{AffinityScope: affinityScope})
 	if failure != nil {
 		t.Fatal(failure)
 	}
 	if result.Model != "gpt-test" || result.ServiceTier != "priority" ||
+		result.UpstreamAccountID != "0123456789abcdef" ||
 		result.Usage.Total() != 19 || result.Usage.CachedTokens != 5 ||
 		result.Usage.CacheWriteTokens != 2 || !result.Usage.CacheWriteTokensPresent ||
 		result.Usage.ReasoningTokens != 3 {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	if got := recorder.Header().Get(upstreamAccountHeader); got != "" {
+		t.Fatalf("internal account header leaked downstream: %q", got)
+	}
+}
+
+func TestForwardRejectsInvalidAffinityAndAccountTrace(t *testing.T) {
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set(upstreamAccountHeader, "../../oauth-token")
+		_, _ = io.WriteString(w, `{"data":[]}`)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL)
+	client := NewWithHTTPClient(base, "secret", upstream.Client())
+
+	req := httptest.NewRequest(http.MethodGet, "https://gateway.test/v1/models", nil)
+	_, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), req, "/v1/models", ForwardOptions{AffinityScope: "invalid scope"})
+	if failure == nil || failure.Code != "upstream_unavailable" || upstreamCalls != 0 {
+		t.Fatalf("invalid affinity failure=%+v calls=%d", failure, upstreamCalls)
+	}
+
+	result, failure := client.Forward(context.Background(), httptest.NewRecorder(), req, "/v1/models")
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	if result.UpstreamAccountID != "" {
+		t.Fatalf("unsafe account trace accepted: %q", result.UpstreamAccountID)
+	}
+}
+
+func TestSafeUpstreamAccountHeaderRejectsAmbiguousValues(t *testing.T) {
+	header := make(http.Header)
+	header.Add(upstreamAccountHeader, "0123456789abcdef")
+	header.Add(upstreamAccountHeader, "fedcba9876543210")
+	if got := safeUpstreamAccountHeader(header); got != "" {
+		t.Fatalf("ambiguous account trace accepted: %q", got)
+	}
+	header = make(http.Header)
+	header.Set(upstreamAccountHeader, "0123456789abcdef")
+	if got := safeUpstreamAccountHeader(header); got != "0123456789abcdef" {
+		t.Fatalf("single account trace = %q", got)
 	}
 }
 

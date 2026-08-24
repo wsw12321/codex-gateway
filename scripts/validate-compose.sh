@@ -9,6 +9,11 @@ compose=$root/scripts/compose.sh
 caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
 pricing_template=$root/deploy/pricing-v2.example.json
+compat_dockerfile=$root/deploy/codex-compat/Dockerfile
+compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
+compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch
+compat_patch_sha256=d66059167aa269f2099ed0385cc96f32c3e8da060cce1228e5402288209b2e66
+compat_image=codex-gateway-compat:v7.2.127-ecc9aa72-d66059167aa269f2
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -26,6 +31,42 @@ test -r "$lock" || {
 test -r "$env_file" || {
     fail 'copy deploy/env.example to .env and configure it first'
 }
+test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
+test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
+    fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
+grep -Fq 'git apply --check /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
+    fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
+grep -Fq 'go test -count=1' "$compat_dockerfile" || \
+    fail 'codex-compat image must run the patch regression tests'
+grep -Fq 'go test -list' "$compat_dockerfile" && grep -Fq 'grep -Fxq "$test_name"' "$compat_dockerfile" || \
+    fail 'codex-compat image must fail closed when a named runtime regression test is missing'
+grep -Fq './internal/watcher' "$compat_dockerfile" && \
+    grep -Fq './internal/auth/codex' "$compat_dockerfile" && \
+    grep -Fq './sdk/auth' "$compat_dockerfile" || \
+    fail 'codex-compat image must test OAuth redirects, stable-index, and duplicate-file reconciliation'
+grep -Eq '^max-retry-credentials:[[:space:]]*2[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must cap each request at two credentials'
+grep -Eq '^request-retry:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^max-retry-interval:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must not allocate handler-layer request retry attempts'
+grep -Eq '^[[:space:]]+strategy:[[:space:]]*"round-robin"[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+session-affinity:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must use round-robin routing with session affinity'
+grep -Eq '^[[:space:]]+session-affinity-ttl:[[:space:]]*"1h"[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must retain session affinity for one hour'
+grep -Eq '^[[:space:]]+bootstrap-retries:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must disable handler-layer stream bootstrap retries'
+grep -Eq '^[[:space:]]+allow-remote:[[:space:]]*false[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+secret-key:[[:space:]]*""[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+disable-control-panel:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+disable-auto-update-panel:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat full management API and control panels must remain disabled'
+grep -Fq 'X-Codex-Gateway-Affinity' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry the reviewed caller-scope header contract'
+grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
+grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry the narrow internal account API'
 test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }
@@ -300,6 +341,16 @@ jq -e \
   .services["codex-compat"].build.args.GOLANG_IMAGE == $cliproxy_golang and
   .services["codex-compat"].build.args.RUNTIME_IMAGE == $runtime
 ' "$tmp" >/dev/null
+
+jq -e '
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.127" and
+  .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
+    "ecc9aa72b32f34b680d03b0724b531a21ae74472"
+' "$tmp" >/dev/null || \
+    fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI tag and commit'
+
+test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
+    fail 'codex-compat image tag must identify the reviewed multi-account patch'
 
 gateway_image=$(jq -r '.services.gateway.image' "$tmp")
 gateway_version=$(jq -r '.services.gateway.build.args.VERSION' "$tmp")

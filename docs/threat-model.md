@@ -10,7 +10,7 @@
 
 ## 范围和安全目标
 
-受保护资产包括 ChatGPT Pro OAuth/refresh token、设备 API Key、独立 API Key
+受保护资产包括 ChatGPT Plus/Pro OAuth/refresh token、设备 API Key、独立 API Key
 加密密钥、Passkey 公钥与 challenge、恢复码、会话、数据库凭证、配额数据和
 安全审计。提示词、源代码和
 模型回复属于高敏感瞬时数据：可以在转发内存或受限 tmpfs 中短暂存在，但不得
@@ -18,8 +18,8 @@
 “OpenAI API Token 等价成本”也属于受限管理元数据，Member 只能查看自己的
 请求明细，只有 Owner 能查看全员汇总。
 
-部署假设账号和所有受邀设备都由同一订阅者控制。若让其他真实用户共用 Pro
-凭证，本威胁模型和订阅边界不再成立，必须改为每人独立上游凭证或官方
+部署假设所有上游账号和所有受邀设备都由同一订阅者控制。若让其他真实用户共用
+Plus/Pro 凭证，本威胁模型和订阅边界不再成立，必须改为每人独立上游凭证或官方
 Platform API。
 
 ## 信任边界
@@ -50,7 +50,10 @@ Internet
 | API Key 数据库泄漏 | HMAC 用于认证；新 Key 的版本化 AES-256-GCM 密文使用仅挂载给 Gateway 的独立密钥，AAD 绑定用户和 Public ID，查看要求近期二次验证 | 加密篡改/AAD 测试、管理响应和数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
 | Refresh token 并发复用 | 登录/升级锁；先停唯一实例；禁止共享卷的双实例 | 容器状态检查、运维演练 |
-| OAuth 文件权限放宽或 symlink | 启动时要求 UID 10001、regular file、精确 `0600` | `verify-oauth-permissions.sh` |
+| OAuth 文件权限放宽或 symlink | 启动时要求目录 UID 10001/精确 `0700`、文件 UID 10001/regular file/精确 `0600` | `verify-oauth-permissions.sh` |
+| 多账号登录覆盖其他 OAuth 文件 | 登录前后只比较内部 Sidecar Key 加域的文件名/内容 SHA-256；要求恰好一个账号新增或刷新且零删除 | 重复登录、同账号刷新和权限测试 |
+| 调用方伪造粘滞或账号归因头 | Gateway 生成每 API Key 的 HMAC 作用域；sidecar 消费作用域头；Gateway 消费账号头且不下发客户端 | Header 清理和跨 API Key session 隔离测试 |
+| 即时额度接口被改造成任意 SSRF/令牌出口 | sidecar 仅允许固定 GET `chatgpt.com/backend-api/wham/usage`、禁止重定向并只返回规范化字段；完整管理 API 关闭 | URL/方法/Header/重定向、异常响应和敏感 canary 测试 |
 | Sidecar 任意出网/SSRF | internal 网络加 Squid 精确域名和 443 allowlist | 代理 ACL 测试、网络 namespace 测试 |
 | 请求头走私凭证 | Gateway 只接受已知路径/头，替换 Authorization，移除 Cookie、转发头及 hop-by-hop 头 | 代理和 fuzz 测试 |
 | 超大正文/资源耗尽 | Caddy 与 Gateway 双重 64 MiB 上限；RPM、并发、日配额和全局流限制 | 限额与并发测试 |
@@ -75,7 +78,8 @@ Gateway 和 sidecar 使用 UID 10001、私有部署组、只读根文件系统�
 
 内部 sidecar API Key 与用户 Key 完全不同。Gateway 在转发前丢弃用户
 Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access 且控制
-面板关闭。任何 OAuth 文件下载接口都不经 Caddy 路由。
+面板关闭。只读账号列表和固定上游额度适配器位于私有兼容网络并使用同一内部
+Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接口都不经 Caddy 路由。
 
 ## 数据生命周期
 
@@ -103,7 +107,7 @@ Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access �
   无中断故障转移，也不构成整机灾备。
 - 本版本不支持 API Key 加密密钥轮换。数据库备份不包含该部署 secret；密钥丢失或
   被替换后，HMAC 认证资料仍无法用于还原明文，新 Key 的查看操作会失败。
-- Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。
+- 各 Plus/Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。
 
 ## 安全验收
 

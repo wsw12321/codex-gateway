@@ -1,8 +1,8 @@
 # 部署与运维手册
 
 `0003_password_credentials.sql`、`0004_subscription_period_limits.sql`、
-`0005_official_token_pricing.sql` 和 `0006_api_key_lifecycle.sql` 都是 forward-only
-迁移。部署前先备份
+`0005_official_token_pricing.sql`、`0006_api_key_lifecycle.sql` 和
+`0007_upstream_accounts.sql` 都是 forward-only 迁移。部署前先备份
 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不能只切回旧镜像。
 `0004` 会把所有当时仍启用且未到期的订阅设为 `1/1`，保留现有额度、余额和周期
 起止时间，并在原 `period_ends_at` 自动失效；已经越过结束时间但仍标记启用的
@@ -10,11 +10,14 @@ PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不�
 上下文、缓存写入和不可变 ledger 元数据，不重算或更新历史流水。`0006` 为既有 Key
 回填不含秘密的历史引用，迁移账务、用量、配额和审计外键，增加可空密文字段，删除旧
 `revoked` 凭证并把活动状态收紧为 `active`/`disabled`；迁移前 Key 的密文保持为空。
+`0007` 增加不含 OAuth secret 的上游账号索引，并为请求明细、日/月聚合和不可变
+ledger 增加可空账号归因；迁移前历史保持 `NULL`，不得猜测或回填所属账号。
 密码哈希属于敏感数据，
 不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和
 并行度 2，不需要新增部署 secret。
 
-本项目按单台 Linux 云服务器、单个 ChatGPT Pro 上游账号设计。Cloudflare
+本项目按单台 Linux 云服务器、单个隔离 sidecar 中的多个 ChatGPT Plus/Pro 上游
+账号设计。Cloudflare
 Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 服务均不得
 发布宿主机端口。服务器只接受固定管理 IP 的 SSH 入站。所有命令都应从目标
 服务器上的仓库根目录执行。
@@ -159,7 +162,7 @@ ledger，修改当前价格 JSON 不会改变历史 USD；Token 数量继续来�
 `charged_usd` 和 `uncovered_usd`。CNY 只按当前配置的固定汇率换算 ledger USD。
 
 界面和接口中的金额只能称为“OpenAI API Token 等价成本”，不能称为 OpenAI
-实际账单：当前上游是 ChatGPT Pro OAuth，而且 `codex-auto-review` 零价与上述
+实际账单：当前上游是 ChatGPT Plus/Pro OAuth，而且 `codex-auto-review` 零价与上述
 保守兜底都是本地策略；Pro 订阅费、工具、区域、Batch、Ultrafast、税费和基础
 设施成本均不在范围内。完整价格表和缓存语义见
 [GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
@@ -305,12 +308,22 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 
 1. 停止唯一的 `codex-compat` 实例，确认已停止后移除容器以释放固定 IP；命名
    OAuth volume 始终保留。
-2. 保持域名白名单出口代理运行，执行 `--codex-device-login`。
-3. 拒绝任何 symlink、非 UID 10001 或非 `0600` 的 OAuth 文件。
-4. 重启唯一 sidecar，等待健康检查。
-5. 使用内部固定凭证调用模型列表及最小流式 Responses，且不输出响应正文。
+2. 通过 sidecar 的本地命令记录现有 Codex OAuth 文件名和内容的 secret-keyed
+   SHA-256；不输出可离线猜测的裸文件名哈希、文件名、邮箱或 token。
+3. 保持域名白名单出口代理运行，执行一次 `--codex-device-login`，添加一个新账号
+   或刷新同一账号。
+4. 拒绝任何 symlink、非 UID 10001、目录非 `0700` 或文件非 `0600` 的 OAuth
+   状态；再次取得哈希清单，并要求恰好一个账号新增或变化、零账号消失。
+5. 重启唯一 sidecar，等待健康检查。
+6. 使用内部固定凭证调用脱敏账号列表、模型列表及最小流式 Responses，验证最终
+   账号归因头，且不输出响应正文。
 
-任何一步失败都会让 sidecar 保持停止，防止继续使用不确定的 refresh token。
+每次执行只处理一个 ChatGPT Plus/Pro 账号；重复执行可逐个加入更多账号。刷新
+已有账号时，其他 OAuth 文件必须保持原样。差异标识由内部 Sidecar Key 加域，不能
+在不知道该 Key 时对常见邮箱做离线字典匹配，仅用于阻止登录工具意外覆盖或删除其他
+账号。
+
+任何一步失败都会让 sidecar 保持停止，防止继续使用不确定的一组 refresh token。
 修复原因后重新执行。严禁手动启动第二个挂载同一 `codex_oauth` 卷的容器。
 
 可独立复查：
@@ -320,8 +333,8 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 ./scripts/smoke-sidecar.sh
 ```
 
-OAuth 卷不属于备份。灾备恢复、卷损坏或 refresh token 失效后重新执行设备
-码登录，不要从旧快照复制 token。
+OAuth 卷不属于备份。灾备恢复、卷损坏或 refresh token 失效后，按账号逐次重新
+执行设备码登录，不要从旧快照复制 token。
 
 ## 6. Owner 初始化和日常身份运维
 
@@ -553,12 +566,13 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 镜像。升级 CLIProxyAPI 前还必须：
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
-2. 在 CI 运行 Responses 普通/SSE、compact、401、429、跨 chunk usage 和刷新
-   token 契约测试，并确认认证后的 Responses WebSocket 探测返回一次 426 后立即
-   降级到 HTTPS/SSE。
+2. 将固定多账号补丁重放到新 commit，审阅完整 diff，并在 CI 运行调用方作用域
+   隔离、轮询/粘滞、两账号失败切换、SSE 首字节边界、窄内部接口、Responses
+   普通/SSE、compact、401、429、跨 chunk usage 和刷新 token 契约测试；同时确认
+   认证后的 Responses WebSocket 探测返回一次 426 后立即降级到 HTTPS/SSE。
 3. 持有 `.device-login.lock` 的 `flock` 并停止生产 sidecar，确保没有两个实例
    共享 token。
-4. 用测试 OAuth 状态完成契约验证，再进行一次人工 Pro 冒烟。
+4. 用测试 OAuth 状态完成契约验证，再用至少一个已授权 Plus/Pro 账号进行人工冒烟。
 5. 单实例滚动替换；失败时停止新实例，再回到旧镜像，不能并行回滚。
 
 Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移会明确拒绝数据库
@@ -676,11 +690,41 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
    备份恢复到新的隔离数据库卷，再切换旧 revision；不得删除迁移记录或手工反向
    修改生产 schema。
 
+### 升级到 `0007_upstream_accounts.sql`
+
+`0007` 增加上游账号的非 secret 元数据和最终成功账号归因。它不会读取 sidecar
+OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的账号列必须保持
+`NULL`，在管理台统一显示为“未归因”。按以下顺序升级：
+
+1. 停止 Tunnel、Caddy 和 Gateway 写入，生成新的数据库加密备份并完成恢复演练。
+   记录 `usage_requests`、`usage_daily`、`usage_monthly` 和
+   `billing_ledger_entries` 的行数及账务金额合计作为迁移前基线。
+2. 检出已审阅 revision，确认 CLIProxyAPI 固定多账号补丁仍能对固定 commit
+   `git apply --check`，并确认 sidecar 配置保持两账号尝试上限、一小时粘滞和流式
+   handler 层零 bootstrap retry。运行 `./scripts/validate-compose.sh`，再构建 Gateway
+   与 `codex-compat`。
+3. PostgreSQL 保持 healthy、旧 Gateway 保持停止，用新镜像显式执行迁移，并确认
+   `schema_migrations` 中存在 `0007_upstream_accounts.sql`。
+4. 确认 `upstream_accounts` 只含稳定账号索引、严格脱敏邮箱、套餐、可用状态和同步
+   时间；数据库中不得出现完整邮箱、OAuth token、refresh token 或管理员归属。
+   再次核对步骤 1 的行数和金额，迁移前行的 `upstream_account_id` 必须全部为
+   `NULL`。
+5. 启动唯一 sidecar 和 Gateway，逐个账号执行设备码登录或刷新。Owner 的“上游
+   账号”视图应只显示 `a***@example.com` 形式的邮箱，并能按按钮实时查询固定
+   ChatGPT 用量地址；异常 JSON、超时、重认证和上游字段变化只能让即时额度查询
+   失败，不得影响代理请求。
+6. 用两个以上账号验证新会话近似轮询、同一会话一小时粘滞、账号不可用时重新绑定，
+   以及普通和 SSE 请求都只归因到最终成功账号。未知或缺失归因头必须进入“未归因”，
+   不得伪造账号关联；非 Owner 和跨站额度请求必须拒绝。
+7. `0007` 写入后禁止旧二进制连接该数据库卷。需要回退时停止所有写入，将升级前
+   备份恢复到新的隔离数据库卷，再切换旧 revision；不得删除迁移记录、手工回填
+   历史账号或反向修改生产 schema。
+
 ## 11. 计划迁机
 
 计划迁机使用数据库逻辑备份，不复制运行中的 PostgreSQL 原始 volume，也不
 复制 `codex_oauth` volume。新旧服务器任何时刻只能有一个 Tunnel connector
-承载该 hostname，也不能让两个 sidecar 共享或继续使用同一 refresh token。
+承载该 hostname，也不能让两个 sidecar 共享或继续使用同一组 refresh token。
 
 1. 在新服务器安装相同依赖，配置仅固定管理 IP 可访问的 SSH，并关闭所有其他
    入站端口。检出旧服务器正在运行的**同一完整 revision**，确认工作树为空；

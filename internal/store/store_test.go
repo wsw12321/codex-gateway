@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 6 {
-		t.Fatalf("migration count = %d, want 6", len(migrations))
+	if len(migrations) != 7 {
+		t.Fatalf("migration count = %d, want 7", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -35,7 +35,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		"users", "invitations", "webauthn_credentials", "recovery_codes",
 		"sessions", "devices", "projects", "api_keys", "api_key_history", "usage_requests",
 		"usage_daily", "audit_events", "alerts", "quota_locks",
-		"usage_monthly",
+		"usage_monthly", "upstream_accounts",
 		"quota_counters", "quota_rate_windows", "quota_reservations",
 		"concurrency_leases",
 		"billing_settings", "billing_accounts", "billing_operations",
@@ -52,6 +52,48 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	for _, forbidden := range []string{"prompt_text", "request_body BYTEA", "response_body BYTEA", "oauth_token"} {
 		if strings.Contains(strings.ToLower(sql), strings.ToLower(forbidden)) {
 			t.Errorf("migration contains sensitive payload column %q", forbidden)
+		}
+	}
+}
+
+func TestUpstreamAccountMigrationRetainsOnlyMaskedMetadataAndAttribution(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0007_upstream_accounts.sql" {
+			migrationSQL = migration.SQL
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0007_upstream_accounts.sql is missing")
+	}
+	for _, required := range []string{
+		"CREATE TABLE upstream_accounts",
+		"id ~ '^[a-f0-9]{16}$'",
+		"masked_email TEXT NOT NULL",
+		"status IN ('available', 'unavailable')",
+		"ADD COLUMN upstream_account_id TEXT",
+		"usage_requests_upstream_account_fk",
+		"usage_daily_upstream_account_fk",
+		"usage_monthly_upstream_account_fk",
+		"billing_ledger_upstream_account_fk",
+		"UNIQUE NULLS NOT DISTINCT",
+		"ON DELETE RESTRICT",
+	} {
+		if !strings.Contains(migrationSQL, required) {
+			t.Errorf("upstream account migration is missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"access_token", "refresh_token", "oauth_token", "full_email",
+		"owner_user_id", "administrator_id",
+	} {
+		if strings.Contains(strings.ToLower(migrationSQL), forbidden) {
+			t.Errorf("upstream account migration stores forbidden field %q", forbidden)
 		}
 	}
 }

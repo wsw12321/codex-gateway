@@ -60,6 +60,20 @@ func TestResponsesWebSocketNegotiation(t *testing.T) {
 	}
 }
 
+func TestUpstreamAffinityScopeIsStableAndKeyScoped(t *testing.T) {
+	secret := bytes.Repeat([]byte{0x42}, 32)
+	first := upstreamAffinityScope(secret, "api-key-one")
+	if first != upstreamAffinityScope(secret, "api-key-one") {
+		t.Fatal("affinity scope is not stable")
+	}
+	if first == upstreamAffinityScope(secret, "api-key-two") {
+		t.Fatal("different API keys share an affinity scope")
+	}
+	if len(first) != 43 || strings.Contains(first, "api-key-one") {
+		t.Fatalf("unexpected affinity scope %q", first)
+	}
+}
+
 func TestResponsesWebSocketNegotiationRequiresAPIKey(t *testing.T) {
 	t.Parallel()
 

@@ -15,6 +15,36 @@ RUN git init \
     && git checkout --detach "${CLIPROXY_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
+COPY deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch /tmp/cliproxy-multi-account.patch
+RUN git apply --check /tmp/cliproxy-multi-account.patch \
+    && git apply /tmp/cliproxy-multi-account.patch \
+    && git diff --check
+
+# The reviewed patch carries its security regression tests. A context mismatch
+# or semantic regression therefore fails the immutable image build closed.
+RUN go test -count=1 \
+    ./internal/api \
+    ./internal/auth/codex \
+    ./internal/logging \
+    ./internal/watcher \
+    ./internal/watcher/synthesizer \
+    ./sdk/api/handlers \
+    ./sdk/auth \
+    ./sdk/cliproxy/auth
+
+RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/executor > /tmp/codex-regression-tests \
+    && for test_name in \
+        TestCodexRejectRedirectReturnsOriginalResponse \
+        TestCodexHttpRequestDoesNotFollowRedirect \
+        TestCodexImageHTTPClientDoesNotFollowRedirect \
+        TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
+        TestAuditHomeCodex426WebsocketToHTTPFreshSelection; do \
+        grep -Fxq "$test_name" /tmp/codex-regression-tests; \
+    done \
+    && go test -count=1 \
+        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        ./internal/runtime/executor
+
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${CLIPROXY_VERSION} -X main.Commit=${CLIPROXY_COMMIT}" \

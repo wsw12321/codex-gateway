@@ -15,7 +15,7 @@ const usageRequestColumns = `id, request_id, user_id, device_id, api_key_id, key
 	first_token_at, completed_at, ttft_ms, duration_ms, input_tokens,
 	cached_input_tokens, cache_write_tokens, cache_write_tokens_present,
 	output_tokens, reasoning_tokens, request_bytes, response_bytes,
-	upstream_request_id, pricing_rule_version, pricing_service_tier,
+	upstream_request_id, upstream_account_id, pricing_rule_version, pricing_service_tier,
 	context_class, pricing_fallback_reason`
 
 func scanUsageRequest(row rowScanner) (UsageRequest, error) {
@@ -30,6 +30,7 @@ func scanUsageRequest(row rowScanner) (UsageRequest, error) {
 		&request.CachedInputTokens, &request.CacheWriteTokens,
 		&request.CacheWriteTokensPresent, &request.OutputTokens, &request.ReasoningTokens,
 		&request.RequestBytes, &request.ResponseBytes, &request.UpstreamRequestID,
+		&request.UpstreamAccountID,
 		&request.PricingRuleVersion, &request.PricingServiceTier,
 		&request.ContextClass, &request.PricingFallbackReason,
 	)
@@ -128,6 +129,7 @@ type CompleteUsageRequestParams struct {
 	RequestBytes            int64
 	ResponseBytes           int64
 	UpstreamRequestID       string
+	UpstreamAccountID       string
 	ActualModel             string
 	ActualServiceTier       string
 }
@@ -150,8 +152,22 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 	}
 	params.ActualModel = strings.TrimSpace(params.ActualModel)
 	params.ActualServiceTier = strings.TrimSpace(params.ActualServiceTier)
+	params.UpstreamAccountID = strings.TrimSpace(params.UpstreamAccountID)
+	normalizedAccountID, accountIDErr := normalizeUpstreamAccountID(params.UpstreamAccountID)
+	if accountIDErr != nil {
+		// A malformed or otherwise unrecognized tracing value must not make the
+		// client request fail or leak into durable metadata.
+		params.UpstreamAccountID = ""
+	} else {
+		params.UpstreamAccountID = normalizedAccountID
+	}
 	if len(params.ActualServiceTier) > 32 {
 		return UsageRequest{}, fmt.Errorf("%w: invalid actual service tier", ErrInvalid)
+	}
+	if params.UpstreamAccountID != "" {
+		if err := s.EnsureUpstreamAccount(ctx, params.UpstreamAccountID, params.CompletedAt); err != nil {
+			return UsageRequest{}, fmt.Errorf("ensure usage upstream account: %w", err)
+		}
 	}
 	args := []any{
 		params.RequestID, params.State, params.HTTPStatus, valueOrNil(params.ErrorCode),
@@ -159,7 +175,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		params.CachedInputTokens, params.CacheWriteTokens, params.CacheWriteTokensPresent,
 		params.OutputTokens, params.ReasoningTokens, params.RequestBytes, params.ResponseBytes,
 		valueOrNil(params.UpstreamRequestID), params.ActualModel,
-		valueOrNil(params.ActualServiceTier),
+		valueOrNil(params.ActualServiceTier), valueOrNil(params.UpstreamAccountID),
 	}
 	request, err := scanUsageRequest(s.db.QueryRowContext(ctx, `
 		UPDATE usage_requests
@@ -174,7 +190,8 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 			cache_write_tokens_present = $10, output_tokens = $11,
 			reasoning_tokens = $12, request_bytes = $13, response_bytes = $14,
 			upstream_request_id = $15, model = COALESCE(NULLIF($16, ''), model),
-			actual_service_tier = $17
+			actual_service_tier = $17,
+			upstream_account_id = (SELECT id FROM upstream_accounts WHERE id = $18)
 		WHERE request_id = $1 AND state = 'in_progress'
 		  AND $6 >= requested_at
 		  AND ($5::timestamptz IS NULL OR ($5 >= requested_at AND $5 <= $6))
@@ -204,7 +221,9 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		  AND upstream_request_id IS NOT DISTINCT FROM $15::text
 		  AND first_token_at IS NOT DISTINCT FROM $5::timestamptz
 		  AND ($16::text = '' OR model = $16)
-		  AND actual_service_tier IS NOT DISTINCT FROM $17::text`, args...,
+		  AND actual_service_tier IS NOT DISTINCT FROM $17::text
+		  AND upstream_account_id IS NOT DISTINCT FROM
+		      (SELECT id FROM upstream_accounts WHERE id = $18::text)`, args...,
 	))
 	if err == nil {
 		return request, nil
@@ -566,13 +585,15 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO usage_daily (
-				usage_day, user_id, device_id, api_key_id, project_id, model, endpoint,
+				usage_day, user_id, device_id, api_key_id, project_id, upstream_account_id,
+				model, endpoint,
 				status_class, error_code, request_count, error_count, input_tokens,
 				cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens, request_bytes,
 				response_bytes, ttft_count, ttft_sum_ms, p95_ttft_ms,
 				duration_count, duration_sum_ms, p95_duration_ms, updated_at
 			)
-			SELECT $1::date, user_id, device_id, api_key_id, project_id, model, endpoint,
+			SELECT $1::date, user_id, device_id, api_key_id, project_id,
+				upstream_account_id, model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code,
 				count(*)::bigint,
 				count(*) FILTER (WHERE http_status >= 400 OR error_code IS NOT NULL)::bigint,
@@ -589,7 +610,8 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 			FROM usage_requests
 			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
 			  AND (requested_at AT TIME ZONE $2)::date = $1::date
-			GROUP BY user_id, device_id, api_key_id, project_id, model, endpoint,
+			GROUP BY user_id, device_id, api_key_id, project_id, upstream_account_id,
+				model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code`, dayText, timezone,
 		)
 		return mapDBError("aggregate daily usage", err)
@@ -597,7 +619,7 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 }
 
 const dailyUsageColumns = `usage_day, user_id, device_id, api_key_id, project_id,
-	model, endpoint, status_class, error_code, request_count, error_count,
+	upstream_account_id, model, endpoint, status_class, error_code, request_count, error_count,
 	input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
 	request_bytes, response_bytes, ttft_count, ttft_sum_ms::bigint, p95_ttft_ms,
 	duration_count, duration_sum_ms::bigint, p95_duration_ms, updated_at`
@@ -606,7 +628,7 @@ func scanDailyUsage(row rowScanner) (DailyUsage, error) {
 	var usage DailyUsage
 	err := row.Scan(
 		&usage.Day, &usage.UserID, &usage.DeviceID, &usage.APIKeyID, &usage.ProjectID,
-		&usage.Model, &usage.Endpoint, &usage.StatusClass, &usage.ErrorCode,
+		&usage.UpstreamAccountID, &usage.Model, &usage.Endpoint, &usage.StatusClass, &usage.ErrorCode,
 		&usage.RequestCount, &usage.ErrorCount, &usage.InputTokens,
 		&usage.CachedInputTokens, &usage.CacheWriteTokens,
 		&usage.OutputTokens, &usage.ReasoningTokens,
@@ -661,12 +683,14 @@ func (s *Store) AggregateUsageMonth(ctx context.Context, month time.Time, timezo
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO usage_monthly (
-				usage_month, user_id, device_id, api_key_id, project_id, model, endpoint,
+				usage_month, user_id, device_id, api_key_id, project_id, upstream_account_id,
+				model, endpoint,
 				status_class, error_code, request_count, error_count, input_tokens,
 				cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens, request_bytes,
 				response_bytes, p95_ttft_ms, p95_duration_ms, updated_at
 			)
-			SELECT $1::date, user_id, device_id, api_key_id, project_id, model, endpoint,
+			SELECT $1::date, user_id, device_id, api_key_id, project_id,
+				upstream_account_id, model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code,
 				count(*)::bigint,
 				count(*) FILTER (WHERE http_status >= 400 OR error_code IS NOT NULL)::bigint,
@@ -681,7 +705,8 @@ func (s *Store) AggregateUsageMonth(ctx context.Context, month time.Time, timezo
 			FROM usage_requests
 			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
 			  AND date_trunc('month', requested_at AT TIME ZONE $2)::date = $1::date
-			GROUP BY user_id, device_id, api_key_id, project_id, model, endpoint,
+			GROUP BY user_id, device_id, api_key_id, project_id, upstream_account_id,
+				model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code`, monthText, timezone,
 		)
 		return mapDBError("aggregate monthly usage", err)
@@ -689,7 +714,7 @@ func (s *Store) AggregateUsageMonth(ctx context.Context, month time.Time, timezo
 }
 
 const monthlyUsageColumns = `usage_month, user_id, device_id, api_key_id, project_id,
-	model, endpoint, status_class, error_code, request_count, error_count,
+	upstream_account_id, model, endpoint, status_class, error_code, request_count, error_count,
 	input_tokens, cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens,
 	request_bytes, response_bytes, p95_ttft_ms, p95_duration_ms, updated_at`
 
@@ -697,7 +722,7 @@ func scanMonthlyUsage(row rowScanner) (MonthlyUsage, error) {
 	var usage MonthlyUsage
 	err := row.Scan(
 		&usage.Month, &usage.UserID, &usage.DeviceID, &usage.APIKeyID, &usage.ProjectID,
-		&usage.Model, &usage.Endpoint, &usage.StatusClass, &usage.ErrorCode,
+		&usage.UpstreamAccountID, &usage.Model, &usage.Endpoint, &usage.StatusClass, &usage.ErrorCode,
 		&usage.RequestCount, &usage.ErrorCount, &usage.InputTokens,
 		&usage.CachedInputTokens, &usage.CacheWriteTokens,
 		&usage.OutputTokens, &usage.ReasoningTokens,

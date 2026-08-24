@@ -20,13 +20,16 @@ import (
 const sessionCookieName = "__Host-cg_session"
 
 type Server struct {
-	config   config.Config
-	store    *store.Store
-	identity *identity.Service
-	upstream *gatewayproxy.Client
-	logger   *slog.Logger
-	mux      *http.ServeMux
-	attempts *attemptLimiter
+	config                config.Config
+	store                 *store.Store
+	identity              *identity.Service
+	upstream              *gatewayproxy.Client
+	logger                *slog.Logger
+	mux                   *http.ServeMux
+	attempts              *attemptLimiter
+	quotas                *upstreamQuotaLimiter
+	quotaOnce             sync.Once
+	upstreamAccountSyncMu sync.Mutex
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -51,7 +54,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	s := &Server{
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
-		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(),
+		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
 		spoolSlots: make(chan struct{}, maxConcurrentRequestSpools),
 	}
 	s.routes()
@@ -107,6 +110,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
 	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
+	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
@@ -117,6 +121,7 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /admin/billing/users/{user_id}/adjustments", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.adjustBillingUser)))))
 	s.mux.Handle("PUT /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))
 	s.mux.Handle("DELETE /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingSubscription)))))
+	s.browserPOST("/admin/upstream-accounts/{id}/quota", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountQuota))))
 
 	s.mux.Handle("GET /v1/models", s.requireAPIKey(http.HandlerFunc(s.proxyModels)))
 	s.mux.Handle("GET /v1/responses", s.requireAPIKey(http.HandlerFunc(s.responsesWebSocketUnsupported)))

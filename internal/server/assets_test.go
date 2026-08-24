@@ -81,7 +81,7 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 		t.Fatal("dashboard stylesheet contains an external asset hook")
 	}
 	for _, required := range []string{
-		`href="#overview"`, `href="#resources"`, `href="#keys"`, `href="#guide"`, `href="#billing"`, `href="#security"`, `href="#usage"`,
+		`href="#overview"`, `href="#resources"`, `href="#keys"`, `href="#guide"`, `href="#billing"`, `href="#security"`, `href="#usage"`, `href="#upstream-accounts"`,
 		`id="secret-dialog"`, `id="operation-status"`, `class="skip-link"`,
 	} {
 		if !strings.Contains(html, required) {
@@ -326,6 +326,48 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 	} {
 		if strings.Contains(javascript, forbidden) {
 			t.Fatalf("billing dashboard converts an exact money string with %s", forbidden)
+		}
+	}
+}
+
+func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
+	t.Parallel()
+
+	html := string(indexHTML)
+	javascript := string(appJS)
+	stylesheet := string(styleCSS)
+	for _, required := range []string{
+		`href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"`,
+		`class="view owner-only hidden" data-section="upstream-accounts"`,
+		`id="upstream-account-filter"`, `id="upstream-account-list"`,
+		`<option value="month">本月</option>`, `未公开的 ChatGPT 上游接口`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("upstream accounts dashboard HTML is missing %s", required)
+		}
+	}
+	for _, required := range []string{
+		`const ownerOnlySections = new Set(["upstream-accounts"])`,
+		`state.user.role === "owner"`,
+		`/admin/upstream-accounts${querySuffix(query)}`,
+		`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`,
+		`account.email_masked`, `account?.request_count`, `account?.error_count`,
+		`account?.input_tokens`, `account?.cached_input_tokens`, `account?.output_tokens`,
+		`account?.reasoning_tokens`, `account?.equivalent_cost_usd`,
+		`result?.five_hour`, `result?.seven_day`, `result?.additional_windows`,
+		`container.dataset.state = "loading"`, `container.dataset.state = "error"`,
+		`container.dataset.state = "stale"`, `clearUpstreamQuotaTimers()`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("upstream accounts dashboard JavaScript is missing %s", required)
+		}
+	}
+	for _, required := range []string{
+		`.upstream-account-grid {`, `.upstream-quota-result[data-state="loading"]`,
+		`.upstream-quota-result[data-state="error"]`, `.upstream-quota-result[data-state="stale"]`,
+	} {
+		if !strings.Contains(stylesheet, required) {
+			t.Fatalf("upstream accounts dashboard stylesheet is missing %s", required)
 		}
 	}
 }

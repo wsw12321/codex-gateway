@@ -38,6 +38,28 @@ verify_oauth() {
     test -z "$bad_owner" || fail "every OAuth file must be owned by uid 10001"
 }
 
+oauth_inventory() {
+    find "$auth_dir" -type f -name 'codex-*.json' -exec sh -c '
+        inventory_root=$1
+        inventory_key_file=$2
+        shift 2
+        inventory_key=$(tr -d "\r\n" < "$inventory_key_file")
+        for oauth_file do
+            relative_path=${oauth_file#"$inventory_root"/}
+            path_digest=$(
+                { printf "%s\000" "$inventory_key"; printf "%s" "$relative_path"; } | sha256sum
+            )
+            path_digest=${path_digest%% *}
+            content_digest=$(
+                { printf "%s\000" "$inventory_key"; cat "$oauth_file"; } | sha256sum
+            )
+            content_digest=${content_digest%% *}
+            printf "%s %s\n" "$path_digest" "$content_digest"
+        done
+        unset inventory_key
+    ' sh "$auth_dir" "$key_file" {} +
+}
+
 verify_oauth
 
 if test "${1:-}" = "verify-oauth"; then
@@ -50,6 +72,11 @@ case "$internal_key" in
     *[!A-Za-z0-9_-]*|'') fail "internal API key has an invalid format" ;;
 esac
 test "${#internal_key}" -ge 43 || fail "internal API key is too short"
+if test "${1:-}" = "oauth-inventory"; then
+    oauth_inventory
+    unset internal_key
+    exit 0
+fi
 
 mkdir -p "$run_dir"
 cat > "$config_file" <<EOF
@@ -64,8 +91,18 @@ request-log: false
 error-logs-max-files: 0
 usage-statistics-enabled: false
 request-retry: 0
+max-retry-credentials: 2
+max-retry-interval: 0
 passthrough-headers: false
 ws-auth: true
+streaming:
+  # The patched auth manager owns the shared two-account bootstrap budget.
+  # A handler-layer retry would allocate a fresh budget and exceed that cap.
+  bootstrap-retries: 0
+routing:
+  strategy: "round-robin"
+  session-affinity: true
+  session-affinity-ttl: "1h"
 pprof:
   enable: false
 api-keys:

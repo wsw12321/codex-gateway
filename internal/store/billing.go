@@ -69,6 +69,7 @@ type BillingLedgerEntry struct {
 	SubscriptionTier                *string    `json:"subscription_tier,omitempty"`
 	SubscriptionPeriodID            *string    `json:"subscription_period_id,omitempty"`
 	RequestID                       *string    `json:"request_id,omitempty"`
+	UpstreamAccountID               *string    `json:"-"`
 	Model                           *string    `json:"model,omitempty"`
 	ActualModel                     *string    `json:"actual_model,omitempty"`
 	InputTokens                     *int64     `json:"input_tokens,omitempty"`
@@ -756,7 +757,7 @@ func (s *Store) convergeBillingSubscriptionsCount(ctx context.Context, userID st
 const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 	amount_usd::text, cash_delta_usd::text, balance_after_usd::text,
 	cny_amount::text, usd_per_cny_snapshot::text, subscription_tier,
-	subscription_period_id, request_id, model, input_tokens,
+	subscription_period_id, request_id, upstream_account_id, model, input_tokens,
 	cached_input_tokens, output_tokens, actual_cost_usd::text,
 	charged_usd::text, uncovered_usd::text, reason, actor_user_id, created_at,
 	usage_requested_at, actual_model, cache_write_tokens, cache_write_mode,
@@ -769,7 +770,7 @@ const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var value BillingLedgerEntry
 	var userID, operationID, balance, cny, rate, tier, periodID sql.NullString
-	var requestID, model, cost, charged, uncovered, actorID sql.NullString
+	var requestID, upstreamAccountID, model, cost, charged, uncovered, actorID sql.NullString
 	var usageRequestedAt sql.NullTime
 	var actualModel, cacheWriteMode, requestedTier, actualTier, pricingTier sql.NullString
 	var contextClass, pricingCatalog, appliedInput, appliedCached sql.NullString
@@ -777,7 +778,7 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var input, cached, cacheWrite, output sql.NullInt64
 	err := row.Scan(&value.ID, &userID, &operationID, &value.EntryType,
 		&value.AmountUSD, &value.CashDeltaUSD, &balance, &cny, &rate, &tier,
-		&periodID, &requestID, &model, &input, &cached, &output, &cost,
+		&periodID, &requestID, &upstreamAccountID, &model, &input, &cached, &output, &cost,
 		&charged, &uncovered, &value.Reason, &actorID, &value.CreatedAt,
 		&usageRequestedAt, &actualModel, &cacheWrite, &cacheWriteMode,
 		&requestedTier, &actualTier, &pricingTier, &contextClass,
@@ -787,6 +788,7 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	value.BalanceAfterUSD, value.CNYAmount = nullableString(balance), nullableString(cny)
 	value.USDPerCNYSnapshot, value.SubscriptionTier = nullableString(rate), nullableString(tier)
 	value.SubscriptionPeriodID, value.RequestID = nullableString(periodID), nullableString(requestID)
+	value.UpstreamAccountID = nullableString(upstreamAccountID)
 	value.Model, value.ActorUserID = nullableString(model), nullableString(actorID)
 	value.InputTokens, value.CachedInputTokens, value.OutputTokens = nullableInt64(input), nullableInt64(cached), nullableInt64(output)
 	value.CacheWriteTokens = nullableInt64(cacheWrite)
@@ -1722,16 +1724,17 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	var usageRequestedAt time.Time
 	var actualModel string
 	var actualServiceTier sql.NullString
+	var upstreamAccountID sql.NullString
 	var inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64
 	var cacheWriteTokensPresent bool
 	if err := tx.QueryRowContext(ctx, `
 		SELECT requested_at, model, actual_service_tier, input_tokens,
 			cached_input_tokens, cache_write_tokens, cache_write_tokens_present,
-			output_tokens
+			output_tokens, upstream_account_id
 		FROM usage_requests WHERE request_id = $1 AND state <> 'in_progress'
 		FOR UPDATE`, requestID).Scan(&usageRequestedAt, &actualModel, &actualServiceTier,
 		&inputTokens, &cachedTokens, &cacheWriteTokens, &cacheWriteTokensPresent,
-		&outputTokens); err != nil {
+		&outputTokens, &upstreamAccountID); err != nil {
 		return BillingReservation{}, mapDBError("read terminal usage for billing", err)
 	}
 	var decision config.PricingDecision
@@ -1907,8 +1910,8 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	var ledgerPricingTier, ledgerContextClass, ledgerCatalog any
 	var ledgerAppliedInput, ledgerAppliedCached, ledgerAppliedCacheWrite, ledgerAppliedOutput any
 	var ledgerFallback any
+	ledgerRequestedAt = usageRequestedAt
 	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
-		ledgerRequestedAt = usageRequestedAt
 		ledgerActualModel = actualModel
 		ledgerCacheWriteTokens = cacheWriteTokens
 		ledgerCacheWriteMode = pointerDatabaseValue(reservation.CacheWriteMode)
@@ -1933,17 +1936,18 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			 context_class, pricing_rule_version, pricing_catalog_as_of,
 			 applied_input_usd_per_million, applied_cached_input_usd_per_million,
 			 applied_cache_write_usd_per_million, applied_output_usd_per_million,
-			 pricing_fallback_reason)
+			 pricing_fallback_reason, upstream_account_id)
 		VALUES ($1,'usage_charge',$2::numeric,-$3::numeric,$4::numeric,$5,$6,$7,$8,$9,
 			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12,
 			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::date,$23::numeric,$24::numeric,
-			$25::numeric,$26::numeric,$27)`,
+			$25::numeric,$26::numeric,$27,$28)`,
 		reservation.UserID, cost, cashCharged, balanceAfter, requestID, reservation.Model,
 		inputTokens, cachedTokens, outputTokens, charged, remaining, at,
 		ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens, ledgerCacheWriteMode,
 		ledgerRequestedTier, ledgerActualTier, ledgerPricingTier, ledgerContextClass,
 		reservation.PricingRuleVersion, ledgerCatalog, ledgerAppliedInput, ledgerAppliedCached,
-		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback); err != nil {
+		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback,
+		valueOrNil(upstreamAccountID.String)); err != nil {
 		return BillingReservation{}, mapDBError("record usage billing ledger", err)
 	}
 	var settledCacheWrite, settledActualTier, settledPricingTier, settledActualModel any

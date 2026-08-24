@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"math"
 	"net/http"
@@ -183,7 +186,9 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	go s.renewQuotaLease(requestID, stopRenewal)
 	defer close(stopRenewal)
 	forwardingStarted = true
-	result, failure := s.upstream.Forward(r.Context(), w, r, upstreamPath)
+	result, failure := s.upstream.ForwardWithOptions(r.Context(), w, r, upstreamPath, gatewayproxy.ForwardOptions{
+		AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+	})
 
 	completedAt := time.Now().UTC()
 	effectiveStatus := result.StatusCode
@@ -223,6 +228,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		CacheWriteTokensPresent: result.Usage.CacheWriteTokensPresent,
 		OutputTokens:            result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
 		RequestBytes: actualRequestBytes, ResponseBytes: result.BytesOut, UpstreamRequestID: result.UpstreamRequestID,
+		UpstreamAccountID: result.UpstreamAccountID,
 		ActualModel:       recordedUpstreamModel(result.Model),
 		ActualServiceTier: recordedUpstreamServiceTier(result.ServiceTier),
 	}
@@ -244,6 +250,13 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
 	}
+}
+
+func upstreamAffinityScope(secret []byte, apiKeyID string) string {
+	mac := hmac.New(sha256.New, secret)
+	_, _ = mac.Write([]byte("codex-gateway/upstream-affinity/v1\x00"))
+	_, _ = mac.Write([]byte(apiKeyID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func writeModelPricingNotFound(w http.ResponseWriter, r *http.Request) {

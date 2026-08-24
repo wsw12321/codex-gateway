@@ -17,6 +17,9 @@ const (
 	InvitationOwnerBootstrap = "owner_bootstrap"
 	InvitationMember         = "member"
 	InvitationRecovery       = "recovery"
+
+	UpstreamAccountStatusAvailable   = "available"
+	UpstreamAccountStatusUnavailable = "unavailable"
 )
 
 type User struct {
@@ -198,6 +201,7 @@ type UsageRequest struct {
 	RequestBytes            int64
 	ResponseBytes           int64
 	UpstreamRequestID       *string
+	UpstreamAccountID       *string `json:"-"`
 	PricingRuleVersion      int
 	PricingServiceTier      *string
 	ContextClass            *string
@@ -214,6 +218,7 @@ type DailyUsage struct {
 	DeviceID          string
 	APIKeyID          string
 	ProjectID         *string
+	UpstreamAccountID *string `json:"-"`
 	Model             string
 	Endpoint          string
 	StatusClass       int
@@ -244,6 +249,7 @@ type MonthlyUsage struct {
 	DeviceID          string
 	APIKeyID          string
 	ProjectID         *string
+	UpstreamAccountID *string `json:"-"`
 	Model             string
 	Endpoint          string
 	StatusClass       int
@@ -300,6 +306,59 @@ type GlobalPricingBreakdownRow struct {
 	RequestCount     int64
 	CacheWriteTokens int64
 	ActualCostUSD    string
+}
+
+// UpstreamAccount contains only non-secret metadata supplied by the isolated
+// compatibility sidecar. MaskedEmail is empty for a trace-created placeholder
+// that has not yet appeared in a metadata synchronization snapshot.
+type UpstreamAccount struct {
+	ID           string
+	MaskedEmail  string
+	Plan         string
+	Status       string
+	LastSyncedAt *time.Time
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// UpstreamAccountSnapshot is one entry in an authoritative sidecar metadata
+// snapshot. A snapshot never contains OAuth credentials or a full email.
+type UpstreamAccountSnapshot struct {
+	ID           string
+	MaskedEmail  string
+	Plan         string
+	Status       string
+	LastSyncedAt time.Time
+}
+
+// UpstreamAccountSummary joins durable account metadata to local attribution.
+// AccountID is nil for the synthetic unattributed row. EquivalentCostUSD is
+// read from immutable usage-charge ledger entries rather than recalculated.
+type UpstreamAccountSummary struct {
+	AccountID         *string
+	MaskedEmail       string
+	Plan              string
+	Status            string
+	LastSyncedAt      *time.Time
+	RequestCount      int64
+	ErrorCount        int64
+	InputTokens       int64
+	CachedInputTokens int64
+	CacheWriteTokens  int64
+	OutputTokens      int64
+	ReasoningTokens   int64
+	EquivalentCostUSD string
+}
+
+// UpstreamAccountSummaryFilter follows the same retention split used by
+// GlobalUsage. Bounded ranges read retained request detail. All-history mode
+// reads monthly aggregates before LiveFrom and retained detail from LiveFrom
+// through Until, while ledger cost remains independently durable.
+type UpstreamAccountSummaryFilter struct {
+	From     time.Time
+	Until    time.Time
+	All      bool
+	LiveFrom time.Time
 }
 
 type AuditEvent struct {

@@ -149,6 +149,7 @@ func TestBillingStateResponseKeepsMoneyAsJSONStrings(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, time.August, 12, 12, 0, 0, 0, time.UTC)
 	expiresAt := now.Add(2 * 24 * time.Hour)
+	upstreamAccountID := "0123456789abcdef"
 	state := store.BillingState{
 		UserID: "user-id", BalanceUSD: "12.340000000000", LedgerTotal: 1,
 		Subscriptions: []store.BillingSubscriptionState{{
@@ -163,6 +164,7 @@ func TestBillingStateResponseKeepsMoneyAsJSONStrings(t *testing.T) {
 		Ledger: []store.BillingLedgerEntry{{
 			ID: 1, EntryType: "recharge", AmountUSD: "12.340000000000",
 			CashDeltaUSD: "12.340000000000", CreatedAt: now,
+			UpstreamAccountID: &upstreamAccountID,
 		}},
 	}
 	raw, err := json.Marshal(billingStateResponse(state, 50, 0))
@@ -185,6 +187,9 @@ func TestBillingStateResponseKeepsMoneyAsJSONStrings(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("billing response lost exact string %s: %s", expected, text)
 		}
+	}
+	if strings.Contains(text, "upstream_account") || strings.Contains(text, "0123456789abcdef") {
+		t.Fatalf("billing response leaked upstream account attribution: %s", text)
 	}
 }
 

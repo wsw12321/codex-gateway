@@ -108,6 +108,7 @@
           <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
+          <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
         </nav>
         <div class="profile">
           <div><strong id="whoami">—</strong><small id="role">—</small></div>
@@ -525,6 +526,31 @@
                   <tbody id="global-rows"><tr><td colspan="6" class="table-message">选择“全员汇总”后加载。</td></tr></tbody>
                 </table>
               </div>
+            </div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>查看 ChatGPT OAuth 账号状态及本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
+            </div>
+            <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
+            <form id="upstream-account-filter" class="filters upstream-account-filters">
+              <label>区间
+                <select name="range"><option value="month">本月</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option><option value="all">全部历史</option></select>
+              </label>
+              <label>从
+                <input name="from" type="date">
+              </label>
+              <label>至
+                <input name="until" type="date">
+              </label>
+              <div class="filter-actions"><button type="submit">应用筛选</button></div>
+              <p class="form-message hidden" role="alert"></p>
+            </form>
+            <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
+            <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
+            <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">
+              <div class="empty">登录后加载上游账号。</div>
             </div>
           </section>
         </div>

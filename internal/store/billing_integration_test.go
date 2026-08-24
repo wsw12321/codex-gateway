@@ -1027,6 +1027,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "iz-"+suffix)
 		base := now.Add(120 * time.Hour)
 		model := "codex-auto-review"
+		upstreamAccountID := upstreamIntegrationAccountID("billing-upstream-" + suffix)
 		snapshot := billingIntegrationV2Snapshot(t, model, config.ModelPricing{
 			CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 272_000,
 			LongContextThresholdTokens: 272_000,
@@ -1062,7 +1063,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			RequestID: requestID, State: "completed", HTTPStatus: 200,
 			CompletedAt: base.Add(time.Second), InputTokens: 120,
 			CachedInputTokens: 20, CacheWriteTokens: 30, CacheWriteTokensPresent: true,
-			OutputTokens: 40, ActualModel: model,
+			OutputTokens: 40, ActualModel: model, UpstreamAccountID: upstreamAccountID,
 		}); err != nil {
 			t.Fatalf("CompleteUsageRequest(internal zero): %v", err)
 		}
@@ -1087,20 +1088,21 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		var ledgerCount int
 		var amount, charged, uncovered, balance string
 		var inputTokens, cachedTokens, cacheWriteTokens, outputTokens, actualQuotaTokens int64
-		var pricingTier, contextClass, cacheWriteMode string
+		var pricingTier, contextClass, cacheWriteMode, ledgerUpstreamAccountID string
 		var pricingVersion int
 		if err := repository.db.QueryRowContext(ctx, `SELECT
 			(SELECT count(*) FROM billing_ledger_entries WHERE request_id = $1),
 			l.amount_usd::text,l.charged_usd::text,l.uncovered_usd::text,
 			l.input_tokens,l.cached_input_tokens,l.cache_write_tokens,l.output_tokens,
 			l.pricing_service_tier,l.context_class,l.cache_write_mode,l.pricing_rule_version,
+			l.upstream_account_id,
 			(SELECT balance_usd::text FROM billing_accounts WHERE user_id = $2),
 			q.actual_tokens
 			FROM billing_ledger_entries l JOIN quota_reservations q USING (request_id)
 			WHERE l.request_id = $1`, requestID, user.ID,
 		).Scan(&ledgerCount, &amount, &charged, &uncovered, &inputTokens, &cachedTokens,
 			&cacheWriteTokens, &outputTokens, &pricingTier, &contextClass, &cacheWriteMode,
-			&pricingVersion, &balance, &actualQuotaTokens); err != nil {
+			&pricingVersion, &ledgerUpstreamAccountID, &balance, &actualQuotaTokens); err != nil {
 			t.Fatalf("read internal-zero settlement: %v", err)
 		}
 		if ledgerCount != 1 || amount != "0.000000000000" || charged != "0.000000000000" ||
@@ -1108,11 +1110,11 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			inputTokens != 120 || cachedTokens != 20 || cacheWriteTokens != 30 || outputTokens != 40 ||
 			actualQuotaTokens != 160 || pricingTier != config.PricingTierStandard ||
 			contextClass != config.ContextClassShort || cacheWriteMode != config.CacheWriteIncludedInInput ||
-			pricingVersion != config.PricingSchemaV2 {
-			t.Fatalf("internal-zero settlement mismatch: ledger=%d amount=%s charged=%s uncovered=%s balance=%s tokens=%d/%d/%d/%d quota=%d tier=%s context=%s cache=%s version=%d",
+			pricingVersion != config.PricingSchemaV2 || ledgerUpstreamAccountID != upstreamAccountID {
+			t.Fatalf("internal-zero settlement mismatch: ledger=%d amount=%s charged=%s uncovered=%s balance=%s tokens=%d/%d/%d/%d quota=%d tier=%s context=%s cache=%s version=%d upstream=%s",
 				ledgerCount, amount, charged, uncovered, balance, inputTokens, cachedTokens,
 				cacheWriteTokens, outputTokens, actualQuotaTokens, pricingTier, contextClass,
-				cacheWriteMode, pricingVersion)
+				cacheWriteMode, pricingVersion, ledgerUpstreamAccountID)
 		}
 		var completedRequests, usedTokens int64
 		if err := repository.db.QueryRowContext(ctx, `SELECT requests_completed,tokens_used
@@ -1381,7 +1383,8 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	if byName["0001_initial.sql"] == "" || byName["0002_billing.sql"] == "" ||
 		byName["0004_subscription_period_limits.sql"] == "" ||
 		byName["0005_official_token_pricing.sql"] == "" ||
-		byName["0006_api_key_lifecycle.sql"] == "" {
+		byName["0006_api_key_lifecycle.sql"] == "" ||
+		byName["0007_upstream_accounts.sql"] == "" {
 		t.Fatalf("billing migration set is incomplete: %v", byName)
 	}
 	if _, err := connection.ExecContext(ctx, byName["0001_initial.sql"]); err != nil {
@@ -1593,6 +1596,23 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	}
 	if _, err := connection.ExecContext(ctx, byName["0006_api_key_lifecycle.sql"]); err != nil {
 		t.Fatalf("apply isolated 0006: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, byName["0007_upstream_accounts.sql"]); err != nil {
+		t.Fatalf("apply isolated 0007: %v", err)
+	}
+	var migratedUpstreamAccounts int
+	var migratedUsageAccount, migratedLedgerAccount sql.NullString
+	if err := connection.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM upstream_accounts),
+		(SELECT upstream_account_id FROM usage_requests WHERE request_id=$1),
+		(SELECT upstream_account_id FROM billing_ledger_entries WHERE request_id=$2)`,
+		legacyRequestID, historicalRequestID,
+	).Scan(&migratedUpstreamAccounts, &migratedUsageAccount, &migratedLedgerAccount); err != nil {
+		t.Fatalf("read migrated upstream attribution: %v", err)
+	}
+	if migratedUpstreamAccounts != 0 || migratedUsageAccount.Valid || migratedLedgerAccount.Valid {
+		t.Fatalf("0007 inferred historical upstream accounts: accounts=%d usage=%v ledger=%v",
+			migratedUpstreamAccounts, migratedUsageAccount, migratedLedgerAccount)
 	}
 	var activeKeyCount, historyCount int
 	var secretAvailable bool

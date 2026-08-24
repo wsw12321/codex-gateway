@@ -54,7 +54,7 @@ Compose 中的服务职责如下：
 | `caddy` | 内部反向代理、安全头、64 MiB 请求上限和 SSE 刷新 | 无 |
 | `gateway` | 身份、Key、配额、统计、管理界面和固定 Responses 代理 | 无 |
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
-| `codex-compat` | 持有唯一 Pro OAuth 状态并适配 Codex 协议 | 无 |
+| `codex-compat` | 在唯一隔离实例中持有多个 Plus/Pro OAuth 状态并适配 Codex 协议 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
 
 所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
@@ -105,7 +105,7 @@ Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 | `413 request_too_large` | 请求超过 64 MiB |
 | `426 responses_websocket_unsupported` | WebSocket 不受支持，客户端应改用 HTTPS/SSE |
 | `429` | RPM、并发、每日请求或 USD 额度不足 |
-| `503 upstream_reauthentication_required` | Pro OAuth 需要重新登录 |
+| `503 upstream_reauthentication_required` | 对应 Plus/Pro OAuth 账号需要重新登录 |
 | `502/504` | 清洗后的上游网络、协议或超时错误 |
 
 ### 配额与统计
@@ -119,7 +119,7 @@ lease，客户端断开会取消上游请求并释放租约，异常退出的遗
 | --- | ---: | ---: | ---: |
 | 每个 Key | 30 | 16 | 10,000 |
 | 每个用户聚合 | 60 | 16 | 20,000 |
-| 单 Pro 上游全局 | — | 32 | — |
+| 所有 Plus/Pro 上游共享的网关全局 | — | 32 | — |
 
 Token 总量按 input + output 结算；cached input、cache write 和 reasoning 是细分
 指标，不重复计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态
@@ -162,7 +162,7 @@ Owner 的全员统计展示“OpenAI API Token 等价成本”。USD 金额汇�
 短/长上下文、cache-write Token 和保守兜底原因单独统计。CNY 仅按当前配置中
 带日期的固定汇率换算不可变 USD 成本。
 
-这些数值不能称为 OpenAI 实际账单：当前上游是 ChatGPT Pro OAuth，内部零价和
+这些数值不能称为 OpenAI 实际账单：当前上游是 ChatGPT Plus/Pro OAuth，内部零价和
 保守兜底也属于本地策略；报表不包含 Pro 订阅费、工具、区域、Batch、Ultrafast、
 税费或基础设施成本。修改当前价格 JSON 不会改变已经写入 ledger 的 USD 金额。
 
@@ -308,15 +308,18 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 `GET /healthz` 是进程存活探针，
 `GET /readyz` 当前只检查 PostgreSQL 连接；它不验证 sidecar 或真实上游。
 
-### 4. 登录唯一上游账号
+### 4. 添加或刷新上游账号
 
 ```sh
 ./scripts/codex-device-login.sh
 ```
 
-该 SSH 运维脚本会持有本机锁、停止唯一 sidecar、执行设备码登录、检查 OAuth
-文件为 UID 10001 且精确 `0600`，然后重启并做模型列表与最小 Responses 冒烟。
-任何时刻都不得让两个 sidecar 共享同一个 refresh token。
+该 SSH 运维脚本会持有本机锁、停止唯一 sidecar，并在每次执行中添加或刷新一个
+ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其他 OAuth 文件
+没有被覆盖或删除，检查
+目录为 UID 10001/`0700`、文件为 UID 10001/`0600`，然后重启并做账号列表、模型
+列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
+不得让两个 sidecar 共享同一组 refresh token。
 
 ### 5. 初始化 Owner
 
@@ -331,14 +334,16 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 完整上线、设备登录、备份、恢复与升级流程见
 [部署与运维手册](docs/operations.md)。
 
-升级到 `0004_subscription_period_limits.sql`、`0005_official_token_pricing.sql`
-或 `0006_api_key_lifecycle.sql` 前必须完成加密备份和恢复演练。迁移是
+升级到 `0004_subscription_period_limits.sql`、`0005_official_token_pricing.sql`、
+`0006_api_key_lifecycle.sql` 或 `0007_upstream_accounts.sql` 前必须完成加密备份和恢复演练。迁移是
 forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；回滚必须
 停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。`0005`
 的停写、核账、迁移和模型冒烟 7 步见
 [升级到 OpenAI API Token 等价成本 v2](docs/operations.md#升级到-0005_official_token_pricingsql)。
 `0006` 上线前还必须先生成并安全保存独立 API Key 加密 secret；数据库备份不包含
-该文件，恢复或迁机必须携带同一份密钥。
+该文件，恢复或迁机必须携带同一份密钥。`0007` 上线前还必须确认固定版本
+CLIProxyAPI 多账号补丁、两账号尝试上限和账号归因追踪契约均通过验证；迁移前历史
+统一保留为“未归因”。
 
 ## Codex CLI 配置
 
@@ -449,7 +454,7 @@ gateway version           显示版本与 revision
 ./scripts/restore-drill.sh backups/gateway-YYYYmmddTHHMMSSZ.dump.age
 ```
 
-OAuth volume 永不备份，灾备后必须重新执行设备码登录。
+OAuth volume 永不备份，灾备后必须按账号逐次重新执行设备码登录。
 生产数据库由固定 Compose 命名卷持久化；禁止执行
 `./scripts/compose.sh down -v`。每日 03:00 UTC 的本地 age 备份、14 组保留、
 每月/升级前恢复演练及计划迁机步骤见[部署与运维手册](docs/operations.md)。

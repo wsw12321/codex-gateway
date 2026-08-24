@@ -11,7 +11,7 @@
 - [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching/)
 
 本系统计算的是“OpenAI API Token 等价成本”，不是 OpenAI 实际账单。上游使用
-ChatGPT Pro OAuth，而且内部零价和保守兜底都属于本地策略；Pro 订阅费、工具、
+ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略；订阅费、工具、
 区域、Batch、Ultrafast、税费和基础设施成本不在范围内。
 
 ## 计价口径

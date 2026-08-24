@@ -1,0 +1,3 @@
+# Reviewed upstream patch artifacts preserve the exact byte stream applied in
+# the image build; their embedded diff lines are not source files in this repo.
+deploy/codex-compat/*.patch -whitespace

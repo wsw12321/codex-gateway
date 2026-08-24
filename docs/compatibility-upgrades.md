@@ -2,7 +2,32 @@
 
 生产固定在 CLIProxyAPI `v7.2.127`、commit
 `ecc9aa72b32f34b680d03b0724b531a21ae74472`。版本号和 commit 必须作为一组
-更新，Docker 构建会验证 tag 指向该 commit。
+更新，Docker 构建会验证 tag 指向该 commit。仓库同时固定
+`deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch`；构建必须先用
+`git apply --check` 验证补丁上下文、应用补丁并运行补丁内的聚焦测试，任一步
+失败都不得生成镜像。
+
+该补丁属于部署安全边界，而不是可选功能：
+
+- 使用 `round-robin` 加一小时 session affinity。Gateway 发送的
+  `X-Codex-Gateway-Affinity` 是每个调用方的 43 字符不透明 HMAC 作用域；sidecar
+  校验并消费该头，所有显式及派生 session ID 都以该作用域命名空间隔离，且该头
+  永不发送给 OpenAI。
+- 每个请求最多触达两个不同 OAuth 账号。仅认证、额度、429、408、网络错误和
+  5xx 可在首个下游字节前切换账号；3xx、其他 4xx、客户端取消及首字节后的流式
+  错误都不得重放。部署配置必须把 handler 层 `streaming.bootstrap-retries` 固定为
+  `0`，防止它为同一请求重新分配一组两账号预算。
+- 最终选中的稳定账号索引通过 `X-Codex-Upstream-Account` 返回给 Gateway；Gateway
+  必须消费该头，不得转发给 API 客户端。该索引只接受 16 位小写十六进制，基于
+  OAuth `account_id` 的不可逆摘要而不是含邮箱的文件名；同一真实账号的重复文件
+  只能有一个进入路由池。
+- 只开放 Bearer 认证的 `GET /internal/upstream-accounts` 和固定 URL 的
+  `GET /internal/upstream-accounts/{id}/quota`。后者只能请求
+  `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的 URL、方法或
+  上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
+  `a***@example.com` 形式的 ASCII 脱敏邮箱；额度只输出 allowlist 规范化后的套餐、
+  窗口比例和 RFC3339 重置时间，不能返回或记录 token、完整邮箱或原始上游响应。
+  CLIProxyAPI 完整管理 API 仍保持关闭。
 
 升级候选必须先在隔离环境覆盖以下契约：
 
@@ -16,12 +41,14 @@
 - usage 分散在多个 SSE chunk 时的 input、cached input、output、reasoning；
 - 客户端断开取消、首 token 超时和总超时；
 - OAuth refresh 成功、refresh 失效和 reauthentication required；
-- sidecar 不记录请求/响应正文或 token，管理 API 无法从兼容层网络远程访问。
+- sidecar 不记录请求/响应正文或 token，完整管理 API 无法从兼容层网络远程访问，
+  窄内部接口只返回脱敏、规范化字段。
 
 切换生产前运行加密数据库备份，但不要复制 OAuth volume。持有设备登录锁，
 停止旧 sidecar，确认其容器状态不是 running，才允许候选版本挂载现有 token。
-完成模型列表和最小 Responses 人工 Pro 冒烟后才能恢复 Gateway 流量。
+完成模型列表和至少一个已授权 Plus/Pro 账号的最小 Responses 人工冒烟后才能恢复
+Gateway 流量。
 
 失败回滚时先停止候选实例，再启动旧实例。任何时刻都不允许两个 sidecar
-共享同一个 refresh token。若 token 已因候选版本失效，保持服务关闭并重新
+共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新
 执行 `scripts/codex-device-login.sh`。

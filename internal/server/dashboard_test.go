@@ -1,10 +1,23 @@
 package server
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/wsw/codex-gateway/internal/store"
 )
+
+func TestUsageRequestJSONHidesUpstreamAccountAttribution(t *testing.T) {
+	accountID := "0123456789abcdef"
+	raw, err := json.Marshal(store.UsageRequest{RequestID: "request-1", UpstreamAccountID: &accountID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text := string(raw); strings.Contains(text, "UpstreamAccount") || strings.Contains(text, accountID) {
+		t.Fatalf("personal usage JSON leaked upstream account attribution: %s", text)
+	}
+}
 
 func TestSummarizeUsageDoesNotDoubleCountCachedOrReasoning(t *testing.T) {
 	status := 200

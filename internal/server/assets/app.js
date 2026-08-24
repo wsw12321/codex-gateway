@@ -10,7 +10,9 @@ const sectionTitles = {
   billing: "额度与订阅",
   security: "账号安全",
   usage: "使用统计",
+  "upstream-accounts": "上游账号",
 };
+const ownerOnlySections = new Set(["upstream-accounts"]);
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -35,10 +37,13 @@ let billingSettings = null;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
+let upstreamAccountRequestSequence = 0;
+const upstreamQuotaStaleTimers = new Map();
 let reauthResolve = null;
 let reauthReject = null;
 
 const billingLedgerPageSize = 50;
+const upstreamQuotaStaleAfterMS = 5 * 60 * 1000;
 const billingTiers = [
   {id: "day", label: "日订阅", duration: "24 小时"},
   {id: "week", label: "周订阅", duration: "7 天"},
@@ -147,9 +152,9 @@ function inputDate(date) {
 
 function statusLabel(status) {
   return ({
-    active: "活跃", disabled: "已停用", archived: "已归档", revoked: "已撤销",
+    active: "活跃", available: "可用", disabled: "已停用", unavailable: "不可用", archived: "已归档", revoked: "已撤销",
     completed: "已完成", failed: "失败", cancelled: "已取消", in_progress: "进行中",
-    open: "开放", acknowledged: "已确认", resolved: "已解决",
+    open: "开放", acknowledged: "已确认", resolved: "已解决", stale: "可能已过时",
   })[status] || status || "未知";
 }
 
@@ -267,6 +272,8 @@ function handleUnauthorized() {
   personalRequestSequence++;
   globalRequestSequence++;
   billingRequestSequence++;
+  upstreamAccountRequestSequence++;
+  clearUpstreamQuotaTimers();
   state = null;
   overviewSummary = null;
   billingDetail = null;
@@ -308,6 +315,10 @@ function handleUnauthorized() {
   hide("personal-loading");
   byId("usage-rows").replaceChildren(tableMessage(8, "登录后加载使用明细。"));
   byId("global-rows").replaceChildren(tableMessage(6, "登录后加载全员汇总。"));
+  hide("upstream-account-loading");
+  byId("upstream-account-period").textContent = "—";
+  byId("upstream-account-list").setAttribute("aria-busy", "false");
+  byId("upstream-account-list").replaceChildren(emptyState("登录后加载上游账号。"));
   for (const id of ["devices", "projects", "keys", "passkeys"]) {
     byId(id).replaceChildren(element("div", {className: "empty", text: "登录后加载。"}));
   }
@@ -1746,6 +1757,242 @@ async function loadGlobalUsage(query, updateOverview = false) {
   }
 }
 
+function clearUpstreamQuotaTimer(accountID) {
+  const key = String(accountID || "");
+  const timer = upstreamQuotaStaleTimers.get(key);
+  if (timer) window.clearTimeout(timer);
+  upstreamQuotaStaleTimers.delete(key);
+}
+
+function clearUpstreamQuotaTimers() {
+  for (const timer of upstreamQuotaStaleTimers.values()) window.clearTimeout(timer);
+  upstreamQuotaStaleTimers.clear();
+}
+
+function upstreamAccountStat(label, value, detail = "") {
+  const children = [element("span", {text: label}), element("strong", {text: value})];
+  if (detail) children.push(element("small", {text: detail}));
+  return element("div", {className: "upstream-account-stat"}, ...children);
+}
+
+function upstreamAccountStats(account) {
+  const inputTokens = Number(account?.input_tokens || 0);
+  const outputTokens = Number(account?.output_tokens || 0);
+  const tokens = Number.isFinite(inputTokens + outputTokens) ? formatInteger(inputTokens + outputTokens) : "—";
+  return element("div", {className: "upstream-account-stats"},
+    upstreamAccountStat("请求", formatInteger(account?.request_count)),
+    upstreamAccountStat("Token", tokens, "输入 + 输出"),
+    upstreamAccountStat("错误", formatInteger(account?.error_count)),
+    upstreamAccountStat("输入 Token", formatInteger(account?.input_tokens)),
+    upstreamAccountStat("缓存输入", formatInteger(account?.cached_input_tokens), "输入 Token 的子集"),
+    upstreamAccountStat("缓存写入", formatInteger(account?.cache_write_tokens)),
+    upstreamAccountStat("输出 Token", formatInteger(account?.output_tokens)),
+    upstreamAccountStat("推理 Token", formatInteger(account?.reasoning_tokens), "输出 Token 的子集"),
+    upstreamAccountStat("API 等价成本", formatMoney(account?.equivalent_cost_usd, "USD"), "本地不可变 Ledger"),
+  );
+}
+
+function upstreamQuotaWindow(label, quotaWindow) {
+  const value = quotaWindow && typeof quotaWindow === "object" ? quotaWindow : {};
+  const used = value.used_ratio == null ? "—" : formatPercent(value.used_ratio, "—");
+  const remaining = value.remaining_ratio == null ? "—" : formatPercent(value.remaining_ratio, "—");
+  return element("article", {className: "upstream-quota-window"},
+    element("strong", {text: label}),
+    element("span", {text: `已用 ${used} · 剩余 ${remaining}`}),
+    element("small", {text: `重置：${formatDateTime(value.resets_at, "上游未返回")}`}),
+  );
+}
+
+function markUpstreamQuotaStale(container) {
+  if (!container?.isConnected || container.dataset.state !== "fresh") return;
+  container.dataset.state = "stale";
+  const freshness = container.querySelector(".upstream-quota-freshness");
+  if (freshness) {
+    freshness.dataset.status = "stale";
+    freshness.textContent = "可能已过时";
+  }
+  show(container.querySelector(".upstream-quota-stale-note"));
+}
+
+function scheduleUpstreamQuotaStale(accountID, container, queriedAt) {
+  clearUpstreamQuotaTimer(accountID);
+  const queried = new Date(queriedAt || "");
+  if (Number.isNaN(queried.getTime())) {
+    markUpstreamQuotaStale(container);
+    return;
+  }
+  const delay = queried.getTime() + upstreamQuotaStaleAfterMS - Date.now();
+  if (delay <= 0) {
+    markUpstreamQuotaStale(container);
+    return;
+  }
+  const key = String(accountID || "");
+  const timer = window.setTimeout(() => {
+    upstreamQuotaStaleTimers.delete(key);
+    markUpstreamQuotaStale(container);
+  }, delay);
+  upstreamQuotaStaleTimers.set(key, timer);
+}
+
+function renderUpstreamQuota(account, container, result) {
+  const freshness = statusBadge("ok");
+  freshness.classList.add("upstream-quota-freshness");
+  freshness.textContent = "刚刚查询";
+  const windows = [
+    upstreamQuotaWindow("5 小时", result?.five_hour),
+    upstreamQuotaWindow("7 天", result?.seven_day),
+  ];
+  const additional = Array.isArray(result?.additional_windows) ? result.additional_windows : [];
+  for (const [index, quotaWindow] of additional.entries()) {
+    windows.push(upstreamQuotaWindow(`附加窗口 ${index + 1}`, quotaWindow));
+  }
+  container.dataset.state = "fresh";
+  container.dataset.queriedAt = String(result?.queried_at || "");
+  container.setAttribute("aria-busy", "false");
+  container.replaceChildren(
+    element("div", {className: "upstream-quota-result-head"},
+      element("span", {text: `查询于 ${formatDateTime(result?.queried_at, "未知时间")} · ${String(result?.plan || account.plan || "套餐未知")}`}),
+      freshness,
+    ),
+    element("div", {className: "upstream-quota-windows"}, ...windows),
+    element("p", {className: "upstream-quota-stale-note hidden", text: "此结果已超过 5 分钟，可能不再反映当前额度。请重新查询。"}),
+  );
+  scheduleUpstreamQuotaStale(account.id, container, result?.queried_at);
+}
+
+async function loadUpstreamQuota(account, quotaBlock, container) {
+  setLocalMessage(quotaBlock);
+  clearUpstreamQuotaTimer(account.id);
+  container.dataset.state = "loading";
+  container.setAttribute("aria-busy", "true");
+  container.replaceChildren(element("p", {className: "upstream-quota-state", text: "正在实时查询官方额度…"}));
+  try {
+    const result = await api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`, {method: "POST", body: "{}"});
+    if (!result || typeof result !== "object" || !result.queried_at) throw new Error("官方额度响应格式异常，请稍后重试。");
+    if (!container.isConnected) return;
+    renderUpstreamQuota(account, container, result || {});
+    announce(`已查询 ${account.email_masked || "该上游账号"} 的官方额度。`);
+  } catch (error) {
+    if (!container.isConnected) return;
+    container.dataset.state = "error";
+    container.setAttribute("aria-busy", "false");
+    container.replaceChildren(element("p", {className: "upstream-quota-state", text: "官方额度查询失败；本地统计仍可正常使用。"}));
+    throw error;
+  }
+}
+
+function upstreamAccountCard(account) {
+  const quotaResult = element("div", {
+    className: "upstream-quota-result",
+    dataset: {state: "idle"},
+    attributes: {"aria-live": "polite", "aria-busy": "false"},
+  }, element("p", {className: "upstream-quota-state", text: "尚未查询官方额度。"}));
+  const button = element("button", {
+    type: "button", className: "secondary", text: "查询官方额度",
+    attributes: {"aria-describedby": "upstream-quota-warning"},
+  });
+  if (!account.id) {
+    button.disabled = true;
+    button.title = "账号缺少稳定索引，无法查询。";
+  }
+  const quotaBlock = element("section", {className: "upstream-quota tool-block"},
+    element("div", {className: "upstream-quota-heading"},
+      element("div", {}, element("h4", {text: "官方即时额度"}), element("small", {text: "每次点击都会实时查询上游"})),
+      button,
+    ),
+    quotaResult,
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
+  );
+  button.addEventListener("click", () => runButton(button, () => loadUpstreamQuota(account, quotaBlock, quotaResult), "查询中…"));
+  return element("article", {className: "panel upstream-account-card"},
+    element("div", {className: "panel-heading upstream-account-heading"},
+      element("div", {className: "upstream-account-identity"},
+        element("h3", {text: account.email_masked || "邮箱不可用"}),
+        element("p", {text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
+      ),
+      statusBadge(account.status),
+    ),
+    upstreamAccountStats(account),
+    quotaBlock,
+  );
+}
+
+function unattributedAccountCard(usage) {
+  const badge = statusBadge("unknown");
+  badge.textContent = "仅本地统计";
+  return element("article", {className: "panel upstream-account-card upstream-account-unattributed"},
+    element("div", {className: "panel-heading upstream-account-heading"},
+      element("div", {className: "upstream-account-identity"},
+        element("h3", {text: "未归因"}),
+        element("p", {text: "无法识别最终服务账号的请求，包括上线前历史数据。"}),
+      ),
+      badge,
+    ),
+    upstreamAccountStats(usage),
+    element("p", {className: "upstream-unattributed-note", text: "未归因记录无法查询官方额度。"}),
+  );
+}
+
+function upstreamAccountPeriod(result, query) {
+  if (query.get("all") === "true") return "全部历史";
+  const from = formatDate(result?.from || query.get("from"), "起始时间不限");
+  const untilValue = result?.until || query.get("until");
+  const untilDate = untilValue ? new Date(untilValue) : null;
+  if (untilDate && !Number.isNaN(untilDate.getTime())) untilDate.setMilliseconds(untilDate.getMilliseconds() - 1);
+  const until = untilDate && !Number.isNaN(untilDate.getTime()) ? formatDate(untilDate) : "结束时间不限";
+  return `${from} 至 ${until}`;
+}
+
+function renderUpstreamAccounts(result, query) {
+  clearUpstreamQuotaTimers();
+  const accounts = (Array.isArray(result?.accounts) ? result.accounts : []).filter((account) => account && typeof account === "object");
+  const cards = accounts.map(upstreamAccountCard);
+  if (result?.unattributed && typeof result.unattributed === "object") cards.push(unattributedAccountCard(result.unattributed));
+  const container = byId("upstream-account-list");
+  container.setAttribute("aria-busy", "false");
+  if (cards.length) container.replaceChildren(...cards);
+  else container.replaceChildren(emptyState("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。"));
+  const warning = result?.sync_warning ? " · 上游状态同步失败，当前展示最后已知的本地记录" : "";
+  byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个上游账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
+}
+
+function upstreamAccountQueryFromForm() {
+  const form = byId("upstream-account-filter");
+  const query = new URLSearchParams();
+  if (form.elements.range.value === "all") {
+    query.set("all", "true");
+  } else {
+    if (form.elements.from.value) query.set("from", localDateBoundary(form.elements.from.value));
+    if (form.elements.until.value) query.set("until", localDateBoundary(form.elements.until.value, true));
+  }
+  return query;
+}
+
+async function loadUpstreamAccounts(query) {
+  if (state?.user?.role !== "owner") return;
+  const sequence = ++upstreamAccountRequestSequence;
+  const container = byId("upstream-account-list");
+  clearUpstreamQuotaTimers();
+  show("upstream-account-loading");
+  container.setAttribute("aria-busy", "true");
+  container.replaceChildren(emptyState("正在加载上游账号和本地统计…"));
+  try {
+    const result = await api(`/admin/upstream-accounts${querySuffix(query)}`);
+    if (!result || typeof result !== "object" || !Array.isArray(result.accounts)) throw new Error("上游账号响应格式异常，请稍后重试。");
+    if (sequence !== upstreamAccountRequestSequence) return;
+    renderUpstreamAccounts(result || {}, query);
+  } catch (error) {
+    if (sequence === upstreamAccountRequestSequence) {
+      container.setAttribute("aria-busy", "false");
+      container.replaceChildren(emptyState(`上游账号加载失败：${friendlyError(error)}`));
+      byId("upstream-account-period").textContent = "本地统计暂时无法加载。";
+    }
+    throw error;
+  } finally {
+    if (sequence === upstreamAccountRequestSequence) hide("upstream-account-loading");
+  }
+}
+
 async function loadAlerts() {
   const container = byId("alert-summary");
   try {
@@ -1785,11 +2032,46 @@ function initializeDateFilters() {
   globalForm.elements.until.max = inputDate(today);
   globalForm.elements.from.max = inputDate(today);
   syncGlobalRange();
+
+  const upstreamForm = byId("upstream-account-filter");
+  upstreamForm.elements.until.max = inputDate(today);
+  upstreamForm.elements.from.max = inputDate(today);
+  syncUpstreamAccountRange();
   updateCSVLink();
 }
 
 function syncGlobalRange() {
   const form = byId("global-filter");
+  const range = form.elements.range.value;
+  const from = form.elements.from;
+  const until = form.elements.until;
+  const today = new Date();
+  const start = new Date(today);
+  if (range === "month") start.setDate(1);
+  if (range === "7") start.setDate(start.getDate() - 6);
+  if (range === "30") start.setDate(start.getDate() - 29);
+  if (["month", "7", "30"].includes(range)) {
+    from.value = inputDate(start);
+    until.value = inputDate(today);
+  }
+  const custom = range === "custom";
+  const allHistory = range === "all";
+  from.disabled = !custom;
+  until.disabled = !custom;
+  from.required = custom;
+  until.required = custom;
+  if (allHistory) {
+    from.value = "";
+    until.value = "";
+  } else if (custom && (!from.value || !until.value)) {
+    start.setDate(today.getDate() - 29);
+    from.value = inputDate(start);
+    until.value = inputDate(today);
+  }
+}
+
+function syncUpstreamAccountRange() {
+  const form = byId("upstream-account-filter");
   const range = form.elements.range.value;
   const from = form.elements.from;
   const until = form.elements.until;
@@ -1833,7 +2115,9 @@ function showUsageTab(tab) {
 function routeFromHash(focusContent = true) {
   if (!state) return;
   const requested = location.hash.slice(1);
-  const section = Object.prototype.hasOwnProperty.call(sectionTitles, requested) ? requested : "overview";
+  const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
+  const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
+  const section = known && ownerAllowed ? requested : "overview";
   if (requested !== section) history.replaceState(null, "", `#${section}`);
   all(".view").forEach((view) => view.classList.toggle("hidden", view.dataset.section !== section));
   all("nav [data-view]").forEach((link) => {
@@ -1865,6 +2149,9 @@ async function loadDashboard() {
     tasks.push(
       loadGlobalUsage(globalQueryFromForm(), true).catch((error) => {
         setLocalMessage(byId("global-filter"), friendlyError(error));
+      }),
+      loadUpstreamAccounts(upstreamAccountQueryFromForm()).catch((error) => {
+        setLocalMessage(byId("upstream-account-filter"), friendlyError(error));
       }),
       loadAlerts(),
     );
@@ -1925,6 +2212,8 @@ function bindUI() {
     personalRequestSequence++;
     globalRequestSequence++;
     billingRequestSequence++;
+    upstreamAccountRequestSequence++;
+    clearUpstreamQuotaTimers();
     resetPersonalUsageSummary();
     hide("personal-loading");
     clearSensitiveDOM();
@@ -1957,6 +2246,10 @@ function bindUI() {
     await loadGlobalUsage(globalQueryFromForm(), false);
     announce("全员使用统计已更新。");
   }, "聚合中…");
+  bindAsync("upstream-account-filter", "submit", async () => {
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm());
+    announce("上游账号本地统计已更新。");
+  }, "应用中…");
   bindAsync("billing-user-select", "change", async (event) => {
     const userID = event.currentTarget.value;
     if (!userID) return;
@@ -2028,6 +2321,7 @@ function bindUI() {
   byId("usage-filter").addEventListener("input", updateCSVLink);
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
+  byId("upstream-account-filter").elements.range.addEventListener("change", syncUpstreamAccountRange);
   window.addEventListener("hashchange", () => routeFromHash(true));
 
   all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {

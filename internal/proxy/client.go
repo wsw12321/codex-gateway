@@ -15,13 +15,24 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 )
 
-const maxSSEEventBytes = 4 << 20
+const (
+	maxSSEEventBytes             = 4 << 20
+	affinityHeader               = "X-Codex-Gateway-Affinity"
+	upstreamAccountHeader        = "X-Codex-Upstream-Account"
+	maxInternalResponseBodyBytes = 1 << 20
+)
+
+var (
+	affinityScopePattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	upstreamAccountPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
+)
 
 var allowedRequestHeaders = map[string]struct{}{
 	"Accept":                      {},
@@ -58,6 +69,7 @@ type Result struct {
 	ContentType       string
 	Model             string
 	ServiceTier       string
+	UpstreamAccountID string
 	UpstreamRequestID string
 	Usage             Usage
 	BytesOut          int64
@@ -90,6 +102,13 @@ type Client struct {
 	http    *http.Client
 }
 
+type ForwardOptions struct {
+	// AffinityScope is an opaque, gateway-generated caller namespace. It is
+	// accepted only in the fixed base64url form emitted by the gateway and is
+	// consumed by the sidecar rather than forwarded to the service provider.
+	AffinityScope string
+}
+
 func New(baseURL *url.URL, token string) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = http.ProxyFromEnvironment
@@ -113,6 +132,10 @@ func NewWithHTTPClient(baseURL *url.URL, token string, client *http.Client) *Cli
 }
 
 func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *http.Request, upstreamPath string) (Result, *Failure) {
+	return c.ForwardWithOptions(ctx, w, incoming, upstreamPath, ForwardOptions{})
+}
+
+func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, incoming *http.Request, upstreamPath string, options ForwardOptions) (Result, *Failure) {
 	if !allowedPath(incoming.Method, upstreamPath) {
 		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}
 	}
@@ -129,6 +152,12 @@ func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *h
 	copyAllowedHeaders(outgoing.Header, incoming.Header)
 	outgoing.Header.Set("Authorization", "Bearer "+c.token)
 	outgoing.Header.Set("Cache-Control", "no-store")
+	if options.AffinityScope != "" {
+		if !affinityScopePattern.MatchString(options.AffinityScope) {
+			return Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
+		}
+		outgoing.Header.Set(affinityHeader, options.AffinityScope)
+	}
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {
@@ -139,6 +168,7 @@ func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *h
 	result := Result{
 		StatusCode:        response.StatusCode,
 		ContentType:       response.Header.Get("Content-Type"),
+		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -206,6 +236,22 @@ func firstHeader(header http.Header, names ...string) string {
 		}
 	}
 	return ""
+}
+
+func safeUpstreamAccountID(value string) string {
+	value = strings.TrimSpace(value)
+	if !upstreamAccountPattern.MatchString(value) {
+		return ""
+	}
+	return value
+}
+
+func safeUpstreamAccountHeader(header http.Header) string {
+	values := header.Values(upstreamAccountHeader)
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return ""
+	}
+	return safeUpstreamAccountID(values[0])
 }
 
 func safeContentType(value string) string {

@@ -589,6 +589,7 @@ nav a.active {
 }
 
 .status-badge[data-status="active"],
+.status-badge[data-status="available"],
 .status-badge[data-status="completed"],
 .status-badge[data-status="ok"] {
   border-color: rgb(114 230 173 / 35%);
@@ -599,6 +600,7 @@ nav a.active {
 .status-badge[data-status="failed"],
 .status-badge[data-status="revoked"],
 .status-badge[data-status="disabled"],
+.status-badge[data-status="unavailable"],
 .status-badge[data-status="cancelled"] {
   border-color: rgb(255 143 145 / 35%);
   color: #ffc0c2;
@@ -606,7 +608,8 @@ nav a.active {
 }
 
 .status-badge[data-status="archived"],
-.status-badge[data-status="in_progress"] {
+.status-badge[data-status="in_progress"],
+.status-badge[data-status="stale"] {
   border-color: rgb(255 209 102 / 35%);
   color: #ffe09a;
   background: rgb(255 209 102 / 7%);
@@ -1151,6 +1154,194 @@ code {
   margin: .2rem 0;
 }
 
+.upstream-quota-warning strong {
+  color: var(--warning);
+}
+
+.upstream-account-filters {
+  grid-template-columns: repeat(3, minmax(9rem, 1fr)) auto;
+}
+
+.upstream-account-period {
+  margin: 0 0 1rem;
+  font-size: .86rem;
+}
+
+.upstream-account-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+  gap: 1rem;
+}
+
+.upstream-account-grid > .empty {
+  grid-column: 1 / -1;
+}
+
+.upstream-account-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.upstream-account-heading {
+  align-items: center;
+}
+
+.upstream-account-identity {
+  min-width: 0;
+}
+
+.upstream-account-identity h3 {
+  overflow-wrap: anywhere;
+}
+
+.upstream-account-identity p {
+  margin: .25rem 0 0;
+  font-size: .8rem;
+}
+
+.upstream-account-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+  gap: .6rem;
+}
+
+.upstream-account-stat {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: .7rem;
+  padding: .7rem;
+  background: var(--surface-soft);
+}
+
+.upstream-account-stat span,
+.upstream-account-stat strong,
+.upstream-account-stat small {
+  display: block;
+}
+
+.upstream-account-stat span,
+.upstream-account-stat small {
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.upstream-account-stat strong {
+  margin-top: .15rem;
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.upstream-account-stat small {
+  margin-top: .15rem;
+  color: var(--faint);
+}
+
+.upstream-quota {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 1rem;
+}
+
+.upstream-quota-heading,
+.upstream-quota-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.upstream-quota-heading h4 {
+  margin: 0;
+}
+
+.upstream-quota-heading small,
+.upstream-quota-result-head > span {
+  color: var(--muted);
+  font-size: .76rem;
+}
+
+.upstream-quota-heading button {
+  min-height: 2.25rem;
+  padding: .48rem .7rem;
+  font-size: .82rem;
+}
+
+.upstream-quota-result {
+  margin-top: .75rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  padding: .8rem;
+  background: rgb(8 13 19 / 45%);
+}
+
+.upstream-quota-result[data-state="loading"] {
+  border-color: rgb(124 196 255 / 35%);
+}
+
+.upstream-quota-result[data-state="error"] {
+  border-color: rgb(255 143 145 / 40%);
+  background: rgb(255 143 145 / 5%);
+}
+
+.upstream-quota-result[data-state="stale"] {
+  border-color: rgb(255 209 102 / 40%);
+  background: rgb(255 209 102 / 4%);
+}
+
+.upstream-quota-state {
+  margin: 0;
+  color: var(--muted);
+  font-size: .84rem;
+}
+
+.upstream-quota-windows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: .55rem;
+  margin-top: .7rem;
+}
+
+.upstream-quota-window {
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  padding: .65rem;
+  background: var(--surface-soft);
+}
+
+.upstream-quota-window strong,
+.upstream-quota-window span,
+.upstream-quota-window small {
+  display: block;
+}
+
+.upstream-quota-window span {
+  margin-top: .18rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.upstream-quota-window small {
+  margin-top: .18rem;
+  color: var(--muted);
+}
+
+.upstream-quota-stale-note,
+.upstream-unattributed-note {
+  margin: .65rem 0 0;
+  color: #f4dfaa;
+  font-size: .78rem;
+}
+
+.upstream-account-unattributed {
+  border-style: dashed;
+}
+
+.upstream-account-unattributed .upstream-unattributed-note {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: .8rem;
+  color: var(--muted);
+}
+
 .billing-period-panel,
 .billing-ledger-panel {
   margin-bottom: 1rem;
@@ -1525,6 +1716,16 @@ dialog form {
   .auth-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .upstream-quota-heading,
+  .upstream-quota-result-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .upstream-quota-heading button {
+    width: 100%;
   }
 
   .guide-endpoint,
