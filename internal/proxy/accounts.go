@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,18 @@ import (
 var (
 	safeMetadataValuePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
 	maskedEmailPattern       = regexp.MustCompile(`^[A-Za-z0-9]\*{3}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
+	rateLimitIDPattern       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+)
+
+const (
+	AccountRateLimitsMethod    = "account/rateLimits/read"
+	AccountRateLimitsRequestID = int64(6)
+
+	accountRateLimitsRequestBody   = `{"method":"account/rateLimits/read","id":6}`
+	maxAccountRateLimitBuckets     = 33
+	maxRateLimitWindowDurationMins = int64((31 * 24 * time.Hour) / time.Minute)
+	minRateLimitResetUnix          = int64(946684800)  // 2000-01-01T00:00:00Z
+	maxRateLimitResetUnix          = int64(4102444800) // 2100-01-01T00:00:00Z
 )
 
 type UpstreamAccount struct {
@@ -35,47 +48,54 @@ type upstreamAccountWire struct {
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 }
 
-type QuotaWindow struct {
-	UsedRatio      float64    `json:"used_ratio"`
-	RemainingRatio float64    `json:"remaining_ratio"`
-	ResetAt        *time.Time `json:"reset_at"`
-	WindowSeconds  *int64     `json:"window_seconds,omitempty"`
+type RateLimitWindow struct {
+	UsedPercent        int    `json:"usedPercent"`
+	WindowDurationMins *int64 `json:"windowDurationMins"`
+	ResetsAt           *int64 `json:"resetsAt"`
 }
 
-type AdditionalQuotaWindow struct {
-	Name string `json:"name"`
-	QuotaWindow
+type RateLimitSnapshot struct {
+	LimitID              string           `json:"limitId"`
+	LimitName            *string          `json:"limitName"`
+	Primary              *RateLimitWindow `json:"primary"`
+	Secondary            *RateLimitWindow `json:"secondary"`
+	RateLimitReachedType *string          `json:"rateLimitReachedType"`
+}
+
+type AccountRateLimitsResult struct {
+	RateLimits            RateLimitSnapshot            `json:"rateLimits"`
+	RateLimitsByLimitID   map[string]RateLimitSnapshot `json:"rateLimitsByLimitId"`
+	RateLimitResetCredits *struct{}                    `json:"rateLimitResetCredits"`
 }
 
 type UpstreamQuota struct {
-	QueriedAt         time.Time               `json:"queried_at"`
-	Plan              string                  `json:"plan"`
-	FiveHour          QuotaWindow             `json:"five_hour"`
-	SevenDay          QuotaWindow             `json:"seven_day"`
-	AdditionalWindows []AdditionalQuotaWindow `json:"additional_windows"`
+	ID     int64                   `json:"id"`
+	Result AccountRateLimitsResult `json:"result"`
 }
 
-type quotaWindowWire struct {
-	UsedRatio      *float64   `json:"used_ratio"`
-	RemainingRatio *float64   `json:"remaining_ratio"`
-	ResetAt        *time.Time `json:"reset_at"`
-	WindowSeconds  *int64     `json:"window_seconds,omitempty"`
+type rateLimitWindowWire struct {
+	UsedPercent        *int   `json:"usedPercent"`
+	WindowDurationMins *int64 `json:"windowDurationMins"`
+	ResetsAt           *int64 `json:"resetsAt"`
 }
 
-type additionalQuotaWindowWire struct {
-	Name           *string    `json:"name"`
-	UsedRatio      *float64   `json:"used_ratio"`
-	RemainingRatio *float64   `json:"remaining_ratio"`
-	ResetAt        *time.Time `json:"reset_at"`
-	WindowSeconds  *int64     `json:"window_seconds,omitempty"`
+type rateLimitSnapshotWire struct {
+	LimitID              *string         `json:"limitId"`
+	LimitName            json.RawMessage `json:"limitName"`
+	Primary              json.RawMessage `json:"primary"`
+	Secondary            json.RawMessage `json:"secondary"`
+	RateLimitReachedType json.RawMessage `json:"rateLimitReachedType"`
+}
+
+type accountRateLimitsResultWire struct {
+	RateLimits            *rateLimitSnapshotWire            `json:"rateLimits"`
+	RateLimitsByLimitID   *map[string]rateLimitSnapshotWire `json:"rateLimitsByLimitId"`
+	RateLimitResetCredits json.RawMessage                   `json:"rateLimitResetCredits"`
 }
 
 type upstreamQuotaWire struct {
-	QueriedAt         *time.Time                  `json:"queried_at"`
-	Plan              *string                     `json:"plan"`
-	FiveHour          *quotaWindowWire            `json:"five_hour"`
-	SevenDay          *quotaWindowWire            `json:"seven_day"`
-	AdditionalWindows []additionalQuotaWindowWire `json:"additional_windows"`
+	ID     *int64                       `json:"id"`
+	Result *accountRateLimitsResultWire `json:"result"`
 }
 
 type InternalAPIError struct {
@@ -139,54 +159,67 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadRequest, Code: "invalid_upstream_account"}
 	}
 	var wire upstreamQuotaWire
-	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/"+accountID+"/quota", &wire); err != nil {
+	if err := c.internalJSONBody(ctx, http.MethodPost, "/internal/upstream-accounts/"+accountID+"/quota", accountRateLimitsRequestBody, &wire); err != nil {
 		return UpstreamQuota{}, err
 	}
-	if wire.QueriedAt == nil || wire.Plan == nil || wire.FiveHour == nil || wire.SevenDay == nil {
+	if wire.ID == nil || *wire.ID != AccountRateLimitsRequestID || wire.Result == nil ||
+		wire.Result.RateLimits == nil || wire.Result.RateLimitsByLimitID == nil ||
+		!isJSONNull(wire.Result.RateLimitResetCredits) {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	fiveHour, ok := normalizedQuotaWindow(*wire.FiveHour, false)
+	rateLimits, ok := normalizedRateLimitSnapshot(*wire.Result.RateLimits, "codex")
 	if !ok {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	sevenDay, ok := normalizedQuotaWindow(*wire.SevenDay, false)
-	if !ok || wire.QueriedAt.IsZero() || !validQuotaPlan(*wire.Plan) {
+	byLimitIDWire := *wire.Result.RateLimitsByLimitID
+	if len(byLimitIDWire) == 0 || len(byLimitIDWire) > maxAccountRateLimitBuckets {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	quota := UpstreamQuota{
-		QueriedAt: *wire.QueriedAt, Plan: *wire.Plan, FiveHour: fiveHour, SevenDay: sevenDay,
-		AdditionalWindows: make([]AdditionalQuotaWindow, 0, len(wire.AdditionalWindows)),
-	}
-	for index, additionalWire := range wire.AdditionalWindows {
-		window, ok := normalizedQuotaWindow(quotaWindowWire{
-			UsedRatio: additionalWire.UsedRatio, RemainingRatio: additionalWire.RemainingRatio,
-			ResetAt: additionalWire.ResetAt, WindowSeconds: additionalWire.WindowSeconds,
-		}, true)
-		if !ok || additionalWire.Name == nil || strings.TrimSpace(*additionalWire.Name) == "" {
+	byLimitID := make(map[string]RateLimitSnapshot, len(byLimitIDWire))
+	for limitID, snapshotWire := range byLimitIDWire {
+		if !rateLimitIDPattern.MatchString(limitID) {
 			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 		}
-		// An upstream-controlled label is not needed to render the normalized
-		// window and could otherwise smuggle secret fragments through a
-		// syntactically safe string. Replace it with a gateway-generated name.
-		quota.AdditionalWindows = append(quota.AdditionalWindows, AdditionalQuotaWindow{
-			Name: fmt.Sprintf("additional_%d", index+1), QuotaWindow: window,
-		})
+		snapshot, valid := normalizedRateLimitSnapshot(snapshotWire, limitID)
+		if !valid {
+			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+		}
+		byLimitID[limitID] = snapshot
 	}
-	return quota, nil
+	if codex, exists := byLimitID["codex"]; !exists || !equalRateLimitSnapshot(rateLimits, codex) {
+		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+	}
+	return UpstreamQuota{
+		ID: AccountRateLimitsRequestID,
+		Result: AccountRateLimitsResult{
+			RateLimits: rateLimits, RateLimitsByLimitID: byLimitID, RateLimitResetCredits: nil,
+		},
+	}, nil
 }
 
 func (c *Client) internalJSON(ctx context.Context, method, path string, destination any) error {
+	return c.internalJSONBody(ctx, method, path, "", destination)
+}
+
+func (c *Client) internalJSONBody(ctx context.Context, method, path, body string, destination any) error {
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + path
 	target.RawQuery = ""
 	target.Fragment = ""
-	request, err := http.NewRequestWithContext(ctx, method, target.String(), nil)
+	var requestBody io.Reader
+	if body != "" {
+		requestBody = strings.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, target.String(), requestBody)
 	if err != nil {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_unavailable", Cause: err}
 	}
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := c.http.Do(request)
 	if err != nil {
 		code := "sidecar_unavailable"
@@ -205,16 +238,19 @@ func (c *Client) internalJSON(ctx context.Context, method, path string, destinat
 	if err != nil || mediaType != "application/json" {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	limited := &io.LimitedReader{R: response.Body, N: maxInternalResponseBodyBytes + 1}
-	decoder := json.NewDecoder(limited)
+	limitedBody, err := io.ReadAll(io.LimitReader(response.Body, maxInternalResponseBodyBytes+1))
+	if err != nil || len(limitedBody) > maxInternalResponseBodyBytes {
+		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response", Cause: err}
+	}
+	if err := rejectDuplicateJSONKeys(limitedBody); err != nil {
+		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response", Cause: err}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(limitedBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response", Cause: err}
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-	}
-	if limited.N == 0 {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
 	return nil
@@ -269,35 +305,186 @@ func validUpstreamPlan(value string) bool {
 	}
 }
 
-func validQuotaPlan(value string) bool {
-	return value == "plus" || value == "pro"
+func isJSONNull(value json.RawMessage) bool {
+	return len(value) > 0 && bytes.Equal(bytes.TrimSpace(value), []byte("null"))
 }
 
-func normalizedQuotaWindow(wire quotaWindowWire, allowSeconds bool) (QuotaWindow, bool) {
-	if wire.UsedRatio == nil || wire.RemainingRatio == nil || wire.ResetAt == nil {
-		return QuotaWindow{}, false
+func normalizedRateLimitSnapshot(wire rateLimitSnapshotWire, expectedLimitID string) (RateLimitSnapshot, bool) {
+	if wire.LimitID == nil || *wire.LimitID != expectedLimitID || !rateLimitIDPattern.MatchString(*wire.LimitID) || !isJSONNull(wire.LimitName) {
+		return RateLimitSnapshot{}, false
 	}
-	window := QuotaWindow{
-		UsedRatio: *wire.UsedRatio, RemainingRatio: *wire.RemainingRatio,
-		ResetAt: wire.ResetAt, WindowSeconds: wire.WindowSeconds,
+	primary, ok := normalizedRateLimitWindowJSON(wire.Primary)
+	if !ok {
+		return RateLimitSnapshot{}, false
 	}
-	return window, validQuotaWindow(window, allowSeconds)
+	secondary, ok := normalizedRateLimitWindowJSON(wire.Secondary)
+	if !ok {
+		return RateLimitSnapshot{}, false
+	}
+	reachedType, ok := normalizedRateLimitReachedType(wire.RateLimitReachedType)
+	if !ok {
+		return RateLimitSnapshot{}, false
+	}
+	return RateLimitSnapshot{
+		LimitID: *wire.LimitID, LimitName: nil, Primary: primary, Secondary: secondary,
+		RateLimitReachedType: reachedType,
+	}, true
 }
 
-func validQuotaWindow(window QuotaWindow, allowSeconds bool) bool {
-	if window.UsedRatio < 0 || window.UsedRatio > 1 || window.RemainingRatio < 0 || window.RemainingRatio > 1 {
-		return false
+func normalizedRateLimitWindowJSON(raw json.RawMessage) (*RateLimitWindow, bool) {
+	if len(raw) == 0 {
+		return nil, false
 	}
-	if difference := window.UsedRatio + window.RemainingRatio - 1; difference < -0.000001 || difference > 0.000001 {
-		return false
+	if isJSONNull(raw) {
+		return nil, true
 	}
-	if window.ResetAt == nil || window.ResetAt.IsZero() {
-		return false
+	var wire rateLimitWindowWire
+	if err := decodeStrictJSON(raw, &wire); err != nil {
+		return nil, false
 	}
-	if window.WindowSeconds != nil && (!allowSeconds || *window.WindowSeconds <= 0 || *window.WindowSeconds > int64((31*24*time.Hour)/time.Second)) {
-		return false
+	if wire.UsedPercent == nil || *wire.UsedPercent < 0 || *wire.UsedPercent > 100 {
+		return nil, false
 	}
-	return true
+	if wire.WindowDurationMins != nil && (*wire.WindowDurationMins <= 0 || *wire.WindowDurationMins > maxRateLimitWindowDurationMins) {
+		return nil, false
+	}
+	if wire.ResetsAt != nil && (*wire.ResetsAt < minRateLimitResetUnix || *wire.ResetsAt > maxRateLimitResetUnix) {
+		return nil, false
+	}
+	return &RateLimitWindow{
+		UsedPercent: *wire.UsedPercent, WindowDurationMins: wire.WindowDurationMins, ResetsAt: wire.ResetsAt,
+	}, true
+}
+
+func normalizedRateLimitReachedType(raw json.RawMessage) (*string, bool) {
+	if len(raw) == 0 {
+		return nil, false
+	}
+	if isJSONNull(raw) {
+		return nil, true
+	}
+	var value string
+	if err := decodeStrictJSON(raw, &value); err != nil {
+		return nil, false
+	}
+	switch value {
+	case "rate_limit_reached",
+		"workspace_owner_credits_depleted",
+		"workspace_member_credits_depleted",
+		"workspace_owner_usage_limit_reached",
+		"workspace_member_usage_limit_reached":
+		return &value, true
+	default:
+		return nil, false
+	}
+}
+
+func decodeStrictJSON(body []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func equalRateLimitSnapshot(left, right RateLimitSnapshot) bool {
+	return left.LimitID == right.LimitID && left.LimitName == nil && right.LimitName == nil &&
+		equalOptionalString(left.RateLimitReachedType, right.RateLimitReachedType) &&
+		equalRateLimitWindow(left.Primary, right.Primary) && equalRateLimitWindow(left.Secondary, right.Secondary)
+}
+
+func equalOptionalString(left, right *string) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func equalRateLimitWindow(left, right *RateLimitWindow) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return left.UsedPercent == right.UsedPercent &&
+		equalOptionalInt64(left.WindowDurationMins, right.WindowDurationMins) &&
+		equalOptionalInt64(left.ResetsAt, right.ResetsAt)
+}
+
+func equalOptionalInt64(left, right *int64) bool {
+	return left == nil && right == nil || left != nil && right != nil && *left == *right
+}
+
+func rejectDuplicateJSONKeys(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := consumeJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, isDelimiter := token.(json.Delim)
+	if !isDelimiter {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, keyErr := decoder.Token()
+			if keyErr != nil {
+				return keyErr
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("invalid JSON object key")
+			}
+			if _, exists := seen[key]; exists {
+				return errors.New("duplicate JSON object key")
+			}
+			seen[key] = struct{}{}
+			if valueErr := consumeJSONValue(decoder); valueErr != nil {
+				return valueErr
+			}
+		}
+		closing, closeErr := decoder.Token()
+		if closeErr != nil {
+			return closeErr
+		}
+		if closing != json.Delim('}') {
+			return errors.New("invalid JSON object")
+		}
+	case '[':
+		for decoder.More() {
+			if valueErr := consumeJSONValue(decoder); valueErr != nil {
+				return valueErr
+			}
+		}
+		closing, closeErr := decoder.Token()
+		if closeErr != nil {
+			return closeErr
+		}
+		if closing != json.Delim(']') {
+			return errors.New("invalid JSON array")
+		}
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+	return nil
 }
 
 func (e *InternalAPIError) SafeCode() string {

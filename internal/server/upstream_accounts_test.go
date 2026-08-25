@@ -133,6 +133,43 @@ func TestUpstreamQuotaLimiterEnforcesConcurrencyAndFiveSecondDebounce(t *testing
 	release()
 }
 
+func TestUpstreamQuotaRejectsInvalidRPCRequests(t *testing.T) {
+	validPrefix := `{"method":"account/rateLimits/read","id":6}`
+	for _, test := range []struct {
+		name          string
+		body          string
+		unknownLength bool
+		wantStatus    int
+		wantCode      string
+	}{
+		{name: "wrong method", body: `{"method":"account/read","id":6}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_upstream_quota_request"},
+		{name: "wrong id", body: `{"method":"account/rateLimits/read","id":7}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_upstream_quota_request"},
+		{name: "missing method", body: `{"id":6}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_upstream_quota_request"},
+		{name: "params null", body: `{"method":"account/rateLimits/read","id":6,"params":null}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_json"},
+		{name: "unknown field", body: `{"method":"account/rateLimits/read","id":6,"token":"secret"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_json"},
+		{name: "duplicate method", body: `{"method":"account/read","method":"account/rateLimits/read","id":6}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_json"},
+		{name: "duplicate id", body: `{"method":"account/rateLimits/read","id":7,"id":6}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_json"},
+		{name: "multiple values", body: validPrefix + `{}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_json"},
+		{name: "oversized", body: validPrefix + strings.Repeat(" ", upstreamQuotaRequestBytes), wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_too_large"},
+		{name: "oversized unknown length", body: validPrefix + strings.Repeat(" ", upstreamQuotaRequestBytes), unknownLength: true, wantStatus: http.StatusRequestEntityTooLarge, wantCode: "request_too_large"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := quotaTestRequestWithBody("0123456789abcdef", test.body)
+			if test.unknownLength {
+				request.ContentLength = -1
+			}
+			response := httptest.NewRecorder()
+			(&Server{}).upstreamAccountQuota(response, request)
+			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.wantCode) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "secret") {
+				t.Fatalf("request content leaked: %s", response.Body.String())
+			}
+		})
+	}
+}
+
 func TestUpstreamQuotaLocalRateLimitIsAudited(t *testing.T) {
 	repository, capture := newUpstreamAuditStore(t)
 	limiter := newUpstreamQuotaLimiter()
@@ -368,18 +405,18 @@ func TestUpstreamQuotaErrorAndAuditAreSanitized(t *testing.T) {
 }
 
 func TestUpstreamQuotaResponseAndSuccessAuditContainOnlyNormalizedFields(t *testing.T) {
-	now := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
-	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q", r.Method)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		} else if string(body) != `{"method":"account/rateLimits/read","id":6}` {
+			t.Errorf("request body = %q", body)
+		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"queried_at": now, "plan": "plus",
-			"five_hour": map[string]any{"used_ratio": 0.4, "remaining_ratio": 0.6, "reset_at": now.Add(time.Hour)},
-			"seven_day": map[string]any{"used_ratio": 0.25, "remaining_ratio": 0.75, "reset_at": now.Add(7 * 24 * time.Hour)},
-			"additional_windows": []map[string]any{{
-				"name": "codex_other", "used_ratio": 0.1, "remaining_ratio": 0.9,
-				"reset_at": now.Add(30 * time.Minute), "window_seconds": 1800,
-			}},
-		})
+		_, _ = io.WriteString(w, `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":1800000000},"secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":1800600000},"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":1800000000},"secondary":{"usedPercent":25,"windowDurationMins":10080,"resetsAt":1800600000},"rateLimitReachedType":null},"codex_other":{"limitId":"codex_other","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":30,"resetsAt":1800001800},"secondary":null,"rateLimitReachedType":"rate_limit_reached"}},"rateLimitResetCredits":null}}`)
 	}))
 	defer sidecar.Close()
 
@@ -399,16 +436,24 @@ func TestUpstreamQuotaResponseAndSuccessAuditContainOnlyNormalizedFields(t *test
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	assertExactJSONKeys(t, payload, "queried_at", "plan", "five_hour", "seven_day", "additional_windows")
-	assertExactJSONKeys(t, payload["five_hour"].(map[string]any), "used_ratio", "remaining_ratio", "resets_at")
-	additional := payload["additional_windows"].([]any)
-	if len(additional) != 1 {
-		t.Fatalf("additional windows = %#v", additional)
+	assertExactJSONKeys(t, payload, "id", "result")
+	if payload["id"] != float64(6) {
+		t.Fatalf("response id = %#v", payload["id"])
 	}
-	if additional[0].(map[string]any)["name"] != "additional_1" {
-		t.Fatalf("additional window name was not gateway-generated: %#v", additional[0])
+	result := payload["result"].(map[string]any)
+	assertExactJSONKeys(t, result, "rateLimits", "rateLimitsByLimitId", "rateLimitResetCredits")
+	if result["rateLimitResetCredits"] != nil {
+		t.Fatalf("rate limit reset credits = %#v", result["rateLimitResetCredits"])
 	}
-	assertExactJSONKeys(t, additional[0].(map[string]any), "name", "used_ratio", "remaining_ratio", "resets_at", "window_seconds")
+	buckets := result["rateLimitsByLimitId"].(map[string]any)
+	if len(buckets) != 2 {
+		t.Fatalf("rate limit buckets = %#v", buckets)
+	}
+	additional := buckets["codex_other"].(map[string]any)
+	assertExactJSONKeys(t, additional, "limitId", "limitName", "primary", "secondary", "rateLimitReachedType")
+	if additional["limitName"] != nil || additional["rateLimitReachedType"] != "rate_limit_reached" {
+		t.Fatalf("additional bucket = %#v", additional)
+	}
 	for _, forbidden := range []string{"token", "email", "raw", "authorization"} {
 		if strings.Contains(strings.ToLower(response.Body.String()), forbidden) {
 			t.Fatalf("forbidden field %q in quota DTO: %s", forbidden, response.Body.String())
@@ -440,7 +485,11 @@ func TestUpstreamManagementErrorRejectsDataDerivedCodesAndRetryValues(t *testing
 }
 
 func quotaTestRequest(accountID string) *http.Request {
-	request := httptest.NewRequest(http.MethodPost, "/admin/upstream-accounts/"+accountID+"/quota", nil)
+	return quotaTestRequestWithBody(accountID, `{"method":"account/rateLimits/read","id":6}`)
+}
+
+func quotaTestRequestWithBody(accountID, body string) *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/admin/upstream-accounts/"+accountID+"/quota", strings.NewReader(body))
 	request.SetPathValue("id", accountID)
 	ctx := context.WithValue(request.Context(), userContextKey, store.User{ID: "owner-1", Role: store.UserRoleOwner})
 	ctx = context.WithValue(ctx, sessionContextKey, store.Session{ID: "session-1", UserID: "owner-1"})

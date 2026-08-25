@@ -44,6 +44,7 @@ let reauthReject = null;
 
 const billingLedgerPageSize = 50;
 const upstreamQuotaStaleAfterMS = 5 * 60 * 1000;
+const upstreamQuotaRequestBody = '{"method":"account/rateLimits/read","id":6}';
 const billingTiers = [
   {id: "day", label: "日订阅", duration: "24 小时"},
   {id: "week", label: "周订阅", duration: "7 天"},
@@ -1792,15 +1793,57 @@ function upstreamAccountStats(account) {
   );
 }
 
-function upstreamQuotaWindow(label, quotaWindow) {
+function formatUpstreamQuotaDuration(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) return "上游未返回";
+  if (value % (24 * 60) === 0) return `${value / (24 * 60)} 天`;
+  if (value % 60 === 0) return `${value / 60} 小时`;
+  return `${value} 分钟`;
+}
+
+function formatUpstreamQuotaReset(value) {
+  if (!Number.isSafeInteger(value) || value <= 0) return "上游未返回";
+  return formatDateTime(new Date(value * 1000), "上游未返回");
+}
+
+function upstreamQuotaWindow(bucketLabel, windowLabel, quotaWindow) {
   const value = quotaWindow && typeof quotaWindow === "object" ? quotaWindow : {};
-  const used = value.used_ratio == null ? "—" : formatPercent(value.used_ratio, "—");
-  const remaining = value.remaining_ratio == null ? "—" : formatPercent(value.remaining_ratio, "—");
+  const usedPercent = Number.isInteger(value.usedPercent) && value.usedPercent >= 0 && value.usedPercent <= 100
+    ? value.usedPercent
+    : null;
+  const used = usedPercent == null ? "上游未返回" : `${usedPercent}%`;
+  const remaining = usedPercent == null ? "上游未返回" : `${100 - usedPercent}%`;
   return element("article", {className: "upstream-quota-window"},
-    element("strong", {text: label}),
+    element("strong", {text: `${bucketLabel} · ${windowLabel} · ${formatUpstreamQuotaDuration(value.windowDurationMins)}`}),
     element("span", {text: `已用 ${used} · 剩余 ${remaining}`}),
-    element("small", {text: `重置：${formatDateTime(value.resets_at, "上游未返回")}`}),
+    element("small", {text: `重置：${formatUpstreamQuotaReset(value.resetsAt)}`}),
   );
+}
+
+function upstreamQuotaReached(bucketLabel) {
+  return element("article", {className: "upstream-quota-window"},
+    element("strong", {text: `${bucketLabel} · 状态`}),
+    element("span", {text: "已达上游限额"}),
+    element("small", {text: "请等待额度窗口重置后重试。"}),
+  );
+}
+
+function upstreamQuotaWindows(result) {
+  const byLimitID = result?.rateLimitsByLimitId;
+  const entries = byLimitID && typeof byLimitID === "object" && !Array.isArray(byLimitID)
+    ? Object.entries(byLimitID)
+    : [];
+  const buckets = entries.length > 0 ? entries : [[result?.rateLimits?.limitId || "默认", result?.rateLimits]];
+  const windows = [];
+  for (const [limitID, quota] of buckets) {
+    const bucket = quota && typeof quota === "object" ? quota : {};
+    const bucketLabel = `额度桶 ${String(limitID)}`;
+    windows.push(upstreamQuotaWindow(bucketLabel, "主窗口", bucket.primary));
+    windows.push(upstreamQuotaWindow(bucketLabel, "次窗口", bucket.secondary));
+    if (bucket.rateLimitReachedType != null && String(bucket.rateLimitReachedType).trim() !== "") {
+      windows.push(upstreamQuotaReached(bucketLabel));
+    }
+  }
+  return windows;
 }
 
 function markUpstreamQuotaStale(container) {
@@ -1814,14 +1857,14 @@ function markUpstreamQuotaStale(container) {
   show(container.querySelector(".upstream-quota-stale-note"));
 }
 
-function scheduleUpstreamQuotaStale(accountID, container, queriedAt) {
+function scheduleUpstreamQuotaStale(accountID, container, receivedAt) {
   clearUpstreamQuotaTimer(accountID);
-  const queried = new Date(queriedAt || "");
-  if (Number.isNaN(queried.getTime())) {
+  const received = new Date(receivedAt || "");
+  if (Number.isNaN(received.getTime())) {
     markUpstreamQuotaStale(container);
     return;
   }
-  const delay = queried.getTime() + upstreamQuotaStaleAfterMS - Date.now();
+  const delay = received.getTime() + upstreamQuotaStaleAfterMS - Date.now();
   if (delay <= 0) {
     markUpstreamQuotaStale(container);
     return;
@@ -1834,30 +1877,23 @@ function scheduleUpstreamQuotaStale(accountID, container, queriedAt) {
   upstreamQuotaStaleTimers.set(key, timer);
 }
 
-function renderUpstreamQuota(account, container, result) {
+function renderUpstreamQuota(account, container, result, receivedAt) {
   const freshness = statusBadge("ok");
   freshness.classList.add("upstream-quota-freshness");
   freshness.textContent = "刚刚查询";
-  const windows = [
-    upstreamQuotaWindow("5 小时", result?.five_hour),
-    upstreamQuotaWindow("7 天", result?.seven_day),
-  ];
-  const additional = Array.isArray(result?.additional_windows) ? result.additional_windows : [];
-  for (const [index, quotaWindow] of additional.entries()) {
-    windows.push(upstreamQuotaWindow(`附加窗口 ${index + 1}`, quotaWindow));
-  }
+  const windows = upstreamQuotaWindows(result);
   container.dataset.state = "fresh";
-  container.dataset.queriedAt = String(result?.queried_at || "");
+  container.dataset.queriedAt = receivedAt.toISOString();
   container.setAttribute("aria-busy", "false");
   container.replaceChildren(
     element("div", {className: "upstream-quota-result-head"},
-      element("span", {text: `查询于 ${formatDateTime(result?.queried_at, "未知时间")} · ${String(result?.plan || account.plan || "套餐未知")}`}),
+      element("span", {text: `查询于 ${formatDateTime(receivedAt, "未知时间")} · ${String(account.plan || "套餐未知")}`}),
       freshness,
     ),
     element("div", {className: "upstream-quota-windows"}, ...windows),
     element("p", {className: "upstream-quota-stale-note hidden", text: "此结果已超过 5 分钟，可能不再反映当前额度。请重新查询。"}),
   );
-  scheduleUpstreamQuotaStale(account.id, container, result?.queried_at);
+  scheduleUpstreamQuotaStale(account.id, container, receivedAt);
 }
 
 async function loadUpstreamQuota(account, quotaBlock, container) {
@@ -1867,10 +1903,13 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
   container.setAttribute("aria-busy", "true");
   container.replaceChildren(element("p", {className: "upstream-quota-state", text: "正在实时查询官方额度…"}));
   try {
-    const result = await api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`, {method: "POST", body: "{}"});
-    if (!result || typeof result !== "object" || !result.queried_at) throw new Error("官方额度响应格式异常，请稍后重试。");
+    const response = await api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`, {method: "POST", body: upstreamQuotaRequestBody});
+    const receivedAt = new Date();
+    if (response?.id !== 6 || !response.result || typeof response.result !== "object" || Array.isArray(response.result)) {
+      throw new Error("官方额度响应格式异常，请稍后重试。");
+    }
     if (!container.isConnected) return;
-    renderUpstreamQuota(account, container, result || {});
+    renderUpstreamQuota(account, container, response.result, receivedAt);
     announce(`已查询 ${account.email_masked || "该上游账号"} 的官方额度。`);
   } catch (error) {
     if (!container.isConnected) return;

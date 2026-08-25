@@ -351,15 +351,29 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		`state.user.role === "owner"`,
 		`/admin/upstream-accounts${querySuffix(query)}`,
 		`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`,
+		`const upstreamQuotaRequestBody = '{"method":"account/rateLimits/read","id":6}'`,
+		`{method: "POST", body: upstreamQuotaRequestBody}`,
+		`response?.id !== 6`, `response.result`, `const receivedAt = new Date()`,
 		`account.email_masked`, `account?.request_count`, `account?.error_count`,
 		`account?.input_tokens`, `account?.cached_input_tokens`, `account?.output_tokens`,
 		`account?.reasoning_tokens`, `account?.equivalent_cost_usd`,
-		`result?.five_hour`, `result?.seven_day`, `result?.additional_windows`,
+		`result?.rateLimitsByLimitId`, `result?.rateLimits`, `bucket.primary`, `bucket.secondary`,
+		`bucket.rateLimitReachedType`, `value.usedPercent`, `100 - usedPercent`,
+		`value.windowDurationMins`, `value.resetsAt`, `上游未返回`, `已达上游限额`,
 		`container.dataset.state = "loading"`, `container.dataset.state = "error"`,
 		`container.dataset.state = "stale"`, `clearUpstreamQuotaTimers()`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("upstream accounts dashboard JavaScript is missing %s", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`, {method: \"POST\", body: \"{}\"}",
+		`result?.five_hour`, `result?.seven_day`, `result?.additional_windows`,
+		`used_ratio`, `remaining_ratio`, `resets_at`, `limitName`,
+	} {
+		if strings.Contains(javascript, forbidden) {
+			t.Fatalf("upstream accounts dashboard JavaScript still contains legacy or unsafe quota field %s", forbidden)
 		}
 	}
 	for _, required := range []string{

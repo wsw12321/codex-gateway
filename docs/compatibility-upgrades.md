@@ -22,11 +22,13 @@
   OAuth `account_id` 的不可逆摘要而不是含邮箱的文件名；同一真实账号的重复文件
   只能有一个进入路由池。
 - 只开放 Bearer 认证的 `GET /internal/upstream-accounts` 和固定 URL 的
-  `GET /internal/upstream-accounts/{id}/quota`。后者只能请求
-  `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的 URL、方法或
-  上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
-  `a***@example.com` 形式的 ASCII 脱敏邮箱；额度只输出 allowlist 规范化后的套餐、
-  窗口比例和 RFC3339 重置时间，不能返回或记录 token、完整邮箱或原始上游响应。
+  `POST /internal/upstream-accounts/{id}/quota`。后者只接受精确的
+  `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
+  并且只能请求 `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的
+  URL、方法或上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
+  `a***@example.com` 形式的 ASCII 脱敏邮箱；额度只输出 `{id,result}` RPC envelope、
+  经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
+  或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
   CLIProxyAPI 完整管理 API 仍保持关闭。
 
 升级候选必须先在隔离环境覆盖以下契约：

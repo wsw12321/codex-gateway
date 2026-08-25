@@ -12,8 +12,8 @@ pricing_template=$root/deploy/pricing-v2.example.json
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch
-compat_patch_sha256=d66059167aa269f2099ed0385cc96f32c3e8da060cce1228e5402288209b2e66
-compat_image=codex-gateway-compat:v7.2.127-ecc9aa72-d66059167aa269f2
+compat_patch_sha256=33561a5a15cc4a38ef20bc0b22d2a5d15b5a1bbbde6a7ffc69aa43cd032be86c
+compat_image=codex-gateway-compat:v7.2.127-ecc9aa72-33561a5a15cc4a38
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -67,6 +67,14 @@ grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
 grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the narrow internal account API'
+grep -Fq 'codexQuotaRPCMethod          = "account/rateLimits/read"' "$compat_patch" && \
+    grep -Fq 'codexQuotaRequestMaxBodySize = 256' "$compat_patch" && \
+    grep -Fq 'internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry the strict POST quota RPC contract'
+grep -Fq 'TestInternalUpstreamAccountQuotaRequiresExactRPCRequest' "$compat_patch" && \
+    grep -Fq 'TestNormalizeUpstreamUsageSupportsNullableWindowsAndCeilsDuration' "$compat_patch" && \
+    grep -Fq 'TestInternalUpstreamAccountQuotaRejectsOversizedSensitiveResponse' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry the quota RPC security regressions'
 test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }

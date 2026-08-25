@@ -160,7 +160,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v7.2.127-ecc9aa72-d66059167aa269f2
+    image: codex-gateway-compat:v7.2.127-ecc9aa72-33561a5a15cc4a38
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile

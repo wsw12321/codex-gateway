@@ -23,17 +23,28 @@ func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/internal/upstream-accounts":
+			if r.Method != http.MethodGet {
+				t.Errorf("account method = %q", r.Method)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []map[string]any{{
 				"id": "0123456789abcdef", "masked_email": "u***@example.com", "plan": "plus",
 				"status": "active", "last_synced_at": now,
 			}}})
 		case "/internal/upstream-accounts/0123456789abcdef/quota":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"queried_at": now, "plan": "plus",
-				"five_hour":          map[string]any{"used_ratio": 0.4, "remaining_ratio": 0.6, "reset_at": now.Add(time.Hour)},
-				"seven_day":          map[string]any{"used_ratio": 0.25, "remaining_ratio": 0.75, "reset_at": now.Add(24 * time.Hour)},
-				"additional_windows": []map[string]any{{"name": "codex_other", "used_ratio": 0.1, "remaining_ratio": 0.9, "reset_at": now.Add(30 * time.Minute), "window_seconds": 1800}},
-			})
+			if r.Method != http.MethodPost {
+				t.Errorf("quota method = %q", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/json" {
+				t.Errorf("content type = %q", got)
+			}
+			body, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(body); got != `{"method":"account/rateLimits/read","id":6}` {
+				t.Errorf("quota body = %q", got)
+			}
+			_, _ = io.WriteString(w, `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"codex_other":{"limitId":"codex_other","limitName":null,"primary":{"usedPercent":10,"windowDurationMins":null,"resetsAt":null},"secondary":null,"rateLimitReachedType":"rate_limit_reached"}},"rateLimitResetCredits":null}}`)
 		default:
 			t.Errorf("unexpected internal path %q", r.URL.Path)
 			http.NotFound(w, r)
@@ -48,9 +59,22 @@ func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 		t.Fatalf("accounts=%+v err=%v", accounts, err)
 	}
 	quota, err := client.QueryUpstreamAccountQuota(context.Background(), accounts[0].ID)
-	if err != nil || quota.Plan != "plus" || quota.FiveHour.UsedRatio != 0.4 ||
-		len(quota.AdditionalWindows) != 1 || quota.AdditionalWindows[0].Name != "additional_1" {
+	other := quota.Result.RateLimitsByLimitID["codex_other"]
+	if err != nil || quota.ID != AccountRateLimitsRequestID || quota.Result.RateLimits.Primary == nil ||
+		quota.Result.RateLimits.Primary.UsedPercent != 25 || quota.Result.RateLimits.Secondary != nil ||
+		len(quota.Result.RateLimitsByLimitID) != 2 || other.Primary == nil || other.Primary.WindowDurationMins != nil ||
+		other.RateLimitReachedType == nil || *other.RateLimitReachedType != "rate_limit_reached" ||
+		quota.Result.RateLimitResetCredits != nil {
 		t.Fatalf("quota=%+v err=%v", quota, err)
+	}
+	encoded, err := json.Marshal(quota)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"queried_at", "plan", "five_hour", "seven_day", "remaining_ratio"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("legacy or sensitive field %q in normalized response: %s", forbidden, encoded)
+		}
 	}
 }
 
@@ -87,16 +111,37 @@ func TestInternalAccountAPIRejectsLeaksAndSchemaDrift(t *testing.T) {
 	}
 }
 
-func TestInternalQuotaRejectsMissingRequiredFields(t *testing.T) {
+func TestInternalQuotaRejectsInvalidRPCResponses(t *testing.T) {
+	validCodex := `{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null}`
 	tests := []struct {
 		name string
 		body string
 	}{
 		{name: "empty object", body: `{}`},
-		{name: "missing used ratio", body: `{"queried_at":"2026-08-24T12:00:00Z","plan":"plus","five_hour":{"remaining_ratio":1,"reset_at":"2026-08-24T17:00:00Z"},"seven_day":{"used_ratio":0.2,"remaining_ratio":0.8,"reset_at":"2026-08-31T12:00:00Z"}}`},
-		{name: "missing remaining ratio", body: `{"queried_at":"2026-08-24T12:00:00Z","plan":"plus","five_hour":{"used_ratio":0,"reset_at":"2026-08-24T17:00:00Z"},"seven_day":{"used_ratio":0.2,"remaining_ratio":0.8,"reset_at":"2026-08-31T12:00:00Z"}}`},
-		{name: "unknown quota plan", body: `{"queried_at":"2026-08-24T12:00:00Z","plan":"unknown","five_hour":{"used_ratio":0.4,"remaining_ratio":0.6,"reset_at":"2026-08-24T17:00:00Z"},"seven_day":{"used_ratio":0.2,"remaining_ratio":0.8,"reset_at":"2026-08-31T12:00:00Z"}}`},
-		{name: "missing additional name", body: `{"queried_at":"2026-08-24T12:00:00Z","plan":"plus","five_hour":{"used_ratio":0.4,"remaining_ratio":0.6,"reset_at":"2026-08-24T17:00:00Z"},"seven_day":{"used_ratio":0.2,"remaining_ratio":0.8,"reset_at":"2026-08-31T12:00:00Z"},"additional_windows":[{"used_ratio":0.1,"remaining_ratio":0.9,"reset_at":"2026-08-24T12:30:00Z"}]}`},
+		{name: "wrong response id", body: `{"id":5,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null}}`},
+		{name: "string response id", body: `{"id":"6","result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null}}`},
+		{name: "missing result", body: `{"id":6}`},
+		{name: "missing rate limits", body: `{"id":6,"result":{"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null}}`},
+		{name: "null bucket map", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":null,"rateLimitResetCredits":null}}`},
+		{name: "empty bucket map", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{},"rateLimitResetCredits":null}}`},
+		{name: "missing codex bucket", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex_other":{"limitId":"codex_other","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "non-null reset credits", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":{}}}`},
+		{name: "missing limit name", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","primary":null,"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "upstream limit name", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":"Bearer-secret","primary":null,"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":"Bearer-secret","primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "missing primary", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "missing used percent", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "percent above 100", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":101,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":101,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "fractional percent", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25.5,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25.5,"windowDurationMins":15,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "zero duration", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":0,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":0,"resetsAt":1730947200},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "timestamp before lower bound", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "unknown reached type", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":"Bearer-secret"},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":"Bearer-secret"}},"rateLimitResetCredits":null}}`},
+		{name: "invalid bucket id", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `,"../../token":{"limitId":"../../token","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "map and snapshot id mismatch", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `,"codex_other":{"limitId":"different","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "single bucket mismatch", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`},
+		{name: "duplicate bucket id", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `,"codex":` + validCodex + `},"rateLimitResetCredits":null}}`},
+		{name: "unknown sensitive field", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null,"access_token":"Bearer-secret"}}`},
+		{name: "unknown window field", body: `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":25,"windowDurationMins":15,"resetsAt":1730947200,"token":"Bearer-secret"},"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null}}`},
+		{name: "multiple JSON values", body: `{"id":6,"result":{"rateLimits":` + validCodex + `,"rateLimitsByLimitId":{"codex":` + validCodex + `},"rateLimitResetCredits":null}} {"access_token":"Bearer-secret"}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -108,10 +153,37 @@ func TestInternalQuotaRejectsMissingRequiredFields(t *testing.T) {
 			base, _ := url.Parse(server.URL)
 			_, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 			var internalErr *InternalAPIError
-			if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
+			if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" ||
+				strings.Contains(err.Error(), "Bearer-secret") || strings.Contains(fmt.Sprintf("%#v", internalErr), "Bearer-secret") {
 				t.Fatalf("error = %#v", err)
 			}
 		})
+	}
+}
+
+func TestInternalQuotaAcceptsDynamicWindowsAndNullableMetadata(t *testing.T) {
+	const body = `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":1730947200},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1731552000},"rateLimitReachedType":"workspace_member_usage_limit_reached"},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":40,"windowDurationMins":300,"resetsAt":1730947200},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1731552000},"rateLimitReachedType":"workspace_member_usage_limit_reached"},"codex_other":{"limitId":"codex_other","limitName":null,"primary":{"usedPercent":0},"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+
+	quota, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if quota.Result.RateLimits.Primary == nil || quota.Result.RateLimits.Secondary == nil ||
+		quota.Result.RateLimits.Primary.WindowDurationMins == nil ||
+		quota.Result.RateLimits.Secondary.WindowDurationMins == nil ||
+		*quota.Result.RateLimits.Primary.WindowDurationMins != 300 ||
+		*quota.Result.RateLimits.Secondary.WindowDurationMins != 10080 {
+		t.Fatalf("fixed windows were not preserved: %+v", quota.Result.RateLimits)
+	}
+	other := quota.Result.RateLimitsByLimitID["codex_other"]
+	if other.Primary == nil || other.Primary.WindowDurationMins != nil || other.Primary.ResetsAt != nil || other.Secondary != nil {
+		t.Fatalf("nullable window metadata was not preserved: %+v", other)
 	}
 }
 
@@ -196,6 +268,22 @@ func TestInternalAccountAPIRejectsOversizedAndSensitiveMalformedJSON(t *testing.
 		base, _ := url.Parse(server.URL)
 
 		_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+		var internalErr *InternalAPIError
+		if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
+			t.Fatalf("error = %#v", err)
+		}
+	})
+
+	t.Run("oversized quota response", func(t *testing.T) {
+		body := `{"id":6}` + strings.Repeat(" ", maxInternalResponseBodyBytes)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+		defer server.Close()
+		base, _ := url.Parse(server.URL)
+
+		_, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 		var internalErr *InternalAPIError
 		if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
 			t.Fatalf("error = %#v", err)

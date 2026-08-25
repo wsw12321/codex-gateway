@@ -1,9 +1,9 @@
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 00000000..ab07a52d
+index 0000000000000000000000000000000000000000..414778c7ba0af0d011999e529eda592e766e2a00
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,553 @@
+@@ -0,0 +1,642 @@
 +package api
 +
 +import (
@@ -24,16 +24,20 @@ index 00000000..ab07a52d
 +)
 +
 +const (
-+	codexUsageURL          = "https://chatgpt.com/backend-api/wham/usage"
-+	codexFiveHourSeconds   = 5 * 60 * 60
-+	codexSevenDaySeconds   = 7 * 24 * 60 * 60
-+	codexQuotaTimeout      = 15 * time.Second
-+	codexQuotaMaxBodyBytes = 1 << 20
-+	codexMaxExtraWindows   = 32
-+	codexMaxWindowSeconds  = 31 * 24 * 60 * 60
-+	codexMinResetUnix      = 946684800  // 2000-01-01T00:00:00Z
-+	codexMaxResetUnix      = 4102444800 // 2100-01-01T00:00:00Z
++	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
++	codexQuotaRPCMethod          = "account/rateLimits/read"
++	codexQuotaRPCID              = 6
++	codexQuotaTimeout            = 15 * time.Second
++	codexQuotaRequestMaxBodySize = 256
++	codexQuotaMaxBodyBytes       = 1 << 20
++	codexMaxExtraLimits          = 32
++	codexMaxLimitIDBytes         = 32
++	codexMaxWindowSeconds        = 31 * 24 * 60 * 60
++	codexMinResetUnix            = 946684800  // 2000-01-01T00:00:00Z
++	codexMaxResetUnix            = 4102444800 // 2100-01-01T00:00:00Z
 +)
++
++var errQuotaRPCRequestTooLarge = errors.New("quota RPC request too large")
 +
 +type upstreamAccountView struct {
 +	ID           string `json:"id"`
@@ -43,38 +47,51 @@ index 00000000..ab07a52d
 +	LastSyncedAt string `json:"last_synced_at"`
 +}
 +
++type quotaRPCRequest struct {
++	Method string
++	ID     int
++}
++
++type quotaRPCResponse struct {
++	ID     int                   `json:"id"`
++	Result quotaRateLimitsResult `json:"result"`
++}
++
++type quotaRateLimitsResult struct {
++	RateLimits            quotaRateLimitView            `json:"rateLimits"`
++	RateLimitsByLimitID   map[string]quotaRateLimitView `json:"rateLimitsByLimitId"`
++	RateLimitResetCredits any                           `json:"rateLimitResetCredits"`
++}
++
++type quotaRateLimitView struct {
++	LimitID              string           `json:"limitId"`
++	LimitName            *string          `json:"limitName"`
++	Primary              *quotaWindowView `json:"primary"`
++	Secondary            *quotaWindowView `json:"secondary"`
++	RateLimitReachedType *string          `json:"rateLimitReachedType"`
++}
++
 +type quotaWindowView struct {
-+	UsedRatio      float64 `json:"used_ratio"`
-+	RemainingRatio float64 `json:"remaining_ratio"`
-+	ResetAt        string  `json:"reset_at"`
-+}
-+
-+type additionalQuotaWindowView struct {
-+	Name           string  `json:"name"`
-+	UsedRatio      float64 `json:"used_ratio"`
-+	RemainingRatio float64 `json:"remaining_ratio"`
-+	ResetAt        string  `json:"reset_at"`
-+	WindowSeconds  int64   `json:"window_seconds"`
-+}
-+
-+type upstreamQuotaView struct {
-+	QueriedAt         string                      `json:"queried_at"`
-+	Plan              string                      `json:"plan"`
-+	FiveHour          quotaWindowView             `json:"five_hour"`
-+	SevenDay          quotaWindowView             `json:"seven_day"`
-+	AdditionalWindows []additionalQuotaWindowView `json:"additional_windows"`
++	UsedPercent        int    `json:"usedPercent"`
++	WindowDurationMins *int64 `json:"windowDurationMins"`
++	ResetsAt           *int64 `json:"resetsAt"`
 +}
 +
 +type upstreamUsagePayload struct {
-+	PlanType             string                    `json:"plan_type"`
-+	RateLimit            upstreamRateLimit         `json:"rate_limit"`
-+	AdditionalRateLimits []upstreamAdditionalLimit `json:"additional_rate_limits"`
++	PlanType             string                        `json:"plan_type"`
++	RateLimit            *upstreamRateLimit            `json:"rate_limit"`
++	AdditionalRateLimits []upstreamAdditionalLimit     `json:"additional_rate_limits"`
++	RateLimitReachedType *upstreamRateLimitReachedType `json:"rate_limit_reached_type"`
 +}
 +
 +type upstreamAdditionalLimit struct {
-+	LimitName      string            `json:"limit_name"`
-+	MeteredFeature string            `json:"metered_feature"`
-+	RateLimit      upstreamRateLimit `json:"rate_limit"`
++	LimitName      string             `json:"limit_name"`
++	MeteredFeature string             `json:"metered_feature"`
++	RateLimit      *upstreamRateLimit `json:"rate_limit"`
++}
++
++type upstreamRateLimitReachedType struct {
++	Type string `json:"type"`
 +}
 +
 +type upstreamRateLimit struct {
@@ -171,6 +188,15 @@ index 00000000..ab07a52d
 +		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_registry_unavailable"})
 +		return
 +	}
++	rpcRequest, err := decodeQuotaRPCRequest(c.Request.Body)
++	if err != nil {
++		if errors.Is(err, errQuotaRPCRequestTooLarge) {
++			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "quota_request_too_large"})
++			return
++		}
++		c.JSON(http.StatusBadRequest, gin.H{"error": "quota_request_invalid"})
++		return
++	}
 +	account := findCodexOAuthAccount(s.handlers.AuthManager.List(), strings.TrimSpace(c.Param("id")))
 +	if account == nil {
 +		c.JSON(http.StatusNotFound, gin.H{"error": "upstream_account_not_found"})
@@ -247,12 +273,71 @@ index 00000000..ab07a52d
 +		c.JSON(http.StatusBadGateway, gin.H{"error": "quota_response_invalid"})
 +		return
 +	}
-+	quota, err := normalizeUpstreamUsage(body, account, time.Now().UTC())
++	quota, err := normalizeUpstreamUsage(body, account)
 +	if err != nil {
 +		c.JSON(http.StatusBadGateway, gin.H{"error": "quota_schema_changed"})
 +		return
 +	}
-+	c.JSON(http.StatusOK, quota)
++	c.JSON(http.StatusOK, quotaRPCResponse{ID: rpcRequest.ID, Result: quota})
++}
++
++func decodeQuotaRPCRequest(body io.Reader) (quotaRPCRequest, error) {
++	data, err := io.ReadAll(io.LimitReader(body, codexQuotaRequestMaxBodySize+1))
++	if err != nil {
++		return quotaRPCRequest{}, err
++	}
++	if len(data) > codexQuotaRequestMaxBodySize {
++		return quotaRPCRequest{}, errQuotaRPCRequestTooLarge
++	}
++
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	start, err := decoder.Token()
++	if err != nil || start != json.Delim('{') {
++		return quotaRPCRequest{}, errors.New("quota RPC request must be an object")
++	}
++	var request quotaRPCRequest
++	var seenMethod, seenID bool
++	for decoder.More() {
++		keyToken, errToken := decoder.Token()
++		if errToken != nil {
++			return quotaRPCRequest{}, errToken
++		}
++		key, ok := keyToken.(string)
++		if !ok {
++			return quotaRPCRequest{}, errors.New("quota RPC request key must be a string")
++		}
++		switch key {
++		case "method":
++			if seenMethod {
++				return quotaRPCRequest{}, errors.New("duplicate quota RPC method")
++			}
++			seenMethod = true
++			if errDecode := decoder.Decode(&request.Method); errDecode != nil {
++				return quotaRPCRequest{}, errDecode
++			}
++		case "id":
++			if seenID {
++				return quotaRPCRequest{}, errors.New("duplicate quota RPC id")
++			}
++			seenID = true
++			if errDecode := decoder.Decode(&request.ID); errDecode != nil {
++				return quotaRPCRequest{}, errDecode
++			}
++		default:
++			return quotaRPCRequest{}, errors.New("unknown quota RPC field")
++		}
++	}
++	end, err := decoder.Token()
++	if err != nil || end != json.Delim('}') {
++		return quotaRPCRequest{}, errors.New("quota RPC request object was not closed")
++	}
++	if err := ensureJSONEOF(decoder); err != nil {
++		return quotaRPCRequest{}, err
++	}
++	if !seenMethod || !seenID || request.Method != codexQuotaRPCMethod || request.ID != codexQuotaRPCID {
++		return quotaRPCRequest{}, errors.New("unsupported quota RPC request")
++	}
++	return request, nil
 +}
 +
 +func findCodexOAuthAccount(accounts []*auth.Auth, id string) *auth.Auth {
@@ -407,115 +492,97 @@ index 00000000..ab07a52d
 +	return value.UTC().Format(time.RFC3339)
 +}
 +
-+func normalizeUpstreamUsage(body []byte, account *auth.Auth, queriedAt time.Time) (upstreamQuotaView, error) {
++func normalizeUpstreamUsage(body []byte, account *auth.Auth) (quotaRateLimitsResult, error) {
 +	var payload upstreamUsagePayload
 +	decoder := json.NewDecoder(bytes.NewReader(body))
 +	if err := decoder.Decode(&payload); err != nil {
-+		return upstreamQuotaView{}, err
++		return quotaRateLimitsResult{}, err
 +	}
 +	if err := ensureJSONEOF(decoder); err != nil {
-+		return upstreamQuotaView{}, err
++		return quotaRateLimitsResult{}, err
 +	}
-+
 +	plan := strings.ToLower(strings.TrimSpace(payload.PlanType))
 +	if plan == "" && account != nil {
 +		plan = strings.ToLower(strings.TrimSpace(account.Attributes["plan_type"]))
 +	}
 +	if !validCodexAccountPlan(plan) {
-+		return upstreamQuotaView{}, errors.New("missing plan type")
++		return quotaRateLimitsResult{}, errors.New("missing plan type")
 +	}
 +
-+	var fiveHour, sevenDay *upstreamUsageWindow
-+	for _, window := range []*upstreamUsageWindow{payload.RateLimit.PrimaryWindow, payload.RateLimit.SecondaryWindow} {
-+		if window == nil {
-+			continue
-+		}
-+		if window.LimitWindowSeconds == nil {
-+			return upstreamQuotaView{}, errors.New("missing quota window duration")
-+		}
-+		switch *window.LimitWindowSeconds {
-+		case codexFiveHourSeconds:
-+			if fiveHour != nil {
-+				return upstreamQuotaView{}, errors.New("duplicate five hour window")
-+			}
-+			fiveHour = window
-+		case codexSevenDaySeconds:
-+			if sevenDay != nil {
-+				return upstreamQuotaView{}, errors.New("duplicate seven day window")
-+			}
-+			sevenDay = window
-+		default:
-+			return upstreamQuotaView{}, errors.New("unexpected primary quota window")
-+		}
++	reachedType := normalizeRateLimitReachedType(payload.RateLimitReachedType)
++	primary, err := normalizeRateLimit("codex", payload.RateLimit, reachedType)
++	if err != nil {
++		return quotaRateLimitsResult{}, err
 +	}
-+	if fiveHour == nil || sevenDay == nil {
-+		return upstreamQuotaView{}, errors.New("missing fixed quota window")
++	byLimitID := map[string]quotaRateLimitView{"codex": primary}
++	if len(payload.AdditionalRateLimits) > codexMaxExtraLimits {
++		return quotaRateLimitsResult{}, errors.New("too many additional quota limits")
 +	}
++	for _, additional := range payload.AdditionalRateLimits {
++		limitID := strings.TrimSpace(additional.MeteredFeature)
++		if !validQuotaLimitID(limitID) {
++			return quotaRateLimitsResult{}, errors.New("invalid additional quota limit id")
++		}
++		if _, exists := byLimitID[limitID]; exists {
++			return quotaRateLimitsResult{}, errors.New("duplicate quota limit id")
++		}
++		normalized, errLimit := normalizeRateLimit(limitID, additional.RateLimit, nil)
++		if errLimit != nil {
++			return quotaRateLimitsResult{}, errLimit
++		}
++		byLimitID[limitID] = normalized
++	}
++	return quotaRateLimitsResult{
++		RateLimits:            primary,
++		RateLimitsByLimitID:   byLimitID,
++		RateLimitResetCredits: nil,
++	}, nil
++}
 +
-+	view := upstreamQuotaView{
-+		QueriedAt:         queriedAt.UTC().Format(time.RFC3339),
-+		Plan:              plan,
-+		AdditionalWindows: make([]additionalQuotaWindowView, 0),
++func normalizeRateLimit(limitID string, limit *upstreamRateLimit, reachedType *string) (quotaRateLimitView, error) {
++	view := quotaRateLimitView{
++		LimitID:              limitID,
++		LimitName:            nil,
++		RateLimitReachedType: reachedType,
++	}
++	if limit == nil {
++		return view, nil
 +	}
 +	var err error
-+	if view.FiveHour, err = normalizeQuotaWindow(fiveHour); err != nil {
-+		return upstreamQuotaView{}, err
++	if view.Primary, err = normalizeQuotaWindow(limit.PrimaryWindow); err != nil {
++		return quotaRateLimitView{}, err
 +	}
-+	if view.SevenDay, err = normalizeQuotaWindow(sevenDay); err != nil {
-+		return upstreamQuotaView{}, err
++	if view.Secondary, err = normalizeQuotaWindow(limit.SecondaryWindow); err != nil {
++		return quotaRateLimitView{}, err
 +	}
-+
-+	for _, additional := range payload.AdditionalRateLimits {
-+		name, ok := normalizeQuotaWindowName(additional.LimitName, additional.MeteredFeature)
-+		if !ok {
-+			return upstreamQuotaView{}, errors.New("additional quota window missing name")
-+		}
-+		windowCount := 0
-+		for _, window := range []*upstreamUsageWindow{additional.RateLimit.PrimaryWindow, additional.RateLimit.SecondaryWindow} {
-+			if window == nil {
-+				continue
-+			}
-+			normalized, errWindow := normalizeQuotaWindow(window)
-+			if errWindow != nil || window.LimitWindowSeconds == nil || *window.LimitWindowSeconds <= 0 || *window.LimitWindowSeconds > codexMaxWindowSeconds || len(view.AdditionalWindows) >= codexMaxExtraWindows {
-+				return upstreamQuotaView{}, errors.New("invalid additional quota window")
-+			}
-+			view.AdditionalWindows = append(view.AdditionalWindows, additionalQuotaWindowView{
-+				Name:           name,
-+				UsedRatio:      normalized.UsedRatio,
-+				RemainingRatio: normalized.RemainingRatio,
-+				ResetAt:        normalized.ResetAt,
-+				WindowSeconds:  *window.LimitWindowSeconds,
-+			})
-+			windowCount++
-+		}
-+		if windowCount == 0 {
-+			return upstreamQuotaView{}, errors.New("additional quota limit missing window")
-+		}
-+	}
-+	sort.Slice(view.AdditionalWindows, func(i, j int) bool {
-+		if view.AdditionalWindows[i].Name == view.AdditionalWindows[j].Name {
-+			return view.AdditionalWindows[i].WindowSeconds < view.AdditionalWindows[j].WindowSeconds
-+		}
-+		return view.AdditionalWindows[i].Name < view.AdditionalWindows[j].Name
-+	})
 +	return view, nil
 +}
 +
-+func normalizeQuotaWindow(window *upstreamUsageWindow) (quotaWindowView, error) {
-+	if window == nil || window.UsedPercent == nil || window.LimitWindowSeconds == nil || window.ResetAt == nil ||
-+		*window.LimitWindowSeconds <= 0 || *window.ResetAt <= 0 ||
-+		*window.ResetAt < codexMinResetUnix || *window.ResetAt > codexMaxResetUnix ||
-+		math.IsNaN(*window.UsedPercent) || math.IsInf(*window.UsedPercent, 0) ||
-+		*window.UsedPercent < 0 || *window.UsedPercent > 100 {
-+		return quotaWindowView{}, errors.New("invalid quota window")
++func normalizeQuotaWindow(window *upstreamUsageWindow) (*quotaWindowView, error) {
++	if window == nil {
++		return nil, nil
 +	}
-+	used := math.Round((*window.UsedPercent/100)*1e6) / 1e6
-+	remaining := math.Round((1-used)*1e6) / 1e6
-+	return quotaWindowView{
-+		UsedRatio:      used,
-+		RemainingRatio: remaining,
-+		ResetAt:        time.Unix(*window.ResetAt, 0).UTC().Format(time.RFC3339),
-+	}, nil
++	if window.UsedPercent == nil || math.IsNaN(*window.UsedPercent) || math.IsInf(*window.UsedPercent, 0) ||
++		*window.UsedPercent < 0 || *window.UsedPercent > 100 || math.Trunc(*window.UsedPercent) != *window.UsedPercent {
++		return nil, errors.New("invalid quota window used percent")
++	}
++	view := &quotaWindowView{UsedPercent: int(*window.UsedPercent)}
++	if window.LimitWindowSeconds != nil {
++		seconds := *window.LimitWindowSeconds
++		if seconds <= 0 || seconds > codexMaxWindowSeconds {
++			return nil, errors.New("invalid quota window duration")
++		}
++		minutes := (seconds + 59) / 60
++		view.WindowDurationMins = &minutes
++	}
++	if window.ResetAt != nil {
++		if *window.ResetAt < codexMinResetUnix || *window.ResetAt > codexMaxResetUnix {
++			return nil, errors.New("invalid quota window reset")
++		}
++		resetAt := *window.ResetAt
++		view.ResetsAt = &resetAt
++	}
++	return view, nil
 +}
 +
 +func validCodexAccountPlan(plan string) bool {
@@ -535,16 +602,38 @@ index 00000000..ab07a52d
 +	return "unknown"
 +}
 +
-+func normalizeQuotaWindowName(limitName, meteredFeature string) (string, bool) {
-+	// The quota endpoint is intentionally strict: schema drift must not reflect
-+	// an arbitrary upstream string through this narrow normalized interface.
-+	for _, candidate := range []string{limitName, meteredFeature} {
-+		switch strings.ToLower(strings.TrimSpace(candidate)) {
-+		case "codex_other":
-+			return "codex_other", true
++func validQuotaLimitID(value string) bool {
++	if value == "" || len(value) > codexMaxLimitIDBytes || value[0] < 'a' || value[0] > 'z' {
++		return false
++	}
++	for i := 1; i < len(value); i++ {
++		candidate := value[i]
++		if candidate < 'a' || candidate > 'z' {
++			if candidate < '0' || candidate > '9' {
++				if candidate != '_' {
++					return false
++				}
++			}
 +		}
 +	}
-+	return "", false
++	return true
++}
++
++func normalizeRateLimitReachedType(details *upstreamRateLimitReachedType) *string {
++	if details == nil {
++		return nil
++	}
++	value := strings.TrimSpace(details.Type)
++	switch value {
++	case "rate_limit_reached",
++		"workspace_owner_credits_depleted",
++		"workspace_member_credits_depleted",
++		"workspace_owner_usage_limit_reached",
++		"workspace_member_usage_limit_reached":
++		return &value
++	default:
++		return nil
++	}
 +}
 +
 +func ensureJSONEOF(decoder *json.Decoder) error {
@@ -559,10 +648,10 @@ index 00000000..ab07a52d
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
-index 00000000..f31ec8a6
+index 0000000000000000000000000000000000000000..4454ec29f5d58c47ccb65de914d66c0b39e12b32
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,532 @@
 +package api
 +
 +import (
@@ -809,7 +898,8 @@ index 00000000..f31ec8a6
 +			"primary_window":{"used_percent":42,"limit_window_seconds":18000,"reset_after_seconds":120,"reset_at":1800000000},
 +			"secondary_window":{"used_percent":5,"limit_window_seconds":604800,"reset_after_seconds":120,"reset_at":1800100000}
 +		},
-+		"additional_rate_limits":[{"limit_name":"codex_other","rate_limit":{"primary_window":{"used_percent":88,"limit_window_seconds":1800,"reset_at":1800200000}}}],
++		"rate_limit_reached_type":{"type":"workspace_member_usage_limit_reached"},
++		"additional_rate_limits":[{"limit_name":"must-not-leak","metered_feature":"codex_other","rate_limit":{"primary_window":{"used_percent":88,"limit_window_seconds":1800,"reset_at":1800200000}}}],
 +		"future_field":{"ignored":true}
 +	}`}
 +	registered := registerQuotaTestAccount(t, server, executor)
@@ -819,7 +909,7 @@ index 00000000..f31ec8a6
 +	registered.Attributes["compat_name"] = "attacker-compat"
 +	registered.Attributes["provider_key"] = "openai-compatibility:attacker"
 +
-+	req := httptest.NewRequest(http.MethodGet, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", nil)
++	req := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(`{"method":"account/rateLimits/read","id":6}`))
 +	req.Header.Set("Authorization", "Bearer test-key")
 +	req.Header.Set("X-Attacker-Controlled", "must-not-forward")
 +	req.Header.Set("X-Codex-Gateway-Affinity", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ")
@@ -850,17 +940,30 @@ index 00000000..f31ec8a6
 +		t.Fatalf("gateway affinity header reached upstream: %q", got)
 +	}
 +
-+	var quota upstreamQuotaView
++	var quota quotaRPCResponse
 +	if err := json.Unmarshal(recorder.Body.Bytes(), &quota); err != nil {
 +		t.Fatalf("decode response: %v", err)
 +	}
-+	if quota.Plan != "plus" || quota.FiveHour.UsedRatio != 0.42 || quota.FiveHour.RemainingRatio != 0.58 || quota.SevenDay.UsedRatio != 0.05 {
++	if quota.ID != codexQuotaRPCID || quota.Result.RateLimits.LimitID != "codex" || quota.Result.RateLimits.Primary == nil ||
++		quota.Result.RateLimits.Primary.UsedPercent != 42 || quota.Result.RateLimits.Primary.WindowDurationMins == nil ||
++		*quota.Result.RateLimits.Primary.WindowDurationMins != 300 || quota.Result.RateLimits.Secondary == nil ||
++		quota.Result.RateLimits.Secondary.UsedPercent != 5 || quota.Result.RateLimits.RateLimitReachedType == nil ||
++		*quota.Result.RateLimits.RateLimitReachedType != "workspace_member_usage_limit_reached" {
 +		t.Fatalf("quota = %#v", quota)
 +	}
-+	if len(quota.AdditionalWindows) != 1 || quota.AdditionalWindows[0].Name != "codex_other" || quota.AdditionalWindows[0].UsedRatio != 0.88 {
-+		t.Fatalf("additional windows = %#v", quota.AdditionalWindows)
++	additional, ok := quota.Result.RateLimitsByLimitID["codex_other"]
++	if !ok || additional.Primary == nil || additional.Primary.UsedPercent != 88 || additional.Secondary != nil || additional.LimitName != nil {
++		t.Fatalf("additional limit = %#v", additional)
 +	}
-+	if strings.Contains(recorder.Body.String(), "allowed") || strings.Contains(recorder.Body.String(), "future_field") {
++	codex, ok := quota.Result.RateLimitsByLimitID["codex"]
++	if !ok || codex.Primary == nil || codex.Primary.UsedPercent != quota.Result.RateLimits.Primary.UsedPercent ||
++		codex.RateLimitReachedType == nil || *codex.RateLimitReachedType != *quota.Result.RateLimits.RateLimitReachedType {
++		t.Fatalf("codex compatibility/map views diverged: %#v %#v", quota.Result.RateLimits, codex)
++	}
++	if quota.Result.RateLimitResetCredits != nil || strings.Contains(recorder.Body.String(), "allowed") ||
++		strings.Contains(recorder.Body.String(), "future_field") || strings.Contains(recorder.Body.String(), "must-not-leak") ||
++		strings.Contains(recorder.Body.String(), "plan_type") || !strings.Contains(recorder.Body.String(), `"rateLimitResetCredits":null`) ||
++		!strings.Contains(recorder.Body.String(), `"secondary":null`) {
 +		t.Fatalf("raw upstream fields leaked: %s", recorder.Body.String())
 +	}
 +}
@@ -882,7 +985,7 @@ index 00000000..f31ec8a6
 +		t.Fatalf("Update() = %#v, %v", registered, err)
 +	}
 +
-+	req := httptest.NewRequest(http.MethodGet, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", nil)
++	req := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(`{"method":"account/rateLimits/read","id":6}`))
 +	req.Header.Set("Authorization", "Bearer test-key")
 +	recorder := httptest.NewRecorder()
 +	server.engine.ServeHTTP(recorder, req)
@@ -925,16 +1028,19 @@ index 00000000..f31ec8a6
 +		wantStatus int
 +		wantError  string
 +	}{
-+		{name: "malformed", body: `{"access_token":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "malformed", body: `{"access_token":"must-not-leak"`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
 +		{name: "missing used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "missing duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "missing reset", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "negative used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":-1,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "oversized used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":101,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "fractional used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":24.6,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
 +		{name: "unsafe plan", body: `{"plan_type":"plus<script>","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "unsafe window name", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}},"additional_rate_limits":[{"limit_name":"<raw-upstream>","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":1800,"reset_at":1800000000}}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "unknown safe window name", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}},"additional_rate_limits":[{"limit_name":"future_feature","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":1800,"reset_at":1800000000}}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "allowlisted additional limit missing windows", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}},"additional_rate_limits":[{"limit_name":"codex_other","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "allowlisted additional limit empty window", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}},"additional_rate_limits":[{"limit_name":"codex_other","rate_limit":{"primary_window":{}}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "unsafe limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"limit_name":"must-not-leak","metered_feature":"<raw-upstream>","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "hyphenated limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"tool-v2","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "duplicate limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex_other","rate_limit":{}},{"metered_feature":"codex_other","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "reserved codex limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "absurd duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":9223372036854775807,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
 +		{name: "absurd reset", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":9223372036854775807},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "multiple response values", body: `{"plan_type":"plus","rate_limit":{}} {"secret":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
 +		{name: "reauthentication", status: http.StatusUnauthorized, body: `{"token":"must-not-leak"}`, wantStatus: http.StatusUnauthorized, wantError: "quota_reauthentication_required"},
 +		{name: "forbidden", status: http.StatusForbidden, body: `{"token":"must-not-leak"}`, wantStatus: http.StatusForbidden, wantError: "quota_reauthentication_required"},
 +		{name: "rate limited", status: http.StatusTooManyRequests, body: `{"detail":"must-not-leak"}`, wantStatus: http.StatusTooManyRequests, wantError: "quota_upstream_rate_limited"},
@@ -946,7 +1052,7 @@ index 00000000..f31ec8a6
 +			server := newTestServer(t)
 +			executor := &quotaCaptureExecutor{status: test.status, responseBody: test.body, err: test.err}
 +			registered := registerQuotaTestAccount(t, server, executor)
-+			req := httptest.NewRequest(http.MethodGet, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", nil)
++			req := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(`{"method":"account/rateLimits/read","id":6}`))
 +			req.Header.Set("Authorization", "Bearer test-key")
 +			recorder := httptest.NewRecorder()
 +			server.engine.ServeHTTP(recorder, req)
@@ -959,8 +1065,127 @@ index 00000000..f31ec8a6
 +		})
 +	}
 +}
++
++func TestInternalUpstreamAccountQuotaRequiresExactRPCRequest(t *testing.T) {
++	for _, test := range []struct {
++		name       string
++		method     string
++		body       string
++		wantStatus int
++	}{
++		{name: "wrong HTTP method", method: http.MethodGet, body: `{"method":"account/rateLimits/read","id":6}`, wantStatus: http.StatusNotFound},
++		{name: "empty", method: http.MethodPost, body: ``, wantStatus: http.StatusBadRequest},
++		{name: "wrong RPC method", method: http.MethodPost, body: `{"method":"account/read","id":6}`, wantStatus: http.StatusBadRequest},
++		{name: "wrong RPC id", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":7}`, wantStatus: http.StatusBadRequest},
++		{name: "fractional RPC id", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6.0}`, wantStatus: http.StatusBadRequest},
++		{name: "params null", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6,"params":null}`, wantStatus: http.StatusBadRequest},
++		{name: "unknown field", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6,"future":true}`, wantStatus: http.StatusBadRequest},
++		{name: "trailing JSON", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6}{}`, wantStatus: http.StatusBadRequest},
++		{name: "duplicate method", method: http.MethodPost, body: `{"method":"account/rateLimits/read","method":"account/rateLimits/read","id":6}`, wantStatus: http.StatusBadRequest},
++		{name: "duplicate id", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6,"id":6}`, wantStatus: http.StatusBadRequest},
++		{name: "oversized", method: http.MethodPost, body: `{"method":"account/rateLimits/read","id":6,"padding":"` + strings.Repeat("x", codexQuotaRequestMaxBodySize) + `"}`, wantStatus: http.StatusRequestEntityTooLarge},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			server := newTestServer(t)
++			executor := &quotaCaptureExecutor{responseBody: `{"plan_type":"plus","rate_limit":{}}`}
++			registered := registerQuotaTestAccount(t, server, executor)
++			request := httptest.NewRequest(test.method, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(test.body))
++			request.Header.Set("Authorization", "Bearer test-key")
++			recorder := httptest.NewRecorder()
++			server.engine.ServeHTTP(recorder, request)
++			if recorder.Code != test.wantStatus {
++				t.Fatalf("status/body = %d %s, want %d", recorder.Code, recorder.Body.String(), test.wantStatus)
++			}
++			if executor.request != nil {
++				t.Fatal("invalid RPC request reached the upstream quota endpoint")
++			}
++		})
++	}
++}
++
++func TestNormalizeUpstreamUsageSupportsNullableWindowsAndCeilsDuration(t *testing.T) {
++	result, err := normalizeUpstreamUsage([]byte(`{
++		"plan_type":"plus",
++		"rate_limit":{"primary_window":{"used_percent":25}},
++		"rate_limit_reached_type":{"type":"future-sensitive-value"},
++		"additional_rate_limits":[
++			{"limit_name":"arbitrary upstream display text","metered_feature":"tool_v2","rate_limit":null},
++			{"limit_name":"ignored","metered_feature":"fifteen_min","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":900,"reset_at":1800000000}}},
++			{"limit_name":"ignored","metered_feature":"codex_other","rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":901,"reset_at":1800000000}}}
++		]
++	}`), nil)
++	if err != nil {
++		t.Fatalf("normalizeUpstreamUsage() error = %v", err)
++	}
++	if result.RateLimits.Primary == nil || result.RateLimits.Primary.UsedPercent != 25 ||
++		result.RateLimits.Primary.WindowDurationMins != nil || result.RateLimits.Primary.ResetsAt != nil ||
++		result.RateLimits.Secondary != nil || result.RateLimits.RateLimitReachedType != nil {
++		t.Fatalf("primary limit = %#v", result.RateLimits)
++	}
++	tool := result.RateLimitsByLimitID["tool_v2"]
++	if tool.Primary != nil || tool.Secondary != nil || tool.LimitName != nil {
++		t.Fatalf("nullable additional limit = %#v", tool)
++	}
++	fifteen := result.RateLimitsByLimitID["fifteen_min"]
++	if fifteen.Primary == nil || fifteen.Primary.WindowDurationMins == nil || *fifteen.Primary.WindowDurationMins != 15 || fifteen.Secondary != nil {
++		t.Fatalf("fifteen minute limit = %#v", fifteen)
++	}
++	other := result.RateLimitsByLimitID["codex_other"]
++	if other.Primary == nil || other.Primary.WindowDurationMins == nil || *other.Primary.WindowDurationMins != 16 ||
++		other.Primary.ResetsAt == nil || *other.Primary.ResetsAt != 1800000000 {
++		t.Fatalf("rounded additional window = %#v", other.Primary)
++	}
++}
++
++func TestNormalizeUpstreamUsageRetainsAccountPlanFallback(t *testing.T) {
++	result, err := normalizeUpstreamUsage([]byte(`{"rate_limit":null}`), &auth.Auth{Attributes: map[string]string{"plan_type": "plus"}})
++	if err != nil {
++		t.Fatalf("normalizeUpstreamUsage() error = %v", err)
++	}
++	if result.RateLimits.LimitID != "codex" || result.RateLimits.Primary != nil || result.RateLimits.Secondary != nil {
++		t.Fatalf("fallback quota = %#v", result.RateLimits)
++	}
++}
++
++func TestValidQuotaLimitIDUsesShortASCIIIdentifier(t *testing.T) {
++	t.Parallel()
++	for _, test := range []struct {
++		value string
++		want  bool
++	}{
++		{value: "codex", want: true},
++		{value: "a_1", want: true},
++		{value: "a" + strings.Repeat("1", codexMaxLimitIDBytes-1), want: true},
++		{value: "", want: false},
++		{value: "1codex", want: false},
++		{value: "Codex", want: false},
++		{value: "tool-v2", want: false},
++		{value: "a" + strings.Repeat("1", codexMaxLimitIDBytes), want: false},
++		{value: "额度", want: false},
++	} {
++		if got := validQuotaLimitID(test.value); got != test.want {
++			t.Fatalf("validQuotaLimitID(%q) = %t, want %t", test.value, got, test.want)
++		}
++	}
++}
++
++func TestInternalUpstreamAccountQuotaRejectsOversizedSensitiveResponse(t *testing.T) {
++	server := newTestServer(t)
++	executor := &quotaCaptureExecutor{responseBody: `{"secret":"must-not-leak","padding":"` + strings.Repeat("x", codexQuotaMaxBodyBytes) + `"}`}
++	registered := registerQuotaTestAccount(t, server, executor)
++	request := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(`{"method":"account/rateLimits/read","id":6}`))
++	request.Header.Set("Authorization", "Bearer test-key")
++	recorder := httptest.NewRecorder()
++	server.engine.ServeHTTP(recorder, request)
++	if recorder.Code != http.StatusBadGateway || !strings.Contains(recorder.Body.String(), "quota_response_invalid") {
++		t.Fatalf("status/body = %d %s", recorder.Code, recorder.Body.String())
++	}
++	if strings.Contains(recorder.Body.String(), "must-not-leak") {
++		t.Fatalf("oversized upstream response leaked: %s", recorder.Body.String())
++	}
++}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index f12ff4bf..926c1480 100644
+index f12ff4bf48a1764eb15e23e26183946bc9999ad1..926c1480688fa0b57e13c63aec66f95378a5b2aa 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
 @@ -137,6 +137,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
@@ -978,7 +1203,7 @@ index f12ff4bf..926c1480 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index 19af6260..1f7b558f 100644
+index 19af6260a7987860fd2f2c61d4c46dcb8e806898..ef3620fb5f4e99facbd9c74a56dbfe53a54010aa 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
 @@ -103,6 +103,16 @@ func (s *Server) setupRoutes() {
@@ -992,14 +1217,14 @@ index 19af6260..1f7b558f 100644
 +	internalAccounts.Use(internalAccountAuthMiddleware(s.accessManager))
 +	{
 +		internalAccounts.GET("", s.listUpstreamAccounts)
-+		internalAccounts.GET("/:id/quota", s.getUpstreamAccountQuota)
++		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
 +	}
 +
  	// Gemini compatible API routes
  	v1beta := s.engine.Group("/v1beta")
  	v1beta.Use(AuthMiddleware(s.accessManager))
 diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
-index 2c1eac08..2f851ae2 100644
+index 2c1eac086f491244c2a76627ed20d9f66af0f633..2f851ae212e5823fb78dd53683d6952241c0e10c 100644
 --- a/internal/auth/codex/openai_auth.go
 +++ b/internal/auth/codex/openai_auth.go
 @@ -7,6 +7,7 @@ package codex
@@ -1203,7 +1428,7 @@ index 2c1eac08..2f851ae2 100644
  
  // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.
 diff --git a/internal/auth/codex/openai_auth_test.go b/internal/auth/codex/openai_auth_test.go
-index 55942c7b..0e9ced9a 100644
+index 55942c7bf0a7c5c35385645e339a499c3374e022..0e9ced9ae171658295a02a381939eb909499ec45 100644
 --- a/internal/auth/codex/openai_auth_test.go
 +++ b/internal/auth/codex/openai_auth_test.go
 @@ -26,6 +26,115 @@ func TestNewCodexAuthDoesNotSetRequestTimeout(t *testing.T) {
@@ -1323,7 +1548,7 @@ index 55942c7b..0e9ced9a 100644
  	resetCodexRefreshGroupForTest()
  	defer resetCodexRefreshGroupForTest()
 diff --git a/internal/auth/codex/token.go b/internal/auth/codex/token.go
-index b2a7bcf2..6486ccce 100644
+index b2a7bcf21ac851131388e8b05425083642711abb..6486ccce988657b652aa3e2798eb1959795e08d6 100644
 --- a/internal/auth/codex/token.go
 +++ b/internal/auth/codex/token.go
 @@ -43,6 +43,15 @@ func (ts *CodexTokenStorage) SetMetadata(meta map[string]any) {
@@ -1343,7 +1568,7 @@ index b2a7bcf2..6486ccce 100644
  // This method creates the necessary directory structure and writes the token
  // data in JSON format to the specified file path for persistent storage.
 diff --git a/internal/logging/cpa_trace.go b/internal/logging/cpa_trace.go
-index bc1d243a..cc38b0f8 100644
+index bc1d243a88ae727308e1ffe6d8f759af01473197..cc38b0f84ccafcb1ad0ccfe39f50b09f2c4a6ea1 100644
 --- a/internal/logging/cpa_trace.go
 +++ b/internal/logging/cpa_trace.go
 @@ -11,6 +11,11 @@ import (
@@ -1485,7 +1710,7 @@ index bc1d243a..cc38b0f8 100644
 +	return true
  }
 diff --git a/internal/logging/cpa_trace_test.go b/internal/logging/cpa_trace_test.go
-index 2202e509..4f137f73 100644
+index 2202e5092e1c87118aa5734e53eec74ccccbb747..4f137f73e3c08b766a50b82d1101f4027e3cafb8 100644
 --- a/internal/logging/cpa_trace_test.go
 +++ b/internal/logging/cpa_trace_test.go
 @@ -35,12 +35,14 @@ func TestFormatCPATraceID(t *testing.T) {
@@ -1653,7 +1878,7 @@ index 2202e509..4f137f73 100644
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_executor_auth.go b/internal/runtime/executor/codex_executor_auth.go
-index e200d690..371120c5 100644
+index e200d69021c90394433314b37d80d9e598f978b2..371120c528de00fa307007684aacbe85b92a8d1b 100644
 --- a/internal/runtime/executor/codex_executor_auth.go
 +++ b/internal/runtime/executor/codex_executor_auth.go
 @@ -42,6 +42,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
@@ -1673,7 +1898,7 @@ index e200d690..371120c5 100644
  }
  
 diff --git a/internal/runtime/executor/codex_executor_cache_test.go b/internal/runtime/executor/codex_executor_cache_test.go
-index 8d971382..1127303b 100644
+index 8d9713828a71b69ed84dd40208315295ebd444c4..1127303bad6171be8c1fa338143e9646999957a0 100644
 --- a/internal/runtime/executor/codex_executor_cache_test.go
 +++ b/internal/runtime/executor/codex_executor_cache_test.go
 @@ -257,8 +257,12 @@ func TestApplyCodexHeadersUsesAccountHeaderForOAuth(t *testing.T) {
@@ -1691,7 +1916,7 @@ index 8d971382..1127303b 100644
  	applyCodexHeaders(httpReq, auth, "oauth-token", true, nil)
  
 diff --git a/internal/runtime/executor/codex_executor_execute.go b/internal/runtime/executor/codex_executor_execute.go
-index d2a1ac2f..76d90833 100644
+index d2a1ac2fd620f2ff2bea483fb4cc479f07299f13..76d90833d19d20f53fb89a7a0dc52838b81e0461 100644
 --- a/internal/runtime/executor/codex_executor_execute.go
 +++ b/internal/runtime/executor/codex_executor_execute.go
 @@ -80,8 +80,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
@@ -1734,7 +1959,7 @@ index d2a1ac2f..76d90833 100644
  	if err != nil {
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
-index 00000000..031b98c5
+index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb6b8e1599
 --- /dev/null
 +++ b/internal/runtime/executor/codex_executor_redirect_test.go
 @@ -0,0 +1,313 @@
@@ -2052,7 +2277,7 @@ index 00000000..031b98c5
 +	})
 +}
 diff --git a/internal/runtime/executor/codex_executor_request.go b/internal/runtime/executor/codex_executor_request.go
-index 806063ab..2fe2918c 100644
+index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4780106c3 100644
 --- a/internal/runtime/executor/codex_executor_request.go
 +++ b/internal/runtime/executor/codex_executor_request.go
 @@ -63,6 +63,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
@@ -2146,7 +2371,7 @@ index 806063ab..2fe2918c 100644
  
  func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
-index d6e62264..7e496343 100644
+index d6e6226464637232789c6753a7b3b40e7e33dfea..7e49634354931b20c96b9ef360d54b56a33a22af 100644
 --- a/internal/runtime/executor/codex_executor_stream.go
 +++ b/internal/runtime/executor/codex_executor_stream.go
 @@ -84,8 +84,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
@@ -2169,7 +2394,7 @@ index d6e62264..7e496343 100644
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
 diff --git a/internal/runtime/executor/codex_openai_images.go b/internal/runtime/executor/codex_openai_images.go
-index 18ef4418..0e759472 100644
+index 18ef441864b8ce30690253cbd84f95f8fd42fa71..0e7594728c895ec4e7885043719d16e4eed5487a 100644
 --- a/internal/runtime/executor/codex_openai_images.go
 +++ b/internal/runtime/executor/codex_openai_images.go
 @@ -113,11 +113,10 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
@@ -2235,7 +2460,7 @@ index 18ef4418..0e759472 100644
  	httpResp, errDo := httpClient.Do(httpReq)
  	if errDo != nil {
 diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
-index 5243bc7a..718113d2 100644
+index 5243bc7adf50e5c4480545a00fc93e019cd4435d..718113d29190e42080d2a2b4e6e58aef36cd334c 100644
 --- a/internal/runtime/executor/codex_websockets_execute.go
 +++ b/internal/runtime/executor/codex_websockets_execute.go
 @@ -85,8 +85,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
@@ -2249,7 +2474,7 @@ index 5243bc7a..718113d2 100644
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
 diff --git a/internal/runtime/executor/codex_websockets_request.go b/internal/runtime/executor/codex_websockets_request.go
-index 7d1cf92d..b5ef55e1 100644
+index 7d1cf92dd745ae18e8744b15926fb80f4382a41d..b5ef55e1d98f0b40b7fbbfe922788fde9dc21053 100644
 --- a/internal/runtime/executor/codex_websockets_request.go
 +++ b/internal/runtime/executor/codex_websockets_request.go
 @@ -125,6 +125,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
@@ -2261,7 +2486,7 @@ index 7d1cf92d..b5ef55e1 100644
  	return headers
  }
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index 505081f0..dffcef37 100644
+index 505081f099b5f4c2c8e18367a003cd1f2d515b37..dffcef37b722dee2e130d8346af8b33ab405b96d 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
 @@ -82,8 +82,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
@@ -2275,7 +2500,7 @@ index 505081f0..dffcef37 100644
  	var authID, authLabel, authType, authValue string
  	authID = auth.ID
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index 0b8d72bc..7f5d2821 100644
+index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f4f697d0d 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
 @@ -5,6 +5,11 @@ import (
@@ -2320,7 +2545,7 @@ index 0b8d72bc..7f5d2821 100644
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
-index 3ef58b55..918f71af 100644
+index 3ef58b55c0a8d10c0656303e8aa21d36aab82c44..918f71aff93485383f6b66d5699b8c1eab4e93a8 100644
 --- a/internal/watcher/clients.go
 +++ b/internal/watcher/clients.go
 @@ -124,7 +124,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
@@ -2459,7 +2684,7 @@ index 3ef58b55..918f71af 100644
  
  func (w *Watcher) loadFileClients(cfg *config.Config) int {
 diff --git a/internal/watcher/dispatcher.go b/internal/watcher/dispatcher.go
-index d1602bc1..48a1071b 100644
+index d1602bc1d6e71f082d5680def3e4dd5a71d8ea2a..48a1071b14ef7d1302b83e2ddc6064a858a53886 100644
 --- a/internal/watcher/dispatcher.go
 +++ b/internal/watcher/dispatcher.go
 @@ -105,13 +105,20 @@ func (w *Watcher) dispatchPersistedAuthUpdate(update AuthUpdate) bool {
@@ -2540,7 +2765,7 @@ index d1602bc1..48a1071b 100644
  	if len(updates) == 0 {
  		return
 diff --git a/internal/watcher/synthesizer/file.go b/internal/watcher/synthesizer/file.go
-index dad21bd1..01c31889 100644
+index dad21bd1c407aa9a4e2ccbd13b160443bd1bd469..01c318890edbb00a6b681cd4655149b98383a04c 100644
 --- a/internal/watcher/synthesizer/file.go
 +++ b/internal/watcher/synthesizer/file.go
 @@ -62,7 +62,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
@@ -2576,7 +2801,7 @@ index dad21bd1..01c31889 100644
  	if parser == nil {
  		return nil, false, nil
 diff --git a/internal/watcher/synthesizer/file_test.go b/internal/watcher/synthesizer/file_test.go
-index 20026080..af99c9af 100644
+index 20026080605b60a688a20926667328b05b0784eb..af99c9afecfcab2cb42e29570ead5b8cdc08c579 100644
 --- a/internal/watcher/synthesizer/file_test.go
 +++ b/internal/watcher/synthesizer/file_test.go
 @@ -5,6 +5,7 @@ import (
@@ -2655,7 +2880,7 @@ index 20026080..af99c9af 100644
  
  func (f multiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
 diff --git a/internal/watcher/watcher_test.go b/internal/watcher/watcher_test.go
-index fee50468..b90f1fe1 100644
+index fee504689514e40c46bc790b9c54e1e2b5c63adc..b90f1fe1b77b03de5afdf3d219360c916edf0f30 100644
 --- a/internal/watcher/watcher_test.go
 +++ b/internal/watcher/watcher_test.go
 @@ -465,6 +465,45 @@ func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
@@ -2741,7 +2966,7 @@ index fee50468..b90f1fe1 100644
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index cf31c5e0..46faf80f 100644
+index cf31c5e0989c19dfc2fcd165079878de40159aa3..46faf80fa420d59ff1a1b86cb0ea972f83f3aa5a 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
 @@ -5,6 +5,7 @@ package handlers
@@ -2824,7 +3049,7 @@ index cf31c5e0..46faf80f 100644
  	if meta == nil {
  		return
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index 02fcf54b..042dd89a 100644
+index 02fcf54b4d76df9bbe92a3b1104ec90445a9fd71..042dd89a7d76029616d064170e520e2636bc2aff 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
 @@ -68,6 +68,74 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
@@ -2923,7 +3148,7 @@ index 02fcf54b..042dd89a 100644
  }
  
 diff --git a/sdk/api/handlers/handlers_stream_bootstrap_test.go b/sdk/api/handlers/handlers_stream_bootstrap_test.go
-index fc37107d..dece5184 100644
+index fc37107ddde4308b5e343aef13036c3c9944f427..dece5184e66173f4e7a122a0cdee6cf3034fd47b 100644
 --- a/sdk/api/handlers/handlers_stream_bootstrap_test.go
 +++ b/sdk/api/handlers/handlers_stream_bootstrap_test.go
 @@ -608,8 +608,8 @@ func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
@@ -2938,7 +3163,7 @@ index fc37107d..dece5184 100644
  }
  
 diff --git a/sdk/api/handlers/header_filter.go b/sdk/api/handlers/header_filter.go
-index e7246745..864cebd3 100644
+index e72467459aae14972ee7f23037fbae91bbc169c3..864cebd35e941e353973f6a821fa4684d10018ce 100644
 --- a/sdk/api/handlers/header_filter.go
 +++ b/sdk/api/handlers/header_filter.go
 @@ -44,6 +44,7 @@ var cpaReservedResponseHeaders = map[string]struct{}{
@@ -2950,7 +3175,7 @@ index e7246745..864cebd3 100644
  
  // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
-index d7ea4e1f..2a6254e8 100644
+index d7ea4e1fe93439ad6e14321c195adbaea75e7f1b..2a6254e80b52558dae5a4ce72cbfa7b2cbfeb054 100644
 --- a/sdk/auth/codex_device.go
 +++ b/sdk/auth/codex_device.go
 @@ -61,12 +61,17 @@ func shouldUseCodexDeviceFlow(opts *LoginOptions) bool {
@@ -2982,7 +3207,7 @@ index d7ea4e1f..2a6254e8 100644
  
  	fmt.Println("Codex authentication successful")
 diff --git a/sdk/auth/filestore.go b/sdk/auth/filestore.go
-index 8abef89e..d30cadb9 100644
+index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d0885f1bd 100644
 --- a/sdk/auth/filestore.go
 +++ b/sdk/auth/filestore.go
 @@ -157,6 +157,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
@@ -3019,7 +3244,7 @@ index 8abef89e..d30cadb9 100644
  }
  
 diff --git a/sdk/auth/filestore_test.go b/sdk/auth/filestore_test.go
-index e638ffee..b99e63a4 100644
+index e638ffee744f7a301ada8a085c8306aef456f1a7..b99e63a4a422a68f5252bac9bbb692a325bab097 100644
 --- a/sdk/auth/filestore_test.go
 +++ b/sdk/auth/filestore_test.go
 @@ -2,10 +2,15 @@ package auth
@@ -3194,7 +3419,7 @@ index e638ffee..b99e63a4 100644
  	store := NewFileTokenStore()
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe.go b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 new file mode 100644
-index 00000000..3c845733
+index 0000000000000000000000000000000000000000..3c845733c93805cc6ec7f75e2f1346f9707de96f
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 @@ -0,0 +1,348 @@
@@ -3548,7 +3773,7 @@ index 00000000..3c845733
 +}
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe_test.go b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 new file mode 100644
-index 00000000..d89da81e
+index 0000000000000000000000000000000000000000..d89da81e1254751bc76193735ed59e5539f27a66
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 @@ -0,0 +1,358 @@
@@ -3911,7 +4136,7 @@ index 00000000..d89da81e
 +	return auth
 +}
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index cb68fae1..d158a806 100644
+index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d62779516d 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -5,7 +5,9 @@ import (
@@ -4165,7 +4390,7 @@ index cb68fae1..d158a806 100644
  func (m *Manager) executorFor(provider string) ProviderExecutor {
 diff --git a/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 new file mode 100644
-index 00000000..2906cc24
+index 0000000000000000000000000000000000000000..2906cc2477c650bd2b5aa20aca30177e37d3b02d
 --- /dev/null
 +++ b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 @@ -0,0 +1,302 @@
@@ -4472,7 +4697,7 @@ index 00000000..2906cc24
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_lifecycle.go b/sdk/cliproxy/auth/conductor_lifecycle.go
-index a8688529..d9ab049b 100644
+index a8688529a5420d2a46485bfa3aff53a9e0569b89..d9ab049b1348fd8c43f30add4838fa5bc77134b0 100644
 --- a/sdk/cliproxy/auth/conductor_lifecycle.go
 +++ b/sdk/cliproxy/auth/conductor_lifecycle.go
 @@ -69,6 +69,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
@@ -4514,7 +4739,7 @@ index a8688529..d9ab049b 100644
  	for _, auth := range items {
  		if auth == nil || auth.ID == "" {
 diff --git a/sdk/cliproxy/auth/conductor_overrides_test.go b/sdk/cliproxy/auth/conductor_overrides_test.go
-index de35ebc9..a440ee69 100644
+index de35ebc9a4a81e4ea36eb5b5ab6eff058937141d..a440ee69bbfa8ba702a9632727aa47673f240ee3 100644
 --- a/sdk/cliproxy/auth/conductor_overrides_test.go
 +++ b/sdk/cliproxy/auth/conductor_overrides_test.go
 @@ -1178,10 +1178,6 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T)
@@ -4538,7 +4763,7 @@ index de35ebc9..a440ee69 100644
  		{name: "streaming xai websocket message too big", provider: "xai", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
  		{name: "non-streaming invalid request", err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
-index 06a2a27a..a83719c6 100644
+index 06a2a27a1298514eca2de6de85959d21820bee5c..a83719c6c0beaa97b03bac88974b55854a96a57a 100644
 --- a/sdk/cliproxy/auth/conductor_refresh.go
 +++ b/sdk/cliproxy/auth/conductor_refresh.go
 @@ -565,6 +565,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
@@ -4579,7 +4804,7 @@ index 06a2a27a..a83719c6 100644
 +	return !updatedValid || previousIndex != updatedIndex
 +}
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index 09850f30..9b9cf78e 100644
+index 09850f30575c3e727589c4de9ea9a1ade253a4f3..9b9cf78eabc681706a65bcb0ab0a75e5a0f93b9c 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -71,12 +71,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
@@ -4661,7 +4886,7 @@ index 09850f30..9b9cf78e 100644
  			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
  			if idx < len(execModels)-1 {
 diff --git a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
-index 37451925..62c4cb86 100644
+index 37451925076ee1e16b5a79f92f5d597f51b3190f..62c4cb862d3af518e577327ff05399b549fa59e6 100644
 --- a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 +++ b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 @@ -13,13 +13,15 @@ import (
@@ -4808,7 +5033,7 @@ index 37451925..62c4cb86 100644
  	m, executor, primary, backup, model := newUnauthorizedRefreshFixture(t, true)
  
 diff --git a/sdk/cliproxy/auth/selected_auth_metadata_test.go b/sdk/cliproxy/auth/selected_auth_metadata_test.go
-index 2a7433e4..95d86659 100644
+index 2a7433e447db8a104451effd52b259f815ef5bea..95d866597dd31e92b5f08e048813666d4b1f732d 100644
 --- a/sdk/cliproxy/auth/selected_auth_metadata_test.go
 +++ b/sdk/cliproxy/auth/selected_auth_metadata_test.go
 @@ -11,9 +11,14 @@ func TestPublishSelectedAuthMetadataIncludesStableIndex(t *testing.T) {
@@ -4921,7 +5146,7 @@ index 2a7433e4..95d86659 100644
 +	}
  }
 diff --git a/sdk/cliproxy/auth/selector.go b/sdk/cliproxy/auth/selector.go
-index c7751372..a6ee038b 100644
+index c775137276834dda1c97a28357b0f392c9498902..a6ee038ba1d33c101e87c483336e004e6a265edd 100644
 --- a/sdk/cliproxy/auth/selector.go
 +++ b/sdk/cliproxy/auth/selector.go
 @@ -813,6 +813,23 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
@@ -4949,7 +5174,7 @@ index c7751372..a6ee038b 100644
  		return "claude:" + sid, ""
  	}
 diff --git a/sdk/cliproxy/auth/selector_test.go b/sdk/cliproxy/auth/selector_test.go
-index 19677b24..f0751205 100644
+index 19677b242ffb7a5b3fa134322eb3df7f24361730..f07512057151ff2c65d713457741cb018afceed1 100644
 --- a/sdk/cliproxy/auth/selector_test.go
 +++ b/sdk/cliproxy/auth/selector_test.go
 @@ -1746,6 +1746,58 @@ func TestSessionAffinitySelector_CrossProviderIsolation(t *testing.T) {
@@ -5012,7 +5237,7 @@ index 19677b24..f0751205 100644
  	t.Parallel()
  
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index 85e5fdc2..99182ae2 100644
+index 85e5fdc23b586effd8c9245cf7295bfec0ca61d9..99182ae2cf894c42d01e0ae2a374bb92f81f4dfb 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
 @@ -42,6 +42,11 @@ const (

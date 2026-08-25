@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"net/url"
@@ -18,6 +21,7 @@ const (
 	upstreamAccountSyncTimeout = 5 * time.Second
 	upstreamQuotaTimeout       = 15 * time.Second
 	upstreamQuotaDebounce      = 5 * time.Second
+	upstreamQuotaRequestBytes  = 256
 )
 
 var errUpstreamAccountRangeExpired = errors.New("upstream account range predates retained request detail")
@@ -232,32 +236,25 @@ func parseUpstreamAccountQuery(now time.Time, values url.Values) (globalUsageQue
 	return query, nil
 }
 
-type quotaWindowDTO struct {
-	UsedRatio      float64    `json:"used_ratio"`
-	RemainingRatio float64    `json:"remaining_ratio"`
-	ResetsAt       *time.Time `json:"resets_at"`
-}
-
-type additionalQuotaWindowDTO struct {
-	Name           string     `json:"name"`
-	UsedRatio      float64    `json:"used_ratio"`
-	RemainingRatio float64    `json:"remaining_ratio"`
-	ResetsAt       *time.Time `json:"resets_at"`
-	WindowSeconds  *int64     `json:"window_seconds,omitempty"`
-}
-
-type upstreamQuotaResponse struct {
-	QueriedAt         time.Time                  `json:"queried_at"`
-	Plan              string                     `json:"plan"`
-	FiveHour          quotaWindowDTO             `json:"five_hour"`
-	SevenDay          quotaWindowDTO             `json:"seven_day"`
-	AdditionalWindows []additionalQuotaWindowDTO `json:"additional_windows"`
+type upstreamQuotaRPCRequest struct {
+	Method *string `json:"method"`
+	ID     *int64  `json:"id"`
 }
 
 func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	accountID := r.PathValue("id")
 	if !validUpstreamAccountID(accountID) {
 		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
+		return
+	}
+	var input upstreamQuotaRPCRequest
+	if err := decodeUpstreamQuotaRPCRequest(r, &input); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	if input.Method == nil || *input.Method != gatewayproxy.AccountRateLimitsMethod ||
+		input.ID == nil || *input.ID != gatewayproxy.AccountRateLimitsRequestID {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_quota_request", "额度查询协议无效")
 		return
 	}
 	now := time.Now().UTC()
@@ -298,22 +295,67 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 		writeUpstreamManagementError(w, r, err, "无法查询官方额度")
 		return
 	}
-	additional := make([]additionalQuotaWindowDTO, 0, len(quota.AdditionalWindows))
-	for _, window := range quota.AdditionalWindows {
-		additional = append(additional, additionalQuotaWindowDTO{
-			Name: window.Name, UsedRatio: window.UsedRatio, RemainingRatio: window.RemainingRatio,
-			ResetsAt: window.ResetAt, WindowSeconds: window.WindowSeconds,
-		})
-	}
 	resultCode = "ok"
 	resultStatus = http.StatusOK
 	success = true
-	writeJSON(w, http.StatusOK, upstreamQuotaResponse{
-		QueriedAt: quota.QueriedAt, Plan: quota.Plan,
-		FiveHour:          quotaWindowDTO{UsedRatio: quota.FiveHour.UsedRatio, RemainingRatio: quota.FiveHour.RemainingRatio, ResetsAt: quota.FiveHour.ResetAt},
-		SevenDay:          quotaWindowDTO{UsedRatio: quota.SevenDay.UsedRatio, RemainingRatio: quota.SevenDay.RemainingRatio, ResetsAt: quota.SevenDay.ResetAt},
-		AdditionalWindows: additional,
-	})
+	writeJSON(w, http.StatusOK, quota)
+}
+
+func decodeUpstreamQuotaRPCRequest(r *http.Request, destination *upstreamQuotaRPCRequest) error {
+	if r.ContentLength > upstreamQuotaRequestBytes {
+		return &http.MaxBytesError{Limit: upstreamQuotaRequestBytes}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, upstreamQuotaRequestBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(body) > upstreamQuotaRequestBytes {
+		return &http.MaxBytesError{Limit: upstreamQuotaRequestBytes}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return errors.New("quota RPC request must be an object")
+	}
+	var seenMethod, seenID bool
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("quota RPC request key must be a string")
+		}
+		switch key {
+		case "method":
+			if seenMethod {
+				return errors.New("duplicate quota RPC method")
+			}
+			seenMethod = true
+			if err := decoder.Decode(&destination.Method); err != nil {
+				return err
+			}
+		case "id":
+			if seenID {
+				return errors.New("duplicate quota RPC id")
+			}
+			seenID = true
+			if err := decoder.Decode(&destination.ID); err != nil {
+				return err
+			}
+		default:
+			return errors.New("unknown quota RPC field")
+		}
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') {
+		return errors.New("quota RPC request object was not closed")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("request must contain exactly one JSON value")
+	}
+	return nil
 }
 
 func validUpstreamAccountID(value string) bool {
