@@ -347,6 +347,7 @@ func TestUpstreamQuotaPreservesSidecarErrorClassification(t *testing.T) {
 		{502, "quota_schema_changed", 502, "upstream_quota_schema_changed", "额度数据无法解析"},
 		{502, "quota_json_invalid", 502, "upstream_quota_json_invalid", "单一 JSON"},
 		{502, "quota_field_type_invalid", 502, "upstream_quota_field_type_invalid", "字段类型"},
+		{502, "quota_rate_limit_missing", 502, "upstream_quota_rate_limit_missing", "缺少额度结构"},
 		{502, "quota_plan_unsupported", 502, "upstream_quota_plan_unsupported", "套餐标识"},
 		{502, "quota_percent_missing", 502, "upstream_quota_percent_missing", "缺少已用百分比"},
 		{502, "quota_percent_out_of_range", 502, "upstream_quota_percent_out_of_range", "有效范围"},

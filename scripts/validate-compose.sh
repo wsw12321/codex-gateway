@@ -12,8 +12,8 @@ pricing_template=$root/deploy/pricing-v2.example.json
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=ad35c9794e72c49111cba3824db370b74f86e2db3b4f9fa515ad7c8e9c9539e6
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-ad35c9794e72c491
+compat_patch_sha256=6be9eef68861a4bb05fa2c4ca42b3826d588e90ea87e0ff4c58dd0cb08783fc6
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-6be9eef68861a4bb
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -77,6 +77,7 @@ grep -Fq 'codexQuotaRPCMethod          = "account/rateLimits/read"' "$compat_pat
     grep -Fq 'internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the strict POST quota RPC contract'
 grep -Fq 'TestInternalUpstreamAccountQuotaRequiresExactRPCRequest' "$compat_patch" && \
+    grep -Fq 'TestInternalUpstreamAccountQuotaIgnoresPlanMetadata' "$compat_patch" && \
     grep -Fq 'TestNormalizeUpstreamUsageSupportsNullableWindowsAndCeilsDuration' "$compat_patch" && \
     grep -Fq 'TestQuotaSchemaErrorCodeRejectsUnrecognizedErrors' "$compat_patch" && \
     grep -Fq 'TestInternalUpstreamAccountQuotaRejectsOversizedSensitiveResponse' "$compat_patch" || \

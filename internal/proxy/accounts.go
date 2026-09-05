@@ -68,6 +68,7 @@ var internalErrorCodes = map[int]map[string]string{
 		"quota_schema_changed":               "upstream_quota_schema_changed",
 		"quota_json_invalid":                 "upstream_quota_json_invalid",
 		"quota_field_type_invalid":           "upstream_quota_field_type_invalid",
+		"quota_rate_limit_missing":           "upstream_quota_rate_limit_missing",
 		"quota_plan_unsupported":             "upstream_quota_plan_unsupported",
 		"quota_percent_missing":              "upstream_quota_percent_missing",
 		"quota_percent_out_of_range":         "upstream_quota_percent_out_of_range",

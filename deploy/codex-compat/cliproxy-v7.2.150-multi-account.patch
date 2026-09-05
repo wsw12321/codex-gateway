@@ -189,10 +189,10 @@ index 0000000..8fbfb6e
 +}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000..b61f96e
+index 0000000..ebfff6f
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,671 @@
+@@ -0,0 +1,675 @@
 +package api
 +
 +import (
@@ -237,7 +237,7 @@ index 0000000..b61f96e
 +	var schemaErr quotaSchemaError
 +	if errors.As(err, &schemaErr) {
 +		switch schemaErr {
-+		case "quota_json_invalid", "quota_field_type_invalid", "quota_plan_unsupported",
++		case "quota_json_invalid", "quota_field_type_invalid", "quota_rate_limit_missing",
 +			"quota_percent_missing", "quota_percent_out_of_range", "quota_percent_fractional",
 +			"quota_window_invalid", "quota_reset_invalid", "quota_limit_id_invalid",
 +			"quota_limit_id_duplicate", "quota_limits_excessive":
@@ -286,8 +286,7 @@ index 0000000..b61f96e
 +}
 +
 +type upstreamUsagePayload struct {
-+	PlanType             string                        `json:"plan_type"`
-+	RateLimit            *upstreamRateLimit            `json:"rate_limit"`
++	RateLimit            json.RawMessage               `json:"rate_limit"`
 +	AdditionalRateLimits []upstreamAdditionalLimit     `json:"additional_rate_limits"`
 +	RateLimitReachedType *upstreamRateLimitReachedType `json:"rate_limit_reached_type"`
 +}
@@ -481,7 +480,7 @@ index 0000000..b61f96e
 +		c.JSON(http.StatusBadGateway, gin.H{"error": "quota_response_invalid"})
 +		return
 +	}
-+	quota, err := normalizeUpstreamUsage(body, account)
++	quota, err := normalizeUpstreamUsage(body)
 +	if err != nil {
 +		c.JSON(http.StatusBadGateway, gin.H{"error": quotaSchemaErrorCode(err)})
 +		return
@@ -700,7 +699,7 @@ index 0000000..b61f96e
 +	return value.UTC().Format(time.RFC3339)
 +}
 +
-+func normalizeUpstreamUsage(body []byte, account *auth.Auth) (quotaRateLimitsResult, error) {
++func normalizeUpstreamUsage(body []byte) (quotaRateLimitsResult, error) {
 +	var payload upstreamUsagePayload
 +	decoder := json.NewDecoder(bytes.NewReader(body))
 +	if err := decoder.Decode(&payload); err != nil {
@@ -713,16 +712,21 @@ index 0000000..b61f96e
 +	if err := ensureJSONEOF(decoder); err != nil {
 +		return quotaRateLimitsResult{}, quotaSchemaError("quota_json_invalid")
 +	}
-+	plan := strings.ToLower(strings.TrimSpace(payload.PlanType))
-+	if plan == "" && account != nil {
-+		plan = strings.ToLower(strings.TrimSpace(account.Attributes["plan_type"]))
++	// Plan metadata does not determine usage. Require a quota field instead,
++	// retaining explicit null windows without accepting unrelated JSON as usage.
++	if len(payload.RateLimit) == 0 && payload.AdditionalRateLimits == nil {
++		return quotaRateLimitsResult{}, quotaSchemaError("quota_rate_limit_missing")
 +	}
-+	if !validCodexAccountPlan(plan) {
-+		return quotaRateLimitsResult{}, quotaSchemaError("quota_plan_unsupported")
++	var rateLimit *upstreamRateLimit
++	if len(payload.RateLimit) != 0 {
++		// The outer decoder already validated the JSON syntax.
++		if err := json.Unmarshal(payload.RateLimit, &rateLimit); err != nil {
++			return quotaRateLimitsResult{}, quotaSchemaError("quota_field_type_invalid")
++		}
 +	}
 +
 +	reachedType := normalizeRateLimitReachedType(payload.RateLimitReachedType)
-+	primary, err := normalizeRateLimit("codex", payload.RateLimit, reachedType)
++	primary, err := normalizeRateLimit("codex", rateLimit, reachedType)
 +	if err != nil {
 +		return quotaRateLimitsResult{}, err
 +	}
@@ -866,10 +870,10 @@ index 0000000..b61f96e
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
-index 0000000..7a34432
+index 0000000..e00a5fe
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
-@@ -0,0 +1,557 @@
+@@ -0,0 +1,632 @@
 +package api
 +
 +import (
@@ -1238,6 +1242,62 @@ index 0000000..7a34432
 +	}
 +}
 +
++func TestInternalUpstreamAccountQuotaIgnoresPlanMetadata(t *testing.T) {
++	for _, test := range []struct {
++		name string
++		plan json.RawMessage
++	}{
++		{name: "missing"},
++		{name: "null", plan: json.RawMessage(`null`)},
++		{name: "empty", plan: json.RawMessage(`""`)},
++		{name: "plus", plan: json.RawMessage(`"plus"`)},
++		{name: "pro", plan: json.RawMessage(`"pro"`)},
++		{name: "unknown", plan: json.RawMessage(`"future-plan-must-not-leak"`)},
++		{name: "unsafe text", plan: json.RawMessage(`"plus<script>must-not-leak"`)},
++		{name: "object", plan: json.RawMessage(`{"secret":"must-not-leak"}`)},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			body := map[string]json.RawMessage{
++				"rate_limit": json.RawMessage(`{"secondary_window":{"used_percent":25,"limit_window_seconds":604800,"reset_at":1800000000}}`),
++			}
++			if test.plan != nil {
++				body["plan_type"] = test.plan
++			}
++			encoded, err := json.Marshal(body)
++			if err != nil {
++				t.Fatal(err)
++			}
++			server := newTestServer(t)
++			executor := &quotaCaptureExecutor{responseBody: string(encoded)}
++			registered := registerQuotaTestAccount(t, server, executor)
++			delete(registered.Attributes, "plan_type")
++			if _, err := server.handlers.AuthManager.Update(context.Background(), registered); err != nil {
++				t.Fatal(err)
++			}
++			req := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/"+registered.EnsureIndex()+"/quota", strings.NewReader(`{"method":"account/rateLimits/read","id":6}`))
++			req.Header.Set("Authorization", "Bearer test-key")
++			recorder := httptest.NewRecorder()
++			server.engine.ServeHTTP(recorder, req)
++			if recorder.Code != http.StatusOK {
++				t.Fatalf("status/body = %d %s", recorder.Code, recorder.Body.String())
++			}
++			var quota quotaRPCResponse
++			if err := json.Unmarshal(recorder.Body.Bytes(), &quota); err != nil {
++				t.Fatal(err)
++			}
++			weekly := quota.Result.RateLimits.Secondary
++			if quota.ID != codexQuotaRPCID || quota.Result.RateLimits.Primary != nil || weekly == nil ||
++				weekly.UsedPercent != 25 || weekly.WindowDurationMins == nil || *weekly.WindowDurationMins != 10080 ||
++				weekly.ResetsAt == nil || *weekly.ResetsAt != 1800000000 {
++				t.Fatalf("unexpected quota: %s", recorder.Body.String())
++			}
++			if strings.Contains(recorder.Body.String(), "must-not-leak") || strings.Contains(recorder.Body.String(), "plan_type") {
++				t.Fatalf("plan metadata leaked: %s", recorder.Body.String())
++			}
++		})
++	}
++}
++
 +func TestInternalUpstreamAccountQuotaHidesMalformedAndAuthResponses(t *testing.T) {
 +	for _, test := range []struct {
 +		name       string
@@ -1251,13 +1311,18 @@ index 0000000..7a34432
 +		{name: "html with success status", body: `<html>must-not-leak</html>`, wantStatus: http.StatusBadGateway, wantError: "quota_json_invalid"},
 +		{name: "wrong field type", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":"must-not-leak"}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
 +		{name: "nonintegral duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":3.5}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
-+		{name: "unsupported plan", body: `{"plan_type":"must-not-leak","rate_limit":{}}`, wantStatus: http.StatusBadGateway, wantError: "quota_plan_unsupported"},
++		{name: "missing quota fields", body: `{}`, wantStatus: http.StatusBadGateway, wantError: "quota_rate_limit_missing"},
++		{name: "null response", body: `null`, wantStatus: http.StatusBadGateway, wantError: "quota_rate_limit_missing"},
++		{name: "plan without quota", body: `{"plan_type":"plus"}`, wantStatus: http.StatusBadGateway, wantError: "quota_rate_limit_missing"},
++		{name: "error with success status", body: `{"error":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_rate_limit_missing"},
++		{name: "null additional limits without quota", body: `{"additional_rate_limits":null}`, wantStatus: http.StatusBadGateway, wantError: "quota_rate_limit_missing"},
++		{name: "invalid rate limit type", body: `{"rate_limit":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
++		{name: "invalid additional limits type", body: `{"additional_rate_limits":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
 +		{name: "excessive limits", body: `{"plan_type":"plus","additional_rate_limits":[` + strings.Repeat(`{},`, codexMaxExtraLimits) + `{}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limits_excessive"},
 +		{name: "missing used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_missing"},
 +		{name: "negative used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":-1,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_out_of_range"},
 +		{name: "oversized used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":101,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_out_of_range"},
 +		{name: "fractional used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":24.6,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_fractional"},
-+		{name: "unsafe plan", body: `{"plan_type":"plus<script>","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_plan_unsupported"},
 +		{name: "unsafe limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"limit_name":"must-not-leak","metered_feature":"<raw-upstream>","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_invalid"},
 +		{name: "hyphenated limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"tool-v2","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_invalid"},
 +		{name: "duplicate limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex_other","rate_limit":{}},{"metered_feature":"codex_other","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_duplicate"},
@@ -1356,7 +1421,7 @@ index 0000000..7a34432
 +			{"limit_name":"ignored","metered_feature":"fifteen_min","rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":900,"reset_at":1800000000}}},
 +			{"limit_name":"ignored","metered_feature":"codex_other","rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":901,"reset_at":1800000000}}}
 +		]
-+	}`), nil)
++	}`))
 +	if err != nil {
 +		t.Fatalf("normalizeUpstreamUsage() error = %v", err)
 +	}
@@ -1380,13 +1445,27 @@ index 0000000..7a34432
 +	}
 +}
 +
-+func TestNormalizeUpstreamUsageRetainsAccountPlanFallback(t *testing.T) {
-+	result, err := normalizeUpstreamUsage([]byte(`{"rate_limit":null}`), &auth.Auth{Attributes: map[string]string{"plan_type": "plus"}})
++func TestNormalizeUpstreamUsageRetainsNullRateLimit(t *testing.T) {
++	result, err := normalizeUpstreamUsage([]byte(`{"rate_limit":null}`))
 +	if err != nil {
 +		t.Fatalf("normalizeUpstreamUsage() error = %v", err)
 +	}
 +	if result.RateLimits.LimitID != "codex" || result.RateLimits.Primary != nil || result.RateLimits.Secondary != nil {
-+		t.Fatalf("fallback quota = %#v", result.RateLimits)
++		t.Fatalf("null quota = %#v", result.RateLimits)
++	}
++}
++
++func TestNormalizeUpstreamUsageSupportsAdditionalLimitsOnly(t *testing.T) {
++	result, err := normalizeUpstreamUsage([]byte(`{"additional_rate_limits":[{"metered_feature":"tool_v2","rate_limit":{"secondary_window":{"used_percent":25,"limit_window_seconds":604800}}}]}`))
++	if err != nil {
++		t.Fatalf("normalizeUpstreamUsage() error = %v", err)
++	}
++	if result.RateLimits.Primary != nil || result.RateLimits.Secondary != nil {
++		t.Fatalf("missing default quota = %#v", result.RateLimits)
++	}
++	weekly := result.RateLimitsByLimitID["tool_v2"].Secondary
++	if weekly == nil || weekly.UsedPercent != 25 || weekly.WindowDurationMins == nil || *weekly.WindowDurationMins != 10080 {
++		t.Fatalf("additional weekly quota = %#v", weekly)
 +	}
 +}
 +

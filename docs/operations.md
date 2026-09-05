@@ -183,7 +183,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-ad35c9794e72c491`；最后一段为固定多账号补丁 SHA256 的
+`v7.2.150-c77b1369-6be9eef68861a4bb`；最后一段为固定多账号补丁 SHA256 的
 前 16 位，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 
 ## 3. 服务密钥
@@ -581,7 +581,8 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 | `upstream_quota_schema_changed` | 旧版 sidecar 的汇总解析错误，或尚未细分的校验失败 |
 | `upstream_quota_json_invalid` | 响应不是完整的单一 JSON，例如上游 2xx 返回 HTML、空正文或多个 JSON 值 |
 | `upstream_quota_field_type_invalid` | 已知字段的 JSON 类型不匹配，例如百分比为字符串，或秒数为小数 |
-| `upstream_quota_plan_unsupported` | 套餐标识缺失或不是当前适配器接受的 Plus/Pro |
+| `upstream_quota_rate_limit_missing` | 响应既没有 `rate_limit` 字段，也没有非 null 的 `additional_rate_limits` 数组；不能作为有效额度解析 |
+| `upstream_quota_plan_unsupported` | 旧版 sidecar 拒绝了缺失或未知的套餐标识；需更新 `codex-compat`，新版额度解析不依赖套餐名称 |
 | `upstream_quota_percent_missing` | 某个额度窗口缺少 `used_percent` 或值为 null |
 | `upstream_quota_percent_out_of_range` | 已用百分比不是 0–100 范围内的有限数字 |
 | `upstream_quota_percent_fractional` | 已用百分比含小数，未通过当前整数约束 |
@@ -604,8 +605,13 @@ Gateway 只识别固定 HTTP 状态与错误码组合，错误 JSON 最多读取
 `upstream_quota_schema_changed` 只说明响应解析/校验失败，不能单凭该名称认定上游
 已修改接口；这些错误发生在 sidecar 收到 2xx 并读取正文之后。
 
-部署本次解析错误细分需同时重新构建 Gateway 与 `codex-compat`；只更新 Gateway、
-仍运行旧 sidecar 时，解析失败仍会得到 `upstream_quota_schema_changed`。
+额度解析只使用额度字段，不依赖上游或本地 OAuth 的 `plan_type`。未知套餐名称
+不会阻断有效额度，原始套餐字段也不会返回或记录。显式的 `rate_limit: null`
+继续表示上游未提供窗口，不会补成 100% 剩余额度；完全缺少额度结构则返回明确错误。
+
+部署本次套餐兼容修复需同时重新构建 Gateway 与 `codex-compat`；只更新 Gateway、
+仍运行旧 sidecar 时，套餐检查仍可能返回 `upstream_quota_plan_unsupported`，
+更早的 sidecar 则可能返回汇总错误 `upstream_quota_schema_changed`。
 部署顺序宜先更新 Gateway，使其接受新错误码，再更新 sidecar。Compose 中的
 sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致，无需额外数据库迁移。
 
