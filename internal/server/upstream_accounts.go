@@ -394,6 +394,17 @@ var upstreamManagementErrors = map[string]struct {
 	"upstream_quota_timeout":                      {http.StatusGatewayTimeout, "额度查询服务请求 ChatGPT 超时，请检查出站网络或稍后重试"},
 	"upstream_quota_invalid_response":             {http.StatusBadGateway, "ChatGPT 额度响应读取失败或过大，请稍后重试"},
 	"upstream_quota_schema_changed":               {http.StatusBadGateway, "ChatGPT 额度数据无法解析，可能需要更新额度适配器"},
+	"upstream_quota_json_invalid":                 {http.StatusBadGateway, "ChatGPT 额度响应不是完整的单一 JSON，可能返回了非 JSON 页面"},
+	"upstream_quota_field_type_invalid":           {http.StatusBadGateway, "ChatGPT 额度字段类型不符合预期，需检查额度适配器兼容性"},
+	"upstream_quota_plan_unsupported":             {http.StatusBadGateway, "ChatGPT 额度套餐标识缺失或不受支持，当前适配器只接受 Plus/Pro"},
+	"upstream_quota_percent_missing":              {http.StatusBadGateway, "ChatGPT 额度窗口缺少已用百分比 used_percent"},
+	"upstream_quota_percent_out_of_range":         {http.StatusBadGateway, "ChatGPT 额度已用百分比超出 0–100 的有效范围"},
+	"upstream_quota_percent_fractional":           {http.StatusBadGateway, "ChatGPT 额度返回了小数百分比，当前适配器只接受整数"},
+	"upstream_quota_window_invalid":               {http.StatusBadGateway, "ChatGPT 额度窗口时长不在当前适配器接受的范围内"},
+	"upstream_quota_reset_invalid":                {http.StatusBadGateway, "ChatGPT 额度重置时间不在当前适配器接受的范围内"},
+	"upstream_quota_limit_id_invalid":             {http.StatusBadGateway, "ChatGPT 额外额度标识不符合当前适配器格式要求"},
+	"upstream_quota_limit_id_duplicate":           {http.StatusBadGateway, "ChatGPT 额度标识重复或与默认 codex 额度冲突"},
+	"upstream_quota_limits_excessive":             {http.StatusBadGateway, "ChatGPT 返回的额外额度数量超过当前适配器上限"},
 }
 
 func upstreamManagementErrorDetails(err error) (string, int) {

@@ -189,10 +189,10 @@ index 0000000..8fbfb6e
 +}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000..414778c
+index 0000000..b61f96e
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,642 @@
+@@ -0,0 +1,671 @@
 +package api
 +
 +import (
@@ -227,6 +227,25 @@ index 0000000..414778c
 +)
 +
 +var errQuotaRPCRequestTooLarge = errors.New("quota RPC request too large")
++
++// These errors identify failed schema checks without retaining upstream values.
++type quotaSchemaError string
++
++func (e quotaSchemaError) Error() string { return string(e) }
++
++func quotaSchemaErrorCode(err error) string {
++	var schemaErr quotaSchemaError
++	if errors.As(err, &schemaErr) {
++		switch schemaErr {
++		case "quota_json_invalid", "quota_field_type_invalid", "quota_plan_unsupported",
++			"quota_percent_missing", "quota_percent_out_of_range", "quota_percent_fractional",
++			"quota_window_invalid", "quota_reset_invalid", "quota_limit_id_invalid",
++			"quota_limit_id_duplicate", "quota_limits_excessive":
++			return string(schemaErr)
++		}
++	}
++	return "quota_schema_changed"
++}
 +
 +type upstreamAccountView struct {
 +	ID           string `json:"id"`
@@ -464,7 +483,7 @@ index 0000000..414778c
 +	}
 +	quota, err := normalizeUpstreamUsage(body, account)
 +	if err != nil {
-+		c.JSON(http.StatusBadGateway, gin.H{"error": "quota_schema_changed"})
++		c.JSON(http.StatusBadGateway, gin.H{"error": quotaSchemaErrorCode(err)})
 +		return
 +	}
 +	c.JSON(http.StatusOK, quotaRPCResponse{ID: rpcRequest.ID, Result: quota})
@@ -685,17 +704,21 @@ index 0000000..414778c
 +	var payload upstreamUsagePayload
 +	decoder := json.NewDecoder(bytes.NewReader(body))
 +	if err := decoder.Decode(&payload); err != nil {
-+		return quotaRateLimitsResult{}, err
++		var typeErr *json.UnmarshalTypeError
++		if errors.As(err, &typeErr) {
++			return quotaRateLimitsResult{}, quotaSchemaError("quota_field_type_invalid")
++		}
++		return quotaRateLimitsResult{}, quotaSchemaError("quota_json_invalid")
 +	}
 +	if err := ensureJSONEOF(decoder); err != nil {
-+		return quotaRateLimitsResult{}, err
++		return quotaRateLimitsResult{}, quotaSchemaError("quota_json_invalid")
 +	}
 +	plan := strings.ToLower(strings.TrimSpace(payload.PlanType))
 +	if plan == "" && account != nil {
 +		plan = strings.ToLower(strings.TrimSpace(account.Attributes["plan_type"]))
 +	}
 +	if !validCodexAccountPlan(plan) {
-+		return quotaRateLimitsResult{}, errors.New("missing plan type")
++		return quotaRateLimitsResult{}, quotaSchemaError("quota_plan_unsupported")
 +	}
 +
 +	reachedType := normalizeRateLimitReachedType(payload.RateLimitReachedType)
@@ -705,15 +728,15 @@ index 0000000..414778c
 +	}
 +	byLimitID := map[string]quotaRateLimitView{"codex": primary}
 +	if len(payload.AdditionalRateLimits) > codexMaxExtraLimits {
-+		return quotaRateLimitsResult{}, errors.New("too many additional quota limits")
++		return quotaRateLimitsResult{}, quotaSchemaError("quota_limits_excessive")
 +	}
 +	for _, additional := range payload.AdditionalRateLimits {
 +		limitID := strings.TrimSpace(additional.MeteredFeature)
 +		if !validQuotaLimitID(limitID) {
-+			return quotaRateLimitsResult{}, errors.New("invalid additional quota limit id")
++			return quotaRateLimitsResult{}, quotaSchemaError("quota_limit_id_invalid")
 +		}
 +		if _, exists := byLimitID[limitID]; exists {
-+			return quotaRateLimitsResult{}, errors.New("duplicate quota limit id")
++			return quotaRateLimitsResult{}, quotaSchemaError("quota_limit_id_duplicate")
 +		}
 +		normalized, errLimit := normalizeRateLimit(limitID, additional.RateLimit, nil)
 +		if errLimit != nil {
@@ -751,22 +774,28 @@ index 0000000..414778c
 +	if window == nil {
 +		return nil, nil
 +	}
-+	if window.UsedPercent == nil || math.IsNaN(*window.UsedPercent) || math.IsInf(*window.UsedPercent, 0) ||
-+		*window.UsedPercent < 0 || *window.UsedPercent > 100 || math.Trunc(*window.UsedPercent) != *window.UsedPercent {
-+		return nil, errors.New("invalid quota window used percent")
++	if window.UsedPercent == nil {
++		return nil, quotaSchemaError("quota_percent_missing")
++	}
++	if math.IsNaN(*window.UsedPercent) || math.IsInf(*window.UsedPercent, 0) ||
++		*window.UsedPercent < 0 || *window.UsedPercent > 100 {
++		return nil, quotaSchemaError("quota_percent_out_of_range")
++	}
++	if math.Trunc(*window.UsedPercent) != *window.UsedPercent {
++		return nil, quotaSchemaError("quota_percent_fractional")
 +	}
 +	view := &quotaWindowView{UsedPercent: int(*window.UsedPercent)}
 +	if window.LimitWindowSeconds != nil {
 +		seconds := *window.LimitWindowSeconds
 +		if seconds <= 0 || seconds > codexMaxWindowSeconds {
-+			return nil, errors.New("invalid quota window duration")
++			return nil, quotaSchemaError("quota_window_invalid")
 +		}
 +		minutes := (seconds + 59) / 60
 +		view.WindowDurationMins = &minutes
 +	}
 +	if window.ResetAt != nil {
 +		if *window.ResetAt < codexMinResetUnix || *window.ResetAt > codexMaxResetUnix {
-+			return nil, errors.New("invalid quota window reset")
++			return nil, quotaSchemaError("quota_reset_invalid")
 +		}
 +		resetAt := *window.ResetAt
 +		view.ResetsAt = &resetAt
@@ -837,15 +866,16 @@ index 0000000..414778c
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
-index 0000000..4454ec2
+index 0000000..7a34432
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
-@@ -0,0 +1,532 @@
+@@ -0,0 +1,557 @@
 +package api
 +
 +import (
 +	"context"
 +	"encoding/json"
++	"errors"
 +	"io"
 +	"net/http"
 +	"net/http/httptest"
@@ -1217,19 +1247,24 @@ index 0000000..4454ec2
 +		wantStatus int
 +		wantError  string
 +	}{
-+		{name: "malformed", body: `{"access_token":"must-not-leak"`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "missing used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "negative used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":-1,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "oversized used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":101,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "fractional used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":24.6,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "unsafe plan", body: `{"plan_type":"plus<script>","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "unsafe limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"limit_name":"must-not-leak","metered_feature":"<raw-upstream>","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "hyphenated limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"tool-v2","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "duplicate limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex_other","rate_limit":{}},{"metered_feature":"codex_other","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "reserved codex limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "absurd duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":9223372036854775807,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "absurd reset", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":9223372036854775807},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
-+		{name: "multiple response values", body: `{"plan_type":"plus","rate_limit":{}} {"secret":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_schema_changed"},
++		{name: "malformed", body: `{"access_token":"must-not-leak"`, wantStatus: http.StatusBadGateway, wantError: "quota_json_invalid"},
++		{name: "html with success status", body: `<html>must-not-leak</html>`, wantStatus: http.StatusBadGateway, wantError: "quota_json_invalid"},
++		{name: "wrong field type", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":"must-not-leak"}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
++		{name: "nonintegral duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":3.5}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_field_type_invalid"},
++		{name: "unsupported plan", body: `{"plan_type":"must-not-leak","rate_limit":{}}`, wantStatus: http.StatusBadGateway, wantError: "quota_plan_unsupported"},
++		{name: "excessive limits", body: `{"plan_type":"plus","additional_rate_limits":[` + strings.Repeat(`{},`, codexMaxExtraLimits) + `{}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limits_excessive"},
++		{name: "missing used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_missing"},
++		{name: "negative used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":-1,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_out_of_range"},
++		{name: "oversized used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":101,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_out_of_range"},
++		{name: "fractional used percent", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":24.6,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_percent_fractional"},
++		{name: "unsafe plan", body: `{"plan_type":"plus<script>","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":1800000000},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_plan_unsupported"},
++		{name: "unsafe limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"limit_name":"must-not-leak","metered_feature":"<raw-upstream>","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_invalid"},
++		{name: "hyphenated limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"tool-v2","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_invalid"},
++		{name: "duplicate limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex_other","rate_limit":{}},{"metered_feature":"codex_other","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_duplicate"},
++		{name: "reserved codex limit id", body: `{"plan_type":"plus","rate_limit":{},"additional_rate_limits":[{"metered_feature":"codex","rate_limit":{}}]}`, wantStatus: http.StatusBadGateway, wantError: "quota_limit_id_duplicate"},
++		{name: "absurd duration", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":9223372036854775807,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_window_invalid"},
++		{name: "absurd reset", body: `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":1,"limit_window_seconds":18000,"reset_at":9223372036854775807},"secondary_window":{"used_percent":1,"limit_window_seconds":604800,"reset_at":1800000000}}}`, wantStatus: http.StatusBadGateway, wantError: "quota_reset_invalid"},
++		{name: "multiple response values", body: `{"plan_type":"plus","rate_limit":{}} {"secret":"must-not-leak"}`, wantStatus: http.StatusBadGateway, wantError: "quota_json_invalid"},
 +		{name: "reauthentication", status: http.StatusUnauthorized, body: `{"token":"must-not-leak"}`, wantStatus: http.StatusUnauthorized, wantError: "quota_reauthentication_required"},
 +		{name: "forbidden", status: http.StatusForbidden, body: `{"token":"must-not-leak"}`, wantStatus: http.StatusForbidden, wantError: "quota_reauthentication_required"},
 +		{name: "rate limited", status: http.StatusTooManyRequests, body: `{"detail":"must-not-leak"}`, wantStatus: http.StatusTooManyRequests, wantError: "quota_upstream_rate_limited"},
@@ -1245,13 +1280,32 @@ index 0000000..4454ec2
 +			req.Header.Set("Authorization", "Bearer test-key")
 +			recorder := httptest.NewRecorder()
 +			server.engine.ServeHTTP(recorder, req)
-+			if recorder.Code != test.wantStatus || !strings.Contains(recorder.Body.String(), test.wantError) {
++			var result struct {
++				Error string `json:"error"`
++			}
++			if err := json.Unmarshal(recorder.Body.Bytes(), &result); err != nil {
++				t.Fatal(err)
++			}
++			if recorder.Code != test.wantStatus || result.Error != test.wantError {
 +				t.Fatalf("status/body = %d %s", recorder.Code, recorder.Body.String())
 +			}
 +			if strings.Contains(recorder.Body.String(), "must-not-leak") {
 +				t.Fatalf("raw upstream response leaked: %s", recorder.Body.String())
 +			}
 +		})
++	}
++}
++
++func TestQuotaSchemaErrorCodeRejectsUnrecognizedErrors(t *testing.T) {
++	for _, err := range []error{
++		nil,
++		errors.New("must-not-leak"),
++		quotaSchemaError("must-not-leak"),
++		errors.New("quota_percent_fractional"),
++	} {
++		if got := quotaSchemaErrorCode(err); got != "quota_schema_changed" {
++			t.Fatalf("unrecognized error classification = %q", got)
++		}
 +	}
 +}
 +

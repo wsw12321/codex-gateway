@@ -183,7 +183,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-771903fb47f59bda`；最后一段为固定多账号补丁 SHA256 的
+`v7.2.150-c77b1369-ad35c9794e72c491`；最后一段为固定多账号补丁 SHA256 的
 前 16 位，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 
 ## 3. 服务密钥
@@ -578,7 +578,18 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 | `upstream_quota_rate_limited` | ChatGPT 返回 429；稍后重试 |
 | `upstream_quota_upstream_error` | ChatGPT 返回其他非成功状态；现有 sidecar 不提供原始状态和正文 |
 | `upstream_quota_invalid_response` | sidecar 读取上游响应失败或响应超过大小限制 |
-| `upstream_quota_schema_changed` | 上游 JSON 无法解析或字段未通过校验；检查额度适配器兼容性 |
+| `upstream_quota_schema_changed` | 旧版 sidecar 的汇总解析错误，或尚未细分的校验失败 |
+| `upstream_quota_json_invalid` | 响应不是完整的单一 JSON，例如上游 2xx 返回 HTML、空正文或多个 JSON 值 |
+| `upstream_quota_field_type_invalid` | 已知字段的 JSON 类型不匹配，例如百分比为字符串，或秒数为小数 |
+| `upstream_quota_plan_unsupported` | 套餐标识缺失或不是当前适配器接受的 Plus/Pro |
+| `upstream_quota_percent_missing` | 某个额度窗口缺少 `used_percent` 或值为 null |
+| `upstream_quota_percent_out_of_range` | 已用百分比不是 0–100 范围内的有限数字 |
+| `upstream_quota_percent_fractional` | 已用百分比含小数，未通过当前整数约束 |
+| `upstream_quota_window_invalid` | 窗口时长不在大于 0、至多 31 天的范围内 |
+| `upstream_quota_reset_invalid` | 重置时间不在当前接受的 2000–2100 年 Unix 秒范围内 |
+| `upstream_quota_limit_id_invalid` | 额外额度标识不符合 `^[a-z][a-z0-9_]{0,31}$`，例如包含连字符 |
+| `upstream_quota_limit_id_duplicate` | 额外额度标识重复，或与保留的 `codex` 标识冲突 |
+| `upstream_quota_limits_excessive` | 返回的额外额度数量超过 32 个 |
 | `sidecar_invalid_response` | Gateway 校验 sidecar 成功响应失败；检查内部响应协议与版本 |
 | `sidecar_request_failed` | 收到了无法识别的 sidecar 错误响应；不据此推断 sidecar 连接中断 |
 | `upstream_quota_query_rate_limited` | Gateway 本地并发/五秒防抖限制；等待后重试 |
@@ -589,8 +600,14 @@ Gateway 只识别固定 HTTP 状态与错误码组合，错误 JSON 最多读取
 浏览器响应或审计。未识别的 5xx 使用 `sidecar_request_failed`，不会再合并成
 `sidecar_unavailable`。Gateway 先到达超时时限时仍返回 `sidecar_timeout`。
 
-这些分类利用现有 sidecar 已输出的固定错误码，只需重新构建并部署 Gateway
-即可生效，无需修改额度查询地址、重建 sidecar 或执行额外数据库迁移。
+细分解析错误时只返回固定条件标识，不返回原始字段值、上游 JSON 或 Go 解析异常。
+`upstream_quota_schema_changed` 只说明响应解析/校验失败，不能单凭该名称认定上游
+已修改接口；这些错误发生在 sidecar 收到 2xx 并读取正文之后。
+
+部署本次解析错误细分需同时重新构建 Gateway 与 `codex-compat`；只更新 Gateway、
+仍运行旧 sidecar 时，解析失败仍会得到 `upstream_quota_schema_changed`。
+部署顺序宜先更新 Gateway，使其接受新错误码，再更新 sidecar。Compose 中的
+sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致，无需额外数据库迁移。
 
 新 Codex 会话可能先记录一次 `GET /v1/responses` 的
 `426 responses_websocket_unsupported`，紧接着以 `POST /v1/responses` 的

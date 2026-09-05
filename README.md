@@ -303,7 +303,7 @@ connector token 以精确 `0640` 保存为
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为
-`v7.2.150-c77b1369-771903fb47f59bda`，包含固定多账号补丁的 SHA256 前 16 位。
+`v7.2.150-c77b1369-ad35c9794e72c491`，包含固定多账号补丁的 SHA256 前 16 位。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
 
