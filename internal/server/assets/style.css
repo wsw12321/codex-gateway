@@ -1424,13 +1424,30 @@ code {
   flex: 1 1 8rem;
 }
 
-#billing-owner-scope label {
-  flex: 0 0 auto;
+#billing-owner-scope {
+  flex-wrap: wrap;
+  align-items: flex-start;
 }
 
+.billing-user-search,
+.billing-user-picker {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.billing-user-picker {
+  flex-basis: 22rem;
+}
+
+#billing-user-search-status {
+  display: block;
+  margin-top: .35rem;
+  color: var(--muted);
+}
+
+#billing-user-search,
 #billing-user-select {
-  min-width: min(22rem, 100%);
-  margin: 0;
+  min-width: 0;
 }
 
 #billing-scope-name {
@@ -1887,8 +1904,13 @@ dialog form {
     gap: .2rem;
   }
 
-  #billing-user-select {
-    min-width: 0;
+  #billing-owner-scope {
+    align-items: stretch;
+  }
+
+  .billing-user-search,
+  .billing-user-picker {
+    flex-basis: auto;
   }
 
   #billing-scope-name {

@@ -317,6 +317,7 @@ function handleUnauthorized() {
   byId("billing-ledger-rows").replaceChildren(tableMessage(5, "登录后加载账务流水。"));
   byId("billing-current-rate").textContent = "—";
   byId("billing-user-select").replaceChildren(option("", "登录后加载用户"));
+  resetBillingUserSearch();
   byId("billing-ledger-page").textContent = "—";
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
@@ -1323,14 +1324,39 @@ function renderBillingUsers(result) {
   if (current.id && !unique.has(current.id)) unique.set(current.id, current);
   billingUsers = Array.from(unique.values()).sort((left, right) =>
     String(left.username || left.display_name).localeCompare(String(right.username || right.display_name), "zh-CN"));
+  byId("billing-user-search").disabled = false;
+  renderBillingUserOptions();
+}
+
+function resetBillingUserSearch() {
+  byId("billing-user-search").value = "";
+  byId("billing-user-search").disabled = true;
+  byId("billing-user-search-status").textContent = "登录后加载用户";
+}
+
+function renderBillingUserOptions() {
   const select = byId("billing-user-select");
   const previous = select.value || billingUserForDetail()?.id || state?.user?.id || "";
-  select.replaceChildren(...billingUsers.map((user) => option(
+  const selected = billingUsers.find((user) => user.id === previous);
+  const query = byId("billing-user-search").value.trim().toLowerCase();
+  const matches = billingUsers.filter((user) => String(user.username).toLowerCase().includes(query));
+  const userOption = (user) => option(
     user.id,
     `${user.display_name || user.username || user.id} (${user.username || user.id}) · ${formatUSD(user.cash_balance_usd, formatUSD("0"))}`,
-  )));
-  if (billingUsers.some((user) => user.id === previous)) select.value = previous;
-  else if (billingUsers.length) select.value = billingUsers[0].id;
+  );
+  const options = matches.map(userOption);
+  if (selected && !matches.some((user) => user.id === selected.id)) {
+    select.replaceChildren(
+      element("optgroup", {attributes: {label: "当前管理用户"}}, userOption(selected)),
+      ...(options.length ? [element("optgroup", {attributes: {label: "匹配用户"}}, ...options)] : []),
+    );
+  } else {
+    select.replaceChildren(...options);
+  }
+  select.value = selected?.id || "";
+  byId("billing-user-search-status").textContent = query
+    ? (matches.length ? `找到 ${matches.length} 位用户` : "未找到匹配的用户名")
+    : `共 ${billingUsers.length} 位用户`;
 }
 
 function renderBillingSettings(result) {
@@ -1388,7 +1414,7 @@ async function loadBillingSettings() {
 }
 
 async function loadBillingDashboard() {
-  const tasks = [loadBillingDetail(state.user.id, 0)];
+  const tasks = [loadBillingDetail(selectedBillingUserID(), 0)];
   if (state.user.role === "owner") {
     tasks.push(
       loadBillingSettings().catch((error) => {
@@ -1396,6 +1422,8 @@ async function loadBillingDashboard() {
       }),
       loadBillingUsers().catch((error) => {
         byId("billing-user-select").replaceChildren(option("", "用户列表加载失败"));
+        byId("billing-user-search").disabled = true;
+        byId("billing-user-search-status").textContent = "用户列表加载失败";
         notice(`账务用户列表加载失败：${friendlyError(error)}`, "error");
       }),
     );
@@ -2473,6 +2501,7 @@ function bindUI() {
     hide("personal-loading");
     clearSensitiveDOM();
     await api("/auth/logout", {method: "POST", body: "{}"});
+    resetBillingUserSearch();
     location.assign("/");
   }, "正在退出…");
   bindAsync("device-form", "submit", (event) => submitResource(event, "/admin/devices", "设备已添加。"), "添加中…");
@@ -2520,9 +2549,11 @@ function bindUI() {
     await loadUpstreamAccounts(upstreamAccountQueryFromForm());
     announce("上游账号本地统计已更新。");
   }, "应用中…");
+  byId("billing-user-search").addEventListener("input", renderBillingUserOptions);
   bindAsync("billing-user-select", "change", async (event) => {
     const userID = event.currentTarget.value;
     if (!userID) return;
+    renderBillingUserOptions();
     billingLedgerOffset = 0;
     all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
     await loadBillingDetail(userID, 0);

@@ -278,8 +278,15 @@
             </div>
             <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
             <div id="billing-owner-scope" class="scope-banner owner-only hidden">
-              <label for="billing-user-select">管理用户</label>
-              <select id="billing-user-select" aria-describedby="billing-scope-name"><option value="">正在加载用户…</option></select>
+              <div class="billing-user-search">
+                <label for="billing-user-search">搜索用户名</label>
+                <input id="billing-user-search" type="search" placeholder="输入用户名的一部分" autocomplete="off" aria-controls="billing-user-select" aria-describedby="billing-user-search-status" disabled>
+                <small id="billing-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
+              </div>
+              <div class="billing-user-picker">
+                <label for="billing-user-select">管理用户</label>
+                <select id="billing-user-select" aria-describedby="billing-scope-name"><option value="">正在加载用户…</option></select>
+              </div>
               <span id="billing-scope-name">—</span>
             </div>
             <div class="metrics billing-metrics">
