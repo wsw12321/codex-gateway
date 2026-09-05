@@ -145,7 +145,7 @@ pricing_validator='
     (.long | included_price);
   def included_short_tier:
     exact_keys(["short"]) and (.short | included_price);
-  def gpt56_model:
+  def separate_long_model:
     exact_keys([
       "cache_write_mode",
       "long_context_threshold_tokens",
@@ -230,11 +230,13 @@ pricing_validator='
       "gpt-5.5",
       "gpt-5.6-luna",
       "gpt-5.6-sol",
-      "gpt-5.6-terra"
+      "gpt-5.6-terra",
+      "gpt-6-astra"
     ]) and
-    (.["gpt-5.6-sol"] | gpt56_model) and
-    (.["gpt-5.6-terra"] | gpt56_model) and
-    (.["gpt-5.6-luna"] | gpt56_model) and
+    (.["gpt-6-astra"] | separate_long_model) and
+    (.["gpt-5.6-sol"] | separate_long_model) and
+    (.["gpt-5.6-terra"] | separate_long_model) and
+    (.["gpt-5.6-luna"] | separate_long_model) and
     (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and

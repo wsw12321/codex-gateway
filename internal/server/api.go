@@ -44,12 +44,21 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	key := apiKeyFrom(r.Context())
 	requestedAt := time.Now().UTC()
 	model := fixedModel
+	var allowedModels map[string]struct{}
 	requestedServiceTier := ""
 	var body *countingBody
 	var modelPricingInput, modelPricingCached, modelPricingOutput string
 	var pricingSnapshot []byte
 	var cacheWriteMode, billingMode string
 	pricingRuleVersion := s.config.UsagePricing.SchemaVersion
+	if r.Method == http.MethodGet {
+		var err error
+		allowedModels, err = s.allowedModelsForAPIKey(r.Context(), key)
+		if err != nil {
+			internalError(s, w, r, "resolve effective model catalog", err)
+			return
+		}
+	}
 	if r.Method == http.MethodPost {
 		routing, parsedBody, err := s.prepareModelBody(w, r, s.config.BodyLimit)
 		if err != nil {
@@ -70,7 +79,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		model, requestedServiceTier, body = routing.Model, routing.ServiceTier, parsedBody
 		defer func() { _ = body.Close() }()
 		if !modelAllowed(model, key.ModelAllowlist) {
-			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "model_not_allowed", "此 API Key 不允许使用该模型")
+			writeModelNotAllowed(w, r)
 			return
 		}
 		priceSnapshot, price, ok, err := s.config.UsagePricing.ModelSnapshot(model)
@@ -153,9 +162,14 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			PricingRuleVersion:   pricingRuleVersion,
 			RequestedAt:          requestedAt, RequestBytes: requestBytes,
 		},
-		Billing: billingReservation,
+		Billing:            billingReservation,
+		RequireModelAccess: requiresUserModelAccess(r.Method, model, s.config.UsagePricing),
 	})
 	if err != nil {
+		if errors.Is(err, store.ErrModelNotAllowed) {
+			writeModelNotAllowed(w, r)
+			return
+		}
 		var insufficient *store.InsufficientFundsError
 		if errors.As(err, &insufficient) {
 			writeInsufficientQuota(w, r, insufficient.RetryAfter)
@@ -186,9 +200,17 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	go s.renewQuotaLease(requestID, stopRenewal)
 	defer close(stopRenewal)
 	forwardingStarted = true
-	result, failure := s.upstream.ForwardWithOptions(r.Context(), w, r, upstreamPath, gatewayproxy.ForwardOptions{
-		AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
-	})
+	var result gatewayproxy.Result
+	var failure *gatewayproxy.Failure
+	if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
+		result, failure = s.upstream.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
+			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+		})
+	} else {
+		result, failure = s.upstream.ForwardWithOptions(r.Context(), w, r, upstreamPath, gatewayproxy.ForwardOptions{
+			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+		})
+	}
 
 	completedAt := time.Now().UTC()
 	effectiveStatus := result.StatusCode
@@ -261,6 +283,10 @@ func upstreamAffinityScope(secret []byte, apiKeyID string) string {
 
 func writeModelPricingNotFound(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_pricing_not_found", "模型未记录计费价格，请联系管理员")
+}
+
+func writeModelNotAllowed(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "model_not_allowed", "当前 API Key 或账号不允许使用该模型")
 }
 
 func writeServiceTierNotSupported(w http.ResponseWriter, r *http.Request) {

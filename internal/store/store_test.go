@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 7 {
-		t.Fatalf("migration count = %d, want 7", len(migrations))
+	if len(migrations) != 8 {
+		t.Fatalf("migration count = %d, want 8", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -43,6 +43,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		"billing_ledger_entries", "billing_cash_credit_lots",
 		"billing_reservations", "billing_charge_allocations",
 		"password_credentials",
+		"model_access_defaults", "user_model_access",
 	} {
 		needle := "CREATE TABLE " + table
 		if !strings.Contains(sql, needle) {
@@ -52,6 +53,75 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	for _, forbidden := range []string{"prompt_text", "request_body BYTEA", "response_body BYTEA", "oauth_token"} {
 		if strings.Contains(strings.ToLower(sql), strings.ToLower(forbidden)) {
 			t.Errorf("migration contains sensitive payload column %q", forbidden)
+		}
+	}
+}
+
+func TestModelAccessMigrationSnapshotsDefaultsAndRetainsCatalogState(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0008_model_access.sql" {
+			migrationSQL = migration.SQL
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0008_model_access.sql is missing")
+	}
+	for _, required := range []string{
+		"CREATE TABLE model_access_defaults",
+		"catalog_active BOOLEAN NOT NULL DEFAULT true",
+		"CREATE TABLE user_model_access",
+		"PRIMARY KEY (user_id, model)",
+		"gateway_snapshot_model_access_defaults",
+		"AFTER INSERT ON users",
+		"WHERE d.catalog_active",
+		"updated_by_user_id UUID REFERENCES users(id) ON DELETE RESTRICT",
+	} {
+		if !strings.Contains(migrationSQL, required) {
+			t.Errorf("model access migration is missing %q", required)
+		}
+	}
+}
+
+func TestModelAccessModelValidationMatchesPricingCatalog(t *testing.T) {
+	t.Parallel()
+	for _, model := range []string{"gpt-6-astra", ".internal", "_model", ":alias", "a"} {
+		if !validModelAccessModel(model) {
+			t.Errorf("validModelAccessModel(%q) = false", model)
+		}
+	}
+	for _, model := range []string{"", "white space", "slash/model", strings.Repeat("a", 129)} {
+		if validModelAccessModel(model) {
+			t.Errorf("validModelAccessModel(%q) = true", model)
+		}
+	}
+}
+
+func TestNormalizeSelectedModelAccessUsersRejectsDuplicates(t *testing.T) {
+	t.Parallel()
+	_, err := normalizeSelectedModelAccessUsers([]string{
+		"00000000-0000-4000-8000-000000000001",
+		" 00000000-0000-4000-8000-000000000001 ",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("duplicate selected users error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestNormalizeSelectedModelAccessUsersRejectsNonCanonicalUUID(t *testing.T) {
+	t.Parallel()
+	for _, userID := range []string{
+		"not-a-user-id",
+		"00000000000040008000000000000001",
+		"00000000-0000-4000-8000-00000000000A",
+	} {
+		if _, err := normalizeSelectedModelAccessUsers([]string{userID}); !errors.Is(err, ErrInvalid) {
+			t.Errorf("non-canonical selected user %q error = %v, want ErrInvalid", userID, err)
 		}
 	}
 }

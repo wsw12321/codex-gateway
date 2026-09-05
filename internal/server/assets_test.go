@@ -386,6 +386,46 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 	}
 }
 
+func TestModelAccessDashboardIsOwnerOnlyAndSupportsBatchChanges(t *testing.T) {
+	t.Parallel()
+
+	html := string(indexHTML)
+	javascript := string(appJS)
+	stylesheet := string(styleCSS)
+	for _, required := range []string{
+		`href="#model-access" data-view="model-access" class="owner-only hidden"`,
+		`class="view owner-only hidden" data-section="model-access"`,
+		`id="model-access-model-select"`, `id="model-access-default-enabled"`,
+		`id="model-access-user-rows"`, `id="model-access-select-all"`,
+		`id="model-access-enable-selected"`, `id="model-access-disable-selected"`,
+		`id="model-access-enable-all"`, `id="model-access-disable-all"`,
+		`name="reason" required maxlength="500"`,
+		`API Key 的模型白名单及管理员为当前用户配置的模型权限`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("model-access dashboard HTML is missing %s", required)
+		}
+	}
+	for _, required := range []string{
+		`ownerOnlySections.add("model-access")`,
+		`/admin/model-access/models`, `/default`, `/users`,
+		`method: "PUT"`, `scope === "selected"`, `payload.user_ids`,
+		`sensitiveAction(() => api(`, `window.confirm(`,
+		`loadModelAccess(model)`, `modelAccessUsersRequestSequence`,
+	} {
+		if !strings.Contains(javascript, required) {
+			t.Fatalf("model-access dashboard JavaScript is missing %s", required)
+		}
+	}
+	for _, required := range []string{
+		`.model-access-grid {`, `.model-access-bulk-form {`, `.model-access-checkbox {`,
+	} {
+		if !strings.Contains(stylesheet, required) {
+			t.Fatalf("model-access dashboard stylesheet is missing %s", required)
+		}
+	}
+}
+
 func TestPasswordIdentityUIIncludesFallbackAndSafeSessionHandling(t *testing.T) {
 	t.Parallel()
 	html := string(indexHTML)

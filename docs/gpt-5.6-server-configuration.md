@@ -1,9 +1,9 @@
-# GPT-5.6 服务端配置
+# GPT-6 与 GPT-5.6 服务端配置
 
 本指南使用 [`deploy/env.gpt-5.6.example`](../deploy/env.gpt-5.6.example) 生成
 生产 `.env`。完整可读目录是
 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，模型单价和
-缓存语义于 2026-08-20 对照以下官方文档核对：
+缓存语义于 2026-09-05 对照以下官方文档核对：
 
 - [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)
 - [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)
@@ -16,19 +16,22 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 
 ## 计价口径
 
-模板包含当前 Codex API 模型目录中的 `gpt-5.6-sol`、`gpt-5.6-terra`、
-`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini`，以及隐藏的
-`codex-auto-review`。GPT-5.2 等未加入完整规则的模型会在转发前拒绝，不能用别名
-或相近模型价格代替。
+模板包含当前 Codex API 模型目录中的 `gpt-6-astra`、`gpt-5.6-sol`、
+`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、
+`gpt-5.4-mini`，以及隐藏的 `codex-auto-review`。GPT-5.2 等未加入完整规则的模型
+会在转发前拒绝，不能用别名或相近模型价格代替。
 
 配置中的每百万 Token 单价如下；每格依次为“普通输入 / 缓存读取 / 缓存写入 /
 输出”。“包含”表示缓存写入不单独收费，仍属于普通非缓存输入。
 
 | 模型 / 服务层 | `<=272000` Token | `>272000` Token |
 | --- | --- | --- |
-| GPT-5.6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
-| GPT-5.6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
-| GPT-5.6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
+| GPT-6 Astra Standard | `10 / 1 / 12.5 / 50` | `20 / 2 / 25 / 75` |
+| GPT-6 Astra Flex | `5 / 0.5 / 6.25 / 25` | `10 / 1 / 12.5 / 37.5` |
+| GPT-6 Astra Fast | `20 / 2 / 25 / 100` | `40 / 4 / 50 / 150` |
+| GPT-5.6 Sol Standard | `4 / 0.4 / 5 / 20` | `8 / 0.8 / 10 / 30` |
+| GPT-5.6 Sol Flex | `2 / 0.2 / 2.5 / 10` | `4 / 0.4 / 5 / 15` |
+| GPT-5.6 Sol Fast | `8 / 0.8 / 10 / 40` | `16 / 1.6 / 20 / 60` |
 | GPT-5.6 Terra Standard | `2 / 0.2 / 2.5 / 12` | `4 / 0.4 / 5 / 18` |
 | GPT-5.6 Terra Flex | `1 / 0.1 / 1.25 / 6` | `2 / 0.2 / 2.5 / 9` |
 | GPT-5.6 Terra Fast | `4 / 0.4 / 5 / 24` | `8 / 0.8 / 10 / 36` |
@@ -49,7 +52,7 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 的最大输入为 272000，只配置短档；若上游仍报告更大输入，会记录缺失组合并用该
 模型最高已公布分量兜底。
 
-GPT-5.6 的 `cache_write_mode` 是 `separate`：
+GPT-6 和 GPT-5.6 的 `cache_write_mode` 是 `separate`：
 
 ```text
 ordinary = input - cached - cache_write
@@ -68,8 +71,8 @@ cost = ordinary * input_price
      + output * output_price
 ```
 
-两种公式最后都除以 `1,000,000`，并按现有规则保留 12 位小数。GPT-5.6 若缺失
-`cache_write_tokens` 字段，会把全部非缓存输入视为缓存写入并记录
+两种公式最后都除以 `1,000,000`，并按现有规则保留 12 位小数。GPT-6 或 GPT-5.6
+若缺失 `cache_write_tokens` 字段，会把全部非缓存输入视为缓存写入并记录
 `missing_cache_write_tokens`。
 
 服务层处理规则：请求/响应 `default` 或 `standard` 映射 Standard，`flex` 映射
@@ -207,13 +210,17 @@ codex-auto-review
 ```
 
 价格目录只负责计价，不会自动修改 API Key 白名单。
+Owner 还可在管理台“模型权限”中独立控制用户权限：新用户默认值在注册时复制，
+之后的默认修改不追溯已有用户；单用户和批量修改则不改变未来默认值。
+`/v1/models` 返回价格目录、当前用户权限与上述 Key 白名单的交集。
 
 ## 故障判断
 
 - `model_pricing_not_found`：请求中的精确模型名不在价格 JSON 中。
 - `service_tier_not_supported`：请求显式指定了 Ultrafast 或模型未配置的服务层；
   请求没有转发到上游。
-- `model_not_allowed`：API Key 模型白名单未包含该模型。
+- `model_not_allowed`：API Key 模型白名单未包含该模型，或 Owner 已禁用当前用户的
+  模型权限；拒绝发生在用量、配额、账务预留和上游转发前。
 - `insufficient_quota`：非零价请求没有可用于准入的余额或订阅额度；内部零价
   `codex-auto-review` 不要求资金来源。
 - 管理台出现 `missing_service_tier`、`unknown_service_tier`、

@@ -50,6 +50,10 @@ type AdmitRequestParams struct {
 	Quota   ReserveQuotaParams
 	Usage   BeginUsageRequestParams
 	Billing *BillingReservationParams
+	// RequireModelAccess must be set by managed-model data-plane callers. It is
+	// false only for catalog traffic, legacy store workflows, and explicitly
+	// exempt internal governance models.
+	RequireModelAccess bool
 }
 
 type RequestAdmission struct {
@@ -111,6 +115,11 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 
 	var admission RequestAdmission
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if params.RequireModelAccess {
+			if err := requireModelAccess(ctx, tx, usage.UserID, usage.Model); err != nil {
+				return err
+			}
+		}
 		var txErr error
 		admission.Quota, txErr = reserveQuotaTx(ctx, tx, quota)
 		if txErr != nil {

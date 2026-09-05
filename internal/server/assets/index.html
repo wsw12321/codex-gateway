@@ -108,6 +108,7 @@
           <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
+          <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
         </nav>
         <div class="profile">
@@ -259,7 +260,7 @@
                       <div><dt><code>401 invalid_api_key</code></dt><dd>重新执行 Codex 登录，并确认 Key 尚未过期或被删除。</dd></div>
                       <div><dt><code>403 key_disabled</code></dt><dd>在 API Keys 页面重新启用该 Key，或改用其他活跃 Key。</dd></div>
                       <div><dt><code>400 invalid_project</code></dt><dd>确认 API Key 的默认项目仍为活跃状态，且属于当前账号。</dd></div>
-                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单；Gateway 仅支持 Responses 协议。</dd></div>
+                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单及管理员为当前用户配置的模型权限；Gateway 仅支持 Responses 协议。</dd></div>
                     </dl>
                   </div>
                   <div class="button-group guide-actions">
@@ -526,6 +527,62 @@
                   <tbody id="global-rows"><tr><td colspan="6" class="table-message">选择“全员汇总”后加载。</td></tr></tbody>
                 </table>
               </div>
+            </div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="model-access" aria-labelledby="model-access-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="model-access-title">模型权限</h2><p>控制每位用户可调用的定价目录模型，以及新用户注册时获得的默认权限。</p></div>
+            </div>
+            <p class="callout model-access-note" role="note">新用户默认值只在注册时复制；批量操作只影响当前已经存在的用户，两者互不追溯。</p>
+            <div id="model-access-loading" class="inline-loading hidden" role="status">正在加载模型权限…</div>
+            <div class="model-access-grid">
+              <article class="panel model-access-settings">
+                <div class="panel-heading"><div><p class="eyebrow">MODEL DEFAULT</p><h3>模型与新用户默认值</h3></div></div>
+                <label for="model-access-model-select">管理模型
+                  <select id="model-access-model-select"><option value="">正在加载模型…</option></select>
+                </label>
+                <div class="metrics compact model-access-metrics">
+                  <article><span>已启用用户</span><strong id="model-access-enabled-count">—</strong></article>
+                  <article><span>已禁用用户</span><strong id="model-access-disabled-count">—</strong></article>
+                </div>
+                <form id="model-access-default-form" class="model-access-form">
+                  <label class="switch-control" for="model-access-default-enabled">
+                    <input id="model-access-default-enabled" name="enabled" type="checkbox" role="switch">
+                    <span><strong>新用户默认启用</strong><small>修改不会影响任何已有用户。</small></span>
+                  </label>
+                  <label>操作原因
+                    <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明修改默认权限的原因">
+                  </label>
+                  <p class="form-message hidden" role="alert"></p>
+                  <button type="submit">保存新用户默认值</button>
+                </form>
+              </article>
+
+              <article class="panel model-access-users-panel">
+                <div class="panel-heading"><div><p class="eyebrow">EXISTING USERS</p><h3>已有用户权限</h3><p>包括 Owner 与已停用账号。逐用户或批量操作都会立即影响下一次请求。</p></div><span id="model-access-selected-count" class="badge">已选 0</span></div>
+                <form id="model-access-users-form" class="model-access-bulk-form">
+                  <label>操作原因
+                    <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明启用或禁用的原因">
+                  </label>
+                  <div class="button-group model-access-selected-actions">
+                    <button id="model-access-enable-selected" type="button">启用选中用户</button>
+                    <button id="model-access-disable-selected" type="button" class="secondary">禁用选中用户</button>
+                  </div>
+                  <div class="button-group model-access-all-actions" aria-label="全部现有用户操作">
+                    <button id="model-access-enable-all" type="button" class="secondary">启用全部现有用户</button>
+                    <button id="model-access-disable-all" type="button" class="danger">禁用全部现有用户</button>
+                  </div>
+                  <p class="form-message hidden" role="alert"></p>
+                </form>
+                <div class="table-wrap model-access-table-wrap">
+                  <table>
+                    <caption>权限记录直接从服务端读取；停用账号仍可在这里预先配置。</caption>
+                    <thead><tr><th class="model-access-check-cell"><label class="sr-only" for="model-access-select-all">选择全部用户</label><input id="model-access-select-all" class="model-access-checkbox" type="checkbox"></th><th>用户</th><th>角色 / 状态</th><th>当前权限</th><th>操作</th></tr></thead>
+                    <tbody id="model-access-user-rows"><tr><td colspan="5" class="table-message">选择模型后加载用户。</td></tr></tbody>
+                  </table>
+                </div>
+              </article>
             </div>
           </section>
 

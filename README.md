@@ -101,7 +101,7 @@ Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 | --- | --- |
 | `400 invalid_project` | 显式项目不存在或不属于当前用户 |
 | `401` | API Key 无效或已过期 |
-| `403` | 用户或 Key 已禁用，或模型不在白名单 |
+| `403` | 用户或 Key 已禁用，或模型被 Key 白名单/管理员用户权限拒绝 |
 | `413 request_too_large` | 请求超过 64 MiB |
 | `426 responses_websocket_unsupported` | WebSocket 不受支持，客户端应改用 HTTPS/SSE |
 | `429` | RPM、并发、每日请求或 USD 额度不足 |
@@ -148,6 +148,14 @@ reservation，照常记录 Token 和零金额 ledger；它不扣日、周、月�
 `429 insufficient_quota`。单次或并发请求超过准入时绑定额度时，账务流水会分别
 记录实际成本、已扣金额和未覆盖金额，不透支也不延后追扣。
 
+Owner 可在管理台“模型权限”区域为每个定价目录模型设置新用户默认值，并对单个、
+选中或全部现有用户批量启用/禁用。注册时会在同一事务内复制当时的默认值；此后
+修改默认值不会追溯已有用户，批量操作也不会改变未来注册默认值。模型禁用在下一次
+请求立即生效，并在额度预留、用量/账务记录和上游转发前返回
+`403 permission_error / model_not_allowed`。`GET /v1/models` 只返回“当前价格目录、
+用户权限、API Key 模型白名单”的交集。内部 `codex-auto-review` 不进入 Owner 权限
+目录并保持原有内部零价行为。
+
 管理台的“额度与订阅”区域允许成员只读查看余额、三档周期和长期账务流水。Owner
 在近期 Passkey 验证后可按当时充值汇率进行 CNY 充值、执行带原因的正负 USD 调整、
 修改充值汇率，以及立即重开或停用任一订阅档。所有写操作要求 UUID
@@ -177,12 +185,12 @@ Owner 的全员统计展示“OpenAI API Token 等价成本”。USD 金额汇�
 ### 已实现
 
 - Go Gateway、PostgreSQL schema 与嵌入式校验迁移。
-- 中文管理界面、Passkey 邀请/登录/恢复、多设备/项目/API Key 管理。
+- 中文管理界面、Passkey 邀请/登录/恢复、多设备/项目/API Key 与 Owner 模型权限管理。
 - Responses、compact、models 固定代理，普通响应和 SSE usage/TTFT 解析。
 - PostgreSQL 原子 RPM、并发、每日请求配额及长流 lease 续期。
 - usage 日/月聚合、精确筛选、CSV、审计、配额及上游告警。
 - OpenAI API Token 等价成本 v2：多模型、Standard/Flex/Fast、短/长上下文、
-  GPT-5.6 独立 cache-write、保守兜底及不可变 ledger 报表。
+  GPT-6/GPT-5.6 独立 cache-write、保守兜底及不可变 ledger 报表。
 - Cloudflare Tunnel、Caddy、CLIProxyAPI、Squid 网络隔离、加密备份/恢复脚本
   和供应链锁定。
 
@@ -262,7 +270,7 @@ chmod 0600 .env
 
 `deploy/env.example` 已包含
 [deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
-覆盖 GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini 和内部零价
+覆盖 GPT-6 Astra、GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini 和内部零价
 `codex-auto-review`。部署前仍必须对照
 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 复核每百万
 Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`；不要把 v1

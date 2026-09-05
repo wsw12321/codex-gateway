@@ -68,7 +68,7 @@ chmod 0600 .env
 ```json
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-08-20",
+  "catalog_as_of": "2026-09-05",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -84,16 +84,16 @@ chmod 0600 .env
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "30"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "20"
           },
           "long": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "45"
+            "input_usd_per_million": "8",
+            "cached_input_usd_per_million": "0.8",
+            "cache_write_usd_per_million": "10",
+            "output_usd_per_million": "30"
           }
         }
       }
@@ -102,11 +102,12 @@ chmod 0600 .env
 }
 ```
 
-完整模板覆盖 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、
-`gpt-5.4`、`gpt-5.4-mini` 和内部零价 `codex-auto-review`。GPT-5.2 等不在目录
+完整模板覆盖 `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、
+`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
+`codex-auto-review`。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
-API Key 白名单逐一核对。
+用户模型权限、API Key 白名单逐一核对。
 
 v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
 `schema_version` 的配置仍按 v1 解析，只用于过渡和升级时结算已经执行中的 v1
@@ -129,7 +130,7 @@ reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的�
   `12.5 / 1.25 / 75` 和 `5 / 0.5 / 30`（输入/缓存读取/输出，每百万 Token）。
   这属于本地保守兜底，不伪装成官方精确价格。
 
-GPT-5.6 使用 `cache_write_mode=separate`，缓存写入是独立计费类别：
+GPT-6 和 GPT-5.6 使用 `cache_write_mode=separate`，缓存写入是独立计费类别：
 
 ```text
 ordinary = input_tokens - cached_input_tokens - cache_write_tokens
@@ -150,7 +151,8 @@ cost = (ordinary * input_price
       + output_tokens * output_price) / 1,000,000
 ```
 
-若 GPT-5.6 响应没有给出 cache-write 字段，结算会把全部非缓存输入视为缓存写入，
+若 GPT-6 或 GPT-5.6 响应没有给出 cache-write 字段，结算会把全部非缓存输入视为
+缓存写入，
 记录 `missing_cache_write_tokens`。`reasoning_tokens` 已包含在 output 中，不能再次
 计费。最终金额沿用系统规则保留 12 位小数。
 
@@ -165,7 +167,7 @@ ledger，修改当前价格 JSON 不会改变历史 USD；Token 数量继续来�
 实际账单：当前上游是 ChatGPT Plus/Pro OAuth，而且 `codex-auto-review` 零价与上述
 保守兜底都是本地策略；Pro 订阅费、工具、区域、Batch、Ultrafast、税费和基础
 设施成本均不在范围内。完整价格表和缓存语义见
-[GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+[GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
 
 ## 2. 供应链锁定
 
@@ -351,6 +353,13 @@ Owner 完成 Passkey 注册后，邀请、恢复、API Key 创建、查看、启
 敏感操作都在 HTTPS 管理界面完成并要求近期二次验证。新创建的 API Key 可在再次
 验证后查看；迁移前 Key 因没有密文会明确显示不可查看。不要截图、记录或通过聊天系统转发
 API Key、恢复码、邀请 fragment 或 Passkey challenge。
+
+“模型权限”仅对 Owner 可见。每个当前定价目录模型分别维护新用户默认值和已有用户
+快照：修改默认值只影响之后注册的用户；单用户、选中用户和“全部现有用户”操作只
+影响操作事务中已经存在的账号，包括 Owner 与已停用账号。所有写入都要求同源浏览器、
+近期二次验证和 1–500 字原因。禁用后应在下一次请求立即得到
+`403 permission_error / model_not_allowed`，且不得产生 usage、配额、账务预留或
+sidecar 请求。内部 `codex-auto-review` 不出现在该目录中。
 
 ## 7. 客户端接入
 
@@ -646,7 +655,7 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
    2 的旧 ledger 行数和三项金额合计，必须逐项完全相同。抽查历史
    `usage_charge` 的 `pricing_rule_version=1`，新增 v2 元数据保持空值；不得为追求
    “完整”而更新历史流水。
-6. 先启动 Gateway 和 Caddy，确认健康后分别用 GPT-5.6、GPT-5.5、GPT-5.4、
+6. 先启动 Gateway 和 Caddy，确认健康后分别用 GPT-6、GPT-5.6、GPT-5.5、GPT-5.4、
    GPT-5.4-mini 做受控 Responses 结算冒烟，并验证 Standard/Flex/Fast、
    `272000`/`272001` 边界、cache-write 与兜底统计。用无余额测试用户验证
    `codex-auto-review` 能写入 Token 和零金额 ledger、但不扣任何 USD 额度；全部
@@ -719,6 +728,23 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
 7. `0007` 写入后禁止旧二进制连接该数据库卷。需要回退时停止所有写入，将升级前
    备份恢复到新的隔离数据库卷，再切换旧 revision；不得删除迁移记录、手工回填
    历史账号或反向修改生产 schema。
+
+### 升级到 `0008_model_access.sql`
+
+`0008` 新增模型权限默认值、用户快照和注册触发器。迁移本身不知道运行时价格目录；
+新 Gateway 在监听端口前会用 `GATEWAY_USAGE_PRICING_JSON` 同步可管理模型，为新模型
+创建启用默认值并给全部已有用户补齐启用记录。按以下顺序验收：
+
+1. 停止公网入口和旧 Gateway，生成加密备份并记录用户、usage、配额、账务与审计行数。
+2. 用新镜像显式执行迁移，再启动 Gateway；若价格目录同步失败，进程必须拒绝监听。
+3. 确认 `model_access_defaults` 包含除 `codex-auto-review` 外的当前价格目录模型，且
+   `user_model_access` 对每个现有用户/可管理模型恰有一行。已从目录移除的历史记录可
+   保留，但 `catalog_active` 必须为 false，管理台和数据面均不得采用。
+4. 在非生产账号验证默认值注册快照、默认修改不追溯、选中/全部批量、无效目标整批
+   回滚和审计原因/影响数量。再验证 `/v1/models` 只返回价格目录、用户权限与 Key
+   白名单交集，畸形或超过 1 MiB 的上游目录返回 502 且没有部分响应。
+5. `0008` 写入后禁止旧二进制连接该数据库卷；回退必须恢复升级前备份，不能手工删除
+   权限表、触发器或 migration ledger。
 
 ## 11. 计划迁机
 
@@ -815,10 +841,13 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
    兜底原因；修改测试环境当前价格 JSON 后，历史 ledger USD 必须不变。未配置
    模型必须在转发前返回 `model_pricing_not_found`。确认所有金额均标为
    “OpenAI API Token 等价成本”，没有呈现为 OpenAI 实际账单。
-7. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
+7. 在“模型权限”中验证新用户默认值与已有用户批量操作互不追溯；禁用一个测试用户
+   后，其下一次请求必须在 usage、配额、账务预留和 sidecar 调用前返回
+   `model_not_allowed`。`/v1/models` 必须同时受用户权限和 Key 白名单过滤。
+8. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
    两分钟的代表性长流不能被聚合或无故断开，客户端主动断开后上游请求和并发
    lease 会被取消或结算；响应不得被 Cloudflare 缓存。
-8. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
+9. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
    不出现测试 canary 的正文或凭证。
-9. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
+10. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再
    手工运行一次每日备份任务和恢复演练，确认只保留最近 14 组完整文件对。

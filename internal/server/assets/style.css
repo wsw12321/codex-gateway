@@ -1457,6 +1457,117 @@ code {
   margin-top: 1rem;
 }
 
+.model-access-note {
+  margin-bottom: 1rem;
+}
+
+.model-access-grid {
+  display: grid;
+  grid-template-columns: minmax(18rem, .38fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+}
+
+.model-access-settings,
+.model-access-form,
+.model-access-bulk-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.model-access-metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.switch-control {
+  display: flex;
+  align-items: center;
+  gap: .8rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  padding: .8rem;
+  color: var(--text);
+  background: var(--surface-soft);
+  cursor: pointer;
+}
+
+.switch-control input,
+.model-access-checkbox {
+  width: 1.15rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.switch-control span,
+.switch-control strong,
+.switch-control small,
+.model-access-user-identity strong,
+.model-access-user-identity small {
+  display: block;
+}
+
+.switch-control small,
+.model-access-user-identity small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.model-access-users-panel .panel-heading {
+  align-items: flex-start;
+}
+
+.model-access-users-panel .panel-heading p {
+  margin: .25rem 0 0;
+}
+
+.model-access-bulk-form {
+  grid-template-columns: minmax(14rem, 1fr) auto auto;
+  align-items: end;
+  margin: 1rem 0;
+  border: 1px solid var(--line);
+  border-radius: .8rem;
+  padding: .9rem;
+  background: var(--surface-soft);
+}
+
+.model-access-bulk-form > .form-message {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.model-access-selected-actions,
+.model-access-all-actions {
+  flex-wrap: wrap;
+}
+
+.model-access-table-wrap {
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+}
+
+.model-access-table-wrap td:nth-child(3) .status-badge {
+  margin-left: .45rem;
+}
+
+.model-access-check-cell {
+  width: 3rem;
+  text-align: center !important;
+}
+
+.model-access-toggle {
+  min-width: 4.5rem;
+}
+
+.model-access-user-identity {
+  max-width: 24rem;
+  white-space: normal;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -1569,8 +1680,17 @@ dialog form {
 
   .billing-admin-grid,
   .billing-subscription-forms,
-  .subscription-list {
+  .subscription-list,
+  .model-access-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .model-access-bulk-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .model-access-bulk-form > label {
+    grid-column: 1 / -1;
   }
 }
 
@@ -1651,7 +1771,8 @@ dialog form {
 
   .billing-admin-grid,
   .billing-subscription-forms,
-  .subscription-list {
+  .subscription-list,
+  .model-access-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1696,6 +1817,21 @@ dialog form {
 
   .filters,
   .global-filters {
+    grid-template-columns: 1fr;
+  }
+
+  .model-access-bulk-form {
+    grid-template-columns: 1fr;
+  }
+
+  .model-access-bulk-form > label,
+  .model-access-bulk-form > .form-message {
+    grid-column: auto;
+  }
+
+  .model-access-selected-actions,
+  .model-access-all-actions {
+    display: grid;
     grid-template-columns: 1fr;
   }
 

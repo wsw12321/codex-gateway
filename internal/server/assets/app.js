@@ -10,9 +10,11 @@ const sectionTitles = {
   billing: "额度与订阅",
   security: "账号安全",
   usage: "使用统计",
+  "model-access": "模型权限",
   "upstream-accounts": "上游账号",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
+ownerOnlySections.add("model-access");
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -37,6 +39,10 @@ let billingSettings = null;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
+let modelAccessModels = [];
+let modelAccessUsers = [];
+let modelAccessModelsRequestSequence = 0;
+let modelAccessUsersRequestSequence = 0;
 let upstreamAccountRequestSequence = 0;
 const upstreamQuotaStaleTimers = new Map();
 let reauthResolve = null;
@@ -273,6 +279,8 @@ function handleUnauthorized() {
   personalRequestSequence++;
   globalRequestSequence++;
   billingRequestSequence++;
+  modelAccessModelsRequestSequence++;
+  modelAccessUsersRequestSequence++;
   upstreamAccountRequestSequence++;
   clearUpstreamQuotaTimers();
   state = null;
@@ -282,6 +290,8 @@ function handleUnauthorized() {
   billingSettings = null;
   billingLedgerOffset = 0;
   billingLedgerNextOffset = 0;
+  modelAccessModels = [];
+  modelAccessUsers = [];
   all("dialog[open]").forEach((dialog) => dialog.close());
   clearSensitiveDOM();
   hide("dashboard");
@@ -310,6 +320,12 @@ function handleUnauthorized() {
   byId("billing-ledger-page").textContent = "—";
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
+  byId("model-access-model-select").replaceChildren(option("", "登录后加载模型"));
+  byId("model-access-enabled-count").textContent = "—";
+  byId("model-access-disabled-count").textContent = "—";
+  byId("model-access-user-rows").replaceChildren(tableMessage(5, "登录后加载用户权限。"));
+  byId("model-access-select-all").checked = false;
+  byId("model-access-selected-count").textContent = "已选 0";
   for (const tier of billingTiers) byId(`billing-${tier.id}-ends`).textContent = "未启用";
   hide("personal-scope");
   resetPersonalUsageSummary();
@@ -1485,6 +1501,201 @@ async function changeBillingLedgerPage(offset) {
   announce("账务流水已更新。");
 }
 
+function selectedModelAccessModel() {
+  return String(byId("model-access-model-select").value || "");
+}
+
+function modelAccessSummary(model = selectedModelAccessModel()) {
+  return modelAccessModels.find((item) => item.model === model) || null;
+}
+
+function modelAccessReason() {
+  const form = byId("model-access-users-form");
+  const reason = String(form.elements.reason.value || "").trim();
+  if (Array.from(reason).length < 1 || Array.from(reason).length > 500) {
+    setLocalMessage(form, "请填写 1–500 字的操作原因。");
+    throw new Error("请填写 1–500 字的操作原因。");
+  }
+  return reason;
+}
+
+function selectedModelAccessUserIDs() {
+  return all(".model-access-user-select:checked", byId("model-access-user-rows")).map((input) => input.value);
+}
+
+function syncModelAccessSelection() {
+  const checkboxes = all(".model-access-user-select", byId("model-access-user-rows"));
+  const selected = checkboxes.filter((input) => input.checked).length;
+  const selectAll = byId("model-access-select-all");
+  selectAll.disabled = checkboxes.length === 0;
+  selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
+  selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
+  byId("model-access-selected-count").textContent = `已选 ${formatInteger(selected)}`;
+  byId("model-access-enable-selected").disabled = selected === 0;
+  byId("model-access-disable-selected").disabled = selected === 0;
+}
+
+function renderModelAccessSummary(model = selectedModelAccessModel()) {
+  const summary = modelAccessSummary(model);
+  const hasModel = Boolean(summary);
+  byId("model-access-default-enabled").disabled = !hasModel;
+  byId("model-access-default-form").querySelector("button[type=submit]").disabled = !hasModel;
+  byId("model-access-enable-all").disabled = !hasModel;
+  byId("model-access-disable-all").disabled = !hasModel;
+  byId("model-access-default-enabled").checked = Boolean(summary?.default_enabled);
+  byId("model-access-enabled-count").textContent = hasModel ? formatInteger(summary.enabled_user_count) : "—";
+  byId("model-access-disabled-count").textContent = hasModel ? formatInteger(summary.disabled_user_count) : "—";
+}
+
+function renderModelAccessUsers(result) {
+  modelAccessUsers = Array.isArray(result?.users) ? result.users : [];
+  const rows = modelAccessUsers.map((user) => {
+    const checkbox = element("input", {
+      type: "checkbox", className: "model-access-checkbox model-access-user-select",
+      attributes: {value: user.user_id, "aria-label": `选择用户 ${user.username || user.user_id}`},
+    });
+    checkbox.addEventListener("change", syncModelAccessSelection);
+
+    const permission = element("span", {
+      className: "status-badge", text: user.enabled ? "已启用" : "已禁用",
+      dataset: {status: user.enabled ? "active" : "disabled"},
+    });
+    const toggle = element("button", {
+      type: "button", className: user.enabled ? "secondary model-access-toggle" : "model-access-toggle",
+      text: user.enabled ? "禁用" : "启用",
+      attributes: {role: "switch", "aria-checked": user.enabled ? "true" : "false"},
+    });
+    toggle.addEventListener("click", () => runButton(toggle, async () => {
+      await mutateUserModelAccess(!user.enabled, "selected", [user.user_id]);
+    }, user.enabled ? "禁用中…" : "启用中…"));
+
+    const identity = element("div", {className: "model-access-user-identity"},
+      element("strong", {text: user.display_name || user.username || user.user_id}),
+      element("small", {text: `${user.username || "—"} · ${user.user_id}`}),
+    );
+    if (user.updated_at) identity.append(element("small", {text: `权限更新：${formatDateTime(user.updated_at, "—")}`}));
+    const role = user.role === "owner" ? "Owner" : "Member";
+    return element("tr", {},
+      element("td", {className: "model-access-check-cell"}, checkbox),
+      element("td", {}, identity),
+      element("td", {}, element("span", {text: role}), statusBadge(user.status)),
+      element("td", {}, permission),
+      element("td", {}, toggle),
+    );
+  });
+  byId("model-access-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(5, "当前没有用户。")]));
+  syncModelAccessSelection();
+  byId("model-access-user-rows").closest("table").parentElement.setAttribute("aria-busy", "false");
+}
+
+function renderModelAccessModels(result, preferredModel = "") {
+  if (!Array.isArray(result?.models)) throw new Error("模型权限目录响应格式无效。");
+  modelAccessModels = result.models.filter((item) => item && typeof item.model === "string" && item.model);
+  const select = byId("model-access-model-select");
+  select.replaceChildren(...(modelAccessModels.length
+    ? modelAccessModels.map((item) => option(item.model, item.model))
+    : [option("", "没有可管理的模型")]));
+  const selected = modelAccessModels.some((item) => item.model === preferredModel)
+    ? preferredModel : (modelAccessModels[0]?.model || "");
+  select.value = selected;
+  select.disabled = modelAccessModels.length === 0;
+  renderModelAccessSummary(selected);
+  if (!selected) {
+    modelAccessUsers = [];
+    byId("model-access-user-rows").replaceChildren(tableMessage(5, "定价目录中没有可管理的模型。"));
+    syncModelAccessSelection();
+  }
+  return selected;
+}
+
+async function loadModelAccessUsers(model = selectedModelAccessModel()) {
+  const sequence = ++modelAccessUsersRequestSequence;
+  if (!model) return;
+  const tableWrap = byId("model-access-user-rows").closest("table").parentElement;
+  tableWrap.setAttribute("aria-busy", "true");
+  byId("model-access-user-rows").replaceChildren(tableMessage(5, "正在加载用户权限…"));
+  syncModelAccessSelection();
+  try {
+    const result = await api(`/admin/model-access/models/${encodeURIComponent(model)}/users`);
+    if (sequence !== modelAccessUsersRequestSequence || model !== selectedModelAccessModel()) return;
+    renderModelAccessUsers(result);
+  } catch (error) {
+    if (sequence === modelAccessUsersRequestSequence) {
+      tableWrap.setAttribute("aria-busy", "false");
+      byId("model-access-user-rows").replaceChildren(tableMessage(5, friendlyError(error)));
+      syncModelAccessSelection();
+    }
+    throw error;
+  }
+}
+
+async function loadModelAccess(preferredModel = selectedModelAccessModel()) {
+  const sequence = ++modelAccessModelsRequestSequence;
+  show("model-access-loading");
+  try {
+    const result = await api("/admin/model-access/models");
+    if (sequence !== modelAccessModelsRequestSequence) return;
+    const selected = renderModelAccessModels(result, preferredModel);
+    if (selected) await loadModelAccessUsers(selected);
+  } finally {
+    if (sequence === modelAccessModelsRequestSequence) hide("model-access-loading");
+  }
+}
+
+async function updateModelAccessDefault(event) {
+  const form = event.currentTarget;
+  const model = selectedModelAccessModel();
+  const reason = String(form.elements.reason.value || "").trim();
+  if (!model) throw new Error("请先选择模型。");
+  if (Array.from(reason).length < 1 || Array.from(reason).length > 500) throw new Error("请填写 1–500 字的操作原因。");
+  const enabled = form.elements.enabled.checked;
+  try {
+    const result = await sensitiveAction(() => api(`/admin/model-access/models/${encodeURIComponent(model)}/default`, {
+      method: "PUT", body: JSON.stringify({enabled, reason}),
+    }));
+    form.elements.reason.value = "";
+    notice(`已更新 ${model} 的新用户默认权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
+    await loadModelAccess(model);
+  } catch (error) {
+    renderModelAccessSummary(model);
+    throw error;
+  }
+}
+
+async function mutateUserModelAccess(enabled, scope, userIDs = []) {
+  const model = selectedModelAccessModel();
+  if (!model) throw new Error("请先选择模型。");
+  if (scope === "selected" && (userIDs.length < 1 || userIDs.length > 5000)) {
+    throw new Error("请选择 1–5000 个用户。");
+  }
+  const reason = modelAccessReason();
+  const payload = {enabled, scope, reason};
+  if (scope === "selected") payload.user_ids = [...new Set(userIDs)];
+  const result = await sensitiveAction(() => api(`/admin/model-access/models/${encodeURIComponent(model)}/users`, {
+    method: "PUT", body: JSON.stringify(payload),
+  }));
+  byId("model-access-users-form").elements.reason.value = "";
+  notice(
+    `${enabled ? "已启用" : "已禁用"} ${formatInteger(result.target_count)} 位用户的 ${model} 权限；实际变更 ${formatInteger(result.changed_count)} 位。`,
+    "ok",
+  );
+  await loadModelAccess(model);
+}
+
+async function mutateSelectedModelAccess(enabled) {
+  try {
+    await mutateUserModelAccess(enabled, "selected", selectedModelAccessUserIDs());
+  } finally {
+    window.setTimeout(syncModelAccessSelection, 0);
+  }
+}
+
+async function mutateAllModelAccess(enabled) {
+  const model = selectedModelAccessModel();
+  if (!enabled && !window.confirm(`确认禁用全部现有用户的 ${model} 权限？下一次请求将立即被拒绝。`)) return;
+  await mutateUserModelAccess(enabled, "all");
+}
+
 function usageNameMaps() {
   return {
     devices: new Map((state?.devices || []).map((item) => [item.id, item.name])),
@@ -2192,6 +2403,9 @@ async function loadDashboard() {
       loadUpstreamAccounts(upstreamAccountQueryFromForm()).catch((error) => {
         setLocalMessage(byId("upstream-account-filter"), friendlyError(error));
       }),
+      loadModelAccess().catch((error) => {
+        notice(`模型权限加载失败：${friendlyError(error)}`, "error");
+      }),
       loadAlerts(),
     );
   }
@@ -2251,6 +2465,8 @@ function bindUI() {
     personalRequestSequence++;
     globalRequestSequence++;
     billingRequestSequence++;
+    modelAccessModelsRequestSequence++;
+    modelAccessUsersRequestSequence++;
     upstreamAccountRequestSequence++;
     clearUpstreamQuotaTimers();
     resetPersonalUsageSummary();
@@ -2268,6 +2484,21 @@ function bindUI() {
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
+  bindAsync("model-access-default-form", "submit", async (event) => {
+    try { await updateModelAccessDefault(event); } finally { window.setTimeout(renderModelAccessSummary, 0); }
+  }, "保存中…");
+  bindAsync("model-access-enable-selected", "click", async () => {
+    try { await mutateSelectedModelAccess(true); } finally { window.setTimeout(syncModelAccessSelection, 0); }
+  }, "启用中…");
+  bindAsync("model-access-disable-selected", "click", async () => {
+    try { await mutateSelectedModelAccess(false); } finally { window.setTimeout(syncModelAccessSelection, 0); }
+  }, "禁用中…");
+  bindAsync("model-access-enable-all", "click", async () => {
+    try { await mutateAllModelAccess(true); } finally { window.setTimeout(renderModelAccessSummary, 0); }
+  }, "启用中…");
+  bindAsync("model-access-disable-all", "click", async () => {
+    try { await mutateAllModelAccess(false); } finally { window.setTimeout(renderModelAccessSummary, 0); }
+  }, "禁用中…");
   for (const tier of billingTiers) {
     bindAsync(`billing-subscription-${tier.id}`, "submit", updateBillingSubscription, "保存中…");
   }
@@ -2361,6 +2592,20 @@ function bindUI() {
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
   byId("upstream-account-filter").elements.range.addEventListener("change", syncUpstreamAccountRange);
+  byId("model-access-model-select").addEventListener("change", () => {
+    const model = selectedModelAccessModel();
+    renderModelAccessSummary(model);
+    setLocalMessage(byId("model-access-default-form"));
+    setLocalMessage(byId("model-access-users-form"));
+    loadModelAccessUsers(model).catch((error) => notice(`用户模型权限加载失败：${friendlyError(error)}`, "error"));
+  });
+  byId("model-access-select-all").addEventListener("change", (event) => {
+    all(".model-access-user-select", byId("model-access-user-rows")).forEach((input) => {
+      input.checked = event.currentTarget.checked;
+    });
+    syncModelAccessSelection();
+  });
+  byId("model-access-users-form").addEventListener("submit", (event) => event.preventDefault());
   window.addEventListener("hashchange", () => routeFromHash(true));
 
   all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {

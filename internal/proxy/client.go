@@ -135,6 +135,222 @@ func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *h
 	return c.ForwardWithOptions(ctx, w, incoming, upstreamPath, ForwardOptions{})
 }
 
+// ForwardModels fetches and filters the upstream model catalog before writing
+// any response bytes. The bounded, all-or-nothing handling is intentional:
+// malformed or oversized upstream JSON must not leak a partial catalog to the
+// caller.
+func (c *Client) ForwardModels(ctx context.Context, w http.ResponseWriter, incoming *http.Request, allowedModels map[string]struct{}) (Result, *Failure) {
+	return c.ForwardModelsWithOptions(ctx, w, incoming, allowedModels, ForwardOptions{})
+}
+
+func (c *Client) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWriter, incoming *http.Request, allowedModels map[string]struct{}, options ForwardOptions) (Result, *Failure) {
+	if incoming.Method != http.MethodGet {
+		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}
+	}
+	target := *c.baseURL
+	target.Path = strings.TrimRight(c.baseURL.Path, "/") + "/v1/models"
+	target.RawQuery = ""
+	target.Fragment = ""
+
+	outgoing, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return Result{}, protocolFailure(err)
+	}
+	copyAllowedHeaders(outgoing.Header, incoming.Header)
+	outgoing.Header.Set("Authorization", "Bearer "+c.token)
+	outgoing.Header.Set("Cache-Control", "no-store")
+	if options.AffinityScope != "" {
+		if !affinityScopePattern.MatchString(options.AffinityScope) {
+			return Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
+		}
+		outgoing.Header.Set(affinityHeader, options.AffinityScope)
+	}
+
+	response, err := c.http.Do(outgoing)
+	if err != nil {
+		return Result{}, transportFailure(ctx, err)
+	}
+	defer response.Body.Close()
+
+	result := Result{
+		StatusCode:        response.StatusCode,
+		ContentType:       response.Header.Get("Content-Type"),
+		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
+		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		failure := sanitizeUpstreamFailure(response)
+		result.CompletedAt = time.Now()
+		return result, failure
+	}
+
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxInternalResponseBodyBytes+1))
+	if err != nil {
+		result.CompletedAt = time.Now()
+		return result, invalidModelCatalogFailure(fmt.Errorf("read model catalog: %w", err))
+	}
+	if len(body) > maxInternalResponseBodyBytes {
+		result.CompletedAt = time.Now()
+		return result, invalidModelCatalogFailure(errors.New("model catalog exceeds 1 MiB"))
+	}
+	filtered, err := filterModelCatalog(body, allowedModels)
+	if err != nil {
+		result.CompletedAt = time.Now()
+		return result, invalidModelCatalogFailure(err)
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(response.StatusCode)
+	written, err := w.Write(filtered)
+	result.BytesOut = int64(written)
+	result.FirstByteAt = time.Now()
+	result.FirstTokenAt = result.FirstByteAt
+	result.CompletedAt = result.FirstByteAt
+	if err != nil {
+		return result, &Failure{Status: 0, Type: "upstream_error", Code: "upstream_stream_error", Message: "上游响应流意外中断", Cause: err}
+	}
+	return result, nil
+}
+
+func filterModelCatalog(body []byte, allowedModels map[string]struct{}) ([]byte, error) {
+	if err := validateModelCatalogJSON(body); err != nil {
+		return nil, err
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, fmt.Errorf("decode model catalog: %w", err)
+	}
+	if envelope == nil {
+		return nil, errors.New("model catalog must be a JSON object")
+	}
+	rawData, ok := envelope["data"]
+	if !ok || len(bytes.TrimSpace(rawData)) == 0 || bytes.TrimSpace(rawData)[0] != '[' {
+		return nil, errors.New("model catalog data must be an array")
+	}
+	var entries []json.RawMessage
+	if err := json.Unmarshal(rawData, &entries); err != nil {
+		return nil, fmt.Errorf("decode model catalog data: %w", err)
+	}
+	filtered := make([]json.RawMessage, 0, len(entries))
+	for index, entry := range entries {
+		trimmed := bytes.TrimSpace(entry)
+		if len(trimmed) == 0 || trimmed[0] != '{' {
+			return nil, fmt.Errorf("model catalog data[%d] must be an object", index)
+		}
+		var model struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(entry, &model); err != nil {
+			return nil, fmt.Errorf("decode model catalog data[%d]: %w", index, err)
+		}
+		if !validCatalogModelID(model.ID) {
+			return nil, fmt.Errorf("model catalog data[%d] has invalid id", index)
+		}
+		if _, allowed := allowedModels[model.ID]; allowed {
+			filtered = append(filtered, entry)
+		}
+	}
+	encodedData, err := json.Marshal(filtered)
+	if err != nil {
+		return nil, fmt.Errorf("encode filtered model data: %w", err)
+	}
+	envelope["data"] = encodedData
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		return nil, fmt.Errorf("encode filtered model catalog: %w", err)
+	}
+	return append(encoded, '\n'), nil
+}
+
+func validateModelCatalogJSON(body []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := validateUniqueJSONValue(decoder, 0); err != nil {
+		return fmt.Errorf("validate model catalog JSON: %w", err)
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("validate model catalog JSON: trailing value")
+		}
+		return fmt.Errorf("validate model catalog JSON: %w", err)
+	}
+	return nil
+}
+
+func validateUniqueJSONValue(decoder *json.Decoder, depth int) error {
+	if depth > 1000 {
+		return errors.New("JSON nesting exceeds limit")
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, composite := token.(json.Delim)
+	if !composite {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("object member name is not a string")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return fmt.Errorf("duplicate object member %q", key)
+			}
+			seen[key] = struct{}{}
+			if err := validateUniqueJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("object is not terminated")
+		}
+	case '[':
+		for decoder.More() {
+			if err := validateUniqueJSONValue(decoder, depth+1); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("array is not terminated")
+		}
+	default:
+		return errors.New("unexpected JSON delimiter")
+	}
+	return nil
+}
+
+func validCatalogModelID(model string) bool {
+	if model == "" || len(model) > 128 {
+		return false
+	}
+	for _, character := range model {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '-' && character != '_' &&
+			character != '.' && character != ':' {
+			return false
+		}
+	}
+	return true
+}
+
+func invalidModelCatalogFailure(err error) *Failure {
+	return &Failure{
+		Status: http.StatusBadGateway, Type: "upstream_error", Code: "upstream_invalid_model_catalog",
+		Message: "上游模型目录响应无效", Cause: err,
+	}
+}
+
 func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, incoming *http.Request, upstreamPath string, options ForwardOptions) (Result, *Failure) {
 	if !allowedPath(incoming.Method, upstreamPath) {
 		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}

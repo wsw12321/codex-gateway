@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -82,6 +83,84 @@ func TestForwardRejectsInvalidAffinityAndAccountTrace(t *testing.T) {
 	}
 	if result.UpstreamAccountID != "" {
 		t.Fatalf("unsafe account trace accepted: %q", result.UpstreamAccountID)
+	}
+}
+
+func TestForwardModelsFiltersOnlyAfterValidatingCatalog(t *testing.T) {
+	const scope = "0123456789012345678901234567890123456789012"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get(affinityHeader); got != scope {
+			t.Errorf("affinity scope = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"gpt-priced-enabled","object":"model"},{"id":"gpt-user-disabled","object":"model"},{"id":"gpt-unpriced","object":"model"}]}`)
+	}))
+	defer upstream.Close()
+	base, _ := url.Parse(upstream.URL)
+	client := NewWithHTTPClient(base, "secret", upstream.Client())
+	recorder := httptest.NewRecorder()
+
+	result, failure := client.ForwardModelsWithOptions(
+		context.Background(), recorder,
+		httptest.NewRequest(http.MethodGet, "https://gateway.test/v1/models", nil),
+		map[string]struct{}{"gpt-priced-enabled": {}},
+		ForwardOptions{AffinityScope: scope},
+	)
+	if failure != nil {
+		t.Fatal(failure)
+	}
+	if result.StatusCode != http.StatusOK || result.BytesOut == 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	var catalog struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &catalog); err != nil {
+		t.Fatal(err)
+	}
+	if catalog.Object != "list" || len(catalog.Data) != 1 || catalog.Data[0].ID != "gpt-priced-enabled" {
+		t.Fatalf("filtered catalog = %+v", catalog)
+	}
+}
+
+func TestForwardModelsRejectsMalformedOrOversizedCatalogWithoutWriting(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed JSON", body: `{"data":[`},
+		{name: "missing data", body: `{"object":"list"}`},
+		{name: "malformed entry", body: `{"data":[{"object":"model"}]}`},
+		{name: "duplicate data member", body: `{"data":[],"data":[]}`},
+		{name: "duplicate model id member", body: `{"data":[{"id":"gpt-test","id":"gpt-other"}]}`},
+		{name: "oversized", body: `{"data":[]}` + strings.Repeat(" ", maxInternalResponseBodyBytes)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer upstream.Close()
+			base, _ := url.Parse(upstream.URL)
+			client := NewWithHTTPClient(base, "secret", upstream.Client())
+			recorder := httptest.NewRecorder()
+
+			_, failure := client.ForwardModels(
+				context.Background(), recorder,
+				httptest.NewRequest(http.MethodGet, "https://gateway.test/v1/models", nil),
+				map[string]struct{}{"gpt-test": {}},
+			)
+			if failure == nil || failure.Status != http.StatusBadGateway || failure.Code != "upstream_invalid_model_catalog" {
+				t.Fatalf("unexpected failure: %+v", failure)
+			}
+			if recorder.Body.Len() != 0 {
+				t.Fatalf("invalid catalog was partially written: %q", recorder.Body.String())
+			}
+		})
 	}
 }
 

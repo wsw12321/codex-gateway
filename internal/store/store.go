@@ -15,12 +15,14 @@ import (
 )
 
 var (
-	ErrNotFound              = errors.New("store: not found")
-	ErrConflict              = errors.New("store: conflict")
-	ErrInvalid               = errors.New("store: invalid input")
-	ErrInvitationUnavailable = errors.New("store: invitation unavailable")
-	ErrQuotaExceeded         = errors.New("store: quota exceeded")
-	ErrAPIKeyExpired         = errors.New("store: API key expired")
+	ErrNotFound               = errors.New("store: not found")
+	ErrConflict               = errors.New("store: conflict")
+	ErrInvalid                = errors.New("store: invalid input")
+	ErrInvitationUnavailable  = errors.New("store: invitation unavailable")
+	ErrQuotaExceeded          = errors.New("store: quota exceeded")
+	ErrAPIKeyExpired          = errors.New("store: API key expired")
+	ErrModelNotAllowed        = errors.New("store: model not allowed")
+	ErrModelAccessUnavailable = errors.New("store: model access unavailable")
 )
 
 // Config controls the database/sql pool. DriverName defaults to pgx. The

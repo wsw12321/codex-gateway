@@ -87,6 +87,13 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 	}
 	cancelMigration()
 
+	modelAccessContext, cancelModelAccess := context.WithTimeout(ctx, 30*time.Second)
+	if err := repository.SyncModelAccessCatalog(modelAccessContext, cfg.UsagePricing.ManageableModelNames()); err != nil {
+		cancelModelAccess()
+		return fmt.Errorf("synchronize model access catalog: %w", err)
+	}
+	cancelModelAccess()
+
 	handler, err := server.New(cfg, repository, logger)
 	if err != nil {
 		return err

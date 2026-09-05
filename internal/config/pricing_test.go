@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -50,9 +51,12 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
+	if pricing.CatalogAsOf != "2026-09-05" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+		t.Fatalf("unexpected catalog metadata: %+v", pricing)
+	}
 	wantModels := []string{
 		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
-		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra",
+		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
 	for model := range pricing.Models {
@@ -64,7 +68,8 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	type expected struct{ input, cached, write, output string }
 	short := map[string]map[string]expected{
-		"gpt-5.6-sol":   {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
+		"gpt-6-astra":   {"default": {"10", "1", "12.5", "50"}, "flex": {"5", "0.5", "6.25", "25"}, "priority": {"20", "2", "25", "100"}},
+		"gpt-5.6-sol":   {"default": {"4", "0.4", "5", "20"}, "flex": {"2", "0.2", "2.5", "10"}, "priority": {"8", "0.8", "10", "40"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
 		"gpt-5.6-luna":  {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
 		"gpt-5.5":       {"default": {"5", "0.5", "0", "30"}, "flex": {"2.5", "0.25", "0", "15"}, "priority": {"12.5", "1.25", "0", "75"}},
@@ -92,7 +97,8 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		}
 	}
 	long := map[string]map[string]expected{
-		"gpt-5.6-sol":   {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
+		"gpt-6-astra":   {"default": {"20", "2", "25", "75"}, "flex": {"10", "1", "12.5", "37.5"}, "priority": {"40", "4", "50", "150"}},
+		"gpt-5.6-sol":   {"default": {"8", "0.8", "10", "30"}, "flex": {"4", "0.4", "5", "15"}, "priority": {"16", "1.6", "20", "60"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
 		"gpt-5.6-luna":  {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
 		"gpt-5.5":       {"default": {"10", "1", "0", "45"}, "flex": {"5", "0.5", "0", "22.5"}},
@@ -135,6 +141,38 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	if got := pricing.Models["gpt-5.4-mini"].MaxInputTokens; got != 272000 {
 		t.Fatalf("gpt-5.4-mini max input = %d", got)
+	}
+}
+
+func TestOfficialPricingV2EnvironmentCopies(t *testing.T) {
+	templateRaw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, templateRaw); err != nil {
+		t.Fatal(err)
+	}
+	want := "GATEWAY_USAGE_PRICING_JSON=" + compact.String()
+	for _, path := range []string{"../../deploy/env.example", "../../deploy/env.gpt-5.6.example"} {
+		t.Run(path, func(t *testing.T) {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var matches []string
+			for _, line := range strings.Split(string(raw), "\n") {
+				if strings.HasPrefix(line, "GATEWAY_USAGE_PRICING_JSON=") {
+					matches = append(matches, line)
+				}
+			}
+			if len(matches) != 1 {
+				t.Fatalf("found %d pricing environment lines", len(matches))
+			}
+			if matches[0] != want {
+				t.Fatal("pricing environment copy differs from deploy/pricing-v2.example.json")
+			}
+		})
 	}
 }
 

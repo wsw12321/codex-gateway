@@ -30,6 +30,7 @@ type Server struct {
 	quotas                *upstreamQuotaLimiter
 	quotaOnce             sync.Once
 	upstreamAccountSyncMu sync.Mutex
+	modelAccessRepo       modelAccessRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -55,7 +56,8 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
-		spoolSlots: make(chan struct{}, maxConcurrentRequestSpools),
+		modelAccessRepo: repository,
+		spoolSlots:      make(chan struct{}, maxConcurrentRequestSpools),
 	}
 	s.routes()
 	return s, nil
@@ -116,11 +118,15 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("GET /admin/billing/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUsers))))
 	s.mux.Handle("GET /admin/billing/users/{user_id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUser))))
+	s.mux.Handle("GET /admin/model-access/models", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessModels))))
+	s.mux.Handle("GET /admin/model-access/models/{model}/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsers))))
 	s.mux.Handle("PUT /admin/billing/settings/recharge-rate", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateRechargeRate)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/recharges", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.rechargeBillingUser)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/adjustments", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.adjustBillingUser)))))
 	s.mux.Handle("PUT /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))
 	s.mux.Handle("DELETE /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingSubscription)))))
+	s.mux.Handle("PUT /admin/model-access/models/{model}/default", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelAccessDefault)))))
+	s.mux.Handle("PUT /admin/model-access/models/{model}/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateUserModelAccess)))))
 	s.browserPOST("/admin/upstream-accounts/{id}/quota", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountQuota))))
 
 	s.mux.Handle("GET /v1/models", s.requireAPIKey(http.HandlerFunc(s.proxyModels)))
