@@ -1,11 +1,27 @@
 # CLIProxyAPI 兼容层升级规程
 
-生产固定在 CLIProxyAPI `v7.2.127`、commit
-`ecc9aa72b32f34b680d03b0724b531a21ae74472`。版本号和 commit 必须作为一组
+仓库固定在 CLIProxyAPI `v7.2.150`、commit
+`c77b13694318b0897f2c74104ef48aebdf8c34d6`。版本号和 commit 必须作为一组
 更新，Docker 构建会验证 tag 指向该 commit。仓库同时固定
-`deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch`；构建必须先用
-`git apply --check` 验证补丁上下文、应用补丁并运行补丁内的聚焦测试，任一步
-失败都不得生成镜像。
+`deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
+应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
+规则的变化。补丁 SHA256 为
+`771903fb47f59bda64dd8727da0d1f8d9dcbe51e0261108500c01d157baa610e`。
+构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
+再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
+失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
+
+重基同时保留上游父会话识别，隔离不同调用方，并让 OAuth 与内部请求头防护覆盖
+同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
+和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
+
+兼容层镜像标签固定为 `v7.2.150-c77b1369-771903fb47f59bda`，由版本号、commit
+前 8 位和补丁 SHA256 前 16 位组成。Compose、校验脚本和 CI 必须使用同一完整
+标签，CI 扫描实际构建的镜像。继续使用现有 Go 1.26 构建镜像；本次不修改公共
+API、数据库结构和模型价格配置。
+
+本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
+Astra 冒烟和生产切换按下文规程执行。
 
 该补丁属于部署安全边界，而不是可选功能：
 
@@ -36,9 +52,9 @@
 - 认证后的 `GET /v1/responses` 返回一次
   `426 responses_websocket_unsupported` 后客户端立即改用 HTTPS/SSE，探测不进入
   usage、配额、计费、并发租约或 sidecar；
-- 非流式和 SSE `POST /v1/responses`；
-- `POST /v1/responses/compact`；
-- 模型列表；
+- Astra（`gpt-6-astra`）模型列表、非流式和 SSE `POST /v1/responses`；
+- Astra 的 `POST /v1/responses/compact`；
+- 两账号重试上限、最终账号归因以及内部账号列表和额度接口；
 - 安全清理后的 401、429、5xx；
 - usage 分散在多个 SSE chunk 时的 input、cached input、output、reasoning；
 - 客户端断开取消、首 token 超时和总超时；
@@ -46,10 +62,15 @@
 - sidecar 不记录请求/响应正文或 token，完整管理 API 无法从兼容层网络远程访问，
   窄内部接口只返回脱敏、规范化字段。
 
+仓库验证至少执行 `./scripts/validate-compose.sh`、
+`./scripts/compose.sh build gateway codex-compat`、`go test -count=1 ./...`、
+`go test -race -count=1 ./...` 和 `go vet ./...`，并检查构建内现有安全回归测试通过。
+隔离测试的模型目录和 HTTP 契约验证不能替代真实 OAuth 冒烟。
+
 切换生产前运行加密数据库备份，但不要复制 OAuth volume。持有设备登录锁，
 停止旧 sidecar，确认其容器状态不是 running，才允许候选版本挂载现有 token。
-完成模型列表和至少一个已授权 Plus/Pro 账号的最小 Responses 人工冒烟后才能恢复
-Gateway 流量。
+完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
+compact 人工冒烟后才能恢复 Gateway 流量。
 
 失败回滚时先停止候选实例，再启动旧实例。任何时刻都不允许两个 sidecar
 共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新

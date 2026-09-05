@@ -181,8 +181,10 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ```
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
-`latest`。CLIProxyAPI 的构建还会证明 `v7.2.127` 的 peeled commit 正是
-`ecc9aa72b32f34b680d03b0724b531a21ae74472`，不匹配就会失败。
+`latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
+`c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
+`v7.2.150-c77b1369-771903fb47f59bda`；最后一段为固定多账号补丁 SHA256 的
+前 16 位，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 
 ## 3. 服务密钥
 
@@ -575,7 +577,9 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 镜像。升级 CLIProxyAPI 前还必须：
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
-2. 将固定多账号补丁重放到新 commit，审阅完整 diff，并在 CI 运行调用方作用域
+2. 将固定多账号补丁重放到新 commit；对 `v7.2.150` 使用
+   `git apply --check --ignore-space-change` 校验，再用
+   `git apply --ignore-space-change` 应用。审阅完整 diff，并在 CI 运行调用方作用域
    隔离、轮询/粘滞、两账号失败切换、SSE 首字节边界、窄内部接口、Responses
    普通/SSE、compact、401、429、跨 chunk usage 和刷新 token 契约测试；同时确认
    认证后的 Responses WebSocket 探测返回一次 426 后立即降级到 HTTPS/SSE。
@@ -583,6 +587,12 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
    共享 token。
 4. 用测试 OAuth 状态完成契约验证，再用至少一个已授权 Plus/Pro 账号进行人工冒烟。
 5. 单实例滚动替换；失败时停止新实例，再回到旧镜像，不能并行回滚。
+
+`v7.2.150` 仓库升级沿用现有 Go 1.26 构建镜像，不更改公共 API、数据库结构或模型
+价格配置。仓库交付覆盖 Compose、两个镜像构建、构建内安全回归及 Gateway 单元
+测试、race 和 vet；生产切换与真实 OAuth 账号的 Astra 模型列表、普通/SSE
+Responses、compact 冒烟仍按上述步骤及
+[兼容层升级规程](compatibility-upgrades.md) 执行。
 
 Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移会明确拒绝数据库
 降级。因此，只在确认新 revision **没有写入任何新迁移** 时才可直接把镜像标签
@@ -709,9 +719,9 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
    记录 `usage_requests`、`usage_daily`、`usage_monthly` 和
    `billing_ledger_entries` 的行数及账务金额合计作为迁移前基线。
 2. 检出已审阅 revision，确认 CLIProxyAPI 固定多账号补丁仍能对固定 commit
-   `git apply --check`，并确认 sidecar 配置保持两账号尝试上限、一小时粘滞和流式
-   handler 层零 bootstrap retry。运行 `./scripts/validate-compose.sh`，再构建 Gateway
-   与 `codex-compat`。
+   `git apply --check --ignore-space-change`，并确认 sidecar 配置保持两账号尝试上限、
+   一小时粘滞和流式 handler 层零 bootstrap retry。运行 `./scripts/validate-compose.sh`，
+   再构建 Gateway 与 `codex-compat`。
 3. PostgreSQL 保持 healthy、旧 Gateway 保持停止，用新镜像显式执行迁移，并确认
    `schema_migrations` 中存在 `0007_upstream_accounts.sql`。
 4. 确认 `upstream_accounts` 只含稳定账号索引、严格脱敏邮箱、套餐、可用状态和同步

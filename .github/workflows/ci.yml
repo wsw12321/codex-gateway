@@ -139,9 +139,9 @@ jobs:
         shell: bash
         run: |
           set -eu
-          grep -q 'CLIProxyAPI v7.2.127' THIRD_PARTY_NOTICES
-          grep -q 'ecc9aa72b32f34b680d03b0724b531a21ae74472' THIRD_PARTY_NOTICES
-          grep -q 'ecc9aa72b32f34b680d03b0724b531a21ae74472' docker-compose.yml
+          grep -q 'CLIProxyAPI v7.2.150' THIRD_PARTY_NOTICES
+          grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' THIRD_PARTY_NOTICES
+          grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' docker-compose.yml
       - name: Generate CycloneDX SBOM
         run: >-
           go run github.com/anchore/syft/cmd/syft@v1.30.0
@@ -213,11 +213,12 @@ jobs:
       - name: Scan application images with digest-locked Trivy
         shell: bash
         run: |
-          set -eu
+          set -euo pipefail
           set -a
           . deploy/images.lock.env
           . ./.env
           set +a
+          compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["codex-compat"].image')
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
@@ -225,4 +226,4 @@ jobs:
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
-            --severity HIGH,CRITICAL codex-gateway-compat:v7.2.127-ecc9aa72
+            --severity HIGH,CRITICAL "$compat_image"

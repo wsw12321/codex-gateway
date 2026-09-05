@@ -160,15 +160,15 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v7.2.127-ecc9aa72-33561a5a15cc4a38
+    image: codex-gateway-compat:v7.2.150-c77b1369-771903fb47f59bda
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
       args:
         GOLANG_IMAGE: ${CLIPROXY_GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
         RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
-        CLIPROXY_VERSION: v7.2.127
-        CLIPROXY_COMMIT: ecc9aa72b32f34b680d03b0724b531a21ae74472
+        CLIPROXY_VERSION: v7.2.150
+        CLIPROXY_COMMIT: c77b13694318b0897f2c74104ef48aebdf8c34d6
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true

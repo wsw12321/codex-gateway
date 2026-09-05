@@ -1,6 +1,195 @@
+diff --git a/internal/api/astra_upgrade_smoke_test.go b/internal/api/astra_upgrade_smoke_test.go
+new file mode 100644
+index 0000000..8fbfb6e
+--- /dev/null
++++ b/internal/api/astra_upgrade_smoke_test.go
+@@ -0,0 +1,183 @@
++package api
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++type astraUpgradeExecutor struct {
++	codexSearchCaptureExecutor
++	mu       sync.Mutex
++	calls    []string
++	indices  []string
++	alts     []string
++	models   []string
++	failures int
++}
++
++func (e *astraUpgradeExecutor) record(a *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) error {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	e.calls = append(e.calls, a.ID)
++	e.indices = append(e.indices, a.EnsureIndex())
++	e.alts = append(e.alts, opts.Alt)
++	e.models = append(e.models, req.Model)
++	if len(e.calls) <= e.failures {
++		return &auth.Error{HTTPStatus: http.StatusBadGateway, Message: "mock upstream unavailable"}
++	}
++	return nil
++}
++
++func (e *astraUpgradeExecutor) Execute(_ context.Context, a *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
++	if err := e.record(a, req, opts); err != nil {
++		return coreexecutor.Response{}, err
++	}
++	return coreexecutor.Response{Payload: []byte(`{"id":"resp-astra","object":"response","model":"gpt-6-astra","status":"completed","output":[]}`)}, nil
++}
++
++func (e *astraUpgradeExecutor) ExecuteStream(_ context.Context, a *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
++	if err := e.record(a, req, opts); err != nil {
++		return nil, err
++	}
++	chunks := make(chan coreexecutor.StreamChunk, 1)
++	chunks <- coreexecutor.StreamChunk{Payload: []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-astra\",\"model\":\"gpt-6-astra\",\"status\":\"completed\",\"output\":[]}}\n\n")}
++	close(chunks)
++	return &coreexecutor.StreamResult{Chunks: chunks}, nil
++}
++
++func newAstraUpgradeServer(t *testing.T, failures int) (*Server, *astraUpgradeExecutor) {
++	t.Helper()
++	s := newTestServer(t)
++	e := &astraUpgradeExecutor{failures: failures}
++	s.handlers.AuthManager.RegisterExecutor(e)
++	s.handlers.AuthManager.SetRetryConfig(0, 0, 2)
++	models := registry.GetCodexPlusModels()
++	found := false
++	for _, model := range models {
++		if model.ID == "gpt-6-astra" {
++			found = true
++		}
++	}
++	if !found {
++		t.Fatal("Astra is absent from upstream Codex Plus registry")
++	}
++	for i := 0; i < 3; i++ {
++		id := fmt.Sprintf("astra-upgrade-%d", i)
++		a := &auth.Auth{ID: id, Provider: "codex", Status: auth.StatusActive,
++			Attributes: map[string]string{auth.AttributeAuthKind: auth.AuthKindOAuth, "plan_type": "plus"},
++			Metadata:   map[string]any{"type": "codex", "access_token": "mock-token", "account_id": id, "email": "mock@example.com"},
++		}
++		if _, err := s.handlers.AuthManager.Register(context.Background(), a); err != nil {
++			t.Fatal(err)
++		}
++		registry.GetGlobalRegistry().RegisterClient(id, "codex", models)
++		t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++	}
++	return s, e
++}
++
++func TestAstraUpgradeModels(t *testing.T) {
++	s, _ := newAstraUpgradeServer(t, 0)
++	for _, clientVersion := range []string{"", "0.153.3"} {
++		t.Run("client="+clientVersion, func(t *testing.T) {
++			path := "/v1/models"
++			if clientVersion != "" {
++				path += "?client_version=" + clientVersion
++			}
++			req := httptest.NewRequest(http.MethodGet, path, nil)
++			req.Header.Set("Authorization", "Bearer test-key")
++			rr := httptest.NewRecorder()
++			s.engine.ServeHTTP(rr, req)
++			if rr.Code != http.StatusOK {
++				t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
++			}
++			var doc map[string]json.RawMessage
++			if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
++				t.Fatal(err)
++			}
++			key, identity := "data", "id"
++			if clientVersion != "" {
++				key, identity = "models", "slug"
++			}
++			var models []map[string]any
++			if err := json.Unmarshal(doc[key], &models); err != nil {
++				t.Fatal(err)
++			}
++			for _, model := range models {
++				if model[identity] == "gpt-6-astra" {
++					return
++				}
++			}
++			t.Fatalf("Astra is absent from %s catalog", key)
++		})
++	}
++}
++
++func TestAstraUpgradeResponses(t *testing.T) {
++	for _, mode := range []string{"ordinary", "sse", "compact"} {
++		for _, failures := range []int{0, 1, 3} {
++			t.Run(fmt.Sprintf("%s/failures=%d", mode, failures), func(t *testing.T) {
++				s, e := newAstraUpgradeServer(t, failures)
++				path := "/v1/responses"
++				if mode == "compact" {
++					path += "/compact"
++				}
++				payload := fmt.Sprintf(`{"model":"gpt-6-astra","input":"hello","stream":%t}`, mode == "sse")
++				req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))
++				req.Header.Set("Authorization", "Bearer test-key")
++				req.Header.Set("Content-Type", "application/json")
++				req.Header.Set("X-Codex-Upstream-Account", "spoofed")
++				rr := httptest.NewRecorder()
++				s.engine.ServeHTTP(rr, req)
++				wantCalls, wantStatus := failures+1, http.StatusOK
++				if failures == 3 {
++					wantCalls, wantStatus = 2, http.StatusBadGateway
++				}
++				if rr.Code != wantStatus {
++					t.Fatalf("status=%d want=%d body=%s", rr.Code, wantStatus, rr.Body.String())
++				}
++				e.mu.Lock()
++				defer e.mu.Unlock()
++				if len(e.calls) != wantCalls {
++					t.Fatalf("calls=%v want count=%d", e.calls, wantCalls)
++				}
++				if len(e.calls) == 2 && e.calls[0] == e.calls[1] {
++					t.Fatalf("same account replayed: %v", e.calls)
++				}
++				for i, model := range e.models {
++					if model != "gpt-6-astra" {
++						t.Fatalf("request %d model=%q", i, model)
++					}
++					if mode == "compact" && e.alts[i] != "responses/compact" {
++						t.Fatalf("compact alt=%q", e.alts[i])
++					}
++				}
++				wantIndex := e.indices[len(e.indices)-1]
++				if got := rr.Header().Get("X-Codex-Upstream-Account"); got != wantIndex {
++					t.Fatalf("attribution=%q want=%q", got, wantIndex)
++				}
++				if failures < 3 && !strings.Contains(rr.Body.String(), "gpt-6-astra") {
++					t.Fatalf("model lost: %s", rr.Body.String())
++				}
++				if mode == "sse" && failures < 3 {
++					if !strings.HasPrefix(rr.Header().Get("Content-Type"), "text/event-stream") {
++						t.Fatalf("content type=%q", rr.Header().Get("Content-Type"))
++					}
++					if !strings.Contains(rr.Body.String(), "response.completed") {
++						t.Fatalf("missing completion: %s", rr.Body.String())
++					}
++				}
++			})
++		}
++	}
++}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..414778c7ba0af0d011999e529eda592e766e2a00
+index 0000000..414778c
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
 @@ -0,0 +1,642 @@
@@ -648,7 +837,7 @@ index 0000000000000000000000000000000000000000..414778c7ba0af0d011999e529eda592e
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..4454ec29f5d58c47ccb65de914d66c0b39e12b32
+index 0000000..4454ec2
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
 @@ -0,0 +1,532 @@
@@ -1185,7 +1374,7 @@ index 0000000000000000000000000000000000000000..4454ec29f5d58c47ccb65de914d66c0b
 +	}
 +}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index f12ff4bf48a1764eb15e23e26183946bc9999ad1..926c1480688fa0b57e13c63aec66f95378a5b2aa 100644
+index f12ff4b..926c148 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
 @@ -137,6 +137,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
@@ -1203,10 +1392,10 @@ index f12ff4bf48a1764eb15e23e26183946bc9999ad1..926c1480688fa0b57e13c63aec66f953
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index 19af6260a7987860fd2f2c61d4c46dcb8e806898..ef3620fb5f4e99facbd9c74a56dbfe53a54010aa 100644
+index fc9de12..11ba98e 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -103,6 +103,16 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,16 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -1224,7 +1413,7 @@ index 19af6260a7987860fd2f2c61d4c46dcb8e806898..ef3620fb5f4e99facbd9c74a56dbfe53
  	v1beta := s.engine.Group("/v1beta")
  	v1beta.Use(AuthMiddleware(s.accessManager))
 diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
-index 2c1eac086f491244c2a76627ed20d9f66af0f633..2f851ae212e5823fb78dd53683d6952241c0e10c 100644
+index 2c1eac0..2f851ae 100644
 --- a/internal/auth/codex/openai_auth.go
 +++ b/internal/auth/codex/openai_auth.go
 @@ -7,6 +7,7 @@ package codex
@@ -1428,7 +1617,7 @@ index 2c1eac086f491244c2a76627ed20d9f66af0f633..2f851ae212e5823fb78dd53683d69522
  
  // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.
 diff --git a/internal/auth/codex/openai_auth_test.go b/internal/auth/codex/openai_auth_test.go
-index 55942c7bf0a7c5c35385645e339a499c3374e022..0e9ced9ae171658295a02a381939eb909499ec45 100644
+index 55942c7..0e9ced9 100644
 --- a/internal/auth/codex/openai_auth_test.go
 +++ b/internal/auth/codex/openai_auth_test.go
 @@ -26,6 +26,115 @@ func TestNewCodexAuthDoesNotSetRequestTimeout(t *testing.T) {
@@ -1548,10 +1737,10 @@ index 55942c7bf0a7c5c35385645e339a499c3374e022..0e9ced9ae171658295a02a381939eb90
  	resetCodexRefreshGroupForTest()
  	defer resetCodexRefreshGroupForTest()
 diff --git a/internal/auth/codex/token.go b/internal/auth/codex/token.go
-index b2a7bcf21ac851131388e8b05425083642711abb..6486ccce988657b652aa3e2798eb1959795e08d6 100644
+index c7ea0fb..61b855d 100644
 --- a/internal/auth/codex/token.go
 +++ b/internal/auth/codex/token.go
-@@ -43,6 +43,15 @@ func (ts *CodexTokenStorage) SetMetadata(meta map[string]any) {
+@@ -44,6 +44,15 @@ func (ts *CodexTokenStorage) SetMetadata(meta map[string]any) {
  	ts.Metadata = meta
  }
  
@@ -1568,7 +1757,7 @@ index b2a7bcf21ac851131388e8b05425083642711abb..6486ccce988657b652aa3e2798eb1959
  // This method creates the necessary directory structure and writes the token
  // data in JSON format to the specified file path for persistent storage.
 diff --git a/internal/logging/cpa_trace.go b/internal/logging/cpa_trace.go
-index bc1d243a88ae727308e1ffe6d8f759af01473197..cc38b0f84ccafcb1ad0ccfe39f50b09f2c4a6ea1 100644
+index bc1d243..cc38b0f 100644
 --- a/internal/logging/cpa_trace.go
 +++ b/internal/logging/cpa_trace.go
 @@ -11,6 +11,11 @@ import (
@@ -1710,7 +1899,7 @@ index bc1d243a88ae727308e1ffe6d8f759af01473197..cc38b0f84ccafcb1ad0ccfe39f50b09f
 +	return true
  }
 diff --git a/internal/logging/cpa_trace_test.go b/internal/logging/cpa_trace_test.go
-index 2202e5092e1c87118aa5734e53eec74ccccbb747..4f137f73e3c08b766a50b82d1101f4027e3cafb8 100644
+index 2202e50..4f137f7 100644
 --- a/internal/logging/cpa_trace_test.go
 +++ b/internal/logging/cpa_trace_test.go
 @@ -35,12 +35,14 @@ func TestFormatCPATraceID(t *testing.T) {
@@ -1877,8 +2066,128 @@ index 2202e5092e1c87118aa5734e53eec74ccccbb747..4f137f73e3c08b766a50b82d1101f402
 +		t.Fatalf("non-canonical upstream account header = %q, want empty", got)
 +	}
 +}
+diff --git a/internal/runtime/executor/codex_astra_upgrade_test.go b/internal/runtime/executor/codex_astra_upgrade_test.go
+new file mode 100644
+index 0000000..df4b3fb
+--- /dev/null
++++ b/internal/runtime/executor/codex_astra_upgrade_test.go
+@@ -0,0 +1,114 @@
++package executor
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++	"github.com/tidwall/gjson"
++)
++
++func TestCodexAstraUpgradeHTTPTransports(t *testing.T) {
++	for _, mode := range []string{"ordinary", "sse", "compact"} {
++		t.Run(mode, func(t *testing.T) {
++			type capturedRequest struct {
++				path    string
++				headers http.Header
++				body    []byte
++			}
++			captured := make(chan capturedRequest, 1)
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				body, err := io.ReadAll(r.Body)
++				if err != nil {
++					t.Error(err)
++					w.WriteHeader(http.StatusBadRequest)
++					return
++				}
++				captured <- capturedRequest{r.URL.Path, r.Header.Clone(), body}
++				if mode == "compact" {
++					w.Header().Set("Content-Type", "application/json")
++					_, _ = w.Write([]byte(`{"id":"compact-astra","object":"response.compaction","model":"gpt-6-astra","output":[{"type":"compaction","encrypted_content":"mock-compacted-content"}]}`))
++					return
++				}
++				w.Header().Set("Content-Type", "text/event-stream")
++				_, _ = w.Write([]byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-astra\",\"object\":\"response\",\"model\":\"gpt-6-astra\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":4,\"output_tokens\":2,\"total_tokens\":6}}}\n\n"))
++			}))
++			defer upstream.Close()
++			a := &cliproxyauth.Auth{ID: "astra-transport", Provider: "codex", ProxyURL: "direct",
++				Metadata: map[string]any{"access_token": "astra-mock-token", "account_id": "astra-mock-account"},
++				Attributes: map[string]string{"base_url": upstream.URL, cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth,
++					"header:Authorization": "Bearer forged", "header:Chatgpt-Account-Id": "forged-account", "header:X-Codex-Gateway-Affinity": "must-not-leak", "header:X-Codex-Upstream-Account": "must-not-leak"},
++			}
++			cliproxyauth.SetCodexOAuthAccountIndexSeed(a, "astra-mock-account")
++			e := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
++			req := cliproxyexecutor.Request{Model: "gpt-6-astra", Payload: []byte(`{"model":"gpt-6-astra","input":[{"role":"user","content":"hello"}],"reasoning":{"effort":"high"}}`)}
++			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), ResponseFormat: sdktranslator.FromString("openai-response")}
++			var response []byte
++			if mode == "sse" {
++				opts.Stream = true
++				result, err := e.ExecuteStream(context.Background(), a, req, opts)
++				if err != nil {
++					t.Fatal(err)
++				}
++				for chunk := range result.Chunks {
++					if chunk.Err != nil {
++						t.Fatal(chunk.Err)
++					}
++					response = append(response, chunk.Payload...)
++				}
++			} else {
++				if mode == "compact" {
++					opts.Alt = "responses/compact"
++				}
++				result, err := e.Execute(context.Background(), a, req, opts)
++				if err != nil {
++					t.Fatal(err)
++				}
++				response = result.Payload
++			}
++			var got capturedRequest
++			select {
++			case got = <-captured:
++			default:
++				t.Fatal("upstream was not called")
++			}
++			wantPath := "/responses"
++			if mode == "compact" {
++				wantPath += "/compact"
++			}
++			if got.path != wantPath {
++				t.Fatalf("path=%q want=%q", got.path, wantPath)
++			}
++			if gjson.GetBytes(got.body, "model").String() != "gpt-6-astra" {
++				t.Fatalf("upstream model changed: %s", got.body)
++			}
++			if gjson.GetBytes(got.body, "reasoning.effort").String() != "high" {
++				t.Fatalf("reasoning effort changed: %s", got.body)
++			}
++			if got.headers.Get("Authorization") != "Bearer astra-mock-token" || got.headers.Get("Chatgpt-Account-Id") != "astra-mock-account" {
++				t.Fatalf("canonical OAuth headers replaced: %v", got.headers)
++			}
++			for _, name := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Upstream-Account"} {
++				if got.headers.Get(name) != "" {
++					t.Fatalf("internal header leaked: %s", name)
++				}
++			}
++			if !strings.Contains(string(response), "gpt-6-astra") {
++				t.Fatalf("response lost Astra model: %s", response)
++			}
++			if mode == "sse" && !strings.Contains(string(response), "response.completed") {
++				t.Fatalf("SSE completion lost: %s", response)
++			}
++			if mode == "compact" && gjson.GetBytes(response, "object").String() != "response.compaction" {
++				t.Fatalf("compact response=%s", response)
++			}
++		})
++	}
++}
 diff --git a/internal/runtime/executor/codex_executor_auth.go b/internal/runtime/executor/codex_executor_auth.go
-index e200d69021c90394433314b37d80d9e598f978b2..371120c528de00fa307007684aacbe85b92a8d1b 100644
+index e200d69..371120c 100644
 --- a/internal/runtime/executor/codex_executor_auth.go
 +++ b/internal/runtime/executor/codex_executor_auth.go
 @@ -42,6 +42,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
@@ -1898,7 +2207,7 @@ index e200d69021c90394433314b37d80d9e598f978b2..371120c528de00fa307007684aacbe85
  }
  
 diff --git a/internal/runtime/executor/codex_executor_cache_test.go b/internal/runtime/executor/codex_executor_cache_test.go
-index 8d9713828a71b69ed84dd40208315295ebd444c4..1127303bad6171be8c1fa338143e9646999957a0 100644
+index 8bd5298..c46be64 100644
 --- a/internal/runtime/executor/codex_executor_cache_test.go
 +++ b/internal/runtime/executor/codex_executor_cache_test.go
 @@ -257,8 +257,12 @@ func TestApplyCodexHeadersUsesAccountHeaderForOAuth(t *testing.T) {
@@ -1916,13 +2225,13 @@ index 8d9713828a71b69ed84dd40208315295ebd444c4..1127303bad6171be8c1fa338143e9646
  	applyCodexHeaders(httpReq, auth, "oauth-token", true, nil)
  
 diff --git a/internal/runtime/executor/codex_executor_execute.go b/internal/runtime/executor/codex_executor_execute.go
-index d2a1ac2fd620f2ff2bea483fb4cc479f07299f13..76d90833d19d20f53fb89a7a0dc52838b81e0461 100644
+index d7c6dbd..d747c57 100644
 --- a/internal/runtime/executor/codex_executor_execute.go
 +++ b/internal/runtime/executor/codex_executor_execute.go
 @@ -80,8 +80,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
  		return resp, err
  	}
- 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(httpReq.Header, baseModel)
 -	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 +	finalizeCodexOutboundHeaders(httpReq.Header, auth, baseModel, &identityState)
@@ -1938,17 +2247,17 @@ index d2a1ac2fd620f2ff2bea483fb4cc479f07299f13..76d90833d19d20f53fb89a7a0dc52838
  	httpClient = reporter.TrackHTTPClient(httpClient)
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
-@@ -237,8 +236,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+@@ -240,8 +239,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
  		return resp, err
  	}
- 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
+ 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(httpReq.Header, baseModel)
 -	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 +	finalizeCodexOutboundHeaders(httpReq.Header, auth, baseModel, &identityState)
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
  		authID = auth.ID
-@@ -256,7 +254,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+@@ -259,7 +257,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
  		AuthType:  authType,
  		AuthValue: authValue,
  	})
@@ -1959,10 +2268,10 @@ index d2a1ac2fd620f2ff2bea483fb4cc479f07299f13..76d90833d19d20f53fb89a7a0dc52838
  	if err != nil {
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb6b8e1599
+index 0000000..da2f96f
 --- /dev/null
 +++ b/internal/runtime/executor/codex_executor_redirect_test.go
-@@ -0,0 +1,313 @@
+@@ -0,0 +1,358 @@
 +package executor
 +
 +import (
@@ -2096,6 +2405,9 @@ index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb
 +
 +	assertProtected := func(t *testing.T, headers http.Header) {
 +		t.Helper()
++		if got := headers.Get("X-Codex-Turn-Metadata"); got != "options-header-canary" {
++			t.Fatalf("X-Codex-Turn-Metadata = %q, want header from executor options", got)
++		}
 +		if got := headers.Get("Authorization"); got != "Bearer canonical-token" {
 +			t.Fatalf("Authorization = %q, want canonical token", got)
 +		}
@@ -2116,6 +2428,13 @@ index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb
 +	responseOptions := cliproxyexecutor.Options{
 +		SourceFormat:   sdktranslator.FromString("openai-response"),
 +		ResponseFormat: sdktranslator.FromString("openai-response"),
++		Headers: http.Header{
++			"X-Codex-Turn-Metadata":    {"options-header-canary"},
++			"Authorization":            {"Bearer options-override-token"},
++			"Chatgpt-Account-Id":       {"options-override-account"},
++			"X-Codex-Gateway-Affinity": {"options-internal-canary"},
++			"X-Codex-Upstream-Account": {"options-internal-canary"},
++		},
 +	}
 +	for _, path := range []struct {
 +		name     string
@@ -2155,6 +2474,7 @@ index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb
 +			wantPath: "/backend-api/codex/responses",
 +			run: func(ctx context.Context, candidate *cliproxyauth.Auth) error {
 +				opts := codexOpenAIImageTestOptions(codexImagesGenerationsPath, false)
++				opts.Headers = responseOptions.Headers.Clone()
 +				_, err := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{GPTImage2BaseModel: canaryModel}}).Execute(ctx, candidate, cliproxyexecutor.Request{
 +					Model:   canaryModel,
 +					Payload: []byte(`{"model":"` + canaryModel + `","prompt":"header canary"}`),
@@ -2254,6 +2574,40 @@ index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb
 +		}
 +	})
 +
++	t.Run("case variants cannot bypass protection", func(t *testing.T) {
++		for _, attributable := range []bool{true, false} {
++			candidate := auth.Clone()
++			if !attributable {
++				candidate.Metadata["account_id"] = "different-account"
++				delete(candidate.Metadata, "access_token")
++			}
++			headers := http.Header{
++				"authorization":            {"Bearer attacker-token"},
++				"ChatGPT-Account-ID":       {"attacker-account"},
++				"x-codex-gateway-affinity": {"must-not-leak"},
++				"x-codex-upstream-account": {"must-not-leak"},
++			}
++			protectCodexOAuthRequestHeaders(&http.Request{Header: headers}, candidate)
++			if attributable && (headers.Get("Authorization") != "Bearer canonical-token" || headers.Get("Chatgpt-Account-Id") != "canonical-account") {
++				t.Fatal("canonical OAuth headers were not restored")
++			}
++			for key, values := range headers {
++				switch {
++				case strings.EqualFold(key, "Authorization"):
++					if !attributable || len(values) != 1 || values[0] != "Bearer canonical-token" {
++						t.Fatalf("Authorization case variant survived protection: %v", values)
++					}
++				case strings.EqualFold(key, "Chatgpt-Account-Id"):
++					if !attributable || len(values) != 1 || values[0] != "canonical-account" {
++						t.Fatalf("account case variant survived protection: %v", values)
++					}
++				case strings.EqualFold(key, "X-Codex-Gateway-Affinity"), strings.EqualFold(key, "X-Codex-Upstream-Account"):
++					t.Fatalf("internal header case variant leaked: %s", key)
++				}
++			}
++		}
++	})
++
 +	t.Run("production call sites", func(t *testing.T) {
 +		_, testFile, _, ok := runtime.Caller(0)
 +		if !ok {
@@ -2277,10 +2631,10 @@ index 0000000000000000000000000000000000000000..031b98c595f70cb3516f54a55c1c7adb
 +	})
 +}
 diff --git a/internal/runtime/executor/codex_executor_request.go b/internal/runtime/executor/codex_executor_request.go
-index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4780106c3 100644
+index e713eaf..12ba805 100644
 --- a/internal/runtime/executor/codex_executor_request.go
 +++ b/internal/runtime/executor/codex_executor_request.go
-@@ -63,6 +63,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
+@@ -65,6 +65,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
  		attrs = auth.Attributes
  	}
  	util.ApplyCustomHeadersFromAttrs(req, attrs)
@@ -2288,7 +2642,7 @@ index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4
  	return nil
  }
  
-@@ -78,10 +79,53 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
+@@ -80,10 +81,51 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
  	if err := e.PrepareRequest(httpReq, auth); err != nil {
  		return nil, err
  	}
@@ -2326,16 +2680,14 @@ index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4
 +	}
 +	token, _ := auth.Metadata["access_token"].(string)
 +	token = strings.TrimSpace(token)
-+	if token == "" {
-+		req.Header.Del("Authorization")
-+	} else {
++	deleteHeaderCaseInsensitive(req.Header, "Authorization")
++	if token != "" {
 +		req.Header.Set("Authorization", "Bearer "+token)
 +	}
 +	accountID, _ := auth.Metadata["account_id"].(string)
 +	accountID = strings.TrimSpace(accountID)
-+	if _, attributable := cliproxyauth.CodexOAuthAccountIndex(auth); !attributable || !cliproxyauth.ValidCodexOAuthAccountID(accountID) {
-+		req.Header.Del("Chatgpt-Account-Id")
-+	} else {
++	deleteHeaderCaseInsensitive(req.Header, "Chatgpt-Account-Id")
++	if _, attributable := cliproxyauth.CodexOAuthAccountIndex(auth); attributable && cliproxyauth.ValidCodexOAuthAccountID(accountID) {
 +		req.Header.Set("Chatgpt-Account-Id", accountID)
 +	}
 +}
@@ -2343,7 +2695,7 @@ index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4
  type codexIdentityConfuseState struct {
  	enabled                bool
  	authID                 string
-@@ -301,6 +345,18 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
+@@ -305,6 +347,18 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
  	}
  }
  
@@ -2361,46 +2713,46 @@ index 806063abb0d272002c95b1464842ff2a8e4304b9..2fe2918c54ed90df07acfdec2ca296a4
 +
  // applyCodexDirectImageHeaders sets Codex upstream headers for direct /images/* calls.
  // Downstream client User-Agent values are not forwarded to reduce Cloudflare 1010 blocks.
- func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
-@@ -360,6 +416,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
+ func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
+@@ -367,6 +421,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
  	}
- 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+ 	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
  	applyCodexCloakingHeaders(r.Header, cfg)
 +	protectCodexOAuthRequestHeaders(r, auth)
  }
  
  func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
 diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
-index d6e6226464637232789c6753a7b3b40e7e33dfea..7e49634354931b20c96b9ef360d54b56a33a22af 100644
+index b51e273..0b0d0f7 100644
 --- a/internal/runtime/executor/codex_executor_stream.go
 +++ b/internal/runtime/executor/codex_executor_stream.go
-@@ -84,8 +84,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+@@ -86,8 +86,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
  		return nil, err
  	}
- 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(httpReq.Header, baseModel)
 -	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 +	finalizeCodexOutboundHeaders(httpReq.Header, auth, baseModel, &identityState)
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
  		authID = auth.ID
-@@ -104,7 +103,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
+@@ -106,7 +105,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
  		AuthValue: authValue,
  	})
  
 -	httpClient := helps.NewUtlsHTTPClient(ctx, e.cfg, auth, 0)
 +	httpClient := e.newHTTPClient(ctx, auth)
- 	httpClient = reporter.TrackHTTPClient(httpClient)
+ 	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
 diff --git a/internal/runtime/executor/codex_openai_images.go b/internal/runtime/executor/codex_openai_images.go
-index 18ef441864b8ce30690253cbd84f95f8fd42fa71..0e7594728c895ec4e7885043719d16e4eed5487a 100644
+index 5492f37..952bf49 100644
 --- a/internal/runtime/executor/codex_openai_images.go
 +++ b/internal/runtime/executor/codex_openai_images.go
 @@ -113,11 +113,10 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
  		return resp, errCache
  	}
- 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(httpReq.Header, mainModel)
 -	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 +	finalizeCodexOutboundHeaders(httpReq.Header, auth, mainModel, &identityState)
@@ -2414,7 +2766,7 @@ index 18ef441864b8ce30690253cbd84f95f8fd42fa71..0e7594728c895ec4e7885043719d16e4
 @@ -210,11 +209,10 @@ func (e *CodexExecutor) executeOpenAIImageStream(ctx context.Context, auth *clip
  		return nil, errCache
  	}
- 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+ 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(httpReq.Header, mainModel)
 -	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 +	finalizeCodexOutboundHeaders(httpReq.Header, auth, mainModel, &identityState)
@@ -2460,13 +2812,13 @@ index 18ef441864b8ce30690253cbd84f95f8fd42fa71..0e7594728c895ec4e7885043719d16e4
  	httpResp, errDo := httpClient.Do(httpReq)
  	if errDo != nil {
 diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
-index 5243bc7adf50e5c4480545a00fc93e019cd4435d..718113d29190e42080d2a2b4e6e58aef36cd334c 100644
+index 3874763..580eec6 100644
 --- a/internal/runtime/executor/codex_websockets_execute.go
 +++ b/internal/runtime/executor/codex_websockets_execute.go
-@@ -85,8 +85,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
+@@ -86,8 +86,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
  	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
  	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
- 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+ 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(wsHeaders, baseModel)
 -	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 +	finalizeCodexOutboundHeaders(wsHeaders, auth, baseModel, &identityState)
@@ -2474,25 +2826,25 @@ index 5243bc7adf50e5c4480545a00fc93e019cd4435d..718113d29190e42080d2a2b4e6e58aef
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
 diff --git a/internal/runtime/executor/codex_websockets_request.go b/internal/runtime/executor/codex_websockets_request.go
-index 7d1cf92dd745ae18e8744b15926fb80f4382a41d..b5ef55e1d98f0b40b7fbbfe922788fde9dc21053 100644
+index d0ddb3d..2129eb8 100644
 --- a/internal/runtime/executor/codex_websockets_request.go
 +++ b/internal/runtime/executor/codex_websockets_request.go
-@@ -125,6 +125,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
+@@ -129,6 +129,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
  	}
- 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs)
+ 	util.ApplyCustomHeadersFromAttrs(&http.Request{Header: headers}, attrs, ginHeaders)
  	applyCodexCloakingHeaders(headers, cfg)
 +	protectCodexOAuthRequestHeaders(&http.Request{Header: headers}, auth)
  
  	return headers
  }
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index 505081f099b5f4c2c8e18367a003cd1f2d515b37..dffcef37b722dee2e130d8346af8b33ab405b96d 100644
+index 217d6e6..49ffc0c 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
-@@ -82,8 +82,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
+@@ -83,8 +83,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
  	upstreamBody, identityState := applyCodexIdentityConfuseBody(e.cfg, auth, originalPayloadSource, body)
  	reporter.SetTranslatedReasoningEffort(clientBody, to.String())
- 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
+ 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, opts.Headers)
 -	applyModelHeaderOverrides(wsHeaders, baseModel)
 -	applyCodexIdentityConfuseHeaders(wsHeaders, &identityState)
 +	finalizeCodexOutboundHeaders(wsHeaders, auth, baseModel, &identityState)
@@ -2500,11 +2852,11 @@ index 505081f099b5f4c2c8e18367a003cd1f2d515b37..dffcef37b722dee2e130d8346af8b33a
  	var authID, authLabel, authType, authValue string
  	authID = auth.ID
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f4f697d0d 100644
+index f100fab..848a794 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
-@@ -5,6 +5,11 @@ import (
- 	"strings"
+@@ -7,6 +7,11 @@ import (
+ 	"github.com/gin-gonic/gin"
  )
  
 +const (
@@ -2514,8 +2866,8 @@ index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f
 +
  // ApplyCustomHeadersFromAttrs applies user-defined headers stored in the provided attributes map.
  // Custom headers override built-in defaults when conflicts occur.
- func ApplyCustomHeadersFromAttrs(r *http.Request, attrs map[string]string) {
-@@ -47,6 +52,9 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
+ // If clientHeaders is provided (or if the request context carries a Gin context), any custom header
+@@ -82,6 +87,9 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
  		if k == "" || v == "" {
  			continue
  		}
@@ -2525,7 +2877,7 @@ index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f
  		// net/http reads Host from req.Host (not req.Header) when writing
  		// a real request, so we must mirror it there. Some callers pass
  		// synthetic requests (e.g. &http.Request{Header: ...}) and only
-@@ -58,3 +66,18 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
+@@ -93,3 +101,21 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
  		r.Header.Set(k, v)
  	}
  }
@@ -2536,8 +2888,11 @@ index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f
 +	if headers == nil {
 +		return
 +	}
-+	headers.Del(CodexGatewayAffinityHeader)
-+	headers.Del(CodexUpstreamAccountHeader)
++	for name := range headers {
++		if isCodexInternalHeader(name) {
++			delete(headers, name)
++		}
++	}
 +}
 +
 +func isCodexInternalHeader(name string) bool {
@@ -2545,7 +2900,7 @@ index 0b8d72bcb4e170f39bd61fe5d6f5e85ed2c8c1c9..7f5d2821628ff59c080af8af714be67f
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
-index 3ef58b55c0a8d10c0656303e8aa21d36aab82c44..918f71aff93485383f6b66d5699b8c1eab4e93a8 100644
+index 3ef58b5..918f71a 100644
 --- a/internal/watcher/clients.go
 +++ b/internal/watcher/clients.go
 @@ -124,7 +124,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
@@ -2684,7 +3039,7 @@ index 3ef58b55c0a8d10c0656303e8aa21d36aab82c44..918f71aff93485383f6b66d5699b8c1e
  
  func (w *Watcher) loadFileClients(cfg *config.Config) int {
 diff --git a/internal/watcher/dispatcher.go b/internal/watcher/dispatcher.go
-index d1602bc1d6e71f082d5680def3e4dd5a71d8ea2a..48a1071b14ef7d1302b83e2ddc6064a858a53886 100644
+index d1602bc..48a1071 100644
 --- a/internal/watcher/dispatcher.go
 +++ b/internal/watcher/dispatcher.go
 @@ -105,13 +105,20 @@ func (w *Watcher) dispatchPersistedAuthUpdate(update AuthUpdate) bool {
@@ -2765,7 +3120,7 @@ index d1602bc1d6e71f082d5680def3e4dd5a71d8ea2a..48a1071b14ef7d1302b83e2ddc6064a8
  	if len(updates) == 0 {
  		return
 diff --git a/internal/watcher/synthesizer/file.go b/internal/watcher/synthesizer/file.go
-index dad21bd1c407aa9a4e2ccbd13b160443bd1bd469..01c318890edbb00a6b681cd4655149b98383a04c 100644
+index 41cb14e..100b6a0 100644
 --- a/internal/watcher/synthesizer/file.go
 +++ b/internal/watcher/synthesizer/file.go
 @@ -62,7 +62,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
@@ -2777,15 +3132,15 @@ index dad21bd1c407aa9a4e2ccbd13b160443bd1bd469..01c318890edbb00a6b681cd4655149b9
  }
  
  // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
-@@ -133,6 +133,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
- 				coreauth.SetOAuthModelAliasesAttribute(auth, perAccountModelAliases)
+@@ -136,6 +136,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
  				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
  				coreauth.ApplyCustomHeadersFromMetadata(auth)
+ 				applyFingerprintProfileAttribute(auth, metadata)
 +				applyCodexAccountIndexSeed(auth, metadata)
  			}
  			return auths, nil
  		}
-@@ -232,9 +233,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
+@@ -236,9 +237,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
  			}
  		}
  	}
@@ -2801,7 +3156,7 @@ index dad21bd1c407aa9a4e2ccbd13b160443bd1bd469..01c318890edbb00a6b681cd4655149b9
  	if parser == nil {
  		return nil, false, nil
 diff --git a/internal/watcher/synthesizer/file_test.go b/internal/watcher/synthesizer/file_test.go
-index 20026080605b60a688a20926667328b05b0784eb..af99c9afecfcab2cb42e29570ead5b8cdc08c579 100644
+index 24e343d..1a22a8e 100644
 --- a/internal/watcher/synthesizer/file_test.go
 +++ b/internal/watcher/synthesizer/file_test.go
 @@ -5,6 +5,7 @@ import (
@@ -2812,7 +3167,7 @@ index 20026080605b60a688a20926667328b05b0784eb..af99c9afecfcab2cb42e29570ead5b8c
  	"testing"
  	"time"
  
-@@ -315,6 +316,66 @@ func TestSynthesizeAuthFilePluginHandledEmptySuppressesBuiltin(t *testing.T) {
+@@ -357,6 +358,66 @@ func TestSynthesizeAuthFilePluginHandledEmptySuppressesBuiltin(t *testing.T) {
  	}
  }
  
@@ -2880,7 +3235,7 @@ index 20026080605b60a688a20926667328b05b0784eb..af99c9afecfcab2cb42e29570ead5b8c
  
  func (f multiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
 diff --git a/internal/watcher/watcher_test.go b/internal/watcher/watcher_test.go
-index fee504689514e40c46bc790b9c54e1e2b5c63adc..b90f1fe1b77b03de5afdf3d219360c916edf0f30 100644
+index da7511a..562143a 100644
 --- a/internal/watcher/watcher_test.go
 +++ b/internal/watcher/watcher_test.go
 @@ -465,6 +465,45 @@ func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
@@ -2929,7 +3284,7 @@ index fee504689514e40c46bc790b9c54e1e2b5c63adc..b90f1fe1b77b03de5afdf3d219360c91
  func TestAuthSliceToMap(t *testing.T) {
  	t.Parallel()
  
-@@ -1635,6 +1674,35 @@ func TestPrepareAuthUpdatesLockedForceAndDelete(t *testing.T) {
+@@ -1674,6 +1713,35 @@ func TestPrepareAuthUpdatesLockedForceAndDelete(t *testing.T) {
  	}
  }
  
@@ -2966,7 +3321,7 @@ index fee504689514e40c46bc790b9c54e1e2b5c63adc..b90f1fe1b77b03de5afdf3d219360c91
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index cf31c5e0989c19dfc2fcd165079878de40159aa3..46faf80fa420d59ff1a1b86cb0ea972f83f3aa5a 100644
+index 78170df..8c73add 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
 @@ -5,6 +5,7 @@ package handlers
@@ -3049,7 +3404,7 @@ index cf31c5e0989c19dfc2fcd165079878de40159aa3..46faf80fa420d59ff1a1b86cb0ea972f
  	if meta == nil {
  		return
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index 02fcf54b4d76df9bbe92a3b1104ec90445a9fd71..042dd89a7d76029616d064170e520e2636bc2aff 100644
+index 02fcf54..042dd89 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
 @@ -68,6 +68,74 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
@@ -3148,10 +3503,10 @@ index 02fcf54b4d76df9bbe92a3b1104ec90445a9fd71..042dd89a7d76029616d064170e520e26
  }
  
 diff --git a/sdk/api/handlers/handlers_stream_bootstrap_test.go b/sdk/api/handlers/handlers_stream_bootstrap_test.go
-index fc37107ddde4308b5e343aef13036c3c9944f427..dece5184e66173f4e7a122a0cdee6cf3034fd47b 100644
+index 8ee322f..df83ead 100644
 --- a/sdk/api/handlers/handlers_stream_bootstrap_test.go
 +++ b/sdk/api/handlers/handlers_stream_bootstrap_test.go
-@@ -608,8 +608,8 @@ func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
+@@ -637,8 +637,8 @@ func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
  			streamErr = msg
  		}
  	}
@@ -3163,7 +3518,7 @@ index fc37107ddde4308b5e343aef13036c3c9944f427..dece5184e66173f4e7a122a0cdee6cf3
  }
  
 diff --git a/sdk/api/handlers/header_filter.go b/sdk/api/handlers/header_filter.go
-index e72467459aae14972ee7f23037fbae91bbc169c3..864cebd35e941e353973f6a821fa4684d10018ce 100644
+index e724674..864cebd 100644
 --- a/sdk/api/handlers/header_filter.go
 +++ b/sdk/api/handlers/header_filter.go
 @@ -44,6 +44,7 @@ var cpaReservedResponseHeaders = map[string]struct{}{
@@ -3175,7 +3530,7 @@ index e72467459aae14972ee7f23037fbae91bbc169c3..864cebd35e941e353973f6a821fa4684
  
  // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
-index d7ea4e1fe93439ad6e14321c195adbaea75e7f1b..2a6254e80b52558dae5a4ce72cbfa7b2cbfeb054 100644
+index d7ea4e1..2a6254e 100644
 --- a/sdk/auth/codex_device.go
 +++ b/sdk/auth/codex_device.go
 @@ -61,12 +61,17 @@ func shouldUseCodexDeviceFlow(opts *LoginOptions) bool {
@@ -3207,10 +3562,10 @@ index d7ea4e1fe93439ad6e14321c195adbaea75e7f1b..2a6254e80b52558dae5a4ce72cbfa7b2
  
  	fmt.Println("Codex authentication successful")
 diff --git a/sdk/auth/filestore.go b/sdk/auth/filestore.go
-index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d0885f1bd 100644
+index c9c4dee..ec21a15 100644
 --- a/sdk/auth/filestore.go
 +++ b/sdk/auth/filestore.go
-@@ -157,6 +157,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
+@@ -158,6 +158,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
  	auth.Attributes[cliproxyauth.AttributePath] = path
  	auth.Attributes[cliproxyauth.AttributeSource] = path
  	auth.Attributes[cliproxyauth.AttributeSourceBackend] = cliproxyauth.AuthSourceFile
@@ -3218,7 +3573,7 @@ index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d
  
  	if strings.TrimSpace(auth.FileName) == "" {
  		auth.FileName = auth.ID
-@@ -194,7 +195,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
+@@ -195,7 +196,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
  	if err != nil {
  		return nil, err
  	}
@@ -3227,7 +3582,7 @@ index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d
  }
  
  // Delete removes the auth file.
-@@ -288,6 +289,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
+@@ -291,6 +292,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
  					return nil, errWeight
  				}
  				cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
@@ -3235,7 +3590,7 @@ index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d
  			}
  			return auths, nil
  		}
-@@ -348,6 +350,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
+@@ -351,6 +353,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
  		auth.Attributes["email"] = email
  	}
  	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
@@ -3244,7 +3599,7 @@ index 8abef89e153725dce3dde8ab16fb42a4aa91b71a..d30cadb94f6dc3f09f44ed2d8e004b9d
  }
  
 diff --git a/sdk/auth/filestore_test.go b/sdk/auth/filestore_test.go
-index e638ffee744f7a301ada8a085c8306aef456f1a7..b99e63a4a422a68f5252bac9bbb692a325bab097 100644
+index 4ce9883..1886588 100644
 --- a/sdk/auth/filestore_test.go
 +++ b/sdk/auth/filestore_test.go
 @@ -2,10 +2,15 @@ package auth
@@ -3263,8 +3618,8 @@ index e638ffee744f7a301ada8a085c8306aef456f1a7..b99e63a4a422a68f5252bac9bbb692a3
  	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
  	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
  )
-@@ -146,6 +151,153 @@ func TestFileTokenStoreSaveExistingMetadataSetsFileAttributes(t *testing.T) {
- 	}
+@@ -206,6 +211,153 @@ func TestFileTokenStoreNormalizesLegacyCredentialMetadata(t *testing.T) {
+ 	})
  }
  
 +func TestFileTokenStoreListDeduplicatesCodexOAuthAccountByLastRefresh(t *testing.T) {
@@ -3419,7 +3774,7 @@ index e638ffee744f7a301ada8a085c8306aef456f1a7..b99e63a4a422a68f5252bac9bbb692a3
  	store := NewFileTokenStore()
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe.go b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..3c845733c93805cc6ec7f75e2f1346f9707de96f
+index 0000000..3c84573
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 @@ -0,0 +1,348 @@
@@ -3773,7 +4128,7 @@ index 0000000000000000000000000000000000000000..3c845733c93805cc6ec7f75e2f1346f9
 +}
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe_test.go b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..d89da81e1254751bc76193735ed59e5539f27a66
+index 0000000..d89da81
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 @@ -0,0 +1,358 @@
@@ -4136,23 +4491,23 @@ index 0000000000000000000000000000000000000000..d89da81e1254751bc76193735ed59e55
 +	return auth
 +}
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d62779516d 100644
+index e2ad851..c3123db 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
-@@ -5,7 +5,9 @@ import (
- 	"context"
+@@ -6,7 +6,9 @@ import (
  	"errors"
+ 	"fmt"
  	"io"
 +	"net"
  	"net/http"
 +	"net/url"
  	"path/filepath"
+ 	"sort"
  	"strconv"
- 	"strings"
-@@ -327,8 +329,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
- 				return cliproxyexecutor.Response{}, errCancel
+@@ -486,8 +488,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 				stateModel = canonicalModelKey(routeModel)
  			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 -			m.MarkResult(execCtx, result)
 +			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, false)
  			lastErr = errPrepare
@@ -4162,92 +4517,140 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
  			continue
  		}
  		var authErr error
-@@ -356,6 +361,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
- 				}
- 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+@@ -523,6 +528,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 				refreshCtx := newUpstreamAttemptContext(execCtx)
+ 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
  					auth = refreshed
 +					publishSelectedAuthMetadata(execOpts.Metadata, auth)
  					didRefreshOnUnauthorized = true
- 					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
- 					if errExec != nil {
-@@ -374,8 +380,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
- 				if ra := retryAfterFromError(errExec); ra != nil {
- 					result.RetryAfter = ra
+ 					execCtx = newUpstreamAttemptContext(execCtx)
+ 					startRetry := time.Now()
+@@ -556,11 +562,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				}
--				m.MarkResult(execCtx, result)
--				if isRequestInvalidError(errExec) {
-+				eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errExec, false)
-+				if !eligible {
- 					return cliproxyexecutor.Response{}, errExec
- 				}
- 				authErr = errExec
-@@ -387,7 +393,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
- 			return resp, nil
- 		}
- 		if authErr != nil {
--			if isRequestInvalidError(authErr) {
-+			if !credentialSwitchEligible(provider, authErr, execCtx) {
- 				return cliproxyexecutor.Response{}, authErr
- 			}
- 			lastErr = authErr
-@@ -454,8 +460,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
- 				return cliproxyexecutor.Response{}, errCancel
- 			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
--			m.MarkResult(execCtx, result)
-+			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, false)
- 			lastErr = errPrepare
-+			if !eligible {
-+				return cliproxyexecutor.Response{}, errPrepare
-+			}
- 			continue
- 		}
- 		var authErr error
-@@ -483,6 +492,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
- 				}
- 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(execCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
- 					auth = refreshed
-+					publishSelectedAuthMetadata(execOpts.Metadata, auth)
- 					didRefreshOnUnauthorized = true
- 					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
- 					if errExec != nil {
-@@ -505,12 +515,13 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
- 				// count_tokens route and return a generic endpoint 404. Record
- 				// the failure for hooks and metrics without suspending a model
- 				// that remains usable through the messages endpoint.
--				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) {
+ 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
+ 				applyRequestScopedActionToResult(action, okAction, &result)
+-				if isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
 +				eligible := credentialSwitchEligible(provider, errExec, execCtx)
-+				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) || isCodexProvider(provider) && !eligible {
++				if isCodexProvider(provider) && !eligible || isResponsesCompactAvailabilityNeutralError(execOpts, errExec, result.Error) {
  					m.recordAvailabilityNeutralResult(execCtx, result)
  				} else {
  					m.MarkResult(execCtx, result)
  				}
--				if isRequestInvalidError(errExec) {
-+				if !eligible {
++				if isCodexProvider(provider) && !eligible {
++					return cliproxyexecutor.Response{}, errExec
++				}
+ 				if okAction {
+ 					if isRequestScopedStop(action, okAction) {
+ 						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
+@@ -571,7 +581,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 					}
+ 					continue
+ 				}
+-				if isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec) {
++				if !isCodexProvider(provider) && (isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec)) {
  					return cliproxyexecutor.Response{}, errExec
  				}
  				authErr = errExec
-@@ -522,7 +533,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -586,6 +596,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			return resp, nil
  		}
  		if authErr != nil {
--			if isRequestInvalidError(authErr) {
-+			if !credentialSwitchEligible(provider, authErr, execCtx) {
++			if isCodexProvider(provider) && !credentialSwitchEligible(provider, authErr, execCtx) {
++				return cliproxyexecutor.Response{}, authErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -597,7 +610,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 				}
+ 				continue
+ 			}
+-			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
++			if !isCodexProvider(provider) && (isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr)) {
  				return cliproxyexecutor.Response{}, authErr
  			}
  			lastErr = authErr
-@@ -544,6 +555,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -677,8 +690,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 				stateModel = canonicalModelKey(routeModel)
+ 			}
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
+-			m.MarkResult(execCtx, result)
++			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, false)
+ 			lastErr = errPrepare
++			if !eligible {
++				return cliproxyexecutor.Response{}, errPrepare
++			}
+ 			continue
+ 		}
+ 		var authErr error
+@@ -714,6 +730,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 				refreshCtx := newUpstreamAttemptContext(execCtx)
+ 				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
+ 					auth = refreshed
++					publishSelectedAuthMetadata(execOpts.Metadata, auth)
+ 					didRefreshOnUnauthorized = true
+ 					execCtx = newUpstreamAttemptContext(execCtx)
+ 					startRetry := time.Now()
+@@ -748,7 +765,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 				// count_tokens route and return a generic endpoint 404. Record
+ 				// the failure for hooks and metrics without suspending a model
+ 				// that remains usable through the messages endpoint.
+-				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
++				eligible := credentialSwitchEligible(provider, errExec, execCtx)
++				if isCodexProvider(provider) && !eligible || isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
+ 					m.recordAvailabilityNeutralResult(execCtx, result)
+ 				} else {
+ 					if isCredentialScopedError(errExec) {
+@@ -756,6 +774,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 					}
+ 					m.MarkResult(execCtx, result)
+ 				}
++				if isCodexProvider(provider) && !eligible {
++					return cliproxyexecutor.Response{}, errExec
++				}
+ 				if okAction {
+ 					if isRequestScopedStop(action, okAction) {
+ 						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
+@@ -766,7 +787,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 					}
+ 					continue
+ 				}
+-				if isRequestInvalidError(errExec) {
++				if !isCodexProvider(provider) && isRequestInvalidError(errExec) {
+ 					return cliproxyexecutor.Response{}, errExec
+ 				}
+ 				authErr = errExec
+@@ -781,6 +802,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 			return resp, nil
+ 		}
+ 		if authErr != nil {
++			if isCodexProvider(provider) && !credentialSwitchEligible(provider, authErr, execCtx) {
++				return cliproxyexecutor.Response{}, authErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -792,7 +816,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 				}
+ 				continue
+ 			}
+-			if isRequestInvalidError(authErr) {
++			if !isCodexProvider(provider) && isRequestInvalidError(authErr) {
+ 				return cliproxyexecutor.Response{}, authErr
+ 			}
+ 			lastErr = authErr
+@@ -814,6 +838,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  	opts = ensureRequestedModelMetadata(opts, routeModel)
  	homeMode := m.HomeEnabled()
  	homeAuthCount := 1
 +	homeTransportFallbackTried := false
  	tried := make(map[string]struct{})
- 	attempted := make(map[string]struct{})
- 	unauthorizedRefreshTried := make(map[string]struct{})
-@@ -651,13 +663,19 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
- 				}
+ 	if !homeMode {
+ 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+@@ -1001,16 +1026,22 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 				stateModel = canonicalModelKey(routeModel)
  			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: routeModel, Success: false, Error: resultErrorFromError(errPrepare)}
+ 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 +			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, selection != nil)
  			if selection != nil {
 -				m.reportHomeResult(execCtx, result, auth)
@@ -4256,6 +4659,9 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
 -				m.MarkResult(execCtx, result)
  			}
  			lastErr = errPrepare
+ 			if homeMode {
+ 				roundTiming.Observe(lastErr)
+ 			}
 +			if !eligible {
 +				if selection != nil {
 +					if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed_non_retryable"); errEnd != nil {
@@ -4267,14 +4673,24 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
  			if selection != nil {
  				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
  					return nil, errEnd
-@@ -689,9 +707,14 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1059,6 +1090,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
  				return nil, errCtx
  			}
--			if isRequestInvalidError(errStream) {
 +			transportFallback := !homeTransportFallbackTried && len(attempted) == 1 &&
 +				homeWebsocketTransportFallbackEligible(ctx, selection, errStream)
-+			if !transportFallback && !credentialSwitchEligible(provider, errStream, execCtx) {
++			if !transportFallback && isCodexProvider(provider) && !credentialSwitchEligible(provider, errStream, execCtx) {
++				return nil, errStream
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -1073,9 +1109,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 				}
+ 				continue
+ 			}
+-			if isRequestInvalidError(errStream) {
++			if !transportFallback && !isCodexProvider(provider) && isRequestInvalidError(errStream) {
  				return nil, errStream
  			}
 +			if transportFallback {
@@ -4282,9 +4698,9 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
 +			}
  			lastErr = errStream
  			if homeMode {
- 				homeAuthCount++
-@@ -708,6 +731,88 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
- 	}
+ 				roundTiming.Observe(lastErr)
+@@ -1136,6 +1175,88 @@ func cloneRequestMetadata(src map[string]any) map[string]any {
+ 	return dst
  }
  
 +func credentialSwitchEligible(provider string, err error, ctx context.Context) bool {
@@ -4370,9 +4786,9 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
 +}
 +
  func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
+ 	opts.Metadata = cloneRequestMetadata(opts.Metadata)
  	requestedModel = strings.TrimSpace(requestedModel)
- 	if requestedModel == "" {
-@@ -1081,6 +1186,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+@@ -1600,6 +1721,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
  			callback(authIndex)
  		}
  	}
@@ -4390,7 +4806,7 @@ index cb68fae1db9246959a4521870a8bfa12b55e654d..d158a80672437c9d67e8662909cb79d6
  func (m *Manager) executorFor(provider string) ProviderExecutor {
 diff --git a/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..2906cc2477c650bd2b5aa20aca30177e37d3b02d
+index 0000000..2906cc2
 --- /dev/null
 +++ b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 @@ -0,0 +1,302 @@
@@ -4697,52 +5113,47 @@ index 0000000000000000000000000000000000000000..2906cc2477c650bd2b5aa20aca30177e
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_lifecycle.go b/sdk/cliproxy/auth/conductor_lifecycle.go
-index a8688529a5420d2a46485bfa3aff53a9e0569b89..d9ab049b1348fd8c43f30add4838fa5bc77134b0 100644
+index c112541..6d3739f 100644
 --- a/sdk/cliproxy/auth/conductor_lifecycle.go
 +++ b/sdk/cliproxy/auth/conductor_lifecycle.go
-@@ -69,6 +69,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
- 	if auth == nil {
+@@ -71,6 +71,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
  		return nil, nil
  	}
+ 	NormalizeCredentialMetadata(auth.Metadata)
 +	ApplyCodexOAuthAccountIdentity(auth, auth.Metadata)
  	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
  		return nil, fmt.Errorf("register auth: %w", errWeight)
  	}
-@@ -108,13 +109,15 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
- 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
- 		return nil, fmt.Errorf("update auth: %w", errWeight)
- 	}
-+	ApplyCodexOAuthAccountIdentity(auth, auth.Metadata)
-+	isCodexOAuth := strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") && auth.AuthKind() == AuthKindOAuth
- 	m.mu.Lock()
- 	existing, ok := m.auths[auth.ID]
- 	if !ok || existing == nil {
- 		m.mu.Unlock()
- 		return nil, nil
+@@ -192,7 +193,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
+ 	} else if auth.RegistrationEpoch == 0 {
+ 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
  	}
 -	if !auth.indexAssigned && auth.Index == "" {
++	ApplyCodexOAuthAccountIdentity(auth, auth.Metadata)
++	isCodexOAuth := strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") && auth.AuthKind() == AuthKindOAuth
 +	if !isCodexOAuth && !auth.indexAssigned && auth.Index == "" {
  		auth.Index = existing.Index
  		auth.indexAssigned = existing.indexAssigned
  	}
-@@ -224,6 +227,12 @@ func (m *Manager) Load(ctx context.Context) error {
- 		m.mu.Unlock()
+@@ -326,6 +329,13 @@ func (m *Manager) Load(ctx context.Context) error {
  		return err
  	}
+ 	previousAuths := m.auths
 +	for _, auth := range items {
 +		if auth != nil {
++			NormalizeCredentialMetadata(auth.Metadata)
 +			ApplyCodexOAuthAccountIdentity(auth, auth.Metadata)
 +		}
 +	}
 +	items = DeduplicateCodexOAuthAuths(items)
  	m.auths = make(map[string]*Auth, len(items))
- 	for _, auth := range items {
- 		if auth == nil || auth.ID == "" {
+ 	if m.authEpochs == nil {
+ 		m.authEpochs = make(map[string]uint64, len(items))
 diff --git a/sdk/cliproxy/auth/conductor_overrides_test.go b/sdk/cliproxy/auth/conductor_overrides_test.go
-index de35ebc9a4a81e4ea36eb5b5ab6eff058937141d..a440ee69bbfa8ba702a9632727aa47673f240ee3 100644
+index 27665bf..1da6c17 100644
 --- a/sdk/cliproxy/auth/conductor_overrides_test.go
 +++ b/sdk/cliproxy/auth/conductor_overrides_test.go
-@@ -1178,10 +1178,6 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T)
+@@ -1433,10 +1433,6 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T)
  }
  
  func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(t *testing.T) {
@@ -4753,7 +5164,7 @@ index de35ebc9a4a81e4ea36eb5b5ab6eff058937141d..a440ee69bbfa8ba702a9632727aa4767
  	messageTooBigErr := &requestScopedStatusError{
  		status:  http.StatusRequestEntityTooLarge,
  		message: `{"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`,
-@@ -1233,8 +1229,6 @@ func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(
+@@ -1488,8 +1484,6 @@ func TestManager_RequestScopedErrorStopsCredentialFallbackWithoutSuspendingAuth(
  		err                error
  		wantStatus         int
  	}{
@@ -4763,15 +5174,15 @@ index de35ebc9a4a81e4ea36eb5b5ab6eff058937141d..a440ee69bbfa8ba702a9632727aa4767
  		{name: "streaming xai websocket message too big", provider: "xai", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
  		{name: "non-streaming invalid request", err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
-index 06a2a27a1298514eca2de6de85959d21820bee5c..a83719c6c0beaa97b03bac88974b55854a96a57a 100644
+index 92b0e9c..1041f5f 100644
 --- a/sdk/cliproxy/auth/conductor_refresh.go
 +++ b/sdk/cliproxy/auth/conductor_refresh.go
-@@ -565,6 +565,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
+@@ -532,6 +532,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
  	if updated == nil {
- 		updated = cloned
+ 		updated = base.Clone()
  	}
 +	ApplyCodexOAuthAccountIdentity(updated, updated.Metadata)
-+	if isCodexOAuthIdentityRefreshMismatch(auth, updated) {
++	if isCodexOAuthIdentityRefreshMismatch(base, updated) {
 +		return nil, &Error{
 +			Code:       "codex_account_identity_changed",
 +			Message:    "Codex OAuth account identity changed during refresh",
@@ -4781,9 +5192,9 @@ index 06a2a27a1298514eca2de6de85959d21820bee5c..a83719c6c0beaa97b03bac88974b5585
  	// Preserve runtime created by the executor during Refresh.
  	// If executor didn't set one, fall back to the previous runtime.
  	if updated.Runtime == nil {
-@@ -595,3 +603,21 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
+@@ -572,3 +580,21 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
  	}
- 	return updated.Clone(), nil
+ 	return saved.Clone(), nil
  }
 +
 +func isCodexOAuthIdentityRefreshMismatch(previous, updated *Auth) bool {
@@ -4804,10 +5215,10 @@ index 06a2a27a1298514eca2de6de85959d21820bee5c..a83719c6c0beaa97b03bac88974b5585
 +	return !updatedValid || previousIndex != updatedIndex
 +}
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index 09850f30575c3e727589c4de9ea9a1ade253a4f3..9b9cf78eabc681706a65bcb0ab0a75e5a0f93b9c 100644
+index d0d46e0..44f8e03 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
-@@ -71,12 +71,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
+@@ -78,12 +78,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
  	}
  }
  
@@ -4830,63 +5241,63 @@ index 09850f30575c3e727589c4de9ea9a1ade253a4f3..9b9cf78eabc681706a65bcb0ab0a75e5
  	}
  	return result, nil
  }
-@@ -268,8 +277,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
- 			rerr := resultErrorFromError(errStream)
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
- 			result.RetryAfter = retryAfterFromError(errStream)
+@@ -287,7 +296,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 				result.CredentialScope = true
+ 			}
+ 			applyRequestScopedActionToResult(action, okAction, &result)
 -			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
++			eligible := m.recordCredentialFailure(ctx, result, auth, provider, errStream, ephemeralResult)
++			if isCodexProvider(provider) && !eligible {
++				return nil, errStream
++			}
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+ 					return nil, wrapRequestStopError(errStream)
+@@ -298,7 +310,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 				}
+ 				continue
+ 			}
 -			if isRequestInvalidError(errStream) {
-+			if !m.recordCredentialFailure(ctx, result, auth, provider, errStream, ephemeralResult) {
++			if !isCodexProvider(provider) && isRequestInvalidError(errStream) {
  				return nil, errStream
  			}
  			lastErr = errStream
-@@ -324,33 +332,27 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -364,6 +376,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			}
  		}
  		if bootstrapErr != nil {
--			if isRequestInvalidError(bootstrapErr) {
--				rerr := resultErrorFromError(bootstrapErr)
--				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
--				result.RetryAfter = retryAfterFromError(bootstrapErr)
--				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
--				discardStreamChunks(streamResult.Chunks)
-+			rerr := resultErrorFromError(bootstrapErr)
-+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
-+			result.RetryAfter = retryAfterFromError(bootstrapErr)
-+			eligible := m.recordCredentialFailure(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
-+			discardStreamChunks(streamResult.Chunks)
-+			if !eligible {
- 				return nil, bootstrapErr
- 			}
- 			if idx < len(execModels)-1 {
--				rerr := resultErrorFromError(bootstrapErr)
--				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
--				result.RetryAfter = retryAfterFromError(bootstrapErr)
--				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
--				discardStreamChunks(streamResult.Chunks)
- 				lastErr = bootstrapErr
++			if isCodexProvider(provider) && !credentialSwitchEligible(provider, bootstrapErr, ctx) {
++				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts}
++				result.RetryAfter = retryAfterFromError(bootstrapErr)
++				m.recordCredentialFailure(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
++				discardStreamChunks(streamResult.Chunks)
++				return nil, bootstrapErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				rerr := resultErrorFromError(bootstrapErr)
+@@ -385,7 +404,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 				}
  				continue
  			}
--			rerr := resultErrorFromError(bootstrapErr)
--			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
--			result.RetryAfter = retryAfterFromError(bootstrapErr)
--			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
--			discardStreamChunks(streamResult.Chunks)
- 			return nil, newStreamBootstrapError(bootstrapErr, streamResult.Headers)
+-			if isRequestInvalidError(bootstrapErr) {
++			if !isCodexProvider(provider) && isRequestInvalidError(bootstrapErr) {
+ 				rerr := resultErrorFromError(bootstrapErr)
+ 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+ 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+@@ -425,7 +444,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  		}
  
  		if closed && len(buffered) == 0 {
--			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
-+			// A clean close before any payload is an incomplete bootstrap, not a
-+			// successful empty response. Classify this manager-generated condition
-+			// as a request-scoped 408 so Codex may try one other credential without
-+			// cooling the credential that observed the transport failure.
-+			emptyErr := newEmptyStreamBootstrapError("upstream stream closed before first payload")
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
- 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
- 			if idx < len(execModels)-1 {
+-			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			// Incomplete bootstrap is a request-scoped transport timeout and may
++			// switch credentials without making the selected account unavailable.
++			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, newEmptyStreamBootstrapError("upstream stream closed before first payload"))
+ 			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
+ 			if hasUpstreamExecutionAttempt(emptyErr) {
+ 				upstreamErr = currentErr
 diff --git a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
-index 37451925076ee1e16b5a79f92f5d597f51b3190f..62c4cb862d3af518e577327ff05399b549fa59e6 100644
+index 3745192..62c4cb8 100644
 --- a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 +++ b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 @@ -13,13 +13,15 @@ import (
@@ -5032,8 +5443,27 @@ index 37451925076ee1e16b5a79f92f5d597f51b3190f..62c4cb862d3af518e577327ff05399b5
  func TestManager_Execute_UnauthorizedRefreshFailureFallsBackToNextAuth(t *testing.T) {
  	m, executor, primary, backup, model := newUnauthorizedRefreshFixture(t, true)
  
+diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go
+index e9e6902..896f96b 100644
+--- a/sdk/cliproxy/auth/home_session_alias.go
++++ b/sdk/cliproxy/auth/home_session_alias.go
+@@ -237,6 +237,14 @@ func isHierarchyParent(primary, fallback string) bool {
+ 	if fallback == "" || primary == "" || primary == fallback {
+ 		return false
+ 	}
++	if strings.HasPrefix(primary, "caller:") || strings.HasPrefix(fallback, "caller:") {
++		primaryParts := strings.SplitN(primary, ":", 3)
++		fallbackParts := strings.SplitN(fallback, ":", 3)
++		if len(primaryParts) != 3 || len(fallbackParts) != 3 || primaryParts[0] != "caller" || fallbackParts[0] != "caller" || primaryParts[1] != fallbackParts[1] {
++			return false
++		}
++		primary, fallback = primaryParts[2], fallbackParts[2]
++	}
+ 	if strings.Contains(primary, ":agent:") {
+ 		return true
+ 	}
 diff --git a/sdk/cliproxy/auth/selected_auth_metadata_test.go b/sdk/cliproxy/auth/selected_auth_metadata_test.go
-index 2a7433e447db8a104451effd52b259f815ef5bea..95d866597dd31e92b5f08e048813666d4b1f732d 100644
+index 2a7433e..95d8665 100644
 --- a/sdk/cliproxy/auth/selected_auth_metadata_test.go
 +++ b/sdk/cliproxy/auth/selected_auth_metadata_test.go
 @@ -11,9 +11,14 @@ func TestPublishSelectedAuthMetadataIncludesStableIndex(t *testing.T) {
@@ -5146,14 +5576,18 @@ index 2a7433e447db8a104451effd52b259f815ef5bea..95d866597dd31e92b5f08e048813666d
 +	}
  }
 diff --git a/sdk/cliproxy/auth/selector.go b/sdk/cliproxy/auth/selector.go
-index c775137276834dda1c97a28357b0f392c9498902..a6ee038ba1d33c101e87c483336e004e6a265edd 100644
+index 75a3f22..ae94478 100644
 --- a/sdk/cliproxy/auth/selector.go
 +++ b/sdk/cliproxy/auth/selector.go
-@@ -813,6 +813,23 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
- // fallbackID preserves an earlier binding when a stronger body identifier appears
- // later, and lets callers bind both identifiers when both are present.
- func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
-+	primary, fallback := extractUnscopedSessionIDs(headers, payload, metadata)
+@@ -1440,6 +1440,27 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
+ // extractExplicitSessionIDs returns only client- or execution-provided identities.
+ // LCP fallback must run after this function so explicit harness sessions remain authoritative.
+ func extractExplicitSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
++	primary, fallback := extractUnscopedExplicitSessionIDs(headers, payload, metadata)
++	return callerScopedSessionIDs(primary, fallback, metadata)
++}
++
++func callerScopedSessionIDs(primary, fallback string, metadata map[string]any) (string, string) {
 +	callerScope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
 +	callerScope = strings.TrimSpace(callerScope)
 +	if callerScope == "" {
@@ -5169,15 +5603,31 @@ index c775137276834dda1c97a28357b0f392c9498902..a6ee038ba1d33c101e87c483336e004e
 +	return primary, fallback
 +}
 +
-+func extractUnscopedSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
- 	if sid := sessionHeaderValue(headers, "X-Claude-Code-Session-Id"); sid != "" {
- 		return "claude:" + sid, ""
++func extractUnscopedExplicitSessionIDs(headers http.Header, payload []byte, metadata map[string]any) (string, string) {
+ 	var primary, fallback string
+ 
+ 	// Extract parent candidate from payload once if payload is non-empty
+@@ -1947,12 +1968,13 @@ func extractSessionIDs(headers http.Header, payload []byte, metadata map[string]
+ 		return primaryID, fallbackID
  	}
+ 	if derivedID := normalizedSessionCandidate(cliproxysession.DerivedID(metadata)); derivedID != "" {
+-		return "derived:" + derivedID, ""
++		return callerScopedSessionIDs("derived:"+derivedID, "", metadata)
+ 	}
+ 	if len(payload) == 0 {
+ 		return "", ""
+ 	}
+-	return extractMessageHashIDs(payload)
++	primary, fallback := extractMessageHashIDs(payload)
++	return callerScopedSessionIDs(primary, fallback, metadata)
+ }
+ 
+ func extractMessageHashIDs(payload []byte) (primaryID, fallbackID string) {
 diff --git a/sdk/cliproxy/auth/selector_test.go b/sdk/cliproxy/auth/selector_test.go
-index 19677b242ffb7a5b3fa134322eb3df7f24361730..f07512057151ff2c65d713457741cb018afceed1 100644
+index cab2079..921d5d6 100644
 --- a/sdk/cliproxy/auth/selector_test.go
 +++ b/sdk/cliproxy/auth/selector_test.go
-@@ -1746,6 +1746,58 @@ func TestSessionAffinitySelector_CrossProviderIsolation(t *testing.T) {
+@@ -2040,6 +2040,58 @@ func TestSessionAffinitySelector_CrossProviderIsolation(t *testing.T) {
  	}
  }
  
@@ -5236,8 +5686,44 @@ index 19677b242ffb7a5b3fa134322eb3df7f24361730..f07512057151ff2c65d713457741cb01
  func TestSessionCache_GetAndRefresh(t *testing.T) {
  	t.Parallel()
  
+@@ -2552,3 +2604,35 @@ func TestManagerSetSelectorConcurrent(t *testing.T) {
+ 	}
+ 	wg.Wait()
+ }
++
++func TestExplicitSessionIDsApplyCallerScopeBeforeCanonicalSelection(t *testing.T) {
++	t.Parallel()
++	for _, scope := range []string{"caller-a", "caller-b"} {
++		metadata := map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope}
++		headers := http.Header{"Session-Id": {"shared-child"}, "X-Parent-Session-Id": {"shared-parent"}}
++		payload := []byte(`{"parent_session_id":"shared-parent"}`)
++		primary, fallback := extractExplicitSessionIDs(headers, payload, metadata)
++		wantPrimary := "caller:" + scope + ":codex:shared-child"
++		wantFallback := "caller:" + scope + ":codex:shared-parent"
++		if primary != wantPrimary || fallback != wantFallback {
++			t.Fatalf("explicit identities for %s = (%q, %q), want (%q, %q)", scope, primary, fallback, wantPrimary, wantFallback)
++		}
++		metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = primary
++		if got := CanonicalSessionID(headers, payload, metadata); got != wantPrimary {
++			t.Fatalf("canonical identity for %s = %q, want %q", scope, got, wantPrimary)
++		}
++		if gotPrimary, gotFallback := extractSessionIDs(headers, payload, metadata); gotPrimary != wantPrimary || gotFallback != wantFallback {
++			t.Fatalf("session identities received duplicate caller scope: (%q, %q)", gotPrimary, gotFallback)
++		}
++	}
++}
++
++func TestCallerScopedSessionHierarchyPreservesParentIsolation(t *testing.T) {
++	t.Parallel()
++	if !isHierarchyParent("caller:one:codex:child", "caller:one:codex:parent") {
++		t.Fatal("same-caller parent relationship was lost after scoping")
++	}
++	if isHierarchyParent("caller:one:codex:root:agent:child", "caller:two:codex:root") {
++		t.Fatal("different caller scopes shared a parent relationship")
++	}
++}
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index 85e5fdc23b586effd8c9245cf7295bfec0ca61d9..99182ae2cf894c42d01e0ae2a374bb92f81f4dfb 100644
+index a1a648f..bb14697 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
 @@ -42,6 +42,11 @@ const (

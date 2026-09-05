@@ -38,7 +38,7 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v7.2.127
+  CLIProxyAPI v7.2.150
       │ HTTP(S)_PROXY；无直接互联网路由
       ▼
   Squid 域名白名单出口
@@ -301,8 +301,11 @@ connector token 以精确 `0640` 保存为
 ### 3. 校验、构建和启动
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v7.2.127` / commit
-`ecc9aa72b32f34b680d03b0724b531a21ae74472`。
+锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
+`c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为
+`v7.2.150-c77b1369-771903fb47f59bda`，包含固定多账号补丁的 SHA256 前 16 位。
+此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
+按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
 
 ```sh
 ./scripts/validate-compose.sh

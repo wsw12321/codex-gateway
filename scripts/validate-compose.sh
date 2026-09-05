@@ -11,9 +11,9 @@ secret_dir=$root/deploy/secrets
 pricing_template=$root/deploy/pricing-v2.example.json
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch
-compat_patch_sha256=33561a5a15cc4a38ef20bc0b22d2a5d15b5a1bbbde6a7ffc69aa43cd032be86c
-compat_image=codex-gateway-compat:v7.2.127-ecc9aa72-33561a5a15cc4a38
+compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
+compat_patch_sha256=771903fb47f59bda64dd8727da0d1f8d9dcbe51e0261108500c01d157baa610e
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-771903fb47f59bda
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -34,12 +34,17 @@ test -r "$env_file" || {
 test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
 test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
-grep -Fq 'git apply --check /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
+grep -Fq 'git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" && \
+    grep -Fq 'git apply --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
 grep -Fq 'go test -count=1' "$compat_dockerfile" || \
     fail 'codex-compat image must run the patch regression tests'
 grep -Fq 'go test -list' "$compat_dockerfile" && grep -Fq 'grep -Fxq "$test_name"' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when a named runtime regression test is missing'
+grep -Fq 'TestCodexAstraUpgradeHTTPTransports' "$compat_dockerfile" && \
+    grep -Fq 'TestAstraUpgradeModels' "$compat_patch" && \
+    grep -Fq 'TestAstraUpgradeResponses' "$compat_patch" || \
+    fail 'codex-compat must verify Astra models, Responses, SSE, and compact'
 grep -Fq './internal/watcher' "$compat_dockerfile" && \
     grep -Fq './internal/auth/codex' "$compat_dockerfile" && \
     grep -Fq './sdk/auth' "$compat_dockerfile" || \
@@ -353,9 +358,9 @@ jq -e \
 ' "$tmp" >/dev/null
 
 jq -e '
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.127" and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.150" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "ecc9aa72b32f34b680d03b0724b531a21ae74472"
+    "c77b13694318b0897f2c74104ef48aebdf8c34d6"
 ' "$tmp" >/dev/null || \
     fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI tag and commit'
 

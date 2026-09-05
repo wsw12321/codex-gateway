@@ -15,9 +15,9 @@ RUN git init \
     && git checkout --detach "${CLIPROXY_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
-COPY deploy/codex-compat/cliproxy-v7.2.127-multi-account.patch /tmp/cliproxy-multi-account.patch
-RUN git apply --check /tmp/cliproxy-multi-account.patch \
-    && git apply /tmp/cliproxy-multi-account.patch \
+COPY deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch /tmp/cliproxy-multi-account.patch
+RUN git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
+    && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
 
 # The reviewed patch carries its security regression tests. A context mismatch
@@ -38,11 +38,12 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexHttpRequestDoesNotFollowRedirect \
         TestCodexImageHTTPClientDoesNotFollowRedirect \
         TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
+        TestCodexAstraUpgradeHTTPTransports \
         TestAuditHomeCodex426WebsocketToHTTPFreshSelection; do \
         grep -Fxq "$test_name" /tmp/codex-regression-tests; \
     done \
     && go test -count=1 \
-        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
