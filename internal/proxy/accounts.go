@@ -27,10 +27,55 @@ const (
 
 	accountRateLimitsRequestBody   = `{"method":"account/rateLimits/read","id":6}`
 	maxAccountRateLimitBuckets     = 33
+	maxInternalErrorBodyBytes      = 1024
 	maxRateLimitWindowDurationMins = int64((31 * 24 * time.Hour) / time.Minute)
 	minRateLimitResetUnix          = int64(946684800)  // 2000-01-01T00:00:00Z
 	maxRateLimitResetUnix          = int64(4102444800) // 2100-01-01T00:00:00Z
 )
+
+// Only status/code pairs emitted by the pinned sidecar are recognized. Values
+// are local constants, never upstream display text or a data-derived code.
+var internalErrorCodes = map[int]map[string]string{
+	http.StatusBadRequest: {
+		"quota_request_invalid": "sidecar_quota_protocol_error",
+	},
+	http.StatusUnauthorized: {
+		"unauthorized":                    "sidecar_auth_failed",
+		"quota_reauthentication_required": "upstream_reauthentication_required",
+	},
+	http.StatusForbidden: {
+		"quota_reauthentication_required": "upstream_reauthentication_required",
+	},
+	http.StatusNotFound: {
+		"upstream_account_not_found": "invalid_upstream_account",
+	},
+	http.StatusConflict: {
+		"upstream_account_disabled": "upstream_account_disabled",
+	},
+	http.StatusRequestEntityTooLarge: {
+		"quota_request_too_large": "sidecar_quota_protocol_error",
+	},
+	http.StatusTooManyRequests: {
+		"quota_upstream_rate_limited": "upstream_quota_rate_limited",
+	},
+	http.StatusBadGateway: {
+		"quota_account_identity_unavailable": "upstream_quota_account_identity_unavailable",
+		"quota_credential_unavailable":       "upstream_quota_credential_unavailable",
+		"quota_request_failed":               "upstream_quota_request_failed",
+		"quota_upstream_unavailable":         "upstream_quota_unavailable",
+		"quota_upstream_error":               "upstream_quota_upstream_error",
+		"quota_response_invalid":             "upstream_quota_invalid_response",
+		"quota_schema_changed":               "upstream_quota_schema_changed",
+	},
+	http.StatusServiceUnavailable: {
+		"unauthorized":                 "sidecar_auth_unavailable",
+		"internal_auth_unavailable":    "sidecar_auth_unavailable",
+		"account_registry_unavailable": "sidecar_account_registry_unavailable",
+	},
+	http.StatusGatewayTimeout: {
+		"quota_upstream_timeout": "upstream_quota_timeout",
+	},
+}
 
 type UpstreamAccount struct {
 	ID           string    `json:"id"`
@@ -267,19 +312,39 @@ func internalStatusError(response *http.Response) error {
 		code = "upstream_quota_rate_limited"
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
 		code = "sidecar_timeout"
-	default:
-		if response.StatusCode >= http.StatusInternalServerError {
-			code = "sidecar_unavailable"
-		}
 	}
 	retryAfter := 0
 	if parsed, err := strconv.Atoi(strings.TrimSpace(response.Header.Get("Retry-After"))); err == nil && parsed > 0 && parsed <= 3600 {
 		retryAfter = parsed
 	}
-	// Drain only a bounded amount so the connection can be reused without ever
-	// parsing, returning, or logging a potentially sensitive upstream body.
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 8<<10))
+	// A received 5xx is a failed request, not evidence of an unreachable sidecar.
+	// Read only a small envelope and never retain its body or decoder errors:
+	// malformed JSON can contain credentials too. Unknown errors use the fallback.
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxInternalErrorBodyBytes+1))
+	if err == nil && len(body) <= maxInternalErrorBodyBytes {
+		if normalized := normalizedInternalErrorCode(response.StatusCode, response.Header.Get("Content-Type"), body); normalized != "" {
+			code = normalized
+		}
+	}
 	return &InternalAPIError{StatusCode: response.StatusCode, Code: code, RetryAfter: retryAfter}
+}
+
+func normalizedInternalErrorCode(status int, contentType string, body []byte) string {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil || mediaType != "application/json" || rejectDuplicateJSONKeys(body) != nil {
+		return ""
+	}
+	// Require exactly the case-sensitive {"error": "fixed_code"} envelope.
+	// A map avoids encoding/json's case-insensitive struct-field matching.
+	var envelope map[string]json.RawMessage
+	if decodeStrictJSON(body, &envelope) != nil || len(envelope) != 1 {
+		return ""
+	}
+	var code string
+	if json.Unmarshal(envelope["error"], &code) != nil {
+		return ""
+	}
+	return internalErrorCodes[status][code]
 }
 
 func safeMaskedEmail(value string) bool {

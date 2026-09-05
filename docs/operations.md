@@ -555,6 +555,43 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 出现 `upstream_reauthentication_required` 时停止调用并重新执行设备码登录。
 不要启用 Platform API 自动回退；这会改变计费边界。
 
+即时额度查询失败时，查看浏览器 Network 中
+`POST /admin/upstream-accounts/{id}/quota` 的 `error.code`、`error.message`
+和 `error.request_id`。相同分类也写入 `upstream_account.quota_queried` 审计事件的
+`metadata.result_code`，可用请求 ID 关联排查。
+
+| 错误码 | 失败环节与排查方向 |
+| --- | --- |
+| `sidecar_unavailable` | Gateway 无法连接 sidecar；检查容器状态、服务地址和内部网络 |
+| `sidecar_timeout` | Gateway 等待 sidecar 超时；尚不能确定是内部网络还是 sidecar 等待上游 |
+| `sidecar_auth_failed` | sidecar 拒绝内部认证；核对 Gateway 与 sidecar 的内部密钥配置 |
+| `sidecar_auth_unavailable` | sidecar 内部认证未就绪；检查认证配置和服务状态 |
+| `sidecar_account_registry_unavailable` | sidecar 账号管理未就绪 |
+| `sidecar_quota_protocol_error` | sidecar 拒绝固定额度 RPC 请求；检查两端版本是否匹配 |
+| `invalid_upstream_account` / `upstream_account_disabled` | 账号不存在或已停用；刷新账号列表并检查账号状态 |
+| `upstream_quota_account_identity_unavailable` | OAuth 账号缺少有效账号标识 |
+| `upstream_quota_credential_unavailable` | OAuth 账号缺少有效访问令牌；重新登录该账号 |
+| `upstream_reauthentication_required` | ChatGPT 返回 401/403；检查账号登录状态与访问限制 |
+| `upstream_quota_request_failed` | sidecar 无法构造上游请求；检查配置和版本 |
+| `upstream_quota_unavailable` | sidecar 请求 ChatGPT 时发生网络错误；检查出站代理、DNS、TLS 和网络 |
+| `upstream_quota_timeout` | sidecar 明确报告请求 ChatGPT 超时 |
+| `upstream_quota_rate_limited` | ChatGPT 返回 429；稍后重试 |
+| `upstream_quota_upstream_error` | ChatGPT 返回其他非成功状态；现有 sidecar 不提供原始状态和正文 |
+| `upstream_quota_invalid_response` | sidecar 读取上游响应失败或响应超过大小限制 |
+| `upstream_quota_schema_changed` | 上游 JSON 无法解析或字段未通过校验；检查额度适配器兼容性 |
+| `sidecar_invalid_response` | Gateway 校验 sidecar 成功响应失败；检查内部响应协议与版本 |
+| `sidecar_request_failed` | 收到了无法识别的 sidecar 错误响应；不据此推断 sidecar 连接中断 |
+| `upstream_quota_query_rate_limited` | Gateway 本地并发/五秒防抖限制；等待后重试 |
+
+Gateway 只识别固定 HTTP 状态与错误码组合，错误 JSON 最多读取 1025 字节，
+超过 1024 字节即不解析；只接受单一 `error` 字段。未知字段、重复字段、异常 JSON、
+不匹配的状态码和未知错误码均保留状态级通用分类，原始正文和解析异常不会写入
+浏览器响应或审计。未识别的 5xx 使用 `sidecar_request_failed`，不会再合并成
+`sidecar_unavailable`。Gateway 先到达超时时限时仍返回 `sidecar_timeout`。
+
+这些分类利用现有 sidecar 已输出的固定错误码，只需重新构建并部署 Gateway
+即可生效，无需修改额度查询地址、重建 sidecar 或执行额外数据库迁移。
+
 新 Codex 会话可能先记录一次 `GET /v1/responses` 的
 `426 responses_websocket_unsupported`，紧接着以 `POST /v1/responses` 的
 HTTPS/SSE 继续。这是预期的传输协商，不是 Cloudflare 缓冲、上游中断或需要告警

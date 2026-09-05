@@ -295,6 +295,9 @@ func TestUpstreamQuotaMapsReauthenticationAndTimeouts(t *testing.T) {
 		wantStatus int
 		wantCode   string
 	}{
+		{name: "connection failure", transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("connection failed: Bearer secret")
+		}), wantStatus: http.StatusServiceUnavailable, wantCode: "sidecar_unavailable"},
 		{name: "reauthentication", transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"access_token":"secret"}`))}, nil
 		}), wantStatus: http.StatusServiceUnavailable, wantCode: "upstream_reauthentication_required"},
@@ -313,6 +316,72 @@ func TestUpstreamQuotaMapsReauthenticationAndTimeouts(t *testing.T) {
 			server.upstreamAccountQuota(response, quotaTestRequest("0123456789abcdef"))
 			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.wantCode) || strings.Contains(response.Body.String(), "secret") {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			assertQuotaAudit(t, capture.snapshot(), false, test.wantCode, test.wantStatus)
+		})
+	}
+}
+
+func TestUpstreamQuotaPreservesSidecarErrorClassification(t *testing.T) {
+	for _, test := range []struct {
+		remoteStatus int
+		remoteCode   string
+		wantStatus   int
+		wantCode     string
+		wantMessage  string
+	}{
+		{400, "quota_request_invalid", 502, "sidecar_quota_protocol_error", "拒绝了查询协议"},
+		{413, "quota_request_too_large", 502, "sidecar_quota_protocol_error", "拒绝了查询协议"},
+		{401, "unauthorized", 503, "sidecar_auth_failed", "内部认证失败"},
+		{503, "unauthorized", 503, "sidecar_auth_unavailable", "内部认证未就绪"},
+		{503, "internal_auth_unavailable", 503, "sidecar_auth_unavailable", "内部认证未就绪"},
+		{503, "account_registry_unavailable", 503, "sidecar_account_registry_unavailable", "账号管理未就绪"},
+		{404, "upstream_account_not_found", 404, "invalid_upstream_account", "上游账号不存在"},
+		{409, "upstream_account_disabled", 409, "upstream_account_disabled", "已停用"},
+		{502, "quota_account_identity_unavailable", 502, "upstream_quota_account_identity_unavailable", "账号标识"},
+		{502, "quota_credential_unavailable", 502, "upstream_quota_credential_unavailable", "登录凭据"},
+		{502, "quota_request_failed", 502, "upstream_quota_request_failed", "无法构造"},
+		{502, "quota_upstream_unavailable", 502, "upstream_quota_unavailable", "无法连接 ChatGPT"},
+		{502, "quota_upstream_error", 502, "upstream_quota_upstream_error", "ChatGPT 额度接口返回错误"},
+		{502, "quota_response_invalid", 502, "upstream_quota_invalid_response", "读取失败或过大"},
+		{502, "quota_schema_changed", 502, "upstream_quota_schema_changed", "额度数据无法解析"},
+		{401, "quota_reauthentication_required", 503, "upstream_reauthentication_required", "拒绝了账号认证"},
+		{403, "quota_reauthentication_required", 503, "upstream_reauthentication_required", "拒绝了账号认证"},
+		{429, "quota_upstream_rate_limited", 429, "upstream_quota_rate_limited", "被限流"},
+		{504, "quota_upstream_timeout", 504, "upstream_quota_timeout", "请求 ChatGPT 超时"},
+		{502, "Bearer sensitive-canary", 502, "sidecar_request_failed", "未识别的错误"},
+		{503, "Bearer sensitive-canary", 502, "sidecar_request_failed", "未识别的错误"},
+	} {
+		t.Run(integerString(test.remoteStatus)+"/"+test.wantCode, func(t *testing.T) {
+			baseURL, _ := url.Parse("http://sidecar.internal")
+			repository, capture := newUpstreamAuditStore(t)
+			client := &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+				body, err := json.Marshal(map[string]string{"error": test.remoteCode})
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{
+					StatusCode: test.remoteStatus, Body: io.NopCloser(strings.NewReader(string(body))),
+					Header: http.Header{"Content-Type": {"application/json"}},
+				}, nil
+			})}
+			server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", client)}
+			response := httptest.NewRecorder()
+			server.upstreamAccountQuota(response, quotaTestRequest("0123456789abcdef"))
+			var payload struct {
+				Error struct {
+					Code    string `json:"code"`
+					Message string `json:"message"`
+				} `json:"error"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != test.wantStatus || payload.Error.Code != test.wantCode || !strings.Contains(payload.Error.Message, test.wantMessage) {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if strings.Contains(response.Body.String(), "sensitive-canary") {
+				t.Fatal("raw sidecar error reached the browser")
 			}
 			assertQuotaAudit(t, capture.snapshot(), false, test.wantCode, test.wantStatus)
 		})
@@ -624,7 +693,9 @@ func assertQuotaAudit(t *testing.T, args []driver.NamedValue, success bool, code
 		t.Fatalf("audit metadata = %#v", metadata)
 	}
 	encoded := strings.ToLower(string(metadataBytes))
-	for _, forbidden := range []string{"token", "email", "authorization", "response", "bearer"} {
+	// Safe result codes may contain "response"; the exact metadata key check
+	// above excludes response bodies, and result_code must equal the expected code.
+	for _, forbidden := range []string{"token", "email", "authorization", "bearer", "sensitive-canary"} {
 		if strings.Contains(encoded, forbidden) {
 			t.Fatalf("audit metadata contains %q: %s", forbidden, metadataBytes)
 		}

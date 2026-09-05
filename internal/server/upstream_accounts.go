@@ -370,34 +370,50 @@ func validUpstreamAccountID(value string) bool {
 	return true
 }
 
+var upstreamManagementErrors = map[string]struct {
+	status  int
+	message string
+}{
+	"invalid_upstream_account":                    {http.StatusNotFound, "上游账号不存在，请刷新账号列表"},
+	"upstream_account_disabled":                   {http.StatusConflict, "该上游账号已停用，无法查询额度"},
+	"upstream_quota_rate_limited":                 {http.StatusTooManyRequests, "ChatGPT 额度查询被限流，请稍后重试"},
+	"upstream_reauthentication_required":          {http.StatusServiceUnavailable, "ChatGPT 额度接口拒绝了账号认证，请管理员检查该账号的登录状态"},
+	"sidecar_unavailable":                         {http.StatusServiceUnavailable, "无法连接额度查询服务，请管理员检查 sidecar 运行状态和内部网络"},
+	"sidecar_timeout":                             {http.StatusGatewayTimeout, "等待额度查询服务响应超时，请稍后重试"},
+	"sidecar_invalid_response":                    {http.StatusBadGateway, "额度查询服务返回的数据不符合协议，请管理员检查 Gateway 与 sidecar 版本"},
+	"sidecar_request_failed":                      {http.StatusBadGateway, "额度查询服务返回未识别的错误，请管理员检查 sidecar 状态和版本"},
+	"sidecar_auth_failed":                         {http.StatusServiceUnavailable, "额度查询服务的内部认证失败，请管理员检查 Gateway 与 sidecar 的内部密钥配置"},
+	"sidecar_auth_unavailable":                    {http.StatusServiceUnavailable, "额度查询服务的内部认证未就绪，请管理员检查 sidecar 配置"},
+	"sidecar_account_registry_unavailable":        {http.StatusServiceUnavailable, "额度查询服务的账号管理未就绪，请管理员检查 sidecar 状态"},
+	"sidecar_quota_protocol_error":                {http.StatusBadGateway, "额度查询服务拒绝了查询协议，请管理员检查 Gateway 与 sidecar 版本"},
+	"upstream_quota_account_identity_unavailable": {http.StatusBadGateway, "上游账号缺少有效账号标识，请管理员检查 OAuth 登录状态"},
+	"upstream_quota_credential_unavailable":       {http.StatusBadGateway, "上游账号缺少有效登录凭据，请管理员重新登录该账号"},
+	"upstream_quota_request_failed":               {http.StatusBadGateway, "额度查询服务无法构造 ChatGPT 请求，请管理员检查 sidecar 配置"},
+	"upstream_quota_unavailable":                  {http.StatusBadGateway, "额度查询服务无法连接 ChatGPT，请管理员检查 sidecar 出站网络和代理"},
+	"upstream_quota_upstream_error":               {http.StatusBadGateway, "ChatGPT 额度接口返回错误，请稍后重试"},
+	"upstream_quota_timeout":                      {http.StatusGatewayTimeout, "额度查询服务请求 ChatGPT 超时，请检查出站网络或稍后重试"},
+	"upstream_quota_invalid_response":             {http.StatusBadGateway, "ChatGPT 额度响应读取失败或过大，请稍后重试"},
+	"upstream_quota_schema_changed":               {http.StatusBadGateway, "ChatGPT 额度数据无法解析，可能需要更新额度适配器"},
+}
+
 func upstreamManagementErrorDetails(err error) (string, int) {
 	var internalErr *gatewayproxy.InternalAPIError
 	if !errors.As(err, &internalErr) {
 		return "sidecar_unavailable", http.StatusBadGateway
 	}
 	code := internalErr.SafeCode()
-	status := http.StatusBadGateway
-	switch code {
-	case "invalid_upstream_account":
-		status = http.StatusNotFound
-	case "upstream_quota_rate_limited":
-		status = http.StatusTooManyRequests
-	case "sidecar_timeout":
-		status = http.StatusGatewayTimeout
-	case "upstream_reauthentication_required", "sidecar_unavailable":
-		status = http.StatusServiceUnavailable
-	case "sidecar_invalid_response", "sidecar_request_failed":
-		// These are fixed, client-safe proxy error codes.
-	default:
-		// Do not let a newly added or accidentally data-derived internal code
-		// become part of the browser response or the durable audit metadata.
-		code = "sidecar_request_failed"
+	if details, ok := upstreamManagementErrors[code]; ok {
+		return code, details.status
 	}
-	return code, status
+	// Only fixed codes may reach the browser or durable audit metadata.
+	return "sidecar_request_failed", http.StatusBadGateway
 }
 
 func writeUpstreamManagementError(w http.ResponseWriter, r *http.Request, err error, message string) {
 	code, status := upstreamManagementErrorDetails(err)
+	if details, ok := upstreamManagementErrors[code]; ok {
+		message = details.message
+	}
 	var internalErr *gatewayproxy.InternalAPIError
 	if errors.As(err, &internalErr) && internalErr.RetryAfter > 0 && internalErr.RetryAfter <= 3600 {
 		w.Header().Set("Retry-After", integerString(internalErr.RetryAfter))
