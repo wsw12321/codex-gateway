@@ -297,7 +297,7 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 	javascript := string(appJS)
 	for _, required := range []string{
 		`data-section="billing"`, `id="billing-cash-balance"`, `id="billing-subscriptions"`,
-		`id="billing-ledger-rows"`, `id="billing-user-select"`, `id="billing-rate-form"`,
+		`id="billing-ledger-rows"`, `id="billing-user-search"`, `id="billing-rate-form"`,
 		`id="billing-recharge-form"`, `id="billing-adjustment-form"`,
 		`id="billing-subscription-day"`, `id="billing-subscription-week"`, `id="billing-subscription-month"`,
 		`name="reason" required`, `name="period_count" required type="number" min="0" max="99" step="1" value="1"`,

@@ -33,12 +33,18 @@ let secretDismissible = false;
 let personalRequestSequence = 0;
 let globalRequestSequence = 0;
 let checkingSession = false;
+let loggingOut = false;
 let billingDetail = null;
 let billingUsers = [];
 let billingSettings = null;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
+let billingUsersRequestSequence = 0;
+let billingUserID = "";
+let billingDetailLoading = false;
+let billingUserSearch = null;
+let globalUserSearch = null;
 let modelAccessModels = [];
 let modelAccessUsers = [];
 let modelAccessModelsRequestSequence = 0;
@@ -209,6 +215,8 @@ function setBusy(host, busy, label = "处理中…") {
     delete control.dataset.idleLabel;
     control.disabled = false;
   }
+  if (host.matches?.("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form") ||
+      host.closest?.(".billing-subscription-form, .billing-pagination")) syncBillingUserControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…") {
@@ -279,6 +287,7 @@ function handleUnauthorized() {
   personalRequestSequence++;
   globalRequestSequence++;
   billingRequestSequence++;
+  billingUsersRequestSequence++;
   modelAccessModelsRequestSequence++;
   modelAccessUsersRequestSequence++;
   upstreamAccountRequestSequence++;
@@ -316,8 +325,8 @@ function handleUnauthorized() {
   byId("billing-subscriptions").replaceChildren(element("div", {className: "empty", text: "登录后加载。"}));
   byId("billing-ledger-rows").replaceChildren(tableMessage(5, "登录后加载账务流水。"));
   byId("billing-current-rate").textContent = "—";
-  byId("billing-user-select").replaceChildren(option("", "登录后加载用户"));
   resetBillingUserSearch();
+  globalUserSearch?.reset();
   byId("billing-ledger-page").textContent = "—";
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
@@ -856,6 +865,7 @@ function renderGuide() {
 }
 
 function renderState(value) {
+  const previousUser = state?.user;
   state = {
     ...value,
     devices: Array.isArray(value.devices) ? value.devices : [],
@@ -866,6 +876,13 @@ function renderState(value) {
   };
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
+  if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
+    billingRequestSequence++;
+    billingUsersRequestSequence++;
+    globalRequestSequence++;
+    resetBillingUserSearch();
+    globalUserSearch?.reset();
+  }
   all(".owner-only").forEach((node) => node.classList.toggle("hidden", !owner));
   if (!owner && byId("global-tab").getAttribute("aria-selected") === "true") showUsageTab("personal");
   byId("whoami").textContent = state.user.display_name || state.user.username;
@@ -1080,7 +1097,7 @@ function billingUserForDetail(detail = billingDetail) {
   if (detail?.user) return normalizeBillingUser(detail.user);
   const direct = normalizeBillingUser(detail);
   if (direct.id) return direct;
-  const selected = byId("billing-user-select")?.value;
+  const selected = billingUserID;
   return billingUsers.find((item) => item.id === selected) || normalizeBillingUser(state?.user);
 }
 
@@ -1287,6 +1304,7 @@ function renderBillingAdminValues(detail) {
     }
     form.querySelector("[data-disable-subscription]").disabled = !billingSubscriptionEnabled(subscription);
   }
+  syncBillingUserControls();
 }
 
 function renderBillingDetail(detail) {
@@ -1313,6 +1331,136 @@ function renderBillingDetail(detail) {
   renderBillingAdminValues(detail);
 }
 
+function createUserSearch(id, onSelect, describe = () => "") {
+  const input = byId(id);
+  const results = byId(`${id}-results`);
+  const status = byId(`${id}-status`);
+  const host = input.closest(".user-search");
+  let users = [];
+  let matches = [];
+  let activeIndex = -1;
+  let composing = false;
+
+  function close() {
+    hide(results);
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+    activeIndex = -1;
+  }
+
+  function activate(index) {
+    activeIndex = index;
+    Array.from(results.children).forEach((node, position) => {
+      if (node.getAttribute("role") === "option") node.setAttribute("aria-selected", String(position === index));
+    });
+    const active = index >= 0 ? results.children[index] : null;
+    if (active) {
+      input.setAttribute("aria-activedescendant", active.id);
+      active.scrollIntoView({block: "nearest"});
+    } else {
+      input.removeAttribute("aria-activedescendant");
+    }
+  }
+
+  async function choose(user) {
+    if (input.disabled || composing || state?.user?.role !== "owner") return;
+    input.value = user.username;
+    input.focus({preventScroll: true});
+    close();
+    status.textContent = `已选择 ${user.display_name || user.username} (${user.username})`;
+    try {
+      await onSelect(user);
+    } catch (error) {
+      if (state?.user?.role === "owner") notice(friendlyError(error), "error");
+    }
+  }
+
+  function render(open = true) {
+    if (input.disabled) return;
+    const query = input.value.trim().toLowerCase();
+    matches = users.filter((user) => String(user.username).toLowerCase().includes(query));
+    activeIndex = -1;
+    input.removeAttribute("aria-activedescendant");
+    status.textContent = query
+      ? (matches.length ? `找到 ${matches.length} 位用户` : "未找到匹配的用户名")
+      : `共 ${users.length} 位用户`;
+    results.replaceChildren(...matches.map((user, index) => {
+      const detail = describe(user);
+      const item = element("div", {className: "user-search-option", attributes: {
+        id: `${id}-option-${index}`, role: "option", "aria-selected": "false", tabindex: "-1",
+      }},
+      element("span", {className: "user-search-name", text: user.display_name || user.username}),
+      element("small", {className: "user-search-username", text: user.username}),
+      detail ? element("small", {className: "user-search-detail", text: detail}) : null);
+      item.addEventListener("click", () => choose(user));
+      return item;
+    }));
+    if (!matches.length) results.append(element("div", {className: "user-search-empty", text: status.textContent}));
+    if (open) {
+      show(results);
+      input.setAttribute("aria-expanded", "true");
+    } else close();
+  }
+
+  input.addEventListener("focus", () => render());
+  input.addEventListener("click", () => {
+    if (input.getAttribute("aria-expanded") !== "true") render();
+  });
+  input.addEventListener("input", () => { if (!composing) render(); });
+  input.addEventListener("compositionstart", () => { composing = true; close(); });
+  input.addEventListener("compositionend", () => { composing = false; render(); });
+  input.addEventListener("keydown", (event) => {
+    if (input.disabled || composing || event.isComposing || event.keyCode === 229) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (input.getAttribute("aria-expanded") !== "true") render();
+      if (matches.length) {
+        const next = activeIndex < 0
+          ? (event.key === "ArrowDown" ? 0 : matches.length - 1)
+          : (activeIndex + (event.key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length;
+        activate(next);
+      }
+    } else if (event.key === "Enter" && activeIndex >= 0 && input.getAttribute("aria-expanded") === "true") {
+      event.preventDefault();
+      choose(matches[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      close();
+    } else if (event.key === "Tab") close();
+  });
+  results.addEventListener("mousedown", (event) => {
+    if (event.target.closest('[role="option"]')) event.preventDefault();
+  });
+  host.addEventListener("focusout", (event) => {
+    if (!host.contains(event.relatedTarget)) close();
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!host.contains(event.target)) close();
+  });
+
+  return {
+    close,
+    setUsers(values) {
+      users = values;
+      input.disabled = false;
+      render(document.activeElement === input);
+    },
+    unavailable(message) {
+      users = [];
+      matches = [];
+      input.disabled = true;
+      close();
+      results.replaceChildren();
+      status.textContent = message;
+    },
+    reset() {
+      input.value = "";
+      composing = false;
+      this.unavailable("登录后加载用户");
+    },
+  };
+}
+
 function renderBillingUsers(result) {
   const values = Array.isArray(result) ? result : (result?.users || result?.items || []);
   const unique = new Map();
@@ -1324,39 +1472,51 @@ function renderBillingUsers(result) {
   if (current.id && !unique.has(current.id)) unique.set(current.id, current);
   billingUsers = Array.from(unique.values()).sort((left, right) =>
     String(left.username || left.display_name).localeCompare(String(right.username || right.display_name), "zh-CN"));
-  byId("billing-user-search").disabled = false;
-  renderBillingUserOptions();
+  if (!billingUserID) billingUserID = current.id;
+  billingUserSearch.setUsers(billingUsers);
 }
 
 function resetBillingUserSearch() {
-  byId("billing-user-search").value = "";
-  byId("billing-user-search").disabled = true;
-  byId("billing-user-search-status").textContent = "登录后加载用户";
+  billingUserID = "";
+  billingDetail = null;
+  billingDetailLoading = false;
+  billingUsers = [];
+  billingUserSearch?.reset();
+  byId("billing-scope-name").textContent = "—";
+  syncBillingUserControls();
 }
 
-function renderBillingUserOptions() {
-  const select = byId("billing-user-select");
-  const previous = select.value || billingUserForDetail()?.id || state?.user?.id || "";
-  const selected = billingUsers.find((user) => user.id === previous);
-  const query = byId("billing-user-search").value.trim().toLowerCase();
-  const matches = billingUsers.filter((user) => String(user.username).toLowerCase().includes(query));
-  const userOption = (user) => option(
-    user.id,
-    `${user.display_name || user.username || user.id} (${user.username || user.id}) · ${formatUSD(user.cash_balance_usd, formatUSD("0"))}`,
-  );
-  const options = matches.map(userOption);
-  if (selected && !matches.some((user) => user.id === selected.id)) {
-    select.replaceChildren(
-      element("optgroup", {attributes: {label: "当前管理用户"}}, userOption(selected)),
-      ...(options.length ? [element("optgroup", {attributes: {label: "匹配用户"}}, ...options)] : []),
-    );
-  } else {
-    select.replaceChildren(...options);
+function billingUserReady() {
+  return state?.user?.role === "owner" && !billingDetailLoading && Boolean(billingDetail) &&
+    billingUserForDetail().id === selectedBillingUserID();
+}
+
+function syncBillingUserControls() {
+  const ready = billingUserReady();
+  all("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form").forEach((form) => {
+    const busy = form.dataset.busy === "true";
+    all("input, button", form).forEach((control) => {
+      const tier = control.dataset.disableSubscription;
+      control.disabled = !ready || (busy && control.matches("button")) || control.dataset.busy === "true" ||
+        Boolean(tier && !billingSubscriptionEnabled(billingSubscription(billingDetail, tier)));
+    });
+  });
+  if (!billingDetail || billingDetailLoading) {
+    byId("billing-ledger-prev").disabled = true;
+    byId("billing-ledger-next").disabled = true;
   }
-  select.value = selected?.id || "";
-  byId("billing-user-search-status").textContent = query
-    ? (matches.length ? `找到 ${matches.length} 位用户` : "未找到匹配的用户名")
-    : `共 ${billingUsers.length} 位用户`;
+}
+
+function billingWriteUserID() {
+  if (!billingUserReady()) throw new Error("请等待所选用户的额度加载成功后再操作。");
+  return selectedBillingUserID();
+}
+
+async function selectBillingUser(user) {
+  billingUserID = user.id;
+  all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
+  await loadBillingDetail(user.id, 0);
+  if (billingUserReady() && billingUserID === user.id) announce("所选用户的额度与账务流水已更新。");
 }
 
 function renderBillingSettings(result) {
@@ -1369,7 +1529,7 @@ function renderBillingSettings(result) {
 
 function selectedBillingUserID() {
   if (state?.user?.role !== "owner") return state?.user?.id || "";
-  return byId("billing-user-select").value || state?.user?.id || "";
+  return billingUserID || state?.user?.id || "";
 }
 
 function billingDetailPath(userID) {
@@ -1378,8 +1538,21 @@ function billingDetailPath(userID) {
 }
 
 async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
+  if (loggingOut || !state) return;
   if (!userID) throw new Error("无法确定要查看的账务用户。");
   const sequence = ++billingRequestSequence;
+  billingDetailLoading = true;
+  billingDetail = null;
+  const user = billingUsers.find((item) => item.id === userID) || (state?.user?.id === userID ? state.user : null);
+  byId("billing-scope-name").textContent = `${user?.display_name || user?.username || userID} (${user?.username || userID}) · 正在加载`;
+  byId("billing-cash-balance").textContent = "—";
+  for (const tier of billingTiers) {
+    byId(`billing-${tier.id}-remaining`).textContent = "—";
+    byId(`billing-${tier.id}-ends`).textContent = "正在加载…";
+  }
+  byId("billing-subscriptions").setAttribute("aria-busy", "true");
+  byId("billing-subscriptions").textContent = "正在加载周期额度…";
+  syncBillingUserControls();
   billingLedgerOffset = Math.max(0, Number(offset) || 0);
   show("billing-loading");
   setTableBusy(byId("billing-ledger-rows"), 5, "正在加载账务流水…");
@@ -1387,25 +1560,42 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
   try {
     const result = await api(`${billingDetailPath(userID)}?${query}`);
     if (sequence !== billingRequestSequence) return;
+    if (normalizeBillingUser(result?.user || result).id !== userID) throw new Error("返回的账务用户与所选用户不一致，请重新选择重试。");
+    billingDetailLoading = false;
     renderBillingDetail(result);
   } catch (error) {
-    if (sequence === billingRequestSequence) {
-      billingDetail = null;
-      byId("billing-subscriptions").classList.remove("loading");
-      byId("billing-subscriptions").setAttribute("aria-busy", "false");
-      byId("billing-subscriptions").replaceChildren(emptyState(`额度加载失败：${friendlyError(error)}`));
-      byId("billing-ledger-rows").closest("table")?.setAttribute("aria-busy", "false");
-      byId("billing-ledger-rows").replaceChildren(tableMessage(5, friendlyError(error)));
-    }
+    if (sequence !== billingRequestSequence) return;
+    billingDetail = null;
+    byId("billing-scope-name").textContent = `${user?.display_name || user?.username || userID} (${user?.username || userID}) · 加载失败，请重新选择重试`;
+    for (const tier of billingTiers) byId(`billing-${tier.id}-ends`).textContent = "加载失败";
+    byId("billing-subscriptions").classList.remove("loading");
+    byId("billing-subscriptions").setAttribute("aria-busy", "false");
+    byId("billing-subscriptions").replaceChildren(emptyState(`额度加载失败：${friendlyError(error)}`));
+    byId("billing-ledger-rows").closest("table")?.setAttribute("aria-busy", "false");
+    byId("billing-ledger-rows").replaceChildren(tableMessage(5, friendlyError(error)));
     throw error;
   } finally {
-    if (sequence === billingRequestSequence) hide("billing-loading");
+    if (sequence === billingRequestSequence) {
+      billingDetailLoading = false;
+      syncBillingUserControls();
+      hide("billing-loading");
+    }
   }
 }
 
 async function loadBillingUsers() {
-  const result = await api("/admin/billing/users");
-  renderBillingUsers(result);
+  if (loggingOut || state?.user?.role !== "owner") return;
+  const sequence = ++billingUsersRequestSequence;
+  billingUserSearch.unavailable("正在加载用户…");
+  try {
+    const result = await api("/admin/billing/users");
+    if (sequence !== billingUsersRequestSequence || state?.user?.role !== "owner") return;
+    renderBillingUsers(result);
+  } catch (error) {
+    if (sequence !== billingUsersRequestSequence) return;
+    billingUserSearch.unavailable("用户列表加载失败，请刷新重试");
+    throw error;
+  }
 }
 
 async function loadBillingSettings() {
@@ -1421,9 +1611,6 @@ async function loadBillingDashboard() {
         setLocalMessage(byId("billing-rate-form"), `充值汇率加载失败：${friendlyError(error)}`);
       }),
       loadBillingUsers().catch((error) => {
-        byId("billing-user-select").replaceChildren(option("", "用户列表加载失败"));
-        byId("billing-user-search").disabled = true;
-        byId("billing-user-search-status").textContent = "用户列表加载失败";
         notice(`账务用户列表加载失败：${friendlyError(error)}`, "error");
       }),
     );
@@ -1452,8 +1639,9 @@ async function billingMutation(path, method, payload) {
 }
 
 async function refreshManagedBilling(userID = selectedBillingUserID()) {
+  if (loggingOut || state?.user?.role !== "owner") return;
   await Promise.all([
-    loadBillingDetail(userID, 0),
+    userID === selectedBillingUserID() ? loadBillingDetail(userID, 0) : Promise.resolve(),
     loadBillingUsers().catch((error) => notice(`用户余额摘要刷新失败：${friendlyError(error)}`, "error")),
   ]);
 }
@@ -1472,26 +1660,26 @@ async function updateBillingRate(event) {
 
 async function rechargeBillingUser(event) {
   const form = event.currentTarget;
-  const userID = selectedBillingUserID();
+  const userID = billingWriteUserID();
   const data = new FormData(form);
   await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/recharges`, "POST", {
     cny_amount: String(data.get("cny_amount") || "").trim(),
     reason: billingReason(form),
   });
-  form.reset();
+  if (userID === selectedBillingUserID()) form.reset();
   await refreshManagedBilling(userID);
   notice("充值已入账并记录汇率快照。", "ok");
 }
 
 async function adjustBillingUser(event) {
   const form = event.currentTarget;
-  const userID = selectedBillingUserID();
+  const userID = billingWriteUserID();
   const data = new FormData(form);
   await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/adjustments`, "POST", {
     usd_amount: String(data.get("usd_amount") || "").trim(),
     reason: billingReason(form),
   });
-  form.reset();
+  if (userID === selectedBillingUserID()) form.reset();
   await refreshManagedBilling(userID);
   notice("余额调整已记入不可变账务流水。", "ok");
 }
@@ -1500,14 +1688,14 @@ async function updateBillingSubscription(event) {
   const form = event.currentTarget;
   const tier = form.dataset.tier;
   if (!billingTiers.some((item) => item.id === tier)) throw new Error("订阅档位无效。");
-  const userID = selectedBillingUserID();
+  const userID = billingWriteUserID();
   const data = new FormData(form);
   await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "PUT", {
     quota_usd: String(data.get("quota_usd") || "").trim(),
     period_count: billingPeriodCount(form),
     reason: billingReason(form),
   });
-  form.elements.reason.value = "";
+  if (userID === selectedBillingUserID()) form.elements.reason.value = "";
   await refreshManagedBilling(userID);
   notice(`${billingTiers.find((item) => item.id === tier).label}已从当前时刻重开。`, "ok");
 }
@@ -1517,9 +1705,9 @@ async function disableBillingSubscription(button) {
   const form = button.closest("form");
   const reason = billingReason(form);
   if (!window.confirm(`停用${billingTiers.find((item) => item.id === tier)?.label || "订阅"}后，新请求将立即无法使用当前周期。确定继续？`)) return;
-  const userID = selectedBillingUserID();
+  const userID = billingWriteUserID();
   await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "DELETE", {reason});
-  form.elements.reason.value = "";
+  if (userID === selectedBillingUserID()) form.elements.reason.value = "";
   await refreshManagedBilling(userID);
   notice("订阅已立即停用。", "ok");
 }
@@ -1917,6 +2105,7 @@ function renderGlobalUsage(result) {
   );
 
   const users = Array.isArray(result.users) ? result.users : [];
+  globalUserSearch.setUsers(users);
   const tbody = byId("global-rows");
   tbody.closest("table")?.setAttribute("aria-busy", "false");
   if (!users.length) {
@@ -1972,7 +2161,9 @@ function globalQueryFromForm() {
 }
 
 async function loadGlobalUsage(query, updateOverview = false) {
+  if (loggingOut || state?.user?.role !== "owner") return;
   const sequence = ++globalRequestSequence;
+  globalUserSearch.unavailable("正在加载用户…");
   show("global-loading");
   setTableBusy(byId("global-rows"), 6, "正在聚合全员用量…");
   try {
@@ -1981,15 +2172,15 @@ async function loadGlobalUsage(query, updateOverview = false) {
     renderGlobalUsage(result);
     if (updateOverview) renderGlobalOverview(result);
   } catch (error) {
-    if (sequence === globalRequestSequence) {
-      byId("global-rows").closest("table")?.setAttribute("aria-busy", "false");
-      byId("global-rows").replaceChildren(tableMessage(6, friendlyError(error)));
-      if (updateOverview) {
-        const container = byId("global-overview");
-        container.classList.remove("loading");
-        container.setAttribute("aria-busy", "false");
-        container.replaceChildren(emptyState("全员统计暂时无法加载。"));
-      }
+    if (sequence !== globalRequestSequence) return;
+    globalUserSearch.unavailable("用户列表加载失败，请重新应用筛选重试");
+    byId("global-rows").closest("table")?.setAttribute("aria-busy", "false");
+    byId("global-rows").replaceChildren(tableMessage(6, friendlyError(error)));
+    if (updateOverview) {
+      const container = byId("global-overview");
+      container.classList.remove("loading");
+      container.setAttribute("aria-busy", "false");
+      container.replaceChildren(emptyState("全员统计暂时无法加载。"));
     }
     throw error;
   } finally {
@@ -2379,6 +2570,7 @@ function syncUpstreamAccountRange() {
 }
 
 function showUsageTab(tab) {
+  globalUserSearch?.close();
   const isGlobal = tab === "global" && state?.user?.role === "owner";
   byId("personal-tab").classList.toggle("active", !isGlobal);
   byId("global-tab").classList.toggle("active", isGlobal);
@@ -2392,6 +2584,8 @@ function showUsageTab(tab) {
 
 function routeFromHash(focusContent = true) {
   if (!state) return;
+  billingUserSearch?.close();
+  globalUserSearch?.close();
   const requested = location.hash.slice(1);
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
   const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
@@ -2485,14 +2679,20 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
+    (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
+  globalUserSearch = createUserSearch("global-user-search", drillDownUser);
+  syncBillingUserControls();
   bindAsync("login", "click", login, "等待 Passkey…");
   bindAsync("password-login-form", "submit", passwordLogin, "登录中…");
   bindAsync("join-form", "submit", register, "等待 Passkey…");
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
+    loggingOut = true;
     personalRequestSequence++;
     globalRequestSequence++;
     billingRequestSequence++;
+    billingUsersRequestSequence++;
     modelAccessModelsRequestSequence++;
     modelAccessUsersRequestSequence++;
     upstreamAccountRequestSequence++;
@@ -2500,8 +2700,14 @@ function bindUI() {
     resetPersonalUsageSummary();
     hide("personal-loading");
     clearSensitiveDOM();
-    await api("/auth/logout", {method: "POST", body: "{}"});
     resetBillingUserSearch();
+    globalUserSearch.reset();
+    try {
+      await api("/auth/logout", {method: "POST", body: "{}"});
+    } catch (error) {
+      loggingOut = false;
+      throw error;
+    }
     location.assign("/");
   }, "正在退出…");
   bindAsync("device-form", "submit", (event) => submitResource(event, "/admin/devices", "设备已添加。"), "添加中…");
@@ -2549,17 +2755,6 @@ function bindUI() {
     await loadUpstreamAccounts(upstreamAccountQueryFromForm());
     announce("上游账号本地统计已更新。");
   }, "应用中…");
-  byId("billing-user-search").addEventListener("input", renderBillingUserOptions);
-  bindAsync("billing-user-select", "change", async (event) => {
-    const userID = event.currentTarget.value;
-    if (!userID) return;
-    renderBillingUserOptions();
-    billingLedgerOffset = 0;
-    all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
-    await loadBillingDetail(userID, 0);
-    announce("所选用户的额度与账务流水已更新。");
-  });
-
   all("[data-disable-subscription]").forEach((button) => button.addEventListener("click", () => {
     runButton(button, () => disableBillingSubscription(button), "停用中…").then(() => {
       if (billingDetail) renderBillingAdminValues(billingDetail);

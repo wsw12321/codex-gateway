@@ -278,14 +278,13 @@
             </div>
             <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
             <div id="billing-owner-scope" class="scope-banner owner-only hidden">
-              <div class="billing-user-search">
-                <label for="billing-user-search">搜索用户名</label>
-                <input id="billing-user-search" type="search" placeholder="输入用户名的一部分" autocomplete="off" aria-controls="billing-user-select" aria-describedby="billing-user-search-status" disabled>
+              <div class="user-search">
+                <label for="billing-user-search">搜索并管理用户</label>
+                <div class="user-search-control">
+                  <input id="billing-user-search" type="search" role="combobox" placeholder="输入用户名的一部分" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="billing-user-search-results" aria-describedby="billing-user-search-status" disabled>
+                  <div id="billing-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
+                </div>
                 <small id="billing-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
-              </div>
-              <div class="billing-user-picker">
-                <label for="billing-user-select">管理用户</label>
-                <select id="billing-user-select" aria-describedby="billing-scope-name"><option value="">正在加载用户…</option></select>
               </div>
               <span id="billing-scope-name">—</span>
             </div>
@@ -502,6 +501,16 @@
             </div>
 
             <div id="global-usage" class="hidden" role="tabpanel" aria-labelledby="global-tab">
+              <div class="scope-banner">
+                <div class="user-search">
+                  <label for="global-user-search">搜索用户明细</label>
+                  <div class="user-search-control">
+                    <input id="global-user-search" type="search" role="combobox" placeholder="输入用户名的一部分" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="global-user-search-results" aria-describedby="global-user-search-status" disabled>
+                    <div id="global-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
+                  </div>
+                  <small id="global-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
+                </div>
+              </div>
               <form id="global-filter" class="filters global-filters">
                 <label>区间
                   <select name="range"><option value="month">本月</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option><option value="all">全部历史</option></select>
