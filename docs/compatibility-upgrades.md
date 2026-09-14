@@ -6,7 +6,7 @@
 `deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
 应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
 规则的变化。补丁 SHA256 为
-`6be9eef68861a4bb05fa2c4ca42b3826d588e90ea87e0ff4c58dd0cb08783fc6`。
+`00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -15,10 +15,10 @@
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-6be9eef68861a4bb`，由版本号、commit
+兼容层镜像标签固定为 `v7.2.150-c77b1369-00633c2417755730`，由版本号、commit
 前 8 位和补丁 SHA256 前 16 位组成。Compose、校验脚本和 CI 必须使用同一完整
 标签，CI 扫描实际构建的镜像。继续使用现有 Go 1.26 构建镜像；本次不修改公共
-API、数据库结构和模型价格配置。
+Responses API、数据库结构和模型价格配置，新增 Owner 账号状态管理接口。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
@@ -37,8 +37,9 @@ Astra 冒烟和生产切换按下文规程执行。
   必须消费该头，不得转发给 API 客户端。该索引只接受 16 位小写十六进制，基于
   OAuth `account_id` 的不可逆摘要而不是含邮箱的文件名；同一真实账号的重复文件
   只能有一个进入路由池。
-- 只开放 Bearer 认证的 `GET /internal/upstream-accounts` 和固定 URL 的
-  `POST /internal/upstream-accounts/{id}/quota`。后者只接受精确的
+- 只开放 Bearer 认证的 `GET /internal/upstream-accounts`、
+  `PUT /internal/upstream-accounts/{id}/status` 和固定 URL 的
+  `POST /internal/upstream-accounts/{id}/quota`。额度接口只接受精确的
   `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
   并且只能请求 `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的
   URL、方法或上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
@@ -46,6 +47,17 @@ Astra 冒烟和生产切换按下文规程执行。
   经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
   或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
   CLIProxyAPI 完整管理 API 仍保持关闭。
+- 状态接口只接受 `{"enabled":true}` 或 `{"enabled":false}`，返回确认后的稳定
+  账号 ID 与 `available`／`unavailable`。手动禁用与生成请求的结构化
+  `usage_limit_reached` 都锁定整个账号，直到 Owner 手动重新启用。普通 429
+  仍按现有退避冷却；额度查询只读，认证和网络错误不触发额度锁定。
+- 控制状态按稳定 ID 写入 OAuth 持久卷中的 `.gateway-account-state`，通过
+  `0600` 临时文件、文件同步、原子替换及目录同步确认持久化。加载器和文件监听
+  忽略该文件及其临时文件；现存文件不可读或无效时启动失败。OAuth 刷新、同账号
+  重复文件替换及重启均保留锁定；持久化失败返回固定错误，启用失败保持禁止分流。
+- 重新启用清除账号及所有模型的冷却，不预查额度；上游再次明确耗尽时重新锁定。
+  调度器、模型可用性和会话亲和使用同一控制状态，管理操作前已开始的请求和 SSE
+  继续执行；稳定账号 ID 与控制版本保证旧请求结果不能覆盖新的管理操作。
 - 额度解析不依赖上游或本地 OAuth 的 `plan_type` 元数据；套餐缺失、名称未知或类型
   变化都不会阻断有效额度。响应必须包含 `rate_limit`（可为 null）或非 null 的
   `additional_rate_limits` 数组，不能将任意 JSON 当成空额度。账号列表仍只输出
@@ -67,6 +79,8 @@ Astra 冒烟和生产切换按下文规程执行。
 - usage 分散在多个 SSE chunk 时的 input、cached input、output、reasoning；
 - 客户端断开取消、首 token 超时和总超时；
 - OAuth refresh 成功、refresh 失效和 reauthentication required；
+- 禁用／启用后的分流、持续额度锁定、普通 429 到期恢复、再次耗尽；重启、重复文件
+  替换、并发控制、旧请求结果、状态读写失败、账号消失及全部账号不可用；
 - sidecar 不记录请求/响应正文或 token，完整管理 API 无法从兼容层网络远程访问，
   窄内部接口只返回脱敏、规范化字段。
 
@@ -83,3 +97,7 @@ compact 人工冒烟后才能恢复 Gateway 流量。
 失败回滚时先停止候选实例，再启动旧实例。任何时刻都不允许两个 sidecar
 共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新
 执行 `scripts/codex-device-login.sh`。
+
+账号控制上线后，回滚镜像也必须理解 `.gateway-account-state`。不支持该文件的
+旧镜像会忽略禁用与额度锁定，不能直接恢复流量；保持 Gateway 停流量，使用包含
+账号控制补丁的修复镜像。不要通过删除状态文件或复制 OAuth 卷来恢复账号。

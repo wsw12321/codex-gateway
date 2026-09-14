@@ -183,7 +183,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-6be9eef68861a4bb`；最后一段为固定多账号补丁 SHA256 的
+`v7.2.150-c77b1369-00633c2417755730`；最后一段为固定多账号补丁 SHA256 的
 前 16 位，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 
 ## 3. 服务密钥
@@ -559,6 +559,45 @@ Cookie、正文、邀请令牌或 OAuth token。CLIProxyAPI 以 `debug: false`�
 `POST /admin/upstream-accounts/{id}/quota` 的 `error.code`、`error.message`
 和 `error.request_id`。相同分类也写入 `upstream_account.quota_queried` 审计事件的
 `metadata.result_code`，可用请求 ID 关联排查。
+
+Owner 可在“上游账号”页面禁用可用账号，或对不可用账号执行“重新启用”；操作
+需要近期身份验证。禁用只影响后续分流，已开始的请求和 SSE 流继续执行。生成
+请求收到结构化 `usage_limit_reached` 时，整个账号持续锁定，不会随额度重置时间
+自动恢复；普通 429 仍使用等待时间或内置退避，到期允许请求重试。认证、网络错误
+不触发这类额度锁定，页面“查询额度”也不改变控制状态。
+
+“重新启用”直接清除禁用、额度锁定和账号／模型冷却，不预先查询额度；如果
+额度仍然不足，下一次明确耗尽会再次锁定。页面以 sidecar 确认结果更新状态，再
+刷新列表和统计；若提示操作成功但刷新失败，先刷新页面确认，不要把刷新错误
+当成操作未执行。同步失败和仅存在于历史统计中的账号不能操作；账号已从
+sidecar 消失时接口返回固定的不存在错误。
+
+管理接口为 `PUT /admin/upstream-accounts/{id}/status`，请求只能包含布尔字段
+`enabled`，成功返回 `{"id":"稳定账号ID","status":"available或unavailable"}`。
+启用／禁用审计记录执行人、稳定账号 ID、结果和 `metadata.result_code`，事件为
+`upstream_account.enabled`／`upstream_account.disabled`。内部接口只允许 Bearer
+认证，不向外公开。
+
+控制状态保存在 `codex_oauth` 持久卷的
+`/var/lib/cliproxy/oauth/.gateway-account-state`，权限 `0600`，不包含 OAuth token。
+OAuth 刷新、同账号文件替换和重启都不会解除锁定。现有状态不可读或格式错误会
+阻止 sidecar 启动；写入失败不报告操作成功，启用失败继续禁止分流。排查卷的
+剩余空间、目录属主和权限，保留原文件；不要删除文件来恢复账号。
+
+如果日志出现固定的 `gateway account quota state persistence failed`，自动额度
+锁定仍立即阻止当前进程分流，但尚不能保证重启后保留。先恢复持久卷写入，再
+完成一次成功的账号状态操作以保存整份控制状态，然后再重启；存储无法写入时
+不能保证新增锁定落盘。
+
+| 状态操作错误码 | 排查方向 |
+| --- | --- |
+| `upstream_account_status_persistence_failed` | 状态未确认持久化；检查卷空间、属主和权限，修复后刷新并重试 |
+| `upstream_account_identity_invalid` | 账号身份未通过校验；检查该 OAuth 账号并按设备登录流程重新认证 |
+| `sidecar_account_status_protocol_error` | 两端状态接口协议不匹配；核对镜像版本 |
+
+生产仍采用单 sidecar 切换：停止旧实例并确认后才允许新实例挂载同一 OAuth 卷。
+回滚版本也必须支持控制状态文件；不支持的旧镜像会忽略禁用，应保持 Gateway
+停流量并部署修复镜像。不可同时运行两个持有相同 refresh token 的实例。
 
 | 错误码 | 失败环节与排查方向 |
 | --- | --- |

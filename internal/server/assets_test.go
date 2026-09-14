@@ -340,6 +340,8 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		`href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"`,
 		`class="view owner-only hidden" data-section="upstream-accounts"`,
 		`id="upstream-account-filter"`, `id="upstream-account-list"`,
+		`id="upstream-account-action-message"`, `id="upstream-account-refresh-message"`,
+		`id="upstream-account-control-help"`, `直到 Owner 重新启用`,
 		`<option value="month">本月</option>`, `未公开的 ChatGPT 上游接口`,
 	} {
 		if !strings.Contains(html, required) {
@@ -362,6 +364,10 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		`value.windowDurationMins`, `value.resetsAt`, `上游未返回`, `已达上游限额`,
 		`container.dataset.state = "loading"`, `container.dataset.state = "error"`,
 		`container.dataset.state = "stale"`, `clearUpstreamQuotaTimers()`,
+		`/admin/upstream-accounts/${encodeURIComponent(account.id)}/status`,
+		`method: "PUT", body: JSON.stringify({enabled: operation.enabled})`,
+		`account.can_manage === true`, `upstreamAccountStatusOperation`,
+		`操作已成功，但列表与统计刷新失败`, `重新启用`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("upstream accounts dashboard JavaScript is missing %s", required)
@@ -383,6 +389,18 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		if !strings.Contains(stylesheet, required) {
 			t.Fatalf("upstream accounts dashboard stylesheet is missing %s", required)
 		}
+	}
+}
+
+func TestUpstreamAccountDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/upstream_account_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("upstream account dashboard behavior failed: %v\n%s", err, output)
 	}
 }
 

@@ -282,7 +282,7 @@ func TestUpstreamAccountsFallsBackToDurableLocalSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload.SyncWarning != "upstream_account_sync_unavailable" || len(payload.Accounts) != 1 ||
-		payload.Accounts[0].ID != "0123456789abcdef" || payload.Accounts[0].RequestCount != 3 {
+		payload.Accounts[0].ID != "0123456789abcdef" || payload.Accounts[0].RequestCount != 3 || payload.Accounts[0].CanManage {
 		t.Fatalf("fallback payload = %+v", payload)
 	}
 }

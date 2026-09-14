@@ -604,8 +604,9 @@
 
           <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">
             <div class="section-head">
-              <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>查看 ChatGPT OAuth 账号状态及本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>管理 ChatGPT OAuth 账号状态及查看本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
             </div>
+            <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
             <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
             <form id="upstream-account-filter" class="filters upstream-account-filters">
               <label>区间
@@ -620,6 +621,8 @@
               <div class="filter-actions"><button type="submit">应用筛选</button></div>
               <p class="form-message hidden" role="alert"></p>
             </form>
+            <p id="upstream-account-action-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
             <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">

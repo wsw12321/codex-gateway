@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"sync"
@@ -22,6 +23,7 @@ const (
 	upstreamQuotaTimeout       = 15 * time.Second
 	upstreamQuotaDebounce      = 5 * time.Second
 	upstreamQuotaRequestBytes  = 256
+	upstreamStatusRequestBytes = 256
 )
 
 var errUpstreamAccountRangeExpired = errors.New("upstream account range predates retained request detail")
@@ -99,6 +101,7 @@ type upstreamAccountDTO struct {
 	EmailMasked       string     `json:"email_masked"`
 	Plan              string     `json:"plan"`
 	Status            string     `json:"status"`
+	CanManage         bool       `json:"can_manage"`
 	LastSyncedAt      *time.Time `json:"last_synced_at"`
 	RequestCount      int64      `json:"request_count"`
 	ErrorCount        int64      `json:"error_count"`
@@ -134,12 +137,13 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	// serialization, a slower, older sidecar response could finish after a newer
 	// response and overwrite fresher availability metadata.
 	s.upstreamAccountSyncMu.Lock()
+	defer s.upstreamAccountSyncMu.Unlock()
 	syncCtx, cancelSync := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
 	remoteAccounts, err := s.upstream.ListUpstreamAccounts(syncCtx)
 	cancelSync()
 	syncWarning := ""
+	manageable := make(map[string]bool, len(remoteAccounts))
 	if err != nil {
-		s.upstreamAccountSyncMu.Unlock()
 		syncWarning = "upstream_account_sync_unavailable"
 		if s.logger != nil {
 			code, _ := upstreamManagementErrorDetails(err)
@@ -148,6 +152,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	} else {
 		snapshots := make([]store.UpstreamAccountSnapshot, 0, len(remoteAccounts))
 		for _, account := range remoteAccounts {
+			manageable[account.ID] = true
 			status := store.UpstreamAccountStatusUnavailable
 			if account.Status == "active" {
 				status = store.UpstreamAccountStatusAvailable
@@ -158,11 +163,9 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 		if err := s.store.SyncUpstreamAccounts(r.Context(), snapshots, time.Now().UTC()); err != nil {
-			s.upstreamAccountSyncMu.Unlock()
 			internalError(s, w, r, "sync upstream accounts", err)
 			return
 		}
-		s.upstreamAccountSyncMu.Unlock()
 	}
 
 	// Recheck immediately before the detail query: waiting for the serialized
@@ -195,7 +198,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
 			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,
-			Status: row.Status, LastSyncedAt: row.LastSyncedAt,
+			Status: row.Status, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,
 			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, OutputTokens: usage.OutputTokens,
@@ -234,6 +237,101 @@ func parseUpstreamAccountQuery(now time.Time, values url.Values) (globalUsageQue
 		return globalUsageQuery{}, errUpstreamAccountRangeExpired
 	}
 	return query, nil
+}
+
+func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request) {
+	accountID := r.PathValue("id")
+	if !validUpstreamAccountID(accountID) {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
+		return
+	}
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" || r.URL.RawQuery != "" {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_account_status_request", "账号状态请求必须为 JSON，且不能包含查询参数")
+		return
+	}
+	enabled, err := decodeUpstreamAccountStatusRequest(r)
+	if err != nil {
+		badJSON(w, r, err)
+		return
+	}
+
+	started := time.Now()
+	resultCode, resultStatus, success := "sidecar_request_failed", http.StatusBadGateway, false
+	eventType := "upstream_account.disabled"
+	if enabled {
+		eventType = "upstream_account.enabled"
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
+		defer cancel()
+		_, err := s.store.AppendAuditEvent(ctx, store.AppendAuditEventParams{
+			OccurredAt: time.Now().UTC(), ActorUserID: userFrom(r.Context()).ID,
+			ActorSessionID: sessionFrom(r.Context()).ID, EventType: eventType,
+			Severity: "info", Success: success, SourceIP: safeIP(r.Context()),
+			SubjectType: "upstream_account", SubjectID: accountID,
+			RequestID: httpx.RequestID(r.Context()), Metadata: map[string]any{
+				"duration_ms": time.Since(started).Milliseconds(), "result_code": resultCode,
+				"http_status": resultStatus,
+			},
+		})
+		if err != nil && s.logger != nil {
+			s.logger.Error("upstream account status audit failed", "actor_user_id", userFrom(r.Context()).ID,
+				"account_id", accountID, "event_type", eventType, "success", success,
+				"result_code", resultCode, "code", "upstream_account_status_audit_failed")
+		}
+	}()
+
+	// The same lock covers the entire list snapshot and summary response. An
+	// older list must finish before an administrator's confirmed state change.
+	s.upstreamAccountSyncMu.Lock()
+	defer s.upstreamAccountSyncMu.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
+	result, err := s.upstream.SetUpstreamAccountStatus(ctx, accountID, enabled)
+	cancel()
+	if err != nil {
+		resultCode, resultStatus = upstreamManagementErrorDetails(err)
+		writeUpstreamManagementError(w, r, err, "无法修改上游账号状态")
+		return
+	}
+	resultCode, resultStatus, success = "ok", http.StatusOK, true
+	// The sidecar owns the control state. Return its confirmation independently
+	// of the dashboard's next list/statistics refresh or audit database failures.
+	writeJSON(w, http.StatusOK, result)
+}
+
+func decodeUpstreamAccountStatusRequest(r *http.Request) (bool, error) {
+	if r.ContentLength > upstreamStatusRequestBytes {
+		return false, &http.MaxBytesError{Limit: upstreamStatusRequestBytes}
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, upstreamStatusRequestBytes+1))
+	if err != nil {
+		return false, err
+	}
+	if len(body) > upstreamStatusRequestBytes {
+		return false, &http.MaxBytesError{Limit: upstreamStatusRequestBytes}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	start, err := decoder.Token()
+	if err != nil || start != json.Delim('{') {
+		return false, errors.New("account status request must be an object")
+	}
+	key, err := decoder.Token()
+	if err != nil || key != "enabled" {
+		return false, errors.New("account status request requires enabled")
+	}
+	var enabled *bool
+	if err := decoder.Decode(&enabled); err != nil || enabled == nil {
+		return false, errors.New("account status enabled must be a boolean")
+	}
+	end, err := decoder.Token()
+	if err != nil || end != json.Delim('}') {
+		return false, errors.New("account status request must contain only enabled")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return false, errors.New("request must contain exactly one JSON value")
+	}
+	return *enabled, nil
 }
 
 type upstreamQuotaRPCRequest struct {
@@ -374,17 +472,20 @@ var upstreamManagementErrors = map[string]struct {
 	status  int
 	message string
 }{
+	"sidecar_account_status_protocol_error":       {http.StatusBadGateway, "账号管理服务拒绝了状态修改协议，请管理员检查 Gateway 与 sidecar 版本"},
+	"upstream_account_identity_invalid":           {http.StatusConflict, "上游账号身份校验失败，请管理员检查 OAuth 登录状态"},
+	"upstream_account_status_persistence_failed":  {http.StatusServiceUnavailable, "上游账号状态保存失败，账号继续保持不可用，请检查 sidecar 持久卷后重试"},
 	"invalid_upstream_account":                    {http.StatusNotFound, "上游账号不存在，请刷新账号列表"},
 	"upstream_account_disabled":                   {http.StatusConflict, "该上游账号已停用，无法查询额度"},
 	"upstream_quota_rate_limited":                 {http.StatusTooManyRequests, "ChatGPT 额度查询被限流，请稍后重试"},
 	"upstream_reauthentication_required":          {http.StatusServiceUnavailable, "ChatGPT 额度接口拒绝了账号认证，请管理员检查该账号的登录状态"},
-	"sidecar_unavailable":                         {http.StatusServiceUnavailable, "无法连接额度查询服务，请管理员检查 sidecar 运行状态和内部网络"},
-	"sidecar_timeout":                             {http.StatusGatewayTimeout, "等待额度查询服务响应超时，请稍后重试"},
-	"sidecar_invalid_response":                    {http.StatusBadGateway, "额度查询服务返回的数据不符合协议，请管理员检查 Gateway 与 sidecar 版本"},
-	"sidecar_request_failed":                      {http.StatusBadGateway, "额度查询服务返回未识别的错误，请管理员检查 sidecar 状态和版本"},
-	"sidecar_auth_failed":                         {http.StatusServiceUnavailable, "额度查询服务的内部认证失败，请管理员检查 Gateway 与 sidecar 的内部密钥配置"},
-	"sidecar_auth_unavailable":                    {http.StatusServiceUnavailable, "额度查询服务的内部认证未就绪，请管理员检查 sidecar 配置"},
-	"sidecar_account_registry_unavailable":        {http.StatusServiceUnavailable, "额度查询服务的账号管理未就绪，请管理员检查 sidecar 状态"},
+	"sidecar_unavailable":                         {http.StatusServiceUnavailable, "无法连接上游账号管理服务，请管理员检查 sidecar 运行状态和内部网络"},
+	"sidecar_timeout":                             {http.StatusGatewayTimeout, "等待上游账号管理服务响应超时，请稍后重试"},
+	"sidecar_invalid_response":                    {http.StatusBadGateway, "上游账号管理服务返回的数据不符合协议，请管理员检查 Gateway 与 sidecar 版本"},
+	"sidecar_request_failed":                      {http.StatusBadGateway, "上游账号管理服务返回未识别的错误，请管理员检查 sidecar 状态和版本"},
+	"sidecar_auth_failed":                         {http.StatusServiceUnavailable, "上游账号管理服务的内部认证失败，请管理员检查 Gateway 与 sidecar 的内部密钥配置"},
+	"sidecar_auth_unavailable":                    {http.StatusServiceUnavailable, "上游账号管理服务的内部认证未就绪，请管理员检查 sidecar 配置"},
+	"sidecar_account_registry_unavailable":        {http.StatusServiceUnavailable, "上游账号管理服务的账号管理未就绪，请管理员检查 sidecar 状态"},
 	"sidecar_quota_protocol_error":                {http.StatusBadGateway, "额度查询服务拒绝了查询协议，请管理员检查 Gateway 与 sidecar 版本"},
 	"upstream_quota_account_identity_unavailable": {http.StatusBadGateway, "上游账号缺少有效账号标识，请管理员检查 OAuth 登录状态"},
 	"upstream_quota_credential_unavailable":       {http.StatusBadGateway, "上游账号缺少有效登录凭据，请管理员重新登录该账号"},

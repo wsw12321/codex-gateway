@@ -12,8 +12,8 @@ pricing_template=$root/deploy/pricing-v2.example.json
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=6be9eef68861a4bb05fa2c4ca42b3826d588e90ea87e0ff4c58dd0cb08783fc6
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-6be9eef68861a4bb
+compat_patch_sha256=00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -72,6 +72,14 @@ grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
 grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the narrow internal account API'
+grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
+    grep -Fq '.gateway-account-state' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountConcurrentControlsRemainDurable' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountStateLoadRejectsInvalidExistingState' "$compat_patch" && \
+    grep -Fq 'TestInternalUpstreamAccountStatusPersistenceFailure' "$compat_patch" && \
+    grep -Fq 'TestCodexGatewayQuotaHTTPTransports' "$compat_dockerfile" && \
+    grep -Fq './sdk/cliproxy' "$compat_dockerfile" || \
+    fail 'CLIProxyAPI must test persistent account controls, fail-closed state, and quota signals'
 grep -Fq 'codexQuotaRPCMethod          = "account/rateLimits/read"' "$compat_patch" && \
     grep -Fq 'codexQuotaRequestMaxBodySize = 256' "$compat_patch" && \
     grep -Fq 'internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)' "$compat_patch" || \

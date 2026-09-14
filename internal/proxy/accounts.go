@@ -37,7 +37,8 @@ const (
 // are local constants, never upstream display text or a data-derived code.
 var internalErrorCodes = map[int]map[string]string{
 	http.StatusBadRequest: {
-		"quota_request_invalid": "sidecar_quota_protocol_error",
+		"quota_request_invalid":          "sidecar_quota_protocol_error",
+		"account_status_request_invalid": "sidecar_account_status_protocol_error",
 	},
 	http.StatusUnauthorized: {
 		"unauthorized":                    "sidecar_auth_failed",
@@ -50,10 +51,12 @@ var internalErrorCodes = map[int]map[string]string{
 		"upstream_account_not_found": "invalid_upstream_account",
 	},
 	http.StatusConflict: {
-		"upstream_account_disabled": "upstream_account_disabled",
+		"upstream_account_disabled":       "upstream_account_disabled",
+		"account_status_identity_invalid": "upstream_account_identity_invalid",
 	},
 	http.StatusRequestEntityTooLarge: {
-		"quota_request_too_large": "sidecar_quota_protocol_error",
+		"quota_request_too_large":          "sidecar_quota_protocol_error",
+		"account_status_request_too_large": "sidecar_account_status_protocol_error",
 	},
 	http.StatusTooManyRequests: {
 		"quota_upstream_rate_limited": "upstream_quota_rate_limited",
@@ -80,9 +83,10 @@ var internalErrorCodes = map[int]map[string]string{
 		"quota_limits_excessive":             "upstream_quota_limits_excessive",
 	},
 	http.StatusServiceUnavailable: {
-		"unauthorized":                 "sidecar_auth_unavailable",
-		"internal_auth_unavailable":    "sidecar_auth_unavailable",
-		"account_registry_unavailable": "sidecar_account_registry_unavailable",
+		"unauthorized":                      "sidecar_auth_unavailable",
+		"internal_auth_unavailable":         "sidecar_auth_unavailable",
+		"account_registry_unavailable":      "sidecar_account_registry_unavailable",
+		"account_status_persistence_failed": "upstream_account_status_persistence_failed",
 	},
 	http.StatusGatewayTimeout: {
 		"quota_upstream_timeout": "upstream_quota_timeout",
@@ -95,6 +99,11 @@ type UpstreamAccount struct {
 	Plan         string    `json:"plan"`
 	Status       string    `json:"status"`
 	LastSyncedAt time.Time `json:"last_synced_at"`
+}
+
+type UpstreamAccountStatus struct {
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type upstreamAccountWire struct {
@@ -209,6 +218,29 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 		accounts = append(accounts, account)
 	}
 	return accounts, nil
+}
+
+func (c *Client) SetUpstreamAccountStatus(ctx context.Context, accountID string, enabled bool) (UpstreamAccountStatus, error) {
+	if !upstreamAccountPattern.MatchString(accountID) {
+		return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadRequest, Code: "invalid_upstream_account"}
+	}
+	// Decode through a map to enforce exact, case-sensitive field names as well
+	// as the duplicate-key and trailing-value checks in internalJSONBody.
+	var wire map[string]json.RawMessage
+	body := `{"enabled":` + strconv.FormatBool(enabled) + `}`
+	if err := c.internalJSONBody(ctx, http.MethodPut, "/internal/upstream-accounts/"+accountID+"/status", body, &wire); err != nil {
+		return UpstreamAccountStatus{}, err
+	}
+	var result UpstreamAccountStatus
+	wantStatus := "unavailable"
+	if enabled {
+		wantStatus = "available"
+	}
+	if len(wire) != 2 || json.Unmarshal(wire["id"], &result.ID) != nil ||
+		json.Unmarshal(wire["status"], &result.Status) != nil || result.ID != accountID || result.Status != wantStatus {
+		return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+	}
+	return result, nil
 }
 
 func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string) (UpstreamQuota, error) {

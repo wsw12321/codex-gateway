@@ -30,7 +30,8 @@ RUN go test -count=1 \
     ./internal/watcher/synthesizer \
     ./sdk/api/handlers \
     ./sdk/auth \
-    ./sdk/cliproxy/auth
+    ./sdk/cliproxy/auth \
+    ./sdk/cliproxy
 
 RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/executor > /tmp/codex-regression-tests \
     && for test_name in \
@@ -39,11 +40,15 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexImageHTTPClientDoesNotFollowRedirect \
         TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
         TestCodexAstraUpgradeHTTPTransports \
+        TestCodexGatewayQuotaSignal \
+        TestCodexGatewayQuotaHTTPTransports \
+        TestCodexGatewayControlQuotaPersistsAcrossExecutionModes \
+        TestCodexGatewayControlKeepsInFlightRequestsAndRejectsStaleQuota \
         TestAuditHomeCodex426WebsocketToHTTPFreshSelection; do \
         grep -Fxq "$test_name" /tmp/codex-regression-tests; \
     done \
     && go test -count=1 \
-        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
 RUN CGO_ENABLED=0 GOOS=linux go build \

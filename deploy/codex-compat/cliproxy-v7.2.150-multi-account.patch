@@ -189,10 +189,10 @@ index 0000000..8fbfb6e
 +}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000..ebfff6f
+index 0000000..1b6d1e5
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,675 @@
+@@ -0,0 +1,678 @@
 +package api
 +
 +import (
@@ -653,6 +653,9 @@ index 0000000..ebfff6f
 +func upstreamAccountStatus(candidate *auth.Auth) string {
 +	if candidate == nil {
 +		return "error"
++	}
++	if !auth.GatewayAccountAvailable(candidate) {
++		return "unavailable"
 +	}
 +	if candidate.Disabled || candidate.Status == auth.StatusDisabled {
 +		return "disabled"
@@ -1506,6 +1509,251 @@ index 0000000..e00a5fe
 +		t.Fatalf("oversized upstream response leaked: %s", recorder.Body.String())
 +	}
 +}
+diff --git a/internal/api/codex_gateway_status.go b/internal/api/codex_gateway_status.go
+new file mode 100644
+index 0000000..550a42f
+--- /dev/null
++++ b/internal/api/codex_gateway_status.go
+@@ -0,0 +1,93 @@
++package api
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++var errAccountStatusRequestInvalid = errors.New("account status request invalid")
++
++func (s *Server) setUpstreamAccountStatus(c *gin.Context) {
++	c.Header("Cache-Control", "no-store")
++	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil {
++		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_registry_unavailable"})
++		return
++	}
++	id := c.Param("id")
++	if !validGatewayAccountIndex(id) {
++		c.JSON(http.StatusNotFound, gin.H{"error": "upstream_account_not_found"})
++		return
++	}
++	if c.Request.URL.RawQuery != "" {
++		c.JSON(http.StatusBadRequest, gin.H{"error": "account_status_request_invalid"})
++		return
++	}
++	enabled, err := decodeAccountStatusRequest(c.Request.Body)
++	if err != nil {
++		if errors.Is(err, errQuotaRPCRequestTooLarge) {
++			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "account_status_request_too_large"})
++		} else {
++			c.JSON(http.StatusBadRequest, gin.H{"error": "account_status_request_invalid"})
++		}
++		return
++	}
++	status, err := s.handlers.AuthManager.SetGatewayAccountEnabled(id, enabled)
++	if err != nil {
++		switch {
++		case errors.Is(err, auth.ErrGatewayAccountNotFound):
++			c.JSON(http.StatusNotFound, gin.H{"error": "upstream_account_not_found"})
++		case errors.Is(err, auth.ErrGatewayAccountIdentityInvalid):
++			c.JSON(http.StatusConflict, gin.H{"error": "account_status_identity_invalid"})
++		default:
++			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_status_persistence_failed"})
++		}
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"id": id, "status": status})
++}
++
++func validGatewayAccountIndex(id string) bool {
++	if len(id) != 16 {
++		return false
++	}
++	for _, ch := range id {
++		if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f') {
++			return false
++		}
++	}
++	return true
++}
++
++func decodeAccountStatusRequest(body io.Reader) (bool, error) {
++	data, err := io.ReadAll(io.LimitReader(body, codexQuotaRequestMaxBodySize+1))
++	if err != nil {
++		return false, errAccountStatusRequestInvalid
++	}
++	if len(data) > codexQuotaRequestMaxBodySize {
++		return false, errQuotaRPCRequestTooLarge
++	}
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	start, err := decoder.Token()
++	if err != nil || start != json.Delim('{') {
++		return false, errAccountStatusRequestInvalid
++	}
++	key, err := decoder.Token()
++	if err != nil || key != "enabled" {
++		return false, errAccountStatusRequestInvalid
++	}
++	var enabled *bool
++	if err = decoder.Decode(&enabled); err != nil || enabled == nil || decoder.More() {
++		return false, errAccountStatusRequestInvalid
++	}
++	end, err := decoder.Token()
++	if err != nil || end != json.Delim('}') || ensureJSONEOF(decoder) != nil {
++		return false, errAccountStatusRequestInvalid
++	}
++	return *enabled, nil
++}
+diff --git a/internal/api/codex_gateway_status_test.go b/internal/api/codex_gateway_status_test.go
+new file mode 100644
+index 0000000..08220bb
+--- /dev/null
++++ b/internal/api/codex_gateway_status_test.go
+@@ -0,0 +1,140 @@
++package api
++
++import (
++	"context"
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestInternalUpstreamAccountStatus(t *testing.T) {
++	s := newTestServer(t)
++	dir := t.TempDir()
++	if err := s.handlers.AuthManager.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	a := registerQuotaTestAccount(t, s, &quotaCaptureExecutor{})
++	id := stableCodexAccountID(a)
++	for _, enabled := range []bool{false, true, false} {
++		body := `{"enabled":false}`
++		want := "unavailable"
++		if enabled {
++			body = `{"enabled":true}`
++			want = "available"
++		}
++		r := httptest.NewRequest(http.MethodPut, "/internal/upstream-accounts/"+id+"/status", strings.NewReader(body))
++		r.Header.Set("Authorization", "Bearer test-key")
++		w := httptest.NewRecorder()
++		s.engine.ServeHTTP(w, r)
++		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
++			t.Fatalf("status=%d body=%s", w.Code, w.Body)
++		}
++		var got struct{ ID, Status string }
++		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
++			t.Fatal(err)
++		}
++		if got.ID != id || got.Status != want {
++			t.Fatalf("response=%+v", got)
++		}
++		listed := findCodexOAuthAccount(s.handlers.AuthManager.List(), id)
++		if auth.GatewayAccountAvailable(listed) != enabled {
++			t.Fatalf("confirmed status disagrees with manager")
++		}
++		if !enabled && upstreamAccountStatus(listed) != "unavailable" {
++			t.Fatal("list missed durable block")
++		}
++	}
++	stat, err := os.Stat(filepath.Join(dir, ".gateway-account-state"))
++	if err != nil || stat.Mode().Perm() != 0600 {
++		t.Fatalf("state permissions: %v %v", stat, err)
++	}
++}
++
++func TestInternalUpstreamAccountStatusRejectsInvalidRequests(t *testing.T) {
++	s := newTestServer(t)
++	if err := s.handlers.AuthManager.LoadGatewayAccountState(t.TempDir()); err != nil {
++		t.Fatal(err)
++	}
++	a := registerQuotaTestAccount(t, s, &quotaCaptureExecutor{})
++	id := stableCodexAccountID(a)
++	for _, tc := range []struct {
++		name, body, key, suffix string
++		status                  int
++	}{
++		{"no bearer", `{"enabled":false}`, "", "", 401},
++		{"wrong bearer", `{"enabled":false}`, "Bearer wrong", "", 401},
++		{"missing", `{}`, "Bearer test-key", "", 400},
++		{"null", `{"enabled":null}`, "Bearer test-key", "", 400},
++		{"duplicate", `{"enabled":false,"enabled":true}`, "Bearer test-key", "", 400},
++		{"unknown", `{"enabled":false,"token":"sensitive"}`, "Bearer test-key", "", 400},
++		{"case", `{"Enabled":false}`, "Bearer test-key", "", 400},
++		{"string", `{"enabled":"false"}`, "Bearer test-key", "", 400},
++		{"array", `[false]`, "Bearer test-key", "", 400},
++		{"trailing", `{"enabled":false}{}`, "Bearer test-key", "", 400},
++		{"oversized", strings.Repeat("sensitive", 40), "Bearer test-key", "", 413},
++		{"query", `{"enabled":false}`, "Bearer test-key", "?key=test-key", 400},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			r := httptest.NewRequest(http.MethodPut, "/internal/upstream-accounts/"+id+"/status"+tc.suffix, strings.NewReader(tc.body))
++			if tc.key != "" {
++				r.Header.Set("Authorization", tc.key)
++			}
++			w := httptest.NewRecorder()
++			s.engine.ServeHTTP(w, r)
++			if w.Code != tc.status || strings.Contains(w.Body.String(), "sensitive") {
++				t.Fatalf("status=%d body=%s", w.Code, w.Body)
++			}
++		})
++	}
++	for _, id := range []string{"0123456789abcdef", "ABCDEF0123456789", "short", "0123456789abcdef%20"} {
++		r := httptest.NewRequest(http.MethodPut, "/internal/upstream-accounts/"+id+"/status", strings.NewReader(`{"enabled":true}`))
++		r.Header.Set("Authorization", "Bearer test-key")
++		w := httptest.NewRecorder()
++		s.engine.ServeHTTP(w, r)
++		if w.Code != 404 {
++			t.Fatalf("id=%s status=%d body=%s", id, w.Code, w.Body)
++		}
++	}
++}
++
++func TestInternalUpstreamAccountStatusPersistenceFailure(t *testing.T) {
++	s := newTestServer(t)
++	dir := t.TempDir()
++	if err := s.handlers.AuthManager.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	a := registerQuotaTestAccount(t, s, &quotaCaptureExecutor{})
++	id := stableCodexAccountID(a)
++	if _, err := s.handlers.AuthManager.SetGatewayAccountEnabled(id, false); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Remove(filepath.Join(dir, ".gateway-account-state")); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(filepath.Join(dir, ".gateway-account-state"), 0700); err != nil {
++		t.Fatal(err)
++	}
++	r := httptest.NewRequest(http.MethodPut, "/internal/upstream-accounts/"+id+"/status", strings.NewReader(`{"enabled":true}`))
++	r.Header.Set("Authorization", "Bearer test-key")
++	w := httptest.NewRecorder()
++	s.engine.ServeHTTP(w, r)
++	if w.Code != 503 || !strings.Contains(w.Body.String(), "account_status_persistence_failed") || strings.Contains(w.Body.String(), dir) {
++		t.Fatalf("status=%d body=%s", w.Code, w.Body)
++	}
++	if auth.GatewayAccountAvailable(findCodexOAuthAccount(s.handlers.AuthManager.List(), id)) {
++		t.Fatal("failed enable unblocked account")
++	}
++	// An OAuth replacement must not erase the failed-enable block.
++	if _, err := s.handlers.AuthManager.Update(context.Background(), a); err != nil {
++		t.Fatal(err)
++	}
++	if auth.GatewayAccountAvailable(findCodexOAuthAccount(s.handlers.AuthManager.List(), id)) {
++		t.Fatal("replacement unblocked account")
++	}
++}
 diff --git a/internal/api/server.go b/internal/api/server.go
 index f12ff4b..926c148 100644
 --- a/internal/api/server.go
@@ -1525,10 +1773,10 @@ index f12ff4b..926c148 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index fc9de12..11ba98e 100644
+index fc9de12..29f19e6 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -117,6 +117,16 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,17 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -1540,6 +1788,7 @@ index fc9de12..11ba98e 100644
 +	{
 +		internalAccounts.GET("", s.listUpstreamAccounts)
 +		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
++		internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
 +	}
 +
  	// Gemini compatible API routes
@@ -2358,7 +2607,7 @@ index 8bd5298..c46be64 100644
  	applyCodexHeaders(httpReq, auth, "oauth-token", true, nil)
  
 diff --git a/internal/runtime/executor/codex_executor_execute.go b/internal/runtime/executor/codex_executor_execute.go
-index d7c6dbd..d747c57 100644
+index d7c6dbd..885e8b0 100644
 --- a/internal/runtime/executor/codex_executor_execute.go
 +++ b/internal/runtime/executor/codex_executor_execute.go
 @@ -80,8 +80,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
@@ -2399,6 +2648,16 @@ index d7c6dbd..d747c57 100644
  	httpClient = reporter.TrackHTTPClient(httpClient)
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
+@@ -287,6 +285,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
+ 	}
+ 	upstreamData := applyCodexIdentityConfuseResponsePayload(data, identityState)
+ 	helps.AppendAPIResponseChunk(ctx, e.cfg, upstreamData)
++	if isCodexUsageLimitError(upstreamData) {
++		return resp, newCodexStatusErr(http.StatusTooManyRequests, upstreamData)
++	}
+ 	upstreamData = helps.RestoreCodexMultiAgentV2Response(upstreamData, optimizeMultiAgentV2)
+ 	reporter.Publish(ctx, helps.ParseOpenAIUsage(upstreamData))
+ 	reporter.EnsurePublished(ctx)
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
 index 0000000..da2f96f
@@ -2878,6 +3137,416 @@ index b51e273..0b0d0f7 100644
  	httpClient = reporter.TrackHTTPClientRoundTripOnly(httpClient)
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
+diff --git a/internal/runtime/executor/codex_executor_terminal.go b/internal/runtime/executor/codex_executor_terminal.go
+index 8a934c8..383adc7 100644
+--- a/internal/runtime/executor/codex_executor_terminal.go
++++ b/internal/runtime/executor/codex_executor_terminal.go
+@@ -285,11 +285,14 @@ func codexTerminalErrorIsContextLength(body []byte) bool {
+ 
+ func newCodexStatusErr(statusCode int, body []byte) statusErr {
+ 	errCode := statusCode
+-	if isCodexModelCapacityError(body) || isCodexUsageLimitError(body) {
++	// Preserve the structured quota signal before normalizing the error body.
++	// Authentication failures must never create a durable quota lock.
++	quotaExhausted := statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden && isCodexUsageLimitError(body)
++	if quotaExhausted || statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden && isCodexModelCapacityError(body) {
+ 		errCode = http.StatusTooManyRequests
+ 	}
+ 	body = classifyCodexStatusError(errCode, body)
+-	err := statusErr{code: errCode, msg: string(body)}
++	err := statusErr{code: errCode, msg: string(body), quotaExhausted: quotaExhausted}
+ 	if retryAfter := parseCodexRetryAfter(errCode, body, time.Now()); retryAfter != nil {
+ 		err.retryAfter = retryAfter
+ 	}
+@@ -371,7 +374,7 @@ func isCodexModelCapacityError(errorBody []byte) bool {
+ // Transient per-minute rate limits (rate_limit_error/rate_limit_exceeded) are
+ // intentionally excluded, as they should be retried rather than cooled down.
+ func isCodexUsageLimitError(errorBody []byte) bool {
+-	if len(errorBody) == 0 {
++	if len(errorBody) == 0 || !gjson.ValidBytes(errorBody) {
+ 		return false
+ 	}
+ 	candidates := []string{
+diff --git a/internal/runtime/executor/codex_gateway_control_test.go b/internal/runtime/executor/codex_gateway_control_test.go
+new file mode 100644
+index 0000000..3142de6
+--- /dev/null
++++ b/internal/runtime/executor/codex_gateway_control_test.go
+@@ -0,0 +1,261 @@
++package executor
++
++import (
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++)
++
++const gatewayControlQuotaBody = `{"error":{"type":"usage_limit_reached","message":"usage exhausted","resets_in_seconds":0}}`
++const gatewayControlQuotaEvent = `{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"type":"usage_limit_reached","message":"usage exhausted","resets_in_seconds":0}}}`
++const gatewayControlDeltaEvent = `{"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":"hello"}`
++
++func newCodexGatewayControlManager(t *testing.T, upstreamURL string) (*cliproxyauth.Manager, *cliproxyauth.Auth, string) {
++	t.Helper()
++	dir := t.TempDir()
++	manager := cliproxyauth.NewManager(nil, nil, nil)
++	if err := manager.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	manager.SetRetryConfig(0, 0, 2)
++	manager.RegisterExecutor(NewCodexExecutor(&config.Config{}))
++	candidate := &cliproxyauth.Auth{
++		ID: uuid.NewString() + ".json", Provider: "codex", Status: cliproxyauth.StatusActive,
++		Metadata: map[string]any{"access_token": "test-access-token", "account_id": uuid.NewString()},
++		Attributes: map[string]string{
++			cliproxyauth.AttributeSourceBackend: cliproxyauth.AuthSourceFile,
++			cliproxyauth.AttributeAuthKind:      cliproxyauth.AuthKindOAuth, "base_url": upstreamURL,
++		},
++	}
++	registry.GetGlobalRegistry().RegisterClient(candidate.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.4"}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(candidate.ID) })
++	saved, err := manager.Register(context.Background(), candidate)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, ok := cliproxyauth.CodexOAuthAccountIndex(saved); !ok {
++		t.Fatal("test OAuth account has no stable identity")
++	}
++	return manager, saved, dir
++}
++
++func invokeCodexGatewayControl(manager *cliproxyauth.Manager, mode string) (string, error) {
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	req := cliproxyexecutor.Request{Model: "gpt-5.4", Payload: []byte(`{"model":"gpt-5.4","input":"hello"}`)}
++	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response")}
++	if mode == "compact" {
++		opts.Alt = "responses/compact"
++	}
++	if !strings.HasPrefix(mode, "sse") {
++		result, err := manager.Execute(ctx, []string{"codex"}, req, opts)
++		return string(result.Payload), err
++	}
++	opts.Stream = true
++	result, err := manager.ExecuteStream(ctx, []string{"codex"}, req, opts)
++	if err != nil {
++		return "", err
++	}
++	return drainChunks(result)
++}
++
++func writeGatewayControlSuccess(w http.ResponseWriter, mode string) {
++	if mode == "compact" {
++		w.Header().Set("Content-Type", "application/json")
++		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response.compaction","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
++		return
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	_, _ = fmt.Fprintf(w, "data: %s\n\n", codexCompletedEventBody)
++}
++
++func writeGatewayControlQuota(w http.ResponseWriter, mode string) {
++	if !strings.HasPrefix(mode, "sse") {
++		w.Header().Set("Content-Type", "application/json")
++		w.WriteHeader(http.StatusTooManyRequests)
++		_, _ = io.WriteString(w, gatewayControlQuotaBody)
++		return
++	}
++	w.Header().Set("Content-Type", "text/event-stream")
++	if mode == "sse-tail" {
++		_, _ = fmt.Fprintf(w, "data: %s\n\n", gatewayControlDeltaEvent)
++		w.(http.Flusher).Flush()
++	}
++	_, _ = fmt.Fprintf(w, "data: %s\n\n", gatewayControlQuotaEvent)
++}
++
++func TestCodexGatewayControlQuotaPersistsAcrossExecutionModes(t *testing.T) {
++	for _, mode := range []string{"ordinary", "compact", "sse-early", "sse-tail"} {
++		t.Run(mode, func(t *testing.T) {
++			var quota atomic.Bool
++			quota.Store(true)
++			var calls atomic.Int32
++			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				calls.Add(1)
++				wantPath := "/responses"
++				if mode == "compact" {
++					wantPath += "/compact"
++				}
++				if r.URL.Path != wantPath || r.Header.Get("Authorization") != "Bearer test-access-token" || r.Header.Get("ChatGPT-Account-ID") == "" {
++					t.Errorf("unexpected upstream request %s; OAuth identity header present=%t", r.URL.Path, r.Header.Get("ChatGPT-Account-ID") != "")
++				}
++				if quota.Load() {
++					writeGatewayControlQuota(w, mode)
++				} else {
++					writeGatewayControlSuccess(w, mode)
++				}
++			}))
++			defer upstream.Close()
++			manager, candidate, dir := newCodexGatewayControlManager(t, upstream.URL)
++			payload, err := invokeCodexGatewayControl(manager, mode)
++			if err == nil {
++				t.Fatalf("quota response succeeded: %s", payload)
++			}
++			if mode == "sse-tail" && !strings.Contains(payload, "hello") {
++				t.Fatalf("stream payload before quota error was lost: %s; %v", payload, err)
++			}
++			current, _ := manager.GetByID(candidate.ID)
++			if cliproxyauth.GatewayAccountAvailable(current) {
++				t.Fatalf("real executor quota error did not block manager account: %v", err)
++			}
++			stateBytes, err := os.ReadFile(filepath.Join(dir, cliproxyauth.GatewayAccountStateFile))
++			if err != nil {
++				t.Fatal(err)
++			}
++			var document struct {
++				Accounts map[string]struct {
++					Enabled        bool `json:"enabled"`
++					QuotaExhausted bool `json:"quota_exhausted"`
++				} `json:"accounts"`
++			}
++			if json.Unmarshal(stateBytes, &document) != nil || document.Accounts[candidate.Index].Enabled || !document.Accounts[candidate.Index].QuotaExhausted {
++				t.Fatalf("quota lock was not durable: %s", stateBytes)
++			}
++			if _, err := invokeCodexGatewayControl(manager, mode); err == nil || calls.Load() != 1 {
++				t.Fatalf("locked account was retried: error=%v upstream calls=%d", err, calls.Load())
++			}
++			quota.Store(false)
++			if status, err := manager.SetGatewayAccountEnabled(candidate.Index, true); err != nil || status != "available" {
++				t.Fatalf("re-enable failed: %s %v", status, err)
++			}
++			if _, err := invokeCodexGatewayControl(manager, mode); err != nil || calls.Load() != 2 {
++				t.Fatalf("re-enabled account did not resume: error=%v upstream calls=%d", err, calls.Load())
++			}
++			quota.Store(true)
++			if _, err := invokeCodexGatewayControl(manager, mode); err == nil {
++				t.Fatal("second quota failure unexpectedly succeeded")
++			}
++			current, _ = manager.GetByID(candidate.ID)
++			if cliproxyauth.GatewayAccountAvailable(current) || calls.Load() != 3 {
++				t.Fatalf("new quota after enable failed to lock: available=%t upstream calls=%d", cliproxyauth.GatewayAccountAvailable(current), calls.Load())
++			}
++		})
++	}
++}
++
++func TestCodexGatewayControlKeepsInFlightRequestsAndRejectsStaleQuota(t *testing.T) {
++	for _, mode := range []string{"ordinary", "sse-tail"} {
++		for _, oldQuota := range []bool{false, true} {
++			name := mode + "/success-after-disable"
++			if oldQuota {
++				name = mode + "/quota-after-reenable"
++			}
++			t.Run(name, func(t *testing.T) {
++				started, release := make(chan struct{}), make(chan struct{})
++				var releaseOnce sync.Once
++				unblock := func() { releaseOnce.Do(func() { close(release) }) }
++				var calls atomic.Int32
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					if calls.Add(1) != 1 {
++						writeGatewayControlSuccess(w, mode)
++						return
++					}
++					if mode == "sse-tail" {
++						w.Header().Set("Content-Type", "text/event-stream")
++						_, _ = fmt.Fprintf(w, "data: %s\n\n", gatewayControlDeltaEvent)
++						w.(http.Flusher).Flush()
++					}
++					close(started)
++					select {
++					case <-release:
++					case <-r.Context().Done():
++						return
++					}
++					if oldQuota {
++						if mode == "sse-tail" {
++							_, _ = fmt.Fprintf(w, "data: %s\n\n", gatewayControlQuotaEvent)
++						} else {
++							writeGatewayControlQuota(w, mode)
++						}
++					} else {
++						writeGatewayControlSuccess(w, mode)
++					}
++				}))
++				defer upstream.Close()
++				defer unblock()
++				manager, candidate, _ := newCodexGatewayControlManager(t, upstream.URL)
++				type completion struct {
++					payload string
++					err     error
++				}
++				done := make(chan completion, 1)
++				go func() {
++					payload, err := invokeCodexGatewayControl(manager, mode)
++					done <- completion{payload: payload, err: err}
++				}()
++				select {
++				case <-started:
++				case result := <-done:
++					t.Fatalf("request never reached upstream: %v", result.err)
++				case <-time.After(5 * time.Second):
++					t.Fatal("request did not start")
++				}
++				if _, err := manager.SetGatewayAccountEnabled(candidate.Index, false); err != nil {
++					t.Fatal(err)
++				}
++				if _, err := invokeCodexGatewayControl(manager, mode); err == nil || calls.Load() != 1 {
++					t.Fatalf("disabled account accepted a subsequent request: %v calls=%d", err, calls.Load())
++				}
++				if oldQuota {
++					if _, err := manager.SetGatewayAccountEnabled(candidate.Index, true); err != nil {
++						t.Fatal(err)
++					}
++				}
++				unblock()
++				result := <-done
++				if (result.err != nil) != oldQuota {
++					t.Fatalf("in-flight completion changed: error=%v payload=%s", result.err, result.payload)
++				}
++				if mode == "sse-tail" && !strings.Contains(result.payload, "hello") {
++					t.Fatalf("in-flight stream lost already-started payload: %s", result.payload)
++				}
++				current, _ := manager.GetByID(candidate.ID)
++				if cliproxyauth.GatewayAccountAvailable(current) != oldQuota {
++					t.Fatalf("old completion overrode administrator control: available=%t", cliproxyauth.GatewayAccountAvailable(current))
++				}
++				if oldQuota {
++					if _, err := invokeCodexGatewayControl(manager, mode); err != nil || calls.Load() != 2 {
++						t.Fatalf("stale quota prevented new request after enable: %v calls=%d", err, calls.Load())
++					}
++				}
++			})
++		}
++	}
++}
+diff --git a/internal/runtime/executor/codex_gateway_quota_test.go b/internal/runtime/executor/codex_gateway_quota_test.go
+new file mode 100644
+index 0000000..2f4cee9
+--- /dev/null
++++ b/internal/runtime/executor/codex_gateway_quota_test.go
+@@ -0,0 +1,107 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++)
++
++func TestCodexGatewayQuotaSignal(t *testing.T) {
++	for _, tc := range []struct {
++		name      string
++		status    int
++		body      string
++		exhausted bool
++	}{
++		{"quota", 429, `{"error":{"type":"usage_limit_reached","resets_in_seconds":1}}`, true},
++		{"quota bad request", 400, `{"error":{"type":"usage_limit_reached"}}`, true},
++		{"ordinary 429", 429, `{"error":{"type":"rate_limit_error"}}`, false},
++		{"message only", 429, `{"error":{"message":"usage_limit_reached"}}`, false},
++		{"capacity", 400, `{"error":{"message":"Selected model is at capacity"}}`, false},
++		{"unauthorized", 401, `{"error":{"type":"usage_limit_reached"}}`, false},
++		{"forbidden", 403, `{"error":{"type":"usage_limit_reached"}}`, false},
++		{"malformed", 429, `{"error":{"type":"usage_limit_reached"`, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			got := newCodexStatusErr(tc.status, []byte(tc.body))
++			if got.QuotaExhausted() != tc.exhausted {
++				t.Fatalf("quota=%v want=%v", got.QuotaExhausted(), tc.exhausted)
++			}
++			if tc.status == 401 || tc.status == 403 {
++				if got.StatusCode() != tc.status {
++					t.Fatal("authentication status reclassified")
++				}
++			}
++		})
++	}
++}
++
++func TestCodexGatewayQuotaHTTPTransports(t *testing.T) {
++	for _, mode := range []string{"ordinary", "compact", "sse"} {
++		for _, wire := range []string{"http-quota", "http-rate", "embedded-quota", "late-quota"} {
++			if mode == "compact" && wire == "late-quota" {
++				continue
++			}
++			t.Run(mode+"/"+wire, func(t *testing.T) {
++				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					switch wire {
++					case "http-quota":
++						w.WriteHeader(429)
++						_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached"}}`))
++					case "http-rate":
++						w.WriteHeader(429)
++						_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error"}}`))
++					default:
++						if mode == "compact" {
++							_, _ = w.Write([]byte(`{"error":{"type":"usage_limit_reached"}}`))
++							return
++						}
++						w.Header().Set("Content-Type", "text/event-stream")
++						if wire == "late-quota" {
++							_, _ = w.Write([]byte("data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n"))
++							w.(http.Flusher).Flush()
++						}
++						_, _ = w.Write([]byte("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"type\":\"usage_limit_reached\"}}}\n\n"))
++					}
++				}))
++				defer upstream.Close()
++				a := &cliproxyauth.Auth{ID: "quota-transport", Provider: "codex", ProxyURL: "direct", Metadata: map[string]any{"access_token": "mock-token", "account_id": "mock-account"}, Attributes: map[string]string{"base_url": upstream.URL, cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth}}
++				e := NewCodexExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
++				req := cliproxyexecutor.Request{Model: "gpt-6-astra", Payload: []byte(`{"model":"gpt-6-astra","input":"hello"}`)}
++				opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FromString("openai-response"), ResponseFormat: sdktranslator.FromString("openai-response")}
++				var got error
++				if mode == "sse" {
++					opts.Stream = true
++					var result *cliproxyexecutor.StreamResult
++					result, got = e.ExecuteStream(context.Background(), a, req, opts)
++					if got == nil {
++						for chunk := range result.Chunks {
++							if chunk.Err != nil {
++								got = chunk.Err
++							}
++						}
++					}
++				} else {
++					if mode == "compact" {
++						opts.Alt = "responses/compact"
++					}
++					_, got = e.Execute(context.Background(), a, req, opts)
++				}
++				var signal interface{ QuotaExhausted() bool }
++				if !errors.As(got, &signal) {
++					t.Fatalf("missing quota classification: %v", got)
++				}
++				if signal.QuotaExhausted() != (wire != "http-rate") {
++					t.Fatalf("quota signal=%v wire=%s", signal.QuotaExhausted(), wire)
++				}
++			})
++		}
++	}
++}
 diff --git a/internal/runtime/executor/codex_openai_images.go b/internal/runtime/executor/codex_openai_images.go
 index 5492f37..952bf49 100644
 --- a/internal/runtime/executor/codex_openai_images.go
@@ -2984,6 +3653,32 @@ index 217d6e6..49ffc0c 100644
  
  	var authID, authLabel, authType, authValue string
  	authID = auth.ID
+diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
+index 385058d..5cecfcb 100644
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -1011,9 +1011,10 @@ func openAICompatStreamDataError(payload []byte, eventName string) (statusErr, b
+ }
+ 
+ type statusErr struct {
+-	code       int
+-	msg        string
+-	retryAfter *time.Duration
++	code           int
++	msg            string
++	retryAfter     *time.Duration
++	quotaExhausted bool
+ }
+ 
+ func (e statusErr) Error() string {
+@@ -1024,6 +1025,7 @@ func (e statusErr) Error() string {
+ }
+ func (e statusErr) StatusCode() int            { return e.code }
+ func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
++func (e statusErr) QuotaExhausted() bool       { return e.quotaExhausted }
+ 
+ const openAICompatTPMFallbackRetryAfter = time.Minute
+ 
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
 index f100fab..848a794 100644
 --- a/internal/util/header_helpers.go
@@ -3033,9 +3728,18 @@ index f100fab..848a794 100644
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
-index 3ef58b5..918f71a 100644
+index 3ef58b5..f7767ab 100644
 --- a/internal/watcher/clients.go
 +++ b/internal/watcher/clients.go
+@@ -97,7 +97,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
+ 						continue
+ 					}
+ 					name := entry.Name()
+-					if !strings.HasSuffix(strings.ToLower(name), ".json") {
++					if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 						continue
+ 					}
+ 					fullPath := filepath.Join(resolvedAuthDir, name)
 @@ -124,7 +124,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
  							log.WithError(errSynthesize).Warnf("skipping auth file %s", name)
  						} else if len(generated) > 0 {
@@ -3171,6 +3875,15 @@ index 3ef58b5..918f71a 100644
  }
  
  func (w *Watcher) loadFileClients(cfg *config.Config) int {
+@@ -369,7 +442,7 @@ func (w *Watcher) loadFileClients(cfg *config.Config) int {
+ 			continue
+ 		}
+ 		name := entry.Name()
+-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
++		if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 			continue
+ 		}
+ 		authFileCount++
 diff --git a/internal/watcher/dispatcher.go b/internal/watcher/dispatcher.go
 index d1602bc..48a1071 100644
 --- a/internal/watcher/dispatcher.go
@@ -3252,11 +3965,77 @@ index d1602bc..48a1071 100644
  func (w *Watcher) dispatchAuthUpdates(updates []AuthUpdate) {
  	if len(updates) == 0 {
  		return
+diff --git a/internal/watcher/events.go b/internal/watcher/events.go
+index 806403f..1256ba7 100644
+--- a/internal/watcher/events.go
++++ b/internal/watcher/events.go
+@@ -13,6 +13,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/fsnotify/fsnotify"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -65,6 +66,9 @@ func (w *Watcher) processEvents(ctx context.Context) {
+ }
+ 
+ func (w *Watcher) handleEvent(event fsnotify.Event) {
++	if coreauth.IsGatewayAccountStateFile(event.Name) {
++		return
++	}
+ 	// Filter only relevant events: config file or auth-dir JSON files.
+ 	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+ 	normalizedName := w.normalizeAuthPath(event.Name)
+diff --git a/internal/watcher/gateway_account_state_test.go b/internal/watcher/gateway_account_state_test.go
+new file mode 100644
+index 0000000..7b9f39a
+--- /dev/null
++++ b/internal/watcher/gateway_account_state_test.go
+@@ -0,0 +1,29 @@
++package watcher
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/fsnotify/fsnotify"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestHandleEventIgnoresGatewayAccountState(t *testing.T) {
++	dir := t.TempDir()
++	w := &Watcher{authDir: dir, configPath: filepath.Join(dir, "config.yaml"), lastAuthHashes: make(map[string]string)}
++	w.SetConfig(&config.Config{AuthDir: dir})
++	for _, name := range []string{coreauth.GatewayAccountStateFile, coreauth.GatewayAccountStateFile + ".tmp.json"} {
++		path := filepath.Join(dir, name)
++		if err := os.WriteFile(path, []byte(`{"type":"codex","access_token":"token","account_id":"account"}`), 0o600); err != nil {
++			t.Fatal(err)
++		}
++		for _, op := range []fsnotify.Op{fsnotify.Create, fsnotify.Write, fsnotify.Remove, fsnotify.Rename} {
++			w.handleEvent(fsnotify.Event{Name: path, Op: op})
++		}
++	}
++	if len(w.lastAuthHashes) != 0 || len(w.currentAuths) != 0 {
++		t.Fatal("state events changed OAuth watcher state")
++	}
++}
 diff --git a/internal/watcher/synthesizer/file.go b/internal/watcher/synthesizer/file.go
-index 41cb14e..100b6a0 100644
+index 41cb14e..9bea2ae 100644
 --- a/internal/watcher/synthesizer/file.go
 +++ b/internal/watcher/synthesizer/file.go
-@@ -62,7 +62,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
+@@ -44,7 +44,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
+ 			continue
+ 		}
+ 		name := e.Name()
+-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
++		if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 			continue
+ 		}
+ 		full := filepath.Join(ctx.AuthDir, name)
+@@ -62,12 +62,15 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
  		}
  		out = append(out, auths...)
  	}
@@ -3265,7 +4044,15 @@ index 41cb14e..100b6a0 100644
  }
  
  // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
-@@ -136,6 +136,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
+ // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
+ func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
++	if coreauth.IsGatewayAccountStateFile(fullPath) {
++		return nil, nil
++	}
+ 	return synthesizeFileAuths(ctx, fullPath, data)
+ }
+ 
+@@ -136,6 +139,7 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
  				ApplyAuthExcludedModelsMeta(auth, cfg, perAccountExcluded, "oauth")
  				coreauth.ApplyCustomHeadersFromMetadata(auth)
  				applyFingerprintProfileAttribute(auth, metadata)
@@ -3273,7 +4060,7 @@ index 41cb14e..100b6a0 100644
  			}
  			return auths, nil
  		}
-@@ -236,9 +237,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
+@@ -236,9 +240,14 @@ func synthesizeFileAuths(ctx *SynthesisContext, fullPath string, data []byte) ([
  			}
  		}
  	}
@@ -3367,6 +4154,41 @@ index 24e343d..1a22a8e 100644
  type multiAuthParserFunc func(context.Context, pluginapi.AuthParseRequest) ([]*coreauth.Auth, bool, error)
  
  func (f multiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
+diff --git a/internal/watcher/synthesizer/gateway_account_state_test.go b/internal/watcher/synthesizer/gateway_account_state_test.go
+new file mode 100644
+index 0000000..7eff1f7
+--- /dev/null
++++ b/internal/watcher/synthesizer/gateway_account_state_test.go
+@@ -0,0 +1,29 @@
++package synthesizer
++
++import (
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestFileSynthesizerIgnoresGatewayAccountState(t *testing.T) {
++	dir := t.TempDir()
++	ctx := &SynthesisContext{Config: &config.Config{}, AuthDir: dir, Now: time.Now(), IDGenerator: NewStableIDGenerator()}
++	payload := []byte(`{"type":"codex","access_token":"token","account_id":"account"}`)
++	for _, name := range []string{coreauth.GatewayAccountStateFile, coreauth.GatewayAccountStateFile + ".tmp.json"} {
++		path := filepath.Join(dir, name)
++		if err := os.WriteFile(path, payload, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if auths, err := SynthesizeAuthFile(ctx, path, payload); err != nil || len(auths) != 0 {
++			t.Fatalf("state synthesized as OAuth: %v, %v", auths, err)
++		}
++	}
++	if auths, err := NewFileSynthesizer().Synthesize(ctx); err != nil || len(auths) != 0 {
++		t.Fatalf("state directory synthesized as OAuth: %v, %v", auths, err)
++	}
++}
 diff --git a/internal/watcher/watcher_test.go b/internal/watcher/watcher_test.go
 index da7511a..562143a 100644
 --- a/internal/watcher/watcher_test.go
@@ -3695,7 +4517,7 @@ index d7ea4e1..2a6254e 100644
  
  	fmt.Println("Codex authentication successful")
 diff --git a/sdk/auth/filestore.go b/sdk/auth/filestore.go
-index c9c4dee..ec21a15 100644
+index c9c4dee..b5d0a11 100644
 --- a/sdk/auth/filestore.go
 +++ b/sdk/auth/filestore.go
 @@ -158,6 +158,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
@@ -3706,6 +4528,15 @@ index c9c4dee..ec21a15 100644
  
  	if strings.TrimSpace(auth.FileName) == "" {
  		auth.FileName = auth.ID
+@@ -180,7 +181,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
+ 		if d.IsDir() {
+ 			return nil
+ 		}
+-		if !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
++		if cliproxyauth.IsGatewayAccountStateFile(d.Name()) || !strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
+ 			return nil
+ 		}
+ 		auths, errReadAuths := s.readAuthFiles(path, dir)
 @@ -195,7 +196,7 @@ func (s *FileTokenStore) List(ctx context.Context) ([]*cliproxyauth.Auth, error)
  	if err != nil {
  		return nil, err
@@ -3715,7 +4546,17 @@ index c9c4dee..ec21a15 100644
  }
  
  // Delete removes the auth file.
-@@ -291,6 +292,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
+@@ -226,6 +227,9 @@ func (s *FileTokenStore) resolveDeletePath(id string) (string, error) {
+ }
+ 
+ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Auth, error) {
++	if cliproxyauth.IsGatewayAccountStateFile(path) {
++		return nil, nil
++	}
+ 	data, err := os.ReadFile(path)
+ 	if err != nil {
+ 		return nil, fmt.Errorf("read file: %w", err)
+@@ -291,6 +295,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
  					return nil, errWeight
  				}
  				cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
@@ -3723,7 +4564,7 @@ index c9c4dee..ec21a15 100644
  			}
  			return auths, nil
  		}
-@@ -351,6 +353,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
+@@ -351,6 +356,7 @@ func (s *FileTokenStore) readAuthFiles(path, baseDir string) ([]*cliproxyauth.Au
  		auth.Attributes["email"] = email
  	}
  	cliproxyauth.ApplyCustomHeadersFromMetadata(auth)
@@ -3731,6 +4572,41 @@ index c9c4dee..ec21a15 100644
  	return []*cliproxyauth.Auth{auth}, nil
  }
  
+diff --git a/sdk/auth/filestore_gateway_state_test.go b/sdk/auth/filestore_gateway_state_test.go
+new file mode 100644
+index 0000000..7c3386f
+--- /dev/null
++++ b/sdk/auth/filestore_gateway_state_test.go
+@@ -0,0 +1,29 @@
++package auth
++
++import (
++	"context"
++	"os"
++	"path/filepath"
++	"testing"
++
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestFileTokenStoreIgnoresGatewayAccountState(t *testing.T) {
++	dir := t.TempDir()
++	store := NewFileTokenStore()
++	store.SetBaseDir(dir)
++	payload := []byte(`{"type":"codex","access_token":"token","account_id":"account"}`)
++	for _, name := range []string{coreauth.GatewayAccountStateFile, coreauth.GatewayAccountStateFile + ".tmp.json"} {
++		path := filepath.Join(dir, name)
++		if err := os.WriteFile(path, payload, 0o600); err != nil {
++			t.Fatal(err)
++		}
++		if auths, err := store.readAuthFiles(path, dir); err != nil || len(auths) != 0 {
++			t.Fatalf("state parsed as OAuth: %v, %v", auths, err)
++		}
++	}
++	if auths, err := store.List(context.Background()); err != nil || len(auths) != 0 {
++		t.Fatalf("state enumerated as OAuth: %v, %v", auths, err)
++	}
++}
 diff --git a/sdk/auth/filestore_test.go b/sdk/auth/filestore_test.go
 index 4ce9883..1886588 100644
 --- a/sdk/auth/filestore_test.go
@@ -4623,8 +5499,87 @@ index 0000000..d89da81
 +	SetCodexOAuthAccountIndexSeed(auth, accountID)
 +	return auth
 +}
+diff --git a/sdk/cliproxy/auth/conductor.go b/sdk/cliproxy/auth/conductor.go
+index 0fc9732..f7c0092 100644
+--- a/sdk/cliproxy/auth/conductor.go
++++ b/sdk/cliproxy/auth/conductor.go
+@@ -46,6 +46,9 @@ type ExecutionSessionCloser interface {
+ type Result struct {
+ 	// AuthID references the auth that produced this result.
+ 	AuthID string
++	// GatewayAccountIndex and GatewayAccountVersion snapshot account control at selection.
++	GatewayAccountIndex   string
++	GatewayAccountVersion uint64
+ 	// Provider is copied for convenience when emitting hooks.
+ 	Provider string
+ 	// Model is the upstream model identifier used for the request.
+@@ -119,6 +122,8 @@ type Manager struct {
+ 	selector                  Selector
+ 	hook                      Hook
+ 	mu                        sync.RWMutex
++	gatewayAccountStatePath   string
++	gatewayAccountStates      map[string]gatewayAccountState
+ 	selectorMu                sync.Mutex
+ 	configCooldownMu          sync.Mutex
+ 	auths                     map[string]*Auth
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+index 9b8fd94..3fba091 100644
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -348,7 +348,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
+ 		return false
+ 	}
+ 	auth := m.auths[authID]
+-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) {
++	if auth == nil || !m.gatewayCooldownRecordCurrentLocked(auth, record) || m.cooldownDisabledForAuth(auth) {
+ 		return false
+ 	}
+ 	updatedAt := record.UpdatedAt
+@@ -743,6 +743,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
+ 
+ 	m.mu.Lock()
+ 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
++		if !m.gatewayResultCurrentLocked(auth, result) {
++			m.mu.Unlock()
++			m.hook.OnResult(ctx, result)
++			return
++		}
++		if !result.Success && result.Error != nil && result.Error.QuotaExhausted && !result.SkipQuotaObservation && result.Error.HTTPStatus != http.StatusUnauthorized && result.Error.HTTPStatus != http.StatusForbidden {
++			m.markGatewayQuotaExhaustedLocked(auth)
++		}
+ 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
+ 			if m != nil {
+ 				modelKey = m.selectionModelKeyForAuth(auth, result.RouteModel)
+@@ -998,6 +1006,10 @@ func (m *Manager) reportHomeResult(ctx context.Context, result Result, auth *Aut
+ }
+ 
+ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
++	if result.Error != nil && result.Error.QuotaExhausted && !result.SkipQuotaObservation {
++		m.MarkResult(ctx, result)
++		return
++	}
+ 	if result.AuthID == "" {
+ 		return
+ 	}
+@@ -1410,9 +1422,16 @@ func resultErrorFromError(err error) *Error {
+ 	} else {
+ 		resultErr = &Error{Message: err.Error()}
+ 	}
++	var quotaSignal interface{ QuotaExhausted() bool }
++	if errors.As(err, &quotaSignal) && quotaSignal != nil && quotaSignal.QuotaExhausted() {
++		resultErr.QuotaExhausted = true
++	}
+ 	if resultErr.HTTPStatus == 0 {
+ 		resultErr.HTTPStatus = statusCodeFromError(err)
+ 	}
++	if resultErr.HTTPStatus == http.StatusUnauthorized || resultErr.HTTPStatus == http.StatusForbidden {
++		resultErr.QuotaExhausted = false
++	}
+ 	switch {
+ 	case isRequestScopedError(err) || isRequestInvalidError(err):
+ 		// Prefer true request-scoped faults (including Claude OAuth cancellation)
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index e2ad851..c3123db 100644
+index e2ad851..6b17041 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -6,7 +6,9 @@ import (
@@ -4637,11 +5592,13 @@ index e2ad851..c3123db 100644
  	"path/filepath"
  	"sort"
  	"strconv"
-@@ -486,8 +488,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -485,9 +487,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 -			m.MarkResult(execCtx, result)
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 +			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, false)
  			lastErr = errPrepare
 +			if !eligible {
@@ -4658,6 +5615,15 @@ index e2ad851..c3123db 100644
  					didRefreshOnUnauthorized = true
  					execCtx = newUpstreamAttemptContext(execCtx)
  					startRetry := time.Now()
+@@ -545,7 +551,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
+ 				return cliproxyexecutor.Response{}, errCancel
+ 			}
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts}
+ 			if errExec != nil {
+ 				result.Error = resultErrorFromError(errExec)
+ 				if ra := retryAfterFromError(errExec); ra != nil {
 @@ -556,11 +562,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				}
  				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
@@ -4703,11 +5669,13 @@ index e2ad851..c3123db 100644
  				return cliproxyexecutor.Response{}, authErr
  			}
  			lastErr = authErr
-@@ -677,8 +690,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -676,9 +689,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
 -			m.MarkResult(execCtx, result)
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts, SkipQuotaObservation: true}
 +			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, false)
  			lastErr = errPrepare
 +			if !eligible {
@@ -4724,6 +5692,15 @@ index e2ad851..c3123db 100644
  					didRefreshOnUnauthorized = true
  					execCtx = newUpstreamAttemptContext(execCtx)
  					startRetry := time.Now()
+@@ -736,7 +753,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
+ 				return cliproxyexecutor.Response{}, errCancel
+ 			}
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: execOpts, SkipQuotaObservation: true}
+ 			if errExec != nil {
+ 				result.Error = resultErrorFromError(errExec)
+ 				if ra := retryAfterFromError(errExec); ra != nil {
 @@ -748,7 +765,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  				// count_tokens route and return a generic endpoint 404. Record
  				// the failure for hooks and metrics without suspending a model
@@ -4780,10 +5757,12 @@ index e2ad851..c3123db 100644
  	tried := make(map[string]struct{})
  	if !homeMode {
  		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
-@@ -1001,16 +1026,22 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1000,17 +1025,23 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+ 			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
- 			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: pickOpts}
 +			eligible := m.recordCredentialFailure(execCtx, result, auth, provider, errPrepare, selection != nil)
  			if selection != nil {
 -				m.reportHomeResult(execCtx, result, auth)
@@ -4921,7 +5900,26 @@ index e2ad851..c3123db 100644
  func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
  	opts.Metadata = cloneRequestMetadata(opts.Metadata)
  	requestedModel = strings.TrimSpace(requestedModel)
-@@ -1600,6 +1721,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+@@ -1382,7 +1503,17 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
+ 	return prepare()
+ }
+ 
+-func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
++func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (prepared *Auth, err error) {
++	// Preparing tokens must not advance a request across an administrator's
++	// control version. Its eventual result still belongs to its selection.
++	if auth != nil {
++		version := auth.GatewayAccountVersion
++		defer func() {
++			if prepared != nil {
++				prepared.GatewayAccountVersion = version
++			}
++		}()
++	}
+ 	if m == nil || executor == nil || auth == nil {
+ 		return auth, nil
+ 	}
+@@ -1600,6 +1731,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
  			callback(authIndex)
  		}
  	}
@@ -5245,8 +6243,52 @@ index 0000000..2906cc2
 +		t.Fatalf("upstream calls = %v, want one after first payload", calls)
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
+index 5b4e2b4..913cbe7 100644
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -1254,7 +1254,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
+ 	var candidates []creditsCandidateEntry
+ 	m.mu.RLock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1392,7 +1392,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
+ 			execReq := req
+ 			execReq.Model = upstreamModel
+ 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+-			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts}
++			result := Result{AuthID: c.auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(c.auth), GatewayAccountVersion: c.auth.GatewayAccountVersion, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts}
+ 			if errExec != nil {
+ 				result.Error = resultErrorFromError(errExec)
+ 				if ra := retryAfterFromError(errExec); ra != nil {
+diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
+index 2d5af93..fdcda9b 100644
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -159,7 +159,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			if stateModel == "" {
+ 				stateModel = canonicalModelKey(routeModel)
+ 			}
+-			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
++			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
+ 			releaseAttempt()
+ 			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
+ 				return cliproxyexecutor.Response{}, errEnd
+@@ -239,7 +239,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 				}
+ 				warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
+ 			}
+-			result := Result{AuthID: preparedAuth.ID, Provider: selection.Provider, Model: resultModel, RouteModel: routeModel, Success: errExecute == nil, Options: execOpts}
++			result := Result{AuthID: preparedAuth.ID, GatewayAccountIndex: gatewayAccountResultIndex(preparedAuth), GatewayAccountVersion: preparedAuth.GatewayAccountVersion, Provider: selection.Provider, Model: resultModel, RouteModel: routeModel, Success: errExecute == nil, Options: execOpts}
+ 			if errExecute == nil {
+ 				m.reportHomeResult(execCtx, result, preparedAuth)
+ 				releaseAttempt()
 diff --git a/sdk/cliproxy/auth/conductor_lifecycle.go b/sdk/cliproxy/auth/conductor_lifecycle.go
-index c112541..6d3739f 100644
+index c112541..049588b 100644
 --- a/sdk/cliproxy/auth/conductor_lifecycle.go
 +++ b/sdk/cliproxy/auth/conductor_lifecycle.go
 @@ -71,6 +71,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
@@ -5257,7 +6299,15 @@ index c112541..6d3739f 100644
  	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
  		return nil, fmt.Errorf("register auth: %w", errWeight)
  	}
-@@ -192,7 +193,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
+@@ -103,6 +104,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
+ 	m.authEpochs[auth.ID]++
+ 	auth.RegistrationEpoch = m.authEpochs[auth.ID]
+ 	auth.Generation = 1
++	m.applyGatewayAccountStateLocked(auth)
+ 	authClone := auth.Clone()
+ 	m.auths[auth.ID] = authClone
+ 	m.mu.Unlock()
+@@ -192,7 +194,9 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
  	} else if auth.RegistrationEpoch == 0 {
  		auth.RegistrationEpoch = m.authEpochs[auth.ID]
  	}
@@ -5268,7 +6318,15 @@ index c112541..6d3739f 100644
  		auth.Index = existing.Index
  		auth.indexAssigned = existing.indexAssigned
  	}
-@@ -326,6 +329,13 @@ func (m *Manager) Load(ctx context.Context) error {
+@@ -224,6 +228,7 @@ func (m *Manager) updateInternal(ctx context.Context, base, auth *Auth, mode upd
+ 		cooldownStateChanged = clearCooldownStateForAuth(auth, now) || cooldownStateChanged
+ 	}
+ 	auth.EnsureIndex()
++	m.applyGatewayAccountStateLocked(auth)
+ 	authClone := auth.Clone()
+ 	m.auths[auth.ID] = authClone
+ 	m.mu.Unlock()
+@@ -326,6 +331,13 @@ func (m *Manager) Load(ctx context.Context) error {
  		return err
  	}
  	previousAuths := m.auths
@@ -5282,6 +6340,27 @@ index c112541..6d3739f 100644
  	m.auths = make(map[string]*Auth, len(items))
  	if m.authEpochs == nil {
  		m.authEpochs = make(map[string]uint64, len(items))
+@@ -342,6 +354,7 @@ func (m *Manager) Load(ctx context.Context) error {
+ 		m.authEpochs[auth.ID] = max(m.authEpochs[auth.ID], auth.RegistrationEpoch) + 1
+ 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
+ 		auth.Generation = 1
++		m.applyGatewayAccountStateLocked(auth)
+ 		m.auths[auth.ID] = auth.Clone()
+ 	}
+ 
+diff --git a/sdk/cliproxy/auth/conductor_models.go b/sdk/cliproxy/auth/conductor_models.go
+index c39454e..4766270 100644
+--- a/sdk/cliproxy/auth/conductor_models.go
++++ b/sdk/cliproxy/auth/conductor_models.go
+@@ -235,7 +235,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
+ 	}
+ 
+ 	state := existingModelState(auth, targetKey)
+-	isSuspended := auth.Disabled || auth.Status == StatusDisabled
++	isSuspended := !GatewayAccountAvailable(auth)
+ 	if auth.Quota.Exceeded && auth.Quota.Reason == "credential_quota" && auth.Quota.NextRecoverAt.After(now) {
+ 		isSuspended = true
+ 	}
 diff --git a/sdk/cliproxy/auth/conductor_overrides_test.go b/sdk/cliproxy/auth/conductor_overrides_test.go
 index 27665bf..1da6c17 100644
 --- a/sdk/cliproxy/auth/conductor_overrides_test.go
@@ -5307,10 +6386,18 @@ index 27665bf..1da6c17 100644
  		{name: "streaming xai websocket message too big", provider: "xai", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
  		{name: "non-streaming invalid request", err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
-index 92b0e9c..1041f5f 100644
+index 92b0e9c..6ea5e2e 100644
 --- a/sdk/cliproxy/auth/conductor_refresh.go
 +++ b/sdk/cliproxy/auth/conductor_refresh.go
-@@ -532,6 +532,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
+@@ -422,6 +422,7 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
+ 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
+ 		return auth, false
+ 	}
++	refreshed.GatewayAccountVersion = auth.GatewayAccountVersion
+ 	return refreshed, true
+ }
+ 
+@@ -532,6 +533,14 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
  	if updated == nil {
  		updated = base.Clone()
  	}
@@ -5325,7 +6412,7 @@ index 92b0e9c..1041f5f 100644
  	// Preserve runtime created by the executor during Refresh.
  	// If executor didn't set one, fall back to the previous runtime.
  	if updated.Runtime == nil {
-@@ -572,3 +580,21 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
+@@ -572,3 +581,21 @@ func (m *Manager) refreshAuthForRequest(ctx context.Context, id, failedAccessTok
  	}
  	return saved.Clone(), nil
  }
@@ -5347,8 +6434,93 @@ index 92b0e9c..1041f5f 100644
 +	}
 +	return !updatedValid || previousIndex != updatedIndex
 +}
+diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
+index fef8d28..6c4c2e3 100644
+--- a/sdk/cliproxy/auth/conductor_selection.go
++++ b/sdk/cliproxy/auth/conductor_selection.go
+@@ -871,7 +871,7 @@ func (m *Manager) AvailableProviders() []string {
+ 	seen := make(map[string]struct{}, len(m.auths))
+ 	out := make([]string, 0, len(m.auths))
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
+@@ -902,7 +902,7 @@ func (m *Manager) HasProviderAuth(provider string) bool {
+ 	m.mu.RLock()
+ 	defer m.mu.RUnlock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
+@@ -1026,7 +1026,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
+ 		minWait time.Duration
+ 	)
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1118,7 +1118,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
+ 	m.mu.RLock()
+ 	defer m.mu.RUnlock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1496,7 +1496,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
+ 	}
+ 	registryRef := registry.GetGlobalRegistry()
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
++		if candidate == nil || executorKeyFromAuth(candidate) != provider || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+@@ -1737,7 +1737,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
+ 	if strings.TrimSpace(model) != "" {
+ 		m.mu.RLock()
+ 		for _, candidate := range m.auths {
+-			if candidate == nil || executorKeyFromAuth(candidate) != provider || candidate.Disabled {
++			if candidate == nil || executorKeyFromAuth(candidate) != provider || !GatewayAccountAvailable(candidate) {
+ 				continue
+ 			}
+ 			if !eligibility.allows(candidate) {
+@@ -1819,7 +1819,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
+ 	}
+ 	registryRef := registry.GetGlobalRegistry()
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || candidate.Disabled {
++		if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+@@ -1933,7 +1933,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
+ 		}
+ 		m.mu.RLock()
+ 		for _, candidate := range m.auths {
+-			if candidate == nil || candidate.Disabled {
++			if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 				continue
+ 			}
+ 			if _, ok := providerSet[executorKeyFromAuth(candidate)]; !ok {
+@@ -2042,7 +2042,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
+ 	coolingSummaries := make([]string, 0)
+ 	totalCandidates := 0
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || candidate.Disabled {
++		if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		providerKey := executorKeyFromAuth(candidate)
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index d0d46e0..44f8e03 100644
+index d0d46e0..868fecd 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -78,12 +78,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
@@ -5374,7 +6546,32 @@ index d0d46e0..44f8e03 100644
  	}
  	return result, nil
  }
-@@ -287,7 +296,10 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -138,7 +147,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
+ 				warnLogUpstreamFailure(ctx, entry, provider, resultModel, auth, time.Since(streamStart), chunk.Err)
+ 				rerr := resultErrorFromError(chunk.Err)
+ 				action, okAction := matchRequestScopedErrorAction(auth, chunk.Err, m.runtimeConfigSnapshot())
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts}
++				result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: opts}
+ 				applyRequestScopedActionToResult(action, okAction, &result)
+ 				m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+ 			}
+@@ -197,7 +206,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
+ 			}
+ 		}
+ 		if !failed && (ephemeralResult || claudeOAuthRequestCancellation(ctx, auth, nil) == nil) {
+-			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: opts}, auth, ephemeralResult)
++			m.recordExecutionResult(ctx, Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: true, Options: opts}, auth, ephemeralResult)
+ 		}
+ 	}()
+ 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
+@@ -281,13 +290,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 		if errStream != nil {
+ 			rerr := resultErrorFromError(errStream)
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+ 			result.RetryAfter = retryAfterFromError(errStream)
+ 			if isCredentialScopedError(errStream) {
  				result.CredentialScope = true
  			}
  			applyRequestScopedActionToResult(action, okAction, &result)
@@ -5395,12 +6592,12 @@ index d0d46e0..44f8e03 100644
  				return nil, errStream
  			}
  			lastErr = errStream
-@@ -364,6 +376,13 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+@@ -364,10 +376,17 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			}
  		}
  		if bootstrapErr != nil {
 +			if isCodexProvider(provider) && !credentialSwitchEligible(provider, bootstrapErr, ctx) {
-+				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts}
++				result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts}
 +				result.RetryAfter = retryAfterFromError(bootstrapErr)
 +				m.recordCredentialFailure(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
 +				discardStreamChunks(streamResult.Chunks)
@@ -5409,16 +6606,42 @@ index d0d46e0..44f8e03 100644
  			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
  			if okAction {
  				rerr := resultErrorFromError(bootstrapErr)
-@@ -385,7 +404,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
++				result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+ 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 				if isCredentialScopedError(bootstrapErr) {
+ 					result.CredentialScope = true
+@@ -385,9 +404,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  				}
  				continue
  			}
 -			if isRequestInvalidError(bootstrapErr) {
 +			if !isCodexProvider(provider) && isRequestInvalidError(bootstrapErr) {
  				rerr := resultErrorFromError(bootstrapErr)
- 				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
++				result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
  				result.RetryAfter = retryAfterFromError(bootstrapErr)
-@@ -425,7 +444,9 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 				if isCredentialScopedError(bootstrapErr) {
+ 					result.CredentialScope = true
+@@ -398,7 +417,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 			}
+ 			if idx < len(execModels)-1 {
+ 				rerr := resultErrorFromError(bootstrapErr)
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
++				result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+ 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 				if isCredentialScopedError(bootstrapErr) {
+ 					result.CredentialScope = true
+@@ -413,7 +432,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 				continue
+ 			}
+ 			rerr := resultErrorFromError(bootstrapErr)
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts}
+ 			result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 			if isCredentialScopedError(bootstrapErr) {
+ 				result.CredentialScope = true
+@@ -425,13 +444,15 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  		}
  
  		if closed && len(buffered) == 0 {
@@ -5429,6 +6652,13 @@ index d0d46e0..44f8e03 100644
  			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
  			if hasUpstreamExecutionAttempt(emptyErr) {
  				upstreamErr = currentErr
+ 			}
+ 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts}
++			result := Result{AuthID: auth.ID, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts}
+ 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+ 			if idx < len(execModels)-1 {
+ 				lastErr = emptyErr
 diff --git a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 index 3745192..62c4cb8 100644
 --- a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
@@ -5576,6 +6806,869 @@ index 3745192..62c4cb8 100644
  func TestManager_Execute_UnauthorizedRefreshFailureFallsBackToNextAuth(t *testing.T) {
  	m, executor, primary, backup, model := newUnauthorizedRefreshFixture(t, true)
  
+diff --git a/sdk/cliproxy/auth/errors.go b/sdk/cliproxy/auth/errors.go
+index 60740ee..d4cd415 100644
+--- a/sdk/cliproxy/auth/errors.go
++++ b/sdk/cliproxy/auth/errors.go
+@@ -31,6 +31,8 @@ type Error struct {
+ 	Retryable bool `json:"retryable"`
+ 	// HTTPStatus optionally records an HTTP-like status code for the error.
+ 	HTTPStatus int `json:"http_status,omitempty"`
++	// QuotaExhausted is an explicit upstream exhaustion signal, unlike ordinary 429s.
++	QuotaExhausted bool `json:"quota_exhausted,omitempty"`
+ }
+ 
+ // Error implements the error interface.
+diff --git a/sdk/cliproxy/auth/errors_compat_test.go b/sdk/cliproxy/auth/errors_compat_test.go
+index db058ab..19cb5b0 100644
+--- a/sdk/cliproxy/auth/errors_compat_test.go
++++ b/sdk/cliproxy/auth/errors_compat_test.go
+@@ -7,8 +7,8 @@ import (
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+ )
+ 
+-func TestErrorLegacyUnkeyedLiteralCompatibility(t *testing.T) {
+-	err := cliproxyauth.Error{"code", "message", false, http.StatusRequestTimeout}
++func TestErrorGatewayKeyedLiteralCompatibility(t *testing.T) {
++	err := cliproxyauth.Error{Code: "code", Message: "message", HTTPStatus: http.StatusRequestTimeout}
+ 
+ 	if err.Code != "code" || err.Message != "message" || err.Retryable || err.HTTPStatus != http.StatusRequestTimeout {
+ 		t.Fatalf("unexpected error fields: %#v", err)
+diff --git a/sdk/cliproxy/auth/gateway_account_state.go b/sdk/cliproxy/auth/gateway_account_state.go
+new file mode 100644
+index 0000000..0764d7b
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_account_state.go
+@@ -0,0 +1,405 @@
++package auth
++
++import (
++	"bytes"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++)
++
++const GatewayAccountStateFile = ".gateway-account-state"
++
++var (
++	ErrGatewayAccountNotFound         = errors.New("gateway account not found")
++	ErrGatewayAccountIdentityInvalid  = errors.New("gateway account identity invalid")
++	ErrGatewayAccountStateUnavailable = errors.New("gateway account state unavailable")
++)
++
++type gatewayAccountState struct {
++	Enabled        bool      `json:"enabled"`
++	ManualDisabled bool      `json:"manual_disabled"`
++	QuotaExhausted bool      `json:"quota_exhausted"`
++	Version        uint64    `json:"version"`
++	UpdatedAt      time.Time `json:"updated_at"`
++}
++
++type gatewayAccountStateDocument struct {
++	Version  int                            `json:"version"`
++	Accounts map[string]gatewayAccountState `json:"accounts"`
++}
++
++// IsGatewayAccountStateFile also excludes temporary files used for atomic replacement.
++func IsGatewayAccountStateFile(name string) bool {
++	name = filepath.Base(name)
++	return name == GatewayAccountStateFile || strings.HasPrefix(name, GatewayAccountStateFile+".")
++}
++
++// GatewayAccountAvailable reports the persistent control and credential identity gates.
++// Transient cooldown remains the responsibility of the ordinary availability code.
++func GatewayAccountAvailable(auth *Auth) bool {
++	return auth != nil && !auth.GatewayAccountBlocked && !auth.Disabled && auth.Status != StatusDisabled
++}
++
++// LoadGatewayAccountState must complete before credentials are loaded or served.
++// An unreadable or malformed existing file is fatal; missing state starts empty.
++func (m *Manager) LoadGatewayAccountState(authDir string) error {
++	if m == nil || strings.TrimSpace(authDir) == "" {
++		return ErrGatewayAccountStateUnavailable
++	}
++	path := filepath.Join(authDir, GatewayAccountStateFile)
++	doc := gatewayAccountStateDocument{Version: 1, Accounts: make(map[string]gatewayAccountState)}
++	info, err := os.Lstat(path)
++	if err == nil {
++		if !info.Mode().IsRegular() || info.Size() > 4<<20 {
++			return ErrGatewayAccountStateUnavailable
++		}
++		data, errRead := os.ReadFile(path)
++		if errRead != nil {
++			return ErrGatewayAccountStateUnavailable
++		}
++		doc, err = decodeGatewayAccountState(data)
++		if err != nil {
++			return ErrGatewayAccountStateUnavailable
++		}
++		if errChmod := os.Chmod(path, 0o600); errChmod != nil {
++			return ErrGatewayAccountStateUnavailable
++		}
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return ErrGatewayAccountStateUnavailable
++	}
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	// Prevent a runtime reload from rolling account versions backwards.
++	if m.gatewayAccountStatePath != "" {
++		if m.gatewayAccountStatePath == path {
++			return nil
++		}
++		return ErrGatewayAccountStateUnavailable
++	}
++	m.gatewayAccountStatePath = path
++	m.gatewayAccountStates = doc.Accounts
++	for _, auth := range m.auths {
++		if auth == nil {
++			continue
++		}
++		m.applyGatewayAccountStateLocked(auth)
++		auth.Generation++
++		m.publishGatewayAccountAuthLocked(auth)
++	}
++	return nil
++}
++
++// decodeGatewayObject rejects duplicate and case-alias keys rather than letting
++// encoding/json silently choose the last value of an ambiguous control file.
++func decodeGatewayObject(data []byte, fields ...string) (map[string]json.RawMessage, error) {
++	decoder := json.NewDecoder(bytes.NewReader(data))
++	token, err := decoder.Token()
++	if err != nil || token != json.Delim('{') {
++		return nil, ErrGatewayAccountStateUnavailable
++	}
++	object := make(map[string]json.RawMessage)
++	for decoder.More() {
++		token, err = decoder.Token()
++		key, ok := token.(string)
++		if err != nil || !ok {
++			return nil, ErrGatewayAccountStateUnavailable
++		}
++		if _, exists := object[key]; exists {
++			return nil, ErrGatewayAccountStateUnavailable
++		}
++		if len(fields) > 0 {
++			allowed := false
++			for _, field := range fields {
++				allowed = allowed || key == field
++			}
++			if !allowed {
++				return nil, ErrGatewayAccountStateUnavailable
++			}
++		}
++		var value json.RawMessage
++		if err = decoder.Decode(&value); err != nil {
++			return nil, ErrGatewayAccountStateUnavailable
++		}
++		object[key] = value
++	}
++	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
++		return nil, ErrGatewayAccountStateUnavailable
++	}
++	if _, err = decoder.Token(); err != io.EOF || len(fields) > 0 && len(object) != len(fields) {
++		return nil, ErrGatewayAccountStateUnavailable
++	}
++	return object, nil
++}
++
++func decodeGatewayAccountState(data []byte) (gatewayAccountStateDocument, error) {
++	doc := gatewayAccountStateDocument{Version: 1, Accounts: make(map[string]gatewayAccountState)}
++	root, err := decodeGatewayObject(data, "version", "accounts")
++	if err != nil || string(root["version"]) != "1" {
++		return doc, ErrGatewayAccountStateUnavailable
++	}
++	accounts, err := decodeGatewayObject(root["accounts"])
++	if err != nil {
++		return doc, err
++	}
++	for index, raw := range accounts {
++		if len(index) != 16 || !isLowerHexString(index) {
++			return doc, ErrGatewayAccountStateUnavailable
++		}
++		fields, err := decodeGatewayObject(raw, "enabled", "manual_disabled", "quota_exhausted", "version", "updated_at")
++		if err != nil {
++			return doc, err
++		}
++		for _, field := range []string{"enabled", "manual_disabled", "quota_exhausted"} {
++			if value := string(fields[field]); value != "true" && value != "false" {
++				return doc, ErrGatewayAccountStateUnavailable
++			}
++		}
++		var state gatewayAccountState
++		if err = json.Unmarshal(raw, &state); err != nil || state.Version == 0 || state.UpdatedAt.IsZero() || state.Enabled == (state.ManualDisabled || state.QuotaExhausted) {
++			return doc, ErrGatewayAccountStateUnavailable
++		}
++		doc.Accounts[index] = state
++	}
++	return doc, nil
++}
++
++func (m *Manager) applyGatewayAccountStateLocked(auth *Auth) {
++	if auth == nil {
++		return
++	}
++	index, valid := CodexOAuthAccountIndex(auth)
++	if !valid {
++		auth.GatewayAccountBlocked = false
++		auth.GatewayAccountVersion = 0
++		return
++	}
++	state, exists := m.gatewayAccountStates[index]
++	if !exists {
++		auth.GatewayAccountBlocked = false
++		auth.GatewayAccountVersion = 0
++		return
++	}
++	if state.Enabled {
++		// A confirmed administrator enable overrides file-level disable, after
++		// intrinsic identity validation has succeeded.
++		auth.Disabled = false
++		if auth.Status == StatusDisabled {
++			auth.Status = StatusActive
++		}
++	}
++	auth.GatewayAccountBlocked = !state.Enabled || state.ManualDisabled || state.QuotaExhausted
++	auth.GatewayAccountVersion = state.Version
++}
++
++// SetGatewayAccountEnabled atomically persists the control change before acknowledging it.
++// All duplicate OAuth records share the stable intrinsic account index.
++func (m *Manager) SetGatewayAccountEnabled(index string, enabled bool) (string, error) {
++	if m == nil || len(index) != 16 || !isLowerHexString(index) {
++		return "", ErrGatewayAccountNotFound
++	}
++	m.mu.Lock()
++	defer m.mu.Unlock()
++	found := false
++	for _, auth := range m.auths {
++		if auth == nil {
++			continue
++		}
++		candidateIndex, valid := CodexOAuthAccountIndex(auth)
++		if auth.Index == index && !valid {
++			return "", ErrGatewayAccountIdentityInvalid
++		}
++		if valid && candidateIndex == index {
++			verified := auth.Clone()
++			if !ApplyCodexOAuthAccountIdentity(verified, verified.Metadata) {
++				return "", ErrGatewayAccountIdentityInvalid
++			}
++			verifiedIndex, validIdentity := CodexOAuthAccountIndex(verified)
++			if !validIdentity || verifiedIndex != index {
++				return "", ErrGatewayAccountIdentityInvalid
++			}
++			found = true
++		}
++	}
++	if !found {
++		return "", ErrGatewayAccountNotFound
++	}
++	previous := m.gatewayAccountStates[index]
++	state := gatewayAccountState{Enabled: enabled, ManualDisabled: !enabled, Version: previous.Version + 1, UpdatedAt: time.Now().UTC()}
++	if m.gatewayAccountStates == nil {
++		m.gatewayAccountStates = make(map[string]gatewayAccountState)
++	}
++	m.gatewayAccountStates[index] = state
++	if err := m.persistGatewayAccountStatesLocked(); err != nil {
++		// Never let failed enable participate in routing. Also retain a failed
++		// disable in memory, while reporting that durability was not confirmed.
++		state.Enabled = false
++		state.ManualDisabled = true
++		state.QuotaExhausted = previous.QuotaExhausted
++		m.gatewayAccountStates[index] = state
++		// A directory-sync failure may happen after rename; best effort rewrites
++		// the conservative state so a later restart does not observe an enable.
++		_ = m.persistGatewayAccountStatesLocked()
++		m.publishGatewayAccountStateLocked(index, false)
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	m.publishGatewayAccountStateLocked(index, enabled)
++	if enabled {
++		return "available", nil
++	}
++	return "unavailable", nil
++}
++
++func (m *Manager) publishGatewayAccountStateLocked(index string, clearCooldown bool) {
++	now := time.Now()
++	for _, auth := range m.auths {
++		candidateIndex, valid := CodexOAuthAccountIndex(auth)
++		if !valid || candidateIndex != index {
++			continue
++		}
++		m.applyGatewayAccountStateLocked(auth)
++		if clearCooldown {
++			auth.Unavailable = false
++			auth.NextRetryAfter = time.Time{}
++			auth.Quota = QuotaState{}
++			auth.LastError = nil
++			auth.StatusMessage = ""
++			auth.Status = StatusActive
++			for _, state := range auth.ModelStates {
++				if state != nil {
++					resetModelState(state, now)
++					state.Quota = QuotaState{}
++				}
++			}
++		}
++		auth.Generation++
++		auth.UpdatedAt = now
++		m.publishGatewayAccountAuthLocked(auth)
++	}
++}
++
++func (m *Manager) publishGatewayAccountAuthLocked(auth *Auth) {
++	snapshot := auth.Clone()
++	if m.scheduler != nil {
++		m.scheduler.upsertAuth(snapshot)
++	}
++	models, epoch := registry.GetGlobalRegistry().GetModelsAndEpochForClient(auth.ID)
++	projections := make([]registry.ClientModelProjection, 0, len(models))
++	for _, model := range models {
++		if model != nil && strings.TrimSpace(model.ID) != "" {
++			projections = append(projections, m.clientModelProjectionForAuth(snapshot, model.ID, time.Now()))
++		}
++	}
++	registry.GetGlobalRegistry().ApplyClientModelProjections(auth.ID, epoch, snapshot.Generation, projections)
++}
++
++// markGatewayQuotaExhaustedLocked acts only on explicit generation failures;
++// the quota query endpoint never calls this result-processing path.
++func (m *Manager) markGatewayQuotaExhaustedLocked(auth *Auth) {
++	index, valid := CodexOAuthAccountIndex(auth)
++	if !valid {
++		return
++	}
++	state := m.gatewayAccountStates[index]
++	if state.QuotaExhausted {
++		return
++	}
++	state.Enabled = false
++	state.QuotaExhausted = true
++	state.Version++
++	state.UpdatedAt = time.Now().UTC()
++	if m.gatewayAccountStates == nil {
++		m.gatewayAccountStates = make(map[string]gatewayAccountState)
++	}
++	m.gatewayAccountStates[index] = state
++	if err := m.persistGatewayAccountStatesLocked(); err != nil {
++		logEntryWithRequestID(nil).Error("gateway account quota state persistence failed")
++	}
++	m.publishGatewayAccountStateLocked(index, false)
++}
++
++func gatewayAccountResultIndex(auth *Auth) string {
++	if auth == nil {
++		return ""
++	}
++	// CodexOAuthAccountIndex initializes runtime index fields. Do that on a
++	// shallow copy because one immutable selected auth can feed concurrent results.
++	copyAuth := *auth
++	index, valid := CodexOAuthAccountIndex(&copyAuth)
++	if !valid {
++		return ""
++	}
++	return index
++}
++
++func (m *Manager) gatewayResultCurrentLocked(auth *Auth, result Result) bool {
++	if auth == nil || auth.GatewayAccountBlocked || auth.GatewayAccountVersion != result.GatewayAccountVersion {
++		return false
++	}
++	if result.GatewayAccountIndex != "" {
++		index, valid := CodexOAuthAccountIndex(auth)
++		return valid && index == result.GatewayAccountIndex
++	}
++	return true
++}
++
++func (m *Manager) gatewayCooldownRecordCurrentLocked(auth *Auth, record CooldownStateRecord) bool {
++	if !GatewayAccountAvailable(auth) {
++		return false
++	}
++	index, valid := CodexOAuthAccountIndex(auth)
++	if !valid {
++		return true
++	}
++	state, exists := m.gatewayAccountStates[index]
++	return !exists || !state.Enabled || record.UpdatedAt.After(state.UpdatedAt)
++}
++
++func (m *Manager) persistGatewayAccountStatesLocked() error {
++	if m.gatewayAccountStatePath == "" {
++		return ErrGatewayAccountStateUnavailable
++	}
++	data, err := json.Marshal(gatewayAccountStateDocument{Version: 1, Accounts: m.gatewayAccountStates})
++	if err != nil {
++		return err
++	}
++	dir := filepath.Dir(m.gatewayAccountStatePath)
++	file, err := os.CreateTemp(dir, GatewayAccountStateFile+".")
++	if err != nil {
++		return err
++	}
++	temp := file.Name()
++	defer func() { _ = os.Remove(temp) }()
++	if err = file.Chmod(0o600); err == nil {
++		_, err = file.Write(data)
++	}
++	if err == nil {
++		err = file.Sync()
++	}
++	errClose := file.Close()
++	if err == nil {
++		err = errClose
++	}
++	if err != nil {
++		return err
++	}
++	if err = os.Rename(temp, m.gatewayAccountStatePath); err != nil {
++		return err
++	}
++	directory, err := os.Open(dir)
++	if err != nil {
++		return err
++	}
++	err = directory.Sync()
++	errClose = directory.Close()
++	if err != nil {
++		return fmt.Errorf("sync account state directory: %w", err)
++	}
++	return errClose
++}
+diff --git a/sdk/cliproxy/auth/gateway_account_state_test.go b/sdk/cliproxy/auth/gateway_account_state_test.go
+new file mode 100644
+index 0000000..6fc8092
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_account_state_test.go
+@@ -0,0 +1,418 @@
++package auth
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"net/http"
++	"os"
++	"path/filepath"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++func newGatewayAccountTestManager(t *testing.T) (*Manager, *Auth, string) {
++	t.Helper()
++	dir := t.TempDir()
++	m := NewManager(nil, nil, nil)
++	if err := m.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	candidate := gatewayRegisterAccount(t, m, uuid.NewString()+".json", uuid.NewString())
++	m.RegisterExecutor(&gatewayPolicyExecutor{id: "codex"})
++	m.SetRetryConfig(0, 0, 2)
++	return m, candidate, dir
++}
++
++func gatewayRegisterAccount(t *testing.T, m *Manager, id, accountID string) *Auth {
++	t.Helper()
++	candidate := codexOAuthDedupeAuth(id, accountID, "2026-08-20T00:00:00Z")
++	registry.GetGlobalRegistry().RegisterClient(id, "codex", []*registry.ModelInfo{{ID: "gateway-model"}, {ID: "other-model"}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(id) })
++	saved, err := m.Register(context.Background(), candidate)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return saved
++}
++
++func gatewayResult(candidate *Auth, err *Error) Result {
++	return Result{AuthID: candidate.ID, GatewayAccountIndex: gatewayAccountResultIndex(candidate), GatewayAccountVersion: candidate.GatewayAccountVersion,
++		Provider: "codex", Model: "gateway-model", Success: err == nil, Error: err}
++}
++
++func assertGatewayRoutable(t *testing.T, m *Manager, want bool) {
++	t.Helper()
++	_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, cliproxyexecutor.Options{})
++	if (err == nil) != want {
++		t.Fatalf("request error = %v, want routable %v", err, want)
++	}
++}
++
++func TestGatewayAccountManualDisableEnableRestoresAllModels(t *testing.T) {
++	m, candidate, dir := newGatewayAccountTestManager(t)
++	assertGatewayRoutable(t, m, true)
++	if status, err := m.SetGatewayAccountEnabled(candidate.Index, false); err != nil || status != "unavailable" {
++		t.Fatalf("disable = %s, %v", status, err)
++	}
++	assertGatewayRoutable(t, m, false)
++	if m.HasProviderAuth("codex") || len(m.AvailableProviders()) != 0 {
++		t.Fatal("disabled account remained in provider availability")
++	}
++	info, err := os.Stat(filepath.Join(dir, GatewayAccountStateFile))
++	if err != nil || info.Mode().Perm() != 0o600 {
++		t.Fatalf("state permissions = %v, %v", info, err)
++	}
++	m.MarkResult(context.Background(), gatewayResult(candidate, nil))
++	assertGatewayRoutable(t, m, false)
++	m.mu.Lock()
++	current := m.auths[candidate.ID]
++	current.Unavailable = true
++	current.NextRetryAfter = time.Now().Add(time.Hour)
++	current.Quota = QuotaState{Exceeded: true, Reason: "credential_quota", NextRecoverAt: current.NextRetryAfter}
++	current.ModelStates = map[string]*ModelState{"gateway-model": {Status: StatusDisabled, Unavailable: true, NextRetryAfter: current.NextRetryAfter, Quota: current.Quota}, "other-model": {Unavailable: true, NextRetryAfter: current.NextRetryAfter}}
++	m.mu.Unlock()
++	if status, err := m.SetGatewayAccountEnabled(candidate.Index, true); err != nil || status != "available" {
++		t.Fatalf("enable = %s, %v", status, err)
++	}
++	current, _ = m.GetByID(candidate.ID)
++	if current.Unavailable || !current.NextRetryAfter.IsZero() || current.Quota.Exceeded || !GatewayAccountAvailable(current) {
++		t.Fatalf("enable retained account cooldown: %#v", current)
++	}
++	for _, model := range []string{"gateway-model", "other-model"} {
++		if blocked, _, _ := isAuthBlockedForModel(current, model, time.Now()); blocked {
++			t.Fatalf("enable retained model block for %s", model)
++		}
++		if projection := m.clientModelProjectionForAuth(current, model, time.Now()); projection.Suspended || projection.QuotaExceeded {
++			t.Fatalf("enable retained registry block for %s: %#v", model, projection)
++		}
++	}
++	assertGatewayRoutable(t, m, true)
++}
++
++func TestGatewayAccountQuotaLocksDuplicatesRestartAndReplacement(t *testing.T) {
++	m, candidate, dir := newGatewayAccountTestManager(t)
++	accountID := candidate.Metadata["account_id"].(string)
++	duplicate := gatewayRegisterAccount(t, m, uuid.NewString()+".json", accountID)
++	m.MarkResult(context.Background(), gatewayResult(candidate, &Error{HTTPStatus: 429, QuotaExhausted: true}))
++	for _, id := range []string{candidate.ID, duplicate.ID} {
++		current, _ := m.GetByID(id)
++		if GatewayAccountAvailable(current) {
++			t.Fatalf("quota left duplicate %s available", id)
++		}
++		if blocked, reason, _ := isAuthBlockedForModel(current, "other-model", time.Now().Add(365*24*time.Hour)); !blocked || reason != blockReasonDisabled {
++			t.Fatal("persistent quota lock expired")
++		}
++	}
++	assertGatewayRoutable(t, m, false)
++	fresh := codexOAuthDedupeAuth(candidate.ID, accountID, "2026-08-21T00:00:00Z")
++	if _, err := m.Update(context.Background(), fresh); err != nil {
++		t.Fatal(err)
++	}
++	assertGatewayRoutable(t, m, false)
++	m.Remove(context.Background(), candidate.ID)
++	m.Remove(context.Background(), duplicate.ID)
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, true); !errors.Is(err, ErrGatewayAccountNotFound) {
++		t.Fatalf("missing account enable = %v", err)
++	}
++	replacement := codexOAuthDedupeAuth(uuid.NewString()+".json", accountID, "2026-08-22T00:00:00Z")
++	restarted := NewManager(&codexOAuthDedupeStore{auths: []*Auth{replacement}}, nil, nil)
++	if err := restarted.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	if err := restarted.Load(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	loaded, _ := restarted.GetByID(replacement.ID)
++	if GatewayAccountAvailable(loaded) || loaded.Index != candidate.Index {
++		t.Fatalf("restart or file replacement cleared lock: %#v", loaded)
++	}
++}
++
++func TestGatewayAccountReenableDiscardsOldQuotaThenLocksOnNewQuota(t *testing.T) {
++	m, candidate, _ := newGatewayAccountTestManager(t)
++	quota := &Error{HTTPStatus: 429, QuotaExhausted: true}
++	m.MarkResult(context.Background(), gatewayResult(candidate, quota))
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, true); err != nil {
++		t.Fatal(err)
++	}
++	m.MarkResult(context.Background(), gatewayResult(candidate, quota))
++	m.MarkResult(context.Background(), gatewayResult(candidate, &Error{HTTPStatus: 500}))
++	assertGatewayRoutable(t, m, true)
++	current, _ := m.GetByID(candidate.ID)
++	m.MarkResult(context.Background(), gatewayResult(current, quota))
++	assertGatewayRoutable(t, m, false)
++}
++
++func TestGatewayAccountOrdinary429RecoversWithoutPersistentLock(t *testing.T) {
++	m, candidate, dir := newGatewayAccountTestManager(t)
++	result := gatewayResult(candidate, &Error{HTTPStatus: 429})
++	wait := time.Hour
++	result.RetryAfter = &wait
++	m.MarkResult(context.Background(), result)
++	current, _ := m.GetByID(candidate.ID)
++	if blocked, reason, _ := isAuthBlockedForModel(current, "gateway-model", time.Now()); !blocked || reason != blockReasonCooldown {
++		t.Fatalf("ordinary 429 = %v %v, want cooldown", blocked, reason)
++	}
++	if blocked, _, _ := isAuthBlockedForModel(current, "gateway-model", time.Now().Add(2*time.Hour)); blocked {
++		t.Fatal("ordinary 429 did not expire")
++	}
++	if !GatewayAccountAvailable(current) {
++		t.Fatal("ordinary 429 acquired persistent lock")
++	}
++	if _, err := os.Stat(filepath.Join(dir, GatewayAccountStateFile)); !errors.Is(err, os.ErrNotExist) {
++		t.Fatalf("ordinary 429 wrote control file: %v", err)
++	}
++}
++
++func TestGatewayAccountPersistenceFailureKeepsRoutingBlocked(t *testing.T) {
++	for _, enabled := range []bool{false, true} {
++		t.Run(map[bool]string{false: "disable", true: "enable"}[enabled], func(t *testing.T) {
++			m, candidate, dir := newGatewayAccountTestManager(t)
++			if enabled {
++				if _, err := m.SetGatewayAccountEnabled(candidate.Index, false); err != nil {
++					t.Fatal(err)
++				}
++			}
++			m.mu.Lock()
++			m.gatewayAccountStatePath = filepath.Join(dir, "missing", GatewayAccountStateFile)
++			m.mu.Unlock()
++			if status, err := m.SetGatewayAccountEnabled(candidate.Index, enabled); !errors.Is(err, ErrGatewayAccountStateUnavailable) || status != "" {
++				t.Fatalf("failed persistence = %q, %v", status, err)
++			}
++			assertGatewayRoutable(t, m, false)
++		})
++	}
++}
++
++func TestGatewayAccountStateLoadRejectsInvalidExistingState(t *testing.T) {
++	for _, contents := range []string{"", "null", "{}", "[]", `{"version":2,"accounts":{}}`, `{"version":1,"accounts":null}`, `{"version":1,"accounts":{}} {}`, `{"version":1,"accounts":{"bad":{}}}`} {
++		t.Run(contents, func(t *testing.T) {
++			dir := t.TempDir()
++			if err := os.WriteFile(filepath.Join(dir, GatewayAccountStateFile), []byte(contents), 0o600); err != nil {
++				t.Fatal(err)
++			}
++			if err := NewManager(nil, nil, nil).LoadGatewayAccountState(dir); !errors.Is(err, ErrGatewayAccountStateUnavailable) {
++				t.Fatalf("invalid state accepted: %v", err)
++			}
++		})
++	}
++	t.Run("non regular file", func(t *testing.T) {
++		dir := t.TempDir()
++		if err := os.Mkdir(filepath.Join(dir, GatewayAccountStateFile), 0o700); err != nil {
++			t.Fatal(err)
++		}
++		if err := NewManager(nil, nil, nil).LoadGatewayAccountState(dir); !errors.Is(err, ErrGatewayAccountStateUnavailable) {
++			t.Fatalf("directory accepted as state: %v", err)
++		}
++	})
++}
++
++func TestGatewayAccountConcurrentControlsRemainDurable(t *testing.T) {
++	m, candidate, dir := newGatewayAccountTestManager(t)
++	var wg sync.WaitGroup
++	for i := range 20 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			if _, err := m.SetGatewayAccountEnabled(candidate.Index, i%2 == 0); err != nil {
++				t.Errorf("concurrent control: %v", err)
++			}
++			m.MarkResult(context.Background(), gatewayResult(candidate, &Error{HTTPStatus: 429, QuotaExhausted: true}))
++			_ = m.List()
++		}()
++	}
++	wg.Wait()
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	data, err := os.ReadFile(filepath.Join(dir, GatewayAccountStateFile))
++	if err != nil {
++		t.Fatal(err)
++	}
++	var doc gatewayAccountStateDocument
++	if err = json.Unmarshal(data, &doc); err != nil {
++		t.Fatal(err)
++	}
++	state := doc.Accounts[candidate.Index]
++	if state.Enabled || !state.ManualDisabled || state.Version != 21 {
++		t.Fatalf("durable state = %#v", state)
++	}
++	assertGatewayRoutable(t, m, false)
++}
++
++type gatewayQuotaSignalError struct{ status int }
++
++func (e gatewayQuotaSignalError) Error() string        { return "quota exhausted" }
++func (e gatewayQuotaSignalError) StatusCode() int      { return e.status }
++func (e gatewayQuotaSignalError) QuotaExhausted() bool { return true }
++
++func TestGatewayAccountQuotaSignalAcrossOrdinaryCompactAndSSE(t *testing.T) {
++	for _, mode := range []string{"ordinary", "compact", "stream bootstrap", "stream tail"} {
++		t.Run(mode, func(t *testing.T) {
++			m, candidate, _ := newGatewayAccountTestManager(t)
++			executor := &gatewayPolicyExecutor{id: "codex", err: gatewayQuotaSignalError{status: 429}}
++			if mode == "stream tail" {
++				executor.err = nil
++				executor.tailErr = gatewayQuotaSignalError{status: 429}
++			}
++			m.RegisterExecutor(executor)
++			request := cliproxyexecutor.Request{Model: "gateway-model"}
++			if mode == "ordinary" || mode == "compact" {
++				opts := cliproxyexecutor.Options{}
++				if mode == "compact" {
++					opts.Alt = "responses/compact"
++				}
++				_, _ = m.Execute(context.Background(), []string{"codex"}, request, opts)
++			} else {
++				result, _ := m.ExecuteStream(context.Background(), []string{"codex"}, request, cliproxyexecutor.Options{Stream: true})
++				if result != nil {
++					for range result.Chunks {
++					}
++				}
++			}
++			current, _ := m.GetByID(candidate.ID)
++			if GatewayAccountAvailable(current) {
++				t.Fatalf("%s did not persist quota lock", mode)
++			}
++		})
++	}
++}
++
++func TestGatewayAccountAuthenticationAndNetworkErrorsDoNotLock(t *testing.T) {
++	for _, err := range []error{gatewayQuotaSignalError{status: http.StatusUnauthorized}, gatewayQuotaSignalError{status: http.StatusForbidden}, errors.New("connection reset")} {
++		if result := resultErrorFromError(err); result.QuotaExhausted {
++			t.Fatalf("non quota error acquired lock signal: %#v", result)
++		}
++	}
++}
++
++func TestGatewayAccountOAuthRefreshPreservesControlAndRequestVersion(t *testing.T) {
++	m, selected, _ := newGatewayAccountTestManager(t)
++	base := selected.Clone()
++	if _, err := m.SetGatewayAccountEnabled(selected.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	refreshed := base.Clone()
++	refreshed.Metadata["access_token"] = "refreshed-token"
++	refreshed.Status = StatusActive
++	refreshed.Unavailable = false
++	saved, err := m.UpdateRefreshedAuth(context.Background(), base, refreshed)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if GatewayAccountAvailable(saved) || saved.Metadata["access_token"] != "refreshed-token" {
++		t.Fatalf("refresh lost lock or credentials: %#v", saved)
++	}
++	if _, err = m.SetGatewayAccountEnabled(selected.Index, true); err != nil {
++		t.Fatal(err)
++	}
++	m.MarkResult(context.Background(), gatewayResult(selected, &Error{HTTPStatus: 429, QuotaExhausted: true}))
++	assertGatewayRoutable(t, m, true)
++}
++
++func TestGatewayAccountEnableIgnoresOldCooldownPersistence(t *testing.T) {
++	m, candidate, _ := newGatewayAccountTestManager(t)
++	old := CooldownStateRecord{AuthID: candidate.ID, Provider: "codex", Model: "gateway-model", UpdatedAt: time.Now().Add(-time.Hour), NextRetryAfter: time.Now().Add(time.Hour), Quota: QuotaState{Exceeded: true}}
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, true); err != nil {
++		t.Fatal(err)
++	}
++	m.mu.Lock()
++	restored := m.restoreCooldownRecordLocked(old, time.Now())
++	m.mu.Unlock()
++	if restored {
++		t.Fatal("reenable restored stale persisted model cooldown")
++	}
++	old.Model = ""
++	m.mu.Lock()
++	restored = m.restoreCooldownRecordLocked(old, time.Now())
++	m.mu.Unlock()
++	if restored {
++		t.Fatal("reenable restored stale persisted account cooldown")
++	}
++	assertGatewayRoutable(t, m, true)
++}
++
++func TestGatewayAccountSessionAffinityStopsUsingDisabledAccount(t *testing.T) {
++	m, _, _ := newGatewayAccountTestManager(t)
++	gatewayRegisterAccount(t, m, uuid.NewString()+".json", uuid.NewString())
++	affinity := NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{Fallback: &RoundRobinSelector{}, TTL: time.Hour})
++	t.Cleanup(affinity.Stop)
++	m.SetSelector(affinity)
++	opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.DerivedSessionIDMetadataKey: "gateway-session"}}
++	first, err := m.SelectAuth(context.Background(), "codex", "gateway-model", opts)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if _, err = m.SetGatewayAccountEnabled(first.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	second, err := m.SelectAuth(context.Background(), "codex", "gateway-model", opts)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if second.Index == first.Index {
++		t.Fatal("affinity retained disabled account")
++	}
++	if _, err = m.SetGatewayAccountEnabled(second.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	if _, err = m.SelectAuth(context.Background(), "codex", "gateway-model", opts); err == nil {
++		t.Fatal("affinity selected while all accounts disabled")
++	}
++	if _, err = m.SetGatewayAccountEnabled(first.Index, true); err != nil {
++		t.Fatal(err)
++	}
++	resumed, err := m.SelectAuth(context.Background(), "codex", "gateway-model", opts)
++	if err != nil || resumed.Index != first.Index {
++		t.Fatalf("affinity did not resume enabled account: %v %v", resumed, err)
++	}
++}
++
++func TestGatewayAccountCorruptAmbiguousStateRejected(t *testing.T) {
++	const state = `{"enabled":false,"manual_disabled":true,"quota_exhausted":false,"version":1,"updated_at":"2026-08-20T00:00:00Z"}`
++	const index = "0123456789abcdef"
++	valid := `{"version":1,"accounts":{"` + index + `":` + state + `}}`
++	var doc map[string]any
++	if err := json.Unmarshal([]byte(valid), &doc); err != nil {
++		t.Fatal(err)
++	}
++	for _, data := range []string{
++		`{"version":1,"version":1,"accounts":{}}`,
++		`{"Version":1,"accounts":{}}`,
++		`{"version":1,"accounts":{"` + index + `":` + state + `,"` + index + `":` + state + `}}`,
++		`{"version":1,"accounts":{"` + index + `":{"enabled":false,"enabled":true,"manual_disabled":false,"quota_exhausted":false,"version":1,"updated_at":"2026-08-20T00:00:00Z"}}}`,
++		`{"version":1,"accounts":{"` + index + `":{"Enabled":false,"manual_disabled":true,"quota_exhausted":false,"version":1,"updated_at":"2026-08-20T00:00:00Z"}}}`,
++		`{"version":1,"accounts":{"` + index + `":{"enabled":null,"manual_disabled":true,"quota_exhausted":false,"version":1,"updated_at":"2026-08-20T00:00:00Z"}}}`,
++		`{"version":1,"accounts":{"` + index + `":{"enabled":false,"manual_disabled":true,"version":1,"updated_at":"2026-08-20T00:00:00Z"}}}`,
++	} {
++		if _, err := decodeGatewayAccountState([]byte(data)); !errors.Is(err, ErrGatewayAccountStateUnavailable) {
++			t.Fatalf("ambiguous state accepted: %s, %v", data, err)
++		}
++	}
++	if _, err := decodeGatewayAccountState([]byte(valid)); err != nil {
++		t.Fatalf("valid state rejected: %v", err)
++	}
++}
++
++func TestGatewayAccountEnablePreservesIdentityValidation(t *testing.T) {
++	m, candidate, _ := newGatewayAccountTestManager(t)
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	m.mu.Lock()
++	m.auths[candidate.ID].Metadata["account_id"] = "different-account"
++	m.mu.Unlock()
++	if _, err := m.SetGatewayAccountEnabled(candidate.Index, true); !errors.Is(err, ErrGatewayAccountIdentityInvalid) {
++		t.Fatalf("inconsistent identity enabled: %v", err)
++	}
++	current, _ := m.GetByID(candidate.ID)
++	if GatewayAccountAvailable(current) {
++		t.Fatal("identity failure cleared lock")
++	}
++}
 diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go
 index e9e6902..896f96b 100644
 --- a/sdk/cliproxy/auth/home_session_alias.go
@@ -5594,6 +7687,19 @@ index e9e6902..896f96b 100644
 +	}
  	if strings.Contains(primary, ":agent:") {
  		return true
+ 	}
+diff --git a/sdk/cliproxy/auth/scheduler.go b/sdk/cliproxy/auth/scheduler.go
+index 94020d2..4a69678 100644
+--- a/sdk/cliproxy/auth/scheduler.go
++++ b/sdk/cliproxy/auth/scheduler.go
+@@ -670,7 +670,7 @@ func (s *authScheduler) upsertAuthLocked(auth *Auth, now time.Time) {
+ 	}
+ 
+ 	providerKey := executorKeyFromAuth(auth)
+-	if providerKey == "" || auth.Disabled || auth.Status == StatusDisabled {
++	if providerKey == "" || !GatewayAccountAvailable(auth) {
+ 		s.removeAuthFromProvidersLocked(authID)
+ 		return
  	}
 diff --git a/sdk/cliproxy/auth/selected_auth_metadata_test.go b/sdk/cliproxy/auth/selected_auth_metadata_test.go
 index 2a7433e..95d8665 100644
@@ -5709,9 +7815,18 @@ index 2a7433e..95d8665 100644
 +	}
  }
 diff --git a/sdk/cliproxy/auth/selector.go b/sdk/cliproxy/auth/selector.go
-index 75a3f22..ae94478 100644
+index 75a3f22..e24b2cd 100644
 --- a/sdk/cliproxy/auth/selector.go
 +++ b/sdk/cliproxy/auth/selector.go
+@@ -799,7 +799,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
+ 	if auth == nil {
+ 		return true, blockReasonOther, time.Time{}
+ 	}
+-	if auth.Disabled || auth.Status == StatusDisabled {
++	if !GatewayAccountAvailable(auth) {
+ 		return true, blockReasonDisabled, time.Time{}
+ 	}
+ 	if exp, ok := auth.AccessTokenExpirationTime(); ok && !exp.IsZero() && !exp.After(now) {
 @@ -1440,6 +1440,27 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
  // extractExplicitSessionIDs returns only client- or execution-provided identities.
  // LCP fallback must run after this function so explicit harness sessions remain authoritative.
@@ -5855,6 +7970,21 @@ index cab2079..921d5d6 100644
 +		t.Fatal("different caller scopes shared a parent relationship")
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/types.go b/sdk/cliproxy/auth/types.go
+index b35ceac..7e9fcdf 100644
+--- a/sdk/cliproxy/auth/types.go
++++ b/sdk/cliproxy/auth/types.go
+@@ -70,6 +70,10 @@ type Auth struct {
+ 	StatusMessage string `json:"status_message,omitempty"`
+ 	// Disabled indicates the auth is intentionally disabled by operator.
+ 	Disabled bool `json:"disabled"`
++	// GatewayAccountBlocked and GatewayAccountVersion belong to the independent
++	// durable account control store, never to an OAuth credential file.
++	GatewayAccountBlocked bool   `json:"-"`
++	GatewayAccountVersion uint64 `json:"-"`
+ 	// Unavailable flags transient provider unavailability (e.g. quota exceeded).
+ 	Unavailable bool `json:"unavailable"`
+ 	// ProxyURL overrides the global proxy setting for this auth if provided.
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
 index a1a648f..bb14697 100644
 --- a/sdk/cliproxy/executor/types.go
@@ -5871,3 +8001,46 @@ index a1a648f..bb14697 100644
  	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
  	ExecutionSessionMetadataKey = "execution_session_id"
  	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
+diff --git a/sdk/cliproxy/service_gateway_account_state_test.go b/sdk/cliproxy/service_gateway_account_state_test.go
+new file mode 100644
+index 0000000..a47f7b5
+--- /dev/null
++++ b/sdk/cliproxy/service_gateway_account_state_test.go
+@@ -0,0 +1,23 @@
++package cliproxy
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestServiceRunRejectsCorruptGatewayAccountState(t *testing.T) {
++	dir := t.TempDir()
++	if err := os.WriteFile(filepath.Join(dir, coreauth.GatewayAccountStateFile), []byte(`{"version":1,"accounts":null}`), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	service := &Service{cfg: &config.Config{AuthDir: dir}, coreManager: coreauth.NewManager(nil, nil, nil)}
++	if err := service.Run(context.Background()); !errors.Is(err, coreauth.ErrGatewayAccountStateUnavailable) {
++		t.Fatalf("corrupt state did not fail service startup: %v", err)
++	}
++}
+diff --git a/sdk/cliproxy/service_lifecycle.go b/sdk/cliproxy/service_lifecycle.go
+index e16b143..808a0f7 100644
+--- a/sdk/cliproxy/service_lifecycle.go
++++ b/sdk/cliproxy/service_lifecycle.go
+@@ -75,6 +75,9 @@ func (s *Service) Run(ctx context.Context) error {
+ 
+ 	s.registerPluginAuthParser()
+ 	if s.coreManager != nil && !homeEnabled {
++		if errState := s.coreManager.LoadGatewayAccountState(s.cfg.AuthDir); errState != nil {
++			return fmt.Errorf("cliproxy: load gateway account state: %w", errState)
++		}
+ 		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
+ 			log.Warnf("failed to load auth store: %v", errLoad)
+ 		}
