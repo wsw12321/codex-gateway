@@ -1,17 +1,27 @@
 ARG GOLANG_IMAGE=docker.io/library/golang:1.26.0-bookworm@sha256:2a0ba12e116687098780d3ce700f9ce3cb340783779646aafbabed748fa6677c
-ARG RUNTIME_IMAGE=docker.io/library/alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-20260824-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+
+FROM ${RUNTIME_IMAGE} AS runtime-base
+# Keep the ABI check and final image on the same glibc runtime. Netcat powers
+# the TCP probes without placing the internal API key in process arguments.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system --gid 10001 cliproxy \
+    && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \
+    && install -d -o 10001 -g 10001 -m 0700 \
+        /var/lib/cliproxy /var/lib/cliproxy/oauth /run/cliproxy
+USER 10001:10001
 
 FROM ${GOLANG_IMAGE} AS build
+ENV CGO_ENABLED=1 CC=gcc
 ARG CLIPROXY_VERSION
 ARG CLIPROXY_COMMIT
 ARG GEMINI_PLUGIN_COMMIT=19d9868ffa24e94a2919ea1d1a761afa634de669
 WORKDIR /src
 
-# The host uses dlopen and the plugin exposes a C ABI. Both must target musl
-# so the exact built artifacts can run together in the Alpine runtime.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends musl-tools \
-    && rm -rf /var/lib/apt/lists/*
+# Build the host and plugin against glibc. The pinned Go c-shared plugin
+# crashes during dlopen when built with musl and loaded in Alpine.
 
 # Fetch the release tag and prove that its peeled commit is the reviewed one.
 # The tag is informational; checkout is always by the full immutable commit.
@@ -82,34 +92,29 @@ WORKDIR /gemini-plugin
 RUN go mod edit -replace github.com/router-for-me/CLIProxyAPI/v7=/src \
     && go mod tidy \
     && go test -count=1 ./... \
-    && go test -race -count=1 ./internal/executor ./internal/auth ./internal/translator \
+    && go test -race -count=1 ./... \
     && go vet ./... \
-    && CGO_ENABLED=1 CC=musl-gcc GOOS=linux go build \
+    && CGO_ENABLED=1 CC=gcc GOOS=linux go build \
         -trimpath -buildmode=c-shared -ldflags="-s -w" \
         -o /out/plugins/gemini-cli.so ./cmd/geminicli
 
 WORKDIR /src
-RUN CGO_ENABLED=1 CC=musl-gcc GOOS=linux go build \
+RUN CGO_ENABLED=1 CC=gcc GOOS=linux go build \
     -trimpath \
     -ldflags="-s -w -X main.Version=${CLIPROXY_VERSION} -X main.Commit=${CLIPROXY_COMMIT}" \
     -o /out/cli-proxy-api ./cmd/server
 
-RUN CGO_ENABLED=1 CC=musl-gcc GOOS=linux go test -c \
+RUN CGO_ENABLED=1 CC=gcc GOOS=linux go test -c \
     -o /out/pluginhost.test ./internal/pluginhost
 
-FROM ${RUNTIME_IMAGE} AS verify
-COPY --from=build /out/ /out/
+FROM runtime-base AS verify
+COPY --from=build --chown=10001:10001 /out/ /out/
 RUN --network=none /out/pluginhost.test -test.list '^TestGeminiCLISharedPluginLoads$' \
     | grep -Fx 'TestGeminiCLISharedPluginLoads'
 RUN --network=none GEMINI_PLUGIN_TEST_DIR=/out/plugins /out/pluginhost.test \
     -test.run '^TestGeminiCLISharedPluginLoads$' -test.count=1 -test.v
 
-FROM ${RUNTIME_IMAGE}
-RUN addgroup -S -g 10001 cliproxy \
-    && adduser -S -D -H -u 10001 -G cliproxy cliproxy \
-    && install -d -o 10001 -g 10001 -m 0700 \
-        /var/lib/cliproxy /var/lib/cliproxy/oauth /run/cliproxy
-
+FROM runtime-base
 COPY --from=verify --chown=10001:10001 /out/cli-proxy-api /usr/local/bin/cli-proxy-api
 COPY --from=verify --chown=10001:10001 /out/plugins/gemini-cli.so /usr/local/lib/cliproxy/plugins/gemini-cli.so
 COPY --chown=10001:10001 deploy/codex-compat/entrypoint.sh /usr/local/bin/sidecar-entrypoint

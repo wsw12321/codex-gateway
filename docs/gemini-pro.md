@@ -1,8 +1,8 @@
 # 通过 Responses 接入 Gemini Pro
 
-当前默认 Alpine 方案的真实插件加载验证失败；Debian slim 候选已验证通过，运行
-镜像调整尚待确认。部署前先阅读 [验证记录](gemini-validation.md)，不要跳过镜像
-构建中的 ABI 检查。以下为完成镜像选择后的配置和验收流程。
+兼容层使用独立锁定的 Debian slim/glibc 运行镜像，构建中保留真实插件加载
+检查。Alpine/musl 加载崩溃的原因和修复验证见 [验证记录](gemini-validation.md)。
+以下为配置和真实账号验收流程。
 
 客户端继续使用原网关地址、API Key 和 `POST /v1/responses`，将模型改为
 `gemini-3.1-pro-preview`。支持普通 JSON、SSE 和函数工具调用。沿用现有用户模型
@@ -61,8 +61,9 @@ jq -c --slurpfile reviewed deploy/pricing-v2.example.json '
 # ./scripts/gemini-login.sh your-project-id
 ```
 
-构建使用同一 musl 工具链，以 `CGO_ENABLED=1 CC=musl-gcc` 构建主程序和
-`-buildmode=c-shared` 插件，在 Alpine 中实际加载 `gemini-cli.so` 并验证登录参数与
+构建使用同一 glibc 工具链，以 `CGO_ENABLED=1 CC=gcc` 构建主程序和
+`-buildmode=c-shared` 插件；在相同 Debian 运行层中
+以 UID 10001 断网加载 `gemini-cli.so` 并验证登录参数与
 合成 OAuth 文件识别。启动也检查插件登录参数，加载失败时拒绝启动。
 
 Gemini 登录与 `codex-device-login.sh` 共用 `.device-login.lock`。脚本先停止唯一

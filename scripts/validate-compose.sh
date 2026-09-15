@@ -19,7 +19,7 @@ gemini_plugin_patch=$root/deploy/codex-compat/gemini-cli-19d9868-gateway.patch
 compat_gemini_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-gemini.patch
 gemini_plugin_patch_sha256=e9c0c5c78c3fd5c3f11d4cbd5e71d5ceeeb8612c466044a79794d1a7bf50aeb7
 compat_gemini_patch_sha256=eb59891fa6e7d77cb192b9af67a3508d311183c6fd9f116ad4469790ba2391ca
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -45,12 +45,14 @@ test -s "$gemini_plugin_patch" && test -s "$compat_gemini_patch" || \
 test "$(sha256sum "$gemini_plugin_patch" | awk '{print $1}')" = "$gemini_plugin_patch_sha256" && \
     test "$(sha256sum "$compat_gemini_patch" | awk '{print $1}')" = "$compat_gemini_patch_sha256" || \
     fail 'reviewed Gemini compatibility patch checksum changed'
-grep -Fq 'musl-tools' "$compat_dockerfile" && \
+grep -Fq 'debian:bookworm-20260824-slim@sha256:' "$compat_dockerfile" && \
     grep -Fq 'CGO_ENABLED=1' "$compat_dockerfile" && \
-    grep -Fq 'CC=musl-gcc' "$compat_dockerfile" && \
+    grep -Fq 'CC=gcc' "$compat_dockerfile" && \
     grep -Fq -- '-buildmode=c-shared' "$compat_dockerfile" && \
+    grep -Fxq 'FROM runtime-base AS verify' "$compat_dockerfile" && \
+    grep -Fxq 'FROM runtime-base' "$compat_dockerfile" && \
     grep -Fq 'TestGeminiCLISharedPluginLoads' "$compat_dockerfile" || \
-    fail 'codex-compat must build with musl and test the actual shared Gemini plugin'
+    fail 'codex-compat must build with glibc and test the actual shared Gemini plugin in its runtime base'
 grep -Fq 'gemini-cli-19d9868-gateway.patch' "$compat_dockerfile" && \
     grep -Fq 'cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" || \
     fail 'codex-compat must apply both reviewed Gemini compatibility patches'
@@ -407,7 +409,13 @@ postgres_image=$(lock_value POSTGRES_IMAGE)
 golang_image=$(lock_value GOLANG_IMAGE)
 cliproxy_golang_image=$(lock_value CLIPROXY_GOLANG_IMAGE)
 runtime_image=$(lock_value RUNTIME_IMAGE)
+cliproxy_runtime_image=$(lock_value CLIPROXY_RUNTIME_IMAGE)
 squid_image=$(lock_value SQUID_IMAGE)
+
+case "$cliproxy_runtime_image" in
+    docker.io/library/debian:bookworm-20260824-slim@sha256:*) ;;
+    *) fail 'codex-compat requires its own reviewed Debian glibc runtime lock' ;;
+esac
 
 # Validate the rendered configuration, not only the lock file. This catches
 # Compose precedence regressions or inherited shell variables that would
@@ -419,6 +427,7 @@ jq -e \
     --arg golang "$golang_image" \
     --arg cliproxy_golang "$cliproxy_golang_image" \
     --arg runtime "$runtime_image" \
+    --arg cliproxy_runtime "$cliproxy_runtime_image" \
     --arg squid "$squid_image" '
   .services.caddy.image == $caddy and
   .services.cloudflared.image == $cloudflared and
@@ -427,7 +436,7 @@ jq -e \
   .services.gateway.build.args.GOLANG_IMAGE == $golang and
   .services.gateway.build.args.RUNTIME_IMAGE == $runtime and
   .services["codex-compat"].build.args.GOLANG_IMAGE == $cliproxy_golang and
-  .services["codex-compat"].build.args.RUNTIME_IMAGE == $runtime
+  .services["codex-compat"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
 ' "$tmp" >/dev/null
 
 jq -e --arg gemini_plugin_commit "$gemini_plugin_commit" '
@@ -439,7 +448,7 @@ jq -e --arg gemini_plugin_commit "$gemini_plugin_commit" '
     fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI and Gemini plugin commits'
 
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
-    fail 'codex-compat image tag must identify the reviewed multi-account and Gemini patches'
+    fail 'codex-compat image tag must identify the reviewed multi-account and Gemini patches and glibc runtime'
 
 gateway_image=$(jq -r '.services.gateway.image' "$tmp")
 gateway_version=$(jq -r '.services.gateway.build.args.VERSION' "$tmp")

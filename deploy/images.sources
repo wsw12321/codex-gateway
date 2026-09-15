@@ -6,5 +6,6 @@ POSTGRES_IMAGE|docker.io/library/postgres:17.6-alpine3.22
 GOLANG_IMAGE|docker.io/library/golang:1.24.6-bookworm
 CLIPROXY_GOLANG_IMAGE|docker.io/library/golang:1.26.0-bookworm
 RUNTIME_IMAGE|docker.io/library/alpine:3.22.1
+CLIPROXY_RUNTIME_IMAGE|docker.io/library/debian:bookworm-20260824-slim
 SQUID_IMAGE|docker.io/ubuntu/squid:6.6-24.04_beta
 TRIVY_IMAGE|docker.io/aquasec/trivy:0.64.1
