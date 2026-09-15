@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-09-05",
+  "catalog_as_of": "2026-09-15",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -129,6 +129,17 @@
         "standard": {"short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "4.5"}},
         "flex": {"short": {"input_usd_per_million": "0.375", "cached_input_usd_per_million": "0.0375", "output_usd_per_million": "2.25"}},
         "fast": {"short": {"input_usd_per_million": "1.5", "cached_input_usd_per_million": "0.15", "output_usd_per_million": "9"}}
+      }
+    },
+    "gemini-3.1-pro-preview": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 200000,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "2", "cached_input_usd_per_million": "0.20", "output_usd_per_million": "12"},
+          "long": {"input_usd_per_million": "4", "cached_input_usd_per_million": "0.40", "output_usd_per_million": "18"}
+        }
       }
     },
     "codex-auto-review": {

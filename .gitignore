@@ -10,3 +10,4 @@ backups/
 coverage.out
 sbom*.json
 .device-login.lock
+__pycache__/

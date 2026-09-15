@@ -183,8 +183,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-00633c2417755730`；最后一段为固定多账号补丁 SHA256 的
-前 16 位，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a`；标签记录多账号补丁、Gemini 插件提交及新增补丁组的校验，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 
 ## 3. 服务密钥
 
@@ -302,6 +301,11 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 
 ## 5. 上游设备码登录
 
+Gemini 使用 `./scripts/gemini-login.sh [project-id]`，与 Codex 共用登录锁和唯一
+sidecar，支持服务器端粘贴 OAuth 回调。价格目录升级、Google 域名出口、插件加载
+检查及真实账号请求见 [Gemini Pro 接入说明](gemini-pro.md)。
+
+
 登录只能通过 SSH 执行：
 
 ```sh
@@ -312,7 +316,7 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 
 1. 停止唯一的 `codex-compat` 实例，确认已停止后移除容器以释放固定 IP；命名
    OAuth volume 始终保留。
-2. 通过 sidecar 的本地命令记录现有 Codex OAuth 文件名和内容的 secret-keyed
+2. 通过 sidecar 的本地命令记录所有 OAuth JSON 文件名和内容的 secret-keyed
    SHA-256；不输出可离线猜测的裸文件名哈希、文件名、邮箱或 token。
 3. 保持域名白名单出口代理运行，执行一次 `--codex-device-login`，添加一个新账号
    或刷新同一账号。

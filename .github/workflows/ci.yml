@@ -142,6 +142,8 @@ jobs:
           grep -q 'CLIProxyAPI v7.2.150' THIRD_PARTY_NOTICES
           grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' THIRD_PARTY_NOTICES
           grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' docker-compose.yml
+          grep -q '19d9868ffa24e94a2919ea1d1a761afa634de669' THIRD_PARTY_NOTICES
+          grep -q '19d9868ffa24e94a2919ea1d1a761afa634de669' docker-compose.yml
       - name: Generate CycloneDX SBOM
         run: >-
           go run github.com/anchore/syft/cmd/syft@v1.30.0
@@ -205,11 +207,15 @@ jobs:
           set -eu
           ./scripts/validate-compose.sh
           ./scripts/compose.sh config --quiet
+      - name: OAuth login isolation regressions
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Build immutable application images
         shell: bash
         run: |
           set -eu
           ./scripts/compose.sh build gateway codex-compat
+      - name: Verify sidecar runtime without site credentials
+        run: ./scripts/test-sidecar-image.sh
       - name: Scan application images with digest-locked Trivy
         shell: bash
         run: |

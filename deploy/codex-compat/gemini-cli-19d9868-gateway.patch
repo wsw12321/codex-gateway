@@ -1,0 +1,914 @@
+diff --git a/cmd/geminicli/abi.go b/cmd/geminicli/abi.go
+index 2b56674..16a0168 100644
+--- a/cmd/geminicli/abi.go
++++ b/cmd/geminicli/abi.go
+@@ -315,11 +315,13 @@ func handleABIMethod(ctx context.Context, method string, request []byte) ([]byte
+ 		}
+ 		req := rpcReq.ExecutorRequest
+ 		req.HTTPClient = abiHostHTTPClient{callbackID: rpcReq.HostCallbackID}
+-		resp, errCall := p.ExecuteStream(ctx, req)
++		streamCtx, cancel := context.WithCancel(ctx)
++		resp, errCall := p.ExecuteStream(streamCtx, req)
+ 		if errCall != nil {
++			cancel()
+ 			return nil, errCall
+ 		}
+-		streamResp, errMarshal := marshalABIStreamResponse(ctx, rpcReq.StreamID, resp)
++		streamResp, errMarshal := marshalABIStreamResponse(streamCtx, cancel, rpcReq.StreamID, resp)
+ 		if errMarshal != nil {
+ 			return nil, errMarshal
+ 		}
+@@ -443,25 +445,37 @@ func (c abiHostHTTPClient) DoStream(ctx context.Context, req pluginapi.HTTPReque
+ 
+ func readHostHTTPStream(ctx context.Context, streamID string, out chan<- pluginapi.HTTPStreamChunk) {
+ 	defer close(out)
+-	for {
++	// A host read can be waiting on the upstream socket when the stream pump
++	// loses its client. Close the host stream to interrupt that callback too.
++	closeStream := sync.OnceFunc(func() { closeHostHTTPStream(streamID) })
++	stopClose := context.AfterFunc(ctx, closeStream)
++	defer func() {
++		stopClose()
++		closeStream()
++	}()
++	send := func(chunk pluginapi.HTTPStreamChunk) bool {
+ 		select {
+ 		case <-ctx.Done():
+-			closeHostHTTPStream(streamID)
++			return false
++		case out <- chunk:
++			return true
++		}
++	}
++	for {
++		if ctx.Err() != nil {
+ 			return
+-		default:
+ 		}
+ 		resp, errRead := callHost[abiHostHTTPStreamReadResponse](pluginabi.MethodHostHTTPStreamRead, abiHostHTTPStreamReadRequest{StreamID: streamID})
+ 		if errRead != nil {
+-			closeHostHTTPStream(streamID)
+-			out <- pluginapi.HTTPStreamChunk{Err: errRead}
++			send(pluginapi.HTTPStreamChunk{Err: errRead})
+ 			return
+ 		}
+-		if resp.Error != "" {
+-			out <- pluginapi.HTTPStreamChunk{Err: fmt.Errorf("%s", resp.Error)}
++		if len(resp.Payload) > 0 && !send(pluginapi.HTTPStreamChunk{Payload: append([]byte(nil), resp.Payload...)}) {
+ 			return
+ 		}
+-		if len(resp.Payload) > 0 {
+-			out <- pluginapi.HTTPStreamChunk{Payload: append([]byte(nil), resp.Payload...)}
++		if resp.Error != "" {
++			send(pluginapi.HTTPStreamChunk{Err: fmt.Errorf("%s", resp.Error)})
++			return
+ 		}
+ 		if resp.Done {
+ 			return
+@@ -473,19 +487,21 @@ func closeHostHTTPStream(streamID string) {
+ 	_, _ = callHost[abiEmptyResponse](pluginabi.MethodHostHTTPStreamClose, abiHostHTTPStreamCloseRequest{StreamID: streamID})
+ }
+ 
+-func marshalABIStreamResponse(ctx context.Context, streamID string, resp pluginapi.ExecutorStreamResponse) (abiExecutorStreamResponse, error) {
++func marshalABIStreamResponse(ctx context.Context, cancel context.CancelFunc, streamID string, resp pluginapi.ExecutorStreamResponse) (abiExecutorStreamResponse, error) {
+ 	if streamID == "" {
++		defer cancel()
+ 		chunks := make([]pluginapi.ExecutorStreamChunk, 0)
+ 		for chunk := range resp.Chunks {
+ 			chunks = append(chunks, chunk)
+ 		}
+ 		return abiExecutorStreamResponse{Headers: resp.Headers, Chunks: chunks}, nil
+ 	}
+-	go pumpABIStream(ctx, streamID, resp.Chunks)
++	go pumpABIStream(ctx, cancel, streamID, resp.Chunks)
+ 	return abiExecutorStreamResponse{Headers: resp.Headers}, nil
+ }
+ 
+-func pumpABIStream(ctx context.Context, streamID string, chunks <-chan pluginapi.ExecutorStreamChunk) {
++func pumpABIStream(ctx context.Context, cancel context.CancelFunc, streamID string, chunks <-chan pluginapi.ExecutorStreamChunk) {
++	defer cancel()
+ 	errorMessage := ""
+ 	defer func() {
+ 		_, _ = callHost[abiEmptyResponse](pluginabi.MethodHostStreamClose, abiHostStreamCloseRequest{StreamID: streamID, Error: errorMessage})
+diff --git a/cmd/geminicli/gateway_stream_test.go b/cmd/geminicli/gateway_stream_test.go
+new file mode 100644
+index 0000000..981e2e1
+--- /dev/null
++++ b/cmd/geminicli/gateway_stream_test.go
+@@ -0,0 +1,50 @@
++//go:build cgo
++
++package main
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
++)
++
++func TestGatewayABIPumpCancelsUpstreamOnHostEmitFailure(t *testing.T) {
++	// No host callback is registered: emission fails exactly as it does after
++	// the host removes a cancelled downstream stream.
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	chunks := make(chan pluginapi.ExecutorStreamChunk, 1)
++	chunks <- pluginapi.ExecutorStreamChunk{Payload: []byte(`{"partial":true}`)}
++	done := make(chan struct{})
++	go func() {
++		pumpABIStream(ctx, cancel, "removed-client-stream", chunks)
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("ABI pump blocked after failed host emit")
++	}
++	if ctx.Err() != context.Canceled {
++		t.Fatal("ABI pump left the upstream parser running after client loss")
++	}
++}
++
++func TestGatewayABIHTTPReaderCancellationUnblocksErrorSend(t *testing.T) {
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	chunks := make(chan pluginapi.HTTPStreamChunk)
++	done := make(chan struct{})
++	go func() {
++		readHostHTTPStream(ctx, "removed-upstream-stream", chunks)
++		close(done)
++	}()
++	cancel()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("ABI HTTP reader leaked while publishing a cancellation error")
++	}
++}
+diff --git a/internal/executor/executor.go b/internal/executor/executor.go
+index b6c260d..f317479 100644
+--- a/internal/executor/executor.go
++++ b/internal/executor/executor.go
+@@ -169,26 +169,6 @@ func (missingClient) DoStream(context.Context, pluginapi.HTTPRequest) (pluginapi
+ 	return pluginapi.HTTPStreamResponse{}, fmt.Errorf("host HTTP client is required")
+ }
+ 
+-func convertHTTPChunks(ctx context.Context, in <-chan pluginapi.HTTPStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
+-	out := make(chan pluginapi.ExecutorStreamChunk)
+-	go func() {
+-		defer close(out)
+-		for {
+-			select {
+-			case <-ctx.Done():
+-				out <- pluginapi.ExecutorStreamChunk{Err: ctx.Err()}
+-				return
+-			case chunk, ok := <-in:
+-				if !ok {
+-					return
+-				}
+-				out <- pluginapi.ExecutorStreamChunk{Payload: compat.UnwrapResponse(chunk.Payload), Err: chunk.Err}
+-			}
+-		}
+-	}()
+-	return out
+-}
+-
+ func readStreamErrorBody(ctx context.Context, chunks <-chan pluginapi.HTTPStreamChunk) []byte {
+ 	if chunks == nil {
+ 		return nil
+diff --git a/internal/executor/gateway_functions_test.go b/internal/executor/gateway_functions_test.go
+new file mode 100644
+index 0000000..a0aece4
+--- /dev/null
++++ b/internal/executor/gateway_functions_test.go
+@@ -0,0 +1,165 @@
++package executor
++
++import (
++	"bytes"
++	"context"
++	"encoding/base64"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"testing"
++
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/translator/builtin"
++	"github.com/tidwall/gjson"
++)
++
++func TestGatewaySignedParallelFunctionCallsRoundTrip(t *testing.T) {
++	// Valid Gemini function signature shape: a protobuf wrapper around a UUID.
++	signatures := map[string]string{}
++	for id, uuid := range map[string]string{
++		"native-weather-1": "e24830a7-5cd6-42fe-998b-ee539e72b9c3",
++		"native-weather-2": "e24830a7-5cd6-42fe-998b-ee539e72b9c4",
++	} {
++		signatures[id] = base64.StdEncoding.EncodeToString(append([]byte{0x12, 0x26, 0x0a, 0x24}, uuid...))
++	}
++	original := []byte(`{"model":"gemini-3.1-pro-preview","input":"Compare Shanghai and Beijing weather.","tools":[{"type":"function","name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}`)
++	providerBody := fmt.Sprintf(`{"response":{"candidates":[{"content":{"role":"model","parts":[
++		{"thoughtSignature":%q,"functionCall":{"name":"weather","id":"native-weather-1","args":{"city":"Shanghai"}}},
++		{"thoughtSignature":%q,"functionCall":{"name":"weather","id":"native-weather-2","args":{"city":"Beijing"}}}
++	]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":15},"modelVersion":"gemini-3.1-pro-preview","responseId":"resp_signed_tools"}}`, signatures["native-weather-1"], signatures["native-weather-2"])
++	// A single data line must not contain the pretty-print newlines above.
++	var compact bytes.Buffer
++	if err := json.Compact(&compact, []byte(providerBody)); err != nil {
++		t.Fatal(err)
++	}
++	providerBody = compact.String()
++
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
++			client := &gatewayMockHTTP{status: http.StatusOK, chunkSize: 7, wire: providerBody}
++			if stream {
++				client.wire = "data: " + providerBody + "\n\n"
++			}
++			response, replay := gatewaySignedFunctionResponse(t, client, original, stream)
++			callCount, signatureCount := 0, 0
++			for _, itemJSON := range replay {
++				item := gjson.ParseBytes(itemJSON)
++				switch item.Get("type").String() {
++				case "function_call":
++					callCount++
++					id := item.Get("call_id").String()
++					if _, ok := signatures[id]; !ok || item.Get("name").String() != "weather" {
++						t.Fatalf("provider call ID or name lost: %s", itemJSON)
++					}
++				case "reasoning":
++					if item.Get("encrypted_content").String() == "" {
++						t.Fatalf("signature carrier is empty: %s", itemJSON)
++					}
++					signatureCount++
++				}
++			}
++			if callCount != 2 || signatureCount != 2 || gjson.GetBytes(response, "usage.output_tokens").Int() != 5 {
++				t.Fatalf("signed tool outputs or reasoning usage lost: %s", response)
++			}
++
++			// Replay all returned items, including opaque reasoning carriers, as a
++			// Responses client does. Results arrive in reverse call order to prove
++			// that two calls to the same tool retain their own ID and signature.
++			replay = append(replay,
++				json.RawMessage(`{"type":"function_call_output","call_id":"native-weather-2","output":"Beijing: cloudy"}`),
++				json.RawMessage(`{"type":"function_call_output","call_id":"native-weather-1","output":"Shanghai: sunny"}`),
++			)
++			followUp, err := json.Marshal(map[string]any{
++				"model": gatewayGeminiModel, "input": replay,
++				"tools": json.RawMessage(gjson.GetBytes(original, "tools").Raw),
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			client.wire = `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"Shanghai is sunny; Beijing is cloudy."}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.1-pro-preview","responseId":"resp_signed_result"}}`
++			if stream {
++				client.wire = "data: " + client.wire + "\n\n"
++			}
++			gatewaySignedFunctionResponse(t, client, followUp, stream)
++			if len(client.requests) != 2 {
++				t.Fatalf("upstream requests = %d, want 2", len(client.requests))
++			}
++			calls, results := map[string]gjson.Result{}, map[string]gjson.Result{}
++			for _, content := range gjson.GetBytes(client.requests[1].Body, "request.contents").Array() {
++				for _, part := range content.Get("parts").Array() {
++					if call := part.Get("functionCall"); call.Exists() {
++						calls[call.Get("id").String()] = part
++					}
++					if result := part.Get("functionResponse"); result.Exists() {
++						results[result.Get("id").String()] = part
++					}
++				}
++			}
++			if len(calls) != 2 || len(results) != 2 {
++				t.Fatalf("parallel call/result pairing lost: %s", client.requests[1].Body)
++			}
++			for _, want := range []struct{ id, city, result string }{
++				{"native-weather-1", "Shanghai", "Shanghai: sunny"},
++				{"native-weather-2", "Beijing", "Beijing: cloudy"},
++			} {
++				call, result := calls[want.id], results[want.id]
++				if call.Get("thoughtSignature").String() != signatures[want.id] ||
++					call.Get("functionCall.name").String() != "weather" || call.Get("functionCall.args.city").String() != want.city ||
++					result.Get("functionResponse.name").String() != "weather" || result.Get("functionResponse.response.result").String() != want.result ||
++					result.Get("thoughtSignature").Exists() {
++					t.Fatalf("signed call/result changed: call=%s result=%s", call.Raw, result.Raw)
++				}
++			}
++		})
++	}
++}
++
++func gatewaySignedFunctionResponse(t *testing.T, client *gatewayMockHTTP, original []byte, stream bool) ([]byte, []json.RawMessage) {
++	t.Helper()
++	req := gatewayRequest(t, client, original, stream, false)
++	if !stream {
++		response, err := NewExecutor().Execute(context.Background(), req)
++		if err != nil {
++			t.Fatal(err)
++		}
++		result := builtin.Registry().TranslateNonStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, gatewayGeminiModel, original, req.Payload, response.Payload, nil)
++		var replay []json.RawMessage
++		if err := json.Unmarshal([]byte(gjson.GetBytes(result, "output").Raw), &replay); err != nil {
++			t.Fatalf("decode full Responses output: %v: %s", err, result)
++		}
++		return result, replay
++	}
++	response, err := NewExecutor().ExecuteStream(context.Background(), req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var state any
++	var result []byte
++	var replay []json.RawMessage
++	for chunk := range response.Chunks {
++		if chunk.Err != nil {
++			t.Fatal(chunk.Err)
++		}
++		for _, event := range builtin.Registry().TranslateStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, gatewayGeminiModel, original, req.Payload, chunk.Payload, &state) {
++			_, data, ok := bytes.Cut(event, []byte("data: "))
++			if !ok {
++				t.Fatalf("invalid Responses SSE event: %s", event)
++			}
++			payload := gjson.ParseBytes(bytes.TrimSpace(data))
++			switch payload.Get("type").String() {
++			case "response.output_item.done":
++				replay = append(replay, json.RawMessage(payload.Get("item").Raw))
++			case "response.completed":
++				if len(result) > 0 {
++					t.Fatal("duplicate Responses completion")
++				}
++				result = []byte(payload.Get("response").Raw)
++			}
++		}
++	}
++	if len(result) == 0 || len(replay) == 0 || len(gjson.GetBytes(result, "output").Array()) != len(replay) {
++		t.Fatalf("streamed output/completion mismatch: result=%s items=%v", result, replay)
++	}
++	return result, replay
++}
+diff --git a/internal/executor/gateway_responses_test.go b/internal/executor/gateway_responses_test.go
+new file mode 100644
+index 0000000..023c592
+--- /dev/null
++++ b/internal/executor/gateway_responses_test.go
+@@ -0,0 +1,188 @@
++package executor
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
++	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/translator/builtin"
++	"github.com/tidwall/gjson"
++)
++
++const gatewayGeminiModel = "gemini-3.1-pro-preview"
++
++type gatewayMockHTTP struct {
++	requests  []pluginapi.HTTPRequest
++	wire      string
++	chunkSize int
++	status    int
++}
++
++func (m *gatewayMockHTTP) Do(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
++	m.requests = append(m.requests, req)
++	if req.URL == "https://oauth2.googleapis.com/token" {
++		return pluginapi.HTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"access_token":"new-access","refresh_token":"refresh-token","token_type":"Bearer","expires_in":3600}`)}, nil
++	}
++	return pluginapi.HTTPResponse{StatusCode: m.status, Body: []byte(m.wire)}, nil
++}
++
++func (m *gatewayMockHTTP) DoStream(_ context.Context, req pluginapi.HTTPRequest) (pluginapi.HTTPStreamResponse, error) {
++	m.requests = append(m.requests, req)
++	var parts []string
++	for wire := m.wire; len(wire) > 0; {
++		n := len(wire)
++		if m.chunkSize > 0 && n > m.chunkSize {
++			n = m.chunkSize
++		}
++		parts = append(parts, wire[:n])
++		wire = wire[n:]
++	}
++	return pluginapi.HTTPStreamResponse{StatusCode: m.status, Chunks: streamTestChunks(parts...)}, nil
++}
++
++func gatewayRequest(t *testing.T, client pluginapi.HostHTTPClient, original []byte, stream, expired bool) pluginapi.ExecutorRequest {
++	t.Helper()
++	storage := `{"type":"gemini-cli","project_id":"test-project","access_token":"current-access","refresh_token":"refresh-token"}`
++	if expired {
++		storage = fmt.Sprintf(`{"type":"gemini-cli","project_id":"test-project","access_token":"old-access","refresh_token":"refresh-token","expiry":%q}`, time.Now().Add(-time.Hour).Format(time.RFC3339))
++	}
++	return pluginapi.ExecutorRequest{
++		Model:       gatewayGeminiModel,
++		Payload:     builtin.Registry().TranslateRequest(sdktranslator.FormatOpenAIResponse, sdktranslator.FormatGemini, gatewayGeminiModel, original, stream),
++		StorageJSON: []byte(storage),
++		HTTPClient:  client,
++		Headers:     http.Header{"Authorization": {"Bearer gateway-private-key"}, "X-Codex-Upstream-Account": {"private-account"}, "X-Codex-Caller-Scope": {"private-caller"}},
++	}
++}
++
++func TestGatewayResponsesJSONAndSSEWithTokenRefresh(t *testing.T) {
++	original := []byte(`{"model":"gemini-3.1-pro-preview","input":"hello"}`)
++	final := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":15,"cachedContentTokenCount":4},"modelVersion":"gemini-3.1-pro-preview","responseId":"resp_gateway"}}`
++	for _, mode := range []string{"json", "sse split", "sse coalesced"} {
++		t.Run(mode, func(t *testing.T) {
++			stream := mode != "json"
++			client := &gatewayMockHTTP{status: http.StatusOK, wire: final}
++			if stream {
++				// First event is a nonterminal text delta; final event owns usage.
++				client.wire = "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello \"}]}}],\"responseId\":\"resp_gateway\"}}\n\n" + "data: " + final + "\n\n"
++				if mode == "sse split" {
++					client.chunkSize = 7
++				}
++			}
++			req := gatewayRequest(t, client, original, stream, true)
++			var result []byte
++			if stream {
++				response, err := NewExecutor().ExecuteStream(context.Background(), req)
++				if err != nil {
++					t.Fatal(err)
++				}
++				var state any
++				completions := 0
++				for chunk := range response.Chunks {
++					if chunk.Err != nil {
++						t.Fatal(chunk.Err)
++					}
++					for _, event := range builtin.Registry().TranslateStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, gatewayGeminiModel, original, req.Payload, chunk.Payload, &state) {
++						if bytes.Contains(event, []byte("event: response.completed\n")) {
++							completions++
++							_, data, _ := bytes.Cut(event, []byte("data: "))
++							result = []byte(gjson.GetBytes(bytes.TrimSpace(data), "response").Raw)
++						}
++					}
++				}
++				if completions != 1 {
++					t.Fatalf("completion count=%d", completions)
++				}
++			} else {
++				response, err := NewExecutor().Execute(context.Background(), req)
++				if err != nil {
++					t.Fatal(err)
++				}
++				result = builtin.Registry().TranslateNonStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, gatewayGeminiModel, original, req.Payload, response.Payload, nil)
++			}
++			if !gjson.ValidBytes(result) || gjson.GetBytes(result, "model").String() != gatewayGeminiModel || gjson.GetBytes(result, "status").String() != "completed" {
++				t.Fatalf("invalid Responses reply: %s", result)
++			}
++			for path, want := range map[string]int64{"usage.input_tokens": 10, "usage.output_tokens": 5, "usage.output_tokens_details.reasoning_tokens": 3, "usage.input_tokens_details.cached_tokens": 4, "usage.total_tokens": 15} {
++				if got := gjson.GetBytes(result, path).Int(); got != want {
++					t.Fatalf("%s=%d want=%d: %s", path, got, want, result)
++				}
++			}
++			if len(client.requests) != 2 || client.requests[0].URL != "https://oauth2.googleapis.com/token" || client.requests[1].Headers.Get("Authorization") != "Bearer new-access" {
++				t.Fatal("upstream generation did not use the refreshed credential")
++			}
++			for _, name := range []string{"X-Codex-Upstream-Account", "X-Codex-Caller-Scope"} {
++				if client.requests[1].Headers.Get(name) != "" {
++					t.Fatalf("private client header %s reached Google", name)
++				}
++			}
++			if got := gjson.GetBytes(client.requests[1].Body, "model").String(); got != gatewayGeminiModel {
++				t.Fatalf("upstream model=%q", got)
++			}
++		})
++	}
++}
++
++func TestGatewayResponsesFunctionCallRoundTrip(t *testing.T) {
++	original := []byte(`{"model":"gemini-3.1-pro-preview","input":"weather?","tools":[{"type":"function","name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}`)
++	client := &gatewayMockHTTP{status: http.StatusOK, wire: `{"response":{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"weather","id":"upstream-call","args":{"city":"Shanghai"}}}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.1-pro-preview","responseId":"resp_tool"}}`}
++	req := gatewayRequest(t, client, original, false, false)
++	response, err := NewExecutor().Execute(context.Background(), req)
++	if err != nil {
++		t.Fatal(err)
++	}
++	result := builtin.Registry().TranslateNonStream(context.Background(), sdktranslator.FormatGemini, sdktranslator.FormatOpenAIResponse, gatewayGeminiModel, original, req.Payload, response.Payload, nil)
++	var call gjson.Result
++	for _, item := range gjson.GetBytes(result, "output").Array() {
++		if item.Get("type").String() == "function_call" {
++			call = item
++		}
++	}
++	if call.Get("name").String() != "weather" || call.Get("call_id").String() == "" || gjson.Get(call.Get("arguments").String(), "city").String() != "Shanghai" {
++		t.Fatalf("function call lost: %s", result)
++	}
++	followUp, err := json.Marshal(map[string]any{"model": gatewayGeminiModel, "input": []any{json.RawMessage(call.Raw), map[string]any{"type": "function_call_output", "call_id": call.Get("call_id").String(), "output": "sunny"}}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	client.wire = `{"response":{"candidates":[{"content":{"parts":[{"text":"It is sunny."}]},"finishReason":"STOP"}],"modelVersion":"gemini-3.1-pro-preview"}}`
++	_, err = NewExecutor().Execute(context.Background(), gatewayRequest(t, client, followUp, false, false))
++	if err != nil {
++		t.Fatal(err)
++	}
++	found := false
++	for _, content := range gjson.GetBytes(client.requests[1].Body, "request.contents").Array() {
++		for _, part := range content.Get("parts").Array() {
++			fr := part.Get("functionResponse")
++			if fr.Get("name").String() == "weather" && fr.Get("response.result").String() == "sunny" {
++				found = true
++			}
++		}
++	}
++	if !found {
++		t.Fatalf("function result did not round-trip: %s", client.requests[1].Body)
++	}
++}
++
++func TestGatewayUpstreamRateLimitIsAnErrorForJSONAndSSE(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		client := &gatewayMockHTTP{status: http.StatusTooManyRequests, wire: `{"error":{"message":"quota exceeded"}}`, chunkSize: 3}
++		req := gatewayRequest(t, client, []byte(`{"input":"hello"}`), stream, false)
++		var err error
++		if stream {
++			_, err = NewExecutor().ExecuteStream(context.Background(), req)
++		} else {
++			_, err = NewExecutor().Execute(context.Background(), req)
++		}
++		status, ok := err.(interface{ StatusCode() int })
++		if !ok || status.StatusCode() != http.StatusTooManyRequests || err.Error() != "quota exceeded" || len(client.requests) != 1 {
++			t.Fatalf("stream=%t: rate limit=%v, requests=%d", stream, err, len(client.requests))
++		}
++	}
++}
+diff --git a/internal/executor/request_test.go b/internal/executor/request_test.go
+index 6fc774b..209ee06 100644
+--- a/internal/executor/request_test.go
++++ b/internal/executor/request_test.go
+@@ -288,7 +288,7 @@ func TestExecuteRefreshesExpiredStorageBeforeRequest(t *testing.T) {
+ 
+ func TestExecuteStreamReturnsGeminiChunks(t *testing.T) {
+ 	chunks := make(chan pluginapi.HTTPStreamChunk, 1)
+-	chunks <- pluginapi.HTTPStreamChunk{Payload: []byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}}`)}
++	chunks <- pluginapi.HTTPStreamChunk{Payload: []byte(`data: {"response":{"candidates":[{"content":{"parts":[{"text":"hi"}]} ,"finishReason":"STOP"}]}}` + "\n\n")}
+ 	close(chunks)
+ 
+ 	resp, errExecute := NewExecutor().ExecuteStream(context.Background(), pluginapi.ExecutorRequest{
+diff --git a/internal/executor/stream.go b/internal/executor/stream.go
+new file mode 100644
+index 0000000..b87d020
+--- /dev/null
++++ b/internal/executor/stream.go
+@@ -0,0 +1,178 @@
++package executor
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"fmt"
++	"io"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
++	"github.com/router-for-me/CLIProxyAPIPlugins/geminicli/internal/compat"
++	"github.com/tidwall/gjson"
++	"github.com/tidwall/sjson"
++)
++
++const maxStreamEventBytes = 4 << 20
++
++// HTTP chunks are arbitrary network reads, not SSE events. Decode complete
++// events before removing the Cloud Code envelope or invoking host translation.
++func convertHTTPChunks(ctx context.Context, in <-chan pluginapi.HTTPStreamChunk) <-chan pluginapi.ExecutorStreamChunk {
++	out := make(chan pluginapi.ExecutorStreamChunk)
++	go func() {
++		defer close(out)
++		send := func(chunk pluginapi.ExecutorStreamChunk) bool {
++			select {
++			case <-ctx.Done():
++				return false
++			case out <- chunk:
++				return true
++			}
++		}
++		scanner := bufio.NewScanner(&httpChunkReader{ctx: ctx, chunks: in})
++		scanner.Buffer(make([]byte, 4096), maxStreamEventBytes)
++		scanner.Split(splitSSELines)
++		var data, pendingTerminal []byte
++		emitPending := func() bool {
++			if len(pendingTerminal) == 0 {
++				return true
++			}
++			ok := send(pluginapi.ExecutorStreamChunk{Payload: pendingTerminal})
++			pendingTerminal = nil
++			return ok
++		}
++		hasData, firstLine, terminal := false, true, false
++		for scanner.Scan() {
++			line := scanner.Bytes()
++			if firstLine {
++				line = bytes.TrimPrefix(line, []byte{0xef, 0xbb, 0xbf})
++				firstLine = false
++			}
++			if len(line) == 0 {
++				if !hasData {
++					continue
++				}
++				payload := bytes.TrimSpace(data)
++				if bytes.Equal(payload, []byte("[DONE]")) {
++					if !terminal {
++						send(pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("gemini-cli: stream ended before finishReason: %w", io.ErrUnexpectedEOF)})
++					} else {
++						emitPending()
++					}
++					return
++				}
++				if !json.Valid(payload) {
++					send(pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("gemini-cli: invalid SSE event JSON")})
++					return
++				}
++				// The host usage observer consumes one JSON line per event.
++				var compact bytes.Buffer
++				_ = json.Compact(&compact, payload)
++				unwrapped := compat.UnwrapResponse(compact.Bytes())
++				usage := gjson.GetBytes(unwrapped, "usageMetadata")
++				candidates := gjson.GetBytes(unwrapped, "candidates").Array()
++				if len(pendingTerminal) > 0 {
++					// Google can send usage in a final metadata-only event. Merge it
++					// before the host translator emits response.completed.
++					if usage.Exists() && len(candidates) == 0 {
++						pendingTerminal, _ = sjson.SetRawBytes(pendingTerminal, "usageMetadata", []byte(usage.Raw))
++						if !emitPending() {
++							return
++						}
++						data, hasData = data[:0], false
++						continue
++					}
++					if !emitPending() {
++						return
++					}
++				}
++				finishes := false
++				for _, candidate := range candidates {
++					finishes = finishes || candidate.Get("finishReason").String() != ""
++				}
++				terminal = terminal || finishes
++				if finishes && !usage.Exists() {
++					pendingTerminal = bytes.Clone(unwrapped)
++				} else if !send(pluginapi.ExecutorStreamChunk{Payload: bytes.Clone(unwrapped)}) {
++					return
++				}
++				data, hasData = data[:0], false
++				continue
++			}
++			field, value, _ := bytes.Cut(line, []byte(":"))
++			if !bytes.Equal(field, []byte("data")) {
++				continue
++			}
++			value = bytes.TrimPrefix(value, []byte(" "))
++			if len(data)+len(value)+1 > maxStreamEventBytes {
++				send(pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("gemini-cli: SSE event exceeds size limit")})
++				return
++			}
++			if hasData {
++				data = append(data, '\n')
++			}
++			data = append(data, value...)
++			hasData = true
++		}
++		if err := scanner.Err(); err != nil {
++			send(pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("gemini-cli: read SSE: %w", err)})
++		} else if hasData || !terminal {
++			// Never treat an incomplete event as a successful completion.
++			send(pluginapi.ExecutorStreamChunk{Err: fmt.Errorf("gemini-cli: read SSE: %w", io.ErrUnexpectedEOF)})
++		} else {
++			emitPending()
++		}
++	}()
++	return out
++}
++
++// SSE accepts LF, CRLF and CR, including a CRLF split across network reads.
++func splitSSELines(data []byte, atEOF bool) (int, []byte, error) {
++	for i, c := range data {
++		if c != '\r' && c != '\n' {
++			continue
++		}
++		advance := i + 1
++		if c == '\r' {
++			if advance == len(data) && !atEOF {
++				return 0, nil, nil
++			}
++			if advance < len(data) && data[advance] == '\n' {
++				advance++
++			}
++		}
++		return advance, data[:i], nil
++	}
++	if atEOF && len(data) > 0 {
++		return len(data), data, nil
++	}
++	return 0, nil, nil
++}
++
++type httpChunkReader struct {
++	ctx     context.Context
++	chunks  <-chan pluginapi.HTTPStreamChunk
++	pending []byte
++	err     error
++}
++
++func (r *httpChunkReader) Read(dst []byte) (int, error) {
++	for len(r.pending) == 0 {
++		if r.err != nil {
++			return 0, r.err
++		}
++		select {
++		case <-r.ctx.Done():
++			return 0, r.ctx.Err()
++		case chunk, ok := <-r.chunks:
++			if !ok {
++				return 0, io.EOF
++			}
++			r.pending, r.err = chunk.Payload, chunk.Err
++		}
++	}
++	n := copy(dst, r.pending)
++	r.pending = r.pending[n:]
++	return n, nil
++}
+diff --git a/internal/executor/stream_test.go b/internal/executor/stream_test.go
+new file mode 100644
+index 0000000..3b27d8f
+--- /dev/null
++++ b/internal/executor/stream_test.go
+@@ -0,0 +1,167 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
++	"github.com/tidwall/gjson"
++)
++
++func streamTestChunks(parts ...string) <-chan pluginapi.HTTPStreamChunk {
++	in := make(chan pluginapi.HTTPStreamChunk, len(parts))
++	for _, part := range parts {
++		in <- pluginapi.HTTPStreamChunk{Payload: []byte(part)}
++	}
++	close(in)
++	return in
++}
++
++func TestGatewaySSEFramingAcrossEveryNetworkBoundary(t *testing.T) {
++	first := `{"response":{"candidates":[{"content":{"parts":[{"text":"你好"}]}}]}}`
++	last := `{"response":{"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":15}}}`
++	wire := "\xef\xbb\xbf: heartbeat\r\nevent: message\r\ndata: " + first + "\r\n\r\ndata: " + last + "\r\n\r\n"
++	for split := 0; split <= len(wire); split++ {
++		t.Run(fmt.Sprint(split), func(t *testing.T) {
++			var got []pluginapi.ExecutorStreamChunk
++			for chunk := range convertHTTPChunks(context.Background(), streamTestChunks(wire[:split], wire[split:])) {
++				if chunk.Err != nil {
++					t.Fatal(chunk.Err)
++				}
++				got = append(got, chunk)
++			}
++			if len(got) != 2 {
++				t.Fatalf("decoded %d events, want 2", len(got))
++			}
++			if text := gjson.GetBytes(got[0].Payload, "candidates.0.content.parts.0.text").String(); text != "你好" {
++				t.Fatalf("text=%q payload=%s", text, got[0].Payload)
++			}
++			if total := gjson.GetBytes(got[1].Payload, "usageMetadata.totalTokenCount").Int(); total != 15 {
++				t.Fatalf("completion usage lost: %s", got[1].Payload)
++			}
++		})
++	}
++}
++
++func TestGatewaySSEMultilineAndCarriageReturn(t *testing.T) {
++	wire := "id: one\rdata: {\rdata: \"response\":{\"responseId\":\"one\",\"candidates\":[{\"finishReason\":\"STOP\"}]}}\r\rdata: [DONE]\r\r"
++	var got []pluginapi.ExecutorStreamChunk
++	for chunk := range convertHTTPChunks(context.Background(), streamTestChunks(wire)) {
++		if chunk.Err != nil {
++			t.Fatal(chunk.Err)
++		}
++		got = append(got, chunk)
++	}
++	if len(got) != 1 || gjson.GetBytes(got[0].Payload, "responseId").String() != "one" {
++		t.Fatalf("multiline event=%v", got)
++	}
++}
++
++func TestGatewaySSERejectsIncompleteMalformedAndOversizedEvents(t *testing.T) {
++	for name, wire := range map[string]string{
++		"incomplete":  "data: {\"response\":{}}\n",
++		"malformed":   "data: {bad}\n\n",
++		"large line":  "data: " + strings.Repeat("x", maxStreamEventBytes) + "\n\n",
++		"large event": strings.Repeat("data: "+strings.Repeat("x", 1024)+"\n", maxStreamEventBytes/1024) + "\n",
++	} {
++		t.Run(name, func(t *testing.T) {
++			var failures int
++			for chunk := range convertHTTPChunks(context.Background(), streamTestChunks(wire)) {
++				if len(chunk.Payload) != 0 || chunk.Err == nil {
++					t.Fatalf("invalid stream produced output: %+v", chunk)
++				}
++				if name == "incomplete" && !errors.Is(chunk.Err, io.ErrUnexpectedEOF) {
++					t.Fatalf("error=%v, want unexpected EOF", chunk.Err)
++				}
++				failures++
++			}
++			if failures != 1 {
++				t.Fatalf("failure count=%d, want 1", failures)
++			}
++		})
++	}
++}
++
++func TestGatewaySSEPreservesFinalBytesAndReadError(t *testing.T) {
++	wantErr := errors.New("upstream read failed")
++	in := make(chan pluginapi.HTTPStreamChunk, 1)
++	in <- pluginapi.HTTPStreamChunk{Payload: []byte("data: {\"response\":{\"responseId\":\"one\"}}\n\n"), Err: wantErr}
++	close(in)
++	var got []pluginapi.ExecutorStreamChunk
++	for chunk := range convertHTTPChunks(context.Background(), in) {
++		got = append(got, chunk)
++	}
++	if len(got) != 2 || gjson.GetBytes(got[0].Payload, "responseId").String() != "one" || !errors.Is(got[1].Err, wantErr) {
++		t.Fatalf("final bytes or error lost: %+v", got)
++	}
++}
++
++func TestGatewaySSERequiresTerminalGeminiResponse(t *testing.T) {
++	for _, tail := range []string{"", "data: [DONE]\n\n"} {
++		wire := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"partial\"}]}}]}}\n\n" + tail
++		var payloads, failures int
++		for chunk := range convertHTTPChunks(context.Background(), streamTestChunks(wire)) {
++			if chunk.Err != nil {
++				failures++
++				if !errors.Is(chunk.Err, io.ErrUnexpectedEOF) {
++					t.Fatalf("truncated terminal error=%v", chunk.Err)
++				}
++			} else {
++				payloads++
++			}
++		}
++		if payloads != 1 || failures != 1 {
++			t.Fatalf("truncated stream looked complete: payloads=%d errors=%d", payloads, failures)
++		}
++	}
++}
++
++func TestGatewaySSETrailingUsageJoinsTerminalBeforeTranslation(t *testing.T) {
++	wire := "data: {\"response\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"}]},\"finishReason\":\"STOP\"}]}}\n\n" +
++		"data: {\"response\":{\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":2,\"thoughtsTokenCount\":3,\"totalTokenCount\":15}}}\n\n"
++	var got []pluginapi.ExecutorStreamChunk
++	for chunk := range convertHTTPChunks(context.Background(), streamTestChunks(wire)) {
++		if chunk.Err != nil {
++			t.Fatal(chunk.Err)
++		}
++		got = append(got, chunk)
++	}
++	if len(got) != 1 || gjson.GetBytes(got[0].Payload, "candidates.0.finishReason").String() != "STOP" || gjson.GetBytes(got[0].Payload, "usageMetadata.totalTokenCount").Int() != 15 {
++		t.Fatalf("terminal usage was lost or duplicated: %+v", got)
++	}
++}
++
++func TestGatewaySSECancellationClosesBlockedInputAndOutput(t *testing.T) {
++	for _, blockedOutput := range []bool{false, true} {
++		t.Run(fmt.Sprint(blockedOutput), func(t *testing.T) {
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			in := make(chan pluginapi.HTTPStreamChunk)
++			out := convertHTTPChunks(ctx, in)
++			if blockedOutput {
++				select {
++				case in <- pluginapi.HTTPStreamChunk{Payload: []byte("data: {\"response\":{}}\n\n")}:
++				case <-time.After(time.Second):
++					t.Fatal("decoder did not read input")
++				}
++			}
++			cancel()
++			deadline := time.After(time.Second)
++			for {
++				select {
++				case _, ok := <-out:
++					if !ok {
++						return
++					}
++				case <-deadline:
++					t.Fatal("decoder leaked after client cancellation")
++				}
++			}
++		})
++	}
++}

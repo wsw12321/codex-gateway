@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/wsw/codex-gateway/internal/billing"
 )
 
 const validUsagePricingJSON = `{
@@ -51,11 +53,11 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-09-05" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-09-15" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
-		"codex-auto-review", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+		"codex-auto-review", "gemini-3.1-pro-preview", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
 		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
@@ -141,6 +143,86 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	if got := pricing.Models["gpt-5.4-mini"].MaxInputTokens; got != 272000 {
 		t.Fatalf("gpt-5.4-mini max input = %d", got)
+	}
+}
+
+func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := ParseUsagePricing(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const model = "gemini-3.1-pro-preview"
+	snapshotRaw, rule, ok, err := pricing.ModelSnapshot(model)
+	if err != nil || !ok {
+		t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
+	}
+	if rule.CacheWriteMode != CacheWriteIncludedInInput || rule.MaxInputTokens != 1_048_576 ||
+		rule.LongContextThresholdTokens != 200_000 || len(rule.ServiceTiers) != 1 {
+		t.Fatalf("Gemini rule = %+v", rule)
+	}
+	snapshot, err := ParsePricingSnapshot(snapshotRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tier := range []string{"", "default", "standard"} {
+		if err := pricing.ValidateRequestedServiceTier(model, tier); err != nil {
+			t.Errorf("Gemini rejected Standard tier %q: %v", tier, err)
+		}
+	}
+	for _, tier := range []string{"flex", "priority", "fast", "ultrafast"} {
+		if err := pricing.ValidateRequestedServiceTier(model, tier); err == nil {
+			t.Errorf("Gemini accepted unconfigured tier %q", tier)
+		}
+	}
+	for _, tc := range []struct {
+		inputTokens int64
+		context     string
+		prices      [4]string
+		cost        string
+	}{
+		{200_000, ContextClassShort, [4]string{"2", "0.20", "0", "12"}, "0.503200000000"},
+		{200_001, ContextClassLong, [4]string{"4", "0.40", "0", "18"}, "0.945804000000"},
+		{1_048_576, ContextClassLong, [4]string{"4", "0.40", "0", "18"}, "4.340104000000"},
+	} {
+		t.Run(fmt.Sprint(tc.inputTokens), func(t *testing.T) {
+			for _, tier := range []string{"default", ""} {
+				decision, err := snapshot.Select(tier, tc.inputTokens)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantTier, wantFallback := PricingTierStandard, ""
+				wantPrices := tc.prices
+				if tier == "" {
+					wantTier, wantFallback = PricingTierMaxPublished, FallbackMissingServiceTier
+					for index, price := range wantPrices {
+						wantPrices[index], err = billing.ParsePrice(price)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if decision.ContextClass != tc.context || decision.PricingServiceTier != wantTier ||
+					decision.FallbackReason != wantFallback ||
+					[4]string{decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion,
+						decision.CacheWriteUSDPerMillion, decision.OutputUSDPerMillion} != wantPrices {
+					t.Fatalf("Gemini pricing for tier %q: %+v", tier, decision)
+				}
+				// A completed Responses output of 10,100 tokens already includes
+				// its thinking tokens; cache-write metadata is included in input.
+				for _, cacheWrites := range []int64{0, 20_000} {
+					cost, err := billing.CalculateCostV2(tc.inputTokens, 10_000, cacheWrites, 10_100,
+						rule.CacheWriteMode, decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion,
+						decision.CacheWriteUSDPerMillion, decision.OutputUSDPerMillion)
+					if err != nil || cost != tc.cost {
+						t.Fatalf("Gemini cost with %d cache writes = %s, %v; want %s", cacheWrites, cost, err, tc.cost)
+					}
+				}
+			}
+		})
 	}
 }
 

@@ -160,7 +160,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730
+    image: codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
@@ -169,6 +169,7 @@ services:
         RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v7.2.150
         CLIPROXY_COMMIT: c77b13694318b0897f2c74104ef48aebdf8c34d6
+        GEMINI_PLUGIN_COMMIT: 19d9868ffa24e94a2919ea1d1a761afa634de669
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true

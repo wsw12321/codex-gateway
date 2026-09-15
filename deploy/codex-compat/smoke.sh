@@ -4,7 +4,10 @@ umask 077
 
 key_file=${CLIPROXY_API_KEY_FILE:-/run/secrets/sidecar_api_key}
 port=${CLIPROXY_PORT:-8317}
-model=${CODEX_SMOKE_MODEL:-gpt-5-codex}
+model=${1:-${CODEX_SMOKE_MODEL:-gpt-5-codex}}
+case "$model" in
+    ''|*[!a-zA-Z0-9._-]*) printf '%s\n' 'sidecar smoke: invalid model' >&2; exit 1 ;;
+esac
 # Canonical unpadded base64url encoding of a 32-byte synthetic caller scope.
 # Production requests use a gateway-generated HMAC; this value only exercises
 # the sidecar's strict header contract during the SSH-only smoke test.
@@ -48,27 +51,46 @@ grep -q '"accounts"' "$response_file" || {
 }
 
 request GET /v1/models ''
+grep -Fq "\"$model\"" "$response_file" || {
+    printf '%s\n' 'sidecar smoke test did not find the requested model' >&2
+    exit 1
+}
+# Exercise both translations before restoring the sidecar after login.
+body=$(printf '{"model":"%s","input":"Reply with OK.","stream":false,"store":false}' "$model")
+request POST /v1/responses "$body"
+grep -Eq '"object"[[:space:]]*:[[:space:]]*"response"' "$response_file" &&
+    grep -Eq '"status"[[:space:]]*:[[:space:]]*"completed"' "$response_file" || {
+    printf '%s\n' 'sidecar smoke test did not observe a completed JSON response' >&2
+    exit 1
+}
 body=$(printf '{"model":"%s","input":"Reply with OK.","stream":true,"store":false}' "$model")
 request POST /v1/responses "$body"
 grep -q 'response.completed' "$response_file" || {
     printf '%s\n' 'sidecar smoke test did not observe response.completed' >&2
     exit 1
 }
-awk '
-    !headers_done && $0 ~ /^\r?$/ { headers_done = 1; next }
-    !headers_done && tolower($0) ~ /^x-codex-upstream-account:/ {
-        count++
-        value = $0
-        sub(/\r$/, "", value)
-        sub(/^[^:]*:[[:space:]]*/, "", value)
-        sub(/[[:space:]]*$/, "", value)
-        if (length(value) != 16 || value !~ /^[0-9a-f]+$/) invalid = 1
-    }
-    END { exit !(count == 1 && invalid == 0) }
-' "$response_file" || {
-    printf '%s\n' 'sidecar smoke test did not observe upstream account attribution' >&2
-    exit 1
-}
+# The existing narrow account API and stable OAuth account index are Codex-only.
+# Gemini requests still use the same user/key usage and billing records.
+case "$model" in
+    gemini-*) ;;
+    *)
+        awk '
+            !headers_done && $0 ~ /^\r?$/ { headers_done = 1; next }
+            !headers_done && tolower($0) ~ /^x-codex-upstream-account:/ {
+                count++
+                value = $0
+                sub(/\r$/, "", value)
+                sub(/^[^:]*:[[:space:]]*/, "", value)
+                sub(/[[:space:]]*$/, "", value)
+                if (length(value) != 16 || value !~ /^[0-9a-f]+$/) invalid = 1
+            }
+            END { exit !(count == 1 && invalid == 0) }
+        ' "$response_file" || {
+            printf '%s\n' 'sidecar smoke test did not observe upstream account attribution' >&2
+            exit 1
+        }
+        ;;
+esac
 
 # Never print the upstream response body.
-printf '%s\n' 'sidecar account-list, model-list, attribution, and minimal streaming Responses smoke tests passed'
+printf '%s\n' 'sidecar account-list, model-list, JSON and streaming Responses smoke tests passed'

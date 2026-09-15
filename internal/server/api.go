@@ -95,6 +95,21 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			writeServiceTierNotSupported(w, r)
 			return
 		}
+		if upstreamPath == "/v1/responses/compact" && strings.HasPrefix(model, "gemini-") {
+			// Compact is not a generation request for Gemini. Check permission
+			// without admitting a request, so rejection cannot reserve quota,
+			// create usage, or charge the caller.
+			if err := s.store.RequireModelAccess(r.Context(), key.UserID, model); err != nil {
+				if errors.Is(err, store.ErrModelNotAllowed) {
+					writeModelNotAllowed(w, r)
+				} else {
+					internalError(s, w, r, "resolve model access for compact", err)
+				}
+				return
+			}
+			httpx.WriteError(w, r, http.StatusNotImplemented, "invalid_request_error", "endpoint_not_supported", "Gemini 不支持 /v1/responses/compact，请使用 /v1/responses")
+			return
+		}
 		if pricingRuleVersion == 1 {
 			modelPricingInput = price.InputUSDPerMillion
 			modelPricingCached = price.CachedInputUSDPerMillion

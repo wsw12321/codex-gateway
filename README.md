@@ -303,7 +303,7 @@ connector token 以精确 `0640` 保存为
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为
-`v7.2.150-c77b1369-00633c2417755730`，包含固定多账号补丁的 SHA256 前 16 位。
+`v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a`，包含固定多账号补丁校验、Gemini 插件提交及新增补丁组校验。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
 
@@ -337,6 +337,12 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 目录为 UID 10001/`0700`、文件为 UID 10001/`0600`，然后重启并做账号列表、模型
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
+
+Gemini Pro 使用相同的地址、Key 和 Responses 接口，将模型设为
+`gemini-3.1-pro-preview`。部署前合入新价格目录，然后通过
+`./scripts/gemini-login.sh` 登录。普通 JSON、SSE 和函数调用可用，Gemini compact
+返回 `501 endpoint_not_supported`。构建、定价升级与验收步骤见
+[Gemini Pro 接入说明](docs/gemini-pro.md)。
 
 ### 5. 初始化 Owner
 

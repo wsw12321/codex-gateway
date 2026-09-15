@@ -2,4 +2,4 @@
 set -eu
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-exec "$root/scripts/oauth-login.sh" codex "$@"
+exec "$root/scripts/oauth-login.sh" gemini "$@"

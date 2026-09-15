@@ -39,7 +39,9 @@ verify_oauth() {
 }
 
 oauth_inventory() {
-    find "$auth_dir" -type f -name 'codex-*.json' -exec sh -c '
+    # Both login providers must protect every existing credential, including
+    # imported files whose names do not follow a provider-specific convention.
+    find "$auth_dir" -type f -iname '*.json' -exec sh -c '
         inventory_root=$1
         inventory_key_file=$2
         shift 2
@@ -84,6 +86,12 @@ host: "${listen_addr}"
 port: ${listen_port}
 auth-dir: "${auth_dir}"
 proxy-url: "${proxy_url}"
+plugins:
+  enabled: true
+  dir: "/usr/local/lib/cliproxy/plugins"
+  configs:
+    gemini-cli:
+      enabled: true
 debug: false
 commercial-mode: true
 logging-to-file: false
@@ -115,6 +123,22 @@ remote-management:
 EOF
 unset internal_key
 chmod 0600 "$config_file"
+
+# A missing library or ABI failure otherwise leaves the host running without
+# Gemini. Prove that the packaged plugin registered its login flags at startup.
+plugin_help=$(mktemp "$run_dir/plugin-help.XXXXXX")
+trap 'rm -f "$plugin_help"' EXIT HUP INT TERM
+if ! /usr/local/bin/cli-proxy-api -config "$config_file" -help > "$plugin_help" 2>&1 ||
+    ! grep -Eq '^[[:space:]]+-geminicli-login([[:space:]]|$)' "$plugin_help" ||
+    ! grep -Eq '^[[:space:]]+-geminicli-project-id([[:space:]]|$)' "$plugin_help"; then
+    fail "Gemini CLI plugin did not register its login flags"
+fi
+rm -f "$plugin_help"
+trap - EXIT HUP INT TERM
+if test "${1:-}" = "verify-plugin"; then
+    printf '%s\n' 'Gemini CLI plugin loaded and login flags registered'
+    exit 0
+fi
 
 if test "$#" -eq 0; then
     set -- -config "$config_file" -local-model

@@ -9,11 +9,17 @@ compose=$root/scripts/compose.sh
 caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
 pricing_template=$root/deploy/pricing-v2.example.json
+egress_config=$root/deploy/egress/squid.conf
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
 compat_patch_sha256=00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730
+gemini_plugin_commit=19d9868ffa24e94a2919ea1d1a761afa634de669
+gemini_plugin_patch=$root/deploy/codex-compat/gemini-cli-19d9868-gateway.patch
+compat_gemini_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-gemini.patch
+gemini_plugin_patch_sha256=e9c0c5c78c3fd5c3f11d4cbd5e71d5ceeeb8612c466044a79794d1a7bf50aeb7
+compat_gemini_patch_sha256=eb59891fa6e7d77cb192b9af67a3508d311183c6fd9f116ad4469790ba2391ca
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -34,6 +40,33 @@ test -r "$env_file" || {
 test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
 test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
+test -s "$gemini_plugin_patch" && test -s "$compat_gemini_patch" || \
+    fail 'reviewed Gemini compatibility patches are missing'
+test "$(sha256sum "$gemini_plugin_patch" | awk '{print $1}')" = "$gemini_plugin_patch_sha256" && \
+    test "$(sha256sum "$compat_gemini_patch" | awk '{print $1}')" = "$compat_gemini_patch_sha256" || \
+    fail 'reviewed Gemini compatibility patch checksum changed'
+grep -Fq 'musl-tools' "$compat_dockerfile" && \
+    grep -Fq 'CGO_ENABLED=1' "$compat_dockerfile" && \
+    grep -Fq 'CC=musl-gcc' "$compat_dockerfile" && \
+    grep -Fq -- '-buildmode=c-shared' "$compat_dockerfile" && \
+    grep -Fq 'TestGeminiCLISharedPluginLoads' "$compat_dockerfile" || \
+    fail 'codex-compat must build with musl and test the actual shared Gemini plugin'
+grep -Fq 'gemini-cli-19d9868-gateway.patch' "$compat_dockerfile" && \
+    grep -Fq 'cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" || \
+    fail 'codex-compat must apply both reviewed Gemini compatibility patches'
+grep -Fq 'dir: "/usr/local/lib/cliproxy/plugins"' "$compat_entrypoint" && \
+    grep -Fq 'gemini-cli:' "$compat_entrypoint" && \
+    grep -Fq 'Gemini CLI plugin did not register its login flags' "$compat_entrypoint" || \
+    fail 'codex-compat must enable and verify its packaged Gemini plugin'
+grep -Fxq 'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' "$egress_config" && \
+    grep -Fxq 'acl gemini_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudresourcemanager.googleapis.com cloudcode-pa.googleapis.com cloudaicompanion.googleapis.com' "$egress_config" && \
+    grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
+    grep -Fxq 'http_access deny !TLS_port' "$egress_config" && \
+    grep -Fxq 'http_access deny all' "$egress_config" || \
+    fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
+test "$(awk '$1 == "http_access" && $2 == "allow" { print }' "$egress_config")" = \
+    "$(printf '%s\n' 'http_access allow CONNECT codex_upstreams' 'http_access allow CONNECT gemini_upstreams')" || \
+    fail 'egress must allow only the reviewed Codex and Gemini destination rules'
 grep -Fq 'git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" && \
     grep -Fq 'git apply --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
@@ -203,6 +236,19 @@ pricing_validator='
     (.service_tiers |
       exact_keys(["fast", "flex", "standard"]) and
       all(.[]; included_short_tier));
+  def gemini_pro_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "included_in_input" and
+    .max_input_tokens == 1048576 and
+    .long_context_threshold_tokens == 200000 and
+    (.service_tiers |
+      exact_keys(["standard"]) and
+      (.standard | included_long_tier));
   def internal_zero_model:
     exact_keys([
       "cache_write_mode",
@@ -240,6 +286,7 @@ pricing_validator='
   (.models |
     exact_keys([
       "codex-auto-review",
+      "gemini-3.1-pro-preview",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.5",
@@ -255,6 +302,7 @@ pricing_validator='
     (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and
+    (.["gemini-3.1-pro-preview"] | gemini_pro_model) and
     (.["codex-auto-review"] | internal_zero_model))
 '
 printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
@@ -288,6 +336,21 @@ reject_pricing_mutation \
 reject_pricing_mutation \
     '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
     'an unpublished service tier'
+reject_pricing_mutation \
+    'del(.models["gemini-3.1-pro-preview"])' \
+    'a missing Gemini model'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-preview"].service_tiers.flex = .models["gemini-3.1-pro-preview"].service_tiers.standard' \
+    'an unconfigured Gemini service tier'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-preview"].long_context_threshold_tokens = 272000' \
+    'an incorrect Gemini long-context boundary'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-preview"].max_input_tokens = 1050000' \
+    'an incorrect Gemini input limit'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-preview"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
+    'a separate Gemini cache-write price'
 unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
@@ -367,15 +430,16 @@ jq -e \
   .services["codex-compat"].build.args.RUNTIME_IMAGE == $runtime
 ' "$tmp" >/dev/null
 
-jq -e '
+jq -e --arg gemini_plugin_commit "$gemini_plugin_commit" '
   .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.150" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "c77b13694318b0897f2c74104ef48aebdf8c34d6"
+    "c77b13694318b0897f2c74104ef48aebdf8c34d6" and
+  .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == $gemini_plugin_commit
 ' "$tmp" >/dev/null || \
-    fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI tag and commit'
+    fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI and Gemini plugin commits'
 
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
-    fail 'codex-compat image tag must identify the reviewed multi-account patch'
+    fail 'codex-compat image tag must identify the reviewed multi-account and Gemini patches'
 
 gateway_image=$(jq -r '.services.gateway.image' "$tmp")
 gateway_version=$(jq -r '.services.gateway.build.args.VERSION' "$tmp")
