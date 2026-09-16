@@ -63,12 +63,14 @@ chmod 0600 .env
 允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
 完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
 `deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
-`.env` 中的 JSON 必须保持一行；v2 的结构如下（片段不能单独部署）：
+`.env` 中的 JSON 必须保持一行。模板中的 GPT-5.6 Sol 按部署要求采用降价前
+历史价格，来源和恢复日期见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+v2 的结构如下（片段不能单独部署）：
 
 ```json
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-09-05",
+  "catalog_as_of": "2026-09-16",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -84,16 +86,16 @@ chmod 0600 .env
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "4",
-            "cached_input_usd_per_million": "0.4",
-            "cache_write_usd_per_million": "5",
-            "output_usd_per_million": "20"
+            "input_usd_per_million": "5",
+            "cached_input_usd_per_million": "0.5",
+            "cache_write_usd_per_million": "6.25",
+            "output_usd_per_million": "30"
           },
           "long": {
-            "input_usd_per_million": "8",
-            "cached_input_usd_per_million": "0.8",
-            "cache_write_usd_per_million": "10",
-            "output_usd_per_million": "30"
+            "input_usd_per_million": "10",
+            "cached_input_usd_per_million": "1",
+            "cache_write_usd_per_million": "12.5",
+            "output_usd_per_million": "45"
           }
         }
       }

@@ -53,7 +53,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-09-15" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-09-16" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
@@ -69,9 +69,10 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		t.Fatalf("models = %v", gotModels)
 	}
 	type expected struct{ input, cached, write, output string }
+	// Sol deliberately uses the pre-promotion rates from the 2026-08-20 template.
 	short := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"10", "1", "12.5", "50"}, "flex": {"5", "0.5", "6.25", "25"}, "priority": {"20", "2", "25", "100"}},
-		"gpt-5.6-sol":   {"default": {"4", "0.4", "5", "20"}, "flex": {"2", "0.2", "2.5", "10"}, "priority": {"8", "0.8", "10", "40"}},
+		"gpt-5.6-sol":   {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
 		"gpt-5.6-luna":  {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
 		"gpt-5.5":       {"default": {"5", "0.5", "0", "30"}, "flex": {"2.5", "0.25", "0", "15"}, "priority": {"12.5", "1.25", "0", "75"}},
@@ -100,7 +101,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	long := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"20", "2", "25", "75"}, "flex": {"10", "1", "12.5", "37.5"}, "priority": {"40", "4", "50", "150"}},
-		"gpt-5.6-sol":   {"default": {"8", "0.8", "10", "30"}, "flex": {"4", "0.4", "5", "15"}, "priority": {"16", "1.6", "20", "60"}},
+		"gpt-5.6-sol":   {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
 		"gpt-5.6-luna":  {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
 		"gpt-5.5":       {"default": {"10", "1", "0", "45"}, "flex": {"5", "0.5", "0", "22.5"}},

@@ -10,6 +10,12 @@
 - [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)
 - [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching/)
 
+2026-09-16 按部署计价要求，将 GPT-5.6 Sol 的 Standard/Flex/Fast 长短档全部
+恢复为仓库 2026-08-20 模板（提交 `5d224a8`）中的降价前价格。9 月 5 日提交
+`74450c7` 曾将这些价格下调；本次核对的官方价格页仍列促销价。因此下表的 Sol
+价格是本部署选用的历史价格，不代表当前官方报价；Terra、Luna 和其他模型沿用
+现有配置。`catalog_as_of` 更新为本次配置调整日期 `2026-09-16`。
+
 本系统计算的是“OpenAI API Token 等价成本”，不是 OpenAI 实际账单。上游使用
 ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略；订阅费、工具、
 区域、Batch、Ultrafast、税费和基础设施成本不在范围内。
@@ -29,9 +35,9 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 | GPT-6 Astra Standard | `10 / 1 / 12.5 / 50` | `20 / 2 / 25 / 75` |
 | GPT-6 Astra Flex | `5 / 0.5 / 6.25 / 25` | `10 / 1 / 12.5 / 37.5` |
 | GPT-6 Astra Fast | `20 / 2 / 25 / 100` | `40 / 4 / 50 / 150` |
-| GPT-5.6 Sol Standard | `4 / 0.4 / 5 / 20` | `8 / 0.8 / 10 / 30` |
-| GPT-5.6 Sol Flex | `2 / 0.2 / 2.5 / 10` | `4 / 0.4 / 5 / 15` |
-| GPT-5.6 Sol Fast | `8 / 0.8 / 10 / 40` | `16 / 1.6 / 20 / 60` |
+| GPT-5.6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
+| GPT-5.6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
+| GPT-5.6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
 | GPT-5.6 Terra Standard | `2 / 0.2 / 2.5 / 12` | `4 / 0.4 / 5 / 18` |
 | GPT-5.6 Terra Flex | `1 / 0.1 / 1.25 / 6` | `2 / 0.2 / 2.5 / 9` |
 | GPT-5.6 Terra Fast | `4 / 0.4 / 5 / 24` | `8 / 0.8 / 10 / 36` |
