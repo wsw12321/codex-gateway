@@ -136,6 +136,7 @@ func TestForwardModelsRejectsMalformedOrOversizedCatalogWithoutWriting(t *testin
 		{name: "malformed entry", body: `{"data":[{"object":"model"}]}`},
 		{name: "duplicate data member", body: `{"data":[],"data":[]}`},
 		{name: "duplicate model id member", body: `{"data":[{"id":"gpt-test","id":"gpt-other"}]}`},
+		{name: "duplicate model entries", body: `{"data":[{"id":"gpt-test"},{"id":"gpt-test"}]}`},
 		{name: "oversized", body: `{"data":[]}` + strings.Repeat(" ", maxInternalResponseBodyBytes)},
 	}
 	for _, test := range tests {

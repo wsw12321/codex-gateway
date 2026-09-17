@@ -10,19 +10,7 @@ case "$provider" in
         test "$#" -eq 1 || { printf '%s\n' 'usage: oauth-login.sh codex' >&2; exit 1; }
         set -- --codex-device-login
         ;;
-    gemini)
-        shift
-        test "$#" -le 1 || { printf '%s\n' 'usage: oauth-login.sh gemini [project-id]' >&2; exit 1; }
-        if test "$#" -eq 1; then
-            case "$1" in
-                ''|-*|*[!a-z0-9-]*) printf '%s\n' 'oauth-login: invalid Google Cloud project ID' >&2; exit 1 ;;
-            esac
-            set -- --geminicli-login --no-browser --geminicli-project-id "$1"
-        else
-            set -- --geminicli-login --no-browser
-        fi
-        ;;
-    *) printf '%s\n' 'usage: oauth-login.sh codex | gemini [project-id]' >&2; exit 1 ;;
+    *) printf '%s\n' 'usage: oauth-login.sh codex (Antigravity: scripts/antigravity-login.sh)' >&2; exit 1 ;;
 esac
 lock_file=$root/.device-login.lock
 sidecar_needs_stop=0
@@ -165,11 +153,7 @@ test "${health:-}" = healthy || {
     exit 1
 }
 
-if test "$provider" = gemini; then
-    set -- gemini-3.1-pro-preview
-else
-    set --
-fi
+set --
 if ! compose exec -T codex-compat /usr/local/bin/sidecar-smoke "$@"; then
     printf '%s\n' 'oauth-login: upstream smoke test failed; sidecar has been stopped' >&2
     exit 1

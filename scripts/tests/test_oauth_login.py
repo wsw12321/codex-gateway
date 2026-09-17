@@ -66,7 +66,7 @@ else:
             finish(output=config["inventories"][count])
         if operation == ["verify-oauth"]:
             finish(config.get("permission_status", 0))
-        if operation and operation[0] in ("--geminicli-login", "--codex-device-login"):
+        if operation and operation[0] in ("--codex-device-login",):
             finish(config.get("login_status", 0))
     if args[:4] == ["exec", "-T", "codex-compat", "/usr/local/bin/sidecar-smoke"]:
         finish(config.get("smoke_status", 0))
@@ -85,7 +85,7 @@ class OAuthLoginTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ("oauth-login.sh", "gemini-login.sh", "codex-device-login.sh"):
+        for name in ("oauth-login.sh", "codex-device-login.sh"):
             shutil.copyfile(REPO_ROOT / "scripts" / name, scripts / name)
             (scripts / name).chmod(0o700)
         binaries = self.root / "bin"
@@ -109,7 +109,7 @@ class OAuthLoginTests(unittest.TestCase):
         )
         (self.root / "commands.jsonl").write_text("")
 
-    def run_login(self, wrapper="gemini-login.sh", *args):
+    def run_login(self, wrapper="codex-device-login.sh", *args):
         result = subprocess.run(
             [str(self.root / "scripts" / wrapper), *args],
             cwd=self.root,
@@ -137,31 +137,6 @@ class OAuthLoginTests(unittest.TestCase):
         self.assertNotIn(CLEANUP_STOP, commands)
         self.assertFalse(json.loads((self.root / "state.json").read_text())["running"])
 
-    def test_gemini_adds_one_account_and_runs_model_smoke_after_verification(self):
-        result = self.run_login()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        commands = self.commands()
-        self.assertIn(LOGIN_PREFIX + ["--geminicli-login", "--no-browser"], commands)
-        self.assertIn(
-            ["exec", "-T", "codex-compat", "/usr/local/bin/sidecar-smoke", "gemini-3.1-pro-preview"],
-            commands,
-        )
-        verify = commands.index(LOGIN_PREFIX + ["verify-oauth"])
-        second_inventory = commands.index(LOGIN_PREFIX + ["oauth-inventory"], verify)
-        self.assertLess(verify, second_inventory)
-        self.assertLess(second_inventory, commands.index(RESTART))
-        self.assertNotIn(CLEANUP_STOP, commands)
-        self.assertEqual((self.root / ".device-login.lock").stat().st_mode & 0o777, 0o600)
-
-    def test_gemini_passes_optional_project_id_as_one_argument(self):
-        result = self.run_login("gemini-login.sh", "example-project-123")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn(
-            LOGIN_PREFIX
-            + ["--geminicli-login", "--no-browser", "--geminicli-project-id", "example-project-123"],
-            self.commands(),
-        )
-
     def test_codex_preserves_device_login_flags_and_default_smoke(self):
         result = self.run_login("codex-device-login.sh")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -178,10 +153,10 @@ class OAuthLoginTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(RESTART, self.commands())
 
-    def test_both_wrappers_obey_the_shared_operation_lock(self):
+    def test_codex_obeys_operation_lock(self):
         with (self.root / ".device-login.lock").open("w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            for wrapper in ("gemini-login.sh", "codex-device-login.sh"):
+            for wrapper in ("codex-device-login.sh",):
                 with self.subTest(wrapper=wrapper):
                     result = self.run_login(wrapper)
                     self.assertNotEqual(result.returncode, 0)
@@ -224,7 +199,7 @@ class OAuthLoginTests(unittest.TestCase):
                     self.assert_stopped_before_restart(self.run_login(), "invalid OAuth inventory response")
                     if phase == "before":
                         self.assertNotIn(
-                            LOGIN_PREFIX + ["--geminicli-login", "--no-browser"], self.commands()
+                            LOGIN_PREFIX + ["--codex-device-login"], self.commands()
                         )
 
     def test_permission_failure_keeps_sidecar_stopped(self):
@@ -247,14 +222,11 @@ class OAuthLoginTests(unittest.TestCase):
         self.assertEqual(commands[-1], CLEANUP_STOP)
         self.assertFalse(json.loads((self.root / "state.json").read_text())["running"])
 
-    def test_invalid_project_id_is_rejected_before_stopping(self):
-        for project in ("", "--help", "UpperCase", "project with spaces", "project;touch marker"):
-            with self.subTest(project=project):
-                self.scenario()
-                result = self.run_login("gemini-login.sh", project)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("invalid Google Cloud project ID", result.stderr)
-                self.assertEqual(self.commands(), [])
+    def test_removed_gemini_login_rejected_before_stopping(self):
+        result = self.run_login("oauth-login.sh", "gemini")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("antigravity-login.sh", result.stderr)
+        self.assertEqual(self.commands(), [])
 
 
 if __name__ == "__main__":

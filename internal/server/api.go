@@ -41,6 +41,7 @@ func (s *Server) proxyCompact(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath, endpoint, fixedModel string) {
+	upstreams := gatewayproxy.NewRouter(s.upstream, s.antigravity, s.config.AntigravityModelRoutes)
 	key := apiKeyFrom(r.Context())
 	requestedAt := time.Now().UTC()
 	model := fixedModel
@@ -95,8 +96,8 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			writeServiceTierNotSupported(w, r)
 			return
 		}
-		if upstreamPath == "/v1/responses/compact" && strings.HasPrefix(model, "gemini-") {
-			// Compact is not a generation request for Gemini. Check permission
+		if upstreamPath == "/v1/responses/compact" && upstreams.IsAntigravityModel(model) {
+			// Compact is not a generation request for Antigravity. Check permission
 			// without admitting a request, so rejection cannot reserve quota,
 			// create usage, or charge the caller.
 			if err := s.store.RequireModelAccess(r.Context(), key.UserID, model); err != nil {
@@ -107,7 +108,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 				}
 				return
 			}
-			httpx.WriteError(w, r, http.StatusNotImplemented, "invalid_request_error", "endpoint_not_supported", "Gemini 不支持 /v1/responses/compact，请使用 /v1/responses")
+			httpx.WriteError(w, r, http.StatusNotImplemented, "invalid_request_error", "endpoint_not_supported", "Antigravity 不支持 /v1/responses/compact，请使用 /v1/responses")
 			return
 		}
 		if pricingRuleVersion == 1 {
@@ -218,11 +219,11 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	var result gatewayproxy.Result
 	var failure *gatewayproxy.Failure
 	if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
-		result, failure = s.upstream.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
+		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
 		})
 	} else {
-		result, failure = s.upstream.ForwardWithOptions(r.Context(), w, r, upstreamPath, gatewayproxy.ForwardOptions{
+		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
 		})
 	}

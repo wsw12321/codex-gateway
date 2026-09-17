@@ -135,15 +135,39 @@ jobs:
         run: >-
           go run github.com/google/go-licenses@v1.6.0 check ./...
           --allowed_licenses=Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0
-      - name: Verify CLIProxyAPI notice and immutable source
+      - name: Verify upstream notices and immutable sources
         shell: bash
         run: |
           set -eu
+          agy_manifest_url=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
+          agy_url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz
+          agy_sha512=5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897
           grep -q 'CLIProxyAPI v7.2.150' THIRD_PARTY_NOTICES
           grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' THIRD_PARTY_NOTICES
           grep -q 'c77b13694318b0897f2c74104ef48aebdf8c34d6' docker-compose.yml
-          grep -q '19d9868ffa24e94a2919ea1d1a761afa634de669' THIRD_PARTY_NOTICES
-          grep -q '19d9868ffa24e94a2919ea1d1a761afa634de669' docker-compose.yml
+          grep -q 'Google Antigravity CLI' THIRD_PARTY_NOTICES
+          grep -Fq "$agy_url" THIRD_PARTY_NOTICES
+          grep -Fq "$agy_sha512" THIRD_PARTY_NOTICES
+          jq -e \
+            --arg manifest_url "$agy_manifest_url" \
+            --arg url "$agy_url" \
+            --arg sha512 "$agy_sha512" \
+            '.version == "1.2.4" and
+             .platform == "linux_amd64" and
+             .manifest_url == $manifest_url and
+             .url == $url and
+             .sha512 == $sha512' \
+            deploy/antigravity-bridge/agy.lock.json >/dev/null
+          grep -Fq 'sha512sum -c -' deploy/antigravity-bridge/Dockerfile
+          grep -Fq 'AGY_CLI_DISABLE_AUTO_UPDATE=true' deploy/antigravity-bridge/Dockerfile
+          test ! -e scripts/gemini-login.sh
+          test ! -e deploy/codex-compat/cliproxy-v7.2.150-gemini.patch
+          test ! -e deploy/codex-compat/gemini-cli-19d9868-gateway.patch
+          if grep -Eq 'GEMINI_PLUGIN|geminicli-login|gemini-cli[.]so|cpa-plugin-gemini-cli' \
+            deploy/codex-compat/Dockerfile deploy/codex-compat/entrypoint.sh docker-compose.yml; then
+            printf '%s\n' 'retired Gemini plugin path remains in the deployable configuration' >&2
+            exit 1
+          fi
       - name: Generate CycloneDX SBOM
         run: >-
           go run github.com/anchore/syft/cmd/syft@v1.30.0
@@ -194,7 +218,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for script in scripts/*.sh deploy/codex-compat/*.sh; do
+          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh; do
             case "$(sed -n '1p' "$script")" in
               '#!/bin/sh') sh -n "$script" ;;
               '#!/usr/bin/env bash') bash -n "$script" ;;
@@ -213,9 +237,11 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ./scripts/compose.sh build gateway codex-compat
+          ./scripts/compose.sh build gateway codex-compat antigravity-bridge
       - name: Verify sidecar runtime without site credentials
         run: ./scripts/test-sidecar-image.sh
+      - name: Verify Antigravity keyring isolation without a Google account
+        run: ./scripts/test-antigravity-image.sh
       - name: Scan application images with digest-locked Trivy
         shell: bash
         run: |
@@ -225,6 +251,7 @@ jobs:
           . ./.env
           set +a
           compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["codex-compat"].image')
+          bridge_image=$(./scripts/compose.sh config --format json | jq -er '.services["antigravity-bridge"].image')
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
@@ -233,3 +260,7 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
             --severity HIGH,CRITICAL "$compat_image"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL "$bridge_image"

@@ -90,6 +90,8 @@ create_base64url "$secret_dir/gateway_api_key_encryption_key" 32
 validate_base64url_32 "$secret_dir/gateway_api_key_encryption_key"
 create_random "$secret_dir/gateway_session_secret" 32
 create_random "$secret_dir/sidecar_api_key" 32
+create_random "$secret_dir/antigravity_bridge_api_key" 32
+create_random "$secret_dir/antigravity_keyring_password" 32
 
 cloudflared_token=$secret_dir/cloudflared_tunnel_token
 if test -e "$cloudflared_token" || test -L "$cloudflared_token"; then
@@ -133,6 +135,8 @@ for secret_name in \
     gateway_api_key_pepper \
     gateway_session_secret \
     sidecar_api_key \
+    antigravity_bridge_api_key \
+    antigravity_keyring_password \
     database_url
 do
     secret=$secret_dir/$secret_name

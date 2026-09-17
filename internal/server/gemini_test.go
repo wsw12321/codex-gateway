@@ -123,6 +123,7 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			harness := newResponsesWebSocketTestHarness(t)
 			harness.server.config.BodyLimit = 64 << 20
 			harness.server.config.UsagePricing = pricing
+			harness.server.config.AntigravityModelRoutes = map[string]string{"gemini-3.1-pro-preview": "gemini-3.1-pro-high"}
 			database := &geminiAdmissionTestConnector{
 				auth: harness.database, keyAllowlist: test.keyAllowlist,
 				modelEnabled: test.modelEnabled, missingAccess: test.missingAccess,

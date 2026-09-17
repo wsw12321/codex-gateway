@@ -69,28 +69,22 @@ grep -q 'response.completed' "$response_file" || {
     printf '%s\n' 'sidecar smoke test did not observe response.completed' >&2
     exit 1
 }
-# The existing narrow account API and stable OAuth account index are Codex-only.
-# Gemini requests still use the same user/key usage and billing records.
-case "$model" in
-    gemini-*) ;;
-    *)
-        awk '
-            !headers_done && $0 ~ /^\r?$/ { headers_done = 1; next }
-            !headers_done && tolower($0) ~ /^x-codex-upstream-account:/ {
-                count++
-                value = $0
-                sub(/\r$/, "", value)
-                sub(/^[^:]*:[[:space:]]*/, "", value)
-                sub(/[[:space:]]*$/, "", value)
-                if (length(value) != 16 || value !~ /^[0-9a-f]+$/) invalid = 1
-            }
-            END { exit !(count == 1 && invalid == 0) }
-        ' "$response_file" || {
-            printf '%s\n' 'sidecar smoke test did not observe upstream account attribution' >&2
-            exit 1
-        }
-        ;;
-esac
+# Every Codex response must carry the reviewed account attribution header.
+awk '
+    !headers_done && $0 ~ /^\r?$/ { headers_done = 1; next }
+    !headers_done && tolower($0) ~ /^x-codex-upstream-account:/ {
+        count++
+        value = $0
+        sub(/\r$/, "", value)
+        sub(/^[^:]*:[[:space:]]*/, "", value)
+        sub(/[[:space:]]*$/, "", value)
+        if (length(value) != 16 || value !~ /^[0-9a-f]+$/) invalid = 1
+    }
+    END { exit !(count == 1 && invalid == 0) }
+' "$response_file" || {
+    printf '%s\n' 'sidecar smoke test did not observe upstream account attribution' >&2
+    exit 1
+}
 
 # Never print the upstream response body.
 printf '%s\n' 'sidecar account-list, model-list, JSON and streaming Responses smoke tests passed'

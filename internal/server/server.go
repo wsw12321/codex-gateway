@@ -24,6 +24,7 @@ type Server struct {
 	store                 *store.Store
 	identity              *identity.Service
 	upstream              *gatewayproxy.Client
+	antigravity           *gatewayproxy.Client
 	logger                *slog.Logger
 	mux                   *http.ServeMux
 	attempts              *attemptLimiter
@@ -58,6 +59,9 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
 		modelAccessRepo: repository,
 		spoolSlots:      make(chan struct{}, maxConcurrentRequestSpools),
+	}
+	if cfg.AntigravityBridgeURL != nil {
+		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
 	}
 	s.routes()
 	return s, nil

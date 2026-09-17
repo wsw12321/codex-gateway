@@ -288,7 +288,7 @@ Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`�
 ```
 
 脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、API Key/token HMAC pepper、
-独立的 32 字节 API Key 加密密钥和 Gateway 到 sidecar 的内部 Key，不输出内容。
+独立的 32 字节 API Key 加密密钥、Gateway 到两个上游的独立内部 Key 和 Keyring 口令，不输出内容。
 加密密钥以无填充 URL-safe Base64 保存在
 `deploy/secrets/gateway_api_key_encryption_key`，不得复制到 `.env`，也不得在没有
 密钥轮换方案时重新生成。在 Cloudflare Dashboard 创建
@@ -303,17 +303,19 @@ connector token 以精确 `0640` 保存为
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为
-`v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc`，包含固定多账号补丁校验、Gemini 插件提交、新增补丁组校验及 glibc 运行方案标识。
+`v7.2.150-c77b1369-00633c2417755730-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat
-./scripts/compose.sh up -d
+./scripts/compose.sh build gateway codex-compat antigravity-bridge
+./scripts/compose.sh up -d postgres egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
+
+默认路由为 `{}`，Antigravity Bridge 由后续登录脚本验收成功后启动。
 
 最终不应有任何 Compose 服务发布宿主机端口。Cloudflare 负责公网 TLS 和
 HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 SSH 入站。
@@ -339,11 +341,12 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-Gemini Pro 使用相同的地址、Key 和 Responses 接口，将模型设为
-`gemini-3.1-pro-preview`。部署前合入新价格目录，然后通过
-`./scripts/gemini-login.sh` 登录。普通 JSON、SSE 和函数调用可用，Gemini compact
-返回 `501 endpoint_not_supported`。构建、定价升级与验收步骤见
-[Gemini Pro 接入说明](docs/gemini-pro.md)。
+Gemini Pro 使用相同的地址、Key 和 Responses 接口，公开模型名为
+`gemini-3.1-pro-preview`。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
+调用 `./scripts/antigravity-login.sh` 完成登录验收后配置精确模型路由。支持文本 JSON
+和完成后发送的 SSE；函数工具、多模态和会话续接返回 400，compact 返回 501。
+沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
+部署、隔离、定价及出口域名验收见 [Antigravity 接入说明](docs/gemini-pro.md)。
 
 ### 5. 初始化 Owner
 
@@ -411,7 +414,7 @@ TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmo
 ```sh
 ./scripts/validate-compose.sh
 ./scripts/compose.sh config --quiet
-for script in scripts/*.sh deploy/codex-compat/*.sh; do
+for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh; do
   case "$(sed -n '1p' "$script")" in
     '#!/bin/sh') sh -n "$script" ;;
     '#!/usr/bin/env bash') bash -n "$script" ;;
@@ -427,6 +430,8 @@ CI 还配置了 `govulncheck`、`gosec`、Trivy 容器扫描、CycloneDX SBOM、
 
 ```text
 cmd/gateway/             进程入口和 bootstrap-owner/maintenance 命令
+cmd/antigravity-bridge/  独立 Antigravity HTTP Bridge 入口
+internal/antigravity/    agy 进程隔离、协议校验和 Responses 转换
 internal/config/         配置与 secret 文件加载
 internal/identity/       WebAuthn、会话、邀请与恢复流程
 internal/server/         HTTP 路由、管理界面、API 认证与统计
@@ -442,7 +447,7 @@ docs/                    运维、客户端、安全与兼容层升级文档
 ## 安全边界与限制
 
 - ChatGPT Pro 登录不是官方通用服务端 API。兼容层依赖当前 Codex 协议，可能随
-  上游变化失效。
+  上游变化失效；Antigravity 路径同样依赖固定版本官方 CLI 的 Headless 契约。
 - 项目不会配置 Platform API 自动计费回退。OAuth 失效时应 fail closed、返回
   明确错误并在后台告警。
 - 该部署只适用于同一订阅者本人控制的账号与设备。如果向其他真实用户提供
@@ -478,7 +483,8 @@ gateway version           显示版本与 revision
 ./scripts/restore-drill.sh backups/gateway-YYYYmmddTHHMMSSZ.dump.age
 ```
 
-OAuth volume 永不备份，灾备后必须按账号逐次重新执行设备码登录。
+OAuth 和 Antigravity Keyring volume 永不进入数据库备份；灾备后必须分别重新执行
+设备码登录和 `./scripts/antigravity-login.sh`。
 生产数据库由固定 Compose 命名卷持久化；禁止执行
 `./scripts/compose.sh down -v`。每日 03:00 UTC 的本地 age 备份、14 组保留、
 每月/升级前恢复演练及计划迁机步骤见[部署与运维手册](docs/operations.md)。

@@ -97,9 +97,10 @@ func (f *Failure) Error() string {
 func (f *Failure) Unwrap() error { return f.Cause }
 
 type Client struct {
-	baseURL *url.URL
-	token   string
-	http    *http.Client
+	baseURL     *url.URL
+	token       string
+	http        *http.Client
+	antigravity bool
 }
 
 type ForwardOptions struct {
@@ -147,6 +148,20 @@ func (c *Client) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 	if incoming.Method != http.MethodGet {
 		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}
 	}
+	body, result, failure := c.fetchModelCatalog(ctx, incoming, options)
+	if failure != nil {
+		return result, failure
+	}
+	filtered, err := filterModelCatalog(body, allowedModels)
+	if err != nil {
+		result.CompletedAt = time.Now()
+		return result, invalidModelCatalogFailure(err)
+	}
+
+	return writeModelCatalog(w, filtered, result)
+}
+
+func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, options ForwardOptions) ([]byte, Result, *Failure) {
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + "/v1/models"
 	target.RawQuery = ""
@@ -154,21 +169,21 @@ func (c *Client) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 
 	outgoing, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
-		return Result{}, protocolFailure(err)
+		return nil, Result{}, protocolFailure(err)
 	}
 	copyAllowedHeaders(outgoing.Header, incoming.Header)
 	outgoing.Header.Set("Authorization", "Bearer "+c.token)
 	outgoing.Header.Set("Cache-Control", "no-store")
 	if options.AffinityScope != "" {
 		if !affinityScopePattern.MatchString(options.AffinityScope) {
-			return Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
+			return nil, Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
 		}
 		outgoing.Header.Set(affinityHeader, options.AffinityScope)
 	}
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {
-		return Result{}, transportFailure(ctx, err)
+		return nil, Result{}, c.transportFailure(ctx, err)
 	}
 	defer response.Body.Close()
 
@@ -179,29 +194,27 @@ func (c *Client) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := sanitizeUpstreamFailure(response)
+		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
-		return result, failure
+		return nil, result, failure
 	}
 
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxInternalResponseBodyBytes+1))
 	if err != nil {
 		result.CompletedAt = time.Now()
-		return result, invalidModelCatalogFailure(fmt.Errorf("read model catalog: %w", err))
+		return nil, result, invalidModelCatalogFailure(fmt.Errorf("read model catalog: %w", err))
 	}
 	if len(body) > maxInternalResponseBodyBytes {
 		result.CompletedAt = time.Now()
-		return result, invalidModelCatalogFailure(errors.New("model catalog exceeds 1 MiB"))
+		return nil, result, invalidModelCatalogFailure(errors.New("model catalog exceeds 1 MiB"))
 	}
-	filtered, err := filterModelCatalog(body, allowedModels)
-	if err != nil {
-		result.CompletedAt = time.Now()
-		return result, invalidModelCatalogFailure(err)
-	}
+	return body, result, nil
+}
 
+func writeModelCatalog(w http.ResponseWriter, filtered []byte, result Result) (Result, *Failure) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(response.StatusCode)
+	w.WriteHeader(result.StatusCode)
 	written, err := w.Write(filtered)
 	result.BytesOut = int64(written)
 	result.FirstByteAt = time.Now()
@@ -233,6 +246,7 @@ func filterModelCatalog(body []byte, allowedModels map[string]struct{}) ([]byte,
 		return nil, fmt.Errorf("decode model catalog data: %w", err)
 	}
 	filtered := make([]json.RawMessage, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
 	for index, entry := range entries {
 		trimmed := bytes.TrimSpace(entry)
 		if len(trimmed) == 0 || trimmed[0] != '{' {
@@ -247,6 +261,10 @@ func filterModelCatalog(body []byte, allowedModels map[string]struct{}) ([]byte,
 		if !validCatalogModelID(model.ID) {
 			return nil, fmt.Errorf("model catalog data[%d] has invalid id", index)
 		}
+		if _, duplicate := seen[model.ID]; duplicate {
+			return nil, fmt.Errorf("model catalog repeats model %q", model.ID)
+		}
+		seen[model.ID] = struct{}{}
 		if _, allowed := allowedModels[model.ID]; allowed {
 			filtered = append(filtered, entry)
 		}
@@ -377,7 +395,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {
-		return Result{}, transportFailure(ctx, err)
+		return Result{}, c.transportFailure(ctx, err)
 	}
 	defer response.Body.Close()
 
@@ -388,7 +406,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := sanitizeUpstreamFailure(response)
+		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
 		return result, failure
 	}

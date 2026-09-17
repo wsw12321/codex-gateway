@@ -18,7 +18,6 @@ docker run --rm --network none --read-only --cap-drop ALL \
         umask 077
         export CLIPROXY_API_KEY_FILE=/run/cliproxy/synthetic-key
         printf "%s\n" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > "$CLIPROXY_API_KEY_FILE"
-        /usr/local/bin/sidecar-entrypoint verify-plugin
 
         auth=/var/lib/cliproxy/oauth
         printf "%s\n" "{}" > "$auth/imported-codex.json"
@@ -50,5 +49,5 @@ docker run --rm --network none --read-only --cap-drop ALL \
             test "$attempt" -lt 30
             sleep 1
         done
-        printf "%s\n" "Sidecar plugin, OAuth inventory, permission rejection and isolated startup checks passed"
+        printf "%s\n" "Sidecar OAuth inventory, permission rejection and isolated startup checks passed"
     '

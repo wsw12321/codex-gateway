@@ -1,15 +1,9 @@
 # CLIProxyAPI 兼容层升级规程
 
-兼容层使用独立锁定的 Debian slim/glibc 运行镜像，修复 Gemini 共享库在
-Alpine/musl 下加载崩溃的问题，详见 [Gemini 验证记录](gemini-validation.md)。
-构建继续强制执行真实 ABI 加载检查。
-
-Gemini CLI 插件固定到 `19d9868ffa24e94a2919ea1d1a761afa634de669`，与原主程序
-一同使用 gcc/glibc/CGO 构建，并以 UID 10001 在相同 Debian 运行层中
-断网加载真实共享库，完成 ABI、登录参数和 OAuth 识别验证。
-新增 SSE 组帧及回答/思考 Token 映射补丁，详见
-[Gemini Pro 接入说明](gemini-pro.md)。升级须同步新价格目录，继续保留原 GPT
-价格和历史账务。
+兼容层继续使用独立锁定的 Debian slim/glibc 运行镜像。旧第三方 Gemini 插件
+和对应补丁已经移除；构建回归检查确认历史 Gemini OAuth 文件被忽略且保留，
+Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyring 卷，详见
+[Antigravity 接入说明](gemini-pro.md)。
 
 仓库固定在 CLIProxyAPI `v7.2.150`、commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`。版本号和 commit 必须作为一组
@@ -26,12 +20,11 @@ Gemini CLI 插件固定到 `19d9868ffa24e94a2919ea1d1a761afa634de669`，与原�
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc`，由主程序版本和提交、多账号补丁 SHA256 前 16 位、Gemini 插件提交前 8 位
-及两份新增补丁（主程序、插件顺序拼接）的 SHA256 前 16 位组成，末尾 `-glibc`
-标识运行方案。Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
+兼容层镜像标签固定为 `v7.2.150-c77b1369-00633c2417755730-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 继续使用现有 Go 1.26 构建镜像；`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
 `bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API 与数据库结构
-保持兼容，新增 Gemini 价格目录；原有 Owner 账号状态管理接口仍只管理 Codex。
+保持兼容，保留现有 Gemini 价格目录；原有 Owner 账号状态管理接口仍只管理 Codex。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
@@ -98,7 +91,9 @@ Astra 冒烟和生产切换按下文规程执行。
   窄内部接口只返回脱敏、规范化字段。
 
 仓库验证至少执行 `./scripts/validate-compose.sh`、
-`./scripts/compose.sh build gateway codex-compat`、`go test -count=1 ./...`、
+`./scripts/compose.sh build gateway codex-compat antigravity-bridge`、
+`./scripts/test-sidecar-image.sh`、`./scripts/test-antigravity-image.sh`、
+`go test -count=1 ./...`、
 `go test -race -count=1 ./...` 和 `go vet ./...`，并检查构建内现有安全回归测试通过。
 隔离测试的模型目录和 HTTP 契约验证不能替代真实 OAuth 冒烟。
 

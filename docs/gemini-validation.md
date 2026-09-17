@@ -1,4 +1,6 @@
-# Gemini 接入验证记录
+# 历史第三方 Gemini 插件验证记录
+
+本文记录已移除的旧插件实现，不代表当前 Antigravity Bridge 的验收结果。当前部署和待完成的真实账号验收见 [Antigravity 接入说明](gemini-pro.md)。
 
 更新时间：2026-09-16。默认兼容层构建已采用 Debian slim/glibc，修复
 Alpine/musl 加载 Gemini 共享库时的崩溃；Compose 双镜像构建及真实加载检查通过。

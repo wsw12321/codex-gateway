@@ -17,7 +17,7 @@ ledger 增加可空账号归因；迁移前历史保持 `NULL`，不得猜测或
 并行度 2，不需要新增部署 secret。
 
 本项目按单台 Linux 云服务器、单个隔离 sidecar 中的多个 ChatGPT Plus/Pro 上游
-账号设计。Cloudflare
+账号和独立 Antigravity Bridge 设计。Cloudflare
 Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 服务均不得
 发布宿主机端口。服务器只接受固定管理 IP 的 SSH 入站。所有命令都应从目标
 服务器上的仓库根目录执行。
@@ -27,7 +27,7 @@ Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 
 - 域名由 Cloudflare 托管，操作者有权在 Dashboard 创建 Tunnel 和 Public
   Hostname；不需要把 A/AAAA 记录指向服务器公网 IP。
 - SSH 使用密钥登录；云安全组和主机防火墙只允许固定管理 IP 访问 SSH，明确
-  拒绝公网 80、443、5432、8080、8317 和 3128 入站。
+  拒绝公网 80、443、5432、8080、8317、8318 和 3128 入站。
 - 若主机限制出站，允许 DNS、Cloudflare Tunnel 所需的 TCP/UDP 7844，以及
   拉取镜像和管理 Cloudflare 所需的 HTTPS；不要为 Tunnel 增加任何入站规则。
 - Docker Engine 和 Docker Compose v2 可用。
@@ -52,8 +52,9 @@ chmod 0600 .env
 把 `GATEWAY_DOMAIN` 改成真实域名，并按[构建和首次启动](#4-构建和首次启动)
 设置不可变版本字段。若 Docker 网段与主机已有网段冲突，应在首次启动前同时
 调整 Compose 中的内部子网与静态地址、Caddy 信任的 cloudflared `/32`、
-`GATEWAY_TRUSTED_PROXY_CIDRS`，以及 `validate-compose.sh` 中验证这些地址的
-对应不变量。网关只应信任 Caddy 的单一 `/32` 地址。
+`GATEWAY_TRUSTED_PROXY_CIDRS`、Squid 只放行 Sidecar/Bridge 的两个来源 `/32`，
+以及 `validate-compose.sh` 中验证这些地址的对应不变量。网关只应信任 Caddy 的
+单一 `/32` 地址，Squid 也不得按整个内部子网授权出站。
 
 ### 用量价格快照
 
@@ -185,7 +186,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc`；标签记录多账号补丁、Gemini 插件提交、新增补丁组的校验及 glibc 运行方案，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.2.150-c77b1369-00633c2417755730-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -272,20 +273,24 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat
-./scripts/compose.sh up -d
+./scripts/compose.sh build gateway codex-compat antigravity-bridge
+./scripts/compose.sh up -d postgres egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
+
+首次部署保持 `ANTIGRAVITY_MODEL_ROUTES_JSON={}`，Bridge 由第 5 节的隔离登录脚本
+在登录和持久化验收后启动；不使用 Antigravity 时继续保持停止。
 
 `scripts/compose.sh` 会先清除宿主环境中与两个 env 文件同名的变量，再依次读取
 `.env` 和 `deploy/images.lock.env`，并固定 Compose project 名。这样既不会遗漏
 `GATEWAY_DOMAIN`，也不能用导出的环境变量绕过不可变镜像引用。
 
 `validate-compose.sh` 会检查：没有服务发布宿主机端口、内部网络隔离、
-`cloudflared` 与 Squid 只能连接各自需要的出站网络、PostgreSQL 本地初始化和
-host 连接都强制使用 SCRAM、v2 价格目录结构和必要占位符、sidecar 是只读且非
-root、API Key 加密 secret 的格式和仅 Gateway 挂载、其他 secret 权限及所有基础
-镜像的 SHA-256 digest。
+`cloudflared` 与 Squid 只能连接各自需要的出站网络、Squid 只接受固定 Sidecar/
+Bridge 地址、PostgreSQL 本地初始化和 host 连接都强制使用 SCRAM、v2 价格目录
+结构和必要占位符、两个上游容器只读且非 root、API Key 加密 secret 的格式和仅
+Gateway 挂载、Bridge Keyring/secret 隔离、其他 secret 权限及所有基础镜像的
+SHA-256 digest。
 
 确认主机监听：
 
@@ -294,7 +299,7 @@ ss -lntup
 ```
 
 Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公网不应看到 80、
-443、5432、8080、8317 或 3128；必须从另一网络扫描服务器公网 IP 验证。随后
+443、5432、8080、8317、8318 或 3128；必须从另一网络扫描服务器公网 IP 验证。随后
 从公网域名验证 Cloudflare Tunnel 返回 `/healthz` 和 `/readyz`。
 
 数据库迁移由 Gateway 启动过程从嵌入迁移执行。Gateway 的 `/healthz` 是
@@ -304,10 +309,9 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 
 ## 5. 上游设备码登录
 
-Gemini 使用 `./scripts/gemini-login.sh [project-id]`，与 Codex 共用登录锁和唯一
-sidecar，支持服务器端粘贴 OAuth 回调。价格目录升级、Google 域名出口、插件加载
-检查及真实账号请求见 [Gemini Pro 接入说明](gemini-pro.md)。
-
+Gemini 订阅使用独立的 `./scripts/antigravity-login.sh` 和 Keyring 卷；旧 Gemini
+OAuth 文件留在原卷但不再加载。登录、出口审核及文本 JSON/SSE 验收见
+[Antigravity 接入说明](gemini-pro.md)。Codex 继续使用以下设备码流程。
 
 登录只能通过 SSH 执行：
 
@@ -528,6 +532,7 @@ volume。解密内容只通过管道进入 `pg_restore`，校验应用表数量�
 提供 lock 文件和部署定义。它必须排除：
 
 - `codex_oauth` 卷；
+- `antigravity_keyring` 卷；
 - `.env`、`deploy/secrets` 和 `/run/secrets` 明文副本；
 - 提示词、代码、响应正文和访问 Cookie。
 
@@ -865,17 +870,18 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
 ## 11. 计划迁机
 
 计划迁机使用数据库逻辑备份，不复制运行中的 PostgreSQL 原始 volume，也不
-复制 `codex_oauth` volume。新旧服务器任何时刻只能有一个 Tunnel connector
-承载该 hostname，也不能让两个 sidecar 共享或继续使用同一组 refresh token。
+复制 `codex_oauth` 或 `antigravity_keyring` volume。新旧服务器任何时刻只能有
+一个 Tunnel connector 承载该 hostname，也不能让两端的 Sidecar/Bridge 同时使用
+同一组账号凭据。
 
 1. 在新服务器安装相同依赖，配置仅固定管理 IP 可访问的 SSH，并关闭所有其他
    入站端口。检出旧服务器正在运行的**同一完整 revision**，确认工作树为空；
    暂不启动任何 Compose 服务。
-2. 在旧服务器先停止公网入口，再停止会写数据库或使用 OAuth 的服务：
+2. 在旧服务器先停止公网入口，再停止会写数据库或使用上游凭据的服务：
 
    ```sh
    ./scripts/compose.sh stop cloudflared
-   ./scripts/compose.sh stop caddy gateway codex-compat
+   ./scripts/compose.sh stop caddy gateway codex-compat antigravity-bridge
    ./scripts/backup-postgres.sh
    ./scripts/compose.sh stop postgres egress-allowlist
    ```
@@ -887,14 +893,15 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
    `.env` 的 `0600`、`deploy/secrets` 目录的 `0700`、服务/Tunnel secret 的
    `0640`、age key 文件与备份文件的 `0600`。把 `.env` 中
    `GATEWAY_SECRET_GID` 更新为新部署用户的主组并将 service secret 设为该组；
-   不复制 `.device-login.lock`、容器、PostgreSQL volume 或任何 OAuth 文件。
-4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway 和兼容层。核对
+   不复制 `.device-login.lock`、`.antigravity-login.lock`、容器、PostgreSQL
+   volume、OAuth 文件或 Keyring 数据。
+4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway、兼容层和 Bridge。核对
    `.env` 中版本字段与 `git rev-parse HEAD`，不要使用 `local/dev/unknown`：
 
    ```sh
    ./scripts/bootstrap-secrets.sh
    ./scripts/validate-compose.sh
-   ./scripts/compose.sh build gateway codex-compat
+   ./scripts/compose.sh build gateway codex-compat antigravity-bridge
    ```
 
 5. 确认新服务器的 `postgres_data` 是首次创建的空命名卷，只启动 PostgreSQL，
@@ -914,31 +921,35 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
      '
    ```
 
-6. 不恢复旧 OAuth volume。在新服务器重新执行
-   `./scripts/codex-device-login.sh`，完成权限检查、模型列表和最小 Responses
-   冒烟；旧服务器的 sidecar 必须继续停止。
+6. 不恢复旧 OAuth 或 Keyring volume。在新服务器重新执行
+   `./scripts/codex-device-login.sh` 和 `./scripts/antigravity-login.sh`，完成权限
+   检查、登录持久化、模型列表和最小 Responses 冒烟；旧服务器的 Sidecar 与
+   Bridge 必须继续停止。没有 Antigravity 账号时保持路由为 `{}` 并让 Bridge 停止。
 7. 先启动除 Tunnel 外的服务并确认全部 healthy、数据库 migration ledger 和
    管理数据正确；按第 8 节在新机重新安装备份 wrapper 及 cron 或 systemd timer，
    手工成功执行一次后，再单独启动新 connector。最后从公网验证健康检查、
    Passkey、普通 Responses、首事件及时到达及超过两分钟的 SSE：
 
+   没有 Antigravity 账号时从下面的启动命令中移除 `antigravity-bridge`，并保持
+   `ANTIGRAVITY_MODEL_ROUTES_JSON={}`。
+
    ```sh
-   ./scripts/compose.sh up -d postgres egress-allowlist codex-compat gateway caddy
+   ./scripts/compose.sh up -d postgres egress-allowlist codex-compat antigravity-bridge gateway caddy
    ./scripts/compose.sh ps
    ./scripts/compose.sh up -d cloudflared
    ```
 
 8. 验证审计中的客户端 IP、零宿主端口和每日备份 timer 后再退役旧服务器。迁机
-   失败时保持新 connector 停止；如需返回旧服务器，应在旧机重新做设备码登录，
-   不能同时启动两边 sidecar。只有确认新机稳定且无需回退后，才按云厂商流程
-   安全销毁旧数据库卷和 secret。
+   失败时保持新 connector 停止；如需返回旧服务器，应先停止新机 Sidecar/Bridge，
+   再在旧机重新完成两个登录流程，不能同时启动两端的上游容器。只有确认新机稳定
+   且无需回退后，才按云厂商流程安全销毁旧数据库卷和 secret。
 
 ## 12. 上线验收清单
 
 生产启用前必须记录以下结果；任一项失败都保持 Tunnel 或调用入口停用：
 
 1. 从另一网络扫描服务器公网 IP，确认只有固定管理 IP 可访问 SSH，80、443、
-   5432、8080、8317 和 3128 均不可达；Compose 渲染结果中也没有 `ports`。
+   5432、8080、8317、8318 和 3128 均不可达；Compose 渲染结果中也没有 `ports`。
 2. Cloudflare Dashboard 显示唯一 connector healthy；公网 `/healthz`、`/readyz`
    返回 200，响应为 `DYNAMIC`/`BYPASS` 而非缓存命中，HTTP 会在边缘跳转 HTTPS。
 3. 分别伪造 `CF-Connecting-IP` 和 `X-Forwarded-For`，确认 Cloudflare/Caddy
@@ -960,9 +971,11 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
 7. 在“模型权限”中验证新用户默认值与已有用户批量操作互不追溯；禁用一个测试用户
    后，其下一次请求必须在 usage、配额、账务预留和 sidecar 调用前返回
    `model_not_allowed`。`/v1/models` 必须同时受用户权限和 Key 白名单过滤。
-8. 完成模型列表、普通 Responses 和 SSE：首个事件必须在请求结束前到达，超过
-   两分钟的代表性长流不能被聚合或无故断开，客户端主动断开后上游请求和并发
-   lease 会被取消或结算；响应不得被 Cloudflare 缓存。
+8. 完成模型列表、普通 Responses 和 SSE：Codex 流的首个事件必须在请求结束前
+   到达，超过两分钟的代表性长流不能被聚合或无故断开；Antigravity 首版在完整
+   校验 CLI 输出后发送 SSE，必须以 `response.completed` 和 `[DONE]` 结束。两种
+   路径在客户端主动断开后都必须取消上游请求并清理或结算并发 lease；响应不得被
+   Cloudflare 缓存。
 9. 验证超过 64 MiB 的请求在代理或 Gateway 返回 413，且日志、数据库及备份中
    不出现测试 canary 的正文或凭证。
 10. 重启服务器，确认 Docker 与预期容器恢复、PostgreSQL 命名卷数据不变；再

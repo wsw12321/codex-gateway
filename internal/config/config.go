@@ -32,24 +32,27 @@ type Limits struct {
 }
 
 type Config struct {
-	ListenAddress       string
-	PublicURL           *url.URL
-	RPID                string
-	RPOrigins           []string
-	DatabaseURL         string
-	SidecarURL          *url.URL
-	SidecarToken        string
-	KeyPepper           []byte
-	TokenPepper         []byte
-	APIKeyEncryptionKey []byte
-	TrustedProxy        []*net.IPNet
-	BodyLimit           int64
-	SessionIdle         time.Duration
-	SessionMax          time.Duration
-	ReauthMaxAge        time.Duration
-	Limits              Limits
-	UsagePricing        UsagePricing
-	DevInsecure         bool
+	ListenAddress          string
+	PublicURL              *url.URL
+	RPID                   string
+	RPOrigins              []string
+	DatabaseURL            string
+	SidecarURL             *url.URL
+	SidecarToken           string
+	AntigravityBridgeURL   *url.URL
+	AntigravityBridgeToken string
+	AntigravityModelRoutes map[string]string
+	KeyPepper              []byte
+	TokenPepper            []byte
+	APIKeyEncryptionKey    []byte
+	TrustedProxy           []*net.IPNet
+	BodyLimit              int64
+	SessionIdle            time.Duration
+	SessionMax             time.Duration
+	ReauthMaxAge           time.Duration
+	Limits                 Limits
+	UsagePricing           UsagePricing
+	DevInsecure            bool
 }
 
 func Load() (Config, error) {
@@ -58,6 +61,14 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	sidecarToken, err := envOrFile("SIDECAR_API_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	antigravityToken, err := envOrFile("ANTIGRAVITY_BRIDGE_API_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	antigravityRoutes, err := ParseAntigravityModelRoutes(os.Getenv("ANTIGRAVITY_MODEL_ROUTES_JSON"))
 	if err != nil {
 		return Config{}, err
 	}
@@ -78,15 +89,17 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	cfg := Config{
-		ListenAddress: envDefault("GATEWAY_LISTEN", ":8080"),
-		DatabaseURL:   databaseURL,
-		SidecarToken:  sidecarToken,
-		BodyLimit:     defaultBodyLimit,
-		SessionIdle:   12 * time.Hour,
-		SessionMax:    7 * 24 * time.Hour,
-		ReauthMaxAge:  5 * time.Minute,
-		UsagePricing:  usagePricing,
-		DevInsecure:   envBool("GATEWAY_DEV_INSECURE_HTTP", false),
+		ListenAddress:          envDefault("GATEWAY_LISTEN", ":8080"),
+		DatabaseURL:            databaseURL,
+		SidecarToken:           sidecarToken,
+		AntigravityBridgeToken: antigravityToken,
+		AntigravityModelRoutes: antigravityRoutes,
+		BodyLimit:              defaultBodyLimit,
+		SessionIdle:            12 * time.Hour,
+		SessionMax:             7 * 24 * time.Hour,
+		ReauthMaxAge:           5 * time.Minute,
+		UsagePricing:           usagePricing,
+		DevInsecure:            envBool("GATEWAY_DEV_INSECURE_HTTP", false),
 		Limits: Limits{
 			KeyRPM:             30,
 			KeyConcurrent:      16,
@@ -103,6 +116,11 @@ func Load() (Config, error) {
 	}
 	if cfg.SidecarURL, err = parseURL("SIDECAR_URL", os.Getenv("SIDECAR_URL")); err != nil {
 		return Config{}, err
+	}
+	if value := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BRIDGE_URL")); value != "" {
+		if cfg.AntigravityBridgeURL, err = parseURL("ANTIGRAVITY_BRIDGE_URL", value); err != nil {
+			return Config{}, err
+		}
 	}
 	cfg.RPID = envDefault("WEBAUTHN_RP_ID", cfg.PublicURL.Hostname())
 	cfg.RPOrigins = splitCSV(envDefault("WEBAUTHN_ORIGINS", cfg.PublicURL.Scheme+"://"+cfg.PublicURL.Host))
@@ -170,6 +188,9 @@ func (c Config) Validate() error {
 	}
 	if c.SidecarURL.User != nil || c.SidecarURL.RawQuery != "" || c.SidecarURL.Fragment != "" {
 		return errors.New("SIDECAR_URL must not contain credentials, query, or fragment")
+	}
+	if err := c.validateAntigravity(); err != nil {
+		return err
 	}
 	if c.DatabaseURL == "" {
 		return errors.New("DATABASE_URL is required")

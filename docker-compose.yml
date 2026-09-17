@@ -89,6 +89,9 @@ services:
       TOKEN_HMAC_PEPPER_FILE: /run/secrets/gateway_session_secret
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
+      ANTIGRAVITY_BRIDGE_URL: http://antigravity-bridge:8318
+      ANTIGRAVITY_BRIDGE_API_KEY_FILE: /run/secrets/antigravity_bridge_api_key
+      ANTIGRAVITY_MODEL_ROUTES_JSON: ${ANTIGRAVITY_MODEL_ROUTES_JSON:-}
       GATEWAY_BODY_LIMIT_BYTES: "67108864"
       LIMIT_KEY_CONCURRENT: "${LIMIT_KEY_CONCURRENT:-16}"
       LIMIT_USER_CONCURRENT: "${LIMIT_USER_CONCURRENT:-16}"
@@ -99,6 +102,7 @@ services:
       - gateway_api_key_pepper
       - gateway_session_secret
       - sidecar_api_key
+      - antigravity_bridge_api_key
     tmpfs:
       # Four concurrent 64 MiB request spools plus one body-sized margin for
       # filesystem/accounting overhead and cleanup overlap.
@@ -110,6 +114,8 @@ services:
         ipv4_address: 172.28.20.2
       compat_internal:
         ipv4_address: 172.28.30.2
+      antigravity_internal:
+        ipv4_address: 172.28.40.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -160,7 +166,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc
+    image: codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-codex-only
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
@@ -169,7 +175,6 @@ services:
         RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v7.2.150
         CLIPROXY_COMMIT: c77b13694318b0897f2c74104ef48aebdf8c34d6
-        GEMINI_PLUGIN_COMMIT: 19d9868ffa24e94a2919ea1d1a761afa634de669
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true
@@ -210,6 +215,57 @@ services:
       retries: 5
       start_period: 30s
 
+  antigravity-bridge:
+    <<: *common-security
+    image: codex-gateway-antigravity:agy1.2.4-${GATEWAY_IMAGE_TAG:?Set GATEWAY_IMAGE_TAG in .env}
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: deploy/antigravity-bridge/Dockerfile
+      args:
+        GOLANG_IMAGE: ${GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
+        RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
+    read_only: true
+    user: "10002:${GATEWAY_SECRET_GID:-1000}"
+    init: true
+    pids_limit: 128
+    environment:
+      ANTIGRAVITY_BRIDGE_LISTEN: ":8318"
+      ANTIGRAVITY_BRIDGE_API_KEY_FILE: /run/secrets/antigravity_bridge_api_key
+      ANTIGRAVITY_MODEL_ROUTES_JSON: '{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}'
+      AGY_BINARY: /usr/local/bin/agy
+      AGY_CLI_DISABLE_AUTO_UPDATE: "true"
+      HTTP_PROXY: http://egress-allowlist:3128
+      HTTPS_PROXY: http://egress-allowlist:3128
+      ALL_PROXY: http://egress-allowlist:3128
+      NO_PROXY: 127.0.0.1,localhost,antigravity-bridge
+    secrets:
+      - antigravity_bridge_api_key
+      - antigravity_keyring_password
+    volumes:
+      - type: volume
+        source: antigravity_keyring
+        target: /var/lib/antigravity/keyrings
+        volume:
+          nocopy: false
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10002,gid=10002
+      - /run/antigravity:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10002,gid=10002
+    networks:
+      antigravity_internal:
+        ipv4_address: 172.28.40.3
+    depends_on:
+      egress-allowlist:
+        condition: service_healthy
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "4", "http://127.0.0.1:8318/readyz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
   egress-allowlist:
     <<: *common-security
     image: ${SQUID_IMAGE:?Run ./scripts/lock-images.sh first}
@@ -224,6 +280,8 @@ services:
       egress_external: {}
       compat_internal:
         ipv4_address: 172.28.30.4
+      antigravity_internal:
+        ipv4_address: 172.28.40.4
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -254,6 +312,12 @@ networks:
     ipam:
       config:
         - subnet: 172.28.30.0/24
+  antigravity_internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.40.0/24
   egress_external:
     driver: bridge
 
@@ -262,6 +326,7 @@ volumes:
   caddy_config: {}
   postgres_data: {}
   codex_oauth: {}
+  antigravity_keyring: {}
 
 secrets:
   cloudflared_tunnel_token:
@@ -278,3 +343,7 @@ secrets:
     file: ./deploy/secrets/gateway_session_secret
   sidecar_api_key:
     file: ./deploy/secrets/sidecar_api_key
+  antigravity_bridge_api_key:
+    file: ./deploy/secrets/antigravity_bridge_api_key
+  antigravity_keyring_password:
+    file: ./deploy/secrets/antigravity_keyring_password

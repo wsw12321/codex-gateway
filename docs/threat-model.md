@@ -10,8 +10,9 @@
 
 ## 范围和安全目标
 
-受保护资产包括 ChatGPT Plus/Pro OAuth/refresh token、设备 API Key、独立 API Key
-加密密钥、Passkey 公钥与 challenge、恢复码、会话、数据库凭证、配额数据和
+受保护资产包括 ChatGPT Plus/Pro OAuth/refresh token、Antigravity Keyring 中的
+订阅登录状态、设备 API Key、独立 API Key 加密密钥、Passkey 公钥与 challenge、
+恢复码、会话、数据库凭证、配额数据和
 安全审计。提示词、源代码和
 模型回复属于高敏感瞬时数据：可以在转发内存或受限 tmpfs 中短暂存在，但不得
 进入数据库、日志、备份或管理界面。按用户聚合的用量和
@@ -29,17 +30,21 @@ Internet
   -> Cloudflare Edge (public TLS)
     -> Cloudflare Tunnel (outbound connector)
       -> Caddy (edge_internal only)
-        -> Gateway (edge_internal + data_internal + compat_internal)
+        -> Gateway (edge_internal + data_internal + 两个上游内部网络)
           -> PostgreSQL (data_internal only)
           -> CLIProxyAPI (compat_internal only)
-            -> Squid allowlist (compat_internal + egress_external)
+            -> Squid allowlist (固定 Sidecar /32)
               -> auth.openai.com:443 / chatgpt.com:443
+          -> Antigravity Bridge (antigravity_internal only)
+            -> Squid allowlist (固定 Bridge /32)
+              -> 精确审核的 Google OAuth / Cloud Code 域名:443
 ```
 
 没有容器发布宿主机端口。`cloudflared` 只连接 Tunnel 出站网络和边缘内部网络，
 并把 Dashboard 中的 hostname 转给 `http://caddy:80`。其余带 `internal: true`
-的网络没有默认互联网路由。Sidecar 即使尝试绕过 `HTTP(S)_PROXY` 也没有直接
-出口；Squid 拒绝非 CONNECT、非 443 和不在精确域名列表中的目的地。
+的网络没有默认互联网路由。Sidecar 和 Bridge 即使尝试绕过 `HTTP(S)_PROXY` 也没有
+直接出口；Squid 只接受两个固定容器地址，并拒绝非 CONNECT、非 443 和不在对应
+精确域名列表中的目的地。Gateway 虽加入两个上游网络，但没有 Squid 出站权限。
 
 ## 主要威胁与控制
 
@@ -49,18 +54,21 @@ Internet
 | Tunnel token 泄漏 | Dashboard token 仅存 `0640` secret，以 `--token-file` 挂载给非 root、只读的 connector | 文件/mount/进程参数和日志检查 |
 | API Key 数据库泄漏 | HMAC 用于认证；新 Key 的版本化 AES-256-GCM 密文使用仅挂载给 Gateway 的独立密钥，AAD 绑定用户和 Public ID，查看要求近期二次验证 | 加密篡改/AAD 测试、管理响应和数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
+| Antigravity 登录状态泄漏 | 加密 Keyring 只挂载到 UID 10002 Bridge；独立口令和 Bearer secret；临时 HOME/D-Bus 在 tmpfs | Compose mount/secret 审计、错误口令与重启测试 |
 | Refresh token 并发复用 | 登录/升级锁；先停唯一实例；禁止共享卷的双实例 | 容器状态检查、运维演练 |
 | OAuth 文件权限放宽或 symlink | 启动时要求目录 UID 10001/精确 `0700`、文件 UID 10001/regular file/精确 `0600` | `verify-oauth-permissions.sh` |
 | 多账号登录覆盖其他 OAuth 文件 | 登录前后只比较内部 Sidecar Key 加域的文件名/内容 SHA-256；要求恰好一个账号新增或刷新且零删除 | 重复登录、同账号刷新和权限测试 |
 | 调用方伪造粘滞或账号归因头 | Gateway 生成每 API Key 的 HMAC 作用域；sidecar 消费作用域头；Gateway 消费账号头且不下发客户端 | Header 清理和跨 API Key session 隔离测试 |
 | 即时额度接口被改造成任意 SSRF/令牌出口 | sidecar 仅允许固定 GET `chatgpt.com/backend-api/wham/usage`、禁止重定向并只返回规范化字段；完整管理 API 关闭 | URL/方法/Header/重定向、异常响应和敏感 canary 测试 |
 | Sidecar 任意出网/SSRF | internal 网络加 Squid 精确域名和 443 allowlist | 代理 ACL 测试、网络 namespace 测试 |
+| Bridge Agent 读取文件或执行工具 | 每请求空目录；strict 权限显式拒绝文件、命令、URL、MCP；工具事件使请求失败并终止进程组 | 假 CLI 协议、取消、子进程与残留测试 |
+| Gateway 借上游网络直接出网 | Squid 来源 ACL 只放行 Sidecar `172.28.30.3/32` 和 Bridge `172.28.40.3/32` | Compose/Squid 固定地址校验 |
 | 请求头走私凭证 | Gateway 只接受已知路径/头，替换 Authorization，移除 Cookie、转发头及 hop-by-hop 头 | 代理和 fuzz 测试 |
 | 超大正文/资源耗尽 | Caddy 与 Gateway 双重 64 MiB 上限；RPM、并发、日配额和全局流限制 | 限额与并发测试 |
 | 邀请/恢复 token 泄漏 | URL fragment、单次/短期 token、HMAC 存储；不启用访问日志 | 邀请复用测试、日志扫描 |
 | 会话劫持/CSRF | Secure、HttpOnly、SameSite=Strict；Origin/CSRF 校验；敏感操作 5 分钟内 Passkey 再验证 | 身份安全测试 |
 | 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 与 Gateway 只信任各自上游的固定 `/32`，并重建 XFF | CF/XFF 伪造测试 |
-| 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；固定 CI 工具版本 | CI 和 lock diff 审阅 |
+| 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；`agy` 固定版本化 URL、SHA512 和运行时版本；固定 CI 工具版本 | CI、lock diff 与镜像构建审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
 | Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
 | 把 OpenAI API Token 等价成本误当 OpenAI 实际账单 | 准入固化 v2 规则，ledger 不可变；界面/API 明示 Pro OAuth、内部零价和兜底边界 | v2 计价、ledger 和文案测试 |
@@ -68,16 +76,18 @@ Internet
 
 ## 容器权限
 
-Gateway 和 sidecar 使用 UID 10001、私有部署组、只读根文件系统、
-`no-new-privileges` 和 drop-all capabilities。`cloudflared` 同样以非 root、
-只读根文件系统和 drop-all capabilities 运行。Sidecar 只有 OAuth volume 和
-两个小型 tmpfs 可写，OAuth 文件 umask 是 077。Gateway 只有私有 `/tmp` tmpfs
+Gateway 和 sidecar 使用 UID 10001，Bridge 使用 UID 10002；三者使用私有部署组、
+只读根文件系统、`no-new-privileges` 和 drop-all capabilities。`cloudflared` 同样
+以非 root、只读根文件系统和 drop-all capabilities 运行。Sidecar 只有 OAuth
+volume 和两个小型 tmpfs 可写，OAuth 文件 umask 是 077。Bridge 只有独立 Keyring
+volume 与私有 `/tmp`、运行目录可写，每个请求结束后清理 CLI 工作目录和日志。
+Gateway 只有私有 `/tmp` tmpfs
 可写，并以 4 个并发槽限制完整请求体的转发前扫描文件。Caddy 仅保留绑定内部
 低端口所需的 `NET_BIND_SERVICE`。PostgreSQL 和 Squid 保留各自官方镜像启动
 所需权限，但没有公网端口，且位于最小网络集合中。
 
-内部 sidecar API Key 与用户 Key 完全不同。Gateway 在转发前丢弃用户
-Authorization，设置内部 Bearer；sidecar 管理 API 禁止 remote access 且控制
+两个上游分别使用与用户 Key 不同、彼此不同的内部 API Key。Gateway 在转发前丢弃
+用户 Authorization 并设置对应 Bearer；sidecar 管理 API 禁止 remote access 且控制
 面板关闭。只读账号列表和固定上游额度适配器位于私有兼容网络并使用同一内部
 Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接口都不经 Caddy 路由。
 
@@ -88,6 +98,7 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
 - 安全审计保留 365 天。
 - 请求和响应正文不落库，因此不进入 `pg_dump`。
 - OAuth volume 永不备份；灾备后重新登录。
+- Antigravity Keyring 不进入数据库备份或计划迁机复制；灾备后通过隔离登录脚本重建。
 - PostgreSQL 每日 03:00 UTC 生成本地 age 密文，保留最近 14 组；每月至少在
   无网络临时容器中恢复演练一次，升级前追加一次。
 - 停用的 API Key 立即拒绝新认证；永久删除移除活动凭证及密文，但数据库保留不含
@@ -97,8 +108,11 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
 
 - ChatGPT Pro 登录不是官方通用服务端 API，CLIProxyAPI 可能因上游协议改变而
   失效。控制是固定兼容版本、契约测试、人工冒烟和明确 503，而非静默回退。
+- Antigravity Bridge 依赖官方 `agy` 的订阅登录和 Headless 输出；CLI 模型、认证或
+  事件格式变化会使 readiness 或请求失败。Google 出口域名基线仍须用真实账号流量
+  验收，不能把假 CLI 测试视为生产可用证明。
 - 公网 TLS 在 Cloudflare Edge 终止，Cloudflare 及转发链路上的
-  cloudflared/Caddy/Gateway/sidecar 可见必要的瞬时内容。主机 root、Docker
+  cloudflared/Caddy/Gateway/sidecar/Bridge 可见必要的瞬时内容。主机 root、Docker
   daemon 或内核被攻破后无法靠容器边界保密。
 - 精确域名 allowlist 仍信任这些域名的 DNS、证书和服务端。Squid 不做 TLS
   解密，因此不能检查加密路径，但也不会看到 OAuth 或提示词。
@@ -115,4 +129,4 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
 穿越、SSRF、请求走私、伪造 XFF、无效 Key 限速、并发/日配额原子性、客户端
 断开取消、上游 401/429/超时映射，以及带 canary 的日志、数据库和备份敏感
 内容扫描。还需伪造 `CF-Connecting-IP`/`X-Forwarded-For` 验证来源 IP 边界，
-并从公网确认服务器的 80、443、5432、8080、8317 和 3128 均不可达。
+并从公网确认服务器的 80、443、5432、8080、8317、8318 和 3128 均不可达。

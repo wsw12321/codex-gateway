@@ -14,12 +14,10 @@ compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
 compat_patch_sha256=00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f
-gemini_plugin_commit=19d9868ffa24e94a2919ea1d1a761afa634de669
-gemini_plugin_patch=$root/deploy/codex-compat/gemini-cli-19d9868-gateway.patch
-compat_gemini_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-gemini.patch
-gemini_plugin_patch_sha256=e9c0c5c78c3fd5c3f11d4cbd5e71d5ceeeb8612c466044a79794d1a7bf50aeb7
-compat_gemini_patch_sha256=eb59891fa6e7d77cb192b9af67a3508d311183c6fd9f116ad4469790ba2391ca
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-gemini19d9868-708d3052c0caad8a-glibc
+bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
+bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
+agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-codex-only
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -40,35 +38,37 @@ test -r "$env_file" || {
 test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
 test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
-test -s "$gemini_plugin_patch" && test -s "$compat_gemini_patch" || \
-    fail 'reviewed Gemini compatibility patches are missing'
-test "$(sha256sum "$gemini_plugin_patch" | awk '{print $1}')" = "$gemini_plugin_patch_sha256" && \
-    test "$(sha256sum "$compat_gemini_patch" | awk '{print $1}')" = "$compat_gemini_patch_sha256" || \
-    fail 'reviewed Gemini compatibility patch checksum changed'
-grep -Fq 'debian:bookworm-20260824-slim@sha256:' "$compat_dockerfile" && \
-    grep -Fq 'CGO_ENABLED=1' "$compat_dockerfile" && \
-    grep -Fq 'CC=gcc' "$compat_dockerfile" && \
-    grep -Fq -- '-buildmode=c-shared' "$compat_dockerfile" && \
-    grep -Fxq 'FROM runtime-base AS verify' "$compat_dockerfile" && \
-    grep -Fxq 'FROM runtime-base' "$compat_dockerfile" && \
-    grep -Fq 'TestGeminiCLISharedPluginLoads' "$compat_dockerfile" || \
-    fail 'codex-compat must build with glibc and test the actual shared Gemini plugin in its runtime base'
-grep -Fq 'gemini-cli-19d9868-gateway.patch' "$compat_dockerfile" && \
-    grep -Fq 'cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" || \
-    fail 'codex-compat must apply both reviewed Gemini compatibility patches'
-grep -Fq 'dir: "/usr/local/lib/cliproxy/plugins"' "$compat_entrypoint" && \
-    grep -Fq 'gemini-cli:' "$compat_entrypoint" && \
-    grep -Fq 'Gemini CLI plugin did not register its login flags' "$compat_entrypoint" || \
-    fail 'codex-compat must enable and verify its packaged Gemini plugin'
-grep -Fxq 'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' "$egress_config" && \
-    grep -Fxq 'acl gemini_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudresourcemanager.googleapis.com cloudcode-pa.googleapis.com cloudaicompanion.googleapis.com' "$egress_config" && \
-    grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
+if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" "$compat_entrypoint"; then
+    fail 'codex-compat must not build or load the retired Gemini plugin'
+fi
+grep -A1 '^plugins:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' || \
+    fail 'codex-compat must disable plugins and ignore legacy Gemini credentials'
+grep -Fq 'legacy-credentials.test.txt' "$compat_dockerfile" || \
+    fail 'codex-compat must test preservation and rejection of legacy Gemini credentials'
+jq -e '.version == "1.2.4" and .platform == "linux_amd64" and
+    .url == "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz" and
+    .sha512 == "5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897"' \
+    "$agy_lock" >/dev/null || fail 'agy version, official artifact and SHA512 must remain pinned'
+grep -Fq 'sha512sum -c -' "$bridge_dockerfile" && \
+    grep -Fq 'AGY_CLI_DISABLE_AUTO_UPDATE=true' "$bridge_dockerfile" && \
+    grep -Fq 'dbus-run-session' "$bridge_entrypoint" && \
+    grep -Fq 'gnome-keyring-daemon --unlock' "$bridge_entrypoint" || \
+    fail 'Bridge requires checksum verification, disabled updates and a local Secret Service'
+grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
     grep -Fxq 'http_access deny !TLS_port' "$egress_config" && \
-    grep -Fxq 'http_access deny all' "$egress_config" || \
+    grep -Fxq 'http_access deny all' "$egress_config" && \
+    grep -Fxq 'request_header_access Forwarded deny all' "$egress_config" || \
     fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
+test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "codex_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
+    "$(printf '%s\n' \
+        'acl codex_clients src 172.28.30.3/32' \
+        'acl antigravity_clients src 172.28.40.3/32' \
+        'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' \
+        'acl antigravity_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com')" || \
+    fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" && $2 == "allow" { print }' "$egress_config")" = \
-    "$(printf '%s\n' 'http_access allow CONNECT codex_upstreams' 'http_access allow CONNECT gemini_upstreams')" || \
-    fail 'egress must allow only the reviewed Codex and Gemini destination rules'
+    "$(printf '%s\n' 'http_access allow CONNECT codex_clients codex_upstreams' 'http_access allow CONNECT antigravity_clients antigravity_upstreams')" || \
+    fail 'egress must separate Codex and Antigravity destination rules'
 grep -Fq 'git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" && \
     grep -Fq 'git apply --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
@@ -366,6 +366,7 @@ jq -e '
   .networks.edge_internal.internal == true and
   .networks.data_internal.internal == true and
   .networks.compat_internal.internal == true and
+  .networks.antigravity_internal.internal == true and
   ((.networks.tunnel_external.internal // false) == false) and
   ((.networks.egress_external.internal // false) == false) and
   ([.networks | to_entries[] | select((.value.internal // false) == false) | .key] | sort) ==
@@ -378,6 +379,12 @@ jq -e '
     ["egress-allowlist"] and
   .services.cloudflared.networks.edge_internal.ipv4_address == "172.28.10.4" and
   .services.caddy.networks.edge_internal.ipv4_address == "172.28.10.2" and
+  .services.gateway.networks.compat_internal.ipv4_address == "172.28.30.2" and
+  .services["codex-compat"].networks.compat_internal.ipv4_address == "172.28.30.3" and
+  .services["egress-allowlist"].networks.compat_internal.ipv4_address == "172.28.30.4" and
+  .services.gateway.networks.antigravity_internal.ipv4_address == "172.28.40.2" and
+  .services["antigravity-bridge"].networks.antigravity_internal.ipv4_address == "172.28.40.3" and
+  .services["egress-allowlist"].networks.antigravity_internal.ipv4_address == "172.28.40.4" and
   .services.gateway.environment.TRUSTED_PROXY_CIDRS ==
     (.services.caddy.networks.edge_internal.ipv4_address + "/32")
 ' "$tmp" >/dev/null
@@ -436,19 +443,19 @@ jq -e \
   .services.gateway.build.args.GOLANG_IMAGE == $golang and
   .services.gateway.build.args.RUNTIME_IMAGE == $runtime and
   .services["codex-compat"].build.args.GOLANG_IMAGE == $cliproxy_golang and
-  .services["codex-compat"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
+  .services["codex-compat"].build.args.RUNTIME_IMAGE == $cliproxy_runtime and
+  .services["antigravity-bridge"].build.args.GOLANG_IMAGE == $golang and
+  .services["antigravity-bridge"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
 ' "$tmp" >/dev/null
 
-jq -e --arg gemini_plugin_commit "$gemini_plugin_commit" '
+jq -e '
   .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.150" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
     "c77b13694318b0897f2c74104ef48aebdf8c34d6" and
-  .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == $gemini_plugin_commit
-' "$tmp" >/dev/null || \
-    fail 'codex-compat must remain pinned to the reviewed CLIProxyAPI and Gemini plugin commits'
-
+  .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
+' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
-    fail 'codex-compat image tag must identify the reviewed multi-account and Gemini patches and glibc runtime'
+    fail 'codex-compat image tag must identify the reviewed Codex-only build'
 
 gateway_image=$(jq -r '.services.gateway.image' "$tmp")
 gateway_version=$(jq -r '.services.gateway.build.args.VERSION' "$tmp")
@@ -489,6 +496,7 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
   (.services.gateway.environment.API_KEY_ENCRYPTION_KEY == null) and
   .secrets.gateway_api_key_encryption_key.file == $encryption_key_file and
   ([.services.gateway.secrets[] | .source] | sort) == [
+    "antigravity_bridge_api_key",
     "database_url",
     "gateway_api_key_encryption_key",
     "gateway_api_key_pepper",
@@ -500,6 +508,43 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
     .key]) == ["gateway"]
 ' "$tmp" >/dev/null || \
     fail 'API key encryption key must be mounted only into Gateway through its required file setting'
+
+# Bridge receives only its dedicated secrets/keyring and an internal network.
+# Neither the Docker socket, host filesystem nor the Codex OAuth volume exists
+# in this container. Gateway availability does not depend on Bridge readiness.
+jq -e '
+  .services["antigravity-bridge"] as $bridge |
+  $bridge.read_only == true and
+  ($bridge.user | test("^10002:[1-9][0-9]*$")) and
+  ($bridge.cap_drop | sort) == ["ALL"] and
+  ($bridge.security_opt | index("no-new-privileges:true")) != null and
+  $bridge.init == true and $bridge.pids_limit == 128 and
+  $bridge.platform == "linux/amd64" and
+  ($bridge.networks | keys) == ["antigravity_internal"] and
+  ($bridge.volumes | length) == 1 and
+  $bridge.volumes[0].type == "volume" and
+  $bridge.volumes[0].source == "antigravity_keyring" and
+  $bridge.volumes[0].target == "/var/lib/antigravity/keyrings" and
+  ([.services | to_entries[] | select(any(.value.volumes[]?; .source == "antigravity_keyring")) | .key]) == ["antigravity-bridge"] and
+  ([.services | to_entries[] | select(any(.value.volumes[]?; .source == "codex_oauth")) | .key]) == ["codex-compat"] and
+  ($bridge.secrets | map(.source) | sort) == ["antigravity_bridge_api_key", "antigravity_keyring_password"] and
+  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_keyring_password")) | .key]) == ["antigravity-bridge"] and
+  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge", "gateway"] and
+  $bridge.environment.AGY_CLI_DISABLE_AUTO_UPDATE == "true" and
+  $bridge.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
+  .services.gateway.environment.ANTIGRAVITY_BRIDGE_URL == "http://antigravity-bridge:8318" and
+  .services.gateway.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
+  .services.gateway.depends_on["antigravity-bridge"] == null and
+  ($bridge.tmpfs | sort) == [
+    "/run/antigravity:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10002,gid=10002",
+    "/tmp:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10002,gid=10002"
+  ] and
+  (.services.gateway.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | if . == "" then {} else fromjson end |
+    . == {} or . == {"gemini-3.1-pro-preview":"gemini-3.1-pro-high"})
+' "$tmp" >/dev/null || fail 'Antigravity process, network, route, keyring or secret isolation failed'
+if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/antigravity_bridge_api_key"; then
+    fail 'Codex and Antigravity must use distinct internal Bearer secrets'
+fi
 
 # prepareModelBody admits at most four simultaneous 64 MiB request files.
 # Require a private, non-executable 320 MiB tmpfs: four full spools plus one
@@ -522,6 +567,8 @@ for secret_name in \
     gateway_api_key_pepper \
     gateway_session_secret \
     sidecar_api_key \
+    antigravity_bridge_api_key \
+    antigravity_keyring_password \
     database_url
 do
     secret=$secret_dir/$secret_name

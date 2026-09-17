@@ -11,3 +11,5 @@ coverage.out
 sbom*.json
 .device-login.lock
 __pycache__/
+
+.antigravity-login.lock
