@@ -24,11 +24,12 @@ type fakeCLIConfig struct {
 }
 
 type processCapture struct {
-	Args                                      []string
-	Prompt                                    string
-	Root                                      string
-	PID, ChildPID                             int
-	WorkspaceEmpty, SafePolicy, SecretsAbsent bool
+	Args                                                        []string
+	Prompt                                                      string
+	Root                                                        string
+	DBusSessionBusAddress, GNOMEKeyringControl, XDGRuntimeDir string
+	PID, ChildPID                                               int
+	WorkspaceEmpty, SafePolicy, SecretsAbsent                  bool
 }
 
 // The executable shim selects this helper using only a fixture file argument.
@@ -83,7 +84,14 @@ func TestAgyProcess(t *testing.T) {
 	entries, _ := os.ReadDir(cwd)
 	settings, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".gemini/antigravity-cli/settings.json"))
 	root := filepath.Dir(cwd)
-	capture := processCapture{Args: args, Prompt: event.Message.Content, Root: root, PID: os.Getpid(), WorkspaceEmpty: len(entries) == 0, SafePolicy: string(settings) == SafeSettings, SecretsAbsent: os.Getenv("ANTIGRAVITY_BRIDGE_API_KEY") == "" && os.Getenv("SIDECAR_API_KEY") == ""}
+	capture := processCapture{
+		Args: args, Prompt: event.Message.Content, Root: root, PID: os.Getpid(),
+		DBusSessionBusAddress: os.Getenv("DBUS_SESSION_BUS_ADDRESS"),
+		GNOMEKeyringControl:   os.Getenv("GNOME_KEYRING_CONTROL"),
+		XDGRuntimeDir:         os.Getenv("XDG_RUNTIME_DIR"),
+		WorkspaceEmpty:        len(entries) == 0, SafePolicy: string(settings) == SafeSettings,
+		SecretsAbsent: os.Getenv("ANTIGRAVITY_BRIDGE_API_KEY") == "" && os.Getenv("SIDECAR_API_KEY") == "",
+	}
 	if fixture.Child {
 		child := exec.Command(os.Args[0], "-test.run=^TestAgyProcess$", "--", "--agy-test-helper", os.Args[marker+1], "--sleep-child")
 		child.Stdout, child.Stderr = os.Stdout, os.Stderr
@@ -174,6 +182,9 @@ func assertWorkspacesClean(t *testing.T, runner Runner) {
 }
 
 func TestRunnerStdinIsolationAndCleanup(t *testing.T) {
+	t.Setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/tmp/test-dbus")
+	t.Setenv("GNOME_KEYRING_CONTROL", "/run/antigravity/keyring")
+	t.Setenv("XDG_RUNTIME_DIR", "/run/antigravity")
 	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "sensitive-bridge-secret")
 	t.Setenv("SIDECAR_API_KEY", "sensitive-codex-secret")
 	const prompt = "private prompt marker /logout 世界"
@@ -185,7 +196,10 @@ func TestRunnerStdinIsolationAndCleanup(t *testing.T) {
 		t.Fatalf("result=%+v failure=%+v", result, failure)
 	}
 	capture := readCapture(t, capturePath)
-	if capture.Prompt != prompt || !capture.WorkspaceEmpty || !capture.SafePolicy || !capture.SecretsAbsent {
+	if capture.Prompt != prompt || !capture.WorkspaceEmpty || !capture.SafePolicy || !capture.SecretsAbsent ||
+		capture.DBusSessionBusAddress != "unix:path=/tmp/test-dbus" ||
+		capture.GNOMEKeyringControl != "/run/antigravity/keyring" ||
+		capture.XDGRuntimeDir != "/run/antigravity" {
 		t.Fatalf("isolation failed: %+v", capture)
 	}
 	if strings.Contains(strings.Join(capture.Args, " "), prompt) || strings.Contains(logs.String(), prompt) || strings.Contains(logs.String(), "sensitive-token") {

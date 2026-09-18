@@ -81,7 +81,7 @@ func (r Runner) command(ctx context.Context, root, cwd string, args ...string) *
 	cmd.Dir = cwd
 	// Deliberately exclude gateway/bridge secrets and arbitrary CLI settings
 	// from the child environment. Authentication goes through Secret Service.
-	for _, key := range []string{"PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"} {
+	for _, key := range []string{"PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "XDG_RUNTIME_DIR"} {
 		if value := os.Getenv(key); value != "" {
 			cmd.Env = append(cmd.Env, key+"="+value)
 		}
