@@ -29,11 +29,11 @@ reasoning 明细。总量为输入加输出。历史结算快照保持不变。
 
 ## API 范围
 
-`POST /v1/responses` 支持文本字符串、纯文本消息数组、`instructions`、`stream`、
-缺省或 `false` 的 `store`、缺省或默认 `service_tier`。函数工具、非文本内容、文件、
-图片、会话续接、`previous_response_id`、`max_output_tokens` 及其他无法可靠转换的
-参数返回明确的 `400 antigravity_*_unsupported`。Antigravity 模型的 compact 返回
-`501 endpoint_not_supported`。
+`POST /v1/responses` 支持文本字符串、消息数组、`instructions`、`stream`、`tools` 工具列表、
+以及 Codex CLI 客户端的会话参数与历史 `function_call` / `function_call_output` 结构。Bridge
+会自动转换客户端请求格式：将声明的客户端工具注入会话提示词，若模型输出工具调用结构则转换为标准 Responses
+API `function_call` 事件；非文本内容（文件、图片）仍拒绝并返回明确的 `400 antigravity_input_unsupported`。
+Antigravity 模型的 compact 返回 `501 endpoint_not_supported`。
 
 每个请求创建独立进程和空工作目录，提示词只经 stdin NDJSON 传入；使用
 `--input-format stream-json --output-format stream-json --model gemini-3.1-pro-high

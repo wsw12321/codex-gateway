@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -58,15 +59,13 @@ func DecodeRequest(body []byte) (Request, *Failure) {
 	sort.Strings(keys)
 	for _, key := range keys {
 		switch key {
-		case "model", "input", "instructions", "stream", "store", "service_tier":
+		case "model", "input", "instructions", "stream", "store", "service_tier",
+			"tools", "tool_choice", "parallel_tool_calls", "reasoning", "reasoning_effort",
+			"max_output_tokens", "max_tokens", "temperature", "top_p", "metadata", "client_metadata",
+			"user", "prompt_cache_key", "session_id", "conversation_id", "previous_response_id",
+			"truncation", "background", "modalities", "stream_options", "text", "include":
 		default:
-			// Do not echo arbitrary user-controlled field names into error codes.
-			switch key {
-			case "tools", "tool_choice", "parallel_tool_calls", "previous_response_id", "max_output_tokens", "reasoning", "text", "temperature", "top_p", "include", "metadata", "background", "conversation", "truncation":
-				return out, unsupported(key)
-			default:
-				return out, unsupported("parameter")
-			}
+			return out, unsupported("parameter")
 		}
 	}
 	if json.Unmarshal(fields["model"], &out.Model) != nil || out.Model != PublicModel {
@@ -77,33 +76,60 @@ func DecodeRequest(body []byte) (Request, *Failure) {
 			return out, unsupported("stream")
 		}
 	}
-	if raw, ok := fields["store"]; ok && string(bytes.TrimSpace(raw)) != "false" {
-		return out, unsupported("store")
-	}
-	if raw, ok := fields["service_tier"]; ok {
-		var tier string
-		if json.Unmarshal(raw, &tier) != nil || tier != "default" {
-			return out, unsupported("service_tier")
-		}
-	}
 	var instructions string
 	if raw, ok := fields["instructions"]; ok {
-		if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &instructions) != nil {
-			return out, unsupported("instructions")
+		if len(raw) > 0 && raw[0] == '"' {
+			_ = json.Unmarshal(raw, &instructions)
+		}
+	}
+	var toolPrompt strings.Builder
+	if rawTools, ok := fields["tools"]; ok && len(rawTools) > 0 && string(bytes.TrimSpace(rawTools)) != "null" {
+		var toolList []map[string]json.RawMessage
+		if json.Unmarshal(rawTools, &toolList) == nil && len(toolList) > 0 {
+			toolPrompt.WriteString("\nAvailable client tools for this session:")
+			for _, t := range toolList {
+				var name, desc string
+				if rawName, ok := t["name"]; ok {
+					_ = json.Unmarshal(rawName, &name)
+				}
+				if rawDesc, ok := t["description"]; ok {
+					_ = json.Unmarshal(rawDesc, &desc)
+				}
+				if rawFn, ok := t["function"]; ok {
+					var fnObj map[string]json.RawMessage
+					if json.Unmarshal(rawFn, &fnObj) == nil {
+						if n, ok := fnObj["name"]; ok {
+							_ = json.Unmarshal(n, &name)
+						}
+						if d, ok := fnObj["description"]; ok {
+							_ = json.Unmarshal(d, &desc)
+						}
+					}
+				}
+				if name != "" {
+					toolPrompt.WriteString(fmt.Sprintf("\n- %s: %s", name, desc))
+				}
+			}
+			toolPrompt.WriteString("\nIf you want to invoke a tool, respond with ONLY a JSON code block in the format:\n```json\n{\"type\":\"function_call\",\"name\":\"<tool_name>\",\"arguments\":{...}}\n```\nOtherwise, provide your answer directly in markdown.")
 		}
 	}
 	messages, failure := decodeInput(fields["input"])
 	if failure != nil {
 		return out, failure
 	}
+	fullInstructions := instructions
+	if toolPrompt.Len() > 0 {
+		if fullInstructions != "" {
+			fullInstructions += "\n"
+		}
+		fullInstructions += toolPrompt.String()
+	}
 	transcript := struct {
 		Instructions string        `json:"instructions,omitempty"`
 		Messages     []textMessage `json:"messages"`
-	}{instructions, messages}
+	}{fullInstructions, messages}
 	encoded, _ := json.Marshal(transcript)
-	// The wrapper also prevents a user input beginning with / from becoming a
-	// CLI slash command. No user content is ever passed as a command argument.
-	out.Prompt = "Answer the following text conversation. Follow its instructions and message roles. Return only the assistant's answer. Do not use tools, access files, run commands, browse URLs, or delegate to agents.\n" + string(encoded)
+	out.Prompt = "Answer the following text conversation. Follow its instructions and message roles. Return only the assistant's answer. Do not use server tools, access files, run commands, browse URLs, or delegate to agents.\n" + string(encoded)
 	return out, nil
 }
 
@@ -132,56 +158,98 @@ func decodeInput(raw json.RawMessage) ([]textMessage, *Failure) {
 	}
 	var messages []textMessage
 	for _, item := range items {
-		for key := range item {
-			if key != "role" && key != "content" && key != "type" {
-				return nil, unsupported("input")
+		var itemType string
+		if rawType, ok := item["type"]; ok {
+			_ = json.Unmarshal(rawType, &itemType)
+		}
+		switch itemType {
+		case "function_call":
+			var name, args string
+			if rawName, ok := item["name"]; ok {
+				_ = json.Unmarshal(rawName, &name)
 			}
-		}
-		if kind, ok := item["type"]; ok && string(kind) != `"message"` {
-			return nil, unsupported("input")
-		}
-		var message textMessage
-		if json.Unmarshal(item["role"], &message.Role) != nil {
-			return nil, unsupported("input")
-		}
-		switch message.Role {
-		case "user", "assistant", "system", "developer":
+			if rawArgs, ok := item["arguments"]; ok {
+				rawArgs = bytes.TrimSpace(rawArgs)
+				if len(rawArgs) > 0 && rawArgs[0] == '"' {
+					_ = json.Unmarshal(rawArgs, &args)
+				} else {
+					args = string(rawArgs)
+				}
+			}
+			messages = append(messages, textMessage{
+				Role:    "assistant",
+				Content: fmt.Sprintf("[Assistant called tool %s with arguments: %s]", name, args),
+			})
+		case "function_call_output":
+			var callID, output string
+			if rawCallID, ok := item["call_id"]; ok {
+				_ = json.Unmarshal(rawCallID, &callID)
+			}
+			if rawOutput, ok := item["output"]; ok {
+				rawOutput = bytes.TrimSpace(rawOutput)
+				if len(rawOutput) > 0 && rawOutput[0] == '"' {
+					_ = json.Unmarshal(rawOutput, &output)
+				} else {
+					output = string(rawOutput)
+				}
+			}
+			messages = append(messages, textMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("[Tool output for %s]: %s", callID, output),
+			})
 		default:
-			return nil, unsupported("input")
-		}
-		content := bytes.TrimSpace(item["content"])
-		if len(content) == 0 {
-			return nil, unsupported("input")
-		}
-		if content[0] == '"' {
-			if json.Unmarshal(content, &message.Content) != nil {
-				return nil, unsupported("input")
+			var role string
+			if rawRole, ok := item["role"]; ok {
+				_ = json.Unmarshal(rawRole, &role)
 			}
-		} else {
-			if content[0] != '[' {
-				return nil, unsupported("input")
+			switch role {
+			case "user", "assistant", "system", "developer":
+			case "tool":
+				role = "user"
+			default:
+				role = "user"
 			}
-			var parts []map[string]json.RawMessage
-			if json.Unmarshal(content, &parts) != nil || len(parts) == 0 {
-				return nil, unsupported("input")
+			rawContent, hasContent := item["content"]
+			if !hasContent {
+				continue
 			}
-			var text strings.Builder
-			for _, part := range parts {
-				if len(part) != 2 {
+			rawContent = bytes.TrimSpace(rawContent)
+			if len(rawContent) == 0 {
+				continue
+			}
+			if rawContent[0] == '"' {
+				var text string
+				if json.Unmarshal(rawContent, &text) == nil {
+					messages = append(messages, textMessage{Role: role, Content: text})
+				}
+			} else if rawContent[0] == '[' {
+				var parts []map[string]json.RawMessage
+				if json.Unmarshal(rawContent, &parts) != nil || len(parts) == 0 {
 					return nil, unsupported("input")
 				}
-				var kind, value string
-				if json.Unmarshal(part["type"], &kind) != nil || (kind != "input_text" && kind != "output_text") {
-					return nil, unsupported("input")
+				var text strings.Builder
+				for _, part := range parts {
+					var pType string
+					if rawPType, ok := part["type"]; ok {
+						_ = json.Unmarshal(rawPType, &pType)
+					}
+					if pType != "input_text" && pType != "output_text" && pType != "text" {
+						return nil, unsupported("input")
+					}
+					var pText string
+					if rawPText, ok := part["text"]; ok {
+						if len(rawPText) == 0 || rawPText[0] != '"' || json.Unmarshal(rawPText, &pText) != nil {
+							return nil, unsupported("input")
+						}
+					}
+					text.WriteString(pText)
 				}
-				if len(part["text"]) == 0 || part["text"][0] != '"' || json.Unmarshal(part["text"], &value) != nil {
-					return nil, unsupported("input")
-				}
-				text.WriteString(value)
+				messages = append(messages, textMessage{Role: role, Content: text.String()})
 			}
-			message.Content = text.String()
 		}
-		messages = append(messages, message)
+	}
+	if len(messages) == 0 {
+		return nil, unsupported("input")
 	}
 	return messages, nil
 }

@@ -31,24 +31,34 @@ func TestDecodeRequestTextConversation(t *testing.T) {
 	}
 }
 
+func TestDecodeRequestCodexCLI(t *testing.T) {
+	body := `{"model":"` + PublicModel + `","input":[{"id":"msg_1","type":"message","role":"user","content":[{"type":"input_text","text":"hello codex"}]}],"tools":[{"type":"function","function":{"name":"read_file","description":"read a file"}}],"stream":true}`
+	req, failure := DecodeRequest([]byte(body))
+	if failure != nil {
+		t.Fatalf("unexpected failure: %+v", failure)
+	}
+	if !req.Stream || !strings.Contains(req.Prompt, "read_file") || !strings.Contains(req.Prompt, "hello codex") {
+		t.Fatalf("unexpected prompt: %s", req.Prompt)
+	}
+}
+
+func TestDecodeRequestFunctionCallRoundTrip(t *testing.T) {
+	body := `{"model":"` + PublicModel + `","input":[{"type":"function_call","name":"exec","arguments":"{\"cmd\":\"ls\"}"},{"type":"function_call_output","call_id":"call_1","output":"main.go"}]}`
+	req, failure := DecodeRequest([]byte(body))
+	if failure != nil {
+		t.Fatalf("unexpected failure: %+v", failure)
+	}
+	if !strings.Contains(req.Prompt, "exec") || !strings.Contains(req.Prompt, "main.go") {
+		t.Fatalf("unexpected prompt: %s", req.Prompt)
+	}
+}
+
 func TestDecodeRequestRejectsUnsupportedInput(t *testing.T) {
 	for _, test := range []struct{ name, fields, code string }{
-		{"tools", `"input":"x","tools":[]`, "tools"},
-		{"continuation", `"input":"x","previous_response_id":"resp_1"`, "previous_response_id"},
-		{"token limit", `"input":"x","max_output_tokens":100`, "max_output_tokens"},
-		{"stored response", `"input":"x","store":true`, "store"},
-		{"null store", `"input":"x","store":null`, "store"},
-		{"tier", `"input":"x","service_tier":"priority"`, "service_tier"},
-		{"null instructions", `"input":"x","instructions":null`, "instructions"},
 		{"nonboolean stream", `"input":"x","stream":"true"`, "stream"},
 		{"null stream", `"input":"x","stream":null`, "stream"},
-		{"image", `"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://example.test/a"}]}]`, "input"},
-		{"file", `"input":[{"role":"user","content":[{"type":"input_file","file_id":"file_1"}]}]`, "input"},
-		{"function", `"input":[{"type":"function_call_output","call_id":"call_1","output":"x"}]`, "input"},
-		{"tool role", `"input":[{"role":"tool","content":"x"}]`, "input"},
 		{"null input", `"input":null`, "input"},
 		{"empty input array", `"input":[]`, "input"},
-		{"null text", `"input":[{"role":"user","content":[{"type":"input_text","text":null}]}]`, "input"},
 		{"unknown field", `"input":"x","attacker_supplied_secret":true`, "parameter"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -150,11 +150,55 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(raw[:])
 }
 
+func parseFunctionCall(text string) (name, args string, ok bool) {
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+			trimmed = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
+		}
+	}
+	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+		var call struct {
+			Type      string          `json:"type"`
+			Name      string          `json:"name"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal([]byte(trimmed), &call) == nil && (call.Type == "function_call" || call.Type == "function") && call.Name != "" {
+			argStr := strings.TrimSpace(string(call.Arguments))
+			if argStr == "" {
+				argStr = "{}"
+			}
+			return call.Name, argStr, true
+		}
+	}
+	return "", "", false
+}
+
 func responseObject(result Result) map[string]any {
+	var item map[string]any
+	if name, args, ok := parseFunctionCall(result.Response); ok {
+		item = map[string]any{
+			"id":        newID("fc_"),
+			"type":      "function_call",
+			"status":    "completed",
+			"call_id":   newID("call_"),
+			"name":      name,
+			"arguments": args,
+		}
+	} else {
+		item = map[string]any{
+			"id":      newID("msg_"),
+			"type":    "message",
+			"status":  "completed",
+			"role":    "assistant",
+			"content": []any{map[string]any{"type": "output_text", "text": result.Response, "annotations": []any{}, "logprobs": []any{}}},
+		}
+	}
 	return map[string]any{
 		"id": newID("resp_"), "object": "response", "created_at": time.Now().Unix(), "status": "completed",
 		"model": PublicModel, "service_tier": "default", "store": false, "error": nil, "incomplete_details": nil,
-		"output": []any{map[string]any{"id": newID("msg_"), "type": "message", "status": "completed", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": result.Response, "annotations": []any{}, "logprobs": []any{}}}}},
+		"output": []any{item},
 		"usage": map[string]any{
 			"input_tokens": result.Usage.InputTokens, "output_tokens": result.Usage.OutputTokens, "total_tokens": result.Usage.TotalTokens,
 			"input_tokens_details":  map[string]int64{"cached_tokens": result.Usage.CacheReadTokens},
@@ -187,6 +231,32 @@ func writeSSE(w http.ResponseWriter, response map[string]any) {
 		return
 	}
 	item := response["output"].([]any)[0].(map[string]any)
+	if item["type"] == "function_call" {
+		itemID := item["id"].(string)
+		name := item["name"].(string)
+		callID := item["call_id"].(string)
+		arguments := item["arguments"].(string)
+		if !emit("response.output_item.added", map[string]any{"output_index": 0, "item": map[string]any{"id": itemID, "type": "function_call", "status": "in_progress", "name": name, "call_id": callID, "arguments": ""}}) {
+			return
+		}
+		if !emit("response.function_call_arguments.delta", map[string]any{"item_id": itemID, "output_index": 0, "delta": arguments}) {
+			return
+		}
+		if !emit("response.function_call_arguments.done", map[string]any{"item_id": itemID, "output_index": 0, "arguments": arguments}) {
+			return
+		}
+		if !emit("response.output_item.done", map[string]any{"output_index": 0, "item": item}) {
+			return
+		}
+		if !emit("response.completed", map[string]any{"response": response}) {
+			return
+		}
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		return
+	}
 	part := item["content"].([]any)[0].(map[string]any)
 	if !emit("response.output_item.added", map[string]any{"output_index": 0, "item": map[string]any{"id": item["id"], "type": "message", "status": "in_progress", "role": "assistant", "content": []any{}}}) {
 		return

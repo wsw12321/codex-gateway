@@ -122,7 +122,7 @@ func TestAntigravityHTTPErrorsRemainTypedAndPrivate(t *testing.T) {
 		code      string
 		wantCalls int64
 	}{
-		{name: "tools", body: `{"model":"gemini-3.1-pro-preview","input":"hello","tools":[]}`, status: 400, code: "antigravity_tools_unsupported"},
+		{name: "parameter", body: `{"model":"gemini-3.1-pro-preview","input":"hello","attacker_supplied_secret":true}`, status: 400, code: "antigravity_parameter_unsupported"},
 		{name: "image", body: `{"model":"gemini-3.1-pro-preview","input":[{"role":"user","content":[{"type":"input_image","image_url":"https://private.invalid/image"}]}]}`, status: 400, code: "antigravity_input_unsupported"},
 		{name: "duplicate", body: `{"model":"gemini-3.1-pro-preview","input":"hello","input":"private"}`, status: 400, code: "antigravity_invalid_request"},
 		{name: "large", body: `{"model":"gemini-3.1-pro-preview","input":"` + strings.Repeat("x", 1<<20) + `"}`, status: 413, code: "antigravity_request_too_large"},

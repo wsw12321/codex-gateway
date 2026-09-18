@@ -165,8 +165,11 @@ func TestBridgeReadinessAuthenticationAndUnsupportedInput(t *testing.T) {
 	if w.Code != 401 {
 		t.Fatal("duplicate credentials accepted")
 	}
-	if response := bridgeRequest(server, "POST", "/v1/responses", `{"model":"`+PublicModel+`","input":"hello","tools":[]}`); response.Code != 400 || !strings.Contains(response.Body.String(), "antigravity_tools_unsupported") {
+	if response := bridgeRequest(server, "POST", "/v1/responses", `{"model":"`+PublicModel+`","input":"hello","attacker_supplied_secret":true}`); response.Code != 400 || !strings.Contains(response.Body.String(), "antigravity_parameter_unsupported") {
 		t.Fatalf("unsupported body=%d %s", response.Code, response.Body)
+	}
+	if response := bridgeRequest(server, "POST", "/v1/responses", `{"model":"`+PublicModel+`","input":"hello","tools":[]}`); response.Code != 200 {
+		t.Fatalf("tools should be supported: code=%d body=%s", response.Code, response.Body)
 	}
 	if response := bridgeRequest(server, "POST", "/v1/responses/compact", `{}`); response.Code != 501 {
 		t.Fatalf("compact=%d", response.Code)
