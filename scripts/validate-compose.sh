@@ -64,7 +64,7 @@ test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients
         'acl codex_clients src 172.28.30.3/32' \
         'acl antigravity_clients src 172.28.40.3/32' \
         'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' \
-        'acl antigravity_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
+        'acl antigravity_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" && $2 == "allow" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access allow CONNECT codex_clients codex_upstreams' 'http_access allow CONNECT antigravity_clients antigravity_upstreams')" || \

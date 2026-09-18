@@ -91,9 +91,10 @@ ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}
 ## 出口验收
 
 两个上游使用独立内部网络，只有 Squid 能访问外部网络。Codex 仅允许现有两个 OpenAI
-域名。Antigravity 基线仅保留原部署已经允许的 `accounts.google.com`、
-`oauth2.googleapis.com`、`www.googleapis.com`、`cloudcode-pa.googleapis.com`，并移除
-旧项目发现/配置域名；该基线尚未经过真实 Antigravity 账号流量验收。
+域名。Antigravity 出口允许 `accounts.google.com`、`oauth2.googleapis.com`、
+`www.googleapis.com`、`cloudcode-pa.googleapis.com`、`daily-cloudcode-pa.googleapis.com`、
+`aicode.googleapis.com`、`businessaicode.googleapis.com`、`generativelanguage.googleapis.com`
+等模型交互与订阅鉴权必需域名。
 
 Squid 为 Antigravity 网络记录 CONNECT 目标、时间和状态，不记录 TLS 内容或认证头。
 验收登录、刷新、模型检查、`/usage` 和生成请求时检查：
