@@ -28,7 +28,7 @@ func TestBridgeJSONAndSSEFromFakeCLI(t *testing.T) {
 			runner, _ := fakeRunner(t, fakeCLIConfig{Stream: initEvent + textStep + resultEvent, FragmentSize: 3})
 			server := NewServer(runner, testBridgeToken)
 			server.Refresh(context.Background())
-			body := `{"model":"` + PublicModel + `","input":"hello","stream":` + map[bool]string{false: "false", true: "true"}[stream] + `}`
+			body := `{"model":"` + PublicModel + `","input":"hello","tools":[],"stream":` + map[bool]string{false: "false", true: "true"}[stream] + `}`
 			response := bridgeRequest(server, http.MethodPost, "/v1/responses", body)
 			if response.Code != 200 {
 				t.Fatalf("response=%d %s", response.Code, response.Body)
@@ -167,9 +167,6 @@ func TestBridgeReadinessAuthenticationAndUnsupportedInput(t *testing.T) {
 	}
 	if response := bridgeRequest(server, "POST", "/v1/responses", `{"model":"`+PublicModel+`","input":"hello","attacker_supplied_secret":true}`); response.Code != 400 || !strings.Contains(response.Body.String(), "antigravity_parameter_unsupported") {
 		t.Fatalf("unsupported body=%d %s", response.Code, response.Body)
-	}
-	if response := bridgeRequest(server, "POST", "/v1/responses", `{"model":"`+PublicModel+`","input":"hello","tools":[]}`); response.Code != 200 {
-		t.Fatalf("tools should be supported: code=%d body=%s", response.Code, response.Body)
 	}
 	if response := bridgeRequest(server, "POST", "/v1/responses/compact", `{}`); response.Code != 501 {
 		t.Fatalf("compact=%d", response.Code)

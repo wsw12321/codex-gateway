@@ -33,6 +33,17 @@ profile、命令历史或项目 `.env`。设备丢失时在另一台已认证设
 - `POST /v1/responses/compact`
 - `GET /v1/models`
 
+发往 Codex sidecar 的上述请求支持 `Session-Id` 和 `Session_id` 会话请求头，
+头名不区分大小写。Gateway 保留两种拼写及其原值；同时提供时分别透传，由
+sidecar 判断优先级和有效性。含回车或换行的值会被过滤。这两种头不会转发给
+Antigravity。
+
+同一会话的请求应保持稳定的会话 ID，不同会话应使用不同 ID。会话亲和按已认证
+API Key 隔离；即使不同 Key 使用相同会话 ID，也不会共享绑定。实际账号绑定还
+受模型、亲和有效期和账号可用性影响，不能保证始终使用同一账号。内部
+`X-Codex-Gateway-Affinity` 由 Gateway 生成，客户端无法覆盖；内部账号归因头也
+不会从客户端透传。
+
 `openai_base_url` 覆盖的是 Codex 内置 `openai` provider 的地址。Codex 可能在新
 会话开始时先用受同一 API Key 保护的 `GET /v1/responses` 探测 Responses
 WebSocket；Gateway 会返回一次 `426 responses_websocket_unsupported`，客户端随即

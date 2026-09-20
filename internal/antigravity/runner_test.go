@@ -24,12 +24,12 @@ type fakeCLIConfig struct {
 }
 
 type processCapture struct {
-	Args                                                        []string
-	Prompt                                                      string
-	Root                                                        string
+	Args                                                      []string
+	Prompt                                                    string
+	Root                                                      string
 	DBusSessionBusAddress, GNOMEKeyringControl, XDGRuntimeDir string
-	PID, ChildPID                                               int
-	WorkspaceEmpty, SafePolicy, SecretsAbsent                  bool
+	PID, ChildPID                                             int
+	WorkspaceEmpty, SafePolicy, SecretsAbsent                 bool
 }
 
 // The executable shim selects this helper using only a fixture file argument.

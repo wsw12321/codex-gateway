@@ -171,7 +171,7 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 	if err != nil {
 		return nil, Result{}, protocolFailure(err)
 	}
-	copyAllowedHeaders(outgoing.Header, incoming.Header)
+	c.copyAllowedHeaders(outgoing.Header, incoming.Header)
 	outgoing.Header.Set("Authorization", "Bearer "+c.token)
 	outgoing.Header.Set("Cache-Control", "no-store")
 	if options.AffinityScope != "" {
@@ -383,7 +383,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		return Result{}, protocolFailure(err)
 	}
 	outgoing.ContentLength = incoming.ContentLength
-	copyAllowedHeaders(outgoing.Header, incoming.Header)
+	c.copyAllowedHeaders(outgoing.Header, incoming.Header)
 	outgoing.Header.Set("Authorization", "Bearer "+c.token)
 	outgoing.Header.Set("Cache-Control", "no-store")
 	if options.AffinityScope != "" {
@@ -449,11 +449,15 @@ func allowedPath(method, path string) bool {
 	return false
 }
 
-func copyAllowedHeaders(dst, src http.Header) {
+func (c *Client) copyAllowedHeaders(dst, src http.Header) {
 	for key, values := range src {
 		canonical := http.CanonicalHeaderKey(key)
 		if _, ok := allowedRequestHeaders[canonical]; !ok {
-			continue
+			// Keep both Codex session spellings distinct for the sidecar's
+			// affinity handling; they are not part of the bridge protocol.
+			if c.antigravity || (canonical != "Session-Id" && canonical != "Session_id") {
+				continue
+			}
 		}
 		for _, value := range values {
 			if !strings.ContainsAny(value, "\r\n") {
