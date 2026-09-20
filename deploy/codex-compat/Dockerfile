@@ -1,11 +1,11 @@
-ARG GOLANG_IMAGE=docker.io/library/golang:1.26.0-bookworm@sha256:2a0ba12e116687098780d3ce700f9ce3cb340783779646aafbabed748fa6677c
+ARG GOLANG_IMAGE=docker.io/library/golang:1.26.8-bookworm@sha256:a688600ca24f8a4d3ca77f95b0dd40704a9fc787c826660eb7ba0b641b8b175d
 ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-20260824-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 FROM ${RUNTIME_IMAGE} AS runtime-base
 # Keep the reviewed glibc runtime. Netcat powers
 # the TCP probes without placing the internal API key in process arguments.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates netcat-openbsd \
+    && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 cliproxy \
     && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \

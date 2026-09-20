@@ -8797,3 +8797,80 @@ index e16b143..808a0f7 100644
  		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
  			log.Warnf("failed to load auth store: %v", errLoad)
  		}
+diff --git a/go.mod b/go.mod
+index 1f5d12fb..5012264d 100644
+--- a/go.mod
++++ b/go.mod
+@@ -10,7 +10,7 @@ require (
+ 	github.com/charmbracelet/lipgloss v1.1.0
+ 	github.com/fsnotify/fsnotify v1.9.0
+ 	github.com/gin-gonic/gin v1.10.1
+-	github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164
++	github.com/go-git/go-git/v6 v6.0.0-alpha.5
+ 	github.com/google/uuid v1.6.0
+ 	github.com/gorilla/websocket v1.5.3
+ 	github.com/jackc/pgx/v5 v5.9.2
+@@ -30,7 +30,7 @@ require (
+ 	github.com/tidwall/gjson v1.18.0
+ 	github.com/tidwall/sjson v1.2.5
+ 	github.com/tiktoken-go/tokenizer v0.8.1
+-	golang.org/x/crypto v0.54.0
++	golang.org/x/crypto v0.55.0
+ 	golang.org/x/net v0.57.0
+ 	golang.org/x/oauth2 v0.30.0
+ 	golang.org/x/sync v0.22.0
+@@ -81,7 +81,7 @@ require (
+ 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+ 	github.com/gin-contrib/sse v0.1.0 // indirect
+ 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
+-	github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 // indirect
++	github.com/go-git/go-billy/v6 v6.0.0-alpha.2 // indirect
+ 	github.com/go-playground/locales v0.14.1 // indirect
+ 	github.com/go-playground/universal-translator v0.18.1 // indirect
+ 	github.com/go-playground/validator/v10 v10.20.0 // indirect
+@@ -116,7 +116,7 @@ require (
+ 	github.com/ugorji/go/codec v1.2.12 // indirect
+ 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+ 	golang.org/x/arch v0.8.0 // indirect
+-	golang.org/x/text v0.40.0 // indirect
++	golang.org/x/text v0.41.0 // indirect
+ 	google.golang.org/protobuf v1.34.1
+ 	gopkg.in/ini.v1 v1.67.0 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index 3d3458d6..a5b1c8ec 100644
+--- a/go.sum
++++ b/go.sum
+@@ -75,10 +75,14 @@ github.com/go-git/gcfg/v2 v2.0.2 h1:MY5SIIfTGGEMhdA7d7JePuVVxtKL7Hp+ApGDJAJ7dpo=
+ github.com/go-git/gcfg/v2 v2.0.2/go.mod h1:/lv2NsxvhepuMrldsFilrgct6pxzpGdSRC13ydTLSLs=
+ github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 h1:AaQOU2NVLxnBGWkv5YSoxomcDCqlaqfCW0t00pNKtnk=
+ github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6/go.mod h1:eaCUpHbedW7//EwcYmUDfJe2N6sJC9O12AT0OTqJR1E=
++github.com/go-git/go-billy/v6 v6.0.0-alpha.2 h1:1Sv5WemXL8CxKrAx1gioJ+uHNb2bZJhiQLfwSZ4Et8c=
++github.com/go-git/go-billy/v6 v6.0.0-alpha.2/go.mod h1:r/bsv9i/iDyyEU8/Z6mjC+YraOVwie1ddfUqBCElKXQ=
+ github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1 h1:gmqi2jvsreu0s8JMLylYDFq4sbjHwwlhktMw0DUg3mA=
+ github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1/go.mod h1:ECf1MqJlBdYpKggBrOXjo/0EnvRZx6D++I86UYjPgAQ=
+ github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164 h1:chk74EHqDOHvIx/WH43JfdLImedxN98qGvEFd7WYgus=
+ github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164/go.mod h1:OTUSi3RzPFoC0j/+uxHdVG1X/xXz84QCxLzYvXRvyXk=
++github.com/go-git/go-git/v6 v6.0.0-alpha.5 h1:sE+OlkHgYWNMVmN1s9sR7uyFgsWLtxcNWse/vBYKxRE=
++github.com/go-git/go-git/v6 v6.0.0-alpha.5/go.mod h1:3IjhiZnM+uBmUrOGSeqrJpsmi4Vd0H2NZO/uK2a7d0s=
+ github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lYKSsYSR8s=
+ github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
+ github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
+@@ -251,6 +255,8 @@ golang.org/x/arch v0.8.0 h1:3wRIsP3pM4yUptoR96otTUOXI367OS0+c9eeRi9doIc=
+ golang.org/x/arch v0.8.0/go.mod h1:FEVrYAQjsQXMVJ1nsMoVVXPZg6p2JE2mx8psSWTDQys=
+ golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
+ golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
++golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
++golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
+ golang.org/x/exp v0.0.0-20231006140011-7918f672742d h1:jtJma62tbqLibJ5sFQz8bKtEM8rJBtfilJ2qTU199MI=
+ golang.org/x/exp v0.0.0-20231006140011-7918f672742d/go.mod h1:ldy0pHrwJyGW56pPQzzkH36rKxoZW1tw7ZJpeKx+hdo=
+ golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
+@@ -268,6 +274,8 @@ golang.org/x/term v0.45.0 h1:NwWyBmoJCbfTHpxrWoZ9C6/VxOf7ic219I8xZZFdrf0=
+ golang.org/x/term v0.45.0/go.mod h1:9aqxs0blBcrm/n0L9QW0aRVD+ktan8ssZromtqJC43w=
+ golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
+ golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
++golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
++golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
+ golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
+ golang.org/x/time v0.14.0/go.mod h1:eL/Oa2bBBK0TkX57Fyni+NgnyQQN4LitPmob2Hjnqw4=
+ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 h1:E7g+9GITq07hpfrRu66IVDexMakfv52eLZ2CXBWiKr4=

@@ -50,9 +50,11 @@ jobs:
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
           go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
           grep -Fxq "GOLANG_IMAGE|$go_image" deploy/images.sources
+          grep -Fxq "CLIPROXY_GOLANG_IMAGE|$go_image" deploy/images.sources
           locked_go_image=$(sed -n 's/^GOLANG_IMAGE=//p' deploy/images.lock.env)
           test "${locked_go_image%@sha256:*}" = "$go_image"
-          for dockerfile in Dockerfile deploy/antigravity-bridge/Dockerfile; do
+          test "$(sed -n 's/^CLIPROXY_GOLANG_IMAGE=//p' deploy/images.lock.env)" = "$locked_go_image"
+          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/antigravity-bridge/Dockerfile; do
             grep -Fxq "ARG GOLANG_IMAGE=$locked_go_image" "$dockerfile"
           done
       - name: Install locked Go toolchain

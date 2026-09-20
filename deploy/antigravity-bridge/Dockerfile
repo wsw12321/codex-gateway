@@ -24,7 +24,7 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
 
 FROM ${RUNTIME_IMAGE}
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates dbus-daemon dbus-bin gnome-keyring libglib2.0-bin curl jq \
+    && apt-get install -y --no-install-recommends ca-certificates dbus-daemon dbus-bin gnome-keyring libglib2.0-bin libpcre2-8-0 curl jq \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10002 antigravity \
     && useradd --system --no-create-home --uid 10002 --gid 10002 --shell /usr/sbin/nologin antigravity \

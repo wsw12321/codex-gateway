@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
 应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
 规则的变化。补丁 SHA256 为
-`dc0a889cc8e6b505d162e60182347544e09eb629cd38c7de11916ce50e7ce535`。
+`51e5e4bf0a2baee2ffae51e45b30ad95759d66353ab94c5b4de904b3f6fc36b7`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -20,9 +20,12 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
-继续使用现有 Go 1.26 构建镜像；`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
+兼容层构建镜像升级到 Go 1.26.8；补丁同时将 go-git/v6 升级到
+`v6.0.0-alpha.5`、`golang.org/x/crypto` 升级到 `v0.55.0`，并更新所需的
+go-billy/v6 与 x/text 间接依赖。Debian 运行时显式安装 `libpcre2-8-0`，
+确保继承的基础包获得已发布的安全更新。`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
 `bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
 请求契约保持兼容，保留现有 Gemini 价格目录；数据库新增 forward-only 的
 `0009_upstream_allocation.sql`，旧 Gateway 无法连接迁移后的数据库。

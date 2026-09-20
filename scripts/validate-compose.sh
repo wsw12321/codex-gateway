@@ -13,11 +13,11 @@ egress_config=$root/deploy/egress/squid.conf
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=dc0a889cc8e6b505d162e60182347544e09eb629cd38c7de11916ce50e7ce535
+compat_patch_sha256=51e5e4bf0a2baee2ffae51e45b30ad95759d66353ab94c5b4de904b3f6fc36b7
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
