@@ -12,6 +12,7 @@ import (
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
+// #nosec G101 -- Public timing-only dummy; PasswordLogin rejects users without usable stored credentials.
 const dummyPasswordHash = "$argon2id$v=19$m=65536,t=3,p=2$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 func (s *Service) RegisterPassword(ctx context.Context, invitationToken, username, displayName, password string, sourceIP net.IP, userAgent string) (RegistrationResult, error) {

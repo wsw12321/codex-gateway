@@ -113,6 +113,7 @@ func (s *Store) ListAuditEvents(ctx context.Context, filter AuditFilter) ([]Audi
 		filter.Offset = 0
 	}
 	args = append(args, filter.Limit, filter.Offset)
+	// #nosec G202 -- Column names and predicates are fixed; only placeholder numbers are formatted and all filter values are bound.
 	query := `SELECT ` + auditColumns + ` FROM audit_events WHERE ` +
 		strings.Join(where, " AND ") + fmt.Sprintf(
 		` ORDER BY occurred_at DESC, id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args),

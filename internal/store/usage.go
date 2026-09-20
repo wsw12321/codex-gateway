@@ -318,6 +318,7 @@ func (s *Store) ListUsageRequests(ctx context.Context, filter UsageFilter) ([]Us
 		filter.Offset = 0
 	}
 	args = append(args, filter.Limit, filter.Offset)
+	// #nosec G202 -- Column names and predicates are fixed; only placeholder numbers are formatted and all filter values are bound.
 	query := `SELECT ` + usageRequestColumns + ` FROM usage_requests u WHERE ` +
 		strings.Join(where, " AND ") + fmt.Sprintf(
 		` ORDER BY requested_at DESC, id DESC LIMIT $%d OFFSET $%d`, len(args)-1, len(args),
@@ -422,6 +423,7 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 		modelClause = fmt.Sprintf(" WHERE usage_source.model = $%d", len(args))
 		ledgerModelClause = fmt.Sprintf(" WHERE ledger_source.model = $%d", len(args))
 	}
+	// #nosec G202 -- Fragments are fixed SQL and generated placeholder numbers; dates and model are bound parameters.
 	query := `WITH usage_source AS (` + usageSource + `), usage_totals AS (
 		SELECT user_id, model, sum(request_count)::bigint request_count,
 			sum(input_tokens)::bigint input_tokens, sum(cached_input_tokens)::bigint cached_input_tokens,

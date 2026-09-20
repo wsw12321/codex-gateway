@@ -28,6 +28,7 @@ func run(logger *slog.Logger) error {
 	if path == "" {
 		return errors.New("ANTIGRAVITY_BRIDGE_API_KEY_FILE is required")
 	}
+	// #nosec G304 -- The deployment operator supplies the mounted secret path at startup.
 	secret, err := os.ReadFile(path)
 	if err != nil {
 		return errors.New("cannot read bridge API key file")

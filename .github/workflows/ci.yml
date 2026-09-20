@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.24.6'
+  GO_VERSION: '1.26.8'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -48,7 +48,13 @@ jobs:
         run: |
           set -eu
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
-          grep -q "^GOLANG_IMAGE|docker.io/library/golang:${GO_VERSION}-" deploy/images.sources
+          go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
+          grep -Fxq "GOLANG_IMAGE|$go_image" deploy/images.sources
+          locked_go_image=$(sed -n 's/^GOLANG_IMAGE=//p' deploy/images.lock.env)
+          test "${locked_go_image%@sha256:*}" = "$go_image"
+          for dockerfile in Dockerfile deploy/antigravity-bridge/Dockerfile; do
+            grep -Fxq "ARG GOLANG_IMAGE=$locked_go_image" "$dockerfile"
+          done
       - name: Install locked Go toolchain
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:

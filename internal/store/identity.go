@@ -94,6 +94,7 @@ func (s *Store) GetUserByUsername(ctx context.Context, username string) (User, e
 	return user, mapDBError("get user by username", err)
 }
 
+// #nosec G101 -- This constant lists SQL column names, not password credentials.
 const passwordCredentialColumns = `user_id, encoded_hash, created_at, updated_at, last_used_at`
 
 func scanPasswordCredential(row rowScanner) (PasswordCredential, error) {
@@ -305,6 +306,7 @@ type AddWebAuthnCredentialParams struct {
 	Nickname       string
 }
 
+// #nosec G101 -- This constant lists SQL column names, not WebAuthn credential values.
 const credentialColumns = `id, user_id, credential_id, credential_json, sign_count,
 	to_json(transports)::text, backup_eligible, backup_state, discoverable,
 	aaguid, nickname, created_at, last_used_at`

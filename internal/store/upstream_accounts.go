@@ -279,6 +279,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		ledgerTimeClause = `COALESCE(usage_requested_at, created_at) >= $1
 			AND COALESCE(usage_requested_at, created_at) < $2`
 	}
+	// #nosec G202 -- Both branches select fixed SQL fragments; all interval values are bound parameters.
 	query := `WITH usage_source AS (` + usageSource + `), usage_totals AS (
 		SELECT upstream_account_id, sum(request_count)::bigint request_count,
 			sum(error_count)::bigint error_count, sum(input_tokens)::bigint input_tokens,

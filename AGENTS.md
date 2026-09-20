@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-The Go 1.24 gateway entry point is in `cmd/gateway`. Keep application code under `internal/`: HTTP routing and the embedded dashboard live in `internal/server`, forwarding logic in `internal/proxy`, identity and WebAuthn flows in `internal/identity`, quota logic in `internal/limit`, and PostgreSQL access in `internal/store`. Canonical migrations belong beside the store package in `internal/store/migrations`; do not add executable SQL to the top-level `migrations/` documentation directory. Deployment definitions and pinned images are in `deploy/` and `docker-compose.yml`; operational helpers are in `scripts/`, and longer procedures are in `docs/`.
+The Go 1.26 gateway entry point is in `cmd/gateway`. Keep application code under `internal/`: HTTP routing and the embedded dashboard live in `internal/server`, forwarding logic in `internal/proxy`, identity and WebAuthn flows in `internal/identity`, quota logic in `internal/limit`, and PostgreSQL access in `internal/store`. Canonical migrations belong beside the store package in `internal/store/migrations`; do not add executable SQL to the top-level `migrations/` documentation directory. Deployment definitions and pinned images are in `deploy/` and `docker-compose.yml`; operational helpers are in `scripts/`, and longer procedures are in `docs/`.
 
 ## Build, Test, and Development Commands
 

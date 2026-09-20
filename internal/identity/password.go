@@ -95,6 +95,7 @@ func verifyPassword(password, encoded string) (valid, needsRehash bool, err erro
 		return false, false, err
 	}
 	defer release()
+	// #nosec G115 -- parsePasswordHash bounds the decoded hash length to 16..64 bytes.
 	actual := argon2.IDKey([]byte(password), params.salt, params.iterations, params.memory, params.parallelism, uint32(len(params.hash)))
 	valid = subtle.ConstantTimeCompare(actual, params.hash) == 1
 	needsRehash = valid && (params.memory != passwordMemory || params.iterations != passwordIterations ||

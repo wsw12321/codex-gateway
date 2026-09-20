@@ -951,6 +951,7 @@ func (s *Store) SetBillingSourceDisabled(ctx context.Context, params SetBillingS
 			WHERE user_id = $1 FOR UPDATE`, params.UserID).Scan(&previous); err != nil {
 			return mapDBError("lock billing source preference", err)
 		}
+		// #nosec G202 -- column comes from the fixed switch allowlist above; user ID, preference, and time are bound parameters.
 		if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET `+column+` = $2,
 			updated_at = $3 WHERE user_id = $1`, params.UserID, params.Disabled, params.At); err != nil {
 			return mapDBError("set billing source preference", err)

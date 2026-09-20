@@ -297,6 +297,7 @@ func envOrFile(name string) (string, error) {
 	if path == "" {
 		return value, nil
 	}
+	// #nosec G304 -- The deployment operator selects this secret path through a startup environment variable.
 	contents, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s_FILE: %w", name, err)

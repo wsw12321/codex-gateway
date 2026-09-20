@@ -191,6 +191,7 @@ type CreateAPIKeyParams struct {
 	RotatedFromID     string
 }
 
+// #nosec G101 -- This constant contains SQL column names and expressions, not API key values.
 const apiKeyCoreColumns = `id, public_id, key_prefix, key_hash, user_id, device_id,
 	default_project_id, name, status, to_json(model_allowlist)::text,
 	rpm_limit, concurrent_limit, daily_request_limit, daily_token_limit,

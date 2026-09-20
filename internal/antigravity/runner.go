@@ -77,6 +77,7 @@ func (r Runner) workspace() (string, string, error) {
 }
 
 func (r Runner) command(ctx context.Context, root, cwd string, args ...string) *exec.Cmd {
+	// #nosec G204 -- Binary comes from deployment configuration; arguments are internal, and prompts use stdin without a shell.
 	cmd := exec.CommandContext(ctx, r.Binary, args...)
 	cmd.Dir = cwd
 	// Deliberately exclude gateway/bridge secrets and arbitrary CLI settings

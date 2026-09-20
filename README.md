@@ -411,7 +411,8 @@ profile 或命令历史。
 
 ## 开发与验证
 
-项目工具链固定为 Go 1.24.6。普通测试不需要外部数据库：
+项目工具链固定为 Go 1.26.8；`go.mod`、CI、Gateway 和 Antigravity Bridge
+构建镜像使用同一版本。普通测试不需要外部数据库：
 
 ```sh
 gofmt -l .
