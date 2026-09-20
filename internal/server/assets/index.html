@@ -301,6 +301,82 @@
             </article>
 
             <div class="owner-only hidden billing-owner-tools">
+              <article id="billing-batch-panel" class="panel billing-batch-panel" aria-labelledby="billing-batch-title">
+                <div class="panel-heading">
+                  <div><p class="eyebrow">BATCH OPERATIONS</p><h3 id="billing-batch-title">批量充值与开通订阅</h3><p>勾选用户，为每人设置相同的充值金额或订阅参数。搜索时会保留已选用户。</p></div>
+                  <span id="billing-batch-selected-count" class="badge" role="status" aria-live="polite">已选 0 人</span>
+                </div>
+                <div class="billing-batch-toolbar">
+                  <label class="billing-batch-search">搜索用户
+                    <input id="billing-batch-search" type="search" placeholder="输入用户名的一部分" autocomplete="off" aria-controls="billing-batch-user-rows" aria-describedby="billing-batch-users-status" disabled>
+                  </label>
+                  <div class="billing-batch-selection-actions">
+                    <label class="billing-batch-select-all"><input id="billing-batch-select-all" class="billing-batch-checkbox" type="checkbox" disabled>全选当前搜索结果</label>
+                    <button id="billing-batch-clear-selection" type="button" class="secondary" disabled>清空选择</button>
+                    <button id="billing-batch-refresh-users" type="button" class="secondary" disabled>刷新账务数据</button>
+                  </div>
+                </div>
+                <p id="billing-batch-users-status" class="billing-batch-note" role="status" aria-live="polite">正在加载用户…</p>
+                <div class="table-wrap billing-batch-users-table" tabindex="0" role="region" aria-label="批量操作用户列表">
+                  <table>
+                    <caption class="sr-only">勾选要批量充值或开通订阅的用户；此选择与单人管理互不影响。</caption>
+                    <thead><tr><th scope="col">选择</th><th scope="col">用户</th><th scope="col">角色 / 状态</th><th scope="col">现金余额（USD）</th></tr></thead>
+                    <tbody id="billing-batch-user-rows"><tr><td colspan="4" class="table-message">正在加载用户…</td></tr></tbody>
+                  </table>
+                </div>
+                <div class="billing-batch-forms">
+                  <form id="billing-batch-recharge-form" class="billing-batch-form">
+                    <div><h4>批量充值</h4><p>所选用户每人充值相同的 CNY 金额，按各自入账时的汇率兑换。</p></div>
+                    <label>每人充值金额（CNY）
+                      <input name="cny_amount" required inputmode="decimal" pattern="(0|[1-9][0-9]{0,17})([.][0-9]{1,6})?" maxlength="25" autocomplete="off" placeholder="100.00">
+                    </label>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明充值来源或用途">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <button type="submit" disabled>预览批量充值</button>
+                  </form>
+                  <form id="billing-batch-subscription-form" class="billing-batch-form">
+                    <div><h4>批量开通订阅</h4><p>已有同档位订阅会立即关闭旧周期，按新配置从第 1 期重开。</p></div>
+                    <div class="billing-batch-subscription-fields">
+                      <label>订阅档位
+                        <select name="tier" required><option value="day">日订阅 · 24 小时</option><option value="week">周订阅 · 7 天</option><option value="month">月订阅 · 31 天</option></select>
+                      </label>
+                      <label>每人周期额度（USD）
+                        <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]{0,17})([.][0-9]{1,6})?" maxlength="25" autocomplete="off" placeholder="10.00">
+                      </label>
+                    </div>
+                    <label>周期数（0 表示无限期）
+                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
+                    </label>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <button type="submit" disabled>预览批量开通</button>
+                  </form>
+                </div>
+                <p class="billing-batch-note">先预览并核对名单、人数和参数，再确认执行。批次结果仅保留在当前页面，刷新后请通过账务流水核对。</p>
+                <section id="billing-batch-result" class="tool-block billing-batch-result hidden" aria-labelledby="billing-batch-result-title" tabindex="-1">
+                  <h4 id="billing-batch-result-title">批次确认与结果</h4>
+                  <p id="billing-batch-summary" class="billing-batch-summary"></p>
+                  <p id="billing-batch-progress" class="billing-batch-progress" role="status" aria-live="polite" aria-atomic="true"></p>
+                  <div class="table-wrap billing-batch-results-table" tabindex="0" role="region" aria-label="逐用户执行结果">
+                    <table>
+                      <caption class="sr-only">批次用户及执行结果</caption>
+                      <thead><tr><th scope="col">用户</th><th scope="col">状态</th><th scope="col">说明</th></tr></thead>
+                      <tbody id="billing-batch-result-rows"></tbody>
+                    </table>
+                  </div>
+                  <p id="billing-batch-message" class="form-message hidden" role="alert"></p>
+                  <div class="actions billing-batch-actions">
+                    <button id="billing-batch-start" type="button">确认执行</button>
+                    <button id="billing-batch-retry" type="button" class="hidden">重试未成功项</button>
+                    <button id="billing-batch-reset" type="button" class="secondary">结束本批次</button>
+                  </div>
+                </section>
+              </article>
+
               <div class="billing-admin-grid">
                 <form id="billing-rate-form" class="panel billing-form">
                   <div><p class="eyebrow">GLOBAL RATE</p><h3>充值汇率</h3><p>当前：<strong id="billing-current-rate">—</strong> USD/CNY。仅影响之后的充值，历史充值保留当时汇率快照。</p></div>

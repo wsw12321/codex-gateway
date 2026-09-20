@@ -300,6 +300,10 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 		`id="billing-ledger-rows"`, `id="billing-user-search"`, `id="billing-rate-form"`,
 		`id="billing-recharge-form"`, `id="billing-adjustment-form"`,
 		`id="billing-subscription-day"`, `id="billing-subscription-week"`, `id="billing-subscription-month"`,
+		`id="billing-batch-panel"`, `id="billing-batch-user-rows"`, `id="billing-batch-select-all"`,
+		`id="billing-batch-recharge-form"`, `id="billing-batch-subscription-form"`,
+		`id="billing-batch-result-rows"`, `id="billing-batch-start"`, `id="billing-batch-retry"`,
+		`id="billing-batch-refresh-users"`,
 		`name="reason" required`, `name="period_count" required type="number" min="0" max="99" step="1" value="1"`,
 		`周期数（0 表示无限期）`, `class="owner-only hidden billing-owner-tools"`,
 	} {
@@ -310,7 +314,7 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 	for _, required := range []string{
 		`/admin/billing/me`, `/admin/billing/settings`, `/admin/billing/users`,
 		`/recharges`, `/adjustments`, `/subscriptions/`, `crypto.randomUUID()`,
-		`sensitiveAction(() => api(path, {method, body}))`,
+		`return sensitiveAction(() => {`, `beforeSend?.();`,
 		`period_count: billingPeriodCount(form)`, `当前第 ${period.current}/${period.count} 个周期`,
 		`第 ${period.current} 个周期 · 无限期`, `本周期结束（最终失效）`, `最终失效：`,
 	} {
@@ -318,8 +322,8 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 			t.Fatalf("billing dashboard JavaScript is missing %s", required)
 		}
 	}
-	if count := strings.Count(html, `name="period_count"`); count != 3 {
-		t.Fatalf("billing dashboard period-count input count = %d, want 3", count)
+	if count := strings.Count(html, `name="period_count"`); count != 4 {
+		t.Fatalf("billing dashboard period-count input count = %d, want 4", count)
 	}
 	for _, forbidden := range []string{
 		`Number(data.get("cny_amount"))`, `Number(data.get("usd_amount"))`, `Number(data.get("quota_usd"))`,

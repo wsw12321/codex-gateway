@@ -1371,6 +1371,186 @@ code {
   margin-bottom: 1rem;
 }
 
+.billing-batch-panel {
+  margin-bottom: 1rem;
+}
+
+.billing-batch-panel > .panel-heading {
+  flex-wrap: wrap;
+}
+
+.billing-batch-panel .panel-heading p,
+.billing-batch-form p {
+  margin: .25rem 0 0;
+}
+
+.billing-batch-toolbar,
+.billing-batch-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem 1rem;
+}
+
+.billing-batch-toolbar {
+  align-items: flex-end;
+}
+
+.billing-batch-search {
+  flex: 1 1 18rem;
+}
+
+.billing-batch-select-all {
+  display: inline-flex;
+  min-height: 2.65rem;
+  align-items: center;
+  gap: .55rem;
+  cursor: pointer;
+}
+
+.billing-batch-checkbox {
+  width: 1.15rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  min-height: 1.15rem;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.billing-batch-note {
+  margin: .7rem 0;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+.billing-batch-users-table,
+.billing-batch-results-table {
+  max-height: 24rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  overscroll-behavior: contain;
+}
+
+.billing-batch-users-table thead,
+.billing-batch-results-table thead {
+  position: sticky;
+  z-index: 1;
+  top: 0;
+  background: var(--surface);
+}
+
+.billing-batch-users-table th:first-child,
+.billing-batch-users-table td:first-child {
+  width: 4rem;
+  text-align: center;
+}
+
+.billing-batch-user-identity strong,
+.billing-batch-user-identity small {
+  display: block;
+}
+
+.billing-batch-user-identity small {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.billing-batch-forms,
+.billing-batch-subscription-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.billing-batch-forms {
+  margin-top: 1rem;
+}
+
+.billing-batch-form {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: .8rem;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  padding: 1rem;
+  background: var(--surface-soft);
+}
+
+.billing-batch-form > button {
+  margin-top: .2rem;
+}
+
+.billing-batch-result {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line-strong);
+  padding-top: 1rem;
+}
+
+.billing-batch-summary {
+  margin: .7rem 0;
+  border: 1px solid var(--line-strong);
+  border-radius: .7rem;
+  padding: .8rem 1rem;
+  color: var(--text);
+  background: var(--surface-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: pre-line;
+}
+
+.billing-batch-progress {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-batch-results-table td:last-child {
+  min-width: 12rem;
+  white-space: normal;
+}
+
+.billing-batch-status {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: .22rem .55rem;
+  color: var(--muted);
+  background: rgb(255 255 255 / 2%);
+  font-size: .78rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.billing-batch-status[data-status="running"] {
+  border-color: rgb(124 196 255 / 35%);
+  color: var(--info);
+  background: rgb(124 196 255 / 7%);
+}
+
+.billing-batch-status[data-status="success"] {
+  border-color: rgb(114 230 173 / 35%);
+  color: #aef0cd;
+  background: rgb(114 230 173 / 7%);
+}
+
+.billing-batch-status[data-status="failed"] {
+  border-color: rgb(255 143 145 / 35%);
+  color: #ffc0c2;
+  background: rgb(255 143 145 / 7%);
+}
+
+.billing-batch-status[data-status="unknown"] {
+  border-color: rgb(255 209 102 / 35%);
+  color: var(--warning);
+  background: rgb(255 209 102 / 7%);
+}
+
+.billing-batch-actions {
+  justify-content: flex-start;
+}
+
 .billing-admin-grid,
 .billing-subscription-forms,
 .subscription-list {
@@ -1869,6 +2049,7 @@ dialog form {
   }
 
   .billing-admin-grid,
+  .billing-batch-forms,
   .billing-subscription-forms,
   .subscription-list,
   .model-access-grid {
@@ -1921,6 +2102,19 @@ dialog form {
 
   .model-access-bulk-form {
     grid-template-columns: 1fr;
+  }
+
+  .billing-batch-subscription-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .billing-batch-selection-actions,
+  .billing-batch-selection-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .billing-batch-actions > button {
+    flex: 1 1 10rem;
   }
 
   .model-access-bulk-form > label,

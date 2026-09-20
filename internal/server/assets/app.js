@@ -44,6 +44,11 @@ let billingUsersRequestSequence = 0;
 let billingUserID = "";
 let billingDetailLoading = false;
 let billingUserSearch = null;
+let billingBatch = null;
+let billingBatchSelectedIDs = new Set();
+let billingBatchUsersReady = false;
+let billingBatchGeneration = 0;
+let billingBatchRefreshing = false;
 let globalUserSearch = null;
 let modelAccessModels = [];
 let modelAccessUsers = [];
@@ -57,6 +62,7 @@ let upstreamAccountStatusOperation = null;
 const upstreamQuotaStaleTimers = new Map();
 let reauthResolve = null;
 let reauthReject = null;
+let reauthPromise = null;
 
 const billingLedgerPageSize = 50;
 const upstreamQuotaStaleAfterMS = 5 * 60 * 1000;
@@ -221,6 +227,7 @@ function setBusy(host, busy, label = "处理中…") {
   }
   if (host.matches?.("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form") ||
       host.closest?.(".billing-subscription-form, .billing-pagination")) syncBillingUserControls();
+  if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…") {
@@ -497,6 +504,7 @@ async function passkeyReauthenticate() {
 }
 
 function chooseReauthentication() {
+  if (reauthPromise) return reauthPromise;
   const dialog = byId("reauth-dialog");
   const select = byId("reauth-form").elements.method;
   const methods = state?.login_methods || {};
@@ -508,7 +516,12 @@ function chooseReauthentication() {
   select.value = available.value;
   syncReauthMethod();
   dialog.showModal();
-  return new Promise((resolve, reject) => { reauthResolve = resolve; reauthReject = reject; });
+  const pending = new Promise((resolve, reject) => { reauthResolve = resolve; reauthReject = reject; });
+  const shared = pending.finally(() => {
+    if (reauthPromise === shared) reauthPromise = null;
+  });
+  reauthPromise = shared;
+  return shared;
 }
 
 function syncReauthMethod() {
@@ -1472,7 +1485,8 @@ function createUserSearch(id, onSelect, describe = () => "") {
 }
 
 function renderBillingUsers(result) {
-  const values = Array.isArray(result) ? result : (result?.users || result?.items || []);
+  const values = Array.isArray(result) ? result : (result?.users || result?.items);
+  if (!Array.isArray(values)) throw new Error("账务用户列表响应格式无效。");
   const unique = new Map();
   for (const value of Array.isArray(values) ? values : []) {
     const user = normalizeBillingUser(value);
@@ -1484,6 +1498,9 @@ function renderBillingUsers(result) {
     String(left.username || left.display_name).localeCompare(String(right.username || right.display_name), "zh-CN"));
   if (!billingUserID) billingUserID = current.id;
   billingUserSearch.setUsers(billingUsers);
+  billingBatchUsersReady = true;
+  billingBatchSelectedIDs = new Set(Array.from(billingBatchSelectedIDs).filter((id) => unique.has(id)));
+  renderBillingBatchUsers();
 }
 
 function resetBillingUserSearch() {
@@ -1492,6 +1509,7 @@ function resetBillingUserSearch() {
   billingDetailLoading = false;
   billingUsers = [];
   billingUserSearch?.reset();
+  resetBillingBatchState();
   byId("billing-scope-name").textContent = "—";
   syncBillingUserControls();
 }
@@ -1597,6 +1615,8 @@ async function loadBillingUsers() {
   if (loggingOut || state?.user?.role !== "owner") return;
   const sequence = ++billingUsersRequestSequence;
   billingUserSearch.unavailable("正在加载用户…");
+  billingBatchUsersReady = false;
+  renderBillingBatchUsers("正在加载用户…");
   try {
     const result = await api("/admin/billing/users");
     if (sequence !== billingUsersRequestSequence || state?.user?.role !== "owner") return;
@@ -1604,6 +1624,8 @@ async function loadBillingUsers() {
   } catch (error) {
     if (sequence !== billingUsersRequestSequence) return;
     billingUserSearch.unavailable("用户列表加载失败，请刷新重试");
+    billingBatchUsersReady = false;
+    renderBillingBatchUsers("用户列表加载失败，请点击“刷新账务数据”；已有批次仍可重试未成功项。");
     throw error;
   }
 }
@@ -1628,6 +1650,333 @@ async function loadBillingDashboard() {
   await Promise.all(tasks);
 }
 
+function billingBatchMatches() {
+  const query = byId("billing-batch-search").value.trim().toLowerCase();
+  return billingUsers.filter((user) => [user.username, user.display_name].some((value) =>
+    String(value || "").toLowerCase().includes(query)));
+}
+
+function syncBillingBatchControls() {
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const locked = !owner || !billingBatchUsersReady || Boolean(billingBatch);
+  const matches = billingBatchUsersReady ? billingBatchMatches() : [];
+  const selectedMatches = matches.filter((user) => billingBatchSelectedIDs.has(user.id)).length;
+  const selectAll = byId("billing-batch-select-all");
+  const panel = byId("billing-batch-panel");
+  all("input, select", panel).forEach((control) => { control.disabled = locked; });
+  all("button[type=submit]", panel).forEach((control) => {
+    control.disabled = locked || billingBatchSelectedIDs.size === 0;
+  });
+  selectAll.disabled = locked || matches.length === 0;
+  selectAll.checked = matches.length > 0 && selectedMatches === matches.length;
+  selectAll.indeterminate = selectedMatches > 0 && selectedMatches < matches.length;
+  byId("billing-batch-clear-selection").disabled = locked || billingBatchSelectedIDs.size === 0;
+  byId("billing-batch-refresh-users").disabled = !owner || billingBatchRefreshing || Boolean(billingBatch?.running);
+  byId("billing-batch-refresh-users").textContent = billingBatchRefreshing ? "刷新中…" : "刷新账务数据";
+  byId("billing-batch-selected-count").textContent = `已选 ${billingBatchSelectedIDs.size} 位用户`;
+  const preview = billingBatch?.phase === "preview";
+  const running = Boolean(billingBatch?.running);
+  byId("billing-batch-start").disabled = !owner || !billingBatchUsersReady || !preview || running;
+  byId("billing-batch-retry").disabled = !owner || !billingBatch || preview || running ||
+    !billingBatch.items.some((item) => item.status !== "success");
+  byId("billing-batch-reset").disabled = !owner || !billingBatch || running;
+  byId("billing-batch-reset").textContent = preview ? "取消本批次" : "结束本批次";
+  byId("billing-batch-start").classList.toggle("hidden", !preview);
+  byId("billing-batch-retry").classList.toggle("hidden", !billingBatch || preview ||
+    !billingBatch.items.some((item) => item.status !== "success"));
+}
+
+function setBillingBatchUserSelected(userID, selected) {
+  if (loggingOut || state?.user?.role !== "owner" || !billingBatchUsersReady || billingBatch) return;
+  if (!billingUsers.some((user) => user.id === userID)) return;
+  if (selected) billingBatchSelectedIDs.add(userID);
+  else billingBatchSelectedIDs.delete(userID);
+  syncBillingBatchControls();
+}
+
+function selectBillingBatchMatches(checked) {
+  if (loggingOut || state?.user?.role !== "owner" || !billingBatchUsersReady || billingBatch) return;
+  for (const user of billingBatchMatches()) {
+    if (checked) billingBatchSelectedIDs.add(user.id);
+    else billingBatchSelectedIDs.delete(user.id);
+  }
+  renderBillingBatchUsers();
+}
+
+function clearBillingBatchSelection() {
+  if (loggingOut || state?.user?.role !== "owner" || !billingBatchUsersReady || billingBatch) return;
+  billingBatchSelectedIDs.clear();
+  renderBillingBatchUsers();
+}
+
+function billingBatchIdentity(user) {
+  return element("div", {className: "billing-batch-user-identity"},
+    element("strong", {text: user.display_name || user.username || user.id}),
+    element("small", {text: user.username || user.id}));
+}
+
+function renderBillingBatchUsers(message = "") {
+  const ready = billingBatchUsersReady && !loggingOut && state?.user?.role === "owner";
+  const matches = ready ? billingBatchMatches() : [];
+  const rows = matches.map((user) => {
+    const checkbox = element("input", {
+      type: "checkbox", className: "billing-batch-checkbox billing-batch-user-select",
+      attributes: {value: user.id, "aria-label": `选择用户 ${user.username || user.id}`},
+    });
+    checkbox.checked = billingBatchSelectedIDs.has(user.id);
+    checkbox.addEventListener("change", () => setBillingBatchUserSelected(user.id, checkbox.checked));
+    return element("tr", {},
+      element("td", {}, checkbox),
+      element("td", {}, billingBatchIdentity(user)),
+      element("td", {}, element("span", {text: user.role === "owner" ? "Owner" : "Member"}), statusBadge(user.status)),
+      element("td", {text: formatUSD(user.cash_balance_usd)}));
+  });
+  const empty = ready ? "没有匹配的用户。" : (message || "正在加载用户…");
+  byId("billing-batch-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(4, empty)]));
+  byId("billing-batch-users-status").textContent = ready
+    ? `显示 ${matches.length} / ${billingUsers.length} 位用户；搜索不会清除已选用户。` : empty;
+  syncBillingBatchControls();
+}
+
+function resetBillingBatchState() {
+  billingBatchGeneration++;
+  billingBatch = null;
+  billingBatchSelectedIDs.clear();
+  billingBatchUsersReady = false;
+  billingBatchRefreshing = false;
+  byId("billing-batch-search").value = "";
+  for (const id of ["billing-batch-recharge-form", "billing-batch-subscription-form"]) {
+    byId(id).reset();
+    setLocalMessage(byId(id));
+  }
+  renderBillingBatchUsers("登录后加载用户。");
+  renderBillingBatchResult();
+}
+
+function billingBatchAmount(value) {
+  const amount = String(value || "").trim();
+  if (!/^(0|[1-9][0-9]{0,17})(\.[0-9]{1,6})?$/.test(amount) || !/[1-9]/.test(amount)) {
+    throw new Error("金额必须大于 0，最多 18 位整数和 6 位小数。");
+  }
+  return amount;
+}
+
+function billingBatchTotal(amount, count) {
+  const [whole, fraction = ""] = billingBatchAmount(amount).split(".");
+  const units = BigInt(whole) * 1000000n + BigInt(fraction.padEnd(6, "0"));
+  const total = units * BigInt(count);
+  const decimal = String(total % 1000000n).padStart(6, "0").replace(/0+$/, "");
+  return `${total / 1000000n}${decimal ? `.${decimal}` : ""}`;
+}
+
+function prepareBillingBatch(event, kind) {
+  if (loggingOut || state?.user?.role !== "owner") throw new Error("仅 Owner 可执行批量账务操作。");
+  if (billingBatch) throw new Error("请先结束或取消当前批次。");
+  if (!billingBatchUsersReady) throw new Error("请等待用户列表加载成功后再操作。");
+  const selected = billingUsers.filter((user) => billingBatchSelectedIDs.has(user.id));
+  if (!selected.length) throw new Error("请至少选择一位用户。");
+  if (selected.length !== billingBatchSelectedIDs.size) throw new Error("用户列表已变化，请重新选择用户。");
+  if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
+  const form = event.currentTarget;
+  const data = new FormData(form);
+  const reason = billingReason(form);
+  if (Array.from(reason).length > 500) throw new Error("操作原因最多 500 字。");
+  let payload;
+  let tier = "";
+  if (kind === "recharge") {
+    payload = {cny_amount: billingBatchAmount(data.get("cny_amount")), reason};
+  } else if (kind === "subscription") {
+    tier = String(data.get("tier") || "");
+    if (!billingTiers.some((item) => item.id === tier)) throw new Error("订阅档位无效。");
+    payload = {quota_usd: billingBatchAmount(data.get("quota_usd")), period_count: billingPeriodCount(form), reason};
+  } else throw new Error("批量操作类型无效。");
+  billingBatch = {
+    kind, tier, payload: Object.freeze(payload), actorUserID: state.user.id,
+    generation: billingBatchGeneration, phase: "preview", running: false, message: "",
+    items: selected.map((user) => ({
+      user: Object.freeze({...user}), operationID: crypto.randomUUID(), status: "pending", message: "",
+    })),
+  };
+  renderBillingBatchResult();
+  byId("billing-batch-result").focus();
+}
+
+function billingBatchIsCurrent(batch) {
+  return Boolean(batch && batch === billingBatch && batch.generation === billingBatchGeneration &&
+    !loggingOut && state?.user?.role === "owner" && state.user.id === batch.actorUserID);
+}
+
+function renderBillingBatchResult() {
+  const batch = billingBatch;
+  const result = byId("billing-batch-result");
+  if (!batch) {
+    hide(result);
+    byId("billing-batch-summary").textContent = "";
+    byId("billing-batch-progress").textContent = "";
+    byId("billing-batch-result-rows").replaceChildren();
+    setLocalMessage(result);
+    syncBillingBatchControls();
+    return;
+  }
+  show(result);
+  const count = batch.items.length;
+  const action = batch.kind === "recharge" ? "批量充值" : "批量开通订阅";
+  const specification = batch.kind === "recharge"
+    ? `每人 ${batch.payload.cny_amount} CNY，合计 ${billingBatchTotal(batch.payload.cny_amount, count)} CNY。各笔充值按入账时的汇率换算。`
+    : `${billingTiers.find((tier) => tier.id === batch.tier).label}：每人每周期 ${batch.payload.quota_usd} USD，${batch.payload.period_count === 0 ? "无限期" : `共 ${batch.payload.period_count} 个周期`}。\n已有同档位订阅将立即关闭旧周期，按新配置从第 1 期重开，旧周期剩余额度不会结转。`;
+  byId("billing-batch-summary").textContent = `${action} · ${count} 位用户\n${specification}\n操作原因：${batch.payload.reason}`;
+  const counts = {pending: 0, running: 0, success: 0, failed: 0, unknown: 0};
+  const labels = {pending: "待处理", running: "处理中", success: "成功", failed: "失败", unknown: "结果待确认"};
+  const rows = batch.items.map((item) => {
+    counts[item.status]++;
+    return element("tr", {},
+      element("td", {}, billingBatchIdentity(item.user)),
+      element("td", {}, element("span", {className: "billing-batch-status", text: labels[item.status], dataset: {status: item.status}})),
+      element("td", {text: item.message || (batch.phase === "preview" ? "确认后执行" : "等待处理")}));
+  });
+  byId("billing-batch-result-rows").replaceChildren(...rows);
+  const progress = batch.phase === "preview" ? "请核对以下用户名单和参数，确认后执行。" :
+    `${batch.running ? "处理中" : batch.phase === "paused" ? "已暂停" : "本轮处理完成"}：成功 ${counts.success}，失败 ${counts.failed}，结果待确认 ${counts.unknown}，待处理 ${counts.pending + counts.running} / 共 ${count} 位。`;
+  byId("billing-batch-progress").textContent = progress;
+  const uncertainty = counts.unknown ? "结果待确认的操作可能已生效，请使用“重试未成功项”核对，避免重新创建相同操作。" : "";
+  setLocalMessage(result, [batch.message, uncertainty].filter(Boolean).join(" "));
+  syncBillingBatchControls();
+}
+
+async function startBillingBatch() {
+  const batch = billingBatch;
+  if (!billingBatchIsCurrent(batch) || batch.running || batch.phase !== "preview") return;
+  if (!billingBatchUsersReady) throw new Error("请等待用户列表加载成功后再操作。");
+  await executeBillingBatch(batch);
+}
+
+async function retryBillingBatch() {
+  const batch = billingBatch;
+  if (!billingBatchIsCurrent(batch) || batch.running || batch.phase === "preview") return;
+  await executeBillingBatch(batch);
+}
+
+async function executeBillingBatch(batch) {
+  if (!billingBatchIsCurrent(batch) || batch.running || !batch.items.some((item) => item.status !== "success")) return;
+  batch.running = true;
+  batch.phase = "running";
+  batch.message = "";
+  renderBillingBatchResult();
+  try {
+    for (const item of batch.items) {
+      if (!billingBatchIsCurrent(batch)) return;
+      if (item.status === "success") continue;
+      const previousStatus = item.status;
+      let attempted = false;
+      item.status = "running";
+      item.message = "";
+      renderBillingBatchResult();
+      const path = `/admin/billing/users/${encodeURIComponent(item.user.id)}/${batch.kind === "recharge" ? "recharges" : `subscriptions/${batch.tier}`}`;
+      try {
+        await billingMutation(path, batch.kind === "recharge" ? "POST" : "PUT", batch.payload, item.operationID, () => {
+          // Recheck after every authentication await, including verification-expiry retries.
+          if (!billingBatchIsCurrent(batch)) throw new Error("当前批次已停止。");
+          attempted = true;
+        });
+        if (!billingBatchIsCurrent(batch)) return;
+        item.status = "success";
+        item.message = batch.kind === "recharge" ? "充值已入账。" : "订阅已按新配置从第 1 期重开。";
+      } catch (error) {
+        if (!billingBatchIsCurrent(batch)) return;
+        if (error.code === "owner_required" || error.code === "user_disabled") {
+          resetBillingBatchState();
+          notice("账号权限已变化，批量操作已停止。请重新登录以更新权限。", "error");
+          return;
+        }
+        item.message = friendlyError(error);
+        if (!attempted || error.code === "reauth_cancelled") {
+          item.status = previousStatus;
+          batch.phase = "paused";
+          batch.message = `批次已暂停：${friendlyError(error)} 可使用“重试未成功项”继续。`;
+          break;
+        }
+        const uncertain = previousStatus === "unknown" || error.network || !error.status ||
+          error.status >= 500 || error.status === 408;
+        item.status = uncertain ? "unknown" : "failed";
+        if (error.status === 401 || error.status === 403 || error.code === "recent_identity_verification_required") {
+          batch.phase = "paused";
+          batch.message = "身份验证或权限检查未通过，已停止后续操作。恢复权限后可重试未成功项。";
+          break;
+        }
+      }
+      renderBillingBatchResult();
+    }
+    if (!billingBatchIsCurrent(batch)) return;
+    if (batch.phase !== "paused") batch.phase = "finished";
+    renderBillingBatchResult();
+    // Refresh once per attempt. A failed read must never turn a committed write into a failed item.
+    const refreshed = await Promise.allSettled([
+      loadBillingUsers(), loadBillingDetail(selectedBillingUserID(), 0),
+    ]);
+    if (!billingBatchIsCurrent(batch)) return;
+    if (refreshed.some((entry) => entry.status === "rejected")) {
+      batch.message += " 用户摘要或账务详情刷新失败，操作结果已保留；请点击“刷新账务数据”重试读取。";
+    }
+  } finally {
+    if (billingBatchIsCurrent(batch)) {
+      batch.running = false;
+      renderBillingBatchResult();
+    } else if (batch === billingBatch) {
+      // A lifecycle reset usually clears this first; also fail closed if identity
+      // changes while an awaited verification or write is still outstanding.
+      resetBillingBatchState();
+    }
+  }
+}
+
+function finishBillingBatch() {
+  if (!billingBatchIsCurrent(billingBatch) || billingBatch.running) return;
+  if (billingBatch.items.some((item) => item.status === "unknown") &&
+      !window.confirm("仍有结果待确认的操作，可能已经生效。结束本批次会丢失安全重试记录，请先核对账务流水。确定结束？")) return;
+  billingBatch = null;
+  renderBillingBatchResult();
+  renderBillingBatchUsers();
+}
+
+async function refreshBillingBatchData() {
+  if (loggingOut || state?.user?.role !== "owner" || billingBatch?.running || billingBatchRefreshing) return;
+  const generation = billingBatchGeneration;
+  billingBatchRefreshing = true;
+  syncBillingBatchControls();
+  try {
+    const refreshed = await Promise.allSettled([loadBillingUsers(), loadBillingDetail(selectedBillingUserID(), 0)]);
+    if (generation !== billingBatchGeneration || loggingOut || state?.user?.role !== "owner") return;
+    if (refreshed.some((entry) => entry.status === "rejected")) {
+      notice("部分账务数据刷新失败，请重试；当前批次及操作结果已保留。", "error");
+    } else announce("账务数据已刷新，当前批次及操作结果已保留。");
+  } finally {
+    if (generation === billingBatchGeneration) {
+      billingBatchRefreshing = false;
+      syncBillingBatchControls();
+    }
+  }
+}
+
+function bindBillingBatchAction(id, eventName, handler) {
+  const host = byId(id);
+  host.addEventListener(eventName, async (event) => {
+    if (eventName === "submit") event.preventDefault();
+    const generation = billingBatchGeneration;
+    // The batch's synchronous running/preview guards own concurrency. Keeping
+    // busy state on a button would outlive logout while an old request hangs.
+    setLocalMessage(host);
+    try {
+      await handler(event);
+    } catch (error) {
+      if (generation === billingBatchGeneration && !loggingOut && state?.user?.role === "owner") {
+        if (!setLocalMessage(host, friendlyError(error))) notice(friendlyError(error), "error");
+      }
+    } finally {
+      if (generation === billingBatchGeneration) syncBillingBatchControls();
+    }
+  });
+}
+
 function billingReason(form) {
   const reason = String(new FormData(form).get("reason") || "").trim();
   if (!reason) throw new Error("必须填写操作原因。");
@@ -1640,12 +1989,19 @@ function billingPeriodCount(form) {
   return Number(value);
 }
 
-async function billingMutation(path, method, payload) {
+async function billingMutation(path, method, payload, operationID = "", beforeSend = null) {
   if (state?.user?.role !== "owner") throw new Error("仅 Owner 可执行此账务操作。");
   if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
-  const input = {...payload, operation_id: crypto.randomUUID()};
+  const actorUserID = state.user.id;
+  const input = {...payload, operation_id: operationID || crypto.randomUUID()};
   const body = JSON.stringify(input);
-  return sensitiveAction(() => api(path, {method, body}));
+  return sensitiveAction(() => {
+    if (loggingOut || state?.user?.role !== "owner" || state.user.id !== actorUserID) {
+      throw new Error("登录身份已变化，账务操作已停止。");
+    }
+    beforeSend?.();
+    return api(path, {method, body});
+  });
 }
 
 async function refreshManagedBilling(userID = selectedBillingUserID()) {
@@ -2793,6 +3149,16 @@ function bindUI() {
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
   globalUserSearch = createUserSearch("global-user-search", drillDownUser);
   syncBillingUserControls();
+  syncBillingBatchControls();
+  byId("billing-batch-search").addEventListener("input", () => renderBillingBatchUsers());
+  byId("billing-batch-select-all").addEventListener("change", (event) => selectBillingBatchMatches(event.currentTarget.checked));
+  byId("billing-batch-clear-selection").addEventListener("click", clearBillingBatchSelection);
+  bindBillingBatchAction("billing-batch-recharge-form", "submit", (event) => prepareBillingBatch(event, "recharge"));
+  bindBillingBatchAction("billing-batch-subscription-form", "submit", (event) => prepareBillingBatch(event, "subscription"));
+  bindBillingBatchAction("billing-batch-start", "click", startBillingBatch);
+  bindBillingBatchAction("billing-batch-retry", "click", retryBillingBatch);
+  bindBillingBatchAction("billing-batch-reset", "click", finishBillingBatch);
+  bindBillingBatchAction("billing-batch-refresh-users", "click", refreshBillingBatchData);
   bindAsync("login", "click", login, "等待 Passkey…");
   bindAsync("password-login-form", "submit", passwordLogin, "登录中…");
   bindAsync("join-form", "submit", register, "等待 Passkey…");
@@ -2896,7 +3262,7 @@ function bindUI() {
     if (!reauthReject) return;
     const reject = reauthReject;
     reauthResolve = reauthReject = null;
-    reject(new Error("身份验证已取消。"));
+    reject(Object.assign(new Error("身份验证已取消。"), {code: "reauth_cancelled"}));
   });
   all("#join-form select[name=login_method], #recover-form select[name=login_method]").forEach((select) => {
     select.addEventListener("change", () => {

@@ -22,6 +22,7 @@ function node() {
     value: "", dataset: {}, disabled: false, textContent: "",
     classList: {add() {}, remove() {}, toggle() {}},
     setAttribute() {}, append() {}, replaceChildren() {},
+    addEventListener() {}, reset() {}, focus() {},
     querySelector() { return null; }, querySelectorAll() { return []; },
     matches() { return false; }, closest() { return this; },
   };
