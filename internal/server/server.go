@@ -122,6 +122,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/allocation-weight", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAllocationWeight)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
+	s.mux.Handle("PUT /admin/billing/me/sources/{source}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSourceStatus))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("GET /admin/billing/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUsers))))
 	s.mux.Handle("GET /admin/billing/users/{user_id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUser))))

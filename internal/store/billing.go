@@ -27,8 +27,8 @@ const (
 )
 
 // InsufficientFundsError is returned when a billed endpoint has no positive
-// admission-time source. RetryAfter is the earliest enabled subscription
-// renewal, when one exists.
+// admission-time source. RetryAfter is the earliest subscription renewal
+// allowed by the user's source preferences, when one exists.
 type InsufficientFundsError struct {
 	RetryAfter time.Duration
 }
@@ -39,6 +39,15 @@ type BillingSettings struct {
 	USDPerCNY       string    `json:"usd_per_cny"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	UpdatedByUserID *string   `json:"updated_by_user_id,omitempty"`
+}
+
+// BillingSourceDisabled contains user preferences for new request admission.
+// Subscription validity and period lifecycle remain independent of these flags.
+type BillingSourceDisabled struct {
+	Day   bool `json:"day"`
+	Week  bool `json:"week"`
+	Month bool `json:"month"`
+	Cash  bool `json:"cash"`
 }
 
 type BillingSubscriptionState struct {
@@ -98,23 +107,25 @@ type BillingLedgerEntry struct {
 }
 
 type BillingState struct {
-	UserID        string                     `json:"user_id"`
-	Username      string                     `json:"username,omitempty"`
-	DisplayName   string                     `json:"display_name,omitempty"`
-	BalanceUSD    string                     `json:"balance_usd"`
-	Subscriptions []BillingSubscriptionState `json:"subscriptions"`
-	Ledger        []BillingLedgerEntry       `json:"ledger"`
-	LedgerTotal   int64                      `json:"ledger_total"`
+	UserID         string                     `json:"user_id"`
+	Username       string                     `json:"username,omitempty"`
+	DisplayName    string                     `json:"display_name,omitempty"`
+	BalanceUSD     string                     `json:"balance_usd"`
+	SourceDisabled BillingSourceDisabled      `json:"source_disabled"`
+	Subscriptions  []BillingSubscriptionState `json:"subscriptions"`
+	Ledger         []BillingLedgerEntry       `json:"ledger"`
+	LedgerTotal    int64                      `json:"ledger_total"`
 }
 
 type BillingUserSummary struct {
-	UserID        string                     `json:"user_id"`
-	Username      string                     `json:"username"`
-	DisplayName   string                     `json:"display_name"`
-	Role          string                     `json:"role"`
-	Status        string                     `json:"status"`
-	BalanceUSD    string                     `json:"balance_usd"`
-	Subscriptions []BillingSubscriptionState `json:"subscriptions"`
+	UserID         string                     `json:"user_id"`
+	Username       string                     `json:"username"`
+	DisplayName    string                     `json:"display_name"`
+	Role           string                     `json:"role"`
+	Status         string                     `json:"status"`
+	BalanceUSD     string                     `json:"balance_usd"`
+	SourceDisabled BillingSourceDisabled      `json:"source_disabled"`
+	Subscriptions  []BillingSubscriptionState `json:"subscriptions"`
 }
 
 type BillingReservationParams struct {
@@ -214,6 +225,16 @@ type DeleteSubscriptionParams struct {
 	BillingWriteParams
 	UserID string
 	Tier   string
+}
+
+type SetBillingSourceDisabledParams struct {
+	UserID         string
+	Source         string
+	Disabled       bool
+	ActorSessionID string
+	RequestID      string
+	SourceIP       string
+	At             time.Time
 }
 
 func billingPeriodDuration(tier string) (time.Duration, error) {
@@ -350,7 +371,7 @@ func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationPar
 
 // reserveBillingTx must run after the caller has taken the standard quota
 // locks. It locks the user's billing account, rolls enabled subscriptions
-// forward, then snapshots only the sources that exist at admission time.
+// forward, then snapshots only the sources eligible at admission time.
 func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservationParams) (BillingReservation, error) {
 	params.Model = strings.TrimSpace(params.Model)
 	params.PricingModel = strings.TrimSpace(params.PricingModel)
@@ -410,10 +431,12 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	}
 	var balance string
 	var nextSequence int64
+	var disabled BillingSourceDisabled
 	if err := tx.QueryRowContext(ctx, `
-		SELECT balance_usd::text, next_cash_lot_sequence
+		SELECT balance_usd::text, next_cash_lot_sequence,
+			day_source_disabled, week_source_disabled, month_source_disabled, cash_source_disabled
 		FROM billing_accounts WHERE user_id = $1 FOR UPDATE`, params.UserID,
-	).Scan(&balance, &nextSequence); err != nil {
+	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
 	if _, err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
@@ -426,10 +449,12 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		FROM billing_subscriptions s
 		JOIN billing_subscription_periods p ON p.id = s.current_period_id
 		WHERE s.user_id = $1 AND s.enabled
+		  AND ((s.tier = 'day' AND NOT $3) OR (s.tier = 'week' AND NOT $4)
+		       OR (s.tier = 'month' AND NOT $5))
 		  AND p.closed_at IS NULL AND p.starts_at <= $2 AND p.ends_at > $2
 		  AND p.remaining_usd > 0
 		ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END
-		FOR UPDATE OF s, p`, params.UserID, params.Now)
+		FOR UPDATE OF s, p`, params.UserID, params.Now, disabled.Day, disabled.Week, disabled.Month)
 	if err != nil {
 		return BillingReservation{}, mapDBError("read billing sources", err)
 	}
@@ -454,7 +479,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		return BillingReservation{}, fmt.Errorf("iterate billing sources: %w", err)
 	}
 	var cashCutoff *int64
-	if billingPositive(balance) {
+	if !disabled.Cash && billingPositive(balance) {
 		cutoff := nextSequence - 1
 		if cutoff > 0 {
 			cashCutoff = &cutoff
@@ -470,7 +495,10 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			FROM billing_subscriptions s
 			JOIN billing_subscription_periods p ON p.id = s.current_period_id
 			WHERE s.user_id = $1 AND s.enabled AND p.ends_at > $2
-			  AND (s.period_count = 0 OR s.current_period_number < s.period_count)`, params.UserID, params.Now,
+			  AND ((s.tier = 'day' AND NOT $3) OR (s.tier = 'week' AND NOT $4)
+			       OR (s.tier = 'month' AND NOT $5))
+			  AND (s.period_count = 0 OR s.current_period_number < s.period_count)`,
+			params.UserID, params.Now, disabled.Day, disabled.Week, disabled.Month,
 		).Scan(&renewal)
 		if err != nil {
 			return BillingReservation{}, mapDBError("read billing retry time", err)
@@ -892,6 +920,48 @@ func appendBillingAuditTx(ctx context.Context, tx *sql.Tx, params BillingWritePa
 		params.At, params.ActorUserID, valueOrNil(params.ActorSessionID), eventType,
 		valueOrNil(params.SourceIP), subjectType, subjectID, valueOrNil(params.RequestID), encoded)
 	return mapDBError("append billing audit event", err)
+}
+
+// SetBillingSourceDisabled explicitly sets a preference belonging to the user
+// identified by the caller's authenticated session. Sharing the admission-time
+// account lock makes a concurrent admission observe either complete state.
+// Previously accepted requests retain their original source bindings.
+func (s *Store) SetBillingSourceDisabled(ctx context.Context, params SetBillingSourceDisabledParams) error {
+	if strings.TrimSpace(params.UserID) == "" {
+		return fmt.Errorf("%w: billing source user is required", ErrInvalid)
+	}
+	var column string
+	switch params.Source {
+	case BillingTierDay:
+		column = "day_source_disabled"
+	case BillingTierWeek:
+		column = "week_source_disabled"
+	case BillingTierMonth:
+		column = "month_source_disabled"
+	case "cash":
+		column = "cash_source_disabled"
+	default:
+		return fmt.Errorf("%w: invalid billing source", ErrInvalid)
+	}
+	params.At = normalizedBillingTime(params.At, s.now)
+	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		var previous bool
+		// column is selected exclusively from the fixed allowlist above.
+		if err := tx.QueryRowContext(ctx, `SELECT `+column+` FROM billing_accounts
+			WHERE user_id = $1 FOR UPDATE`, params.UserID).Scan(&previous); err != nil {
+			return mapDBError("lock billing source preference", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET `+column+` = $2,
+			updated_at = $3 WHERE user_id = $1`, params.UserID, params.Disabled, params.At); err != nil {
+			return mapDBError("set billing source preference", err)
+		}
+		return appendBillingAuditTx(ctx, tx, BillingWriteParams{
+			ActorUserID: params.UserID, ActorSessionID: params.ActorSessionID,
+			RequestID: params.RequestID, SourceIP: params.SourceIP, At: params.At,
+		}, "billing.source_status_changed", "billing_account", params.UserID, map[string]any{
+			"source": params.Source, "disabled": params.Disabled, "previous_disabled": previous,
+		})
+	})
 }
 
 func (s *Store) GetBillingSettings(ctx context.Context) (BillingSettings, error) {
@@ -1517,10 +1587,13 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 	}
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, `
-			SELECT u.id, u.username, u.display_name, a.balance_usd::text
+			SELECT u.id, u.username, u.display_name, a.balance_usd::text,
+				a.day_source_disabled, a.week_source_disabled, a.month_source_disabled, a.cash_source_disabled
 			FROM users u JOIN billing_accounts a ON a.user_id = u.id
 			WHERE u.id = $1 FOR UPDATE OF a`, userID).Scan(
-			&state.UserID, &state.Username, &state.DisplayName, &state.BalanceUSD); err != nil {
+			&state.UserID, &state.Username, &state.DisplayName, &state.BalanceUSD,
+			&state.SourceDisabled.Day, &state.SourceDisabled.Week,
+			&state.SourceDisabled.Month, &state.SourceDisabled.Cash); err != nil {
 			return mapDBError("lock billing state account", err)
 		}
 		if _, err := rollBillingSubscriptionsTx(ctx, tx, userID, s.now().UTC()); err != nil {
@@ -1619,7 +1692,7 @@ func (s *Store) ListBillingUsers(ctx context.Context) ([]BillingUserSummary, err
 		}
 		result = append(result, BillingUserSummary{UserID: user.id, Username: user.username,
 			DisplayName: user.displayName, Role: user.role, Status: user.status,
-			BalanceUSD: state.BalanceUSD, Subscriptions: state.Subscriptions})
+			BalanceUSD: state.BalanceUSD, SourceDisabled: state.SourceDisabled, Subscriptions: state.Subscriptions})
 	}
 	return result, nil
 }
@@ -1691,6 +1764,7 @@ func (s *Store) SettleBilling(ctx context.Context, requestID string, at time.Tim
 
 // settleBillingTx prices terminal usage from the admission snapshot and
 // atomically drains only admission-bound sources in day/week/month/cash order.
+// Current source preferences never change those accepted source bindings.
 func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.Time) (BillingReservation, error) {
 	if requestID == "" {
 		return BillingReservation{}, fmt.Errorf("%w: empty billing request id", ErrInvalid)

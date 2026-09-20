@@ -1636,6 +1636,40 @@ code {
   gap: .5rem;
 }
 
+.billing-source-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5rem;
+  margin-top: .5rem;
+}
+
+.billing-source-button {
+  min-height: 2.25rem;
+  padding: .4rem .7rem;
+  font-size: .85rem;
+}
+
+.billing-source-state[data-disabled="true"] {
+  color: var(--warning);
+}
+
+.billing-source-help {
+  color: var(--muted);
+  margin: .5rem 0;
+  font-size: .875rem;
+  line-height: 1.7;
+}
+
+.billing-source-message {
+  margin-bottom: 1rem;
+}
+
+.billing-source-message[data-kind="ok"] {
+  color: var(--accent);
+}
+
 .subscription-card header {
   display: flex;
   align-items: center;

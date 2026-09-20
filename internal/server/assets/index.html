@@ -289,12 +289,15 @@
               <span id="billing-scope-name">—</span>
             </div>
             <div class="metrics billing-metrics">
-              <article><span>现金余额</span><strong id="billing-cash-balance">—</strong><small>订阅额度用尽后使用</small></article>
+              <article><span>现金余额</span><strong id="billing-cash-balance">—</strong><small>订阅额度用尽后使用</small><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
               <article><span>日订阅剩余</span><strong id="billing-day-remaining">—</strong><small id="billing-day-ends">未启用</small></article>
               <article><span>周订阅剩余</span><strong id="billing-week-remaining">—</strong><small id="billing-week-ends">未启用</small></article>
               <article><span>月订阅剩余</span><strong id="billing-month-remaining">—</strong><small id="billing-month-ends">未启用</small></article>
             </div>
 
+            <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；尚未开通的订阅也可预先设置。剩余周期额度仍不结转。</p>
+            <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
+            <p id="billing-source-message" class="form-message billing-source-message hidden" role="status" aria-live="polite"></p>
             <article class="panel billing-period-panel">
               <div class="panel-heading"><div><p class="eyebrow">ROLLING PERIODS</p><h3>当前周期</h3></div><span class="badge">日 → 周 → 月 → 余额</span></div>
               <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
@@ -416,7 +419,7 @@
               </div>
 
               <article class="panel billing-subscription-admin">
-                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置订阅周期</h3><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。</p></div></div>
+                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置订阅周期</h3><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。管理员“立即停用”会终止订阅；用户“禁用扣费”仅跳过该资金来源，订阅期限照常运行。</p></div></div>
                 <div class="billing-subscription-forms">
                   <form id="billing-subscription-day" class="billing-subscription-form" data-tier="day">
                     <div><h4>日订阅</h4><small>固定 24 小时</small></div>

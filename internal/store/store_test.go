@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 9 {
-		t.Fatalf("migration count = %d, want 9", len(migrations))
+	if len(migrations) != 10 {
+		t.Fatalf("migration count = %d, want 10", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -447,6 +447,30 @@ func TestValidateBillingPeriodCount(t *testing.T) {
 		if err := validateBillingPeriodCount(value); !errors.Is(err, ErrInvalid) {
 			t.Errorf("period count %d error = %v, want ErrInvalid", value, err)
 		}
+	}
+}
+
+func TestSetBillingSourceDisabledRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name   string
+		params SetBillingSourceDisabledParams
+	}{
+		{"missing user", SetBillingSourceDisabledParams{Source: "day"}},
+		{"blank user", SetBillingSourceDisabledParams{UserID: " ", Source: "cash"}},
+		{"missing source", SetBillingSourceDisabledParams{UserID: "user"}},
+		{"unsupported source", SetBillingSourceDisabledParams{UserID: "user", Source: "year"}},
+		{"noncanonical source", SetBillingSourceDisabledParams{UserID: "user", Source: "Day"}},
+		{"whitespace source", SetBillingSourceDisabledParams{UserID: "user", Source: " cash "}},
+		{"SQL source", SetBillingSourceDisabledParams{UserID: "user", Source: "cash_source_disabled = false;--"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Invalid input must be rejected before accessing a database.
+			err := (&Store{}).SetBillingSourceDisabled(context.Background(), test.params)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("SetBillingSourceDisabled() = %v, want ErrInvalid", err)
+			}
+		})
 	}
 }
 

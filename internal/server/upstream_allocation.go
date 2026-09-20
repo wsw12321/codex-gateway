@@ -28,12 +28,12 @@ func (s *Server) selectUpstreamAccount(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "invalid_sidecar_token", "内部服务认证失败")
 		return
 	}
-	if !allocationJSONRequest(r) {
+	if !strictJSONRequest(r) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_selection_request", "选路请求必须为 JSON，且不能包含查询参数")
 		return
 	}
 	var ids []string
-	if err := decodeAllocationField(r, upstreamAllocationRequestBytes, "account_ids", &ids); err != nil {
+	if err := decodeSingleJSONField(r, upstreamAllocationRequestBytes, "account_ids", &ids); err != nil {
 		badJSON(w, r, err)
 		return
 	}
@@ -66,12 +66,12 @@ func (s *Server) setUpstreamAccountAllocationWeight(w http.ResponseWriter, r *ht
 		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
 		return
 	}
-	if !allocationJSONRequest(r) {
+	if !strictJSONRequest(r) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_weight_request", "分配系数请求必须为 JSON，且不能包含查询参数")
 		return
 	}
 	var weight *int64
-	if err := decodeAllocationField(r, upstreamWeightRequestBytes, "weight", &weight); err != nil {
+	if err := decodeSingleJSONField(r, upstreamWeightRequestBytes, "weight", &weight); err != nil {
 		badJSON(w, r, err)
 		return
 	}
@@ -91,14 +91,14 @@ func (s *Server) setUpstreamAccountAllocationWeight(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, map[string]any{"id": account.ID, "allocation_weight": account.AllocationWeight})
 }
 
-func allocationJSONRequest(r *http.Request) bool {
+func strictJSONRequest(r *http.Request) bool {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	return err == nil && mediaType == "application/json" && r.URL.RawQuery == ""
 }
 
 // Decode the exact one-field protocol, rejecting duplicate/case-folded keys,
 // oversized bodies (including chunked requests), and additional JSON values.
-func decodeAllocationField(r *http.Request, limit int64, field string, destination any) error {
+func decodeSingleJSONField(r *http.Request, limit int64, field string, destination any) error {
 	if r.ContentLength > limit {
 		return &http.MaxBytesError{Limit: limit}
 	}

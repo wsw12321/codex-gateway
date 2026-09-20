@@ -34,6 +34,7 @@ let personalRequestSequence = 0;
 let globalRequestSequence = 0;
 let checkingSession = false;
 let loggingOut = false;
+let identityGeneration = 0;
 let billingDetail = null;
 let billingUsers = [];
 let billingSettings = null;
@@ -43,6 +44,8 @@ let billingRequestSequence = 0;
 let billingUsersRequestSequence = 0;
 let billingUserID = "";
 let billingDetailLoading = false;
+let billingSourceOperation = null;
+let billingSourceGeneration = 0;
 let billingUserSearch = null;
 let billingBatch = null;
 let billingBatchSelectedIDs = new Set();
@@ -63,6 +66,7 @@ const upstreamQuotaStaleTimers = new Map();
 let reauthResolve = null;
 let reauthReject = null;
 let reauthPromise = null;
+let reauthRequestCurrent = null;
 
 const billingLedgerPageSize = 50;
 const upstreamQuotaStaleAfterMS = 5 * 60 * 1000;
@@ -230,21 +234,23 @@ function setBusy(host, busy, label = "处理中…") {
   if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
 }
 
-function bindAsync(id, eventName, handler, busyLabel = "处理中…") {
+function bindAsync(id, eventName, handler, busyLabel = "处理中…", requestCurrent = null) {
   const host = byId(id);
   if (!host) return;
   host.addEventListener(eventName, async (event) => {
     if (host.dataset.busy === "true") return;
+    const current = requestCurrent?.();
     if (eventName === "submit") event.preventDefault();
     setLocalMessage(host);
     setBusy(host, true, busyLabel);
     try {
       await handler(event);
     } catch (error) {
+      if (current && !current()) return;
       const message = friendlyError(error);
       if (!setLocalMessage(host, message)) notice(message, "error");
     } finally {
-      setBusy(host, false);
+      if (!current || current()) setBusy(host, false);
     }
   });
 }
@@ -293,6 +299,8 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  identityGeneration++;
+  cancelReauthentication();
   invitationToken = "";
   secretAfterClose = null;
   personalRequestSequence++;
@@ -370,7 +378,12 @@ function handleUnauthorized() {
   if (!checkingSession) notice("登录会话已失效，请重新登录。", "error", true);
 }
 
-async function api(path, options = {}) {
+function requireCurrentRequest(current) {
+  if (current && !current()) throw Object.assign(new Error("页面或登录身份已变化，请求结果已忽略。"), {code: "stale_request"});
+}
+
+async function api(path, options = {}, current = null) {
+  requireCurrentRequest(current);
   const headers = {...(options.headers || {})};
   if (options.body != null && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   let response;
@@ -382,6 +395,7 @@ async function api(path, options = {}) {
     throw error;
   }
   const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
+  requireCurrentRequest(current);
   if (!response.ok) {
     if (response.status === 401 && ["session_required", "invalid_session"].includes(body?.error?.code)) handleUnauthorized();
     const error = new Error(body?.error?.message || `请求失败 (${response.status})`);
@@ -489,14 +503,15 @@ async function finishLogin() {
   await loadDashboard();
 }
 
-async function reauthenticate() {
-	return chooseReauthentication();
+async function reauthenticate(current = null) {
+	return chooseReauthentication(current);
 }
 
-async function passkeyReauthenticate() {
-  const ceremony = await api("/auth/reauth/begin", {method: "POST", body: "{}"});
+async function passkeyReauthenticate(current = null) {
+  const ceremony = await api("/auth/reauth/begin", {method: "POST", body: "{}"}, current);
   const credential = await getPasskey(ceremony);
-  await api("/auth/reauth/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})});
+  await api("/auth/reauth/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})}, current);
+  requireCurrentRequest(current);
   if (state) {
     state.recently_verified = true;
     state.recent_verification_expires_at = null;
@@ -504,8 +519,12 @@ async function passkeyReauthenticate() {
   notice("Passkey 二次验证成功，敏感操作已临时解锁。", "ok");
 }
 
-function chooseReauthentication() {
+function chooseReauthentication(current = null) {
   if (reauthPromise) return reauthPromise;
+  const actorUserID = state?.user?.id;
+  const generation = identityGeneration;
+  const requestCurrent = () => reauthRequestCurrent === requestCurrent && Boolean(actorUserID) && !loggingOut && state?.user?.id === actorUserID &&
+    identityGeneration === generation && (!current || current());
   const dialog = byId("reauth-dialog");
   const select = byId("reauth-form").elements.method;
   const methods = state?.login_methods || {};
@@ -514,6 +533,7 @@ function chooseReauthentication() {
   });
   const available = all("option", select).find((option) => !option.disabled);
   if (!available) return Promise.reject(new Error("账号没有当前可用的二次验证方式。"));
+  reauthRequestCurrent = requestCurrent;
   select.value = available.value;
   syncReauthMethod();
   dialog.showModal();
@@ -525,6 +545,18 @@ function chooseReauthentication() {
   return shared;
 }
 
+function cancelReauthentication() {
+  const reject = reauthReject;
+  reauthResolve = reauthReject = reauthRequestCurrent = reauthPromise = null;
+  const dialog = byId("reauth-dialog");
+  if (dialog.open) dialog.close();
+  const form = byId("reauth-form");
+  form.reset();
+  setLocalMessage(form);
+  setBusy(form, false);
+  reject?.(Object.assign(new Error("身份验证已取消。"), {code: "reauth_cancelled"}));
+}
+
 function syncReauthMethod() {
   const password = byId("reauth-form").elements.method.value === "password";
   byId("reauth-form").querySelector(".reauth-password").classList.toggle("hidden", !password);
@@ -533,17 +565,23 @@ function syncReauthMethod() {
 
 async function submitReauthentication(event) {
   const form = event.currentTarget;
+  const current = reauthRequestCurrent;
+  if (!current) return;
+  requireCurrentRequest(current);
   const method = form.elements.method.value;
   if (method === "password") {
-    await api("/auth/password/reauth", {method: "POST", body: JSON.stringify({password: form.elements.password.value})});
+    await api("/auth/password/reauth", {method: "POST", body: JSON.stringify({password: form.elements.password.value})}, current);
+    requireCurrentRequest(current);
     notice("密码二次验证成功，敏感操作已临时解锁。", "ok");
   } else {
-    await passkeyReauthenticate();
+    await passkeyReauthenticate(current);
   }
+  requireCurrentRequest(current);
   if (state) { state.recently_verified = true; state.recent_verification_expires_at = null; }
   const resolve = reauthResolve;
-  reauthResolve = reauthReject = null;
+  reauthResolve = reauthReject = reauthRequestCurrent = null;
   form.reset();
+  setBusy(form, false);
   form.closest("dialog").close();
   resolve?.();
 }
@@ -554,14 +592,18 @@ function verificationIsRecent() {
   return !expires || new Date(expires).getTime() > Date.now();
 }
 
-async function sensitiveAction(operation) {
-  if (!verificationIsRecent()) await reauthenticate();
+async function sensitiveAction(operation, current = null) {
+  requireCurrentRequest(current);
+  if (!verificationIsRecent()) await reauthenticate(current);
+  requireCurrentRequest(current);
   try {
     return await operation();
   } catch (error) {
+    requireCurrentRequest(current);
     if (error.code !== "recent_identity_verification_required") throw error;
     if (state) state.recently_verified = false;
-    await reauthenticate();
+    await reauthenticate(current);
+    requireCurrentRequest(current);
     return operation();
   }
 }
@@ -901,6 +943,7 @@ function renderState(value) {
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
+    identityGeneration++;
     billingRequestSequence++;
     billingUsersRequestSequence++;
     globalRequestSequence++;
@@ -1170,6 +1213,111 @@ function billingCashBalance(detail = billingDetail) {
   return detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd ?? "0";
 }
 
+function billingSourceDisabled(source, detail = billingDetail) {
+  return (detail?.source_disabled ?? detail?.account?.source_disabled)?.[source] === true;
+}
+
+function billingSourceReady() {
+  return !loggingOut && Boolean(state?.user?.id) && !billingDetailLoading && Boolean(billingDetail) &&
+    selectedBillingUserID() === state.user.id && billingUserForDetail().id === state.user.id;
+}
+
+function billingSourceLabel(source) {
+  return source === "cash" ? "现金余额" : billingTiers.find((tier) => tier.id === source)?.label;
+}
+
+function billingSourceControl(source) {
+  const button = element("button", {type: "button", className: "secondary billing-source-button", dataset: {billingSource: source}});
+  button.disabled = true;
+  button.addEventListener("click", () => changeBillingSource(source));
+  return element("div", {className: "billing-source-control"},
+    element("small", {className: "billing-source-state", dataset: {billingSourceState: source}}), button,
+  );
+}
+
+function setBillingSourceMessage(message = "", error = false) {
+  const node = byId("billing-source-message");
+  node.textContent = message;
+  node.dataset.kind = error ? "error" : "ok";
+  node.setAttribute("role", error ? "alert" : "status");
+  node.classList.toggle("hidden", !message);
+}
+
+function resetBillingSourceState() {
+  billingSourceGeneration++;
+  billingSourceOperation = null;
+  if (reauthRequestCurrent && !reauthRequestCurrent()) cancelReauthentication();
+  setBillingSourceMessage();
+}
+
+function syncBillingSourceControls() {
+  const ready = billingSourceReady();
+  const self = Boolean(state?.user?.id) && selectedBillingUserID() === state.user.id;
+  all("[data-billing-source]").forEach((button) => {
+    const source = button.dataset.billingSource;
+    const disabled = billingSourceDisabled(source);
+    const saving = billingSourceOperation?.source === source;
+    button.disabled = !ready || Boolean(billingSourceOperation);
+    button.classList.toggle("hidden", !self);
+    button.textContent = saving ? "保存中…" : disabled ? "恢复扣费" : "禁用扣费";
+    button.setAttribute("aria-label", `${billingSourceLabel(source)}：${button.textContent}`);
+  });
+  all("[data-billing-source-state]").forEach((node) => {
+    const disabled = billingSourceDisabled(node.dataset.billingSourceState);
+    node.textContent = !billingDetail || billingDetailLoading ? "等待额度加载" : disabled ? "已禁用扣费" : "允许扣费";
+    node.dataset.disabled = String(Boolean(billingDetail) && !billingDetailLoading && disabled);
+  });
+  byId("billing-source-readonly").classList.toggle("hidden", self || !state);
+}
+
+function billingSourceOperationCurrent(operation) {
+  return billingSourceOperation === operation && billingSourceGeneration === operation.generation &&
+    !loggingOut && state?.user?.id === operation.userID && selectedBillingUserID() === operation.userID;
+}
+
+async function changeBillingSource(source) {
+  if (!billingSourceLabel(source) || !billingSourceReady() || billingSourceOperation) return;
+  const operation = {source, userID: state.user.id, generation: billingSourceGeneration, disabled: !billingSourceDisabled(source)};
+  const current = () => billingSourceOperationCurrent(operation);
+  billingSourceOperation = operation;
+  setBillingSourceMessage();
+  syncBillingSourceControls();
+  let saved = false;
+  let saveError = null;
+  try {
+    try {
+      const result = await sensitiveAction(() => {
+        if (!billingSourceOperationCurrent(operation)) throw new Error("登录身份或查看的用户已变化，操作已停止。");
+        return api(`/admin/billing/me/sources/${source}/status`, {
+          method: "PUT", body: JSON.stringify({disabled: operation.disabled}),
+        }, current);
+      }, current);
+      if (!billingSourceOperationCurrent(operation)) return;
+      if (result?.source !== source || result?.disabled !== operation.disabled) throw new Error("服务器返回的扣费设置不一致。");
+      saved = true;
+    } catch (error) {
+      if (!billingSourceOperationCurrent(operation)) return;
+      saveError = error;
+    }
+    let refreshError = null;
+    try {
+      await loadBillingDetail(operation.userID, 0);
+    } catch (error) {
+      refreshError = error;
+    }
+    if (!billingSourceOperationCurrent(operation)) return;
+    const message = saved
+      ? `${billingSourceLabel(source)}已${operation.disabled ? "禁用" : "恢复"}扣费；仅影响新请求。`
+      : `保存未确认：${friendlyError(saveError)}。${refreshError ? "" : "已重新加载服务器设置。"}`;
+    setBillingSourceMessage(`${message}${refreshError ? ` 额度刷新失败：${friendlyError(refreshError)}，请刷新页面后重试。` : ""}`, !saved || Boolean(refreshError));
+  } finally {
+    if (billingSourceOperation === operation) {
+      billingSourceOperation = null;
+      syncBillingSourceControls();
+    }
+  }
+}
+
 function billingEntries(detail = billingDetail) {
   const entries = detail?.ledger_entries || detail?.entries || [];
   return Array.isArray(entries) ? entries : [];
@@ -1215,6 +1363,7 @@ function renderBillingSubscriptions(detail) {
       element("small", {text: enabled ? `开始：${formatDateTime(subscription?.period_started_at, "—")}` : "Owner 可随时启用"}),
       element("small", {text: enabled ? `${billingPeriodEndLabel(subscription)}：${formatDateTime(subscription?.period_ends_at, "—")}` : "周期数可设为 1–99 或 0（无限期）"}),
       element("small", {text: enabled ? `最终失效：${subscription?.expires_at ? formatDateTime(subscription.expires_at, "—") : "无限期"}` : ""}),
+      billingSourceControl(tier.id),
     );
   });
   container.replaceChildren(...cards);
@@ -1336,6 +1485,7 @@ function renderBillingDetail(detail) {
   const user = billingUserForDetail(detail);
   const cash = billingCashBalance(detail);
   byId("billing-cash-balance").textContent = formatUSD(cash, formatUSD("0"));
+  byId("billing-cash-source").replaceChildren(billingSourceControl("cash"));
   if (state?.user?.role === "owner") {
     byId("billing-scope-name").textContent = user.id === state.user.id
       ? `${user.display_name || user.username || "当前用户"} · 当前登录用户`
@@ -1505,6 +1655,7 @@ function renderBillingUsers(result) {
 }
 
 function resetBillingUserSearch() {
+  resetBillingSourceState();
   billingUserID = "";
   billingDetail = null;
   billingDetailLoading = false;
@@ -1521,6 +1672,7 @@ function billingUserReady() {
 }
 
 function syncBillingUserControls() {
+  syncBillingSourceControls();
   const ready = billingUserReady();
   all("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form").forEach((form) => {
     const busy = form.dataset.busy === "true";
@@ -1542,6 +1694,7 @@ function billingWriteUserID() {
 }
 
 async function selectBillingUser(user) {
+  if (user.id !== selectedBillingUserID()) resetBillingSourceState();
   billingUserID = user.id;
   all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
   await loadBillingDetail(user.id, 0);
@@ -1570,6 +1723,8 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
   if (loggingOut || !state) return;
   if (!userID) throw new Error("无法确定要查看的账务用户。");
   const sequence = ++billingRequestSequence;
+  const actorUserID = state.user.id;
+  const current = () => sequence === billingRequestSequence && !loggingOut && state?.user?.id === actorUserID && selectedBillingUserID() === userID;
   billingDetailLoading = true;
   billingDetail = null;
   const user = billingUsers.find((item) => item.id === userID) || (state?.user?.id === userID ? state.user : null);
@@ -1587,13 +1742,13 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
   setTableBusy(byId("billing-ledger-rows"), 5, "正在加载账务流水…");
   const query = new URLSearchParams({limit: String(billingLedgerPageSize), offset: String(billingLedgerOffset)});
   try {
-    const result = await api(`${billingDetailPath(userID)}?${query}`);
-    if (sequence !== billingRequestSequence) return;
+    const result = await api(`${billingDetailPath(userID)}?${query}`, undefined, current);
+    if (!current()) return;
     if (normalizeBillingUser(result?.user || result).id !== userID) throw new Error("返回的账务用户与所选用户不一致，请重新选择重试。");
     billingDetailLoading = false;
     renderBillingDetail(result);
   } catch (error) {
-    if (sequence !== billingRequestSequence) return;
+    if (!current()) return;
     billingDetail = null;
     byId("billing-scope-name").textContent = `${user?.display_name || user?.username || userID} (${user?.username || userID}) · 加载失败，请重新选择重试`;
     for (const tier of billingTiers) byId(`billing-${tier.id}-ends`).textContent = "加载失败";
@@ -1604,7 +1759,7 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
     byId("billing-ledger-rows").replaceChildren(tableMessage(5, friendlyError(error)));
     throw error;
   } finally {
-    if (sequence === billingRequestSequence) {
+    if (current()) {
       billingDetailLoading = false;
       syncBillingUserControls();
       hide("billing-loading");
@@ -1615,15 +1770,19 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
 async function loadBillingUsers() {
   if (loggingOut || state?.user?.role !== "owner") return;
   const sequence = ++billingUsersRequestSequence;
+  const actorUserID = state.user.id;
+  const generation = identityGeneration;
+  const current = () => sequence === billingUsersRequestSequence && generation === identityGeneration &&
+    !loggingOut && state?.user?.id === actorUserID && state.user.role === "owner";
   billingUserSearch.unavailable("正在加载用户…");
   billingBatchUsersReady = false;
   renderBillingBatchUsers("正在加载用户…");
   try {
-    const result = await api("/admin/billing/users");
-    if (sequence !== billingUsersRequestSequence || state?.user?.role !== "owner") return;
+    const result = await api("/admin/billing/users", undefined, current);
+    if (!current()) return;
     renderBillingUsers(result);
   } catch (error) {
-    if (sequence !== billingUsersRequestSequence) return;
+    if (!current()) return;
     billingUserSearch.unavailable("用户列表加载失败，请刷新重试");
     billingBatchUsersReady = false;
     renderBillingBatchUsers("用户列表加载失败，请点击“刷新账务数据”；已有批次仍可重试未成功项。");
@@ -1632,8 +1791,17 @@ async function loadBillingUsers() {
 }
 
 async function loadBillingSettings() {
-  const result = await api("/admin/billing/settings");
-  renderBillingSettings(result);
+  if (loggingOut || state?.user?.role !== "owner") return;
+  const actorUserID = state.user.id;
+  const generation = identityGeneration;
+  const current = () => generation === identityGeneration && !loggingOut &&
+    state?.user?.id === actorUserID && state.user.role === "owner";
+  try {
+    const result = await api("/admin/billing/settings", undefined, current);
+    if (current()) renderBillingSettings(result);
+  } catch (error) {
+    if (current()) throw error;
+  }
 }
 
 async function loadBillingDashboard() {
@@ -3264,6 +3432,7 @@ function bindUI() {
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
     loggingOut = true;
+    identityGeneration++;
     personalRequestSequence++;
     globalRequestSequence++;
     billingRequestSequence++;
@@ -3293,7 +3462,7 @@ function bindUI() {
   bindAsync("key-form", "submit", createKey, "创建中…");
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
   bindAsync("password-form", "submit", setPassword, "保存中…");
-  bindAsync("reauth-form", "submit", submitReauthentication, "验证中…");
+  bindAsync("reauth-form", "submit", submitReauthentication, "验证中…", () => reauthRequestCurrent);
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
@@ -3359,9 +3528,7 @@ function bindUI() {
   byId("reauth-form").elements.method.addEventListener("change", syncReauthMethod);
   byId("reauth-dialog").addEventListener("close", () => {
     if (!reauthReject) return;
-    const reject = reauthReject;
-    reauthResolve = reauthReject = null;
-    reject(Object.assign(new Error("身份验证已取消。"), {code: "reauth_cancelled"}));
+    cancelReauthentication();
   });
   all("#join-form select[name=login_method], #recover-form select[name=login_method]").forEach((select) => {
     select.addEventListener("change", () => {

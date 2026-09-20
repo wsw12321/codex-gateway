@@ -2,8 +2,8 @@
 
 `0003_password_credentials.sql`、`0004_subscription_period_limits.sql`、
 `0005_official_token_pricing.sql`、`0006_api_key_lifecycle.sql`、
-`0007_upstream_accounts.sql`、`0008_model_access.sql` 和
-`0009_upstream_allocation.sql` 都是 forward-only 迁移。部署前先备份
+`0007_upstream_accounts.sql`、`0008_model_access.sql`、
+`0009_upstream_allocation.sql` 和 `0010_billing_source_preferences.sql` 都是 forward-only 迁移。部署前先备份
 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不能只切回旧镜像。
 `0004` 会把所有当时仍启用且未到期的订阅设为 `1/1`，保留现有额度、余额和周期
 起止时间，并在原 `period_ends_at` 自动失效；已经越过结束时间但仍标记启用的
@@ -13,6 +13,8 @@ PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不�
 `revoked` 凭证并把活动状态收紧为 `active`/`disabled`；迁移前 Key 的密文保持为空。
 `0007` 增加不含 OAuth secret 的上游账号索引，并为请求明细、日/月聚合和不可变
 ledger 增加可空账号归因；迁移前历史保持 `NULL`，不得猜测或回填所属账号。
+`0010` 为新旧账务账户增加四个默认 `false` 的扣费禁用标记，保持原先扣费顺序，
+不改变金额、周期或历史请求。
 密码哈希属于敏感数据，
 不得写入日志、审计 metadata 或支持工单。Argon2id 固定使用 64 MiB 内存、3 轮和
 并行度 2，不需要新增部署 secret。
@@ -376,6 +378,31 @@ API Key、恢复码、邀请 fragment 或 Passkey challenge。
 近期二次验证和 1–500 字原因。禁用后应在下一次请求立即得到
 `403 permission_error / model_not_allowed`，且不得产生 usage、配额、账务预留或
 sidecar 请求。内部 `codex-auto-review` 不出现在该目录中。
+
+### 用户自助禁用扣费来源
+
+在“额度与订阅”中，登录用户可以分别为日订阅、周订阅、月订阅和现金余额选择
+“禁用扣费／恢复扣费”，尚未开通的订阅也可预先设置。操作要求浏览器同源请求和
+近期身份验证，无需操作原因或账务 `operation_id`。Owner 查看他人时只能查看这些
+状态；管理员现有充值、重开及“立即停用订阅”权限不受影响。
+
+用户禁用只影响新请求选择来源，仍按未禁用的“日 → 周 → 月 → 现金”扣费；订阅
+期限照常运行、周期额度不结转。恢复不会补发额度或重开周期，充值、自动续期以及
+管理员重开订阅都保留用户设置。“立即停用订阅”则关闭订阅本身及当前周期。
+已受理的请求使用原来源结算，禁用期间受理的请求不会因后来恢复而追加来源。
+全部来源禁用或无可用额度时，普通请求返回 `429 insufficient_quota`；重试时间
+只参考未禁用订阅的可续期时间，内部零价请求维持原规则。
+
+接口为 `PUT /admin/billing/me/sources/{source}/status`，`source` 只允许 `day`、
+`week`、`month`、`cash`，请求必须是 `{"disabled":true}` 或 `{"disabled":false}`。
+用户身份仅来自登录会话，不接受目标用户参数。成功返回来源及保存后的 `disabled`，
+重复明确赋值是安全的；更新与 `billing.source_status_changed` 审计事件在同一
+账户锁事务提交，不生成金额流水。账务详情和用户摘要的 `source_disabled` 对象
+提供四项状态，订阅原有 `enabled` 仍代表订阅本身是否启用。
+
+保存期间页面禁止再次操作，并重新读取本人账务状态。若保存报错，先查看刷新后的
+服务器状态；若刷新也失败，应重新加载后再操作。切换查看用户或登录身份会使旧的
+页面请求失效。
 
 ### 批量充值与开通订阅
 
