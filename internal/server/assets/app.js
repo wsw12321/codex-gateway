@@ -58,7 +58,7 @@ let upstreamAccountRequestSequence = 0;
 let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
 let upstreamAccountListLoading = false;
-let upstreamAccountStatusOperation = null;
+let upstreamAccountOperation = null;
 const upstreamQuotaStaleTimers = new Map();
 let reauthResolve = null;
 let reauthReject = null;
@@ -305,7 +305,7 @@ function handleUnauthorized() {
   upstreamAccounts = [];
   upstreamAccountSyncHealthy = false;
   upstreamAccountListLoading = false;
-  upstreamAccountStatusOperation = null;
+  upstreamAccountOperation = null;
   setUpstreamAccountMessage("upstream-account-action-message");
   setUpstreamAccountMessage("upstream-account-refresh-message");
   clearUpstreamQuotaTimers();
@@ -361,6 +361,7 @@ function handleUnauthorized() {
   byId("global-rows").replaceChildren(tableMessage(6, "登录后加载全员汇总。"));
   hide("upstream-account-loading");
   byId("upstream-account-period").textContent = "—";
+  byId("upstream-allocation-period").textContent = "近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。";
   byId("upstream-account-list").setAttribute("aria-busy", "false");
   byId("upstream-account-list").replaceChildren(emptyState("登录后加载上游账号。"));
   for (const id of ["devices", "projects", "keys", "passkeys"]) {
@@ -2733,10 +2734,10 @@ function syncUpstreamAccountControls() {
     if (!account || !button) continue;
     const knownStatus = ["available", "unavailable"].includes(account.status);
     const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && upstreamAccountSyncHealthy;
-    button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountStatusOperation) ||
+    button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
       loggingOut || state?.user?.role !== "owner";
-    const pending = upstreamAccountStatusOperation?.id === account.id;
-    button.textContent = pending ? (upstreamAccountStatusOperation.enabled ? "启用中…" : "禁用中…") :
+    const pending = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "status";
+    button.textContent = pending ? (upstreamAccountOperation.enabled ? "启用中…" : "禁用中…") :
       (account.status === "available" ? "禁用" : "重新启用");
     button.setAttribute("aria-busy", String(pending));
     button.title = canManage ? "" : "账号未在最近一次同步中确认，刷新列表后再试。";
@@ -2744,17 +2745,28 @@ function syncUpstreamAccountControls() {
     badge.textContent = statusLabel(account.status);
     note.textContent = canManage ? "" : "账号未在最近一次同步中确认，暂不可操作。";
     note.classList.toggle("hidden", canManage);
+    const weightInput = card.querySelector(".upstream-allocation-input");
+    const weightButton = card.querySelector(".upstream-allocation-save");
+    const allocationState = card.querySelector(".upstream-allocation-state");
+    const savingWeight = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "weight";
+    weightInput.disabled = button.disabled;
+    weightButton.disabled = button.disabled;
+    weightButton.textContent = savingWeight ? "保存中…" : "保存系数";
+    weightButton.setAttribute("aria-busy", String(savingWeight));
+    allocationState.dataset.draining = String(account.allocation_weight === 0);
+    allocationState.textContent = account.allocation_weight === 0 ? "停止接收新对话 · 已有有效绑定继续使用" :
+      (account.status === "available" ? "参与新对话分配" : "账号不可用 · 暂不参与新对话分配");
   }
   const filter = byId("upstream-account-filter");
-  filter.querySelector("button[type=submit]").disabled = Boolean(upstreamAccountStatusOperation) || filter.dataset.busy === "true";
+  filter.querySelector("button[type=submit]").disabled = Boolean(upstreamAccountOperation) || filter.dataset.busy === "true";
 }
 
 async function changeUpstreamAccountStatus(account) {
-  if (upstreamAccountStatusOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
+  if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
       !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
       !upstreamAccounts.includes(account) || !["available", "unavailable"].includes(account.status)) return;
-  const operation = {id: account.id, enabled: account.status !== "available"};
-  upstreamAccountStatusOperation = operation;
+  const operation = {id: account.id, kind: "status", enabled: account.status !== "available"};
+  upstreamAccountOperation = operation;
   upstreamAccountRequestSequence++;
   setUpstreamAccountMessage("upstream-account-action-message");
   setUpstreamAccountMessage("upstream-account-refresh-message");
@@ -2762,26 +2774,27 @@ async function changeUpstreamAccountStatus(account) {
   let confirmed = false;
   try {
     const response = await sensitiveAction(() => {
-      if (upstreamAccountStatusOperation !== operation || loggingOut || state?.user?.role !== "owner") {
+      if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
         throw new DOMException("操作已取消。", "AbortError");
       }
       return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/status`, {
         method: "PUT", body: JSON.stringify({enabled: operation.enabled}),
       });
     });
-    if (upstreamAccountStatusOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
     if (response?.id !== account.id || response.status !== (operation.enabled ? "available" : "unavailable")) {
       throw new Error("上游账号状态响应格式异常，请刷新列表确认结果。");
     }
     confirmed = true;
     account.status = response.status;
     syncUpstreamAccountControls();
-    const message = `${account.email_masked || "该上游账号"} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? "已恢复参与分流；若额度仍不足，将再次锁定。" : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
+    const enabledMessage = account.allocation_weight === 0 ? "系数仍为 0，停止接收新对话；已有有效绑定继续使用。" : "已恢复参与分流；若额度仍不足，将再次锁定。";
+    const message = `${account.email_masked || "该上游账号"} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
-    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterStatus: true});
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
   } catch (error) {
-    if (upstreamAccountStatusOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
     upstreamAccountSyncHealthy = false;
     if (confirmed) {
       setUpstreamAccountMessage("upstream-account-refresh-message", `操作已成功，但列表与统计刷新失败：${friendlyError(error)} 请重新应用筛选刷新。`);
@@ -2789,11 +2802,92 @@ async function changeUpstreamAccountStatus(account) {
       setUpstreamAccountMessage("upstream-account-action-message", `账号状态操作未确认：${friendlyError(error)} 请刷新列表后再试。`);
     }
   } finally {
-    if (upstreamAccountStatusOperation === operation) {
-      upstreamAccountStatusOperation = null;
+    if (upstreamAccountOperation === operation) {
+      upstreamAccountOperation = null;
       syncUpstreamAccountControls();
     }
   }
+}
+
+async function saveUpstreamAllocationWeight(account, form) {
+  if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
+      !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
+      !upstreamAccounts.includes(account) || !["available", "unavailable"].includes(account.status)) return;
+  const input = form.querySelector(".upstream-allocation-input");
+  const raw = String(input.value || "").trim();
+  const weight = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isInteger(weight) || weight > 2147483647) {
+    input.setAttribute("aria-invalid", "true");
+    setLocalMessage(form, "请输入 0 至 2147483647 的整数；0 表示停止接收新对话。");
+    return;
+  }
+  input.setAttribute("aria-invalid", "false");
+  setLocalMessage(form);
+  const operation = {id: account.id, kind: "weight", weight};
+  upstreamAccountOperation = operation;
+  upstreamAccountRequestSequence++;
+  setUpstreamAccountMessage("upstream-account-action-message");
+  setUpstreamAccountMessage("upstream-account-refresh-message");
+  syncUpstreamAccountControls();
+  let confirmed = false;
+  try {
+    const response = await sensitiveAction(() => {
+      if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
+        throw new DOMException("操作已取消。", "AbortError");
+      }
+      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/allocation-weight`, {
+        method: "PUT", body: JSON.stringify({weight: operation.weight}),
+      });
+    });
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (response?.id !== account.id || response.allocation_weight !== operation.weight) {
+      throw new Error("分配系数响应格式异常，请刷新列表确认结果。");
+    }
+    confirmed = true;
+    account.allocation_weight = response.allocation_weight;
+    syncUpstreamAccountControls();
+    const message = `${account.email_masked || "该上游账号"} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? "停止接收新对话，已有有效绑定继续使用。" : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
+    setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
+    announce(message);
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
+  } catch (error) {
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    upstreamAccountSyncHealthy = false;
+    if (confirmed) {
+      setUpstreamAccountMessage("upstream-account-refresh-message", `操作已成功，但列表与统计刷新失败：${friendlyError(error)} 请重新应用筛选刷新。`);
+    } else {
+      setUpstreamAccountMessage("upstream-account-action-message", `分配系数保存未确认：${friendlyError(error)} 请刷新列表后再试。`);
+    }
+  } finally {
+    if (upstreamAccountOperation === operation) {
+      upstreamAccountOperation = null;
+      syncUpstreamAccountControls();
+    }
+  }
+}
+
+function upstreamAllocationBlock(account) {
+  const input = element("input", {
+    type: "text", className: "upstream-allocation-input",
+    attributes: {inputmode: "numeric", pattern: "[0-9]+", maxlength: "10", required: "",
+      "aria-describedby": "upstream-allocation-help", autocomplete: "off"},
+  });
+  input.value = String(account.allocation_weight ?? 1);
+  const button = element("button", {type: "submit", className: "secondary upstream-allocation-save", text: "保存系数"});
+  const form = element("form", {className: "upstream-allocation-form", attributes: {novalidate: ""}},
+    element("label", {}, element("span", {text: "分配系数"}), input), button,
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
+  );
+  form.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamAllocationWeight(account, form); });
+  return element("section", {className: "upstream-allocation"},
+    form,
+    element("p", {className: "upstream-allocation-state", attributes: {"aria-live": "polite"}}),
+    element("div", {className: "upstream-allocation-stats"},
+      upstreamAccountStat("近 24 小时费用", formatUSD(account.rolling_cost_usd), "已结算 · 跨用户与模型"),
+      upstreamAccountStat("近 24 小时费用占比", account.rolling_cost_share == null ? "—" : formatPercent(account.rolling_cost_share), "所有已归因账号"),
+      upstreamAccountStat("参考目标占比", account.target_share == null ? "—" : formatPercent(account.target_share), "按当前启用账号系数"),
+    ),
+  );
 }
 
 function upstreamAccountCard(account) {
@@ -2835,6 +2929,8 @@ function upstreamAccountCard(account) {
       element("div", {className: "upstream-account-actions"}, badge, statusButton),
     ),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
+    upstreamAllocationBlock(account),
+    element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
     quotaBlock,
   );
@@ -2879,6 +2975,9 @@ function renderUpstreamAccounts(result, query) {
   else container.replaceChildren(emptyState("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。"));
   const warning = result?.sync_warning ? " · 上游状态同步失败，当前展示最后已知的本地记录" : "";
   byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个上游账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
+  const allocationWindow = result?.allocation_from && result?.allocation_until ?
+    `近 24 小时：${formatDateTime(result.allocation_from)} 至 ${formatDateTime(result.allocation_until)} · ` : "";
+  byId("upstream-allocation-period").textContent = `${allocationWindow}独立于历史统计筛选；费用占比以所有已归因账号费用为分母。`;
   syncUpstreamAccountControls();
 }
 
@@ -2894,8 +2993,8 @@ function upstreamAccountQueryFromForm() {
   return query;
 }
 
-async function loadUpstreamAccounts(query, {afterStatus = false} = {}) {
-  if (loggingOut || state?.user?.role !== "owner" || (upstreamAccountStatusOperation && !afterStatus)) return;
+async function loadUpstreamAccounts(query, {afterOperation = false} = {}) {
+  if (loggingOut || state?.user?.role !== "owner" || (upstreamAccountOperation && !afterOperation)) return;
   const sequence = ++upstreamAccountRequestSequence;
   const container = byId("upstream-account-list");
   upstreamAccountListLoading = true;
@@ -3172,7 +3271,7 @@ function bindUI() {
     modelAccessModelsRequestSequence++;
     modelAccessUsersRequestSequence++;
     upstreamAccountRequestSequence++;
-    upstreamAccountStatusOperation = null;
+    upstreamAccountOperation = null;
     upstreamAccountListLoading = false;
     syncUpstreamAccountControls();
     clearUpstreamQuotaTimers();

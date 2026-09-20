@@ -17,6 +17,19 @@ trap 'rm -f "$response_file"' EXIT HUP INT TERM
 
 key=$(tr -d '\r\n' < "$key_file")
 
+# Startup remains independent of Gateway. Only generation requires the reverse
+# allocation callback, so verify Gateway after both services are running.
+{
+    printf 'GET /readyz HTTP/1.1\r\nHost: gateway:8080\r\nConnection: close\r\n\r\n'
+} | nc -w 3 gateway 8080 > "$response_file" || {
+    printf '%s\n' 'sidecar smoke: Gateway is unreachable; start the matching Gateway before generation' >&2
+    exit 1
+}
+case "$(sed -n '1{s/\r$//;p;}' "$response_file")" in
+    'HTTP/1.1 200 '*|'HTTP/1.0 200 '*) ;;
+    *) printf '%s\n' 'sidecar smoke: Gateway is not ready for account allocation' >&2; exit 1 ;;
+esac
+
 request() {
     method=$1
     path=$2

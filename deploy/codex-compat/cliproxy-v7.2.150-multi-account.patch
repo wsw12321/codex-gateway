@@ -6244,10 +6244,29 @@ index 0000000..2906cc2
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 5b4e2b4..913cbe7 100644
+index 5b4e2b4..b78f694 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
-@@ -1254,7 +1254,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
+@@ -281,7 +281,7 @@ func isHomeRequestRetryExceededError(err error) bool {
+ }
+ 
+ func shouldReturnLastErrorOnPickFailure(homeMode bool, lastErr error, errPick error) bool {
+-	if lastErr == nil {
++	if lastErr == nil || isRequestStopError(errPick) {
+ 		return false
+ 	}
+ 	if !homeMode {
+@@ -945,6 +945,9 @@ func (m *Manager) pickNextViaHome(ctx context.Context, model string, opts clipro
+ }
+ 
+ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
++	if _, gatewayAllocation := m.Selector().(*GatewayAllocationSelector); gatewayAllocation {
++		return nil, gatewayAllocationUnavailable()
++	}
+ 	if m == nil {
+ 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+ 	}
+@@ -1254,7 +1257,7 @@ func (m *Manager) findAllAntigravityCreditsCandidateAuths(ctx context.Context, r
  	var candidates []creditsCandidateEntry
  	m.mu.RLock()
  	for _, auth := range m.auths {
@@ -6256,7 +6275,7 @@ index 5b4e2b4..913cbe7 100644
  			continue
  		}
  		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
-@@ -1392,7 +1392,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
+@@ -1392,7 +1395,7 @@ func (m *Manager) tryAntigravityCreditsExecute(ctx context.Context, req cliproxy
  			execReq := req
  			execReq.Model = upstreamModel
  			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
@@ -6435,10 +6454,21 @@ index 92b0e9c..6ea5e2e 100644
 +	return !updatedValid || previousIndex != updatedIndex
 +}
 diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
-index fef8d28..6c4c2e3 100644
+index fef8d28..49df976 100644
 --- a/sdk/cliproxy/auth/conductor_selection.go
 +++ b/sdk/cliproxy/auth/conductor_selection.go
-@@ -871,7 +871,7 @@ func (m *Manager) AvailableProviders() []string {
+@@ -505,7 +505,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
+ // priority tiers so an established binding can be validated instead of being preempted by a
+ // recovered higher-priority credential.
+ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time) (priorityAuths, selectorAuths []*Auth, err error) {
+-	if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
++	_, sessionAffinity := selector.(*SessionAffinitySelector)
++	_, gatewayAllocation := selector.(*GatewayAllocationSelector)
++	if !sessionAffinity && !gatewayAllocation {
+ 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
+ 		if err != nil {
+ 			return nil, nil, err
+@@ -871,7 +873,7 @@ func (m *Manager) AvailableProviders() []string {
  	seen := make(map[string]struct{}, len(m.auths))
  	out := make([]string, 0, len(m.auths))
  	for _, auth := range m.auths {
@@ -6447,7 +6477,7 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		provider := strings.ToLower(strings.TrimSpace(auth.Provider))
-@@ -902,7 +902,7 @@ func (m *Manager) HasProviderAuth(provider string) bool {
+@@ -902,7 +904,7 @@ func (m *Manager) HasProviderAuth(provider string) bool {
  	m.mu.RLock()
  	defer m.mu.RUnlock()
  	for _, auth := range m.auths {
@@ -6456,7 +6486,7 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		if strings.ToLower(strings.TrimSpace(auth.Provider)) == provider {
-@@ -1026,7 +1026,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
+@@ -1026,7 +1028,7 @@ func (m *Manager) closestCooldownWaitWithAttempted(providers []string, model str
  		minWait time.Duration
  	)
  	for _, auth := range m.auths {
@@ -6465,7 +6495,7 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
-@@ -1118,7 +1118,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
+@@ -1118,7 +1120,7 @@ func (m *Manager) retryAllowed(attempt int, providers []string, model string, el
  	m.mu.RLock()
  	defer m.mu.RUnlock()
  	for _, auth := range m.auths {
@@ -6474,7 +6504,17 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
-@@ -1496,7 +1496,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
+@@ -1480,6 +1482,9 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
+ 	selector := m.selector
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
+ 	pluginScheduler := m.pluginScheduler
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		pluginScheduler = nil
++	}
+ 	executor, okExecutor := m.executors[provider]
+ 	if !okExecutor {
+ 		m.mu.RUnlock()
+@@ -1496,7 +1501,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
  	}
  	registryRef := registry.GetGlobalRegistry()
  	for _, candidate := range m.auths {
@@ -6483,7 +6523,29 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-@@ -1737,7 +1737,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
+@@ -1532,6 +1537,7 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
+ 	}
+ 	if !handled {
+ 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
++		selectorCtx = m.withGatewayAllocationRefresh(selectorCtx, selector, selectorAuths, provider, model)
+ 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+ 		if errPick != nil {
+ 			if isBuiltInSelector(selector) {
+@@ -1544,6 +1550,13 @@ func (m *Manager) pickNextLegacy(ctx context.Context, provider, model string, op
+ 	if selected == nil {
+ 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+ 	}
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		fresh, err := m.gatewayAllocationSnapshot(selector, []*Auth{selected}, provider, model)
++		if err != nil || len(fresh) != 1 {
++			return nil, nil, gatewayAllocationUnavailable()
++		}
++		selected = fresh[0]
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -1737,7 +1750,7 @@ func (m *Manager) pickNext(ctx context.Context, provider, model string, opts cli
  	if strings.TrimSpace(model) != "" {
  		m.mu.RLock()
  		for _, candidate := range m.auths {
@@ -6492,7 +6554,17 @@ index fef8d28..6c4c2e3 100644
  				continue
  			}
  			if !eligibility.allows(candidate) {
-@@ -1819,7 +1819,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
+@@ -1808,6 +1821,9 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
+ 	selector := m.selector
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
+ 	pluginScheduler := m.pluginScheduler
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		pluginScheduler = nil
++	}
+ 	candidates := make([]*Auth, 0, len(m.auths))
+ 	modelKey := strings.TrimSpace(model)
+ 	// Always use base model name (without thinking suffix) for auth matching.
+@@ -1819,7 +1835,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
  	}
  	registryRef := registry.GetGlobalRegistry()
  	for _, candidate := range m.auths {
@@ -6501,7 +6573,29 @@ index fef8d28..6c4c2e3 100644
  			continue
  		}
  		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
-@@ -1933,7 +1933,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
+@@ -1865,6 +1881,7 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
+ 	}
+ 	if !handled {
+ 		selectorCtx := withWeightedSelectorStateModel(ctx, selector, model)
++		selectorCtx = m.withGatewayAllocationRefresh(selectorCtx, selector, selectorAuths, "mixed", model)
+ 		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+ 		if errPick != nil {
+ 			if isBuiltInSelector(selector) {
+@@ -1882,6 +1899,13 @@ func (m *Manager) pickNextMixedLegacy(ctx context.Context, providers []string, m
+ 	if !okExecutor {
+ 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+ 	}
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		fresh, err := m.gatewayAllocationSnapshot(selector, []*Auth{selected}, "mixed", model)
++		if err != nil || len(fresh) != 1 {
++			return nil, nil, "", gatewayAllocationUnavailable()
++		}
++		selected = fresh[0]
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -1933,7 +1957,7 @@ func (m *Manager) pickNextMixed(ctx context.Context, providers []string, model s
  		}
  		m.mu.RLock()
  		for _, candidate := range m.auths {
@@ -6510,7 +6604,7 @@ index fef8d28..6c4c2e3 100644
  				continue
  			}
  			if _, ok := providerSet[executorKeyFromAuth(candidate)]; !ok {
-@@ -2042,7 +2042,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
+@@ -2042,7 +2066,7 @@ func (m *Manager) warnLogAuthUnavailable(ctx context.Context, providers []string
  	coolingSummaries := make([]string, 0)
  	totalCandidates := 0
  	for _, candidate := range m.auths {
@@ -7669,6 +7763,619 @@ index 0000000..6fc8092
 +		t.Fatal("identity failure cleared lock")
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
+new file mode 100644
+index 0000000..60788dc
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
+@@ -0,0 +1,223 @@
++package auth
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"os"
++	"sort"
++	"strings"
++	"sync"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++const gatewayAllocationURL = "http://gateway:8080/internal/upstream-accounts/select"
++
++var errGatewayAllocationRequired = errors.New("gateway allocation required")
++
++// GatewayAllocationSelector keeps the existing affinity implementation, while
++// every cold selection (including a single candidate) is decided by Gateway.
++// Its lock protects only in-memory lookup and binding, never the HTTP callback.
++type GatewayAllocationSelector struct {
++	mu       sync.Mutex
++	affinity *SessionAffinitySelector
++	probe    *gatewayAllocationProbe
++	client   *http.Client
++	key      string
++}
++
++type gatewayAllocationProbe struct {
++	candidates []*Auth
++	selected   string
++}
++
++func (p *gatewayAllocationProbe) Pick(_ context.Context, _, _ string, _ cliproxyexecutor.Options, candidates []*Auth) (*Auth, error) {
++	p.candidates = candidates
++	if p.selected == "" {
++		return nil, errGatewayAllocationRequired
++	}
++	for _, candidate := range candidates {
++		if index := gatewayAccountResultIndex(candidate); index != "" && index == p.selected {
++			return candidate, nil
++		}
++	}
++	return nil, gatewayAllocationUnavailable()
++}
++
++func NewGatewayAllocationSelector(ttl time.Duration, subagents bool) *GatewayAllocationSelector {
++	keyFile := os.Getenv("CLIPROXY_API_KEY_FILE")
++	if keyFile == "" {
++		keyFile = "/run/secrets/sidecar_api_key"
++	}
++	key, _ := os.ReadFile(keyFile)
++	p := &gatewayAllocationProbe{}
++	return &GatewayAllocationSelector{
++		probe: p,
++		affinity: NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
++			Fallback: p, TTL: ttl, SubagentAffinity: &subagents,
++		}),
++		key: strings.TrimSpace(string(key)),
++		client: &http.Client{
++			Timeout: 2 * time.Second,
++			Transport: &http.Transport{
++				Proxy:        nil,
++				MaxIdleConns: 16, MaxIdleConnsPerHost: 16,
++				IdleConnTimeout:       30 * time.Second,
++				ResponseHeaderTimeout: 2 * time.Second,
++			},
++			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
++		},
++	}
++}
++
++func gatewayAllocationUnavailable() error {
++	return wrapRequestStopError(&Error{Code: "gateway_allocation_unavailable", Message: "upstream account allocation unavailable", HTTPStatus: http.StatusServiceUnavailable})
++}
++
++func (s *GatewayAllocationSelector) Pick(ctx context.Context, provider, model string, opts cliproxyexecutor.Options, auths []*Auth) (*Auth, error) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	s.mu.Lock()
++	s.probe.selected = ""
++	auth, err := s.affinity.Pick(ctx, provider, model, opts, auths)
++	candidates := append([]*Auth(nil), s.probe.candidates...)
++	s.mu.Unlock()
++	if !errors.Is(err, errGatewayAllocationRequired) {
++		return auth, err
++	}
++	selected, err := s.selectAccount(ctx, candidates)
++	if err != nil {
++		return nil, err
++	}
++	// The manager refreshes model/control/cooldown state after the network call.
++	// It acquires its own lock before our binding lock, avoiding lock inversion.
++	if refresh, ok := ctx.Value(gatewayAllocationRefreshKey{}).(func() ([]*Auth, error)); ok {
++		auths, err = refresh()
++		if err != nil {
++			return nil, gatewayAllocationUnavailable()
++		}
++	}
++	if ctx.Err() != nil {
++		return nil, gatewayAllocationUnavailable()
++	}
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.probe.selected = selected
++	defer func() { s.probe.selected = "" }()
++	// Re-run affinity atomically with binding: another first request may have
++	// established a valid explicit, alias, derived, or LCP binding meanwhile.
++	auth, err = s.affinity.Pick(ctx, provider, model, opts, auths)
++	if err != nil {
++		return nil, gatewayAllocationUnavailable()
++	}
++	return auth, nil
++}
++
++func (s *GatewayAllocationSelector) selectAccount(ctx context.Context, candidates []*Auth) (string, error) {
++	if s.key == "" || len(candidates) == 0 || len(candidates) > 256 {
++		return "", gatewayAllocationUnavailable()
++	}
++	ids := make([]string, 0, len(candidates))
++	seen := make(map[string]bool, len(candidates))
++	for _, candidate := range candidates {
++		index := gatewayAccountResultIndex(candidate)
++		if index == "" {
++			return "", gatewayAllocationUnavailable()
++		}
++		if !seen[index] {
++			ids = append(ids, index)
++			seen[index] = true
++		}
++	}
++	sort.Strings(ids)
++	body, _ := json.Marshal(struct {
++		AccountIDs []string `json:"account_ids"`
++	}{ids})
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayAllocationURL, bytes.NewReader(body))
++	if err != nil {
++		return "", gatewayAllocationUnavailable()
++	}
++	req.Header.Set("Authorization", "Bearer "+s.key)
++	req.Header.Set("Content-Type", "application/json")
++	response, err := s.client.Do(req)
++	if err != nil {
++		return "", gatewayAllocationUnavailable()
++	}
++	defer response.Body.Close()
++	if response.StatusCode != http.StatusOK {
++		return "", gatewayAllocationUnavailable()
++	}
++	data, err := io.ReadAll(io.LimitReader(response.Body, 1025))
++	if err != nil || len(data) > 1024 {
++		return "", gatewayAllocationUnavailable()
++	}
++	fields, err := decodeGatewayObject(data, "account_id")
++	var selected string
++	if err != nil || json.Unmarshal(fields["account_id"], &selected) != nil || !seen[selected] {
++		return "", gatewayAllocationUnavailable()
++	}
++	return selected, nil
++}
++
++func (s *GatewayAllocationSelector) Stop() {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.affinity.Stop()
++	s.client.CloseIdleConnections()
++}
++
++func (s *GatewayAllocationSelector) OnResult(result Result) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.affinity.OnResult(result)
++}
++
++func (s *GatewayAllocationSelector) InvalidateAuth(id string) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.affinity.InvalidateAuth(id)
++}
++
++type gatewayAllocationRefreshKey struct{}
++
++func (m *Manager) withGatewayAllocationRefresh(ctx context.Context, selector Selector, candidates []*Auth, provider, model string) context.Context {
++	if _, ok := selector.(*GatewayAllocationSelector); !ok {
++		return ctx
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, gatewayAllocationRefreshKey{}, func() ([]*Auth, error) {
++		return m.gatewayAllocationSnapshot(selector, candidates, provider, model)
++	})
++}
++
++func (m *Manager) gatewayAllocationSnapshot(selector Selector, candidates []*Auth, provider, model string) ([]*Auth, error) {
++	m.mu.RLock()
++	defer m.mu.RUnlock()
++	current := make([]*Auth, 0, len(candidates))
++	for _, candidate := range candidates {
++		fresh := m.auths[candidate.ID]
++		if fresh == nil || !GatewayAccountAvailable(fresh) || executorKeyFromAuth(fresh) != executorKeyFromAuth(candidate) {
++			continue
++		}
++		index := gatewayAccountResultIndex(candidate)
++		freshIndex := gatewayAccountResultIndex(fresh)
++		if index == "" || freshIndex == "" || index != freshIndex {
++			continue
++		}
++		if strings.TrimSpace(model) != "" && !m.authSupportsRouteModel(registry.GetGlobalRegistry(), fresh, model) {
++			continue
++		}
++		current = append(current, fresh)
++	}
++	_, snapshot, err := m.availableAuthsForSelector(selector, current, provider, model, time.Now())
++	return snapshot, err
++}
+diff --git a/sdk/cliproxy/auth/gateway_allocation_selector_test.go b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
+new file mode 100644
+index 0000000..22a5bc6
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
+@@ -0,0 +1,378 @@
++package auth
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++type gatewayAllocationTransport func(*http.Request) (*http.Response, error)
++
++func (f gatewayAllocationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func allocationResponse(status int, body string) *http.Response {
++	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
++}
++
++func allocationFixture(t *testing.T) (*GatewayAllocationSelector, []*Auth) {
++	t.Helper()
++	s := NewGatewayAllocationSelector(time.Hour, true)
++	s.key = "synthetic-key"
++	t.Cleanup(s.Stop)
++	return s, []*Auth{
++		codexOAuthDedupeAuth("allocation-a.json", "allocation-account-a", "2026-08-20T00:00:00Z"),
++		codexOAuthDedupeAuth("allocation-b.json", "allocation-account-b", "2026-08-20T00:00:00Z"),
++	}
++}
++
++func allocationOptions(session string) cliproxyexecutor.Options {
++	return cliproxyexecutor.Options{Headers: http.Header{"Session_id": []string{session}}}
++}
++
++func assertAllocation503(t *testing.T, err error) {
++	t.Helper()
++	var apiErr *Error
++	if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusServiceUnavailable {
++		t.Fatalf("error = %v, want 503", err)
++	}
++}
++
++func TestGatewayAllocationBindingDrainAndEveryColdBranch(t *testing.T) {
++	for _, mode := range []string{"explicit", "no-session", "singleton", "body-derived", "lcp"} {
++		t.Run(mode, func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			opts := allocationOptions("existing")
++			if mode == "no-session" || mode == "singleton" {
++				opts = cliproxyexecutor.Options{}
++			}
++			if mode == "singleton" {
++				auths = auths[:1]
++			}
++			if mode == "body-derived" {
++				opts = cliproxyexecutor.Options{OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
++			}
++			if mode == "lcp" {
++				opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
++			}
++			var calls int
++			s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++				calls++
++				if r.Method != http.MethodPost || r.URL.String() != gatewayAllocationURL || r.Header.Get("Authorization") != "Bearer synthetic-key" {
++					t.Errorf("invalid callback contract")
++				}
++				var request struct {
++					AccountIDs []string `json:"account_ids"`
++				}
++				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || len(request.AccountIDs) != len(auths) {
++					t.Errorf("candidates = %+v: %v", request, err)
++				}
++				if calls > 1 {
++					return allocationResponse(503, `{}`), nil
++				}
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, gatewayAccountResultIndex(auths[0]))), nil
++			})
++			first, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++			if err != nil || first.ID != auths[0].ID || calls != 1 {
++				t.Fatalf("first = %v, %v; calls %d", first, err, calls)
++			}
++			second, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++			if mode == "no-session" || mode == "singleton" {
++				assertAllocation503(t, err)
++				return
++			}
++			if err != nil || second.ID != first.ID || calls != 1 {
++				t.Fatalf("weight-zero drain lost binding: %v, %v, calls %d", second, err, calls)
++			}
++			s.InvalidateAuth(first.ID)
++			_, err = s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++			assertAllocation503(t, err)
++		})
++	}
++}
++
++func TestGatewayAllocationConcurrentFirstBinding(t *testing.T) {
++	for _, lcp := range []bool{false, true} {
++		t.Run(fmt.Sprint(lcp), func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			entered := make(chan struct{}, 2)
++			release := make(chan struct{})
++			var calls atomic.Int32
++			s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++				i := calls.Add(1) - 1
++				entered <- struct{}{}
++				select {
++				case <-release:
++				case <-r.Context().Done():
++					return nil, r.Context().Err()
++				}
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, gatewayAccountResultIndex(auths[i]))), nil
++			})
++			results := make(chan *Auth, 2)
++			for i := 0; i < 2; i++ {
++				go func() {
++					opts := allocationOptions("concurrent")
++					if lcp {
++						opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
++					}
++					a, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++					if err != nil {
++						t.Errorf("Pick: %v", err)
++					}
++					results <- a
++				}()
++			}
++			for i := 0; i < 2; i++ {
++				select {
++				case <-entered:
++				case <-time.After(time.Second):
++					t.Fatal("callback held binding lock")
++				}
++			}
++			close(release)
++			a, b := <-results, <-results
++			if a == nil || b == nil || a.ID != b.ID {
++				t.Fatalf("conflicting first bindings: %v / %v", a, b)
++			}
++		})
++	}
++}
++
++func TestGatewayAllocationRejectsInvalidCallbacks(t *testing.T) {
++	for _, body := range []string{`{}`, `{"account_id":"ffffffffffffffff"}`, `{"account_id":null}`, `{"account_id":"a","account_id":"b"}`, `{"account_id":"a","extra":true}`, strings.Repeat("x", 1025)} {
++		t.Run(body[:min(24, len(body))], func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(200, body), nil })
++			_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++			assertAllocation503(t, err)
++		})
++	}
++	for _, status := range []int{401, 302, 503} {
++		t.Run(fmt.Sprint(status), func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(status, `{}`), nil })
++			_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++			assertAllocation503(t, err)
++		})
++	}
++}
++
++func TestGatewayAllocationTransportAndCancellation(t *testing.T) {
++	s, auths := allocationFixture(t)
++	transport := s.client.Transport.(*http.Transport)
++	if transport.Proxy != nil || s.client.Timeout != 2*time.Second || s.client.CheckRedirect(nil, nil) != http.ErrUseLastResponse {
++		t.Fatal("callback transport is not bounded/direct")
++	}
++	var calls atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls.Add(1)
++		w.Header().Set("Location", "http://other.invalid/secret")
++		w.WriteHeader(http.StatusTemporaryRedirect)
++	}))
++	defer server.Close()
++	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
++		return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(server.URL, "http://"))
++	}
++	_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++	assertAllocation503(t, err)
++	if calls.Load() != 1 {
++		t.Fatalf("redirect followed %d times", calls.Load())
++	}
++	transport.CloseIdleConnections()
++	entered := make(chan struct{})
++	s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++		close(entered)
++		<-r.Context().Done()
++		return nil, r.Context().Err()
++	})
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan error, 1)
++	go func() {
++		_, err := s.Pick(ctx, "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++		done <- err
++	}()
++	<-entered
++	cancel()
++	select {
++	case err := <-done:
++		assertAllocation503(t, err)
++	case <-time.After(time.Second):
++		t.Fatal("request cancellation not propagated")
++	}
++}
++
++func TestGatewayAllocationRechecksControlWithoutHoldingManagerLock(t *testing.T) {
++	m, candidate, _ := newGatewayAccountTestManager(t)
++	s, _ := allocationFixture(t)
++	m.SetSelector(s)
++	s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++		done := make(chan error, 1)
++		go func() { _, err := m.SetGatewayAccountEnabled(candidate.Index, false); done <- err }()
++		select {
++		case err := <-done:
++			if err != nil {
++				t.Error(err)
++			}
++		case <-time.After(time.Second):
++			t.Fatal("callback held manager lock")
++		}
++		return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, candidate.Index)), nil
++	})
++	_, err := m.SelectAuth(context.Background(), "codex", "gateway-model", allocationOptions("test"))
++	assertAllocation503(t, err)
++}
++
++func TestGatewayAllocationRejectsAlternateSchedulers(t *testing.T) {
++	m, candidate, _ := newGatewayAccountTestManager(t)
++	s, _ := allocationFixture(t)
++	m.SetSelector(s)
++	plugin := &fakePluginScheduler{err: errors.New("plugin must not select Gateway accounts")}
++	m.SetPluginScheduler(plugin)
++	s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) {
++		return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, candidate.Index)), nil
++	})
++	if _, err := m.SelectAuth(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, cliproxyexecutor.Options{}); err != nil {
++		t.Fatal(err)
++	}
++	if plugin.calls != 0 {
++		t.Fatal("plugin bypassed Gateway allocation")
++	}
++	_, err := m.pickHomeDispatchSelection(context.Background(), "gateway-model", cliproxyexecutor.Options{})
++	assertAllocation503(t, err)
++}
++
++func TestGatewayAllocationExpiredAndRestartedBindingsAllocateAgain(t *testing.T) {
++	s, auths := allocationFixture(t)
++	var calls int
++	s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) {
++		calls++
++		return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, gatewayAccountResultIndex(auths[(calls-1)%2]))), nil
++	})
++	opts := allocationOptions("expires")
++	first, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++	if err != nil {
++		t.Fatal(err)
++	}
++	s.affinity.cache.mu.Lock()
++	for key, entry := range s.affinity.cache.entries {
++		entry.expiresAt = time.Now().Add(-time.Second)
++		s.affinity.cache.entries[key] = entry
++	}
++	s.affinity.cache.mu.Unlock()
++	second, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++	if err != nil || calls != 2 || second.ID == first.ID {
++		t.Fatalf("expired binding was reused: %v %v calls %d", second, err, calls)
++	}
++	restarted, _ := allocationFixture(t)
++	restarted.client.Transport = s.client.Transport
++	if _, err := restarted.Pick(context.Background(), "codex", "gateway-model", opts, auths); err != nil || calls != 3 {
++		t.Fatalf("restart did not allocate: %v calls %d", err, calls)
++	}
++}
++
++type gatewayAllocationExecutor struct {
++	gatewayPolicyExecutor
++	failedID     string
++	afterPayload bool
++}
++
++func (e *gatewayAllocationExecutor) Execute(_ context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	e.record(a.ID)
++	if a.ID == e.failedID {
++		return cliproxyexecutor.Response{}, &Error{HTTPStatus: 502}
++	}
++	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
++}
++
++func (e *gatewayAllocationExecutor) ExecuteStream(_ context.Context, a *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	e.record(a.ID)
++	chunks := make(chan cliproxyexecutor.StreamChunk, 2)
++	if a.ID != e.failedID || e.afterPayload {
++		chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("first")}
++	}
++	if a.ID == e.failedID {
++		chunks <- cliproxyexecutor.StreamChunk{Err: &Error{HTTPStatus: 502}}
++	}
++	close(chunks)
++	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
++}
++
++func TestGatewayAllocationFailoverFinalAttribution(t *testing.T) {
++	for _, mode := range []string{"json", "stream-bootstrap", "stream-after-payload", "callback-fails-on-retry"} {
++		t.Run(mode, func(t *testing.T) {
++			m, a, _ := newGatewayAccountTestManager(t)
++			b := gatewayRegisterAccount(t, m, "failover-b-"+a.ID, "failover-b-"+a.ID)
++			e := &gatewayAllocationExecutor{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}, failedID: a.ID, afterPayload: mode == "stream-after-payload"}
++			m.RegisterExecutor(e)
++			s, _ := allocationFixture(t)
++			m.SetSelector(s)
++			var callbacks int
++			s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++				callbacks++
++				var body struct {
++					AccountIDs []string `json:"account_ids"`
++				}
++				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
++					t.Fatal(err)
++				}
++				index := a.Index
++				if callbacks > 1 {
++					if len(body.AccountIDs) != 1 || body.AccountIDs[0] != b.Index {
++						t.Errorf("retry candidates = %v", body.AccountIDs)
++					}
++					if mode == "callback-fails-on-retry" {
++						return allocationResponse(503, `{}`), nil
++					}
++					index = b.Index
++				}
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, index)), nil
++			})
++			var attribution string
++			opts := allocationOptions("failover")
++			opts.Metadata = map[string]any{cliproxyexecutor.UpstreamAccountIndexCallbackMetadataKey: func(id string) { attribution = id }}
++			request := cliproxyexecutor.Request{Model: "gateway-model"}
++			var err error
++			if strings.HasPrefix(mode, "stream") {
++				opts.Stream = true
++				var result *cliproxyexecutor.StreamResult
++				result, err = m.ExecuteStream(context.Background(), []string{"codex"}, request, opts)
++				if result != nil {
++					for range result.Chunks {
++					}
++				}
++			} else {
++				_, err = m.Execute(context.Background(), []string{"codex"}, request, opts)
++			}
++			if mode == "callback-fails-on-retry" {
++				assertAllocation503(t, err)
++				if len(e.Calls()) != 1 {
++					t.Fatalf("callback error replayed account: %v", e.Calls())
++				}
++				return
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			wantIndex, wantCalls := b.Index, 2
++			if mode == "stream-after-payload" {
++				wantIndex, wantCalls = a.Index, 1
++			}
++			if attribution != wantIndex || len(e.Calls()) != wantCalls || callbacks != wantCalls {
++				t.Fatalf("attribution=%s calls=%v callbacks=%d", attribution, e.Calls(), callbacks)
++			}
++		})
++	}
++}
 diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go
 index e9e6902..896f96b 100644
 --- a/sdk/cliproxy/auth/home_session_alias.go
@@ -8001,6 +8708,28 @@ index a1a648f..bb14697 100644
  	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
  	ExecutionSessionMetadataKey = "execution_session_id"
  	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
+diff --git a/sdk/cliproxy/service_config.go b/sdk/cliproxy/service_config.go
+index d04374a..e35d52c 100644
+--- a/sdk/cliproxy/service_config.go
++++ b/sdk/cliproxy/service_config.go
+@@ -42,6 +42,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
+ 	}
+ 
+ 	switch strings.ToLower(strings.TrimSpace(cfg.Routing.Strategy)) {
++	case "gateway-allocation":
++		state.strategy = "gateway-allocation"
+ 	case "weighted-round-robin", "weightedroundrobin", "wrr":
+ 		state.strategy = "weighted-round-robin"
+ 	case "fill-first", "fillfirst", "ff":
+@@ -65,6 +67,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
+ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
+ 	var selector coreauth.Selector
+ 	switch state.strategy {
++	case "gateway-allocation":
++		return coreauth.NewGatewayAllocationSelector(state.sessionAffinityTTL, state.sessionAffinitySubagents)
+ 	case "weighted-round-robin":
+ 		selector = &coreauth.WeightedRoundRobinSelector{}
+ 	case "fill-first":
 diff --git a/sdk/cliproxy/service_gateway_account_state_test.go b/sdk/cliproxy/service_gateway_account_state_test.go
 new file mode 100644
 index 0000000..a47f7b5
@@ -8029,6 +8758,30 @@ index 0000000..a47f7b5
 +	if err := service.Run(context.Background()); !errors.Is(err, coreauth.ErrGatewayAccountStateUnavailable) {
 +		t.Fatalf("corrupt state did not fail service startup: %v", err)
 +	}
++}
+diff --git a/sdk/cliproxy/service_gateway_allocation_test.go b/sdk/cliproxy/service_gateway_allocation_test.go
+new file mode 100644
+index 0000000..d4f76fd
+--- /dev/null
++++ b/sdk/cliproxy/service_gateway_allocation_test.go
+@@ -0,0 +1,18 @@
++package cliproxy
++
++import (
++	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
++	"testing"
++)
++
++func TestGatewayAllocationRoutingStrategy(t *testing.T) {
++	cfg := &config.Config{}
++	cfg.Routing.Strategy = "gateway-allocation"
++	state := normalizedRoutingRuntimeState(cfg)
++	selector, ok := newRoutingSelector(state).(*coreauth.GatewayAllocationSelector)
++	if !ok {
++		t.Fatal("Gateway allocation strategy fell back to local selection")
++	}
++	selector.Stop()
 +}
 diff --git a/sdk/cliproxy/service_lifecycle.go b/sdk/cliproxy/service_lifecycle.go
 index e16b143..808a0f7 100644

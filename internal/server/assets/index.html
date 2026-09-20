@@ -683,9 +683,10 @@
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>管理 ChatGPT OAuth 账号状态及查看本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
             </div>
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
+            <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。</p>
             <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
             <form id="upstream-account-filter" class="filters upstream-account-filters">
-              <label>区间
+              <label>历史统计区间
                 <select name="range"><option value="month">本月</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option><option value="all">全部历史</option></select>
               </label>
               <label>从
@@ -701,6 +702,7 @@
             <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
             <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
+            <p id="upstream-allocation-period" class="upstream-account-period muted" aria-live="polite">近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。</p>
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">
               <div class="empty">登录后加载上游账号。</div>
             </div>

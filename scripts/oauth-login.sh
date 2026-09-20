@@ -153,6 +153,19 @@ test "${health:-}" = healthy || {
     exit 1
 }
 
+# Startup must not wait for Gateway in the sidecar: that would create a cycle.
+# Generation smoke needs the matching Gateway after sidecar health succeeds.
+compose up -d --no-deps gateway
+attempt=0
+until compose exec -T gateway wget -q -O /dev/null http://127.0.0.1:8080/readyz; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 30 || {
+        printf '%s\n' 'oauth-login: Gateway allocation service did not become ready; sidecar has been stopped' >&2
+        exit 1
+    }
+    sleep 2
+done
+
 set --
 if ! compose exec -T codex-compat /usr/local/bin/sidecar-smoke "$@"; then
     printf '%s\n' 'oauth-login: upstream smoke test failed; sidecar has been stopped' >&2

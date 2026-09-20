@@ -111,15 +111,21 @@ type upstreamAccountDTO struct {
 	OutputTokens      int64      `json:"output_tokens"`
 	ReasoningTokens   int64      `json:"reasoning_tokens"`
 	EquivalentCostUSD string     `json:"equivalent_cost_usd"`
+	AllocationWeight  int        `json:"allocation_weight"`
+	RollingCostUSD    string     `json:"rolling_cost_usd"`
+	RollingCostShare  string     `json:"rolling_cost_share"`
+	TargetShare       string     `json:"target_share"`
 }
 
 type upstreamAccountsResponse struct {
-	From         *time.Time               `json:"from"`
-	Until        time.Time                `json:"until"`
-	All          bool                     `json:"all"`
-	SyncWarning  string                   `json:"sync_warning,omitempty"`
-	Accounts     []upstreamAccountDTO     `json:"accounts"`
-	Unattributed *upstreamAccountUsageDTO `json:"unattributed,omitempty"`
+	AllocationFrom  time.Time                `json:"allocation_from"`
+	AllocationUntil time.Time                `json:"allocation_until"`
+	From            *time.Time               `json:"from"`
+	Until           time.Time                `json:"until"`
+	All             bool                     `json:"all"`
+	SyncWarning     string                   `json:"sync_warning,omitempty"`
+	Accounts        []upstreamAccountDTO     `json:"accounts"`
+	Unattributed    *upstreamAccountUsageDTO `json:"unattributed,omitempty"`
 }
 
 func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +188,20 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "summarize upstream accounts", err)
 		return
 	}
+	// Allocation always uses the current rolling window, independently of the
+	// historical statistics filter. Weights and costs share one DB snapshot.
+	allocationUntil := time.Now().UTC()
+	allocations, err := s.store.ListUpstreamAccountAllocations(r.Context(), allocationUntil)
+	if err != nil {
+		internalError(s, w, r, "list upstream allocations", err)
+		return
+	}
+	allocationByID := make(map[string]store.UpstreamAccountAllocation, len(allocations))
+	for _, allocation := range allocations {
+		allocationByID[allocation.AccountID] = allocation
+	}
 	response := upstreamAccountsResponse{
+		AllocationFrom: allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
 		Until: query.Until, All: query.All, SyncWarning: syncWarning,
 		Accounts: make([]upstreamAccountDTO, 0, len(rows)),
 	}
@@ -196,7 +215,10 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			response.Unattributed = &usage
 			continue
 		}
+		allocation := allocationByID[*row.AccountID]
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
+			AllocationWeight: allocation.AllocationWeight, RollingCostUSD: allocation.CostUSD,
+			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
 			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,
 			Status: row.Status, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,

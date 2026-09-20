@@ -104,7 +104,7 @@ streaming:
   # A handler-layer retry would allocate a fresh budget and exceed that cap.
   bootstrap-retries: 0
 routing:
-  strategy: "round-robin"
+  strategy: "gateway-allocation"
   session-affinity: true
   session-affinity-ttl: "1h"
 pprof:

@@ -1219,10 +1219,73 @@ code {
   font-size: .8rem;
 }
 
+.upstream-allocation {
+  margin-bottom: 1rem;
+  border: 1px solid var(--line);
+  border-radius: .8rem;
+  padding: .85rem;
+  background: var(--surface-soft);
+}
+
+.upstream-allocation-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: .65rem;
+}
+
+.upstream-allocation-form label {
+  min-width: 0;
+}
+
+.upstream-allocation-input {
+  width: 100%;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.upstream-allocation-form .form-message {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.upstream-allocation-state {
+  margin: .65rem 0;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.upstream-allocation-state[data-draining="true"] {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.upstream-allocation-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .45rem;
+}
+
+.upstream-allocation-stats .upstream-account-stat {
+  padding: .55rem;
+  background: var(--surface);
+  overflow-wrap: anywhere;
+}
+
+.upstream-history-heading {
+  margin: 0 0 .65rem;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
 .upstream-account-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
   gap: .6rem;
+}
+
+.upstream-account-stats > .upstream-account-stat:last-child {
+  grid-column: 1 / -1;
 }
 
 .upstream-account-stat {
@@ -2160,6 +2223,21 @@ dialog form {
 
   .upstream-account-actions {
     justify-content: space-between;
+  }
+
+  .upstream-allocation-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .upstream-allocation-stats .upstream-account-stat {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    column-gap: .5rem;
+  }
+
+  .upstream-allocation-stats .upstream-account-stat small {
+    grid-column: 1 / -1;
   }
 
   .guide-endpoint,

@@ -49,5 +49,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
             test "$attempt" -lt 30
             sleep 1
         done
-        printf "%s\n" "Sidecar OAuth inventory, permission rejection and isolated startup checks passed"
+        # No Gateway exists on this network: health must not wait for allocation.
+        grep -Fq "strategy: \"gateway-allocation\"" /run/cliproxy/config.yaml
+        printf "%s\n" "Sidecar OAuth inventory, permission rejection and Gateway-independent startup checks passed"
     '

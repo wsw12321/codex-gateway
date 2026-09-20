@@ -56,6 +56,10 @@ else:
     if args == ["up", "-d", "--no-deps", "codex-compat"]:
         state["running"] = True
         finish()
+    if args == ["up", "-d", "--no-deps", "gateway"]:
+        finish(config.get("gateway_start_status", 0))
+    if args == ["exec", "-T", "gateway", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]:
+        finish()
     if args[:4] == ["run", "--rm", "--no-deps", "codex-compat"]:
         operation = args[4:]
         if operation == ["oauth-inventory"]:
@@ -152,6 +156,24 @@ class OAuthLoginTests(unittest.TestCase):
         result = self.run_login()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(RESTART, self.commands())
+
+    def test_generation_smoke_waits_for_gateway_after_sidecar_health(self):
+        result = self.run_login()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        commands = self.commands()
+        gateway_start = ["up", "-d", "--no-deps", "gateway"]
+        gateway_ready = ["exec", "-T", "gateway", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+        smoke = ["exec", "-T", "codex-compat", "/usr/local/bin/sidecar-smoke"]
+        self.assertLess(commands.index(RESTART), commands.index(gateway_start))
+        self.assertLess(commands.index(gateway_start), commands.index(gateway_ready))
+        self.assertLess(commands.index(gateway_ready), commands.index(smoke))
+
+    def test_gateway_start_failure_stops_unverified_sidecar(self):
+        self.scenario(gateway_start_status=1)
+        result = self.run_login()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(CLEANUP_STOP, self.commands())
+        self.assertNotIn(["exec", "-T", "codex-compat", "/usr/local/bin/sidecar-smoke"], self.commands())
 
     def test_codex_obeys_operation_lock(self):
         with (self.root / ".device-login.lock").open("w") as lock:

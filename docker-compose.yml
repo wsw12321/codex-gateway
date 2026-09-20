@@ -166,7 +166,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-codex-only
+    image: codex-gateway-compat:v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
@@ -187,7 +187,7 @@ services:
       HTTP_PROXY: http://egress-allowlist:3128
       HTTPS_PROXY: http://egress-allowlist:3128
       ALL_PROXY: http://egress-allowlist:3128
-      NO_PROXY: 127.0.0.1,localhost,codex-compat
+      NO_PROXY: 127.0.0.1,localhost,codex-compat,gateway
       CODEX_SMOKE_MODEL: ${CODEX_SMOKE_MODEL:-gpt-5-codex}
     secrets:
       - sidecar_api_key

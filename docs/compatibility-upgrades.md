@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
 应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
 规则的变化。补丁 SHA256 为
-`00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f`。
+`dc0a889cc8e6b505d162e60182347544e09eb629cd38c7de11916ce50e7ce535`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -20,18 +20,27 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-00633c2417755730-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 继续使用现有 Go 1.26 构建镜像；`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
-`bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API 与数据库结构
-保持兼容，保留现有 Gemini 价格目录；原有 Owner 账号状态管理接口仍只管理 Codex。
+`bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
+请求契约保持兼容，保留现有 Gemini 价格目录；数据库新增 forward-only 的
+`0009_upstream_allocation.sql`，旧 Gateway 无法连接迁移后的数据库。
+原有 Owner 账号状态管理接口仍只管理 Codex。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
 
 该补丁属于部署安全边界，而不是可选功能：
 
-- 使用 `round-robin` 加一小时 session affinity。Gateway 发送的
+- 使用 `gateway-allocation` 加一小时 session affinity。新分配由 Gateway 按
+  候选账号系数及近 24 小时已结算实际费用选择；系数 0 停止接收新对话，已有
+  有效绑定继续使用。单候选、无显式会话、LCP 派生会话和故障切换均受同一规则约束。
+  兼容层以 sidecar Bearer 密钥回调固定
+  `http://gateway:8080/internal/upstream-accounts/select`，两秒超时，不使用代理、
+  不跟随重定向，传播取消。回调期间不持有管理器及绑定锁，返回后重查账号可用性
+  和并发绑定；失败返回 503，不回退轮询。插件调度器不能绕过此选择器，Home
+  调度与此模式不兼容并拒绝请求。Gateway 发送的
   `X-Codex-Gateway-Affinity` 是每个调用方的 43 字符不透明 HMAC 作用域；sidecar
   校验并消费该头，所有显式及派生 session ID 都以该作用域命名空间隔离，且该头
   永不发送给 OpenAI。
@@ -81,6 +90,7 @@ Astra 冒烟和生产切换按下文规程执行。
 - Astra（`gpt-6-astra`）模型列表、非流式和 SSE `POST /v1/responses`；
 - Astra 的 `POST /v1/responses/compact`；
 - 两账号重试上限、最终账号归因以及内部账号列表和额度接口；
+- 系数 0 排空、唯一候选为 0、并发首次绑定、回调超时／失败、绑定到期及重启；
 - 安全清理后的 401、429、5xx；
 - usage 分散在多个 SSE chunk 时的 input、cached input、output、reasoning；
 - 客户端断开取消、首 token 超时和总超时；
@@ -102,7 +112,17 @@ Astra 冒烟和生产切换按下文规程执行。
 完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
 compact 人工冒烟后才能恢复 Gateway 流量。
 
-失败回滚时先停止候选实例，再启动旧实例。任何时刻都不允许两个 sidecar
+本次必须配套升级 Gateway、兼容层和 `0009_upstream_allocation.sql`。兼容层
+启动与健康检查不等待 Gateway，保持 `Gateway -> healthy sidecar` 的启动顺序；
+首次部署和登录后的生成冒烟必须等 Gateway `/readyz` 返回 200。
+登录脚本在 sidecar 健康后启动 Gateway 并等待就绪；独立
+`scripts/smoke-sidecar.sh` 与容器内 `sidecar-smoke` 都会先检查 Gateway。
+Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从公网进入。
+未同步的新 OAuth 账号自动按系数 1、无历史费用参与首次分配，无须先打开管理员页面。
+
+失败回滚时保持停写，先停止候选实例，再将升级前数据库备份恢复到新的隔离卷，
+配套回退 Gateway 与兼容层。旧 Gateway 会拒绝迁移后的数据库，单独回退 sidecar
+也无法保留加权分配契约。任何时刻都不允许两个 sidecar
 共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新
 执行 `scripts/codex-device-login.sh`。
 

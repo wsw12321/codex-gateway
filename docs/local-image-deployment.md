@@ -23,7 +23,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 \
 gateway_tag=<完整Git-SHA或正式版本>
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
-  "codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-codex-only" \
+  "codex-gateway-compat:v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only" \
   "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
@@ -47,7 +47,12 @@ git checkout --detach <与本地相同的完整Git-SHA>
 
 服务器 `.env` 中的三个版本字段必须与已导入镜像一致。域名、价格、并发限制和模型路由等运行配置以服务器 `.env` 为准；数据库口令、加密密钥和 Tunnel Token 以服务器 `deploy/secrets/` 为准。本地 `.env` 不会进入镜像，只用于本地构建的标签和版本参数。
 
-仅更新 Gateway 时执行：
+近 24 小时费用分配功能必须同时导入并升级本次 Gateway 和兼容层，应用
+`0009_upstream_allocation.sql`。兼容层启动不等待 Gateway；等 Gateway
+`/readyz` 返回 200 后再运行 `./scripts/smoke-sidecar.sh`。回调失败或全部候选
+系数为 0 时，新分配返回 503。上线前按升级规程完成备份与真实 OAuth 冒烟。
+
+完成本次配套升级后，后续仅更新 Gateway 时执行：
 
 ```sh
 ./scripts/compose.sh up -d --no-build --no-deps --force-recreate gateway

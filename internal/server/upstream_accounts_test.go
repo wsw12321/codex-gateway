@@ -287,6 +287,40 @@ func TestUpstreamAccountsFallsBackToDurableLocalSummary(t *testing.T) {
 	}
 }
 
+func TestUpstreamAllocationWindowIsIndependentOfHistoryFilter(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	historicalUntil := now.Add(-25 * time.Hour)
+	var allocationFrom, allocationUntil time.Time
+	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if strings.Contains(query, "WITH account_costs AS") {
+			allocationFrom, allocationUntil = args[0].Value.(time.Time), args[1].Value.(time.Time)
+		} else if args[1].Value.(time.Time) != historicalUntil {
+			t.Fatalf("historical query until=%v", args[1].Value)
+		}
+		return (upstreamSummaryConn{}).QueryContext(ctx, query, args)
+	}}})
+	t.Cleanup(func() { _ = db.Close() })
+	baseURL, _ := url.Parse("http://sidecar.internal")
+	server := &Server{store: store.New(db), upstream: gatewayproxy.NewWithHTTPClient(baseURL, "test", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("sidecar offline")
+	})})}
+	query := url.Values{"from": {now.Add(-48 * time.Hour).Format(time.RFC3339)}, "until": {historicalUntil.Format(time.RFC3339)}}
+	w := httptest.NewRecorder()
+	server.upstreamAccountsJSON(w, httptest.NewRequest(http.MethodGet, "/admin/upstream-accounts?"+query.Encode(), nil))
+	var result upstreamAccountsResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result.Accounts) != 1 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !result.Until.Equal(historicalUntil) || !result.AllocationFrom.Equal(allocationFrom) || !result.AllocationUntil.Equal(allocationUntil) ||
+		allocationUntil.Sub(allocationFrom) != 24*time.Hour || allocationUntil.Before(now) {
+		t.Fatalf("historical and allocation windows diverged incorrectly: %+v", result)
+	}
+	account := result.Accounts[0]
+	if account.AllocationWeight != 20 || account.RollingCostUSD != "0.25" || account.RollingCostShare != "1" || account.TargetShare != "1" || account.EquivalentCostUSD != "0.125" {
+		t.Fatalf("allocation and history fields=%+v", account)
+	}
+}
+
 func TestUpstreamQuotaMapsReauthenticationAndTimeouts(t *testing.T) {
 	baseURL, _ := url.Parse("http://sidecar.internal")
 	for _, test := range []struct {
@@ -431,6 +465,9 @@ func (upstreamSummaryConn) Begin() (driver.Tx, error) {
 }
 
 func (upstreamSummaryConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(query, "WITH account_costs AS") {
+		return &upstreamAuditRows{columns: []string{"id", "allocation_weight", "cost", "cost_share", "target_share"}, values: []driver.Value{"0123456789abcdef", int64(20), "0.25", "1", "1"}}, nil
+	}
 	if !strings.Contains(query, "WITH usage_source AS") {
 		return nil, errors.New("unexpected summary query")
 	}

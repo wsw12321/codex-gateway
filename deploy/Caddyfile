@@ -9,6 +9,8 @@
 
 http://{$GATEWAY_DOMAIN} {
 	encode zstd gzip
+	@internal path /internal /internal/*
+	respond @internal 404
 
 	request_body {
 		max_size 64MiB

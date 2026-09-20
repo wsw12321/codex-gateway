@@ -303,7 +303,7 @@ connector token 以精确 `0640` 保存为
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为
-`v7.2.150-c77b1369-00633c2417755730-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
+`v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
@@ -325,6 +325,9 @@ HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 S
 ### 4. 添加或刷新上游账号
 
 Owner 可在控制台“上游账号”页禁用或重新启用账号，操作需要近期身份验证。
+同页可设置非负整数分配系数（默认 1）；新会话按当前可用候选的系数与近 24
+小时已结算费用补齐欠配，系数 0 停止接收新对话而保留有效会话绑定。
+页面费用窗口独立于历史筛选，实际目标随模型及候选可用性重新计算。
 手动禁用和明确额度耗尽会持续移出分流，直到手动重新启用；普通 429 仍按冷却
 时间恢复。重新启用直接清除账号和模型冷却，已有请求及 SSE 不受禁用影响。
 控制状态随现有 OAuth 卷持久保存；具体排查及单 sidecar 切换要求见
@@ -362,7 +365,8 @@ Gemini Pro 使用相同的地址、Key 和 Responses 接口，公开模型名为
 [部署与运维手册](docs/operations.md)。
 
 升级到 `0004_subscription_period_limits.sql`、`0005_official_token_pricing.sql`、
-`0006_api_key_lifecycle.sql` 或 `0007_upstream_accounts.sql` 前必须完成加密备份和恢复演练。迁移是
+`0006_api_key_lifecycle.sql`、`0007_upstream_accounts.sql` 或
+`0009_upstream_allocation.sql` 前必须完成加密备份和恢复演练。迁移是
 forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；回滚必须
 停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。`0005`
 的停写、核账、迁移和模型冒烟 7 步见
@@ -371,6 +375,8 @@ forward-only：应用后旧二进制会触发未知迁移保护，不能只切�
 该文件，恢复或迁机必须携带同一份密钥。`0007` 上线前还必须确认固定版本
 CLIProxyAPI 多账号补丁、两账号尝试上限和账号归因追踪契约均通过验证；迁移前历史
 统一保留为“未归因”。
+`0009` 需要 Gateway 与兼容层配套升级。兼容层先启动并通过健康检查，再启动
+Gateway；登录后的生成冒烟会等待 Gateway 就绪。回调或数据库失败返回 503。
 
 ## Codex CLI 配置
 

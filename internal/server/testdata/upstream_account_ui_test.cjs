@@ -56,14 +56,15 @@ function deferred() {
 }
 
 function account(id = "account-1", status = "available", can_manage = true) {
-  return {id, status, can_manage, email_masked: `${id}@example.test`, plan: "Plus"};
+  return {id, status, can_manage, email_masked: `${id}@example.test`, plan: "Plus", allocation_weight: 1,
+    rolling_cost_usd: "1.00", rolling_cost_share: "0.2", target_share: "0.2"};
 }
 
 function dashboard(accounts = [account()], extra = {}) {
   const root = new TestElement();
   const nodes = new Map();
   for (const id of ["upstream-account-list", "upstream-account-filter", "upstream-account-period",
-    "upstream-account-loading", "upstream-account-action-message", "upstream-account-refresh-message", "operation-status"]) {
+    "upstream-allocation-period", "upstream-account-loading", "upstream-account-action-message", "upstream-account-refresh-message", "operation-status"]) {
     const node = new TestElement();
     nodes.set(id, node);
     root.append(node);
@@ -84,8 +85,13 @@ function dashboard(accounts = [account()], extra = {}) {
   return {context, run, node: (id) => nodes.get(id), cards: () => root.querySelectorAll(".upstream-account-card[data-account-id]"),
     button: (index = 0) => root.querySelectorAll(".upstream-account-status-button")[index],
     badge: (index = 0) => root.querySelectorAll(".upstream-account-status")[index],
+    weightInput: (index = 0) => root.querySelectorAll(".upstream-allocation-input")[index],
+    weightButton: (index = 0) => root.querySelectorAll(".upstream-allocation-save")[index],
+    allocationState: (index = 0) => root.querySelectorAll(".upstream-allocation-state")[index],
+    weightForm: (index = 0) => root.querySelectorAll(".upstream-allocation-form")[index],
     api: (handler) => { context.handler = handler; run("api = handler;"); },
     change: (index = 0) => run(`changeUpstreamAccountStatus(upstreamAccounts[${index}])`),
+    saveWeight: (index = 0) => run(`saveUpstreamAllocationWeight(upstreamAccounts[${index}], all(".upstream-allocation-form")[${index}])`),
     load: () => run('loadUpstreamAccounts(new URLSearchParams("all=true"))'),
   };
 }
@@ -239,7 +245,7 @@ test("a status result from an invalidated session cannot change the dashboard", 
   let calls = 0;
   ui.api(async () => { calls++; return status.promise; });
   const pending = ui.change();
-  ui.run("upstreamAccountStatusOperation = null; state = null;");
+  ui.run("upstreamAccountOperation = null; state = null;");
   status.resolve({id: "account-1", status: "unavailable"});
   await pending;
   assert.equal(calls, 1);
@@ -259,4 +265,165 @@ test("an obsolete list failure does not disable or report failure over a newer l
   assert.equal(ui.cards()[0].dataset.accountId, "current-account");
   assert.equal(ui.button().disabled, false);
   assert.equal(ui.node("upstream-account-refresh-message").textContent, "");
+});
+
+test("allocation costs and shares use their independent rolling window", () => {
+  const ui = dashboard([{...account(), allocation_weight: 5, rolling_cost_usd: "0.123456789012345678",
+    rolling_cost_share: "0.125", target_share: "0.2"}, {...account("account-2"), allocation_weight: 0}], {
+    allocation_from: "2026-09-19T09:00:00Z", allocation_until: "2026-09-20T09:00:00Z",
+  });
+  const values = ui.cards()[0].querySelector(".upstream-allocation-stats").querySelectorAll("strong").map((node) => node.textContent);
+  assert.deepEqual(values, ["US$0.123456789012345678", "12.5%", "20.0%"]);
+  assert.equal(ui.weightInput().value, "5");
+  assert.match(ui.allocationState(1).textContent, /停止接收新对话.*已有有效绑定继续使用/);
+  assert.match(ui.node("upstream-account-period").textContent, /全部历史/);
+  assert.match(ui.node("upstream-allocation-period").textContent, /近 24 小时.*独立于历史统计筛选/);
+  assert.match(ui.node("upstream-allocation-period").textContent, /所有已归因账号费用为分母/);
+});
+
+test("allocation inputs reject invalid integers locally without issuing requests", async () => {
+  const ui = dashboard();
+  let calls = 0;
+  ui.api(async () => { calls++; throw new Error("must not request"); });
+  for (const invalid of ["", "-1", "+1", "1.5", "1e2", "0x10", "abc", "2147483648", "9007199254740993"]) {
+    ui.weightInput().value = invalid;
+    await ui.saveWeight();
+    assert.equal(ui.weightInput().attributes["aria-invalid"], "true", invalid);
+    assert.match(ui.weightForm().querySelector(".form-message").textContent, /0 至 2147483647 的整数/);
+    assert.equal(ui.weightButton().disabled, false);
+  }
+  assert.equal(calls, 0);
+});
+
+test("allocation save accepts zero and PostgreSQL integer maximum and confirms exact values", async () => {
+  for (const weight of [0, 20, 2147483647]) {
+    const ui = dashboard();
+    const writes = [];
+    ui.api(async (url, options) => {
+      if (options) {
+        writes.push({url, method: options.method, body: JSON.parse(options.body)});
+        return {id: "account-1", allocation_weight: weight};
+      }
+      return {accounts: [{...account(), allocation_weight: weight, target_share: weight ? "1" : "0"}]};
+    });
+    ui.weightInput().value = String(weight);
+    await ui.saveWeight();
+    assert.deepEqual(writes, [{url: "/admin/upstream-accounts/account-1/allocation-weight", method: "PUT", body: {weight}}]);
+    assert.equal(ui.weightInput().value, String(weight));
+    assert.equal(ui.weightButton().disabled, false);
+    assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
+    assert.equal(ui.allocationState().dataset.draining, String(weight === 0));
+  }
+});
+
+test("allocation permission and synchronization failures block edits", async () => {
+  const scenarios = [dashboard([account("historical", "unavailable", false)]),
+    dashboard([account()], {sync_warning: "unavailable"}), dashboard()];
+  scenarios[2].run('state.user.role = "member"; syncUpstreamAccountControls();');
+  for (const ui of scenarios) {
+    ui.api(async () => { throw new Error("must not request"); });
+    assert.equal(ui.weightInput().disabled, true);
+    assert.equal(ui.weightButton().disabled, true);
+    await ui.saveWeight();
+  }
+});
+
+test("allocation operation blocks other writes and refreshes until confirmation", async () => {
+  const ui = dashboard([account(), account("account-2")]);
+  const mutation = deferred();
+  let calls = 0;
+  ui.api(async (_, options) => {
+    calls++;
+    return options ? mutation.promise : {accounts: [{...account(), allocation_weight: 0}, account("account-2")]};
+  });
+  ui.weightInput().value = "0";
+  const pending = ui.saveWeight();
+  assert.equal(ui.weightButton().textContent, "保存中…");
+  assert.equal(ui.button().textContent, "禁用");
+  assert.equal(ui.weightButton(1).disabled, true);
+  assert.equal(ui.button(1).disabled, true);
+  assert.equal(ui.allocationState().dataset.draining, "false");
+  await ui.saveWeight();
+  await ui.saveWeight(1);
+  await ui.change();
+  await ui.load();
+  assert.equal(calls, 1);
+  mutation.resolve({id: "account-1", allocation_weight: 0});
+  await pending;
+  assert.equal(calls, 2);
+  assert.equal(ui.allocationState().dataset.draining, "true");
+});
+
+test("allocation refresh failure retains the confirmed weight and drain state", async () => {
+  const ui = dashboard();
+  ui.api(async (_, options) => {
+    if (options) return {id: "account-1", allocation_weight: 0};
+    throw new Error("统计暂不可用");
+  });
+  ui.weightInput().value = "0";
+  await ui.saveWeight();
+  assert.equal(ui.run("upstreamAccounts[0].allocation_weight"), 0);
+  assert.match(ui.allocationState().textContent, /停止接收新对话/);
+  assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
+  assert.match(ui.node("upstream-account-refresh-message").textContent, /操作已成功，但列表与统计刷新失败/);
+  assert.equal(ui.weightButton().disabled, true);
+});
+
+test("allocation failures and mismatched confirmations never report a saved weight", async () => {
+  for (const response of [{id: "other", allocation_weight: 0}, {id: "account-1", allocation_weight: 1},
+    {id: "account-1", allocation_weight: "0"}, new Error("账号不存在")]) {
+    const ui = dashboard();
+    ui.api(async () => { if (response instanceof Error) throw response; return response; });
+    ui.weightInput().value = "0";
+    await ui.saveWeight();
+    assert.equal(ui.run("upstreamAccounts[0].allocation_weight"), 1);
+    assert.equal(ui.allocationState().dataset.draining, "false");
+    assert.equal(ui.node("upstream-account-action-message").dataset.kind, "error");
+    assert.match(ui.node("upstream-account-action-message").textContent, /保存未确认/);
+    assert.equal(ui.weightButton().disabled, true);
+  }
+});
+
+test("allocation verification precedes writes and cancellation issues no write", async () => {
+  const ui = dashboard();
+  const verification = deferred();
+  ui.context.verification = verification.promise;
+  ui.run("state.recently_verified = false; reauthenticate = () => verification;");
+  let calls = 0;
+  ui.api(async (_, options) => { calls++; return options ? {id: "account-1", allocation_weight: 20} :
+    {accounts: [{...account(), allocation_weight: 20}]}; });
+  ui.weightInput().value = "20";
+  const pending = ui.saveWeight();
+  assert.equal(calls, 0);
+  verification.resolve();
+  await pending;
+  assert.equal(calls, 2);
+
+  const cancelled = dashboard();
+  cancelled.run('state.recently_verified = false; reauthenticate = async () => { throw new DOMException("取消验证", "AbortError"); };');
+  cancelled.api(async () => { throw new Error("must not send a request"); });
+  await cancelled.saveWeight();
+  assert.match(cancelled.node("upstream-account-action-message").textContent, /已取消/);
+});
+
+test("an invalidated allocation operation cannot alter the dashboard", async () => {
+  const ui = dashboard();
+  const response = deferred();
+  ui.api(async () => response.promise);
+  ui.weightInput().value = "0";
+  const pending = ui.saveWeight();
+  ui.run("upstreamAccountOperation = null; state = null;");
+  response.resolve({id: "account-1", allocation_weight: 0});
+  await pending;
+  assert.equal(ui.allocationState().dataset.draining, "false");
+  assert.equal(ui.node("upstream-account-action-message").textContent, "");
+});
+
+test("re-enabling an account with zero weight preserves the draining explanation", async () => {
+  const ui = dashboard([{...account("account-1", "unavailable"), allocation_weight: 0}]);
+  ui.api(async (_, options) => options ? {id: "account-1", status: "available"} :
+    {accounts: [{...account(), allocation_weight: 0}]});
+  await ui.change();
+  assert.match(ui.node("upstream-account-action-message").textContent, /系数仍为 0，停止接收新对话/);
+  assert.match(ui.allocationState().textContent, /停止接收新对话/);
 });

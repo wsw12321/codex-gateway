@@ -153,40 +153,43 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 		{name: "expired verification", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, age: 6 * time.Minute, code: "recent_identity_verification_required", wantStatus: 403},
 		{name: "verified owner reaches handler", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, code: "invalid_json", wantStatus: 400},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			now := time.Now().UTC()
-			var verified driver.Value
-			if test.verified {
-				verified = now.Add(-test.age)
-			}
-			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
-				if strings.Contains(query, "FROM sessions") {
-					return &upstreamAuditRows{columns: make([]string, 13), values: []driver.Value{"session-1", "owner-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verified, nil, ""}}, nil
+		for _, control := range []string{"status", "allocation-weight"} {
+			t.Run(test.name+"/"+control, func(t *testing.T) {
+				now := time.Now().UTC()
+				var verified driver.Value
+				if test.verified {
+					verified = now.Add(-test.age)
 				}
-				if strings.Contains(query, "FROM users") {
-					return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"owner-1", "owner", "Owner", []byte("webauthn-id"), test.role, store.StatusActive, now, now, nil, nil}}, nil
+				db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+					if strings.Contains(query, "FROM sessions") {
+						return &upstreamAuditRows{columns: make([]string, 13), values: []driver.Value{"session-1", "owner-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verified, nil, ""}}, nil
+					}
+					if strings.Contains(query, "FROM users") {
+						return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"owner-1", "owner", "Owner", []byte("webauthn-id"), test.role, store.StatusActive, now, now, nil, nil}}, nil
+					}
+					return nil, errors.New("unexpected authentication query")
+				}}})
+				defer db.Close()
+				server := &Server{store: store.New(db), mux: http.NewServeMux(), config: config.Config{RPOrigins: []string{"https://gateway.example"}, ReauthMaxAge: 5 * time.Minute, TokenPepper: []byte(strings.Repeat("p", 32))}}
+				server.routes()
+				r := statusTestRequest(`{}`)
+				r.URL.Path = "/admin/upstream-accounts/0123456789abcdef/" + control
+				r.Header.Set("Origin", test.origin)
+				r.Header.Set("Sec-Fetch-Site", test.site)
+				if test.cookie {
+					token, err := security.GenerateOpaqueToken(security.SessionToken)
+					if err != nil {
+						t.Fatal(err)
+					}
+					r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token.Token})
 				}
-				return nil, errors.New("unexpected authentication query")
-			}}})
-			defer db.Close()
-			server := &Server{store: store.New(db), mux: http.NewServeMux(), config: config.Config{RPOrigins: []string{"https://gateway.example"}, ReauthMaxAge: 5 * time.Minute, TokenPepper: []byte(strings.Repeat("p", 32))}}
-			server.routes()
-			r := statusTestRequest(`{}`)
-			r.Header.Set("Origin", test.origin)
-			r.Header.Set("Sec-Fetch-Site", test.site)
-			if test.cookie {
-				token, err := security.GenerateOpaqueToken(security.SessionToken)
-				if err != nil {
-					t.Fatal(err)
+				response := httptest.NewRecorder()
+				server.mux.ServeHTTP(response, r)
+				if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.code) || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 				}
-				r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token.Token})
-			}
-			response := httptest.NewRecorder()
-			server.mux.ServeHTTP(response, r)
-			if response.Code != test.wantStatus || !strings.Contains(response.Body.String(), test.code) || response.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -196,6 +199,9 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 			summaryStarted, releaseSummary := make(chan struct{}), make(chan struct{})
 			capture := &upstreamAuditCapture{}
 			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+				if strings.Contains(query, "WITH account_costs AS") {
+					return (upstreamSummaryConn{}).QueryContext(ctx, query, args)
+				}
 				if strings.Contains(query, "WITH usage_source AS") {
 					close(summaryStarted)
 					<-releaseSummary

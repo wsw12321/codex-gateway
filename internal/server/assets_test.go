@@ -370,7 +370,7 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		`container.dataset.state = "stale"`, `clearUpstreamQuotaTimers()`,
 		`/admin/upstream-accounts/${encodeURIComponent(account.id)}/status`,
 		`method: "PUT", body: JSON.stringify({enabled: operation.enabled})`,
-		`account.can_manage === true`, `upstreamAccountStatusOperation`,
+		`account.can_manage === true`, `upstreamAccountOperation`,
 		`操作已成功，但列表与统计刷新失败`, `重新启用`,
 	} {
 		if !strings.Contains(javascript, required) {

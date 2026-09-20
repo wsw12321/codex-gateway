@@ -312,13 +312,14 @@ type GlobalPricingBreakdownRow struct {
 // compatibility sidecar. MaskedEmail is empty for a trace-created placeholder
 // that has not yet appeared in a metadata synchronization snapshot.
 type UpstreamAccount struct {
-	ID           string
-	MaskedEmail  string
-	Plan         string
-	Status       string
-	LastSyncedAt *time.Time
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	ID               string
+	MaskedEmail      string
+	Plan             string
+	Status           string
+	LastSyncedAt     *time.Time
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	AllocationWeight int
 }
 
 // UpstreamAccountSnapshot is one entry in an authoritative sidecar metadata

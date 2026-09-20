@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
+	s.mux.HandleFunc("POST /internal/upstream-accounts/select", s.selectUpstreamAccount)
 	s.mux.HandleFunc("GET /", s.page)
 	s.mux.HandleFunc("GET /join", s.page)
 	s.mux.HandleFunc("GET /recover", s.page)
@@ -118,6 +119,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/status", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountStatus)))))
+	s.mux.Handle("PUT /admin/upstream-accounts/{id}/allocation-weight", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAllocationWeight)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))

@@ -63,7 +63,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	var value UpstreamAccount
 	var lastSynced sql.NullTime
 	err := row.Scan(&value.ID, &value.MaskedEmail, &value.Plan, &value.Status,
-		&lastSynced, &value.CreatedAt, &value.UpdatedAt)
+		&lastSynced, &value.CreatedAt, &value.UpdatedAt, &value.AllocationWeight)
 	if lastSynced.Valid {
 		value.LastSyncedAt = &lastSynced.Time
 	}
@@ -71,7 +71,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 }
 
 const upstreamAccountColumns = `id, masked_email, plan, status,
-	last_synced_at, created_at, updated_at`
+	last_synced_at, created_at, updated_at, allocation_weight`
 
 // EnsureUpstreamAccount creates a metadata-free placeholder for a recognized,
 // opaque tracing ID. Synchronization later replaces its display metadata. It

@@ -13,11 +13,11 @@ egress_config=$root/deploy/egress/squid.conf
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=00633c2417755730b8abe7c5d273135a43d449d1952c3a1d489b7fbae9e32e7f
+compat_patch_sha256=dc0a889cc8e6b505d162e60182347544e09eb629cd38c7de11916ce50e7ce535
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-00633c2417755730-codex-only
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-dc0a889cc8e6b505-codex-only
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
@@ -89,9 +89,15 @@ grep -Eq '^max-retry-credentials:[[:space:]]*2[[:space:]]*$' "$compat_entrypoint
 grep -Eq '^request-retry:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^max-retry-interval:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must not allocate handler-layer request retry attempts'
-grep -Eq '^[[:space:]]+strategy:[[:space:]]*"round-robin"[[:space:]]*$' "$compat_entrypoint" && \
+grep -Eq '^[[:space:]]+strategy:[[:space:]]*"gateway-allocation"[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^[[:space:]]+session-affinity:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" || \
-    fail 'codex-compat must use round-robin routing with session affinity'
+    fail 'codex-compat must use Gateway account allocation with session affinity'
+grep -Fq 'http://gateway:8080/internal/upstream-accounts/select' "$compat_patch" && \
+    grep -Fq 'TestGatewayAllocationConcurrentFirstBinding' "$compat_patch" && \
+    grep -Fq 'TestGatewayAllocationFailoverFinalAttribution' "$compat_patch" && \
+    grep -Fq 'TestGatewayAllocationRejectsAlternateSchedulers' "$compat_patch" && \
+    grep -Fq 'TestGatewayAllocationRechecksControlWithoutHoldingManagerLock' "$compat_patch" || \
+    fail 'codex-compat must carry bounded Gateway allocation and concurrency regressions'
 grep -Eq '^[[:space:]]+session-affinity-ttl:[[:space:]]*"1h"[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must retain session affinity for one hour'
 grep -Eq '^[[:space:]]+bootstrap-retries:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
@@ -456,6 +462,10 @@ jq -e '
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
     fail 'codex-compat image tag must identify the reviewed Codex-only build'
+jq -e '.services["codex-compat"].depends_on.gateway == null and
+    .services.gateway.depends_on["codex-compat"].condition == "service_healthy" and
+    .services.gateway.environment.GATEWAY_LISTEN == ":8080"' "$tmp" >/dev/null || \
+    fail 'sidecar startup must not wait for its Gateway allocation callback'
 
 gateway_image=$(jq -r '.services.gateway.image' "$tmp")
 gateway_version=$(jq -r '.services.gateway.build.args.VERSION' "$tmp")
@@ -606,6 +616,9 @@ fi
 
 grep -Fq 'http://{$GATEWAY_DOMAIN}' "$caddyfile" || \
     fail 'Caddy must expose only the internal HTTP origin'
+grep -Fq '@internal path /internal /internal/*' "$caddyfile" && \
+    grep -Fq 'respond @internal 404' "$caddyfile" || \
+    fail 'Caddy must block external access to every internal Gateway endpoint'
 grep -Fq 'trusted_proxies static 172.28.10.4/32' "$caddyfile" || \
     fail 'Caddy must trust only the fixed cloudflared address'
 grep -Fq 'client_ip_headers CF-Connecting-IP' "$caddyfile" || \
@@ -620,9 +633,17 @@ if grep -Fq 'preload' "$caddyfile"; then
     fail 'Caddy must not opt the deployment domain into HSTS preload'
 fi
 
-# Adapt the Caddyfile with the exact digest-locked binary that will run in
-# production; this catches invalid directives in addition to textual policy.
-"$compose" run --rm --no-deps caddy caddy validate \
+# Validate with the exact digest-locked binary, without project networks, service
+# dependencies, volumes, or secrets. A validation run must not allocate static IPs.
+caddy_validation_image=$(jq -r '.services.caddy.image' "$tmp")
+caddy_validation_domain=$(jq -r '.services.caddy.environment.GATEWAY_DOMAIN' "$tmp")
+docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
+    --security-opt no-new-privileges:true \
+    --tmpfs /config:rw,noexec,nosuid,nodev,size=1m \
+    --tmpfs /data:rw,noexec,nosuid,nodev,size=1m \
+    -e "GATEWAY_DOMAIN=$caddy_validation_domain" \
+    -v "$caddyfile:/etc/caddy/Caddyfile:ro" \
+    "$caddy_validation_image" caddy validate \
     --config /etc/caddy/Caddyfile --adapter caddyfile
 
 printf '%s\n' \
