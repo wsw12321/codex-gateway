@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env.example
 deploy/secrets/*
 !deploy/secrets/.gitkeep
 backups/
@@ -11,5 +13,15 @@ coverage.out
 sbom*.json
 .device-login.lock
 __pycache__/
+*.py[cod]
 
 .antigravity-login.lock
+
+# Local build outputs, speed tests, and downloaded CI artifacts.
+/gateway
+/antigravity-bridge
+/upload-test*.bin
+/deployment-images*.json
+/deployment-images-*
+/tested-images-*
+/ci-images/

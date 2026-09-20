@@ -3,6 +3,8 @@
 .agents
 .codex
 .env
+.env.*
+!.env.example
 backups
 deploy/secrets
 deploy/images.lock.env
@@ -11,4 +13,12 @@ deploy/images.lock.env
 *.log
 coverage.out
 sbom*.json
-
+__pycache__
+*.py[cod]
+/gateway
+/antigravity-bridge
+/upload-test*.bin
+/deployment-images*.json
+/deployment-images-*
+/tested-images-*
+/ci-images/

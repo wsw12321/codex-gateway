@@ -308,6 +308,10 @@ connector token 以精确 `0640` 保存为
 
 ### 3. 校验、构建和启动
 
+服务器资源较少或电脑上传镜像缓慢时，可以使用
+[GitHub Actions 构建并从 GHCR 免登录拉取](docs/ci-image-deployment.md)。
+CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
+
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.2.150` / commit
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，兼容层镜像标签为

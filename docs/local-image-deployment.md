@@ -1,6 +1,8 @@
 # 本地构建并传送到服务器
 
-正式生产部署仍应按 [部署与运维手册](operations.md#4-构建和首次启动) 在目标服务器现场构建。以下流程适用于确认过 Git revision、目标架构和镜像标签的直接镜像交付；示例假设服务器为 `linux/amd64`。
+可以按 [部署与运维手册](operations.md#4-构建和首次启动) 在服务器构建，或使用
+[GitHub Actions 构建并从 GHCR 拉取](ci-image-deployment.md)，减少电脑上传大文件。
+以下流程适用于确认过 Git revision、目标架构和镜像标签的直接镜像交付；示例假设服务器为 `linux/amd64`。
 
 ## 1. 本地构建
 

@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -201,12 +202,12 @@ jobs:
         run: |
           set -eu
           cp deploy/env.example .env
-          ci_revision=0123456789abcdef0123456789abcdef01234567
+          ci_revision=$GITHUB_SHA
           ci_secret_gid=$(id -g)
           sed -i \
             -e 's/^GATEWAY_DOMAIN=.*/GATEWAY_DOMAIN=codex.ci.invalid/' \
             -e "s/^GATEWAY_IMAGE_TAG=.*/GATEWAY_IMAGE_TAG=$ci_revision/" \
-            -e 's/^GATEWAY_VERSION=.*/GATEWAY_VERSION=ci/' \
+            -e "s/^GATEWAY_VERSION=.*/GATEWAY_VERSION=$ci_revision/" \
             -e "s/^GATEWAY_REVISION=.*/GATEWAY_REVISION=$ci_revision/" \
             -e "s/^GATEWAY_SECRET_GID=.*/GATEWAY_SECRET_GID=$ci_secret_gid/" \
             .env
@@ -264,3 +265,93 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
             --severity HIGH,CRITICAL "$bridge_image"
+      - name: Export tested images for publication
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=$RUNNER_TEMP/ci-images
+          mkdir -p "$bundle"
+          ./scripts/compose.sh config --format json | jq '{
+            gateway: .services.gateway.image,
+            "codex-compat": .services["codex-compat"].image,
+            "antigravity-bridge": .services["antigravity-bridge"].image
+          }' > "$bundle/local-images.json"
+          mapfile -t images < <(jq -er '.[]' "$bundle/local-images.json")
+          docker save "${images[@]}" | gzip -1 > "$bundle/images.tar.gz"
+      - name: Upload tested image bundle
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: tested-images-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-images/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+
+  publish-images:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [go-test, postgres-integration, go-security, supply-chain, containers]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download tested image bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: tested-images-${{ github.sha }}
+          path: ci-images
+      - name: Authenticate to GHCR
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export DOCKER_CONFIG=$RUNNER_TEMP/ghcr-auth
+          printf 'DOCKER_CONFIG=%s\n' "$DOCKER_CONFIG" >> "$GITHUB_ENV"
+          mkdir -p "$DOCKER_CONFIG"
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - name: Publish tested images and record immutable digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker load --input ci-images/images.tar.gz
+          repository=${GITHUB_REPOSITORY,,}
+          jq -n --arg revision "$GITHUB_SHA" --arg repository "$repository" '{
+            schema_version: 1,
+            revision: $revision,
+            repository: $repository,
+            platform: "linux/amd64",
+            images: {}
+          }' > deployment-images.json
+          for service in gateway codex-compat antigravity-bridge; do
+            local_image=$(jq -er --arg service "$service" '.[$service]' ci-images/local-images.json)
+            remote_image=ghcr.io/$repository/$service
+            remote_tag=$remote_image:sha-$GITHUB_SHA
+            docker tag "$local_image" "$remote_tag"
+            docker push "$remote_tag"
+            digest_ref=$(docker image inspect "$remote_tag" --format '{{json .RepoDigests}}' |
+              jq -er --arg prefix "$remote_image@sha256:" \
+                '[.[] | select(startswith($prefix))] | if length == 1 then .[0] else error("missing or ambiguous registry digest") end')
+            jq --arg service "$service" --arg image "$digest_ref" \
+              '.images[$service] = $image' deployment-images.json > deployment-images.next.json
+            mv deployment-images.next.json deployment-images.json
+          done
+          {
+            printf 'Published images for commit `%s` (linux/amd64).\n\n' "$GITHUB_SHA"
+            jq -r '.images | to_entries[] | "- `" + .key + "`: `" + .value + "`"' deployment-images.json
+            printf '\nDownload the deployment-images artifact and follow docs/ci-image-deployment.md.\n'
+            printf '\nFor anonymous pulls, set all three GHCR packages to Public after the first publication.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload deployment manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-images-${{ github.sha }}
+          path: deployment-images.json
+          retention-days: 90
+          if-no-files-found: error
+      - name: Remove registry credentials
+        if: always()
+        run: docker logout ghcr.io
