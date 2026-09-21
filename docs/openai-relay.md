@@ -19,6 +19,10 @@ apk add docker docker-cli-compose wireguard-tools iptables iptables-openrc
 
 把本仓库 `deploy/relay/` 整个目录和 `deploy/images.lock.env` 复制至 B，保留为
 `/opt/codex-relay/deploy/relay/` 与 `/opt/codex-relay/deploy/images.lock.env`；不复制 `.env`、secrets 或 OAuth 卷。
+```sh
+tar -czf - deploy/relay deploy/images.lock.env |
+    ssh root@B_PUBLIC_IP 'mkdir -p /opt/codex-relay && tar -xzf - -C /opt/codex-relay'
+```
 Alpine 3.19 的 [WireGuard 打包定义](https://github.com/alpinelinux/aports/blob/3.19-stable/main/wireguard-tools/APKBUILD) 不提供 OpenRC 服务；使用本仓库文件。
 两端分别生成本机密钥；只交换 `.pub` 内容：
 
