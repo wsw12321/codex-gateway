@@ -1,0 +1,27 @@
+name: codex-relay
+
+services:
+  relay:
+    image: ${SQUID_IMAGE:?Supply the reviewed deploy/images.lock.env with --env-file}
+    network_mode: host
+    restart: unless-stopped
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./squid.conf:/etc/squid/squid.conf:ro
+    tmpfs:
+      - /run:rw,noexec,nosuid,nodev,size=8m
+      - /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13
+      - /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD-SHELL", "test -r /run/squid.pid && kill -0 $$(cat /run/squid.pid)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

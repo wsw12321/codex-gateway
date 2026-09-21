@@ -227,9 +227,10 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh; do
+          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/egress/*.sh deploy/relay/wg-codex; do
             case "$(sed -n '1p' "$script")" in
               '#!/bin/sh') sh -n "$script" ;;
+              '#!/sbin/openrc-run') sh -n "$script" ;;
               '#!/usr/bin/env bash') bash -n "$script" ;;
               *) printf 'unsupported shell shebang: %s\n' "$script" >&2; exit 1 ;;
             esac
@@ -240,8 +241,10 @@ jobs:
           set -eu
           ./scripts/validate-compose.sh
           ./scripts/compose.sh config --quiet
-      - name: OAuth login isolation regressions
+      - name: Deployment and login regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      - name: Verify relay routing, fail-closed behavior and streaming
+        run: ./scripts/test-relay-image.sh
       - name: Build immutable application images
         shell: bash
         run: |

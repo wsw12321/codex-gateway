@@ -329,6 +329,9 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 
 默认路由为 `{}`，Antigravity Bridge 由后续登录脚本验收成功后启动。
 
+Codex 需要经第二台服务器出网时，按 [OpenAI 双服务器中转](docs/openai-relay.md)
+配置 WireGuard 和 B 端 Squid；启用后 B 故障会阻断 Codex 请求。
+
 最终不应有任何 Compose 服务发布宿主机端口。Cloudflare 负责公网 TLS 和
 HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 SSH 入站。
 `GET /healthz` 是进程存活探针，

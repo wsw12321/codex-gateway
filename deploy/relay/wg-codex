@@ -1,0 +1,33 @@
+#!/sbin/openrc-run
+# OpenRC sources this file. Keep strict mode inside callback subshells so its
+# runner can continue to read optional, unset service variables normally.
+
+description="WireGuard tunnel for the Codex relay"
+
+depend() {
+    need net
+    before docker
+}
+
+# wg-quick configures a kernel interface and exits; there is no daemon PID.
+start() (
+    set -eu
+    ebegin "Starting wg-codex"
+    if /usr/bin/wg-quick up wg-codex; then
+        eend 0
+    else
+        eend 1
+        return 1
+    fi
+)
+
+stop() (
+    set -eu
+    ebegin "Stopping wg-codex"
+    if /usr/bin/wg-quick down wg-codex; then
+        eend 0
+    else
+        eend 1
+        return 1
+    fi
+)

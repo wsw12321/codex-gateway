@@ -10,6 +10,10 @@ caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
 pricing_template=$root/deploy/pricing-v2.example.json
 egress_config=$root/deploy/egress/squid.conf
+egress_entrypoint=$root/deploy/egress/entrypoint.sh
+relay_config=$root/deploy/relay/squid.conf
+relay_compose=$root/deploy/relay/docker-compose.yml
+relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
@@ -19,7 +23,8 @@ bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
 compat_image=codex-gateway-compat:v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only
 tmp=$(mktemp)
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+relay_tmp=$(mktemp)
+trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
 
 fail() {
     printf '%s\n' "validate-compose: $*" >&2
@@ -66,9 +71,48 @@ test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients
         'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' \
         'acl antigravity_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
-test "$(awk '$1 == "http_access" && $2 == "allow" { print }' "$egress_config")" = \
-    "$(printf '%s\n' 'http_access allow CONNECT codex_clients codex_upstreams' 'http_access allow CONNECT antigravity_clients antigravity_upstreams')" || \
+test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
+    "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
+        'http_access allow CONNECT codex_clients codex_upstreams' \
+        'http_access allow CONNECT antigravity_clients antigravity_upstreams' 'http_access deny all')" || \
     fail 'egress must separate Codex and Antigravity destination rules'
+# The generated fragment is the only place permitted to select an upstream or
+# change direct routing. Check its output as well as parsing it with Squid below.
+sh -n "$egress_entrypoint" && sh -n "$relay_service" || fail 'relay shell syntax is invalid'
+test "$(awk '$1 == "include" || $1 ~ /^(cache_peer|cache_peer_access|cache_peer_domain|always_direct|never_direct|ssl_bump|https_port)$/ { print }' "$egress_config")" = \
+    'include /run/codex-relay.conf' || fail 'egress must use only its generated relay routing fragment'
+relay_rules=$(CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+    fail 'disabled relay fragment generation failed'
+test -z "$(printf '%s\n' "$relay_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
+    fail 'disabled relay must retain direct egress'
+relay_rules=$(CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+    fail 'relay fragment generation failed'
+test "$relay_rules" = "$(printf '%s\n' \
+    'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
+    'cache_peer_access codex_relay allow codex_clients' \
+    'cache_peer_access codex_relay deny all' \
+    'never_direct allow codex_clients' \
+    'never_direct deny all')" || fail 'Codex must use a unique mandatory parent while Antigravity stays direct'
+unset relay_rules
+grep -Fxq 'logformat codex_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
+    grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" || \
+    fail 'Codex CONNECT logs must include destination, status and the selected forwarding path'
+test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cache_peer_access|always_direct|never_direct|ssl_bump)$/ { print }' "$relay_config")" = \
+    "$(printf '%s\n' \
+        'http_port 10.77.0.2:3128' \
+        'acl CONNECT method CONNECT' \
+        'acl TLS_port port 443' \
+        'acl relay_clients src 10.77.0.1/32' \
+        'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
+        'http_access deny !CONNECT' \
+        'http_access deny !TLS_port' \
+        'http_access allow CONNECT relay_clients codex_upstreams' \
+        'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex HTTPS destinations'
+grep -Fxq '    need net' "$relay_service" && \
+    grep -Fxq '    before docker' "$relay_service" && \
+    grep -Fq '/usr/bin/wg-quick up wg-codex' "$relay_service" && \
+    grep -Fq '/usr/bin/wg-quick down wg-codex' "$relay_service" || \
+    fail 'B requires a WireGuard OpenRC service ordered before Docker'
 grep -Fq 'git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" && \
     grep -Fq 'git apply --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
@@ -136,6 +180,27 @@ test -d "$secret_dir" && test ! -L "$secret_dir" || {
 }
 
 "$compose" config --format json > "$tmp"
+
+# Validate JSON strings before extracting them: command substitution strips
+# trailing newlines, which must never turn an injected value into a valid one.
+jq -e '
+  def ipv4:
+    type == "string" and
+    (test("[^0-9.]") | not) and
+    test("^(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}$") and
+    (split(".") | all(.[]; tonumber <= 255));
+  def port:
+    type == "string" and
+    (test("[^0-9]") | not) and test("^[1-9][0-9]{0,4}$") and
+    (tonumber <= 65535);
+  .services["egress-allowlist"].environment |
+  (keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT"] and
+  (.CODEX_RELAY_IP | . == "" or ipv4) and (.CODEX_RELAY_PORT | port)
+' "$tmp" >/dev/null || fail 'CODEX_RELAY_IP must be empty or canonical IPv4; CODEX_RELAY_PORT must be 1..65535'
+relay_ip=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_IP' "$tmp")
+relay_port=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_PORT' "$tmp")
+CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port sh "$egress_entrypoint" --render-config >/dev/null || \
+    fail 'configured relay values were rejected by the startup wrapper'
 
 gateway_domain=$(jq -r '.services.caddy.environment.GATEWAY_DOMAIN // ""' "$tmp")
 case "$gateway_domain" in
@@ -425,6 +490,47 @@ runtime_image=$(lock_value RUNTIME_IMAGE)
 cliproxy_runtime_image=$(lock_value CLIPROXY_RUNTIME_IMAGE)
 squid_image=$(lock_value SQUID_IMAGE)
 
+# Render B independently of site settings, using the same reviewed digest.
+(
+    unset SQUID_IMAGE
+    docker compose --project-name codex-relay --env-file "$lock" \
+        -f "$relay_compose" config --format json > "$relay_tmp"
+)
+jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" \
+    --arg egress_config "$egress_config" --arg egress_entrypoint "$egress_entrypoint" \
+    --arg relay_config "$relay_config" '
+  def squid_security:
+    .image == $squid and .read_only == true and .restart == "unless-stopped" and
+    ((.privileged // false) == false) and .build == null and
+    ((.ports // []) | length == 0) and ((.secrets // []) | length == 0) and
+    (.security_opt | index("no-new-privileges:true")) != null and
+    .logging.driver == "json-file" and
+    .logging.options == {"max-size":"10m", "max-file":"5"} and
+    (.tmpfs | sort) == [
+      "/run:rw,noexec,nosuid,nodev,size=8m",
+      "/var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13",
+      "/var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13"
+    ];
+  def mount($source; $target):
+    .type == "bind" and .source == $source and .target == $target and .read_only == true;
+  (.services["egress-allowlist"] |
+    squid_security and .network_mode == null and
+    (.networks | keys | sort) == ["antigravity_internal", "compat_internal", "egress_external"] and
+    .entrypoint == ["/usr/local/bin/codex-egress-entrypoint.sh"] and
+    .command == ["-f", "/etc/squid/squid.conf", "-NYC"] and
+    (.volumes | length == 2) and
+    any(.volumes[]; mount($egress_config; "/etc/squid/squid.conf")) and
+    any(.volumes[]; mount($egress_entrypoint; "/usr/local/bin/codex-egress-entrypoint.sh"))) and
+  ($relay[0] |
+    (.services | keys) == ["relay"] and
+    (.services.relay |
+      squid_security and .network_mode == "host" and
+      .entrypoint == null and .command == null and
+      ((.networks // {}) | length == 0) and
+      (.volumes | length == 1) and
+      (.volumes[0] | mount($relay_config; "/etc/squid/squid.conf"))))
+' "$tmp" >/dev/null || fail 'A/B Squid entrypoint, mounts, image lock, isolation or log limits changed'
+
 case "$cliproxy_runtime_image" in
     docker.io/library/debian:bookworm-20260824-slim@sha256:*) ;;
     *) fail 'codex-compat requires its own reviewed Debian glibc runtime lock' ;;
@@ -635,6 +741,29 @@ fi
 
 # Validate with the exact digest-locked binary, without project networks, service
 # dependencies, volumes, or secrets. A validation run must not allocate static IPs.
+validate_egress_squid() {
+    docker run --rm --network none --read-only --security-opt no-new-privileges:true \
+        --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
+        --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13 \
+        --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13 \
+        -e "CODEX_RELAY_IP=$1" -e "CODEX_RELAY_PORT=$2" \
+        -v "$egress_config:/etc/squid/squid.conf:ro" \
+        -v "$egress_entrypoint:/usr/local/bin/codex-egress-entrypoint.sh:ro" \
+        --entrypoint /usr/local/bin/codex-egress-entrypoint.sh \
+        "$squid_image" -k parse -f /etc/squid/squid.conf
+}
+validate_egress_squid '' 3128
+validate_egress_squid 10.77.0.2 3128
+if test -n "$relay_ip" && { test "$relay_ip" != 10.77.0.2 || test "$relay_port" != 3128; }; then
+    validate_egress_squid "$relay_ip" "$relay_port"
+fi
+docker run --rm --network none --read-only --security-opt no-new-privileges:true \
+    --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
+    --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13 \
+    --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13 \
+    -v "$relay_config:/etc/squid/squid.conf:ro" \
+    --entrypoint /usr/sbin/squid "$squid_image" -k parse -f /etc/squid/squid.conf
+
 caddy_validation_image=$(jq -r '.services.caddy.image' "$tmp")
 caddy_validation_domain=$(jq -r '.services.caddy.environment.GATEWAY_DOMAIN' "$tmp")
 docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
@@ -648,4 +777,5 @@ docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SER
 
 printf '%s\n' \
     'Compose ingress, network isolation, secrets, and immutable revisions validated' \
-    'Pricing v2, request tmpfs, Caddy policy, PostgreSQL SCRAM auth, and image locks validated'
+    'Pricing v2, request tmpfs, Caddy policy, PostgreSQL SCRAM auth, and image locks validated' \
+    'A/B Squid image parsing, Codex mandatory relay routing and direct Antigravity egress validated'

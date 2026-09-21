@@ -270,8 +270,15 @@ services:
     <<: *common-security
     image: ${SQUID_IMAGE:?Run ./scripts/lock-images.sh first}
     read_only: true
+    entrypoint: ["/usr/local/bin/codex-egress-entrypoint.sh"]
+    # An explicit entrypoint clears the image CMD in Compose; preserve it here.
+    command: ["-f", "/etc/squid/squid.conf", "-NYC"]
+    environment:
+      CODEX_RELAY_IP: ${CODEX_RELAY_IP:-}
+      CODEX_RELAY_PORT: "${CODEX_RELAY_PORT:-3128}"
     volumes:
       - ./deploy/egress/squid.conf:/etc/squid/squid.conf:ro
+      - ./deploy/egress/entrypoint.sh:/usr/local/bin/codex-egress-entrypoint.sh:ro
     tmpfs:
       - /run:rw,noexec,nosuid,nodev,size=8m
       - /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13
