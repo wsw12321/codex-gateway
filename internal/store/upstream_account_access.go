@@ -82,9 +82,10 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 		for rows.Next() {
 			count++
 		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
+		if err := rows.Close(); err != nil {
+			return mapDBError("close upstream authorized users", err)
+		}
+		if err := rows.Err(); err != nil {
 			return mapDBError("read upstream authorized users", err)
 		}
 		if count != len(params.UserIDs) {
