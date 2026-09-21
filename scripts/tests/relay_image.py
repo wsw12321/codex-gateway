@@ -59,6 +59,7 @@ class Sandbox:
         try:
             self.docker(
                 "run", "-d", "--name", self.name, "--network", "none", "--read-only",
+                *(("--ulimit", "nofile=4096:4096") if self.relay else ()),
                 "--security-opt", "no-new-privileges:true",
                 "--tmpfs", "/run:rw,noexec,nosuid,nodev,size=8m",
                 "--tmpfs", "/var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13",

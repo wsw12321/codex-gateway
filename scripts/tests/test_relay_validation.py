@@ -138,6 +138,33 @@ else:
         self.assertIn("CODEX_RELAY_IP=", runs[0])
         self.assertIn("CODEX_RELAY_IP=10.77.0.2", runs[1])
         self.assertIn("/usr/sbin/squid", runs[2])
+        self.assertEqual(runs[2][runs[2].index("--ulimit") + 1], "nofile=4096:4096")
+
+    def test_b_descriptor_limit_cannot_be_removed_or_increased(self):
+        for limit in (None, {}, 4096, {"soft": 4096}, {"hard": 4096},
+                      {"soft": 1048576, "hard": 1048576},
+                      {"soft": 4096, "hard": 1048576},
+                      {"soft": -1, "hard": -1}):
+            with self.subTest(limit=limit):
+                self.relay = copy.deepcopy(self.relay_baseline)
+                service = self.relay["services"]["relay"]
+                if limit is None:
+                    service.pop("ulimits", None)
+                else:
+                    service["ulimits"] = {"nofile": limit}
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("B relay nofile soft and hard limits", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_b_object_memory_cache_must_stay_disabled(self):
+        for directive in ("", "cache_mem 256 MB", "cache_mem 0 MB\ncache_mem 256 MB"):
+            with self.subTest(directive=directive):
+                self.b_config.write_text(self.b_baseline.replace("cache_mem 0 MB", directive))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("B CONNECT-only relay must disable", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
 
     def test_json_environment_injection_fails_before_any_proxy_is_run(self):
         for key, value in (

@@ -108,6 +108,8 @@ test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cac
         'http_access deny !TLS_port' \
         'http_access allow CONNECT relay_clients codex_upstreams' \
         'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex HTTPS destinations'
+test "$(awk '$1 == "cache_mem" { print }' "$relay_config")" = 'cache_mem 0 MB' || \
+    fail 'B CONNECT-only relay must disable the object memory cache'
 grep -Fxq '    need net' "$relay_service" && \
     grep -Fxq '    before docker' "$relay_service" && \
     grep -Fq '/usr/bin/wg-quick up wg-codex' "$relay_service" && \
@@ -496,6 +498,8 @@ squid_image=$(lock_value SQUID_IMAGE)
     docker compose --project-name codex-relay --env-file "$lock" \
         -f "$relay_compose" config --format json > "$relay_tmp"
 )
+jq -e '.services.relay.ulimits.nofile == {"soft":4096, "hard":4096}' \
+    "$relay_tmp" >/dev/null || fail 'B relay nofile soft and hard limits must both be 4096'
 jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" \
     --arg egress_config "$egress_config" --arg egress_entrypoint "$egress_entrypoint" \
     --arg relay_config "$relay_config" '
@@ -758,6 +762,7 @@ if test -n "$relay_ip" && { test "$relay_ip" != 10.77.0.2 || test "$relay_port" 
     validate_egress_squid "$relay_ip" "$relay_port"
 fi
 docker run --rm --network none --read-only --security-opt no-new-privileges:true \
+    --ulimit nofile=4096:4096 \
     --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
     --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13 \
     --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13 \

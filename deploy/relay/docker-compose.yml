@@ -6,6 +6,12 @@ services:
     network_mode: host
     restart: unless-stopped
     read_only: true
+    # Squid sizes descriptor tables from this limit; host defaults can exhaust
+    # the memory budget of a small B VPS before it opens its listener.
+    ulimits:
+      nofile:
+        soft: 4096
+        hard: 4096
     security_opt:
       - no-new-privileges:true
     volumes:
