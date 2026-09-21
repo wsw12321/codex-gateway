@@ -68,36 +68,13 @@ grep -Fq "\"$model\"" "$response_file" || {
     printf '%s\n' 'sidecar smoke test did not find the requested model' >&2
     exit 1
 }
-# Exercise both translations before restoring the sidecar after login.
-body=$(printf '{"model":"%s","input":"Reply with OK.","stream":false,"store":false}' "$model")
-request POST /v1/responses "$body"
-grep -Eq '"object"[[:space:]]*:[[:space:]]*"response"' "$response_file" &&
-    grep -Eq '"status"[[:space:]]*:[[:space:]]*"completed"' "$response_file" || {
-    printf '%s\n' 'sidecar smoke test did not observe a completed JSON response' >&2
+# Generation must traverse Gateway authentication, personal billing and group
+# admission. Direct sidecar generation has no trusted user identity and fails
+# closed; use a real Gateway API key for the separate JSON/SSE generation smoke.
+request GET /internal/upstream-accounts/capabilities ''
+grep -Fq '"upstream_account_access_v1"' "$response_file" || {
+    printf '%s\n' 'sidecar smoke test did not observe account access enforcement capability' >&2
     exit 1
 }
-body=$(printf '{"model":"%s","input":"Reply with OK.","stream":true,"store":false}' "$model")
-request POST /v1/responses "$body"
-grep -q 'response.completed' "$response_file" || {
-    printf '%s\n' 'sidecar smoke test did not observe response.completed' >&2
-    exit 1
-}
-# Every Codex response must carry the reviewed account attribution header.
-awk '
-    !headers_done && $0 ~ /^\r?$/ { headers_done = 1; next }
-    !headers_done && tolower($0) ~ /^x-codex-upstream-account:/ {
-        count++
-        value = $0
-        sub(/\r$/, "", value)
-        sub(/^[^:]*:[[:space:]]*/, "", value)
-        sub(/[[:space:]]*$/, "", value)
-        if (length(value) != 16 || value !~ /^[0-9a-f]+$/) invalid = 1
-    }
-    END { exit !(count == 1 && invalid == 0) }
-' "$response_file" || {
-    printf '%s\n' 'sidecar smoke test did not observe upstream account attribution' >&2
-    exit 1
-}
-
-# Never print the upstream response body.
-printf '%s\n' 'sidecar account-list, model-list, JSON and streaming Responses smoke tests passed'
+printf '%s\n' 'sidecar account-list, model-list and account access capability smoke tests passed'
+printf '%s\n' 'Run JSON and streaming Responses through Gateway with a real user API key to verify generation and billing'

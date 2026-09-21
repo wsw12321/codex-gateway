@@ -8,6 +8,7 @@ const sectionTitles = {
   keys: "API Keys",
   guide: "使用指导",
   billing: "额度与订阅",
+  groups: "群组额度",
   security: "账号安全",
   usage: "使用统计",
   "model-access": "模型权限",
@@ -15,6 +16,7 @@ const sectionTitles = {
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("model-access");
+ownerOnlySections.add("groups");
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -55,6 +57,9 @@ let billingBatchRefreshing = false;
 let globalUserSearch = null;
 let modelAccessModels = [];
 let modelAccessUsers = [];
+let modelAccessSelectedModels = new Set();
+let modelAccessSelectedUsers = new Set();
+let modelAccessSelectionInitialized = false;
 let modelAccessModelsRequestSequence = 0;
 let modelAccessUsersRequestSequence = 0;
 let upstreamAccountRequestSequence = 0;
@@ -232,6 +237,7 @@ function setBusy(host, busy, label = "处理中…") {
   if (host.matches?.("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form") ||
       host.closest?.(".billing-subscription-form, .billing-pagination")) syncBillingUserControls();
   if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
+  if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh") syncGroupControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…", requestCurrent = null) {
@@ -299,6 +305,7 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  resetGroupManagement();
   identityGeneration++;
   cancelReauthentication();
   invitationToken = "";
@@ -326,6 +333,9 @@ function handleUnauthorized() {
   billingLedgerNextOffset = 0;
   modelAccessModels = [];
   modelAccessUsers = [];
+  modelAccessSelectedModels.clear();
+  modelAccessSelectedUsers.clear();
+  modelAccessSelectionInitialized = false;
   all("dialog[open]").forEach((dialog) => dialog.close());
   clearSensitiveDOM();
   hide("dashboard");
@@ -355,7 +365,10 @@ function handleUnauthorized() {
   byId("billing-ledger-page").textContent = "—";
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
-  byId("model-access-model-select").replaceChildren(option("", "登录后加载模型"));
+  byId("model-access-model-select").replaceChildren(element("p", {text: "登录后加载模型"}));
+  byId("model-access-model-search").value = "";
+  byId("model-access-model-count").textContent = "已选 0 个模型";
+  byId("model-access-default-state").textContent = "请选择要管理的模型。";
   byId("model-access-enabled-count").textContent = "—";
   byId("model-access-disabled-count").textContent = "—";
   byId("model-access-user-rows").replaceChildren(tableMessage(5, "登录后加载用户权限。"));
@@ -944,6 +957,7 @@ function renderState(value) {
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
     identityGeneration++;
+    resetGroupManagement();
     billingRequestSequence++;
     billingUsersRequestSequence++;
     globalRequestSequence++;
@@ -1482,6 +1496,7 @@ function renderBillingAdminValues(detail) {
 
 function renderBillingDetail(detail) {
   billingDetail = detail || {};
+  renderBillingGroup(detail?.group);
   const user = billingUserForDetail(detail);
   const cash = billingCashBalance(detail);
   byId("billing-cash-balance").textContent = formatUSD(cash, formatUSD("0"));
@@ -2252,12 +2267,8 @@ async function changeBillingLedgerPage(offset) {
   announce("账务流水已更新。");
 }
 
-function selectedModelAccessModel() {
-  return String(byId("model-access-model-select").value || "");
-}
-
-function modelAccessSummary(model = selectedModelAccessModel()) {
-  return modelAccessModels.find((item) => item.model === model) || null;
+function selectedModelAccessModels() {
+  return modelAccessModels.filter((item) => modelAccessSelectedModels.has(item.model)).map((item) => item.model);
 }
 
 function modelAccessReason() {
@@ -2271,67 +2282,92 @@ function modelAccessReason() {
 }
 
 function selectedModelAccessUserIDs() {
-  return all(".model-access-user-select:checked", byId("model-access-user-rows")).map((input) => input.value);
+  return [...modelAccessSelectedUsers];
 }
 
 function syncModelAccessSelection() {
   const checkboxes = all(".model-access-user-select", byId("model-access-user-rows"));
   const selected = checkboxes.filter((input) => input.checked).length;
+  const models = selectedModelAccessModels().length;
+  const users = modelAccessSelectedUsers.size;
   const selectAll = byId("model-access-select-all");
   selectAll.disabled = checkboxes.length === 0;
   selectAll.checked = checkboxes.length > 0 && selected === checkboxes.length;
   selectAll.indeterminate = selected > 0 && selected < checkboxes.length;
-  byId("model-access-selected-count").textContent = `已选 ${formatInteger(selected)}`;
-  byId("model-access-enable-selected").disabled = selected === 0;
-  byId("model-access-disable-selected").disabled = selected === 0;
+  byId("model-access-selected-count").textContent = `已选 ${formatInteger(models)} 个模型 × ${formatInteger(users)} 位用户 · ${formatInteger(models * users)} 项权限`;
+  byId("model-access-enable-selected").disabled = users === 0 || models === 0;
+  byId("model-access-disable-selected").disabled = users === 0 || models === 0;
 }
 
-function renderModelAccessSummary(model = selectedModelAccessModel()) {
-  const summary = modelAccessSummary(model);
-  const hasModel = Boolean(summary);
-  byId("model-access-default-enabled").disabled = !hasModel;
+function renderModelAccessSummary() {
+  const selected = modelAccessModels.filter((item) => modelAccessSelectedModels.has(item.model));
+  const hasModel = selected.length > 0;
+  const enabledDefaults = selected.filter((item) => item.default_enabled).length;
+  const checkbox = byId("model-access-default-enabled");
+  checkbox.disabled = !hasModel;
+  checkbox.checked = hasModel && enabledDefaults === selected.length;
+  checkbox.indeterminate = enabledDefaults > 0 && enabledDefaults < selected.length;
   byId("model-access-default-form").querySelector("button[type=submit]").disabled = !hasModel;
   byId("model-access-enable-all").disabled = !hasModel;
   byId("model-access-disable-all").disabled = !hasModel;
-  byId("model-access-default-enabled").checked = Boolean(summary?.default_enabled);
-  byId("model-access-enabled-count").textContent = hasModel ? formatInteger(summary.enabled_user_count) : "—";
-  byId("model-access-disabled-count").textContent = hasModel ? formatInteger(summary.disabled_user_count) : "—";
+  byId("model-access-default-state").textContent = hasModel
+    ? `所选模型当前默认值：${checkbox.indeterminate ? "部分启用" : checkbox.checked ? "全部启用" : "全部禁用"}。保存将统一应用勾选状态。`
+    : "请选择要管理的模型。";
+  byId("model-access-model-count").textContent = `已选 ${formatInteger(selected.length)} / ${formatInteger(modelAccessModels.length)} 个模型`;
+  byId("model-access-enabled-count").textContent = hasModel ? formatInteger(selected.reduce((total, item) => total + item.enabled_user_count, 0)) : "—";
+  byId("model-access-disabled-count").textContent = hasModel ? formatInteger(selected.reduce((total, item) => total + item.disabled_user_count, 0)) : "—";
+  syncModelAccessSelection();
 }
 
 function renderModelAccessUsers(result) {
-  modelAccessUsers = Array.isArray(result?.users) ? result.users : [];
+  const grouped = new Map();
+  for (const entry of Array.isArray(result?.users) ? result.users : []) {
+    const user = grouped.get(entry.user_id) || {...entry, enabled_count: 0, model_count: 0};
+    user.enabled_count += entry.enabled ? 1 : 0;
+    user.model_count++;
+    if (entry.updated_at > user.updated_at) user.updated_at = entry.updated_at;
+    grouped.set(entry.user_id, user);
+  }
+  modelAccessUsers = [...grouped.values()];
+  modelAccessSelectedUsers = new Set([...modelAccessSelectedUsers].filter((id) => grouped.has(id)));
   const rows = modelAccessUsers.map((user) => {
     const checkbox = element("input", {
       type: "checkbox", className: "model-access-checkbox model-access-user-select",
       attributes: {value: user.user_id, "aria-label": `选择用户 ${user.username || user.user_id}`},
     });
-    checkbox.addEventListener("change", syncModelAccessSelection);
-
+    checkbox.checked = modelAccessSelectedUsers.has(user.user_id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) modelAccessSelectedUsers.add(user.user_id);
+      else modelAccessSelectedUsers.delete(user.user_id);
+      syncModelAccessSelection();
+    });
+    const fullyEnabled = user.enabled_count === user.model_count;
     const permission = element("span", {
-      className: "status-badge", text: user.enabled ? "已启用" : "已禁用",
-      dataset: {status: user.enabled ? "active" : "disabled"},
+      className: "status-badge", text: fullyEnabled ? "全部启用" : user.enabled_count ? "部分启用" : "全部禁用",
+      dataset: {status: fullyEnabled ? "active" : user.enabled_count ? "pending" : "disabled"},
     });
-    const toggle = element("button", {
-      type: "button", className: user.enabled ? "secondary model-access-toggle" : "model-access-toggle",
-      text: user.enabled ? "禁用" : "启用",
-      attributes: {role: "switch", "aria-checked": user.enabled ? "true" : "false"},
+    const buttons = [true, false].map((enabled) => {
+      const button = element("button", {
+        type: "button", className: enabled ? "model-access-toggle" : "secondary model-access-toggle",
+        text: enabled ? "启用" : "禁用",
+      });
+      button.disabled = enabled ? fullyEnabled : user.enabled_count === 0;
+      button.addEventListener("click", () => runButton(button, async () => {
+        await mutateUserModelAccess(enabled, "selected", [user.user_id]);
+      }, enabled ? "启用中…" : "禁用中…"));
+      return button;
     });
-    toggle.addEventListener("click", () => runButton(toggle, async () => {
-      await mutateUserModelAccess(!user.enabled, "selected", [user.user_id]);
-    }, user.enabled ? "禁用中…" : "启用中…"));
-
     const identity = element("div", {className: "model-access-user-identity"},
       element("strong", {text: user.display_name || user.username || user.user_id}),
       element("small", {text: `${user.username || "—"} · ${user.user_id}`}),
     );
     if (user.updated_at) identity.append(element("small", {text: `权限更新：${formatDateTime(user.updated_at, "—")}`}));
-    const role = user.role === "owner" ? "Owner" : "Member";
     return element("tr", {},
       element("td", {className: "model-access-check-cell"}, checkbox),
       element("td", {}, identity),
-      element("td", {}, element("span", {text: role}), statusBadge(user.status)),
-      element("td", {}, permission),
-      element("td", {}, toggle),
+      element("td", {}, element("span", {text: user.role === "owner" ? "Owner" : "Member"}), statusBadge(user.status)),
+      element("td", {}, permission, element("small", {text: `${user.enabled_count} / ${user.model_count} 个模型`})),
+      element("td", {}, element("div", {className: "button-group"}, ...buttons)),
     );
   });
   byId("model-access-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(5, "当前没有用户。")]));
@@ -2339,36 +2375,50 @@ function renderModelAccessUsers(result) {
   byId("model-access-user-rows").closest("table").parentElement.setAttribute("aria-busy", "false");
 }
 
-function renderModelAccessModels(result, preferredModel = "") {
-  if (!Array.isArray(result?.models)) throw new Error("模型权限目录响应格式无效。");
-  modelAccessModels = result.models.filter((item) => item && typeof item.model === "string" && item.model);
-  const select = byId("model-access-model-select");
-  select.replaceChildren(...(modelAccessModels.length
-    ? modelAccessModels.map((item) => option(item.model, item.model))
-    : [option("", "没有可管理的模型")]));
-  const selected = modelAccessModels.some((item) => item.model === preferredModel)
-    ? preferredModel : (modelAccessModels[0]?.model || "");
-  select.value = selected;
-  select.disabled = modelAccessModels.length === 0;
-  renderModelAccessSummary(selected);
-  if (!selected) {
-    modelAccessUsers = [];
-    byId("model-access-user-rows").replaceChildren(tableMessage(5, "定价目录中没有可管理的模型。"));
-    syncModelAccessSelection();
-  }
-  return selected;
+function filterModelAccessModels() {
+  const query = byId("model-access-model-search").value.trim().toLowerCase();
+  all(".model-access-model-choice", byId("model-access-model-select")).forEach((label) => {
+    label.hidden = !label.dataset.model.toLowerCase().includes(query);
+  });
 }
 
-async function loadModelAccessUsers(model = selectedModelAccessModel()) {
+function renderModelAccessModels(result) {
+  if (!Array.isArray(result?.models)) throw new Error("模型权限目录响应格式无效。");
+  modelAccessModels = result.models.filter((item) => item && typeof item.model === "string" && item.model);
+  const available = new Set(modelAccessModels.map((item) => item.model));
+  modelAccessSelectedModels = new Set([...modelAccessSelectedModels].filter((model) => available.has(model)));
+  if (!modelAccessSelectionInitialized && modelAccessModels.length) {
+    modelAccessSelectedModels.add(modelAccessModels[0].model);
+    modelAccessSelectionInitialized = true;
+  }
+  const choices = modelAccessModels.map((item) => {
+    const input = element("input", {type: "checkbox", className: "model-access-checkbox model-access-model-checkbox", attributes: {value: item.model}});
+    input.checked = modelAccessSelectedModels.has(item.model);
+    return element("label", {className: "model-access-model-choice", dataset: {model: item.model}}, input, element("span", {text: item.model}));
+  });
+  byId("model-access-model-select").replaceChildren(...(choices.length ? choices : [element("p", {text: "没有可管理的模型"})]));
+  filterModelAccessModels();
+  renderModelAccessSummary();
+}
+
+async function loadModelAccessUsers() {
   const sequence = ++modelAccessUsersRequestSequence;
-  if (!model) return;
+  const models = selectedModelAccessModels();
   const tableWrap = byId("model-access-user-rows").closest("table").parentElement;
+  if (!models.length) {
+    tableWrap.setAttribute("aria-busy", "false");
+    byId("model-access-user-rows").replaceChildren(tableMessage(5, "选择模型后加载用户。已选用户会保留。"));
+    syncModelAccessSelection();
+    return;
+  }
   tableWrap.setAttribute("aria-busy", "true");
   byId("model-access-user-rows").replaceChildren(tableMessage(5, "正在加载用户权限…"));
   syncModelAccessSelection();
   try {
-    const result = await api(`/admin/model-access/models/${encodeURIComponent(model)}/users`);
-    if (sequence !== modelAccessUsersRequestSequence || model !== selectedModelAccessModel()) return;
+    const query = new URLSearchParams();
+    models.forEach((model) => query.append("models", model));
+    const result = await api(`/admin/model-access/users?${query}`);
+    if (sequence !== modelAccessUsersRequestSequence || JSON.stringify(models) !== JSON.stringify(selectedModelAccessModels())) return;
     renderModelAccessUsers(result);
   } catch (error) {
     if (sequence === modelAccessUsersRequestSequence) {
@@ -2380,14 +2430,14 @@ async function loadModelAccessUsers(model = selectedModelAccessModel()) {
   }
 }
 
-async function loadModelAccess(preferredModel = selectedModelAccessModel()) {
+async function loadModelAccess() {
   const sequence = ++modelAccessModelsRequestSequence;
   show("model-access-loading");
   try {
     const result = await api("/admin/model-access/models");
     if (sequence !== modelAccessModelsRequestSequence) return;
-    const selected = renderModelAccessModels(result, preferredModel);
-    if (selected) await loadModelAccessUsers(selected);
+    renderModelAccessModels(result);
+    await loadModelAccessUsers();
   } finally {
     if (sequence === modelAccessModelsRequestSequence) hide("model-access-loading");
   }
@@ -2395,42 +2445,36 @@ async function loadModelAccess(preferredModel = selectedModelAccessModel()) {
 
 async function updateModelAccessDefault(event) {
   const form = event.currentTarget;
-  const model = selectedModelAccessModel();
+  const models = selectedModelAccessModels();
   const reason = String(form.elements.reason.value || "").trim();
-  if (!model) throw new Error("请先选择模型。");
+  if (!models.length) throw new Error("请先选择模型。");
   if (Array.from(reason).length < 1 || Array.from(reason).length > 500) throw new Error("请填写 1–500 字的操作原因。");
   const enabled = form.elements.enabled.checked;
   try {
-    const result = await sensitiveAction(() => api(`/admin/model-access/models/${encodeURIComponent(model)}/default`, {
-      method: "PUT", body: JSON.stringify({enabled, reason}),
+    const result = await sensitiveAction(() => api("/admin/model-access/defaults", {
+      method: "PUT", body: JSON.stringify({models, enabled, reason}),
     }));
     form.elements.reason.value = "";
-    notice(`已更新 ${model} 的新用户默认权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
-    await loadModelAccess(model);
+    notice(`已更新 ${formatInteger(models.length)} 个模型的新用户默认权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
+    await loadModelAccess();
   } catch (error) {
-    renderModelAccessSummary(model);
+    renderModelAccessSummary();
     throw error;
   }
 }
 
 async function mutateUserModelAccess(enabled, scope, userIDs = []) {
-  const model = selectedModelAccessModel();
-  if (!model) throw new Error("请先选择模型。");
-  if (scope === "selected" && (userIDs.length < 1 || userIDs.length > 5000)) {
-    throw new Error("请选择 1–5000 个用户。");
-  }
-  const reason = modelAccessReason();
-  const payload = {enabled, scope, reason};
+  const models = selectedModelAccessModels();
+  if (!models.length) throw new Error("请先选择模型。");
+  if (scope === "selected" && (userIDs.length < 1 || userIDs.length > 5000)) throw new Error("请选择 1–5000 个用户。");
+  const payload = {models, enabled, scope, reason: modelAccessReason()};
   if (scope === "selected") payload.user_ids = [...new Set(userIDs)];
-  const result = await sensitiveAction(() => api(`/admin/model-access/models/${encodeURIComponent(model)}/users`, {
+  const result = await sensitiveAction(() => api("/admin/model-access/users", {
     method: "PUT", body: JSON.stringify(payload),
   }));
   byId("model-access-users-form").elements.reason.value = "";
-  notice(
-    `${enabled ? "已启用" : "已禁用"} ${formatInteger(result.target_count)} 位用户的 ${model} 权限；实际变更 ${formatInteger(result.changed_count)} 位。`,
-    "ok",
-  );
-  await loadModelAccess(model);
+  notice(`${enabled ? "已启用" : "已禁用"} ${formatInteger(models.length)} 个模型的 ${formatInteger(result.target_count)} 项用户权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
+  await loadModelAccess();
 }
 
 async function mutateSelectedModelAccess(enabled) {
@@ -2442,9 +2486,16 @@ async function mutateSelectedModelAccess(enabled) {
 }
 
 async function mutateAllModelAccess(enabled) {
-  const model = selectedModelAccessModel();
-  if (!enabled && !window.confirm(`确认禁用全部现有用户的 ${model} 权限？下一次请求将立即被拒绝。`)) return;
+  if (!enabled && !window.confirm(`确认禁用全部现有用户的 ${selectedModelAccessModels().length} 个所选模型权限？下一次请求将立即被拒绝。`)) return;
   await mutateUserModelAccess(enabled, "all");
+}
+
+function changedModelAccessSelection() {
+  modelAccessSelectionInitialized = true;
+  renderModelAccessSummary();
+  setLocalMessage(byId("model-access-default-form"));
+  setLocalMessage(byId("model-access-users-form"));
+  loadModelAccessUsers().catch((error) => notice(`用户模型权限加载失败：${friendlyError(error)}`, "error"));
 }
 
 function usageNameMaps() {
@@ -2735,6 +2786,402 @@ function clearUpstreamQuotaTimers() {
   upstreamQuotaStaleTimers.clear();
 }
 
+let managedGroups = [];
+let managedGroup = null;
+let groupUsers = [];
+let groupSelectedUsers = new Set();
+let groupListSequence = 0;
+let groupDetailSequence = 0;
+let groupOperation = false;
+let upstreamAccessAccount = null;
+let upstreamAccessUsers = [];
+let upstreamAccessSelected = new Set();
+let upstreamAccessSequence = 0;
+
+function resetGroupManagement() {
+  groupListSequence++;
+  groupDetailSequence++;
+  upstreamAccessSequence++;
+  managedGroups = [];
+  managedGroup = null;
+  groupUsers = [];
+  groupSelectedUsers.clear();
+  upstreamAccessSelected.clear();
+  upstreamAccessAccount = null;
+  upstreamAccessUsers = [];
+  groupOperation = false;
+  byId("group-list").replaceChildren(emptyState("登录后加载群组。"));
+  byId("group-member-list").replaceChildren();
+  byId("upstream-access-user-list").replaceChildren();
+  byId("group-detail").classList.add("hidden");
+  byId("group-detail-name").textContent = "—";
+  byId("group-detail-period").textContent = "—";
+  byId("group-metrics").replaceChildren();
+  byId("upstream-access-account").textContent = "—";
+  groupMessage();
+  for (const id of ["group-dialog", "upstream-access-dialog"]) {
+    if (byId(id).open) byId(id).close();
+  }
+  renderBillingGroup(null);
+  for (const id of ["group-form", "group-members-form", "upstream-access-form"]) {
+    const form = byId(id);
+    form.reset();
+    delete form.dataset.operationId;
+    delete form.dataset.operationPayload;
+    setBusy(form, false);
+    setLocalMessage(form);
+  }
+  for (const id of ["groups-refresh", "group-members-add", "group-members-remove", "group-archive"]) setBusy(byId(id), false);
+}
+
+function groupIdentityCurrent() {
+  const generation = identityGeneration;
+  const actorUserID = state?.user?.id;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner" && state.user.id === actorUserID;
+}
+
+function groupPeriodLabel(group) {
+  return ({day: "日 · 24 小时", week: "周 · 7 天", month: "月 · 31 天"})[group?.period] || `每 ${group?.custom_days || "—"} 天`;
+}
+
+function groupMetrics(group) {
+  return [
+    ["周期额度", group.limit_usd], ["实际已用", group.used_usd], ["剩余额度", group.remaining_usd],
+  ].map(([label, value]) => element("article", {}, element("span", {text: label}), element("strong", {text: formatUSD(value)})));
+}
+
+function renderBillingGroup(group) {
+  const host = byId("billing-group");
+  host.classList.toggle("hidden", !group);
+  host.replaceChildren();
+  if (!group) return;
+  host.append(element("h3", {text: `群组额度 · ${group.name}`}),
+    element("div", {className: "metrics compact"}, ...groupMetrics(group)),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组额度与个人可用资金必须同时有剩余。`}),
+  );
+}
+
+function groupMessage(message = "", isError = false) {
+  const host = byId("groups-message");
+  host.textContent = message;
+  host.dataset.kind = isError ? "error" : "ok";
+  host.setAttribute("role", isError ? "alert" : "status");
+  host.classList.toggle("hidden", !message);
+}
+
+function renderGroupList() {
+  const cards = managedGroups.map((group) => {
+    const button = element("button", {type: "button", className: "group-select secondary", attributes: {"aria-pressed": String(managedGroup?.id === group.id)}},
+      element("strong", {text: group.name}),
+      element("span", {text: group.archived_at ? "已归档" : `${group.member_count} 人 · ${groupPeriodLabel(group)}`}),
+      element("small", {text: `剩余 ${formatUSD(group.remaining_usd)} / ${formatUSD(group.limit_usd)}`}),
+    );
+    button.disabled = groupOperation;
+    button.addEventListener("click", () => runButton(button, () => loadGroupDetail(group.id), "加载中…"));
+    return button;
+  });
+  byId("group-list").replaceChildren(...(cards.length ? cards : [emptyState("还没有群组，创建后即可为成员设置共同额度。") ]));
+}
+
+async function loadGroups(preferredID = managedGroup?.id || "") {
+  if (groupOperation || loggingOut || state?.user?.role !== "owner") return;
+  const sequence = ++groupListSequence;
+  const generation = identityGeneration;
+  const identityCurrent = groupIdentityCurrent();
+  const current = () => identityCurrent() && sequence === groupListSequence && !groupOperation;
+  let result, users;
+  try { [result, users] = await Promise.all([api("/admin/groups", undefined, current), api("/admin/billing/users", undefined, current)]); }
+  catch (error) { if (!current()) return; throw error; }
+  if (sequence !== groupListSequence || generation !== identityGeneration || groupOperation || loggingOut || state?.user?.role !== "owner") return;
+  if (!Array.isArray(result?.groups) || !Array.isArray(users?.users)) throw new Error("群组列表响应格式无效。");
+  managedGroups = result.groups;
+  groupUsers = users.users;
+  const id = managedGroups.some((g) => g.id === preferredID) ? preferredID : managedGroups.find((g) => !g.archived_at)?.id;
+  renderGroupList();
+  if (id) await loadGroupDetail(id);
+  else { managedGroup = null; hide("group-detail"); }
+}
+
+async function loadGroupDetail(id) {
+  if (groupOperation || loggingOut || state?.user?.role !== "owner") return;
+  const sequence = ++groupDetailSequence;
+  const generation = identityGeneration;
+  const identityCurrent = groupIdentityCurrent();
+  const current = () => identityCurrent() && sequence === groupDetailSequence && !groupOperation;
+  let group;
+  try { group = await api(`/admin/groups/${encodeURIComponent(id)}`, undefined, current); }
+  catch (error) { if (!current()) return; throw error; }
+  if (sequence !== groupDetailSequence || generation !== identityGeneration || groupOperation || loggingOut || state?.user?.role !== "owner") return;
+  if (group?.id !== id || !Array.isArray(group.members)) throw new Error("群组详情响应格式无效。");
+  if (managedGroup?.id !== id) groupSelectedUsers.clear();
+  managedGroup = group;
+  byId("group-detail-name").textContent = group.name;
+  byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}${group.archived_at ? " · 已归档" : ""}`;
+  byId("group-metrics").replaceChildren(...groupMetrics(group));
+  show("group-detail");
+  renderGroupList();
+  renderGroupMembers();
+}
+
+function matchingManagedUsers(search, users = groupUsers) {
+  const term = String(search || "").trim().toLocaleLowerCase();
+  return users.filter((user) => !term || `${user.username} ${user.display_name} ${user.id}`.toLocaleLowerCase().includes(term));
+}
+
+function groupUserAvailable(user) {
+  return !user.group_id || user.group_id === managedGroup?.id;
+}
+
+function renderGroupMembers() {
+  const members = new Map((managedGroup?.members || []).map((member) => [member.user_id, member]));
+  const rows = matchingManagedUsers(byId("group-member-search").value).map((user) => {
+    const member = members.get(user.id);
+    const checkbox = element("input", {type: "checkbox", attributes: {"aria-label": `选择用户 ${user.username || user.id}`}});
+    checkbox.checked = groupSelectedUsers.has(user.id);
+    checkbox.disabled = groupOperation || !groupUserAvailable(user) || Boolean(managedGroup?.archived_at);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) groupSelectedUsers.add(user.id); else groupSelectedUsers.delete(user.id);
+      syncGroupControls();
+    });
+    const description = member ? `当前成员 · 本期 ${formatUSD(member.used_usd)}` : user.group_id ? "已加入其他群组，需先移除" : "未加入群组";
+    return element("label", {className: "user-check-row"}, checkbox,
+      element("span", {}, element("strong", {text: user.display_name || user.username}), element("small", {text: `${user.username} · ${description}`})));
+  });
+  byId("group-member-list").replaceChildren(...(rows.length ? rows : [emptyState("没有匹配的用户。") ]));
+  syncGroupControls();
+}
+
+function syncGroupControls() {
+  const unavailable = groupOperation || !managedGroup || Boolean(managedGroup.archived_at) || loggingOut || state?.user?.role !== "owner";
+  const members = new Set((managedGroup?.members || []).map((member) => member.user_id));
+  const selected = [...groupSelectedUsers];
+  byId("group-selected-count").textContent = `已选 ${selected.length} 人`;
+  byId("group-members-add").disabled = unavailable || !selected.some((id) => !members.has(id));
+  byId("group-members-remove").disabled = unavailable || !selected.some((id) => members.has(id));
+  byId("group-archive").disabled = unavailable || members.size > 0;
+  byId("group-edit").disabled = unavailable;
+  byId("group-create").disabled = groupOperation;
+  byId("groups-refresh").disabled = groupOperation;
+  byId("group-select-visible").disabled = unavailable;
+  byId("group-clear-selection").disabled = groupOperation;
+}
+
+function openGroupEditor(group = null) {
+  if (groupOperation || state?.user?.role !== "owner") return;
+  const form = byId("group-form");
+  form.reset();
+  delete form.dataset.operationId;
+  delete form.dataset.operationPayload;
+  form.elements.group_id.value = group?.id || "";
+  form.elements.name.value = group?.name || "";
+  form.elements.limit_usd.value = group ? String(group.limit_usd).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") : "";
+  form.elements.period.value = group?.period || "month";
+  form.elements.custom_days.value = String(group?.custom_days || 14);
+  byId("group-dialog-title").textContent = group ? "编辑群组额度" : "创建群组";
+  syncGroupPeriodInput();
+  openDialog("group-dialog");
+}
+
+function syncGroupPeriodInput() {
+  const form = byId("group-form");
+  const custom = form.elements.period.value === "custom";
+  byId("group-custom-days-label").classList.toggle("hidden", !custom);
+  form.elements.custom_days.disabled = !custom;
+  form.elements.custom_days.required = custom;
+}
+
+async function groupMutation(host, path, method, payload) {
+  if (groupOperation) throw new Error("请等待当前群组操作完成。");
+  const fingerprint = JSON.stringify({path, method, payload});
+  if (host.dataset.operationPayload !== fingerprint) {
+    host.dataset.operationPayload = fingerprint;
+    host.dataset.operationId = crypto.randomUUID();
+  }
+  const generation = identityGeneration;
+  const current = groupIdentityCurrent();
+  const body = JSON.stringify({...payload, operation_id: host.dataset.operationId});
+  groupOperation = true;
+  groupListSequence++;
+  groupDetailSequence++;
+  syncGroupControls();
+  try {
+    const group = await sensitiveAction(() => api(path, {method, body}, current), current);
+    if (generation !== identityGeneration || loggingOut) return null;
+    delete host.dataset.operationId;
+    delete host.dataset.operationPayload;
+    return group;
+  } finally {
+    if (generation === identityGeneration) {
+      groupOperation = false;
+      syncGroupControls();
+    }
+  }
+}
+
+async function refreshGroupsAfterWrite(id, message) {
+  groupMessage(message);
+  try { await loadGroups(id); }
+  catch (error) { groupMessage(`${message} 刷新失败：${friendlyError(error)}，请点击刷新。`, true); }
+}
+
+async function saveGroup(event) {
+  const form = event.currentTarget;
+  const id = form.elements.group_id.value;
+  const amount = String(form.elements.limit_usd.value || "").trim();
+  if (!/^(0|[1-9][0-9]{0,17})(\.[0-9]{1,6})?$/.test(amount)) {
+    throw new Error("额度必须大于或等于 0，最多 18 位整数和 6 位小数。");
+  }
+  const payload = {name: form.elements.name.value.trim(), limit_usd: amount, period: form.elements.period.value,
+    custom_days: form.elements.period.value === "custom" ? Number(form.elements.custom_days.value) : 0,
+    reason: billingReason(form)};
+  if (form.elements.starts_at.value) payload.starts_at = new Date(form.elements.starts_at.value).toISOString();
+  const current = managedGroup?.id === id ? managedGroup : null;
+  if (current && (payload.period !== current.period || payload.custom_days !== current.custom_days || payload.starts_at) &&
+      !window.confirm("修改周期或起点会立即关闭旧期并建立新期；已接收的请求仍记入旧期。确认修改？")) return;
+  const group = await groupMutation(form, id ? `/admin/groups/${encodeURIComponent(id)}` : "/admin/groups", id ? "PUT" : "POST", payload);
+  if (!group) return;
+  byId("group-dialog").close();
+  await refreshGroupsAfterWrite(group.id, "群组额度已保存。");
+}
+
+async function changeGroupMembers(action) {
+  const group = managedGroup;
+  if (!group || groupOperation) return;
+  const members = new Set(group.members.map((member) => member.user_id));
+  const ids = [...groupSelectedUsers].filter((id) => action === "add" ? !members.has(id) : members.has(id));
+  if (!ids.length) return;
+  const form = byId("group-members-form");
+  const result = await groupMutation(form, `/admin/groups/${encodeURIComponent(group.id)}/members`, "PUT", {action, user_ids: ids, reason: billingReason(form)});
+  if (!result) return;
+  groupSelectedUsers.clear();
+  await refreshGroupsAfterWrite(group.id, `已${action === "add" ? "加入" : "移除"} ${ids.length} 位成员。`);
+}
+
+async function archiveSelectedGroup() {
+  const group = managedGroup;
+  if (!group || group.members.length || groupOperation) return;
+  const form = byId("group-members-form");
+  const reason = billingReason(form);
+  if (!window.confirm(`确认归档空群组“${group.name}”？历史用量会保留。`)) return;
+  if (await groupMutation(form, `/admin/groups/${encodeURIComponent(group.id)}`, "DELETE", {reason})) {
+    await refreshGroupsAfterWrite(group.id, "群组已归档，历史记录已保留。");
+  }
+}
+
+function upstreamAccessBlock(account) {
+  const exclusive = account.access_mode === "exclusive";
+  const button = element("button", {type: "button", className: "secondary upstream-access-button", text: "设置使用权限"});
+  button.disabled = !account.id;
+  button.addEventListener("click", () => runButton(button, () => openUpstreamAccess(account), "加载用户…"));
+  return element("section", {className: "upstream-access"},
+    element("div", {}, element("strong", {text: exclusive ? `专属 · ${(account.authorized_user_ids || []).length} 人` : "共享 · 所有用户可用"}),
+      element("small", {text: exclusive ? "仅授权用户可参与此账号分配" : "所有用户均可参与此账号分配"})), button);
+}
+
+async function openUpstreamAccess(account) {
+  if (loggingOut || state?.user?.role !== "owner" || upstreamAccountOperation || !upstreamAccountSyncHealthy) return;
+  const sequence = ++upstreamAccessSequence;
+  const generation = identityGeneration;
+  const identityCurrent = groupIdentityCurrent();
+  const current = () => identityCurrent() && sequence === upstreamAccessSequence;
+  let result;
+  try { result = await api("/admin/billing/users", undefined, current); }
+  catch (error) { if (!current()) return; throw error; }
+  if (sequence !== upstreamAccessSequence || generation !== identityGeneration || loggingOut) return;
+  if (!Array.isArray(result?.users)) throw new Error("用户列表响应格式无效。");
+  upstreamAccessUsers = result.users;
+  upstreamAccessAccount = account;
+  upstreamAccessSelected = new Set(account.authorized_user_ids || []);
+  const form = byId("upstream-access-form");
+  form.reset();
+  form.elements.mode.value = account.access_mode || "shared";
+  byId("upstream-access-account").textContent = account.email_masked || account.id;
+  renderUpstreamAccessUsers();
+  openDialog("upstream-access-dialog");
+}
+
+function renderUpstreamAccessUsers() {
+  const exclusive = byId("upstream-access-form").elements.mode.value === "exclusive";
+  byId("upstream-access-users").classList.toggle("hidden", !exclusive);
+  const rows = matchingManagedUsers(byId("upstream-access-search").value, upstreamAccessUsers).map((user) => {
+    const checkbox = element("input", {type: "checkbox", attributes: {"aria-label": `授权用户 ${user.username || user.id}`}});
+    checkbox.checked = upstreamAccessSelected.has(user.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) upstreamAccessSelected.add(user.id); else upstreamAccessSelected.delete(user.id);
+      byId("upstream-access-selected").textContent = `已选 ${upstreamAccessSelected.size} 人`;
+    });
+    return element("label", {className: "user-check-row"}, checkbox,
+      element("span", {}, element("strong", {text: user.display_name || user.username}), element("small", {text: user.username})));
+  });
+  byId("upstream-access-user-list").replaceChildren(...(rows.length ? rows : [emptyState("没有匹配的用户。") ]));
+  byId("upstream-access-selected").textContent = `已选 ${upstreamAccessSelected.size} 人`;
+}
+
+async function saveUpstreamAccess(event) {
+  const form = event.currentTarget;
+  const account = upstreamAccessAccount;
+  if (!account || upstreamAccountOperation || loggingOut || state?.user?.role !== "owner") return;
+  const mode = form.elements.mode.value;
+  const ids = mode === "exclusive" ? [...upstreamAccessSelected].sort() : [];
+  if (mode === "exclusive" && !ids.length) throw new Error("专属账号至少需要选择一位用户。");
+  const payload = {mode, user_ids: ids, reason: billingReason(form)};
+  const generation = identityGeneration;
+  const operation = {id: account.id, kind: "access"};
+  const current = () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+  upstreamAccountOperation = operation;
+  syncUpstreamAccountControls();
+  let saved = false;
+  try {
+    await sensitiveAction(() => {
+      if (!current()) throw new Error("登录身份已变化，操作已停止。");
+      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/access`, {method: "PUT", body: JSON.stringify(payload)}, current);
+    }, current);
+    if (!current()) return;
+    saved = true;
+    account.access_mode = mode;
+    account.authorized_user_ids = ids;
+    byId("upstream-access-dialog").close();
+    setUpstreamAccountMessage("upstream-account-action-message", "账号使用权限已保存；下一次请求使用新权限。", "ok");
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
+  } catch (error) {
+    if (!current()) return;
+    if (!saved) throw error;
+    upstreamAccountSyncHealthy = false;
+    setUpstreamAccountMessage("upstream-account-refresh-message", `权限已保存，但列表刷新失败：${friendlyError(error)}，请重新应用筛选。`);
+  } finally {
+    if (upstreamAccountOperation === operation) {
+      upstreamAccountOperation = null;
+      syncUpstreamAccountControls();
+    }
+  }
+}
+
+function bindGroupUI() {
+  byId("group-create").addEventListener("click", () => openGroupEditor());
+  byId("group-edit").addEventListener("click", () => openGroupEditor(managedGroup));
+  byId("group-form").elements.period.addEventListener("change", syncGroupPeriodInput);
+  byId("group-member-search").addEventListener("input", renderGroupMembers);
+  byId("group-select-visible").addEventListener("click", () => {
+    matchingManagedUsers(byId("group-member-search").value).filter(groupUserAvailable).forEach((user) => groupSelectedUsers.add(user.id));
+    renderGroupMembers();
+  });
+  byId("group-clear-selection").addEventListener("click", () => { groupSelectedUsers.clear(); renderGroupMembers(); });
+  byId("group-members-form").addEventListener("submit", (event) => event.preventDefault());
+  bindAsync("groups-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
+  bindAsync("group-form", "submit", saveGroup, "保存中…", groupIdentityCurrent);
+  bindAsync("group-members-add", "click", () => changeGroupMembers("add"), "处理中…", groupIdentityCurrent);
+  bindAsync("group-members-remove", "click", () => changeGroupMembers("remove"), "处理中…", groupIdentityCurrent);
+  bindAsync("group-archive", "click", archiveSelectedGroup, "处理中…", groupIdentityCurrent);
+  byId("upstream-access-form").elements.mode.addEventListener("change", renderUpstreamAccessUsers);
+  byId("upstream-access-search").addEventListener("input", renderUpstreamAccessUsers);
+  byId("upstream-access-select-visible").addEventListener("click", () => {
+    matchingManagedUsers(byId("upstream-access-search").value, upstreamAccessUsers).forEach((user) => upstreamAccessSelected.add(user.id));
+    renderUpstreamAccessUsers();
+  });
+  byId("upstream-access-clear").addEventListener("click", () => { upstreamAccessSelected.clear(); renderUpstreamAccessUsers(); });
+  bindAsync("upstream-access-form", "submit", saveUpstreamAccess, "保存中…", groupIdentityCurrent);
+}
+
 function upstreamAccountStat(label, value, detail = "") {
   const children = [element("span", {text: label}), element("strong", {text: value})];
   if (detail) children.push(element("small", {text: detail}));
@@ -2896,6 +3343,8 @@ function setUpstreamAccountMessage(id, message = "", kind = "error") {
 function syncUpstreamAccountControls() {
   for (const card of all(".upstream-account-card[data-account-id]")) {
     const account = upstreamAccounts.find((item) => item.id === card.dataset.accountId);
+    const accessButton = card.querySelector(".upstream-access-button");
+    if (accessButton) accessButton.disabled = !account?.id || !upstreamAccountSyncHealthy || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
     const button = card.querySelector(".upstream-account-status-button");
     const badge = card.querySelector(".upstream-account-status");
     const note = card.querySelector(".upstream-account-manage-note");
@@ -3097,6 +3546,7 @@ function upstreamAccountCard(account) {
       element("div", {className: "upstream-account-actions"}, badge, statusButton),
     ),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
+    upstreamAccessBlock(account),
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
@@ -3361,6 +3811,7 @@ async function loadDashboard() {
       loadModelAccess().catch((error) => {
         notice(`模型权限加载失败：${friendlyError(error)}`, "error");
       }),
+      loadGroups().catch((error) => groupMessage(`群组加载失败：${friendlyError(error)}`, true)),
       loadAlerts(),
     );
   }
@@ -3412,6 +3863,7 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  bindGroupUI();
   billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
   globalUserSearch = createUserSearch("global-user-search", drillDownUser);
@@ -3563,16 +4015,29 @@ function bindUI() {
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
   byId("upstream-account-filter").elements.range.addEventListener("change", syncUpstreamAccountRange);
-  byId("model-access-model-select").addEventListener("change", () => {
-    const model = selectedModelAccessModel();
-    renderModelAccessSummary(model);
-    setLocalMessage(byId("model-access-default-form"));
-    setLocalMessage(byId("model-access-users-form"));
-    loadModelAccessUsers(model).catch((error) => notice(`用户模型权限加载失败：${friendlyError(error)}`, "error"));
+  byId("model-access-model-select").addEventListener("change", (event) => {
+    const input = event.target;
+    if (!input.matches(".model-access-model-checkbox")) return;
+    if (input.checked) modelAccessSelectedModels.add(input.value);
+    else modelAccessSelectedModels.delete(input.value);
+    changedModelAccessSelection();
+  });
+  byId("model-access-model-search").addEventListener("input", filterModelAccessModels);
+  byId("model-access-model-all").addEventListener("click", () => {
+    modelAccessSelectedModels = new Set(modelAccessModels.map((item) => item.model));
+    all(".model-access-model-checkbox").forEach((input) => { input.checked = true; });
+    changedModelAccessSelection();
+  });
+  byId("model-access-model-clear").addEventListener("click", () => {
+    modelAccessSelectedModels.clear();
+    all(".model-access-model-checkbox").forEach((input) => { input.checked = false; });
+    changedModelAccessSelection();
   });
   byId("model-access-select-all").addEventListener("change", (event) => {
     all(".model-access-user-select", byId("model-access-user-rows")).forEach((input) => {
       input.checked = event.currentTarget.checked;
+      if (input.checked) modelAccessSelectedUsers.add(input.value);
+      else modelAccessSelectedUsers.delete(input.value);
     });
     syncModelAccessSelection();
   });

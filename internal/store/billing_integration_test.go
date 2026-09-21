@@ -1600,6 +1600,21 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	if _, err := connection.ExecContext(ctx, byName["0007_upstream_accounts.sql"]); err != nil {
 		t.Fatalf("apply isolated 0007: %v", err)
 	}
+	// Current settlement reads nullable group bindings. Legacy rows must stay
+	// ungrouped after the forward-only migration, including in-flight requests.
+	if _, err := connection.ExecContext(ctx, byName["0012_user_groups.sql"]); err != nil {
+		t.Fatalf("apply isolated 0012: %v", err)
+	}
+	var migratedGroupReservations, migratedGroupLedger int
+	if err := connection.QueryRowContext(ctx, `SELECT
+		(SELECT count(*) FROM billing_reservations WHERE group_id IS NOT NULL OR group_period_id IS NOT NULL),
+		(SELECT count(*) FROM billing_ledger_entries WHERE group_id IS NOT NULL OR group_period_id IS NOT NULL)`).Scan(
+		&migratedGroupReservations, &migratedGroupLedger); err != nil {
+		t.Fatalf("read migrated group bindings: %v", err)
+	}
+	if migratedGroupReservations != 0 || migratedGroupLedger != 0 {
+		t.Fatal("group migration attributed historical usage to groups")
+	}
 	var migratedUpstreamAccounts int
 	var migratedUsageAccount, migratedLedgerAccount sql.NullString
 	if err := connection.QueryRowContext(ctx, `SELECT

@@ -115,6 +115,8 @@ type upstreamAccountDTO struct {
 	RollingCostUSD    string     `json:"rolling_cost_usd"`
 	RollingCostShare  string     `json:"rolling_cost_share"`
 	TargetShare       string     `json:"target_share"`
+	AccessMode        string     `json:"access_mode"`
+	AuthorizedUserIDs []string   `json:"authorized_user_ids"`
 }
 
 type upstreamAccountsResponse struct {
@@ -200,6 +202,15 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	for _, allocation := range allocations {
 		allocationByID[allocation.AccountID] = allocation
 	}
+	access, err := s.store.ListUpstreamAccountAccess(r.Context())
+	if err != nil {
+		internalError(s, w, r, "list upstream account access", err)
+		return
+	}
+	accessByID := make(map[string]store.UpstreamAccountAccess, len(access))
+	for _, item := range access {
+		accessByID[item.AccountID] = item
+	}
 	response := upstreamAccountsResponse{
 		AllocationFrom: allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
 		Until: query.Until, All: query.All, SyncWarning: syncWarning,
@@ -216,7 +227,9 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		allocation := allocationByID[*row.AccountID]
+		accountAccess := accessByID[*row.AccountID]
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
+			AccessMode: accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
 			AllocationWeight: allocation.AllocationWeight, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
 			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,

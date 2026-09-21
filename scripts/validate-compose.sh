@@ -17,11 +17,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=51e5e4bf0a2baee2ffae51e45b30ad95759d66353ab94c5b4de904b3f6fc36b7
+compat_patch_sha256=eaefd05c4c478e73703a951cc29f37dbfa12c7d807b40f0741ef2c5a0035aef8
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-eaefd05c4c478e73-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -144,6 +144,11 @@ grep -Fq 'http://gateway:8080/internal/upstream-accounts/select' "$compat_patch"
     grep -Fq 'TestGatewayAllocationRejectsAlternateSchedulers' "$compat_patch" && \
     grep -Fq 'TestGatewayAllocationRechecksControlWithoutHoldingManagerLock' "$compat_patch" || \
     fail 'codex-compat must carry bounded Gateway allocation and concurrency regressions'
+grep -Fq 'http://gateway:8080/internal/upstream-accounts/eligible' "$compat_patch" && \
+    grep -Fq 'upstream_account_access_v1' "$compat_patch" && \
+    grep -Fq 'TestGatewayAllocationAccessRechecksBindingsAndPreservesOtherSessions' "$compat_patch" && \
+    grep -Fq 'TestGatewayUserIdentityConsumedAndValidated' "$compat_patch" || \
+    fail 'codex-compat must enforce authenticated per-user account eligibility before binding reuse'
 grep -Eq '^[[:space:]]+session-affinity-ttl:[[:space:]]*"1h"[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must retain session affinity for one hour'
 grep -Eq '^[[:space:]]+bootstrap-retries:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \

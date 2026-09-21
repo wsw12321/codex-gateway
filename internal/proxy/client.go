@@ -25,6 +25,7 @@ import (
 const (
 	maxSSEEventBytes             = 4 << 20
 	affinityHeader               = "X-Codex-Gateway-Affinity"
+	gatewayUserHeader            = "X-Codex-Gateway-User"
 	upstreamAccountHeader        = "X-Codex-Upstream-Account"
 	maxInternalResponseBodyBytes = 1 << 20
 )
@@ -32,6 +33,7 @@ const (
 var (
 	affinityScopePattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	upstreamAccountPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
+	gatewayUserPattern     = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 )
 
 var allowedRequestHeaders = map[string]struct{}{
@@ -104,6 +106,8 @@ type Client struct {
 }
 
 type ForwardOptions struct {
+	// UserID comes only from the authenticated API key, never client headers.
+	UserID string
 	// AffinityScope is an opaque, gateway-generated caller namespace. It is
 	// accepted only in the fixed base64url form emitted by the gateway and is
 	// consumed by the sidecar rather than forwarded to the service provider.
@@ -179,6 +183,12 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 			return nil, Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
 		}
 		outgoing.Header.Set(affinityHeader, options.AffinityScope)
+	}
+	if options.UserID != "" && !c.antigravity {
+		if !gatewayUserPattern.MatchString(options.UserID) {
+			return nil, Result{}, protocolFailure(errors.New("invalid upstream user identity"))
+		}
+		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
 
 	response, err := c.http.Do(outgoing)
@@ -391,6 +401,15 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 			return Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
 		}
 		outgoing.Header.Set(affinityHeader, options.AffinityScope)
+	}
+	if options.UserID != "" && !c.antigravity {
+		if !gatewayUserPattern.MatchString(options.UserID) {
+			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))
+		}
+		if err := c.requireAccountAccessCapability(ctx); err != nil {
+			return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "upstream_access_protocol_unavailable", Message: "上游账号权限服务不可用", Cause: err}
+		}
+		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
 
 	response, err := c.http.Do(outgoing)

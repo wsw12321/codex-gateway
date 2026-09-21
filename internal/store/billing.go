@@ -66,6 +66,8 @@ type BillingSubscriptionState struct {
 }
 
 type BillingLedgerEntry struct {
+	GroupID                         *string    `json:"group_id,omitempty"`
+	GroupPeriodID                   *string    `json:"group_period_id,omitempty"`
 	ID                              int64      `json:"id"`
 	UserID                          *string    `json:"user_id,omitempty"`
 	OperationID                     *string    `json:"operation_id,omitempty"`
@@ -107,6 +109,7 @@ type BillingLedgerEntry struct {
 }
 
 type BillingState struct {
+	Group          *GroupSummary              `json:"group,omitempty"`
 	UserID         string                     `json:"user_id"`
 	Username       string                     `json:"username,omitempty"`
 	DisplayName    string                     `json:"display_name,omitempty"`
@@ -118,6 +121,7 @@ type BillingState struct {
 }
 
 type BillingUserSummary struct {
+	GroupID        *string                    `json:"group_id,omitempty"`
 	UserID         string                     `json:"user_id"`
 	Username       string                     `json:"username"`
 	DisplayName    string                     `json:"display_name"`
@@ -147,6 +151,8 @@ type BillingReservationParams struct {
 }
 
 type BillingReservation struct {
+	GroupID                         *string         `json:"group_id,omitempty"`
+	GroupPeriodID                   *string         `json:"group_period_id,omitempty"`
 	RequestID                       string          `json:"request_id"`
 	UserID                          string          `json:"user_id"`
 	APIKeyID                        string          `json:"api_key_id"`
@@ -297,7 +303,7 @@ func nullableInt64(value sql.NullInt64) *int64 {
 
 func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 	var value BillingReservation
-	var day, week, month sql.NullString
+	var day, week, month, groupID, groupPeriodID sql.NullString
 	var cutoff sql.NullInt64
 	var inputPrice, cachedPrice, outputPrice sql.NullString
 	var catalog, pricingModel, cacheWriteMode, requestedTier, actualTier sql.NullString
@@ -313,7 +319,7 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 		&cacheWriteTokens, &appliedInput, &appliedCached, &appliedCacheWrite,
 		&appliedOutput, &fallbackReason, &day, &week, &month, &cutoff,
 		&value.State, &inputTokens, &cachedTokens,
-		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt)
+		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt, &groupID, &groupPeriodID)
 	value.InputUSDPerMillion, value.CachedInputUSDPerMillion = inputPrice.String, cachedPrice.String
 	value.OutputUSDPerMillion = outputPrice.String
 	value.PricingCatalogAsOf, value.PricingModel = nullableString(catalog), nullableString(pricingModel)
@@ -330,6 +336,7 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 	value.AppliedCacheWriteUSDPerMillion = nullableString(appliedCacheWrite)
 	value.AppliedOutputUSDPerMillion = nullableString(appliedOutput)
 	value.DayPeriodID, value.WeekPeriodID, value.MonthPeriodID = nullableString(day), nullableString(week), nullableString(month)
+	value.GroupID, value.GroupPeriodID = nullableString(groupID), nullableString(groupPeriodID)
 	value.CashLotCutoff = nullableInt64(cutoff)
 	value.ActualInputTokens, value.ActualCachedInputTokens = nullableInt64(inputTokens), nullableInt64(cachedTokens)
 	value.ActualOutputTokens = nullableInt64(outputTokens)
@@ -348,7 +355,7 @@ const billingReservationColumns = `request_id, user_id, api_key_id, requested_mo
 	day_period_id, week_period_id, month_period_id, cash_lot_cutoff, state,
 	actual_input_tokens, actual_cached_input_tokens,
 	actual_output_tokens, actual_cost_usd::text, charged_usd::text,
-	uncovered_usd::text, created_at, settled_at`
+	uncovered_usd::text, created_at, settled_at, group_id, group_period_id`
 
 func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationParams) (BillingReservation, error) {
 	if params.Now.IsZero() {
@@ -439,6 +446,17 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
+	group, err := userGroupTx(ctx, tx, params.UserID, params.Now)
+	if err != nil {
+		return BillingReservation{}, err
+	}
+	if err := requireGroupQuota(group, params.Now); err != nil {
+		return BillingReservation{}, err
+	}
+	var groupID, groupPeriodID any
+	if group != nil {
+		groupID, groupPeriodID = group.ID, group.PeriodID
+	}
 	if _, err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
 		return BillingReservation{}, err
 	}
@@ -516,9 +534,9 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			 input_usd_per_million, cached_input_usd_per_million, output_usd_per_million,
 			 pricing_rule_version, billing_mode, pricing_catalog_as_of, pricing_model,
 			 pricing_snapshot, cache_write_mode, requested_service_tier,
-			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at)
+			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id)
 		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
-			$12::jsonb,$13,$14,$15,$16,$17,$18,$19)
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
 		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
@@ -526,7 +544,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		valueOrNil(params.PricingCatalogAsOf), valueOrNil(params.PricingModel),
 		valueOrNil(string(params.PricingSnapshot)), valueOrNil(params.CacheWriteMode),
 		valueOrNil(params.RequestedServiceTier), periods[BillingTierDay], periods[BillingTierWeek],
-		periods[BillingTierMonth], cashCutoff, params.Now))
+		periods[BillingTierMonth], cashCutoff, params.Now, groupID, groupPeriodID))
 	return reservation, mapDBError("insert billing reservation", err)
 }
 
@@ -793,7 +811,7 @@ const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 	context_class, pricing_rule_version, pricing_catalog_as_of::text,
 	applied_input_usd_per_million::text, applied_cached_input_usd_per_million::text,
 	applied_cache_write_usd_per_million::text, applied_output_usd_per_million::text,
-	pricing_fallback_reason`
+	pricing_fallback_reason, group_id, group_period_id`
 
 func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var value BillingLedgerEntry
@@ -802,7 +820,7 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var usageRequestedAt sql.NullTime
 	var actualModel, cacheWriteMode, requestedTier, actualTier, pricingTier sql.NullString
 	var contextClass, pricingCatalog, appliedInput, appliedCached sql.NullString
-	var appliedCacheWrite, appliedOutput, fallbackReason sql.NullString
+	var appliedCacheWrite, appliedOutput, fallbackReason, groupID, groupPeriodID sql.NullString
 	var input, cached, cacheWrite, output sql.NullInt64
 	err := row.Scan(&value.ID, &userID, &operationID, &value.EntryType,
 		&value.AmountUSD, &value.CashDeltaUSD, &balance, &cny, &rate, &tier,
@@ -811,7 +829,8 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 		&usageRequestedAt, &actualModel, &cacheWrite, &cacheWriteMode,
 		&requestedTier, &actualTier, &pricingTier, &contextClass,
 		&value.PricingRuleVersion, &pricingCatalog, &appliedInput, &appliedCached,
-		&appliedCacheWrite, &appliedOutput, &fallbackReason)
+		&appliedCacheWrite, &appliedOutput, &fallbackReason, &groupID, &groupPeriodID)
+	value.GroupID, value.GroupPeriodID = nullableString(groupID), nullableString(groupPeriodID)
 	value.UserID, value.OperationID = nullableString(userID), nullableString(operationID)
 	value.BalanceAfterUSD, value.CNYAmount = nullableString(balance), nullableString(cny)
 	value.USDPerCNYSnapshot, value.SubscriptionTier = nullableString(rate), nullableString(tier)
@@ -1597,6 +1616,11 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 			&state.SourceDisabled.Month, &state.SourceDisabled.Cash); err != nil {
 			return mapDBError("lock billing state account", err)
 		}
+		group, err := userGroupTx(ctx, tx, userID, s.now().UTC())
+		if err != nil {
+			return err
+		}
+		state.Group = group
 		if _, err := rollBillingSubscriptionsTx(ctx, tx, userID, s.now().UTC()); err != nil {
 			return err
 		}
@@ -1691,7 +1715,11 @@ func (s *Store) ListBillingUsers(ctx context.Context) ([]BillingUserSummary, err
 		if err != nil {
 			return nil, err
 		}
-		result = append(result, BillingUserSummary{UserID: user.id, Username: user.username,
+		var groupID *string
+		if state.Group != nil {
+			groupID = &state.Group.ID
+		}
+		result = append(result, BillingUserSummary{GroupID: groupID, UserID: user.id, Username: user.username,
 			DisplayName: user.displayName, Role: user.role, Status: user.status,
 			BalanceUSD: state.BalanceUSD, SourceDisabled: state.SourceDisabled, Subscriptions: state.Subscriptions})
 	}
@@ -1784,6 +1812,9 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	// administrative balance/subscription changes.
 	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM billing_accounts WHERE user_id = $1 FOR UPDATE`, pre.UserID); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
+	}
+	if err := lockBoundGroupPeriodTx(ctx, tx, pre.GroupID, pre.GroupPeriodID); err != nil {
+		return BillingReservation{}, err
 	}
 	reservation, err := scanBillingReservation(tx.QueryRowContext(ctx,
 		`SELECT `+billingReservationColumns+` FROM billing_reservations WHERE request_id = $1 FOR UPDATE`, requestID))
@@ -2011,19 +2042,24 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			 context_class, pricing_rule_version, pricing_catalog_as_of,
 			 applied_input_usd_per_million, applied_cached_input_usd_per_million,
 			 applied_cache_write_usd_per_million, applied_output_usd_per_million,
-			 pricing_fallback_reason, upstream_account_id)
+			 pricing_fallback_reason, upstream_account_id, group_id, group_period_id)
 		VALUES ($1,'usage_charge',$2::numeric,-$3::numeric,$4::numeric,$5,$6,$7,$8,$9,
 			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12,
 			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::date,$23::numeric,$24::numeric,
-			$25::numeric,$26::numeric,$27,$28)`,
+			$25::numeric,$26::numeric,$27,$28,$29,$30)`,
 		reservation.UserID, cost, cashCharged, balanceAfter, requestID, reservation.Model,
 		inputTokens, cachedTokens, outputTokens, charged, remaining, at,
 		ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens, ledgerCacheWriteMode,
 		ledgerRequestedTier, ledgerActualTier, ledgerPricingTier, ledgerContextClass,
 		reservation.PricingRuleVersion, ledgerCatalog, ledgerAppliedInput, ledgerAppliedCached,
 		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback,
-		valueOrNil(upstreamAccountID.String)); err != nil {
+		valueOrNil(upstreamAccountID.String), reservation.GroupID, reservation.GroupPeriodID); err != nil {
 		return BillingReservation{}, mapDBError("record usage billing ledger", err)
+	}
+	if reservation.GroupPeriodID != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE group_usage_periods SET used_usd = used_usd + $2::numeric WHERE id=$1`, *reservation.GroupPeriodID, cost); err != nil {
+			return BillingReservation{}, mapDBError("accumulate group usage", err)
+		}
 	}
 	var settledCacheWrite, settledActualTier, settledPricingTier, settledActualModel any
 	var settledContext, settledAppliedInput, settledAppliedCached, settledAppliedCacheWrite any

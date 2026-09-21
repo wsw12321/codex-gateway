@@ -3,7 +3,8 @@
 `0003_password_credentials.sql`、`0004_subscription_period_limits.sql`、
 `0005_official_token_pricing.sql`、`0006_api_key_lifecycle.sql`、
 `0007_upstream_accounts.sql`、`0008_model_access.sql`、
-`0009_upstream_allocation.sql` 和 `0010_billing_source_preferences.sql` 都是 forward-only 迁移。部署前先备份
+`0009_upstream_allocation.sql`、`0010_billing_source_preferences.sql`、
+`0011_upstream_account_access.sql` 和 `0012_user_groups.sql` 都是 forward-only 迁移。部署前先备份
 PostgreSQL；迁移后旧二进制会因未知迁移保护而拒绝启动，不能只切回旧镜像。
 `0004` 会把所有当时仍启用且未到期的订阅设为 `1/1`，保留现有额度、余额和周期
 起止时间，并在原 `period_ends_at` 自动失效；已经越过结束时间但仍标记启用的
@@ -189,7 +190,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.2.150` 的 peeled commit 正是
 `c77b13694318b0897f2c74104ef48aebdf8c34d6`，不匹配就会失败。兼容层镜像标签为
-`v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.2.150-c77b1369-eaefd05c4c478e73-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥

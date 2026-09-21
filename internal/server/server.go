@@ -32,6 +32,7 @@ type Server struct {
 	quotaOnce             sync.Once
 	upstreamAccountSyncMu sync.Mutex
 	modelAccessRepo       modelAccessRepository
+	groupRepo             groupRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -80,6 +81,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("POST /internal/upstream-accounts/select", s.selectUpstreamAccount)
+	s.mux.HandleFunc("POST /internal/upstream-accounts/eligible", s.eligibleUpstreamAccounts)
 	s.mux.HandleFunc("GET /", s.page)
 	s.mux.HandleFunc("GET /join", s.page)
 	s.mux.HandleFunc("GET /recover", s.page)
@@ -120,14 +122,24 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/status", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountStatus)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/allocation-weight", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAllocationWeight)))))
+	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("PUT /admin/billing/me/sources/{source}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSourceStatus))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("GET /admin/billing/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUsers))))
 	s.mux.Handle("GET /admin/billing/users/{user_id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUser))))
+	s.mux.Handle("GET /admin/groups", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupsJSON))))
+	s.mux.Handle("GET /admin/groups/{id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupJSON))))
+	s.mux.Handle("POST /admin/groups", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putGroup)))))
+	s.mux.Handle("PUT /admin/groups/{id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putGroup)))))
+	s.mux.Handle("PUT /admin/groups/{id}/members", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupMembers)))))
+	s.mux.Handle("DELETE /admin/groups/{id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.archiveGroup)))))
 	s.mux.Handle("GET /admin/model-access/models", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessModels))))
 	s.mux.Handle("GET /admin/model-access/models/{model}/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsers))))
+	s.mux.Handle("GET /admin/model-access/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsersBatch))))
+	s.mux.Handle("PUT /admin/model-access/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateUserModelAccessBatch)))))
+	s.mux.Handle("PUT /admin/model-access/defaults", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelAccessDefaultsBatch)))))
 	s.mux.Handle("PUT /admin/billing/settings/recharge-rate", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateRechargeRate)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/recharges", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.rechargeBillingUser)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/adjustments", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.adjustBillingUser)))))

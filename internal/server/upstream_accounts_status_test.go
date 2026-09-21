@@ -153,7 +153,7 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 		{name: "expired verification", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, age: 6 * time.Minute, code: "recent_identity_verification_required", wantStatus: 403},
 		{name: "verified owner reaches handler", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, code: "invalid_json", wantStatus: 400},
 	} {
-		for _, control := range []string{"status", "allocation-weight"} {
+		for _, control := range []string{"status", "allocation-weight", "access"} {
 			t.Run(test.name+"/"+control, func(t *testing.T) {
 				now := time.Now().UTC()
 				var verified driver.Value
@@ -199,7 +199,7 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 			summaryStarted, releaseSummary := make(chan struct{}), make(chan struct{})
 			capture := &upstreamAuditCapture{}
 			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-				if strings.Contains(query, "WITH account_costs AS") {
+				if strings.Contains(query, "a.access_mode") || strings.Contains(query, "WITH account_costs AS") {
 					return (upstreamSummaryConn{}).QueryContext(ctx, query, args)
 				}
 				if strings.Contains(query, "WITH usage_source AS") {

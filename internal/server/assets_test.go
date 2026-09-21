@@ -433,7 +433,8 @@ func TestModelAccessDashboardIsOwnerOnlyAndSupportsBatchChanges(t *testing.T) {
 		`/admin/model-access/models`, `/default`, `/users`,
 		`method: "PUT"`, `scope === "selected"`, `payload.user_ids`,
 		`sensitiveAction(() => api(`, `window.confirm(`,
-		`loadModelAccess(model)`, `modelAccessUsersRequestSequence`,
+		`loadModelAccess()`, `modelAccessUsersRequestSequence`,
+		`modelAccessSelectedModels`, `modelAccessSelectedUsers`, `models, enabled, scope`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("model-access dashboard JavaScript is missing %s", required)

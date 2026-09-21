@@ -2337,6 +2337,43 @@ dialog form {
   }
 }
 
+.groups-layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  gap: 1rem;
+  align-items: start;
+}
+.group-list { display: grid; gap: .65rem; }
+.group-select { display: grid; gap: .3rem; width: 100%; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.group-select[aria-pressed="true"] { border-color: var(--accent); background: var(--surface-strong); }
+.group-select span, .group-select small, .user-check-row small { color: var(--muted); }
+.group-members-form { display: grid; gap: .8rem; margin-top: 1.5rem; }
+.user-check-list { max-height: 24rem; overflow-y: auto; border: 1px solid var(--line); border-radius: .6rem; }
+.user-check-row { display: flex; align-items: center; gap: .75rem; padding: .65rem .8rem; cursor: pointer; border-bottom: 1px solid var(--line); }
+.user-check-row:last-child { border-bottom: 0; }
+.user-check-row input { width: 1.1rem; height: 1.1rem; flex: 0 0 auto; }
+.user-check-row span { min-width: 0; overflow-wrap: anywhere; }
+.user-check-row strong, .user-check-row small { display: block; }
+.user-check-row:has(input:disabled) { opacity: .6; cursor: default; }
+.upstream-access { display: flex; align-items: center; justify-content: space-between; gap: .8rem; padding: .9rem 0; border-top: 1px solid var(--line); }
+.upstream-access small { display: block; color: var(--muted); }
+#upstream-access-users { display: grid; gap: .75rem; }
+#upstream-access-users.hidden { display: none; }
+#billing-group { margin-bottom: 1rem; }
+#group-detail .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.model-access-model-list { display: grid; gap: .35rem; max-height: 20rem; overflow: auto; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; }
+.model-access-model-choice { display: flex; align-items: center; gap: .65rem; padding: .35rem; cursor: pointer; overflow-wrap: anywhere; }
+.model-access-model-choice[hidden] { display: none; }
+.model-access-model-choice input { flex: 0 0 auto; }
+#model-access-selected-count { white-space: normal; }
+#model-access-default-state { font-size: .85rem; color: var(--muted); }
+.model-access-table-wrap td small { display: block; }
+@media (max-width: 760px) {
+  .groups-layout { grid-template-columns: minmax(0, 1fr); }
+  #group-detail .metrics { grid-template-columns: minmax(0, 1fr); }
+  .upstream-access { align-items: start; flex-direction: column; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

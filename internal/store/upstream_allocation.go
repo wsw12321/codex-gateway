@@ -97,7 +97,10 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 // and settled costs. The sidecar owns model support and live availability; a
 // never-synchronized candidate therefore has weight one and no historical cost.
 // Selection does not create placeholders, attribution, or reservations.
-func (s *Store) SelectUpstreamAccount(ctx context.Context, candidateIDs []string, at time.Time) (string, error) {
+func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candidateIDs []string, at time.Time) (string, error) {
+	if _, _, err := upstreamCandidateArguments(userID, candidateIDs); err != nil {
+		return "", err
+	}
 	if len(candidateIDs) == 0 || len(candidateIDs) > MaxUpstreamAllocationCandidates {
 		return "", fmt.Errorf("%w: invalid upstream candidate count", ErrInvalid)
 	}
@@ -106,7 +109,7 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, candidateIDs []string
 	} else {
 		at = at.UTC()
 	}
-	args := []any{at.Add(-24 * time.Hour), at}
+	args := []any{at.Add(-24 * time.Hour), at, userID}
 	values := make([]string, len(candidateIDs))
 	seen := make(map[string]struct{}, len(candidateIDs))
 	for i, id := range candidateIDs {
@@ -118,7 +121,7 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, candidateIDs []string
 		}
 		seen[id] = struct{}{}
 		args = append(args, id)
-		values[i] = fmt.Sprintf("($%d::text)", i+3)
+		values[i] = fmt.Sprintf("($%d::text)", i+4)
 	}
 	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`)
 		SELECT c.id, COALESCE(a.allocation_weight, 1), COALESCE(l.cost, '0')
@@ -130,7 +133,9 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, candidateIDs []string
 			WHERE entry_type = 'usage_charge' AND upstream_account_id = a.id
 			  AND COALESCE(usage_requested_at, created_at) >= $1
 			  AND COALESCE(usage_requested_at, created_at) < $2
-		) l ON true`, args...)
+		) l ON true
+		WHERE EXISTS(SELECT 1 FROM users WHERE id=$3::uuid AND status='active')
+		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))`, args...)
 	if err != nil {
 		return "", mapDBError("read upstream allocation snapshot", err)
 	}

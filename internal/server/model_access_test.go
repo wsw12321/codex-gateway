@@ -251,6 +251,8 @@ func TestModelAccessWriteRoutesRequireSameOriginBrowserRequest(t *testing.T) {
 	for _, path := range []string{
 		"/admin/model-access/models/gpt-6-astra/default",
 		"/admin/model-access/models/gpt-6-astra/users",
+		"/admin/model-access/defaults",
+		"/admin/model-access/users",
 	} {
 		request := httptest.NewRequest(http.MethodPut, path, strings.NewReader(`{"enabled":true,"reason":"reason"}`))
 		response := httptest.NewRecorder()

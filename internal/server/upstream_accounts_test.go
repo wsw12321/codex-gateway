@@ -292,6 +292,9 @@ func TestUpstreamAllocationWindowIsIndependentOfHistoryFilter(t *testing.T) {
 	historicalUntil := now.Add(-25 * time.Hour)
 	var allocationFrom, allocationUntil time.Time
 	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if strings.Contains(query, "a.access_mode") {
+			return &upstreamAuditRows{columns: []string{"id", "mode", "users"}, values: []driver.Value{"0123456789abcdef", "shared", "[]"}}, nil
+		}
 		if strings.Contains(query, "WITH account_costs AS") {
 			allocationFrom, allocationUntil = args[0].Value.(time.Time), args[1].Value.(time.Time)
 		} else if args[1].Value.(time.Time) != historicalUntil {
@@ -465,6 +468,9 @@ func (upstreamSummaryConn) Begin() (driver.Tx, error) {
 }
 
 func (upstreamSummaryConn) QueryContext(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(query, "a.access_mode") {
+		return &upstreamAuditRows{columns: []string{"id", "mode", "users"}, values: []driver.Value{"0123456789abcdef", "shared", "[]"}}, nil
+	}
 	if strings.Contains(query, "WITH account_costs AS") {
 		return &upstreamAuditRows{columns: []string{"id", "allocation_weight", "cost", "cost_share", "target_share"}, values: []driver.Value{"0123456789abcdef", int64(20), "0.25", "1", "1"}}, nil
 	}

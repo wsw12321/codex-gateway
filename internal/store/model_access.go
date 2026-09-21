@@ -363,39 +363,14 @@ func requireModelAccess(ctx context.Context, queryer queryRower, userID, model s
 }
 
 func (s *Store) SetModelAccessDefault(ctx context.Context, params SetModelAccessDefaultParams) (ModelAccessChangeResult, error) {
-	model, err := normalizeModelAccessModel(params.Model)
-	if err != nil {
-		return ModelAccessChangeResult{}, err
-	}
-	write, err := normalizeModelAccessWrite(params.ModelAccessWriteParams, s.now)
-	if err != nil {
-		return ModelAccessChangeResult{}, err
-	}
-	result := ModelAccessChangeResult{
-		Model: model, Enabled: params.Enabled, Scope: ModelAccessScopeDefault, TargetCount: 1,
-	}
-	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		var current bool
-		if err := tx.QueryRowContext(ctx, `SELECT enabled FROM model_access_defaults
-			WHERE model = $1 AND catalog_active FOR UPDATE`, model).Scan(&current); err != nil {
-			return mapDBError("lock model access default", err)
-		}
-		if current == params.Enabled {
-			return nil
-		}
-		update, err := tx.ExecContext(ctx, `UPDATE model_access_defaults
-			SET enabled = $2, updated_at = $3, updated_by_user_id = $4
-			WHERE model = $1 AND catalog_active`, model, params.Enabled, write.At, write.ActorUserID)
-		if err != nil {
-			return mapDBError("update model access default", err)
-		}
-		if err := requireAffected("update model access default", update); err != nil {
-			return err
-		}
-		result.ChangedCount = 1
-		return appendModelAccessAuditTx(ctx, tx, write, "model_access.default_changed", result)
+	result, err := s.SetModelAccessDefaultsBatch(ctx, SetModelAccessDefaultsBatchParams{
+		ModelAccessWriteParams: params.ModelAccessWriteParams,
+		Models:                 []string{params.Model}, Enabled: params.Enabled,
 	})
-	return result, err
+	if err != nil {
+		return ModelAccessChangeResult{}, err
+	}
+	return result.Results[0], nil
 }
 
 func normalizeSelectedModelAccessUsers(userIDs []string) ([]string, error) {
@@ -420,121 +395,14 @@ func normalizeSelectedModelAccessUsers(userIDs []string) ([]string, error) {
 }
 
 func (s *Store) SetUserModelAccess(ctx context.Context, params SetUserModelAccessParams) (ModelAccessChangeResult, error) {
-	model, err := normalizeModelAccessModel(params.Model)
-	if err != nil {
-		return ModelAccessChangeResult{}, err
-	}
-	write, err := normalizeModelAccessWrite(params.ModelAccessWriteParams, s.now)
-	if err != nil {
-		return ModelAccessChangeResult{}, err
-	}
-	params.Scope = strings.TrimSpace(params.Scope)
-	var encodedUserIDs string
-	switch params.Scope {
-	case ModelAccessScopeAll:
-		if len(params.UserIDs) != 0 {
-			return ModelAccessChangeResult{}, fmt.Errorf("%w: all model access scope cannot include user ids", ErrInvalid)
-		}
-	case ModelAccessScopeSelected:
-		params.UserIDs, err = normalizeSelectedModelAccessUsers(params.UserIDs)
-		if err != nil {
-			return ModelAccessChangeResult{}, err
-		}
-		encodedUserIDs, err = marshalStringArray(params.UserIDs)
-		if err != nil {
-			return ModelAccessChangeResult{}, err
-		}
-	default:
-		return ModelAccessChangeResult{}, fmt.Errorf("%w: invalid model access scope", ErrInvalid)
-	}
-	result := ModelAccessChangeResult{Model: model, Enabled: params.Enabled, Scope: params.Scope}
-	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		var active bool
-		if err := tx.QueryRowContext(ctx, `SELECT catalog_active FROM model_access_defaults
-			WHERE model = $1 AND catalog_active FOR UPDATE`, model).Scan(&active); err != nil {
-			return mapDBError("lock model access model", err)
-		}
-		if params.Scope == ModelAccessScopeAll {
-			if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
-				return mapDBError("lock users for model access update", err)
-			}
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&result.TargetCount); err != nil {
-				return mapDBError("count model access users", err)
-			}
-			var accessCount int64
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM user_model_access WHERE model = $1`, model).Scan(&accessCount); err != nil {
-				return mapDBError("count user model access rows", err)
-			}
-			if accessCount != result.TargetCount {
-				return fmt.Errorf("model access rows missing for %q: %w", model, ErrModelAccessUnavailable)
-			}
-			update, err := tx.ExecContext(ctx, `UPDATE user_model_access
-				SET enabled = $2, updated_at = $3, updated_by_user_id = $4
-				WHERE model = $1 AND enabled IS DISTINCT FROM $2`,
-				model, params.Enabled, write.At, write.ActorUserID)
-			if err != nil {
-				return mapDBError("update all user model access", err)
-			}
-			result.ChangedCount, err = update.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("update all user model access rows affected: %w", err)
-			}
-		} else {
-			rows, err := tx.QueryContext(ctx, `
-				SELECT u.id FROM users u
-				WHERE u.id IN (
-					SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)
-				) ORDER BY u.id FOR UPDATE`, encodedUserIDs)
-			if err != nil {
-				return mapDBError("lock selected model access users", err)
-			}
-			for rows.Next() {
-				var userID string
-				if err := rows.Scan(&userID); err != nil {
-					_ = rows.Close()
-					return fmt.Errorf("scan selected model access user: %w", err)
-				}
-				result.TargetCount++
-			}
-			if err := rows.Close(); err != nil {
-				return fmt.Errorf("close selected model access users: %w", err)
-			}
-			if err := rows.Err(); err != nil {
-				return fmt.Errorf("iterate selected model access users: %w", err)
-			}
-			if result.TargetCount != int64(len(params.UserIDs)) {
-				return fmt.Errorf("selected model access user does not exist: %w", ErrInvalid)
-			}
-			var accessCount int64
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM user_model_access
-				WHERE model = $1 AND user_id IN (
-					SELECT value::uuid FROM jsonb_array_elements_text($2::jsonb)
-				)`, model, encodedUserIDs).Scan(&accessCount); err != nil {
-				return mapDBError("count selected user model access rows", err)
-			}
-			if accessCount != result.TargetCount {
-				return fmt.Errorf("selected model access row is missing: %w", ErrModelAccessUnavailable)
-			}
-			update, err := tx.ExecContext(ctx, `UPDATE user_model_access
-				SET enabled = $2, updated_at = $3, updated_by_user_id = $4
-				WHERE model = $1 AND enabled IS DISTINCT FROM $2
-				AND user_id IN (
-					SELECT value::uuid FROM jsonb_array_elements_text($5::jsonb)
-				)`, model, params.Enabled, write.At, write.ActorUserID, encodedUserIDs)
-			if err != nil {
-				return mapDBError("update selected user model access", err)
-			}
-			result.ChangedCount, err = update.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("update selected user model access rows affected: %w", err)
-			}
-		}
-		if result.ChangedCount == 0 {
-			return nil
-		}
-		return appendModelAccessAuditTx(ctx, tx, write, "model_access.users_changed", result)
+	result, err := s.SetUserModelAccessBatch(ctx, SetUserModelAccessBatchParams{
+		ModelAccessWriteParams: params.ModelAccessWriteParams,
+		Models:                 []string{params.Model}, Enabled: params.Enabled, Scope: params.Scope, UserIDs: params.UserIDs,
 	})
-	return result, err
+	if err != nil {
+		return ModelAccessChangeResult{}, err
+	}
+	return result.Results[0], nil
 }
 
 func appendModelAccessAuditTx(

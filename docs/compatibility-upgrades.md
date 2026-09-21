@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
 应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
 规则的变化。补丁 SHA256 为
-`51e5e4bf0a2baee2ffae51e45b30ad95759d66353ab94c5b4de904b3f6fc36b7`。
+`eaefd05c4c478e73703a951cc29f37dbfa12c7d807b40f0741ef2c5a0035aef8`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -20,15 +20,15 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-51e5e4bf0a2baee2-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.2.150-c77b1369-eaefd05c4c478e73-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像升级到 Go 1.26.8；补丁同时将 go-git/v6 升级到
 `v6.0.0-alpha.5`、`golang.org/x/crypto` 升级到 `v0.55.0`，并更新所需的
 go-billy/v6 与 x/text 间接依赖。Debian 运行时显式安装 `libpcre2-8-0`，
 确保继承的基础包获得已发布的安全更新。`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
 `bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
-请求契约保持兼容，保留现有 Gemini 价格目录；数据库新增 forward-only 的
-`0009_upstream_allocation.sql`，旧 Gateway 无法连接迁移后的数据库。
+请求契约保持兼容，保留现有 Gemini 价格目录；本次数据库新增 forward-only 的
+`0011_upstream_account_access.sql` 和 `0012_user_groups.sql`，旧 Gateway 无法连接迁移后的数据库。
 原有 Owner 账号状态管理接口仍只管理 Codex。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
@@ -36,6 +36,12 @@ Astra 冒烟和生产切换按下文规程执行。
 
 该补丁属于部署安全边界，而不是可选功能：
 
+- Gateway 在每次生成请求前验证内部 `capabilities` 接口的
+  `upstream_account_access_v1` 能力，再以 `X-Codex-Gateway-User` 传递已认证用户 ID。
+  兼容层在请求日志记录前消费此头，并在所有上游传输中再次移除它。
+  每次派发、绑定复用和重试均先调用 `/internal/upstream-accounts/eligible`，
+  冷分配再由数据库按用户权限过滤候选。专属账号仅允许名单内用户；共享账号不受
+  专属名单限制。权限查询或能力校验失败时拒绝生成，不使用旧绑定绕过检查。
 - 使用 `gateway-allocation` 加一小时 session affinity。新分配由 Gateway 按
   候选账号系数及近 24 小时已结算实际费用选择；系数 0 停止接收新对话，已有
   有效绑定继续使用。单候选、无显式会话、LCP 派生会话和故障切换均受同一规则约束。
@@ -56,6 +62,7 @@ Astra 冒烟和生产切换按下文规程执行。
   OAuth `account_id` 的不可逆摘要而不是含邮箱的文件名；同一真实账号的重复文件
   只能有一个进入路由池。
 - 只开放 Bearer 认证的 `GET /internal/upstream-accounts`、
+  `GET /internal/upstream-accounts/capabilities`、
   `PUT /internal/upstream-accounts/{id}/status` 和固定 URL 的
   `POST /internal/upstream-accounts/{id}/quota`。额度接口只接受精确的
   `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
@@ -115,11 +122,15 @@ Astra 冒烟和生产切换按下文规程执行。
 完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
 compact 人工冒烟后才能恢复 Gateway 流量。
 
-本次必须配套升级 Gateway、兼容层和 `0009_upstream_allocation.sql`。兼容层
+本次必须配套升级 Gateway、兼容层和 `0011_upstream_account_access.sql`、
+`0012_user_groups.sql`。兼容层
 启动与健康检查不等待 Gateway，保持 `Gateway -> healthy sidecar` 的启动顺序；
 首次部署和登录后的生成冒烟必须等 Gateway `/readyz` 返回 200。
 登录脚本在 sidecar 健康后启动 Gateway 并等待就绪；独立
 `scripts/smoke-sidecar.sh` 与容器内 `sidecar-smoke` 都会先检查 Gateway。
+这两个脚本只验证账号元数据、模型目录和权限能力；普通及 SSE 生成冒烟须通过
+Gateway 使用真实用户 API Key，确保经过个人账务和群组额度准入。直接调用兼容层
+不会生成可信用户身份，因此拒绝生成请求。
 Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从公网进入。
 未同步的新 OAuth 账号自动按系数 1、无历史费用参与首次分配，无须先打开管理员页面。
 

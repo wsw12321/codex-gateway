@@ -120,10 +120,10 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 				return err
 			}
 		}
-		var txErr error
-		admission.Quota, txErr = reserveQuotaTx(ctx, tx, quota)
-		if txErr != nil {
-			return txErr
+		// Acquire quota locks first, but check group and personal funds before
+		// request limits. All reservation writes still commit atomically.
+		if err := lockQuotaScopes(ctx, tx, quota.UserID, quota.APIKeyID); err != nil {
+			return err
 		}
 		if params.Billing != nil {
 			value, billingErr := reserveBillingTx(ctx, tx, *params.Billing)
@@ -131,6 +131,11 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 				return billingErr
 			}
 			admission.Billing = &value
+		}
+		var txErr error
+		admission.Quota, txErr = reserveQuotaLockedTx(ctx, tx, quota)
+		if txErr != nil {
+			return txErr
 		}
 		admission.Usage, txErr = beginUsageRequestTx(ctx, tx, usage)
 		return txErr
@@ -219,12 +224,18 @@ func (s *Store) normalizeReserveQuota(params ReserveQuotaParams) (ReserveQuotaPa
 }
 
 func reserveQuotaTx(ctx context.Context, tx *sql.Tx, params ReserveQuotaParams) (QuotaReservation, error) {
-	dayText := params.Day.Format("2006-01-02")
-	windowStart := params.Now.Truncate(time.Minute)
-	leaseExpiry := params.Now.Add(params.LeaseTTL)
 	if err := lockQuotaScopes(ctx, tx, params.UserID, params.APIKeyID); err != nil {
 		return QuotaReservation{}, err
 	}
+	return reserveQuotaLockedTx(ctx, tx, params)
+}
+
+// reserveQuotaLockedTx validates and writes request counters after the caller
+// has taken quota locks and completed any higher-priority funding checks.
+func reserveQuotaLockedTx(ctx context.Context, tx *sql.Tx, params ReserveQuotaParams) (QuotaReservation, error) {
+	dayText := params.Day.Format("2006-01-02")
+	windowStart := params.Now.Truncate(time.Minute)
+	leaseExpiry := params.Now.Add(params.LeaseTTL)
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM concurrency_leases WHERE lease_expires_at <= $1`, params.Now,
 	); err != nil {

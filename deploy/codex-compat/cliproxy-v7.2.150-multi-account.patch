@@ -1,3 +1,80 @@
+diff --git a/go.mod b/go.mod
+index 1f5d12f..5012264 100644
+--- a/go.mod
++++ b/go.mod
+@@ -10,7 +10,7 @@ require (
+ 	github.com/charmbracelet/lipgloss v1.1.0
+ 	github.com/fsnotify/fsnotify v1.9.0
+ 	github.com/gin-gonic/gin v1.10.1
+-	github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164
++	github.com/go-git/go-git/v6 v6.0.0-alpha.5
+ 	github.com/google/uuid v1.6.0
+ 	github.com/gorilla/websocket v1.5.3
+ 	github.com/jackc/pgx/v5 v5.9.2
+@@ -30,7 +30,7 @@ require (
+ 	github.com/tidwall/gjson v1.18.0
+ 	github.com/tidwall/sjson v1.2.5
+ 	github.com/tiktoken-go/tokenizer v0.8.1
+-	golang.org/x/crypto v0.54.0
++	golang.org/x/crypto v0.55.0
+ 	golang.org/x/net v0.57.0
+ 	golang.org/x/oauth2 v0.30.0
+ 	golang.org/x/sync v0.22.0
+@@ -81,7 +81,7 @@ require (
+ 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
+ 	github.com/gin-contrib/sse v0.1.0 // indirect
+ 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
+-	github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 // indirect
++	github.com/go-git/go-billy/v6 v6.0.0-alpha.2 // indirect
+ 	github.com/go-playground/locales v0.14.1 // indirect
+ 	github.com/go-playground/universal-translator v0.18.1 // indirect
+ 	github.com/go-playground/validator/v10 v10.20.0 // indirect
+@@ -116,7 +116,7 @@ require (
+ 	github.com/ugorji/go/codec v1.2.12 // indirect
+ 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
+ 	golang.org/x/arch v0.8.0 // indirect
+-	golang.org/x/text v0.40.0 // indirect
++	golang.org/x/text v0.41.0 // indirect
+ 	google.golang.org/protobuf v1.34.1
+ 	gopkg.in/ini.v1 v1.67.0 // indirect
+ )
+diff --git a/go.sum b/go.sum
+index 3d3458d..a5b1c8e 100644
+--- a/go.sum
++++ b/go.sum
+@@ -75,10 +75,14 @@ github.com/go-git/gcfg/v2 v2.0.2 h1:MY5SIIfTGGEMhdA7d7JePuVVxtKL7Hp+ApGDJAJ7dpo=
+ github.com/go-git/gcfg/v2 v2.0.2/go.mod h1:/lv2NsxvhepuMrldsFilrgct6pxzpGdSRC13ydTLSLs=
+ github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 h1:AaQOU2NVLxnBGWkv5YSoxomcDCqlaqfCW0t00pNKtnk=
+ github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6/go.mod h1:eaCUpHbedW7//EwcYmUDfJe2N6sJC9O12AT0OTqJR1E=
++github.com/go-git/go-billy/v6 v6.0.0-alpha.2 h1:1Sv5WemXL8CxKrAx1gioJ+uHNb2bZJhiQLfwSZ4Et8c=
++github.com/go-git/go-billy/v6 v6.0.0-alpha.2/go.mod h1:r/bsv9i/iDyyEU8/Z6mjC+YraOVwie1ddfUqBCElKXQ=
+ github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1 h1:gmqi2jvsreu0s8JMLylYDFq4sbjHwwlhktMw0DUg3mA=
+ github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1/go.mod h1:ECf1MqJlBdYpKggBrOXjo/0EnvRZx6D++I86UYjPgAQ=
+ github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164 h1:chk74EHqDOHvIx/WH43JfdLImedxN98qGvEFd7WYgus=
+ github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164/go.mod h1:OTUSi3RzPFoC0j/+uxHdVG1X/xXz84QCxLzYvXRvyXk=
++github.com/go-git/go-git/v6 v6.0.0-alpha.5 h1:sE+OlkHgYWNMVmN1s9sR7uyFgsWLtxcNWse/vBYKxRE=
++github.com/go-git/go-git/v6 v6.0.0-alpha.5/go.mod h1:3IjhiZnM+uBmUrOGSeqrJpsmi4Vd0H2NZO/uK2a7d0s=
+ github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lYKSsYSR8s=
+ github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
+ github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
+@@ -251,6 +255,8 @@ golang.org/x/arch v0.8.0 h1:3wRIsP3pM4yUptoR96otTUOXI367OS0+c9eeRi9doIc=
+ golang.org/x/arch v0.8.0/go.mod h1:FEVrYAQjsQXMVJ1nsMoVVXPZg6p2JE2mx8psSWTDQys=
+ golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
+ golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
++golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
++golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
+ golang.org/x/exp v0.0.0-20231006140011-7918f672742d h1:jtJma62tbqLibJ5sFQz8bKtEM8rJBtfilJ2qTU199MI=
+ golang.org/x/exp v0.0.0-20231006140011-7918f672742d/go.mod h1:ldy0pHrwJyGW56pPQzzkH36rKxoZW1tw7ZJpeKx+hdo=
+ golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
+@@ -268,6 +274,8 @@ golang.org/x/term v0.45.0 h1:NwWyBmoJCbfTHpxrWoZ9C6/VxOf7ic219I8xZZFdrf0=
+ golang.org/x/term v0.45.0/go.mod h1:9aqxs0blBcrm/n0L9QW0aRVD+ktan8ssZromtqJC43w=
+ golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
+ golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
++golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
++golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
+ golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
+ golang.org/x/time v0.14.0/go.mod h1:eL/Oa2bBBK0TkX57Fyni+NgnyQQN4LitPmob2Hjnqw4=
+ golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 h1:E7g+9GITq07hpfrRu66IVDexMakfv52eLZ2CXBWiKr4=
 diff --git a/internal/api/astra_upgrade_smoke_test.go b/internal/api/astra_upgrade_smoke_test.go
 new file mode 100644
 index 0000000..8fbfb6e
@@ -1773,10 +1850,10 @@ index f12ff4b..926c148 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index fc9de12..29f19e6 100644
+index fc9de12..75384e7 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -117,6 +117,17 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,28 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -1787,6 +1864,17 @@ index fc9de12..29f19e6 100644
 +	internalAccounts.Use(internalAccountAuthMiddleware(s.accessManager))
 +	{
 +		internalAccounts.GET("", s.listUpstreamAccounts)
++		internalAccounts.GET("/capabilities", func(c *gin.Context) {
++			if s.handlers == nil || s.handlers.AuthManager == nil {
++				c.Status(http.StatusServiceUnavailable)
++				return
++			}
++			if _, ok := s.handlers.AuthManager.Selector().(*auth.GatewayAllocationSelector); !ok {
++				c.Status(http.StatusServiceUnavailable)
++				return
++			}
++			c.JSON(http.StatusOK, gin.H{"protocol": "upstream_account_access_v1"})
++		})
 +		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
 +		internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
 +	}
@@ -2660,10 +2748,10 @@ index d7c6dbd..885e8b0 100644
  	reporter.EnsurePublished(ctx)
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
-index 0000000..da2f96f
+index 0000000..2670fa1
 --- /dev/null
 +++ b/internal/runtime/executor/codex_executor_redirect_test.go
-@@ -0,0 +1,358 @@
+@@ -0,0 +1,360 @@
 +package executor
 +
 +import (
@@ -2772,6 +2860,7 @@ index 0000000..da2f96f
 +			"Authorization":            "Bearer model-override-token",
 +			"Chatgpt-Account-Id":       "model-override-account",
 +			"X-Codex-Gateway-Affinity": "model-override-internal",
++			"X-Codex-Gateway-User":     "model-override-user",
 +			"X-Codex-Upstream-Account": "model-override-internal",
 +		}},
 +	}})
@@ -2790,6 +2879,7 @@ index 0000000..da2f96f
 +			"header:Authorization":            "Bearer attacker-token",
 +			"header:Chatgpt-Account-Id":       "attacker-account",
 +			"header:X-Codex-Gateway-Affinity": "must-not-leak",
++			"header:X-Codex-Gateway-User":     "must-not-leak",
 +			"header:X-Codex-Upstream-Account": "must-not-leak",
 +		},
 +	}
@@ -2806,7 +2896,7 @@ index 0000000..da2f96f
 +		if got := headers.Get("Chatgpt-Account-Id"); got != "canonical-account" {
 +			t.Fatalf("Chatgpt-Account-Id = %q, want canonical account", got)
 +		}
-+		for _, name := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Upstream-Account"} {
++		for _, name := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Gateway-User", "X-Codex-Upstream-Account"} {
 +			if got := headers.Get(name); got != "" {
 +				t.Fatalf("%s leaked upstream as %q", name, got)
 +			}
@@ -3680,14 +3770,15 @@ index 385058d..5cecfcb 100644
  const openAICompatTPMFallbackRetryAfter = time.Minute
  
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index f100fab..848a794 100644
+index f100fab..101363f 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
-@@ -7,6 +7,11 @@ import (
+@@ -7,6 +7,12 @@ import (
  	"github.com/gin-gonic/gin"
  )
  
 +const (
++	CodexGatewayUserHeader     = "X-Codex-Gateway-User"
 +	CodexGatewayAffinityHeader = "X-Codex-Gateway-Affinity"
 +	CodexUpstreamAccountHeader = "X-Codex-Upstream-Account"
 +)
@@ -3695,7 +3786,7 @@ index f100fab..848a794 100644
  // ApplyCustomHeadersFromAttrs applies user-defined headers stored in the provided attributes map.
  // Custom headers override built-in defaults when conflicts occur.
  // If clientHeaders is provided (or if the request context carries a Gin context), any custom header
-@@ -82,6 +87,9 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
+@@ -82,6 +88,9 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
  		if k == "" || v == "" {
  			continue
  		}
@@ -3705,7 +3796,7 @@ index f100fab..848a794 100644
  		// net/http reads Host from req.Host (not req.Header) when writing
  		// a real request, so we must mirror it there. Some callers pass
  		// synthetic requests (e.g. &http.Request{Header: ...}) and only
-@@ -93,3 +101,21 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
+@@ -93,3 +102,21 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
  		r.Header.Set(k, v)
  	}
  }
@@ -3724,7 +3815,7 @@ index f100fab..848a794 100644
 +}
 +
 +func isCodexInternalHeader(name string) bool {
-+	return strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
++	return strings.EqualFold(strings.TrimSpace(name), CodexGatewayUserHeader) || strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
@@ -4276,18 +4367,21 @@ index da7511a..562143a 100644
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index 78170df..8c73add 100644
+index 78170df..2ad1206 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
-@@ -5,6 +5,7 @@ package handlers
+@@ -5,8 +5,10 @@ package handlers
  
  import (
  	"bytes"
 +	"encoding/base64"
  	"encoding/json"
  	"fmt"
++	"github.com/google/uuid"
  	"net"
-@@ -50,6 +51,14 @@ type ErrorDetail struct {
+ 	"net/http"
+ 	"reflect"
+@@ -50,6 +52,16 @@ type ErrorDetail struct {
  
  const idempotencyKeyMetadataKey = "idempotency_key"
  
@@ -4295,6 +4389,8 @@ index 78170df..8c73add 100644
 +	// GatewayAffinityHeader carries the gateway-generated, per-caller opaque
 +	// namespace used by session affinity. It is consumed before request routing
 +	// and must never be forwarded to an upstream provider.
++	GatewayUserHeader     = "X-Codex-Gateway-User"
++	gatewayUserKey        = "__codex_gateway_user__"
 +	GatewayAffinityHeader = "X-Codex-Gateway-Affinity"
 +	gatewayAffinityKey    = "__codex_gateway_affinity__"
 +)
@@ -4302,7 +4398,7 @@ index 78170df..8c73add 100644
  const (
  	defaultStreamingKeepAliveSeconds = 0
  	defaultStreamingBootstrapRetries = 0
-@@ -186,6 +195,9 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
+@@ -186,10 +198,18 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
  		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
  			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
  		}
@@ -4312,7 +4408,16 @@ index 78170df..8c73add 100644
  	}
  	if executionSessionID := executionSessionIDFromContext(ctx); executionSessionID != "" {
  		meta[coreexecutor.ExecutionSessionMetadataKey] = executionSessionID
-@@ -214,6 +226,11 @@ func requestCallerScope(ginCtx *gin.Context) string {
+ 	}
++	if ginCtx != nil {
++		if userID, ok := ginCtx.Get(gatewayUserKey); ok {
++			meta[coreexecutor.GatewayUserIDMetadataKey] = userID
++		}
++	}
+ 	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
+ 		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
+ 	}
+@@ -214,6 +234,11 @@ func requestCallerScope(ginCtx *gin.Context) string {
  	if ginCtx == nil {
  		return ""
  	}
@@ -4324,7 +4429,7 @@ index 78170df..8c73add 100644
  	value, exists := ginCtx.Get("userApiKey")
  	if !exists || value == nil {
  		return ""
-@@ -221,6 +238,33 @@ func requestCallerScope(ginCtx *gin.Context) string {
+@@ -221,6 +246,47 @@ func requestCallerScope(ginCtx *gin.Context) string {
  	return coresession.CallerScope(fmt.Sprint(value))
  }
  
@@ -4334,6 +4439,20 @@ index 78170df..8c73add 100644
 +func CaptureGatewayAffinityScope(c *gin.Context) {
 +	if c == nil || c.Request == nil {
 +		return
++	}
++	userValues := c.Request.Header.Values(GatewayUserHeader)
++	c.Request.Header.Del(GatewayUserHeader)
++	if len(userValues) > 0 {
++		if len(userValues) != 1 {
++			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_user"})
++			return
++		}
++		parsed, err := uuid.Parse(userValues[0])
++		if err != nil || parsed.String() != userValues[0] {
++			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_user"})
++			return
++		}
++		c.Set(gatewayUserKey, userValues[0])
 +	}
 +	values := c.Request.Header.Values(GatewayAffinityHeader)
 +	c.Request.Header.Del(GatewayAffinityHeader)
@@ -4359,7 +4478,7 @@ index 78170df..8c73add 100644
  	if meta == nil {
  		return
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index 02fcf54..042dd89 100644
+index 02fcf54..86f20c3 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
 @@ -68,6 +68,74 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
@@ -4457,6 +4576,32 @@ index 02fcf54..042dd89 100644
  	})
  }
  
+@@ -182,3 +256,25 @@ func TestSetGenerateMetadataHonorsExplicitFalse(t *testing.T) {
+ 		t.Fatalf("GenerateMetadataKey = %v, want false", got)
+ 	}
+ }
++
++func TestGatewayUserIdentityConsumedAndValidated(t *testing.T) {
++	const id = "00000000-0000-0000-0000-000000000001"
++	for _, values := range [][]string{{id}, {id, id}, {"bad-user"}, {" " + id}, {"00000000-0000-0000-0000-00000000000A"}} {
++		c, _ := gin.CreateTestContext(httptest.NewRecorder())
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++		c.Request.Header[http.CanonicalHeaderKey(GatewayUserHeader)] = values
++		CaptureGatewayAffinityScope(c)
++		if len(c.Request.Header.Values(GatewayUserHeader)) != 0 {
++			t.Fatal("user identity header not consumed")
++		}
++		valid := len(values) == 1 && values[0] == id
++		if c.IsAborted() == valid {
++			t.Fatalf("unexpected identity validation for %v", values)
++		}
++		if valid {
++			if got, _ := c.Get(gatewayUserKey); got != id {
++				t.Fatal("trusted identity was not captured")
++			}
++		}
++	}
++}
 diff --git a/sdk/api/handlers/handlers_stream_bootstrap_test.go b/sdk/api/handlers/handlers_stream_bootstrap_test.go
 index 8ee322f..df83ead 100644
 --- a/sdk/api/handlers/handlers_stream_bootstrap_test.go
@@ -7765,10 +7910,10 @@ index 0000000..6fc8092
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 0000000..60788dc
+index 0000000..96aa6eb
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,347 @@
 +package auth
 +
 +import (
@@ -7784,11 +7929,15 @@ index 0000000..60788dc
 +	"sync"
 +	"time"
 +
++	"github.com/google/uuid"
++
 +	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 +	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 +)
 +
 +const gatewayAllocationURL = "http://gateway:8080/internal/upstream-accounts/select"
++const gatewayEligibilityURL = "http://gateway:8080/internal/upstream-accounts/eligible"
 +
 +var errGatewayAllocationRequired = errors.New("gateway allocation required")
 +
@@ -7855,7 +8004,22 @@ index 0000000..60788dc
 +	if ctx == nil {
 +		ctx = context.Background()
 +	}
++	userID, _ := opts.Metadata[cliproxyexecutor.GatewayUserIDMetadataKey].(string)
++	parsed, parseErr := uuid.Parse(userID)
++	if parseErr != nil || parsed.String() != userID {
++		return nil, gatewayAllocationUnavailable()
++	}
++	var err error
++	auths, err = s.eligibleAccounts(ctx, userID, auths)
++	if err != nil {
++		return nil, err
++	}
 +	s.mu.Lock()
++	s.clearUnauthorizedBinding(provider, model, opts, auths)
++	if len(auths) == 0 {
++		s.mu.Unlock()
++		return nil, gatewayAllocationUnavailable()
++	}
 +	s.probe.selected = ""
 +	auth, err := s.affinity.Pick(ctx, provider, model, opts, auths)
 +	candidates := append([]*Auth(nil), s.probe.candidates...)
@@ -7863,7 +8027,7 @@ index 0000000..60788dc
 +	if !errors.Is(err, errGatewayAllocationRequired) {
 +		return auth, err
 +	}
-+	selected, err := s.selectAccount(ctx, candidates)
++	selected, err := s.selectAccount(ctx, userID, candidates)
 +	if err != nil {
 +		return nil, err
 +	}
@@ -7875,11 +8039,19 @@ index 0000000..60788dc
 +			return nil, gatewayAllocationUnavailable()
 +		}
 +	}
++	auths, err = s.eligibleAccounts(ctx, userID, auths)
++	if err != nil {
++		return nil, err
++	}
 +	if ctx.Err() != nil {
 +		return nil, gatewayAllocationUnavailable()
 +	}
 +	s.mu.Lock()
 +	defer s.mu.Unlock()
++	s.clearUnauthorizedBinding(provider, model, opts, auths)
++	if len(auths) == 0 {
++		return nil, gatewayAllocationUnavailable()
++	}
 +	s.probe.selected = selected
 +	defer func() { s.probe.selected = "" }()
 +	// Re-run affinity atomically with binding: another first request may have
@@ -7891,7 +8063,7 @@ index 0000000..60788dc
 +	return auth, nil
 +}
 +
-+func (s *GatewayAllocationSelector) selectAccount(ctx context.Context, candidates []*Auth) (string, error) {
++func (s *GatewayAllocationSelector) selectAccount(ctx context.Context, userID string, candidates []*Auth) (string, error) {
 +	if s.key == "" || len(candidates) == 0 || len(candidates) > 256 {
 +		return "", gatewayAllocationUnavailable()
 +	}
@@ -7910,7 +8082,8 @@ index 0000000..60788dc
 +	sort.Strings(ids)
 +	body, _ := json.Marshal(struct {
 +		AccountIDs []string `json:"account_ids"`
-+	}{ids})
++		UserID     string   `json:"user_id"`
++	}{ids, userID})
 +	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayAllocationURL, bytes.NewReader(body))
 +	if err != nil {
 +		return "", gatewayAllocationUnavailable()
@@ -7935,6 +8108,102 @@ index 0000000..60788dc
 +		return "", gatewayAllocationUnavailable()
 +	}
 +	return selected, nil
++}
++
++// The callback is intentionally outside all selector/manager locks and runs
++// before every affinity lookup, including retries and already-bound sessions.
++func (s *GatewayAllocationSelector) eligibleAccounts(ctx context.Context, userID string, candidates []*Auth) ([]*Auth, error) {
++	if s.key == "" || len(candidates) == 0 || len(candidates) > 256 {
++		return nil, gatewayAllocationUnavailable()
++	}
++	ids := make([]string, 0, len(candidates))
++	seen := make(map[string]bool, len(candidates))
++	for _, candidate := range candidates {
++		id := gatewayAccountResultIndex(candidate)
++		if id == "" {
++			return nil, gatewayAllocationUnavailable()
++		}
++		if !seen[id] {
++			ids = append(ids, id)
++			seen[id] = true
++		}
++	}
++	sort.Strings(ids)
++	body, _ := json.Marshal(struct {
++		AccountIDs []string `json:"account_ids"`
++		UserID     string   `json:"user_id"`
++	}{ids, userID})
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, gatewayEligibilityURL, bytes.NewReader(body))
++	if err != nil {
++		return nil, gatewayAllocationUnavailable()
++	}
++	req.Header.Set("Authorization", "Bearer "+s.key)
++	req.Header.Set("Content-Type", "application/json")
++	response, err := s.client.Do(req)
++	if err != nil {
++		return nil, gatewayAllocationUnavailable()
++	}
++	defer response.Body.Close()
++	if response.StatusCode != http.StatusOK {
++		return nil, gatewayAllocationUnavailable()
++	}
++	data, err := io.ReadAll(io.LimitReader(response.Body, 8193))
++	if err != nil || len(data) > 8192 {
++		return nil, gatewayAllocationUnavailable()
++	}
++	fields, err := decodeGatewayObject(data, "account_ids")
++	var allowed []string
++	if err != nil || json.Unmarshal(fields["account_ids"], &allowed) != nil {
++		return nil, gatewayAllocationUnavailable()
++	}
++	permitted := make(map[string]bool, len(allowed))
++	for _, id := range allowed {
++		if !seen[id] || permitted[id] {
++			return nil, gatewayAllocationUnavailable()
++		}
++		permitted[id] = true
++	}
++	result := make([]*Auth, 0, len(allowed))
++	for _, candidate := range candidates {
++		if permitted[gatewayAccountResultIndex(candidate)] {
++			result = append(result, candidate)
++		}
++	}
++	return result, nil
++}
++
++// Remove only this request's aliases / LCP sequence; other users and sessions
++// bound to the same account must keep their bindings.
++func (s *GatewayAllocationSelector) clearUnauthorizedBinding(provider, model string, opts cliproxyexecutor.Options, allowed []*Auth) {
++	permitted := make(map[string]bool, len(allowed))
++	for _, a := range allowed {
++		permitted[a.ID] = true
++	}
++	primary, fallback := extractExplicitSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
++	if primary == "" {
++		namespace := lcpAffinityNamespace(provider, model, opts.Metadata)
++		turns := cliproxysession.ExtractCanonicalTurns(opts.SourceFormat, opts.OriginalRequest)
++		fingerprints, minPrefix := s.affinity.matcher.Prepare(turns)
++		if namespace != "" && len(fingerprints) > 0 && minPrefix > 0 {
++			if match, ok := s.affinity.matcher.MatchFingerprints(namespace, fingerprints, minPrefix); ok && !permitted[match.AuthID] {
++				s.affinity.matcher.RemoveFingerprints(namespace, fingerprints, match.AuthID)
++			}
++		}
++		primary, fallback = extractSessionIDs(opts.Headers, opts.OriginalRequest, opts.Metadata)
++	}
++	remove := func(id string) {
++		if id == "" {
++			return
++		}
++		key := provider + "::" + id + "::" + canonicalModelKey(model)
++		if account, ok := s.affinity.cache.Get(key); ok && !permitted[account] {
++			s.affinity.cache.CompareAndDelete(key, account)
++		}
++	}
++	remove(primary)
++	if fallback != primary && !isSubagentSession(primary, fallback) {
++		remove(fallback)
++	}
 +}
 +
 +func (s *GatewayAllocationSelector) Stop() {
@@ -7994,10 +8263,10 @@ index 0000000..60788dc
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector_test.go b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
 new file mode 100644
-index 0000000..22a5bc6
+index 0000000..9e63d6c
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,466 @@
 +package auth
 +
 +import (
@@ -8019,7 +8288,20 @@ index 0000000..22a5bc6
 +
 +type gatewayAllocationTransport func(*http.Request) (*http.Response, error)
 +
-+func (f gatewayAllocationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++func (f gatewayAllocationTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	if r.URL.String() == gatewayEligibilityURL {
++		var request struct {
++			AccountIDs []string `json:"account_ids"`
++			UserID     string   `json:"user_id"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.UserID != "00000000-0000-0000-0000-000000000001" {
++			return allocationResponse(400, `{}`), nil
++		}
++		data, _ := json.Marshal(map[string]any{"account_ids": request.AccountIDs})
++		return allocationResponse(200, string(data)), nil
++	}
++	return f(r)
++}
 +
 +func allocationResponse(status int, body string) *http.Response {
 +	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
@@ -8037,7 +8319,7 @@ index 0000000..22a5bc6
 +}
 +
 +func allocationOptions(session string) cliproxyexecutor.Options {
-+	return cliproxyexecutor.Options{Headers: http.Header{"Session_id": []string{session}}}
++	return cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: "00000000-0000-0000-0000-000000000001"}, Headers: http.Header{"Session_id": []string{session}}}
 +}
 +
 +func assertAllocation503(t *testing.T, err error) {
@@ -8054,16 +8336,16 @@ index 0000000..22a5bc6
 +			s, auths := allocationFixture(t)
 +			opts := allocationOptions("existing")
 +			if mode == "no-session" || mode == "singleton" {
-+				opts = cliproxyexecutor.Options{}
++				opts = allocationOptions("")
 +			}
 +			if mode == "singleton" {
 +				auths = auths[:1]
 +			}
 +			if mode == "body-derived" {
-+				opts = cliproxyexecutor.Options{OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
++				opts = cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: "00000000-0000-0000-0000-000000000001"}, OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
 +			}
 +			if mode == "lcp" {
-+				opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
++				opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: "00000000-0000-0000-0000-000000000001", cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
 +			}
 +			var calls int
 +			s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
@@ -8123,7 +8405,7 @@ index 0000000..22a5bc6
 +				go func() {
 +					opts := allocationOptions("concurrent")
 +					if lcp {
-+						opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
++						opts = cliproxyexecutor.Options{SourceFormat: "openai", OriginalRequest: []byte(`{"messages":[{"role":"user","content":"hello"}]}`), Metadata: map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: "00000000-0000-0000-0000-000000000001", cliproxyexecutor.CallerScopeMetadataKey: "caller"}}
 +					}
 +					a, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
 +					if err != nil {
@@ -8153,7 +8435,7 @@ index 0000000..22a5bc6
 +		t.Run(body[:min(24, len(body))], func(t *testing.T) {
 +			s, auths := allocationFixture(t)
 +			s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(200, body), nil })
-+			_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++			_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions(""), auths)
 +			assertAllocation503(t, err)
 +		})
 +	}
@@ -8161,7 +8443,7 @@ index 0000000..22a5bc6
 +		t.Run(fmt.Sprint(status), func(t *testing.T) {
 +			s, auths := allocationFixture(t)
 +			s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(status, `{}`), nil })
-+			_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++			_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions(""), auths)
 +			assertAllocation503(t, err)
 +		})
 +	}
@@ -8183,7 +8465,7 @@ index 0000000..22a5bc6
 +	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
 +		return (&net.Dialer{}).DialContext(ctx, network, strings.TrimPrefix(server.URL, "http://"))
 +	}
-+	_, err := s.Pick(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++	_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions(""), auths)
 +	assertAllocation503(t, err)
 +	if calls.Load() != 1 {
 +		t.Fatalf("redirect followed %d times", calls.Load())
@@ -8198,7 +8480,7 @@ index 0000000..22a5bc6
 +	ctx, cancel := context.WithCancel(context.Background())
 +	done := make(chan error, 1)
 +	go func() {
-+		_, err := s.Pick(ctx, "codex", "gateway-model", cliproxyexecutor.Options{}, auths)
++		_, err := s.Pick(ctx, "codex", "gateway-model", allocationOptions(""), auths)
 +		done <- err
 +	}()
 +	<-entered
@@ -8241,16 +8523,16 @@ index 0000000..22a5bc6
 +	s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) {
 +		return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, candidate.Index)), nil
 +	})
-+	if _, err := m.SelectAuth(context.Background(), "codex", "gateway-model", cliproxyexecutor.Options{}); err != nil {
++	if _, err := m.SelectAuth(context.Background(), "codex", "gateway-model", allocationOptions("")); err != nil {
 +		t.Fatal(err)
 +	}
-+	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, cliproxyexecutor.Options{}); err != nil {
++	if _, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, allocationOptions("")); err != nil {
 +		t.Fatal(err)
 +	}
 +	if plugin.calls != 0 {
 +		t.Fatal("plugin bypassed Gateway allocation")
 +	}
-+	_, err := m.pickHomeDispatchSelection(context.Background(), "gateway-model", cliproxyexecutor.Options{})
++	_, err := m.pickHomeDispatchSelection(context.Background(), "gateway-model", allocationOptions(""))
 +	assertAllocation503(t, err)
 +}
 +
@@ -8342,7 +8624,7 @@ index 0000000..22a5bc6
 +			})
 +			var attribution string
 +			opts := allocationOptions("failover")
-+			opts.Metadata = map[string]any{cliproxyexecutor.UpstreamAccountIndexCallbackMetadataKey: func(id string) { attribution = id }}
++			opts.Metadata = map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: "00000000-0000-0000-0000-000000000001", cliproxyexecutor.UpstreamAccountIndexCallbackMetadataKey: func(id string) { attribution = id }}
 +			request := cliproxyexecutor.Request{Model: "gateway-model"}
 +			var err error
 +			if strings.HasPrefix(mode, "stream") {
@@ -8374,6 +8656,81 @@ index 0000000..22a5bc6
 +				t.Fatalf("attribution=%s calls=%v callbacks=%d", attribution, e.Calls(), callbacks)
 +			}
 +		})
++	}
++}
++
++type gatewayAccessTransport func(*http.Request) (*http.Response, error)
++
++func (f gatewayAccessTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestGatewayAllocationAccessRechecksBindingsAndPreservesOtherSessions(t *testing.T) {
++	s, auths := allocationFixture(t)
++	a, b := gatewayAccountResultIndex(auths[0]), gatewayAccountResultIndex(auths[1])
++	allowed := []string{a, b}
++	lookups := 0
++	fail := false
++	s.client.Transport = gatewayAccessTransport(func(r *http.Request) (*http.Response, error) {
++		var req struct {
++			AccountIDs []string `json:"account_ids"`
++			UserID     string   `json:"user_id"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserID != "00000000-0000-0000-0000-000000000001" {
++			t.Fatal("identity omitted from callback")
++		}
++		if r.URL.String() == gatewayEligibilityURL {
++			lookups++
++			if fail {
++				return allocationResponse(503, `{}`), nil
++			}
++			data, _ := json.Marshal(map[string]any{"account_ids": allowed})
++			return allocationResponse(200, string(data)), nil
++		}
++		if len(allowed) == 1 && (len(req.AccountIDs) != 1 || req.AccountIDs[0] != b) {
++			t.Fatalf("allocation candidates include denied account: %v", req.AccountIDs)
++		}
++		return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, allowed[0])), nil
++	})
++	for _, session := range []string{"current", "other"} {
++		if _, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions(session), auths); err != nil {
++			t.Fatal(err)
++		}
++	}
++	allowed = []string{b}
++	got, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("current"), auths)
++	if err != nil || got.ID != auths[1].ID {
++		t.Fatalf("revoked binding reused: %v %v", got, err)
++	}
++	allowed = []string{a, b}
++	got, err = s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("other"), auths)
++	if err != nil || got.ID != auths[0].ID {
++		t.Fatalf("unrelated session invalidated: %v %v", got, err)
++	}
++	fail = true
++	if _, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("other"), auths); err == nil {
++		t.Fatal("bound request bypassed failed permission lookup")
++	}
++	if lookups < 5 {
++		t.Fatal("permissions were cached across requests")
++	}
++}
++
++func TestGatewayAllocationAccessRejectsIdentityAndForgedEligibility(t *testing.T) {
++	for _, identity := range []string{"", "invalid", "00000000-0000-0000-0000-00000000000X"} {
++		s, auths := allocationFixture(t)
++		s.client.Transport = gatewayAccessTransport(func(*http.Request) (*http.Response, error) {
++			t.Fatal("invalid identity reached callback")
++			return nil, nil
++		})
++		opts := allocationOptions("identity")
++		opts.Metadata[cliproxyexecutor.GatewayUserIDMetadataKey] = identity
++		_, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
++		assertAllocation503(t, err)
++	}
++	for _, body := range []string{`{"account_ids":["ffffffffffffffff"]}`, `{"account_ids":[]}`, `{"account_ids":null}`, `{"account_ids":[],"account_ids":[]}`} {
++		s, auths := allocationFixture(t)
++		s.client.Transport = gatewayAccessTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(200, body), nil })
++		_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("denied"), auths)
++		assertAllocation503(t, err)
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go
@@ -8693,10 +9050,14 @@ index b35ceac..7e9fcdf 100644
  	Unavailable bool `json:"unavailable"`
  	// ProxyURL overrides the global proxy setting for this auth if provided.
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index a1a648f..bb14697 100644
+index a1a648f..65eb8a9 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
-@@ -42,6 +42,11 @@ const (
+@@ -39,9 +39,15 @@ const (
+ 	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
+ 	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
+ 	// SelectedAuthIndexMetadataKey stores the stable index of the auth selected by the scheduler.
++	GatewayUserIDMetadataKey     = "gateway_user_id"
  	SelectedAuthIndexMetadataKey = "selected_auth_index"
  	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
  	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
@@ -8797,80 +9158,3 @@ index e16b143..808a0f7 100644
  		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
  			log.Warnf("failed to load auth store: %v", errLoad)
  		}
-diff --git a/go.mod b/go.mod
-index 1f5d12fb..5012264d 100644
---- a/go.mod
-+++ b/go.mod
-@@ -10,7 +10,7 @@ require (
- 	github.com/charmbracelet/lipgloss v1.1.0
- 	github.com/fsnotify/fsnotify v1.9.0
- 	github.com/gin-gonic/gin v1.10.1
--	github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164
-+	github.com/go-git/go-git/v6 v6.0.0-alpha.5
- 	github.com/google/uuid v1.6.0
- 	github.com/gorilla/websocket v1.5.3
- 	github.com/jackc/pgx/v5 v5.9.2
-@@ -30,7 +30,7 @@ require (
- 	github.com/tidwall/gjson v1.18.0
- 	github.com/tidwall/sjson v1.2.5
- 	github.com/tiktoken-go/tokenizer v0.8.1
--	golang.org/x/crypto v0.54.0
-+	golang.org/x/crypto v0.55.0
- 	golang.org/x/net v0.57.0
- 	golang.org/x/oauth2 v0.30.0
- 	golang.org/x/sync v0.22.0
-@@ -81,7 +81,7 @@ require (
- 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
- 	github.com/gin-contrib/sse v0.1.0 // indirect
- 	github.com/go-git/gcfg/v2 v2.0.2 // indirect
--	github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 // indirect
-+	github.com/go-git/go-billy/v6 v6.0.0-alpha.2 // indirect
- 	github.com/go-playground/locales v0.14.1 // indirect
- 	github.com/go-playground/universal-translator v0.18.1 // indirect
- 	github.com/go-playground/validator/v10 v10.20.0 // indirect
-@@ -116,7 +116,7 @@ require (
- 	github.com/ugorji/go/codec v1.2.12 // indirect
- 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
- 	golang.org/x/arch v0.8.0 // indirect
--	golang.org/x/text v0.40.0 // indirect
-+	golang.org/x/text v0.41.0 // indirect
- 	google.golang.org/protobuf v1.34.1
- 	gopkg.in/ini.v1 v1.67.0 // indirect
- )
-diff --git a/go.sum b/go.sum
-index 3d3458d6..a5b1c8ec 100644
---- a/go.sum
-+++ b/go.sum
-@@ -75,10 +75,14 @@ github.com/go-git/gcfg/v2 v2.0.2 h1:MY5SIIfTGGEMhdA7d7JePuVVxtKL7Hp+ApGDJAJ7dpo=
- github.com/go-git/gcfg/v2 v2.0.2/go.mod h1:/lv2NsxvhepuMrldsFilrgct6pxzpGdSRC13ydTLSLs=
- github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6 h1:AaQOU2NVLxnBGWkv5YSoxomcDCqlaqfCW0t00pNKtnk=
- github.com/go-git/go-billy/v6 v6.0.0-alpha.1.0.20260519112248-0095b064a6c6/go.mod h1:eaCUpHbedW7//EwcYmUDfJe2N6sJC9O12AT0OTqJR1E=
-+github.com/go-git/go-billy/v6 v6.0.0-alpha.2 h1:1Sv5WemXL8CxKrAx1gioJ+uHNb2bZJhiQLfwSZ4Et8c=
-+github.com/go-git/go-billy/v6 v6.0.0-alpha.2/go.mod h1:r/bsv9i/iDyyEU8/Z6mjC+YraOVwie1ddfUqBCElKXQ=
- github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1 h1:gmqi2jvsreu0s8JMLylYDFq4sbjHwwlhktMw0DUg3mA=
- github.com/go-git/go-git-fixtures/v6 v6.0.0-alpha.1/go.mod h1:ECf1MqJlBdYpKggBrOXjo/0EnvRZx6D++I86UYjPgAQ=
- github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164 h1:chk74EHqDOHvIx/WH43JfdLImedxN98qGvEFd7WYgus=
- github.com/go-git/go-git/v6 v6.0.0-alpha.4.0.20260520124234-0860a7d8a164/go.mod h1:OTUSi3RzPFoC0j/+uxHdVG1X/xXz84QCxLzYvXRvyXk=
-+github.com/go-git/go-git/v6 v6.0.0-alpha.5 h1:sE+OlkHgYWNMVmN1s9sR7uyFgsWLtxcNWse/vBYKxRE=
-+github.com/go-git/go-git/v6 v6.0.0-alpha.5/go.mod h1:3IjhiZnM+uBmUrOGSeqrJpsmi4Vd0H2NZO/uK2a7d0s=
- github.com/go-playground/assert/v2 v2.2.0 h1:JvknZsQTYeFEAhQwI4qEt9cyV5ONwRHC+lYKSsYSR8s=
- github.com/go-playground/assert/v2 v2.2.0/go.mod h1:VDjEfimB/XKnb+ZQfWdccd7VUvScMdVu0Titje2rxJ4=
- github.com/go-playground/locales v0.14.1 h1:EWaQ/wswjilfKLTECiXz7Rh+3BjFhfDFKv/oXslEjJA=
-@@ -251,6 +255,8 @@ golang.org/x/arch v0.8.0 h1:3wRIsP3pM4yUptoR96otTUOXI367OS0+c9eeRi9doIc=
- golang.org/x/arch v0.8.0/go.mod h1:FEVrYAQjsQXMVJ1nsMoVVXPZg6p2JE2mx8psSWTDQys=
- golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
- golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
-+golang.org/x/crypto v0.55.0 h1:+KWHjbgOaAQ66dh/YlkZKHlz9ZUlq61AFirAR9ntP8M=
-+golang.org/x/crypto v0.55.0/go.mod h1:uq0V9dE/fzQuJtbnL+2EhWOE63vo164FY8xqEnV9xis=
- golang.org/x/exp v0.0.0-20231006140011-7918f672742d h1:jtJma62tbqLibJ5sFQz8bKtEM8rJBtfilJ2qTU199MI=
- golang.org/x/exp v0.0.0-20231006140011-7918f672742d/go.mod h1:ldy0pHrwJyGW56pPQzzkH36rKxoZW1tw7ZJpeKx+hdo=
- golang.org/x/net v0.57.0 h1:K5+3DljvIuDG9/Jv9rvyMywYNFCQ9RSUY6OOTTkT+tE=
-@@ -268,6 +274,8 @@ golang.org/x/term v0.45.0 h1:NwWyBmoJCbfTHpxrWoZ9C6/VxOf7ic219I8xZZFdrf0=
- golang.org/x/term v0.45.0/go.mod h1:9aqxs0blBcrm/n0L9QW0aRVD+ktan8ssZromtqJC43w=
- golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
- golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
-+golang.org/x/text v0.41.0 h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
-+golang.org/x/text v0.41.0/go.mod h1:jvf1O8ajNzZqhSrQBPbutR/EB83Cc0CFrezNQIwbb5M=
- golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
- golang.org/x/time v0.14.0/go.mod h1:eL/Oa2bBBK0TkX57Fyni+NgnyQQN4LitPmob2Hjnqw4=
- golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543 h1:E7g+9GITq07hpfrRu66IVDexMakfv52eLZ2CXBWiKr4=

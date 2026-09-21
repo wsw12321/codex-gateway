@@ -109,6 +109,7 @@
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
+          <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
         </nav>
         <div class="profile">
@@ -295,6 +296,7 @@
               <article><span>月订阅剩余</span><strong id="billing-month-remaining">—</strong><small id="billing-month-ends">未启用</small></article>
             </div>
 
+            <article id="billing-group" class="panel hidden" aria-live="polite"></article>
             <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；尚未开通的订阅也可预先设置。剩余周期额度仍不结转。</p>
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
             <p id="billing-source-message" class="form-message billing-source-message hidden" role="status" aria-live="polite"></p>
@@ -625,6 +627,32 @@
             </div>
           </section>
 
+          <section class="view owner-only hidden" data-section="groups" aria-labelledby="groups-title">
+            <div class="section-head">
+              <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为一组用户设置共同的美元用量上限；每人仍需有可用的个人订阅或余额。</p></div>
+              <div class="button-group"><button id="group-create" type="button">创建群组</button><button id="groups-refresh" type="button" class="secondary">刷新</button></div>
+            </div>
+            <p class="callout">群组额度优先于个人额度。达到上限后停止接受新请求，已接收的请求正常完成并计费，实际用量可能超过上限。固定周期自动重置，剩余额度不结转。</p>
+            <p id="groups-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div class="groups-layout">
+              <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
+              <article id="group-detail" class="panel hidden">
+                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p></div><button id="group-edit" type="button" class="secondary">编辑额度</button></div>
+                <div id="group-metrics" class="metrics compact"></div>
+                <form id="group-members-form" class="group-members-form">
+                  <div class="panel-heading"><h4>成员管理</h4><span id="group-selected-count" class="badge">已选 0 人</span></div>
+                  <label>搜索用户<input id="group-member-search" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+                  <div class="button-group"><button id="group-select-visible" type="button" class="secondary">选择搜索结果</button><button id="group-clear-selection" type="button" class="secondary">清空选择</button></div>
+                  <div id="group-member-list" class="user-check-list" aria-live="polite"></div>
+                  <label>操作原因<input name="reason" required maxlength="500" autocomplete="off" placeholder="说明成员变更或归档原因"></label>
+                  <div class="button-group"><button id="group-members-add" type="button">加入所选用户</button><button id="group-members-remove" type="button" class="secondary">移除所选成员</button><button id="group-archive" type="button" class="danger">归档空群组</button></div>
+                  <p class="form-message hidden" role="alert"></p>
+                </form>
+                <p class="muted">每人最多加入一个群组。加入其他群组前需先移除；变更前已接收的请求仍记入原群组、原周期。</p>
+              </article>
+            </div>
+          </section>
+
           <section class="view owner-only hidden" data-section="model-access" aria-labelledby="model-access-title">
             <div class="section-head">
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="model-access-title">模型权限</h2><p>控制每位用户可调用的定价目录模型，以及新用户注册时获得的默认权限。</p></div>
@@ -634,18 +662,25 @@
             <div class="model-access-grid">
               <article class="panel model-access-settings">
                 <div class="panel-heading"><div><p class="eyebrow">MODEL DEFAULT</p><h3>模型与新用户默认值</h3></div></div>
-                <label for="model-access-model-select">管理模型
-                  <select id="model-access-model-select"><option value="">正在加载模型…</option></select>
+                <label for="model-access-model-search">搜索模型
+                  <input id="model-access-model-search" type="search" autocomplete="off" placeholder="输入模型名称">
                 </label>
+                <div class="button-group">
+                  <button id="model-access-model-all" type="button" class="secondary">全选模型</button>
+                  <button id="model-access-model-clear" type="button" class="secondary">清空模型</button>
+                </div>
+                <p id="model-access-model-count" role="status">已选 0 个模型</p>
+                <div id="model-access-model-select" class="model-access-model-list" role="group" aria-label="管理模型（多选）"><p>正在加载模型…</p></div>
                 <div class="metrics compact model-access-metrics">
-                  <article><span>已启用用户</span><strong id="model-access-enabled-count">—</strong></article>
-                  <article><span>已禁用用户</span><strong id="model-access-disabled-count">—</strong></article>
+                  <article><span>已启用权限组合</span><strong id="model-access-enabled-count">—</strong></article>
+                  <article><span>已禁用权限组合</span><strong id="model-access-disabled-count">—</strong></article>
                 </div>
                 <form id="model-access-default-form" class="model-access-form">
                   <label class="switch-control" for="model-access-default-enabled">
-                    <input id="model-access-default-enabled" name="enabled" type="checkbox" role="switch">
-                    <span><strong>新用户默认启用</strong><small>修改不会影响任何已有用户。</small></span>
+                    <input id="model-access-default-enabled" name="enabled" type="checkbox">
+                    <span><strong>所选模型：新用户默认启用</strong><small>修改不会影响任何已有用户。</small></span>
                   </label>
+                  <p id="model-access-default-state" role="status">请选择要管理的模型。</p>
                   <label>操作原因
                     <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明修改默认权限的原因">
                   </label>
@@ -655,7 +690,7 @@
               </article>
 
               <article class="panel model-access-users-panel">
-                <div class="panel-heading"><div><p class="eyebrow">EXISTING USERS</p><h3>已有用户权限</h3><p>包括 Owner 与已停用账号。逐用户或批量操作都会立即影响下一次请求。</p></div><span id="model-access-selected-count" class="badge">已选 0</span></div>
+                <div class="panel-heading"><div><p class="eyebrow">EXISTING USERS</p><h3>已有用户权限</h3><p>包括 Owner 与已停用账号。操作同时应用于所选模型与所选用户，立即影响下一次请求。</p></div><span id="model-access-selected-count" class="badge">已选 0</span></div>
                 <form id="model-access-users-form" class="model-access-bulk-form">
                   <label>操作原因
                     <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明启用或禁用的原因">
@@ -673,7 +708,7 @@
                 <div class="table-wrap model-access-table-wrap">
                   <table>
                     <caption>权限记录直接从服务端读取；停用账号仍可在这里预先配置。</caption>
-                    <thead><tr><th class="model-access-check-cell"><label class="sr-only" for="model-access-select-all">选择全部用户</label><input id="model-access-select-all" class="model-access-checkbox" type="checkbox"></th><th>用户</th><th>角色 / 状态</th><th>当前权限</th><th>操作</th></tr></thead>
+                    <thead><tr><th class="model-access-check-cell"><label class="sr-only" for="model-access-select-all">选择全部用户</label><input id="model-access-select-all" class="model-access-checkbox" type="checkbox"></th><th>用户</th><th>角色 / 状态</th><th>所选模型权限</th><th>所选模型操作</th></tr></thead>
                     <tbody id="model-access-user-rows"><tr><td colspan="5" class="table-message">选择模型后加载用户。</td></tr></tbody>
                   </table>
                 </div>
@@ -799,6 +834,38 @@
       </label></div>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">验证</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="group-dialog" aria-labelledby="group-dialog-title">
+    <form id="group-form">
+      <div class="dialog-heading"><p class="eyebrow">GROUP LIMIT</p><h2 id="group-dialog-title">创建群组</h2></div>
+      <input name="group_id" type="hidden">
+      <label>群组名称<input name="name" required maxlength="120" autocomplete="off"></label>
+      <label>每周期额度（USD）<input name="limit_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 100.00"></label>
+      <label>周期<select name="period"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
+      <label id="group-custom-days-label" class="hidden">自定义天数<input name="custom_days" type="number" min="1" max="106751" step="1" value="14"></label>
+      <label>周期起点（本地时间，可留空）<input name="starts_at" type="datetime-local" step="1"></label>
+      <p class="muted">创建时留空立即开始。编辑时留空保留起点；修改周期后立即重开。仅修改金额会保留当前累计，修改周期或起点会关闭旧期、建立新期。</p>
+      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存群组</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="upstream-access-dialog" aria-labelledby="upstream-access-title">
+    <form id="upstream-access-form">
+      <div class="dialog-heading"><p class="eyebrow">ACCOUNT ACCESS</p><h2 id="upstream-access-title">账号使用权限</h2><p id="upstream-access-account">—</p></div>
+      <label>使用范围<select name="mode"><option value="shared">共享 · 所有用户可用</option><option value="exclusive">专属 · 仅指定用户可用</option></select></label>
+      <div id="upstream-access-users" class="hidden">
+        <label>搜索用户<input id="upstream-access-search" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+        <div class="button-group"><button id="upstream-access-select-visible" type="button" class="secondary">选择搜索结果</button><button id="upstream-access-clear" type="button" class="secondary">清空选择</button><span id="upstream-access-selected" class="badge">已选 0 人</span></div>
+        <div id="upstream-access-user-list" class="user-check-list" aria-live="polite"></div>
+      </div>
+      <p class="muted">专属至少选择一人。名单外用户的旧会话将在下一次请求时重新分配账号；进行中的请求正常完成。授权用户仍可使用其他共享账号。</p>
+      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存使用权限</button></div>
     </form>
   </dialog>
 

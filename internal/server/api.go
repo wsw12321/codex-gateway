@@ -186,6 +186,17 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			writeModelNotAllowed(w, r)
 			return
 		}
+		var groupExceeded *store.GroupQuotaExceededError
+		if errors.As(err, &groupExceeded) {
+			retry := max(int(math.Ceil(groupExceeded.RetryAfter.Seconds())), 1)
+			w.Header().Set("Retry-After", strconv.Itoa(retry))
+			message := "群组额度已耗尽，请等待下一周期或联系 Owner"
+			if groupExceeded.NotStarted {
+				message = "群组额度周期尚未开始"
+			}
+			httpx.WriteError(w, r, http.StatusTooManyRequests, "insufficient_quota", "group_quota_exceeded", message)
+			return
+		}
 		var insufficient *store.InsufficientFundsError
 		if errors.As(err, &insufficient) {
 			writeInsufficientQuota(w, r, insufficient.RetryAfter)
@@ -221,10 +232,12 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
 		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+			UserID:        key.UserID,
 		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+			UserID:        key.UserID,
 		})
 	}
 

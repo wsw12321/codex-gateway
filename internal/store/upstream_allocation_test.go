@@ -122,7 +122,7 @@ func TestUpstreamAllocationRejectsNoncanonicalCandidatesBeforeDatabase(t *testin
 		nil, {"0123456789abcdeF"}, {" 0123456789abcdef"}, {""},
 		{"0123456789abcdef", "0123456789abcdef"}, make([]string, MaxUpstreamAllocationCandidates+1),
 	} {
-		if _, err := repository.SelectUpstreamAccount(context.Background(), ids, time.Now()); !errors.Is(err, ErrInvalid) {
+		if _, err := repository.SelectUpstreamAccount(context.Background(), "00000000-0000-0000-0000-000000000001", ids, time.Now()); !errors.Is(err, ErrInvalid) {
 			t.Fatalf("invalid candidates %v error = %v", ids, err)
 		}
 	}

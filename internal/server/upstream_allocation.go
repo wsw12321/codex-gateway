@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wsw/codex-gateway/internal/httpx"
 	"github.com/wsw/codex-gateway/internal/store"
 )
@@ -22,6 +23,14 @@ const (
 // Only the compatibility service may choose a new binding. Candidate discovery
 // belongs to that service; this handler deliberately never calls it back.
 func (s *Server) selectUpstreamAccount(w http.ResponseWriter, r *http.Request) {
+	s.upstreamAccountSelection(w, r, false)
+}
+
+func (s *Server) eligibleUpstreamAccounts(w http.ResponseWriter, r *http.Request) {
+	s.upstreamAccountSelection(w, r, true)
+}
+
+func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request, eligibility bool) {
 	authorization := r.Header.Values("Authorization")
 	if s.config.SidecarToken == "" || len(authorization) != 1 ||
 		!hmac.Equal([]byte(authorization[0]), []byte("Bearer "+s.config.SidecarToken)) {
@@ -33,12 +42,14 @@ func (s *Server) selectUpstreamAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var ids []string
-	if err := decodeSingleJSONField(r, upstreamAllocationRequestBytes, "account_ids", &ids); err != nil {
+	var userID string
+	if err := decodeExactJSONFields(r, upstreamAllocationRequestBytes, map[string]any{"account_ids": &ids, "user_id": &userID}); err != nil {
 		badJSON(w, r, err)
 		return
 	}
 	seen := make(map[string]bool, len(ids))
-	valid := len(ids) > 0 && len(ids) <= store.MaxUpstreamAllocationCandidates
+	parsedUser, parseErr := uuid.Parse(userID)
+	valid := parseErr == nil && parsedUser.String() == userID && len(ids) > 0 && len(ids) <= store.MaxUpstreamAllocationCandidates
 	for _, id := range ids {
 		if !validUpstreamAccountID(id) || seen[id] {
 			valid = false
@@ -49,7 +60,16 @@ func (s *Server) selectUpstreamAccount(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_candidates", "候选账号列表无效")
 		return
 	}
-	id, err := s.store.SelectUpstreamAccount(r.Context(), ids, time.Now().UTC())
+	if eligibility {
+		allowed, err := s.store.EligibleUpstreamAccounts(r.Context(), userID, ids)
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"account_ids": allowed})
+		return
+	}
+	id, err := s.store.SelectUpstreamAccount(r.Context(), userID, ids, time.Now().UTC())
 	if err != nil {
 		if s.logger != nil && !errors.Is(err, store.ErrNoUpstreamAccount) {
 			s.logger.Error("select upstream account failed", "request_id", httpx.RequestID(r.Context()))
@@ -58,6 +78,34 @@ func (s *Server) selectUpstreamAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"account_id": id})
+}
+
+func (s *Server) setUpstreamAccountAccess(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUpstreamAccountID(id) {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
+		return
+	}
+	if !strictJSONRequest(r) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_access_request", "账号权限请求必须为 JSON，且不能包含查询参数")
+		return
+	}
+	var mode, reason string
+	var users []string
+	if err := decodeExactJSONFields(r, 512<<10, map[string]any{"mode": &mode, "user_ids": &users, "reason": &reason}); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	account, err := s.store.SetUpstreamAccountAccess(r.Context(), store.SetUpstreamAccountAccessParams{
+		AccountID: id, Mode: mode, UserIDs: users, Reason: reason, At: time.Now().UTC(),
+		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
+		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
+	})
+	if err != nil {
+		s.storeWriteError(w, r, "set upstream account access", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, account)
 }
 
 func (s *Server) setUpstreamAccountAllocationWeight(w http.ResponseWriter, r *http.Request) {
@@ -99,6 +147,10 @@ func strictJSONRequest(r *http.Request) bool {
 // Decode the exact one-field protocol, rejecting duplicate/case-folded keys,
 // oversized bodies (including chunked requests), and additional JSON values.
 func decodeSingleJSONField(r *http.Request, limit int64, field string, destination any) error {
+	return decodeExactJSONFields(r, limit, map[string]any{field: destination})
+}
+
+func decodeExactJSONFields(r *http.Request, limit int64, fields map[string]any) error {
 	if r.ContentLength > limit {
 		return &http.MaxBytesError{Limit: limit}
 	}
@@ -114,16 +166,24 @@ func decodeSingleJSONField(r *http.Request, limit int64, field string, destinati
 	if err != nil || start != json.Delim('{') {
 		return errors.New("request must be an object")
 	}
-	key, err := decoder.Token()
-	if err != nil || key != field {
-		return errors.New("request field missing")
-	}
-	if err := decoder.Decode(destination); err != nil {
-		return err
+	seen := make(map[string]bool, len(fields))
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, ok := key.(string)
+		if err != nil || !ok || fields[name] == nil || seen[name] {
+			return errors.New("invalid request field")
+		}
+		seen[name] = true
+		if err := decoder.Decode(fields[name]); err != nil {
+			return err
+		}
 	}
 	end, err := decoder.Token()
 	if err != nil || end != json.Delim('}') {
-		return errors.New("request must contain exactly one field")
+		return errors.New("request must be an object")
+	}
+	if len(seen) != len(fields) {
+		return errors.New("request field missing")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return errors.New("request must contain exactly one JSON value")

@@ -65,6 +65,7 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 		},
 		"cash_balance_usd": state.BalanceUSD,
 		"source_disabled":  state.SourceDisabled,
+		"group":            state.Group,
 		"subscriptions":    billingSubscriptionsResponse(state.Subscriptions),
 		"ledger_entries":   state.Ledger,
 		"pagination": map[string]any{
@@ -109,6 +110,7 @@ func (s *Server) billingUsers(w http.ResponseWriter, r *http.Request) {
 		items = append(items, map[string]any{
 			"id": user.UserID, "username": user.Username, "display_name": user.DisplayName,
 			"role": user.Role, "status": user.Status, "cash_balance_usd": user.BalanceUSD,
+			"group_id":        user.GroupID,
 			"subscriptions":   billingSubscriptionsResponse(user.Subscriptions),
 			"source_disabled": user.SourceDisabled,
 		})

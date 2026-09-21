@@ -51,15 +51,15 @@ func TestUpstreamAllocationRejectsNoncanonicalRequests(t *testing.T) {
 	for i := range tooMany {
 		tooMany[i] = fmt.Sprintf("%016x", i)
 	}
-	tooManyJSON, _ := json.Marshal(map[string]any{"account_ids": tooMany})
+	tooManyJSON, _ := json.Marshal(map[string]any{"account_ids": tooMany, "user_id": "00000000-0000-0000-0000-000000000001"})
 	for _, body := range []string{
-		``, `{}`, `null`, `[]`, `{"account_ids":null}`, `{"account_ids":[]}`,
-		`{"account_ids":[""]}`, `{"account_ids":[null]}`, `{"account_ids":[1]}`,
-		`{"account_ids":["0123456789ABCDEF"]}`, `{"account_ids":[" 0123456789abcdef"]}`,
-		`{"account_ids":["0123456789abcdef","0123456789abcdef"]}`,
-		`{"Account_ids":["0123456789abcdef"]}`, `{"account_ids":["0123456789abcdef"],"account_ids":[]}`,
-		`{"account_ids":["0123456789abcdef"],"token":"sensitive-canary"}`,
-		`{"account_ids":["0123456789abcdef"]}{}`, string(tooManyJSON),
+		``, `{}`, `null`, `[]`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":null}`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":[]}`,
+		`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":[""]}`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":[null]}`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":[1]}`,
+		`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789ABCDEF"]}`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":[" 0123456789abcdef"]}`,
+		`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789abcdef","0123456789abcdef"]}`,
+		`{"Account_ids":["0123456789abcdef"]}`, `{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789abcdef"],"account_ids":[]}`,
+		`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789abcdef"],"token":"sensitive-canary"}`,
+		`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789abcdef"]}{}`, string(tooManyJSON),
 	} {
 		t.Run(body, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -83,7 +83,7 @@ func TestUpstreamAllocationRejectsNoncanonicalRequests(t *testing.T) {
 		func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") },
 		func(r *http.Request) { r.URL.RawQuery = "account_ids=sensitive-canary" },
 	} {
-		r := allocationTestRequest(`{"account_ids":["0123456789abcdef"]}`)
+		r := allocationTestRequest(`{"user_id":"00000000-0000-0000-0000-000000000001","account_ids":["0123456789abcdef"]}`)
 		mutate(r)
 		w := httptest.NewRecorder()
 		server.selectUpstreamAccount(w, r)
@@ -108,7 +108,7 @@ func TestUpstreamAllocationUsesOnlyDatabaseAndFailsClosed(t *testing.T) {
 			calls := 0
 			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 				calls++
-				if !strings.Contains(query, "WITH candidates(id)") || len(args) != 3 || args[2].Value != "0123456789abcdef" {
+				if !strings.Contains(query, "WITH candidates(id)") || len(args) != 4 || args[3].Value != "0123456789abcdef" || args[2].Value != "00000000-0000-0000-0000-000000000001" {
 					t.Fatalf("unexpected allocation query: %s %+v", query, args)
 				}
 				if args[1].Value.(time.Time).Sub(args[0].Value.(time.Time)) != 24*time.Hour {
@@ -122,7 +122,7 @@ func TestUpstreamAllocationUsesOnlyDatabaseAndFailsClosed(t *testing.T) {
 			defer db.Close()
 			server := &Server{config: config.Config{SidecarToken: "sidecar-test-secret"}, store: store.New(db)}
 			w := httptest.NewRecorder()
-			server.selectUpstreamAccount(w, allocationTestRequest(`{"account_ids":["0123456789abcdef"]}`))
+			server.selectUpstreamAccount(w, allocationTestRequest(`{"account_ids":["0123456789abcdef"],"user_id":"00000000-0000-0000-0000-000000000001"}`))
 			if w.Code != test.want || calls != 1 || strings.Contains(w.Body.String(), "sensitive-canary") {
 				t.Fatalf("status=%d calls=%d body=%s", w.Code, calls, w.Body.String())
 			}
@@ -217,5 +217,30 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestUpstreamEligibilityRequiresAuthenticatedCanonicalUser(t *testing.T) {
+	server := &Server{config: config.Config{SidecarToken: "sidecar-test-secret"}}
+	for _, body := range []string{
+		`{"account_ids":["0123456789abcdef"]}`,
+		`{"account_ids":["0123456789abcdef"],"user_id":null}`,
+		`{"account_ids":["0123456789abcdef"],"user_id":"bad-user"}`,
+		`{"account_ids":["0123456789abcdef"],"user_id":"00000000-0000-0000-0000-000000000001","user_id":"00000000-0000-0000-0000-000000000002"}`,
+	} {
+		for _, handler := range []http.HandlerFunc{server.selectUpstreamAccount, server.eligibleUpstreamAccounts} {
+			w := httptest.NewRecorder()
+			handler(w, allocationTestRequest(body))
+			if w.Code != 400 {
+				t.Fatalf("invalid identity accepted: %d %s", w.Code, w.Body.String())
+			}
+		}
+	}
+	request := allocationTestRequest(`{}`)
+	request.Header.Del("Authorization")
+	w := httptest.NewRecorder()
+	server.eligibleUpstreamAccounts(w, request)
+	if w.Code != 401 {
+		t.Fatal("eligibility endpoint accepted unauthenticated request")
 	}
 }

@@ -52,7 +52,7 @@ func TestUpstreamAllocationPostgresIntegration(t *testing.T) {
 	}
 	selection := func(ids []string, want string) {
 		t.Helper()
-		id, err := repository.SelectUpstreamAccount(ctx, ids, at)
+		id, err := repository.SelectUpstreamAccount(ctx, actor.ID, ids, at)
 		if err != nil || id != want {
 			t.Fatalf("SelectUpstreamAccount(%v) = %q, %v; want %q", ids, id, err, want)
 		}
@@ -203,11 +203,11 @@ func TestUpstreamAllocationPostgresIntegration(t *testing.T) {
 	}
 	write(accountB, 0)
 	selection([]string{accountA, accountB}, accountA)
-	if _, err := repository.SelectUpstreamAccount(ctx, []string{accountB}, at); !errors.Is(err, ErrNoUpstreamAccount) {
+	if _, err := repository.SelectUpstreamAccount(ctx, actor.ID, []string{accountB}, at); !errors.Is(err, ErrNoUpstreamAccount) {
 		t.Fatalf("single zero-weight candidate error = %v", err)
 	}
 	write(accountA, 0)
-	if _, err := repository.SelectUpstreamAccount(ctx, []string{accountA, accountB}, at); !errors.Is(err, ErrNoUpstreamAccount) {
+	if _, err := repository.SelectUpstreamAccount(ctx, actor.ID, []string{accountA, accountB}, at); !errors.Is(err, ErrNoUpstreamAccount) {
 		t.Fatalf("all zero-weight candidates error = %v", err)
 	}
 	selection([]string{accountA, accountB, unknown}, unknown)
