@@ -72,7 +72,7 @@ func (s *Server) modelAccessUsersBatch(w http.ResponseWriter, r *http.Request) {
 		s.modelAccessStoreError(w, r, "list model access batch users", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"models": models, "users": users})
+	writeJSON(w, http.StatusOK, map[string]any{"models": models, "users": modelAccessUsersResponse(users)})
 }
 
 func (s *Server) updateModelAccessDefaultsBatch(w http.ResponseWriter, r *http.Request) {

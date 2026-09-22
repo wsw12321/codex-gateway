@@ -112,6 +112,12 @@ type ForwardOptions struct {
 	// accepted only in the fixed base64url form emitted by the gateway and is
 	// consumed by the sidecar rather than forwarded to the service provider.
 	AffinityScope string
+	// OnUpstreamAccount is called after a valid, single-valued upstream account
+	// attribution header is received and before the response body is streamed.
+	// The callback is intentionally only given the validated stable account ID;
+	// malformed or ambiguous headers are ignored. Callers must keep the
+	// callback lightweight because it runs on the forwarding goroutine.
+	OnUpstreamAccount func(accountID string)
 }
 
 func New(baseURL *url.URL, token string) *Client {
@@ -203,6 +209,7 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
+	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
@@ -424,6 +431,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
+	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
@@ -509,6 +517,13 @@ func safeUpstreamAccountHeader(header http.Header) string {
 		return ""
 	}
 	return safeUpstreamAccountID(values[0])
+}
+
+func notifyUpstreamAccount(options ForwardOptions, accountID string) {
+	if accountID == "" || options.OnUpstreamAccount == nil {
+		return
+	}
+	options.OnUpstreamAccount(accountID)
 }
 
 func safeContentType(value string) string {

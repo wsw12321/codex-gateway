@@ -106,7 +106,7 @@ func (s *Server) modelAccessUsers(w http.ResponseWriter, r *http.Request) {
 		s.modelAccessStoreError(w, r, "list model access users", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"model": model, "users": users})
+	writeJSON(w, http.StatusOK, map[string]any{"model": model, "users": modelAccessUsersResponse(users)})
 }
 
 func (s *Server) updateModelAccessDefault(w http.ResponseWriter, r *http.Request) {

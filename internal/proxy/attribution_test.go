@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -82,6 +83,64 @@ func TestForwardPreservesFinalAttributionForAllTerminalResults(t *testing.T) {
 			}
 			if response.Header().Get(upstreamAccountHeader) != "" {
 				t.Fatal("internal attribution leaked to caller")
+			}
+		})
+	}
+}
+
+func TestForwardNotifiesOnlyForValidSingleValuedAttributionHeader(t *testing.T) {
+	const valid = "fedcba9876543210"
+	for _, test := range []struct {
+		name       string
+		header     []string
+		wantID     string
+		wantNotify string
+	}{
+		{name: "valid", header: []string{valid}, wantID: valid, wantNotify: valid},
+		{name: "trimmed valid", header: []string{"  " + valid + "  "}, wantID: valid, wantNotify: valid},
+		{name: "invalid characters", header: []string{"FEDCBA9876543210"}},
+		{name: "wrong length", header: []string{"0123456789abcde"}},
+		{name: "comma separated", header: []string{valid + ",0123456789abcdef"}},
+		{name: "multiple values", header: []string{valid, "0123456789abcdef"}},
+		{name: "missing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+				header := http.Header{"Content-Type": {"application/json"}}
+				if test.header != nil {
+					header[upstreamAccountHeader] = append([]string(nil), test.header...)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: header,
+					Body: io.NopCloser(strings.NewReader(`{"model":"model"}`)),
+				}, nil
+			})
+			base, _ := url.Parse("http://compat.invalid")
+			client := NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})
+			var notifications atomic.Int64
+			var notified atomic.Value
+			request := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
+			result, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, "/v1/responses", ForwardOptions{
+				OnUpstreamAccount: func(accountID string) {
+					notifications.Add(1)
+					notified.Store(accountID)
+				},
+			})
+			if failure != nil {
+				t.Fatalf("failure=%v", failure)
+			}
+			if result.UpstreamAccountID != test.wantID {
+				t.Fatalf("result attribution=%q want %q", result.UpstreamAccountID, test.wantID)
+			}
+			wantCount := int64(0)
+			if test.wantNotify != "" {
+				wantCount = 1
+			}
+			if notifications.Load() != wantCount {
+				t.Fatalf("notifications=%d want %d", notifications.Load(), wantCount)
+			}
+			if test.wantNotify != "" && notified.Load() != test.wantNotify {
+				t.Fatalf("notified=%v want %q", notified.Load(), test.wantNotify)
 			}
 		})
 	}

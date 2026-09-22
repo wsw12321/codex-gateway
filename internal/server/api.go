@@ -215,6 +215,15 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		return
 	}
 	forwardingStarted := false
+	// Upstream account attribution arrives with the response headers, which can
+	// be substantially earlier than the terminal usage write for a streaming
+	// request. Keep that observation in the short-lived monitor overlay and
+	// remove it on every terminal path; the durable usage row remains the
+	// single-account final/last-attempt contract.
+	defer s.clearActiveAttribution(requestID)
+	onUpstreamAccount := func(accountID string) {
+		s.rememberActiveAttribution(requestID, accountID)
+	}
 	defer func() {
 		if !forwardingStarted {
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
@@ -231,13 +240,15 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	var failure *gatewayproxy.Failure
 	if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
 		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
-			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:        key.UserID,
+			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
+			UserID:            key.UserID,
+			OnUpstreamAccount: onUpstreamAccount,
 		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
-			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:        key.UserID,
+			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
+			UserID:            key.UserID,
+			OnUpstreamAccount: onUpstreamAccount,
 		})
 	}
 

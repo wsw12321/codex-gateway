@@ -1809,6 +1809,97 @@ code {
   padding: .7rem;
 }
 
+.user-search-option small {
+  overflow-wrap: anywhere;
+}
+
+.monitoring-head {
+  align-items: flex-start;
+}
+
+.monitoring-toolbar {
+  display: flex;
+  align-items: center;
+  gap: .7rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.monitoring-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  align-items: start;
+}
+
+.monitoring-window {
+  min-width: 0;
+}
+
+.monitoring-window .panel-heading {
+  align-items: flex-start;
+}
+
+.monitoring-window .panel-heading p:not(.eyebrow) {
+  margin: .25rem 0 0;
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+.monitoring-window .table-wrap {
+  max-height: 34rem;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+}
+
+.monitoring-window table {
+  min-width: 42rem;
+}
+
+.monitoring-window td small,
+.monitoring-upstream small,
+.monitoring-user-link small {
+  display: block;
+  color: var(--muted);
+  font-size: .78rem;
+}
+
+.monitoring-user-link {
+  display: inline-block;
+  min-width: 8rem;
+  color: var(--accent-strong, var(--accent));
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+  text-underline-offset: .15em;
+}
+
+.monitoring-user-link:hover,
+.monitoring-user-link:focus-visible {
+  color: var(--text);
+}
+
+.monitoring-upstream strong {
+  display: block;
+  font-weight: 600;
+}
+
+.monitoring-unassigned,
+.monitoring-unattributed {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.monitoring-window .status-badge + small {
+  display: block;
+  margin-top: .25rem;
+}
+
+.model-access-user-search {
+  display: block;
+  margin-bottom: .8rem;
+}
+
 #billing-scope-name {
   min-width: 0;
   margin-left: auto;

@@ -41,7 +41,9 @@ func (r *Router) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_unavailable", Message: "Antigravity 尚未就绪"}
 	}
 	// Codex account affinity is not part of the bridge's protocol.
-	return r.antigravity.ForwardWithOptions(ctx, w, incoming, path, ForwardOptions{})
+	return r.antigravity.ForwardWithOptions(ctx, w, incoming, path, ForwardOptions{
+		OnUpstreamAccount: options.OnUpstreamAccount,
+	})
 }
 
 type catalogFetch struct {

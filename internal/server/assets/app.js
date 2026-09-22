@@ -11,6 +11,7 @@ const sectionTitles = {
   groups: "群组额度",
   security: "账号安全",
   usage: "使用统计",
+  monitoring: "请求监控",
   "model-access": "模型权限",
   "upstream-accounts": "上游账号",
   information: "信息管理",
@@ -19,6 +20,7 @@ const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("model-access");
 ownerOnlySections.add("groups");
 ownerOnlySections.add("information");
+ownerOnlySections.add("monitoring");
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -57,8 +59,10 @@ let billingBatchUsersReady = false;
 let billingBatchGeneration = 0;
 let billingBatchRefreshing = false;
 let globalUserSearch = null;
+let recoveryUserSearch = null;
 let modelAccessModels = [];
 let modelAccessUsers = [];
+let modelAccessUserEntries = [];
 let modelAccessSelectedModels = new Set();
 let modelAccessSelectedUsers = new Set();
 let modelAccessSelectionInitialized = false;
@@ -85,9 +89,15 @@ let informationOperation = false;
 let informationJobTimer = 0;
 let informationUsers = [];
 let informationSelectedUsers = new Set();
+let informationSelectedDetails = new Map();
 let informationUsersOffset = 0;
 let informationUsersReady = false;
 let informationLoaded = false;
+let monitoringTimer = 0;
+let monitoringRequestSequence = 0;
+let monitoringPolling = false;
+let monitoringController = null;
+let monitoringSnapshot = null;
 let reauthResolve = null;
 let reauthReject = null;
 let reauthPromise = null;
@@ -327,6 +337,8 @@ function clearSensitiveDOM() {
 
 function handleUnauthorized() {
   stopUpstreamConcurrency();
+  stopMonitoring();
+  resetMonitoring();
   resetInformation();
   resetGroupManagement();
   identityGeneration++;
@@ -356,6 +368,7 @@ function handleUnauthorized() {
   billingLedgerNextOffset = 0;
   modelAccessModels = [];
   modelAccessUsers = [];
+  modelAccessUserEntries = [];
   modelAccessSelectedModels.clear();
   modelAccessSelectedUsers.clear();
   modelAccessSelectionInitialized = false;
@@ -385,11 +398,13 @@ function handleUnauthorized() {
   byId("billing-current-rate").textContent = "—";
   resetBillingUserSearch();
   globalUserSearch?.reset();
+  recoveryUserSearch?.reset();
   byId("billing-ledger-page").textContent = "—";
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
   byId("model-access-model-select").replaceChildren(element("p", {text: "登录后加载模型"}));
   byId("model-access-model-search").value = "";
+  byId("model-access-user-search").value = "";
   byId("model-access-model-count").textContent = "已选 0 个模型";
   byId("model-access-default-state").textContent = "请选择要管理的模型。";
   byId("model-access-enabled-count").textContent = "—";
@@ -981,6 +996,8 @@ function renderState(value) {
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
     stopUpstreamConcurrency();
+    stopMonitoring();
+    resetMonitoring();
     resetInformation();
     identityGeneration++;
     resetGroupManagement();
@@ -1546,7 +1563,206 @@ function renderBillingDetail(detail) {
   renderBillingAdminValues(detail);
 }
 
+/*
+ * User search is deliberately kept in one place.  The API returns the same
+ * user shape to all owner tools, but older deployments only include username
+ * and display_name.  Newer responses may additionally carry a pre-computed
+ * pinyin index (search_index/pinyin_full/pinyin_initials); using all of the
+ * fields here keeps the picker backwards compatible while making Chinese
+ * names searchable by full pinyin and initials.
+ */
+function userSearchIndex(user) {
+  if (!user || typeof user !== "object") return "";
+  const values = [];
+  const add = (value) => {
+    if (Array.isArray(value)) value.forEach(add);
+    else if (value != null) values.push(String(value));
+  };
+  for (const key of [
+    "username", "display_name", "name", "id", "search_index", "search_text",
+    "pinyin", "pinyin_full", "pinyin_initials", "display_name_pinyin",
+    "display_name_pinyin_full", "display_name_pinyin_initials", "initials",
+  ]) add(user[key]);
+  return values.join(" ").toLocaleLowerCase();
+}
+
+function userMatchesSearch(user, query) {
+  const terms = String(query || "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return true;
+  const index = userSearchIndex(user);
+  return terms.every((term) => index.includes(term));
+}
+
+function matchingUsers(query, users = []) {
+  return (Array.isArray(users) ? users : []).filter((user) => userMatchesSearch(user, query));
+}
+
+/**
+ * Shared single/multi user-picker primitive.
+ *
+ * Existing pages use createUserSearch for a single owner target.  Keeping
+ * that function as a thin wrapper around UserPicker lets the batch and
+ * checkbox pages share the exact same search index and interaction helpers
+ * without changing their business-specific selection rules.
+ */
+class UserPicker {
+  constructor(id, onSelect = null, describe = () => "") {
+    this.id = id;
+    this.input = byId(id);
+    this.results = byId(`${id}-results`);
+    this.status = byId(`${id}-status`);
+    this.host = this.input?.closest?.(".user-search") || this.input?.parentElement;
+    this.onSelect = onSelect;
+    this.describe = describe;
+    this.users = [];
+    this.matches = [];
+    this.activeIndex = -1;
+    this.composing = false;
+    this.bound = false;
+    this.bind();
+  }
+
+  bind() {
+    const input = this.input;
+    const results = this.results;
+    if (!input || !results || this.bound) return;
+    this.bound = true;
+    input.addEventListener("focus", () => this.render());
+    input.addEventListener("click", () => {
+      if (input.getAttribute("aria-expanded") !== "true") this.render();
+    });
+    input.addEventListener("input", () => { if (!this.composing) this.render(); });
+    input.addEventListener("compositionstart", () => { this.composing = true; this.close(); });
+    input.addEventListener("compositionend", () => { this.composing = false; this.render(); });
+    input.addEventListener("keydown", (event) => this.keydown(event));
+    results.addEventListener("mousedown", (event) => {
+      if (event.target.closest?.('[role="option"]')) event.preventDefault();
+    });
+    this.host?.addEventListener?.("focusout", (event) => {
+      if (!this.host.contains(event.relatedTarget)) this.close();
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!this.host?.contains?.(event.target)) this.close();
+    });
+  }
+
+  close() {
+    if (!this.input || !this.results) return;
+    hide(this.results);
+    this.input.setAttribute("aria-expanded", "false");
+    this.input.removeAttribute("aria-activedescendant");
+    this.activeIndex = -1;
+  }
+
+  activate(index) {
+    this.activeIndex = index;
+    Array.from(this.results?.children || []).forEach((node, position) => {
+      if (node.getAttribute("role") === "option") node.setAttribute("aria-selected", String(position === index));
+    });
+    const active = index >= 0 ? this.results?.children?.[index] : null;
+    if (active) {
+      this.input.setAttribute("aria-activedescendant", active.id);
+      active.scrollIntoView?.({block: "nearest"});
+    } else this.input.removeAttribute("aria-activedescendant");
+  }
+
+  async choose(user) {
+    if (!this.input || this.input.disabled || this.composing || state?.user?.role !== "owner") return;
+    this.input.value = user.username || user.display_name || user.id || "";
+    this.input.focus({preventScroll: true});
+    this.close();
+    if (this.status) this.status.textContent = `已选择 ${user.display_name || user.username || user.id} (${user.username || user.id})`;
+    if (!this.onSelect) return;
+    try { await this.onSelect(user); }
+    catch (error) { if (state?.user?.role === "owner") notice(friendlyError(error), "error"); }
+  }
+
+  keydown(event) {
+    const input = this.input;
+    if (input.disabled || this.composing || event.isComposing || event.keyCode === 229) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (input.getAttribute("aria-expanded") !== "true") this.render();
+      if (!this.matches.length) return;
+      const next = this.activeIndex < 0
+        ? (event.key === "ArrowDown" ? 0 : this.matches.length - 1)
+        : (this.activeIndex + (event.key === "ArrowDown" ? 1 : -1) + this.matches.length) % this.matches.length;
+      this.activate(next);
+    } else if (event.key === "Enter" && this.activeIndex >= 0 && input.getAttribute("aria-expanded") === "true") {
+      event.preventDefault();
+      this.choose(this.matches[this.activeIndex]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      this.close();
+    } else if (event.key === "Tab") this.close();
+  }
+
+  render(open = true) {
+    if (!this.input || this.input.disabled || !this.results) return;
+    const query = this.input.value.trim();
+    this.matches = matchingUsers(query, this.users);
+    this.activeIndex = -1;
+    this.input.removeAttribute("aria-activedescendant");
+    if (this.status) this.status.textContent = query
+      ? (this.matches.length ? `找到 ${this.matches.length} 位用户` : "未找到匹配的用户")
+      : `共 ${this.users.length} 位用户`;
+    this.results.replaceChildren(...this.matches.map((user, index) => {
+      const role = user.role ? (user.role === "owner" ? "Owner" : "Member") : "";
+      const status = user.status ? statusLabel(user.status) : "";
+      const context = this.describe(user);
+      const detail = [role, status, context].filter(Boolean).join(" · ");
+      const item = element("div", {className: "user-search-option", attributes: {
+        id: `${this.id}-option-${index}`, role: "option", "aria-selected": "false", tabindex: "-1",
+      }},
+      element("span", {className: "user-search-name", text: user.display_name || user.username || user.id}),
+      element("small", {className: "user-search-username", text: user.username || user.id}),
+      detail ? element("small", {className: "user-search-detail", text: detail}) : null);
+      item.addEventListener("click", () => this.choose(user));
+      return item;
+    }));
+    if (!this.matches.length) this.results.append(element("div", {className: "user-search-empty", text: this.status?.textContent || "没有匹配的用户"}));
+    if (open) {
+      show(this.results);
+      this.input.setAttribute("aria-expanded", "true");
+    } else this.close();
+  }
+
+  setUsers(values) {
+    this.users = Array.isArray(values) ? values : [];
+    if (!this.input) return;
+    this.input.disabled = false;
+    this.render(document.activeElement === this.input);
+  }
+
+  unavailable(message) {
+    this.users = [];
+    this.matches = [];
+    if (!this.input) return;
+    this.input.disabled = true;
+    this.close();
+    this.results?.replaceChildren();
+    if (this.status) this.status.textContent = message;
+  }
+
+  reset() {
+    if (this.input) this.input.value = "";
+    this.composing = false;
+    this.unavailable("登录后加载用户");
+  }
+}
+
 function createUserSearch(id, onSelect, describe = () => "") {
+  return new UserPicker(id, onSelect, describe);
+}
+
+/* Kept as a named factory for pages that need a multi-select picker. */
+function createUserPicker(id, onSelect, describe = () => "") {
+  return new UserPicker(id, onSelect, describe);
+}
+
+/* Legacy implementation intentionally removed; see UserPicker above. */
+/* istanbul ignore next */
+function createLegacyUserSearch(id, onSelect, describe = () => "") {
   const input = byId(id);
   const results = byId(`${id}-results`);
   const status = byId(`${id}-status`);
@@ -1690,6 +1906,7 @@ function renderBillingUsers(result) {
     String(left.username || left.display_name).localeCompare(String(right.username || right.display_name), "zh-CN"));
   if (!billingUserID) billingUserID = current.id;
   billingUserSearch.setUsers(billingUsers);
+  recoveryUserSearch?.setUsers(billingUsers);
   billingBatchUsersReady = true;
   billingBatchSelectedIDs = new Set(Array.from(billingBatchSelectedIDs).filter((id) => unique.has(id)));
   renderBillingBatchUsers();
@@ -1702,6 +1919,7 @@ function resetBillingUserSearch() {
   billingDetailLoading = false;
   billingUsers = [];
   billingUserSearch?.reset();
+  recoveryUserSearch?.reset();
   resetBillingBatchState();
   byId("billing-scope-name").textContent = "—";
   syncBillingUserControls();
@@ -1861,9 +2079,7 @@ async function loadBillingDashboard() {
 }
 
 function billingBatchMatches() {
-  const query = byId("billing-batch-search").value.trim().toLowerCase();
-  return billingUsers.filter((user) => [user.username, user.display_name].some((value) =>
-    String(value || "").toLowerCase().includes(query)));
+  return matchingUsers(byId("billing-batch-search").value, billingUsers);
 }
 
 function syncBillingBatchControls() {
@@ -2346,8 +2562,9 @@ function renderModelAccessSummary() {
 }
 
 function renderModelAccessUsers(result) {
+  modelAccessUserEntries = Array.isArray(result?.users) ? result.users : [];
   const grouped = new Map();
-  for (const entry of Array.isArray(result?.users) ? result.users : []) {
+  for (const entry of modelAccessUserEntries) {
     const user = grouped.get(entry.user_id) || {...entry, enabled_count: 0, model_count: 0};
     user.enabled_count += entry.enabled ? 1 : 0;
     user.model_count++;
@@ -2356,7 +2573,9 @@ function renderModelAccessUsers(result) {
   }
   modelAccessUsers = [...grouped.values()];
   modelAccessSelectedUsers = new Set([...modelAccessSelectedUsers].filter((id) => grouped.has(id)));
-  const rows = modelAccessUsers.map((user) => {
+  const query = byId("model-access-user-search")?.value || "";
+  const visibleUsers = matchingUsers(query, modelAccessUsers);
+  const rows = visibleUsers.map((user) => {
     const checkbox = element("input", {
       type: "checkbox", className: "model-access-checkbox model-access-user-select",
       attributes: {value: user.user_id, "aria-label": `选择用户 ${user.username || user.user_id}`},
@@ -2396,9 +2615,15 @@ function renderModelAccessUsers(result) {
       element("td", {}, element("div", {className: "button-group"}, ...buttons)),
     );
   });
-  byId("model-access-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(5, "当前没有用户。")]));
+  byId("model-access-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(5, query ? "没有匹配的用户。" : "当前没有用户。")]));
   syncModelAccessSelection();
   byId("model-access-user-rows").closest("table").parentElement.setAttribute("aria-busy", "false");
+}
+
+function filterModelAccessUsers() {
+  /* Re-render from the raw latest response so filtering never fabricates
+     permission rows or drops the server-provided pinyin search fields. */
+  renderModelAccessUsers({users: modelAccessUserEntries});
 }
 
 function filterModelAccessModels() {
@@ -2975,8 +3200,7 @@ async function loadGroupDetail(id) {
 }
 
 function matchingManagedUsers(search, users = groupUsers) {
-  const term = String(search || "").trim().toLocaleLowerCase();
-  return users.filter((user) => !term || `${user.username} ${user.display_name} ${user.id}`.toLocaleLowerCase().includes(term));
+  return matchingUsers(search, users);
 }
 
 function groupUserAvailable(user) {
@@ -3562,6 +3786,179 @@ function ownerSectionVisible(section) {
   return !loggingOut && state?.user?.role === "owner" && document.visibilityState !== "hidden" && location.hash === `#${section}`;
 }
 
+function monitoringIdentityCurrent(generation = identityGeneration, sequence = monitoringRequestSequence) {
+  const actorUserID = state?.user?.id;
+  return () => generation === identityGeneration && sequence === monitoringRequestSequence &&
+    !loggingOut && state?.user?.role === "owner" && state?.user?.id === actorUserID &&
+    ownerSectionVisible("monitoring");
+}
+
+function monitoringField(request, ...names) {
+  return field(request, ...names);
+}
+
+function monitoringUser(request) {
+  return {
+    id: String(monitoringField(request, "user_id", "UserID") || ""),
+    username: monitoringField(request, "username", "Username") || "",
+    display_name: monitoringField(request, "display_name", "DisplayName") || "",
+  };
+}
+
+function monitoringUserLink(request) {
+  const user = monitoringUser(request);
+  const label = user.display_name || user.username || user.id || "未知用户";
+  if (!user.id && !user.username) return element("span", {text: label});
+  const link = element("a", {className: "monitoring-user-link", text: label, attributes: {
+    href: "#usage", "data-user-id": user.id, "aria-label": `查看用户 ${label} 的使用统计`,
+  }});
+  const details = [user.username && user.username !== label ? user.username : "", user.id && user.id !== user.username ? user.id : ""]
+    .filter(Boolean).join(" · ");
+  if (details) link.append(element("small", {text: details}));
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    runButton(link, () => drillDownUser(user), "加载中…");
+  });
+  return link;
+}
+
+function monitoringUpstreamCell(request, active = false) {
+  const id = monitoringField(request, "upstream_account_id", "UpstreamAccountID");
+  const masked = monitoringField(request, "upstream_masked_email", "UpstreamMaskedEmail", "email_masked");
+  if (!id && !masked) return element("span", {className: active ? "monitoring-unassigned" : "monitoring-unattributed", text: active ? "分配中" : "未归因"});
+  const host = element("span", {className: "monitoring-upstream"});
+  if (masked) host.append(element("strong", {text: masked}));
+  if (id) host.append(element("small", {text: String(id)}));
+  return host;
+}
+
+function monitoringStatusCell(request) {
+  const stateValue = monitoringField(request, "state", "State") || "unknown";
+  const cell = element("td", {}, statusBadge(stateValue));
+  const status = monitoringField(request, "http_status", "HTTPStatus");
+  const code = monitoringField(request, "error_code", "ErrorCode");
+  const details = [status != null && status !== "" ? `HTTP ${status}` : "", code || ""].filter(Boolean).join(" · ");
+  if (details) cell.append(element("small", {text: details}));
+  return cell;
+}
+
+function monitoringRow(request, windowName) {
+  const active = windowName === "in_progress";
+  const timestamp = active || windowName === "recent"
+    ? monitoringField(request, "requested_at", "RequestedAt")
+    : monitoringField(request, "completed_at", "CompletedAt");
+  const model = monitoringField(request, "model", "Model") || "—";
+  return element("tr", {dataset: {requestId: monitoringField(request, "request_id", "RequestID") || ""}},
+    element("td", {text: formatDateTime(timestamp, "—")}),
+    element("td", {}, monitoringUserLink(request)),
+    element("td", {}, element("code", {text: model})),
+    element("td", {}, monitoringUpstreamCell(request, active)),
+    monitoringStatusCell(request),
+  );
+}
+
+function renderMonitoring(result) {
+  monitoringSnapshot = result || {};
+  const windows = {
+    in_progress: Array.isArray(result?.in_progress) ? result.in_progress : [],
+    recent: Array.isArray(result?.recent) ? result.recent : [],
+    failures: Array.isArray(result?.failures) ? result.failures : [],
+  };
+  for (const [name, rows] of Object.entries(windows)) {
+    const tbody = byId(`monitoring-${name}-rows`);
+    if (!tbody) continue;
+    tbody.closest("table")?.setAttribute("aria-busy", "false");
+    tbody.replaceChildren(...(rows.length ? rows.map((request) => monitoringRow(request, name)) : [tableMessage(5, "当前窗口没有请求。" )]));
+    byId(`monitoring-${name}-count`).textContent = formatInteger(rows.length);
+  }
+  const sampled = result?.sampled_at;
+  byId("monitoring-sampled-at").textContent = sampled ? `最近刷新：${formatDateTime(sampled, "—")} · 每 5 秒刷新` : "最近刷新：—";
+  hide("monitoring-loading");
+  const message = byId("monitoring-message");
+  message.textContent = "";
+  message.classList.add("hidden");
+}
+
+function resetMonitoring(message = "登录后加载请求监控。") {
+  monitoringRequestSequence++;
+  monitoringPolling = false;
+  if (typeof window !== "undefined" && typeof window.clearTimeout === "function") window.clearTimeout(monitoringTimer);
+  monitoringTimer = 0;
+  monitoringController?.abort();
+  monitoringController = null;
+  monitoringSnapshot = null;
+  for (const name of ["in_progress", "recent", "failures"]) {
+    const rows = byId(`monitoring-${name}-rows`);
+    if (rows) rows.replaceChildren(tableMessage(5, message));
+    const count = byId(`monitoring-${name}-count`);
+    if (count) count.textContent = "—";
+  }
+  if (byId("monitoring-sampled-at")) byId("monitoring-sampled-at").textContent = "尚未采样";
+  hide("monitoring-loading");
+  const status = byId("monitoring-message");
+  if (status) { status.textContent = ""; status.classList.add("hidden"); }
+}
+
+async function loadMonitoring({manual = false} = {}) {
+  if (loggingOut || state?.user?.role !== "owner") return;
+  if (!manual && !ownerSectionVisible("monitoring")) return;
+  const sequence = ++monitoringRequestSequence;
+  const generation = identityGeneration;
+  const current = monitoringIdentityCurrent(generation, sequence);
+  if (manual || !monitoringSnapshot) show("monitoring-loading");
+  for (const name of ["in_progress", "recent", "failures"]) {
+    byId(`monitoring-${name}-rows`)?.closest("table")?.setAttribute("aria-busy", "true");
+  }
+  try {
+    const result = await api("/admin/monitoring", {signal: monitoringController?.signal}, current);
+    if (!current()) return;
+    if (!result || typeof result !== "object") throw new Error("请求监控响应格式异常。");
+    renderMonitoring(result);
+  } catch (error) {
+    if (!current() || error?.name === "AbortError" || error?.code === "stale_request") return;
+    const message = byId("monitoring-message");
+    message.textContent = `请求监控加载失败：${friendlyError(error)}`;
+    message.dataset.kind = "error";
+    message.classList.remove("hidden");
+    hide("monitoring-loading");
+    for (const name of ["in_progress", "recent", "failures"]) {
+      byId(`monitoring-${name}-rows`)?.replaceChildren(tableMessage(5, friendlyError(error)));
+    }
+    if (manual) throw error;
+  } finally {
+    if (sequence === monitoringRequestSequence) hide("monitoring-loading");
+  }
+}
+
+function stopMonitoring() {
+  monitoringPolling = false;
+  monitoringRequestSequence++;
+  if (typeof window !== "undefined" && typeof window.clearTimeout === "function") window.clearTimeout(monitoringTimer);
+  monitoringTimer = 0;
+  monitoringController?.abort();
+  monitoringController = null;
+}
+
+function startMonitoring() {
+  if (!ownerSectionVisible("monitoring") || monitoringPolling) return;
+  monitoringPolling = true;
+  const generation = identityGeneration;
+  const tick = async () => {
+    if (!monitoringPolling || !ownerSectionVisible("monitoring") || generation !== identityGeneration) return;
+    monitoringController = new AbortController();
+    try { await loadMonitoring(); }
+    catch (_) { /* renderMonitoring/loadMonitoring already exposes the error */ }
+    finally {
+      monitoringController = null;
+      if (monitoringPolling && ownerSectionVisible("monitoring") && generation === identityGeneration) {
+        monitoringTimer = typeof window !== "undefined" && typeof window.setTimeout === "function"
+          ? window.setTimeout(tick, 5000) : 0;
+      }
+    }
+  };
+  tick();
+}
+
 function renderUpstreamConcurrency() {
   const snapshot = upstreamConcurrencySnapshot;
   const sampled = Date.parse(snapshot?.sampled_at || "");
@@ -3825,6 +4222,7 @@ function resetInformation() {
   informationJob = null;
   informationUsers = [];
   informationSelectedUsers.clear();
+  informationSelectedDetails.clear();
   informationUsersReady = false;
   informationOperation = false;
   informationLoaded = false;
@@ -3854,8 +4252,9 @@ function syncInformationControls() {
   byId("information-delete-users").disabled = unavailable || !informationUsersReady || informationSelectedUsers.size === 0 || informationSelectedUsers.size > 100;
   byId("information-selected-count").textContent = `已选 ${informationSelectedUsers.size} / 100 人`;
   byId("information-select-all").disabled = unavailable || !informationUsersReady || !informationUsers.length;
-  byId("information-select-all").checked = informationUsers.length > 0 && informationUsers.every((user) => informationSelectedUsers.has(user.id));
-  byId("information-select-all").indeterminate = informationSelectedUsers.size > 0 && !byId("information-select-all").checked;
+  const visibleSelected = informationUsers.filter((user) => informationSelectedUsers.has(user.id)).length;
+  byId("information-select-all").checked = informationUsers.length > 0 && visibleSelected === informationUsers.length;
+  byId("information-select-all").indeterminate = visibleSelected > 0 && visibleSelected < informationUsers.length;
   byId("information-users-prev").disabled = unavailable || !informationUsersReady || informationUsersOffset === 0;
   byId("information-users-next").disabled = unavailable || !informationUsersReady || informationUsers.length < 100;
   all(".information-user-select").forEach((input) => { input.disabled = unavailable || !informationUsersReady; });
@@ -3995,8 +4394,14 @@ function renderInformationUsers() {
       attributes: {"aria-label": `选择 ${user.display_name || user.username}`}});
     input.checked = informationSelectedUsers.has(user.id);
     input.addEventListener("change", () => {
-      if (input.checked && informationSelectedUsers.size < 100) informationSelectedUsers.add(user.id);
-      else { informationSelectedUsers.delete(user.id); input.checked = false; }
+      if (input.checked && informationSelectedUsers.size < 100) {
+        informationSelectedUsers.add(user.id);
+        informationSelectedDetails.set(user.id, user);
+      } else {
+        informationSelectedUsers.delete(user.id);
+        informationSelectedDetails.delete(user.id);
+        input.checked = false;
+      }
       syncInformationControls();
     });
     return element("tr", {}, element("td", {}, input),
@@ -4014,7 +4419,6 @@ async function loadInformationUsers(offset = 0) {
   const current = () => identity() && sequence === informationUsersSequence;
   if (!current() || informationOperation) return;
   informationUsersReady = false;
-  informationSelectedUsers.clear();
   syncInformationControls();
   setTableBusy(byId("information-user-rows"), 4, "正在重新核验候选用户…");
   try {
@@ -4023,6 +4427,9 @@ async function loadInformationUsers(offset = 0) {
     if (!current()) return;
     if (!Array.isArray(result?.users)) throw new Error("候选用户响应格式异常。");
     informationUsers = result.users;
+    for (const user of informationUsers) {
+      if (informationSelectedUsers.has(user.id)) informationSelectedDetails.set(user.id, user);
+    }
     informationUsersOffset = offset;
     informationUsersReady = true;
     renderInformationUsers();
@@ -4037,13 +4444,17 @@ async function loadInformationUsers(offset = 0) {
 async function deleteInformationUsers() {
   if (!informationUsersReady || informationOperation || informationSelectedUsers.size === 0 || informationSelectedUsers.size > 100 || loggingOut || state?.user?.role !== "owner") return;
   const ids = [...informationSelectedUsers].sort();
-  const names = informationUsers.filter((user) => informationSelectedUsers.has(user.id)).map((user) => user.display_name || user.username);
+  const names = ids.map((id) => {
+    const user = informationSelectedDetails.get(id) || informationUsers.find((item) => item.id === id);
+    return user?.display_name || user?.username || id;
+  });
   if (!window.confirm(`永久删除 ${ids.length} 位无账务用户及其全部登录凭证？\n${names.slice(0, 8).join("、")}${names.length > 8 ? "等" : ""}\n删除后已有会话与 API Key 立即失效。任一用户不再符合条件时，整批取消。`)) return;
   const current = informationIdentityCurrent();
   try {
     const result = await informationMutation(byId("information-users-form"), "/admin/information/users/delete", {user_ids: ids});
     if (!result || !current()) return;
     informationSelectedUsers.clear();
+    informationSelectedDetails.clear();
     informationMessage(`已永久删除 ${formatInteger(result.deleted_count)} 位用户。`);
     try {
       await loadInformationUsers(0);
@@ -4057,7 +4468,11 @@ async function deleteInformationUsers() {
       return `${user?.display_name || user?.username || blocker.user_id}：${(blocker.reasons || []).map((reason) => informationReasonLabels[reason] || reason).join("、")}`;
     });
     informationMessage(`整批删除未完成：${friendlyError(error)}${reasons.length ? `。${reasons.join("；")}` : ""}`, true);
-    if (error.status === 409) await loadInformationUsers(0);
+    if (error.status === 409) {
+      informationSelectedUsers.clear();
+      informationSelectedDetails.clear();
+      await loadInformationUsers(0);
+    }
     throw error;
   }
 }
@@ -4080,7 +4495,15 @@ function bindInformation() {
     syncInformationControls();
   });
   byId("information-select-all").addEventListener("change", (event) => {
-    informationSelectedUsers = event.currentTarget.checked ? new Set(informationUsers.slice(0, 100).map((user) => user.id)) : new Set();
+    for (const user of informationUsers) {
+      if (event.currentTarget.checked && informationSelectedUsers.size < 100) {
+        informationSelectedUsers.add(user.id);
+        informationSelectedDetails.set(user.id, user);
+      } else if (!event.currentTarget.checked) {
+        informationSelectedUsers.delete(user.id);
+        informationSelectedDetails.delete(user.id);
+      }
+    }
     renderInformationUsers();
   });
 }
@@ -4088,6 +4511,8 @@ function bindInformation() {
 function syncVisiblePolling() {
   if (ownerSectionVisible("upstream-accounts")) startUpstreamConcurrency();
   else if (upstreamConcurrencyPolling) stopUpstreamConcurrency();
+  if (ownerSectionVisible("monitoring")) startMonitoring();
+  else if (monitoringPolling) stopMonitoring();
   window.clearTimeout(informationJobTimer);
   if (ownerSectionVisible("information")) scheduleInformationJob();
 }
@@ -4322,10 +4747,16 @@ function applyWebAuthnSupport() {
 function bindUI() {
   bindInformation();
   document.addEventListener("visibilitychange", syncVisiblePolling);
+  bindAsync("monitoring-refresh", "click", async () => {
+    await loadMonitoring({manual: true});
+    announce("请求监控已刷新。");
+  }, "刷新中…", () => ownerSectionVisible("monitoring"));
   bindGroupUI();
   billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
   globalUserSearch = createUserSearch("global-user-search", drillDownUser);
+  recoveryUserSearch = createUserSearch("recovery-user-search", null,
+    (user) => `${user.role === "owner" ? "Owner" : "Member"} · ${statusLabel(user.status)}`);
   syncBillingUserControls();
   syncBillingBatchControls();
   byId("billing-batch-search").addEventListener("input", () => renderBillingBatchUsers());
@@ -4344,6 +4775,8 @@ function bindUI() {
   bindAsync("logout", "click", async () => {
     loggingOut = true;
     stopUpstreamConcurrency();
+    stopMonitoring();
+    resetMonitoring();
     resetInformation();
     identityGeneration++;
     personalRequestSequence++;
@@ -4362,6 +4795,7 @@ function bindUI() {
     clearSensitiveDOM();
     resetBillingUserSearch();
     globalUserSearch.reset();
+    recoveryUserSearch?.reset();
     try {
       await api("/auth/logout", {method: "POST", body: "{}"});
     } catch (error) {
@@ -4485,6 +4919,7 @@ function bindUI() {
     changedModelAccessSelection();
   });
   byId("model-access-model-search").addEventListener("input", filterModelAccessModels);
+  byId("model-access-user-search").addEventListener("input", filterModelAccessUsers);
   byId("model-access-model-all").addEventListener("click", () => {
     modelAccessSelectedModels = new Set(modelAccessModels.map((item) => item.model));
     all(".model-access-model-checkbox").forEach((input) => { input.checked = true; });

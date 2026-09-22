@@ -108,6 +108,7 @@
           <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
+          <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
           <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
@@ -283,7 +284,7 @@
               <div class="user-search">
                 <label for="billing-user-search">搜索并管理用户</label>
                 <div class="user-search-control">
-                  <input id="billing-user-search" type="search" role="combobox" placeholder="输入用户名的一部分" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="billing-user-search-results" aria-describedby="billing-user-search-status" disabled>
+                  <input id="billing-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="billing-user-search-results" aria-describedby="billing-user-search-status" disabled>
                   <div id="billing-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
                 </div>
                 <small id="billing-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
@@ -507,9 +508,14 @@
                 <form id="recovery-invite-form" class="tool-block">
                   <h4>恢复邀请</h4>
                   <p>为指定账号签发一次性 Passkey 恢复入口。</p>
-                  <label>待恢复用户名
-                    <input name="target_username" required autocomplete="off">
-                  </label>
+                  <label for="recovery-user-search">待恢复用户</label>
+                  <div class="user-search">
+                    <div class="user-search-control">
+                      <input id="recovery-user-search" name="target_username" type="search" role="combobox" required autocomplete="off" placeholder="用户名、显示名或拼音" aria-autocomplete="list" aria-expanded="false" aria-controls="recovery-user-search-results" aria-describedby="recovery-user-search-status" disabled>
+                      <div id="recovery-user-search-results" class="user-search-results hidden" role="listbox" aria-label="恢复目标用户搜索结果"></div>
+                    </div>
+                    <small id="recovery-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
+                  </div>
                   <p class="form-message hidden" role="alert"></p>
                   <button type="submit">签发恢复邀请</button>
                 </form>
@@ -588,7 +594,7 @@
                 <div class="user-search">
                   <label for="global-user-search">搜索用户明细</label>
                   <div class="user-search-control">
-                    <input id="global-user-search" type="search" role="combobox" placeholder="输入用户名的一部分" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="global-user-search-results" aria-describedby="global-user-search-status" disabled>
+                    <input id="global-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="global-user-search-results" aria-describedby="global-user-search-status" disabled>
                     <div id="global-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
                   </div>
                   <small id="global-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
@@ -629,6 +635,29 @@
             </div>
           </section>
 
+          <section class="view owner-only hidden" data-section="monitoring" aria-labelledby="monitoring-title">
+            <div class="section-head monitoring-head">
+              <div><p class="eyebrow">REQUEST MONITORING</p><h2 id="monitoring-title">请求监控</h2><p>查看正在执行、最近创建以及最近失败的请求。页面可见时每 5 秒自动刷新。</p></div>
+              <div class="monitoring-toolbar"><span id="monitoring-sampled-at" class="muted" role="status" aria-live="polite">尚未采样</span><button id="monitoring-refresh" type="button" class="secondary">立即刷新</button></div>
+            </div>
+            <p id="monitoring-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div id="monitoring-loading" class="inline-loading hidden" role="status">正在加载请求监控…</div>
+            <div class="monitoring-grid">
+              <article class="panel monitoring-window" data-monitor-window="in_progress">
+                <div class="panel-heading"><div><p class="eyebrow">ACTIVE</p><h3>当前进行中</h3><p>所有状态为 in_progress 的请求</p></div><span id="monitoring-in-progress-count" class="badge">—</span></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="当前进行中的请求"><table><caption class="sr-only">当前进行中的请求</caption><thead><tr><th>请求时间</th><th>用户</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-in-progress-rows"><tr><td colspan="5" class="table-message">登录后加载。</td></tr></tbody></table></div>
+              </article>
+              <article class="panel monitoring-window" data-monitor-window="recent">
+                <div class="panel-heading"><div><p class="eyebrow">RECENT</p><h3>最近 2 分钟</h3><p>按 requested_at 计算的请求</p></div><span id="monitoring-recent-count" class="badge">—</span></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近两分钟请求"><table><caption class="sr-only">最近两分钟请求</caption><thead><tr><th>请求时间</th><th>用户</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-recent-rows"><tr><td colspan="5" class="table-message">登录后加载。</td></tr></tbody></table></div>
+              </article>
+              <article class="panel monitoring-window" data-monitor-window="failures">
+                <div class="panel-heading"><div><p class="eyebrow">FAILED</p><h3>最近 1 小时失败</h3><p>按 completed_at 计算且 state = failed</p></div><span id="monitoring-failures-count" class="badge">—</span></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近一小时失败请求"><table><caption class="sr-only">最近一小时失败请求</caption><thead><tr><th>结束时间</th><th>用户</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-failures-rows"><tr><td colspan="5" class="table-message">登录后加载。</td></tr></tbody></table></div>
+              </article>
+            </div>
+          </section>
+
           <section class="view owner-only hidden" data-section="groups" aria-labelledby="groups-title">
             <div class="section-head">
               <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为一组用户设置共同的美元用量上限；每人仍需有可用的个人订阅或余额。</p></div>
@@ -643,7 +672,7 @@
                 <div id="group-metrics" class="metrics compact"></div>
                 <form id="group-members-form" class="group-members-form">
                   <div class="panel-heading"><h4>成员管理</h4><span id="group-selected-count" class="badge">已选 0 人</span></div>
-                  <label>搜索用户<input id="group-member-search" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+                  <label>搜索用户<input id="group-member-search" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
                   <div class="button-group"><button id="group-select-visible" type="button" class="secondary">选择搜索结果</button><button id="group-clear-selection" type="button" class="secondary">清空选择</button></div>
                   <div id="group-member-list" class="user-check-list" aria-live="polite"></div>
                   <label>操作原因<input name="reason" required maxlength="500" autocomplete="off" placeholder="说明成员变更或归档原因"></label>
@@ -693,6 +722,9 @@
 
               <article class="panel model-access-users-panel">
                 <div class="panel-heading"><div><p class="eyebrow">EXISTING USERS</p><h3>已有用户权限</h3><p>包括 Owner 与已停用账号。操作同时应用于所选模型与所选用户，立即影响下一次请求。</p></div><span id="model-access-selected-count" class="badge">已选 0</span></div>
+                <label class="model-access-user-search">搜索用户
+                  <input id="model-access-user-search" type="search" autocomplete="off" placeholder="用户名、显示名或拼音">
+                </label>
                 <form id="model-access-users-form" class="model-access-bulk-form">
                   <label>操作原因
                     <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明启用或禁用的原因">
@@ -753,7 +785,7 @@
             <article class="panel information-users-panel">
               <div class="panel-heading"><div><p class="eyebrow">EMPTY ACCOUNTS</p><h3>删除无账务用户</h3><p>仅列出余额为零，无有效订阅、请求、历史账务或待结算记录的普通用户。每批最多 100 人。</p></div><span id="information-selected-count" class="badge">已选 0 / 100 人</span></div>
               <form id="information-users-form" class="information-search-form">
-                <label>搜索候选用户<input id="information-user-search" name="q" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+                <label>搜索候选用户<input id="information-user-search" name="q" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
                 <button type="submit" class="secondary">查询</button>
                 <p class="form-message hidden" role="alert"></p>
               </form>
@@ -911,7 +943,7 @@
       <div class="dialog-heading"><p class="eyebrow">ACCOUNT ACCESS</p><h2 id="upstream-access-title">账号使用权限</h2><p id="upstream-access-account">—</p></div>
       <label>使用范围<select name="mode"><option value="shared">共享 · 所有用户可用</option><option value="exclusive">专属 · 仅指定用户可用</option></select></label>
       <div id="upstream-access-users" class="hidden">
-        <label>搜索用户<input id="upstream-access-search" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+        <label>搜索用户<input id="upstream-access-search" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
         <div class="button-group"><button id="upstream-access-select-visible" type="button" class="secondary">选择搜索结果</button><button id="upstream-access-clear" type="button" class="secondary">清空选择</button><span id="upstream-access-selected" class="badge">已选 0 人</span></div>
         <div id="upstream-access-user-list" class="user-check-list" aria-live="polite"></div>
       </div>

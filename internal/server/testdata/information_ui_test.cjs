@@ -123,6 +123,17 @@ test("batch conflicts report blockers and discard a selection that no longer qua
   assert.equal(ui.node("information-delete-users").disabled, true);
 });
 
+test("candidate search and pagination preserve selections outside the visible page", async () => {
+  const ui = dashboard();
+  ui.run('informationUsers = [{id:"one",username:"alpha",display_name:"张三"}]; informationUsersReady = true; informationSelectedUsers.add("one"); informationSelectedDetails.set("one", informationUsers[0]);');
+  ui.node("information-user-search").value = "lisi";
+  ui.api(async () => ({users: [{id: "two", username: "beta", display_name: "李四"}]}));
+  await ui.run("loadInformationUsers(0)");
+  assert.equal(ui.run("JSON.stringify([...informationSelectedUsers])"), '["one"]');
+  assert.equal(ui.run('informationSelectedDetails.get("one").display_name'), "张三");
+  assert.match(ui.node("information-selected-count").textContent, /已选 1/);
+});
+
 test("member and oversized batch submissions never call the delete API", async () => {
   for (const setup of ['state.user.role = "member"; informationSelectedUsers = new Set(["one"]);', 'informationSelectedUsers = new Set(Array.from({length: 101}, (_, i) => String(i)));']) {
     const ui = dashboard(); let calls = 0; ui.api(async () => { calls++; return {}; });

@@ -31,9 +31,17 @@ type Server struct {
 	quotas                *upstreamQuotaLimiter
 	quotaOnce             sync.Once
 	upstreamAccountSyncMu sync.Mutex
-	modelAccessRepo       modelAccessRepository
-	groupRepo             groupRepository
-	informationRepo       informationRepository
+	// activeAttributions contains short-lived account observations received
+	// from upstream response headers while a request is still streaming.  The
+	// durable usage row is updated only after completion; keeping this separate
+	// allows the owner monitor to show the account immediately without changing
+	// the historical single-account contract.
+	activeAttributionsMu sync.Mutex
+	activeAttributions   map[string]activeRequestAttribution
+	monitoringRepo       monitoringRepository
+	modelAccessRepo      modelAccessRepository
+	groupRepo            groupRepository
+	informationRepo      informationRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -59,8 +67,10 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
-		modelAccessRepo: repository,
-		spoolSlots:      make(chan struct{}, maxConcurrentRequestSpools),
+		monitoringRepo:     repository,
+		modelAccessRepo:    repository,
+		spoolSlots:         make(chan struct{}, maxConcurrentRequestSpools),
+		activeAttributions: make(map[string]activeRequestAttribution),
 	}
 	if cfg.AntigravityBridgeURL != nil {
 		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
@@ -119,6 +129,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/state", s.requireSession(http.HandlerFunc(s.adminState)))
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
+	s.mux.Handle("GET /admin/monitoring", s.requireSession(s.ownerOnly(http.HandlerFunc(s.monitoringJSON))))
 	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
 	s.mux.Handle("GET /admin/upstream-accounts/concurrency", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountConcurrency))))

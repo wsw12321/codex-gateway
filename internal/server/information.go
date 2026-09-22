@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -158,12 +159,65 @@ func (s *Server) deletableInformationUsersJSON(w http.ResponseWriter, r *http.Re
 	if search == "" {
 		search = query.Get("q")
 	}
-	users, err := s.informationStorage().ListDeletableInformationUsers(r.Context(), search, limit, offset)
+	repository := s.informationStorage()
+	users, err := listSearchableDeletableUsers(r.Context(), repository, search, limit, offset)
 	if err != nil {
 		s.informationStoreError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": users, "limit": limit, "offset": offset})
+	items := make([]map[string]any, 0, len(users))
+	for _, user := range users {
+		item := map[string]any{
+			"id": user.ID, "username": user.Username, "display_name": user.DisplayName,
+			"status": user.Status, "created_at": user.CreatedAt,
+		}
+		addUserSearchFields(item, user.Username, user.DisplayName)
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": items, "limit": limit, "offset": offset})
+}
+
+func listSearchableDeletableUsers(ctx context.Context, repository informationRepository, search string, limit, offset int) ([]store.DeletableUser, error) {
+	search = strings.TrimSpace(search)
+	if len([]rune(search)) > 200 {
+		return nil, store.ErrInvalid
+	}
+	if search == "" {
+		return repository.ListDeletableInformationUsers(ctx, "", limit, offset)
+	}
+
+	// PostgreSQL intentionally stores no pinyin columns. Scan the eligible-user
+	// projection in bounded pages and apply the same derived search index used by
+	// every other picker, so remote pagination has identical matching semantics.
+	const pageSize = 100
+	result := make([]store.DeletableUser, 0, limit)
+	matched := 0
+	for sourceOffset := 0; ; sourceOffset += pageSize {
+		page, err := repository.ListDeletableInformationUsers(ctx, "", pageSize, sourceOffset)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range page {
+			if !matchesDerivedUserSearch(user.ID, user.Username, user.DisplayName, search) {
+				continue
+			}
+			if matched >= offset && len(result) < limit {
+				result = append(result, user)
+			}
+			matched++
+			if len(result) == limit {
+				return result, nil
+			}
+		}
+		if len(page) < pageSize {
+			return result, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
 }
 
 func (s *Server) deleteInformationUsers(w http.ResponseWriter, r *http.Request) {

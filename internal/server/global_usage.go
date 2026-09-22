@@ -40,6 +40,10 @@ type globalUserUsage struct {
 	ID              string      `json:"id"`
 	Username        string      `json:"username"`
 	DisplayName     string      `json:"display_name"`
+	Pinyin          string      `json:"pinyin"`
+	PinyinFull      string      `json:"pinyin_full"`
+	PinyinInitials  string      `json:"pinyin_initials"`
+	SearchIndex     string      `json:"search_index"`
 	Usage           pricedUsage `json:"usage"`
 	Share           string      `json:"share"`
 	PricingCoverage string      `json:"pricing_coverage"`
@@ -314,10 +318,15 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 	userExactUSD := make(map[string]*big.Rat, len(usersByID))
 	for _, accumulator := range usersByID {
 		usage := finalizeUsage(accumulator.usage, rate)
+		searchFields := deriveUserSearchFields(accumulator.username, accumulator.displayName)
 		users = append(users, globalUserUsage{
 			ID:              accumulator.id,
 			Username:        accumulator.username,
 			DisplayName:     accumulator.displayName,
+			Pinyin:          searchFields.Pinyin,
+			PinyinFull:      searchFields.PinyinFull,
+			PinyinInitials:  searchFields.PinyinInitials,
+			SearchIndex:     searchFields.SearchIndex,
 			Usage:           usage,
 			Share:           ratioString(usage.Tokens, total.usage.Tokens),
 			PricingCoverage: ratioString(usage.PricedTokens, usage.Tokens),
