@@ -41,6 +41,7 @@ async function main() {
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: [{id: account.id, active_requests: 0}]});
       if (url.pathname === "/admin/billing/users") return send({users});
       if (url.pathname === "/admin/upstream-accounts") return failAccounts ? send({error: {message: "模拟刷新失败"}}, 503) : send({accounts: [account], all: true});
       if (url.pathname.endsWith("/access")) {

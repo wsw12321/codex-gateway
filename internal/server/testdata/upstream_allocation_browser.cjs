@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const assets = path.join(__dirname, "../assets");
-const screenshots = path.join(__dirname, "../../../docs/screenshots");
+const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../../docs/screenshots");
 const source = fs.readFileSync(path.join(assets, "app.js"), "utf8");
 const app = source.slice(0, source.lastIndexOf("\nstart().catch("));
 const initialState = {user: {id: "owner", username: "owner", display_name: "团队管理员", role: "owner", status: "active"},
@@ -46,6 +46,7 @@ async function main() {
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: accounts.map((account) => ({id: account.id, active_requests: 0}))});
       if (url.pathname === "/admin/upstream-accounts") {
         return failList ? send({error: {message: "模拟统计服务暂不可用"}}, 503) : send(response());
       }

@@ -861,6 +861,16 @@ func billingOperationFingerprint(values ...string) []byte {
 
 func claimBillingOperationTx(ctx context.Context, tx *sql.Tx, params BillingWriteParams,
 	operationType, targetUserID string, fingerprint []byte, compatibleFingerprints ...[]byte) (bool, *int64, error) {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('billing.operation.'||$1::uuid::text,0))`, params.OperationID); err != nil {
+		return false, nil, mapDBError("lock billing operation ID", err)
+	}
+	var cleaned bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM billing_operation_tombstones WHERE operation_id=$1)`, params.OperationID).Scan(&cleaned); err != nil {
+		return false, nil, mapDBError("check cleaned billing operation", err)
+	}
+	if cleaned {
+		return false, nil, ErrBillingOperationCleaned
+	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO billing_operations
 			(operation_id, operation_type, actor_user_id, target_user_id, reason,

@@ -31,12 +31,18 @@ func (r Runner) Run(ctx context.Context) {
 	r.runOnce(ctx)
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
+	cleanupTicker := time.NewTicker(time.Second)
+	defer cleanupTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			r.runOnce(ctx)
+		case <-cleanupTicker.C:
+			if _, err := r.Store.RunInformationCleanupBatch(ctx, 500); err != nil {
+				r.Logger.Warn("information cleanup batch failed; task remains resumable")
+			}
 		}
 	}
 }
@@ -44,6 +50,9 @@ func (r Runner) Run(ctx context.Context) {
 func (r Runner) RunOnce(ctx context.Context) { r.runOnce(ctx) }
 
 func (r Runner) runOnce(ctx context.Context) {
+	if _, err := r.Store.RunInformationCleanupBatch(ctx, 500); err != nil {
+		r.Logger.Warn("information cleanup recovery failed")
+	}
 	now := r.Now().UTC()
 	location, err := time.LoadLocation(r.Timezone)
 	if err != nil {

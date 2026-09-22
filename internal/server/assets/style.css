@@ -2374,6 +2374,35 @@ dialog form {
   .upstream-access { align-items: start; flex-direction: column; }
 }
 
+.usage-upstream { min-width: 11rem; overflow-wrap: anywhere; }
+.usage-upstream small, .information-users-panel td small { display: block; color: var(--muted); }
+.upstream-concurrency { display: flex; align-items: baseline; flex-wrap: wrap; gap: .5rem .8rem; padding: .9rem 0; }
+.upstream-concurrency strong { font-size: 1.6rem; color: var(--accent); }
+.upstream-concurrency strong[data-available="false"] { font-size: 1rem; color: var(--muted); }
+.upstream-concurrency small { color: var(--muted); }
+.information-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; align-items: start; }
+.information-layout:has(#information-job:not(.hidden)) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.information-retention-form, .information-search-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
+.information-retention-form p, .information-search-form p { grid-column: 1 / -1; }
+.information-retention-form label { max-width: 20rem; }
+.information-preview { margin-top: 1.3rem; border-top: 1px solid var(--line); padding-top: 1rem; }
+.information-cutoff { font-weight: 600; overflow-wrap: anywhere; }
+.information-job-meta { overflow-wrap: anywhere; }
+.information-reasons { padding-left: 1.3rem; color: var(--muted); }
+.information-users-panel { margin-top: 1rem; }
+.information-users-panel .table-wrap { margin-top: 1rem; }
+.information-users-panel input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
+.information-users-actions { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; margin-top: 1rem; }
+.information-users-actions .button-group { flex-wrap: wrap; }
+@media (max-width: 960px) {
+  .information-layout:has(#information-job:not(.hidden)) { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 540px) {
+  .information-retention-form, .information-search-form { grid-template-columns: minmax(0, 1fr); }
+  .information-retention-form label { max-width: none; }
+  .information-users-actions > button { width: 100%; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

@@ -55,5 +55,15 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "GET /internal/upstream-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities
         grep -Fq "upstream_account_access_v1" /run/cliproxy/capabilities
-        printf "%s\n" "Sidecar OAuth inventory, permission rejection, account access capability and Gateway-independent startup checks passed"
+        {
+            printf "GET /internal/upstream-accounts/concurrency HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/concurrency
+        grep -Fq "200 OK" /run/cliproxy/concurrency
+        grep -Fq "\"sampled_at\"" /run/cliproxy/concurrency
+        grep -Fq "\"accounts\":[]" /run/cliproxy/concurrency
+        {
+            printf "GET /internal/upstream-accounts/concurrency HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/concurrency-unauthorized
+        grep -Fq "401 Unauthorized" /run/cliproxy/concurrency-unauthorized
+        printf "%s\n" "Sidecar OAuth inventory, permission rejection, account access capability, authenticated concurrency and Gateway-independent startup checks passed"
     '

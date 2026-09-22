@@ -264,12 +264,61 @@ index 0000000..8fbfb6e
 +		}
 +	}
 +}
+diff --git a/internal/api/codex_gateway_concurrency_test.go b/internal/api/codex_gateway_concurrency_test.go
+new file mode 100644
+index 0000000..be65d6d
+--- /dev/null
++++ b/internal/api/codex_gateway_concurrency_test.go
+@@ -0,0 +1,43 @@
++package api
++
++import (
++	"encoding/json"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++)
++
++func TestInternalUpstreamConcurrencyRequiresBearerAndReturnsOnlyCounters(t *testing.T) {
++	server := newTestServer(t)
++	registered := registerQuotaTestAccount(t, server, &quotaCaptureExecutor{})
++	for _, token := range []string{"", "wrong", "test-key"} {
++		request := httptest.NewRequest(http.MethodGet, "/internal/upstream-accounts/concurrency", nil)
++		if token != "" {
++			request.Header.Set("Authorization", "Bearer "+token)
++		}
++		recorder := httptest.NewRecorder()
++		server.engine.ServeHTTP(recorder, request)
++		if token != "test-key" {
++			if recorder.Code != http.StatusUnauthorized {
++				t.Fatalf("unauthorized status %d", recorder.Code)
++			}
++			continue
++		}
++		if recorder.Code != http.StatusOK || recorder.Header().Get("Cache-Control") != "no-store" {
++			t.Fatalf("status %d body %s", recorder.Code, recorder.Body.String())
++		}
++		var snapshot auth.GatewayConcurrencySnapshot
++		if err := json.Unmarshal(recorder.Body.Bytes(), &snapshot); err != nil {
++			t.Fatal(err)
++		}
++		if snapshot.SampledAt.IsZero() || len(snapshot.Accounts) != 1 || snapshot.Accounts[0].ID != registered.EnsureIndex() || snapshot.Accounts[0].ActiveRequests != 0 {
++			t.Fatalf("snapshot %+v", snapshot)
++		}
++		if strings.Contains(recorder.Body.String(), "email") || strings.Contains(recorder.Body.String(), "token") {
++			t.Fatalf("identity leak: %s", recorder.Body.String())
++		}
++	}
++}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000..1b6d1e5
+index 0000000..c5d2ba7
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,678 @@
+@@ -0,0 +1,687 @@
 +package api
 +
 +import (
@@ -947,6 +996,15 @@ index 0000000..1b6d1e5
 +		return err
 +	}
 +	return nil
++}
++
++func (s *Server) getUpstreamConcurrency(c *gin.Context) {
++	c.Header("Cache-Control", "no-store")
++	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil {
++		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_registry_unavailable"})
++		return
++	}
++	c.JSON(http.StatusOK, s.handlers.AuthManager.GatewayConcurrency())
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
@@ -1850,10 +1908,10 @@ index f12ff4b..926c148 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index fc9de12..75384e7 100644
+index fc9de12..9eb0512 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -117,6 +117,28 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,29 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -1864,6 +1922,7 @@ index fc9de12..75384e7 100644
 +	internalAccounts.Use(internalAccountAuthMiddleware(s.accessManager))
 +	{
 +		internalAccounts.GET("", s.listUpstreamAccounts)
++		internalAccounts.GET("/concurrency", s.getUpstreamConcurrency)
 +		internalAccounts.GET("/capabilities", func(c *gin.Context) {
 +			if s.handlers == nil || s.handlers.AuthManager == nil {
 +				c.Status(http.StatusServiceUnavailable)
@@ -5645,7 +5704,7 @@ index 0000000..d89da81
 +	return auth
 +}
 diff --git a/sdk/cliproxy/auth/conductor.go b/sdk/cliproxy/auth/conductor.go
-index 0fc9732..f7c0092 100644
+index 0fc9732..94d89fe 100644
 --- a/sdk/cliproxy/auth/conductor.go
 +++ b/sdk/cliproxy/auth/conductor.go
 @@ -46,6 +46,9 @@ type ExecutionSessionCloser interface {
@@ -5658,10 +5717,12 @@ index 0fc9732..f7c0092 100644
  	// Provider is copied for convenience when emitting hooks.
  	Provider string
  	// Model is the upstream model identifier used for the request.
-@@ -119,6 +122,8 @@ type Manager struct {
+@@ -119,6 +122,10 @@ type Manager struct {
  	selector                  Selector
  	hook                      Hook
  	mu                        sync.RWMutex
++	gatewayConcurrencyMu      sync.Mutex
++	gatewayConcurrency        map[string]int64
 +	gatewayAccountStatePath   string
 +	gatewayAccountStates      map[string]gatewayAccountState
  	selectorMu                sync.Mutex
@@ -5724,7 +5785,7 @@ index 9b8fd94..3fba091 100644
  	case isRequestScopedError(err) || isRequestInvalidError(err):
  		// Prefer true request-scoped faults (including Claude OAuth cancellation)
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index e2ad851..6b17041 100644
+index e2ad851..544a3d3 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -6,7 +6,9 @@ import (
@@ -5752,7 +5813,16 @@ index e2ad851..6b17041 100644
  			continue
  		}
  		var authErr error
-@@ -523,6 +528,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -510,7 +515,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
+ 			}
+ 			startExec := time.Now()
+-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
++			resp, errExec := m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, false)
+ 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 			durationExec := time.Since(startExec)
+ 			if errExec != nil {
+@@ -523,10 +528,11 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				refreshCtx := newUpstreamAttemptContext(execCtx)
  				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
  					auth = refreshed
@@ -5760,6 +5830,11 @@ index e2ad851..6b17041 100644
  					didRefreshOnUnauthorized = true
  					execCtx = newUpstreamAttemptContext(execCtx)
  					startRetry := time.Now()
+-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
++					resp, errExec = m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, false)
+ 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 					durationRetry := time.Since(startRetry)
+ 					if errExec != nil {
 @@ -545,7 +551,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
  				return cliproxyexecutor.Response{}, errCancel
@@ -5829,7 +5904,16 @@ index e2ad851..6b17041 100644
  			continue
  		}
  		var authErr error
-@@ -714,6 +730,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -701,7 +717,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
+ 			}
+ 			startExec := time.Now()
+-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
++			resp, errExec := m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, true)
+ 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 			durationExec := time.Since(startExec)
+ 			if errExec != nil {
+@@ -714,10 +730,11 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  				refreshCtx := newUpstreamAttemptContext(execCtx)
  				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
  					auth = refreshed
@@ -5837,6 +5921,11 @@ index e2ad851..6b17041 100644
  					didRefreshOnUnauthorized = true
  					execCtx = newUpstreamAttemptContext(execCtx)
  					startRetry := time.Now()
+-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
++					resp, errExec = m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, true)
+ 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 					durationRetry := time.Since(startRetry)
+ 					if errExec != nil {
 @@ -736,7 +753,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
  				return cliproxyexecutor.Response{}, errCancel
@@ -6430,7 +6519,7 @@ index 5b4e2b4..b78f694 100644
  				result.Error = resultErrorFromError(errExec)
  				if ra := retryAfterFromError(errExec); ra != nil {
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index 2d5af93..fdcda9b 100644
+index 2d5af93..6c200b1 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
 @@ -159,7 +159,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
@@ -6442,6 +6531,18 @@ index 2d5af93..fdcda9b 100644
  			releaseAttempt()
  			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
  				return cliproxyexecutor.Response{}, errEnd
+@@ -220,9 +220,9 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
+ 			}
+ 			execute := func() (cliproxyexecutor.Response, error) {
+ 				if countTokens {
+-					return selection.Executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
++					return m.executeGatewayAttempt(executorCtx, selection.Executor, preparedAuth, execReq, execOpts, true)
+ 				}
+-				return selection.Executor.Execute(execCtx, preparedAuth, execReq, execOpts)
++				return m.executeGatewayAttempt(execCtx, selection.Executor, preparedAuth, execReq, execOpts, false)
+ 			}
+ 			startHomeExec := time.Now()
+ 			response, errExecute = execute()
 @@ -239,7 +239,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
  				}
  				warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
@@ -6759,7 +6860,7 @@ index fef8d28..49df976 100644
  		}
  		providerKey := executorKeyFromAuth(candidate)
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index d0d46e0..868fecd 100644
+index d0d46e0..35e6701 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -78,12 +78,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
@@ -6803,6 +6904,24 @@ index d0d46e0..868fecd 100644
  		}
  	}()
  	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
+@@ -233,7 +242,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 		}
+ 		entry := logEntryWithRequestID(ctx)
+ 		startStream := time.Now()
+-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
++		streamResult, errStream := m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+ 		if hasUpstreamExecutionAttempt(errStream) {
+ 			upstreamErr = errStream
+@@ -252,7 +261,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 					didRefreshOnUnauthorized = true
+ 					ctx = newUpstreamAttemptContext(ctx)
+ 					startRetry := time.Now()
+-					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
++					streamResult, errStream = m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+ 					if hasUpstreamExecutionAttempt(errStream) {
+ 						upstreamErr = errStream
 @@ -281,13 +290,16 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  		if errStream != nil {
  			rerr := resultErrorFromError(errStream)
@@ -6831,6 +6950,15 @@ index d0d46e0..868fecd 100644
  				return nil, errStream
  			}
  			lastErr = errStream
+@@ -328,7 +340,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
+ 					didRefreshOnUnauthorized = true
+ 					ctx = newUpstreamAttemptContext(ctx)
+ 					startRetry := time.Now()
+-					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
++					retryStream, retryErr := m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
+ 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
+ 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
 @@ -364,10 +376,17 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
  			}
  		}
@@ -8731,6 +8859,414 @@ index 0000000..9e63d6c
 +		s.client.Transport = gatewayAccessTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(200, body), nil })
 +		_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("denied"), auths)
 +		assertAllocation503(t, err)
++	}
++}
+diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
+new file mode 100644
+index 0000000..b2750ac
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_concurrency.go
+@@ -0,0 +1,141 @@
++package auth
++
++import (
++	"context"
++	"sort"
++	"sync"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++type GatewayAccountConcurrency struct {
++	ID             string `json:"id"`
++	ActiveRequests int64  `json:"active_requests"`
++}
++
++type GatewayConcurrencySnapshot struct {
++	SampledAt time.Time                   `json:"sampled_at"`
++	Accounts  []GatewayAccountConcurrency `json:"accounts"`
++}
++
++// GatewayConcurrency samples the actual execution attempts, including the wait
++// for the first response and streaming. Registered disabled accounts remain in
++// the snapshot; removing credentials cannot hide their still-active requests.
++func (m *Manager) GatewayConcurrency() GatewayConcurrencySnapshot {
++	known := make(map[string]bool)
++	for _, candidate := range m.List() {
++		if id, ok := gatewayConcurrencyAccountID(candidate); ok {
++			known[id] = true
++		}
++	}
++	m.gatewayConcurrencyMu.Lock()
++	defer m.gatewayConcurrencyMu.Unlock()
++	result := GatewayConcurrencySnapshot{SampledAt: time.Now().UTC(), Accounts: make([]GatewayAccountConcurrency, 0, len(known))}
++	for id := range m.gatewayConcurrency {
++		known[id] = true
++	}
++	for id := range known {
++		result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ActiveRequests: m.gatewayConcurrency[id]})
++	}
++	sort.Slice(result.Accounts, func(i, j int) bool { return result.Accounts[i].ID < result.Accounts[j].ID })
++	return result
++}
++
++func (m *Manager) beginGatewayExecution(ctx context.Context, candidate *Auth) func() {
++	id, ok := gatewayConcurrencyAccountID(candidate)
++	if !ok {
++		return func() {}
++	}
++	m.gatewayConcurrencyMu.Lock()
++	if m.gatewayConcurrency == nil {
++		m.gatewayConcurrency = make(map[string]int64)
++	}
++	m.gatewayConcurrency[id]++
++	m.gatewayConcurrencyMu.Unlock()
++	var once sync.Once
++	release := func() {
++		once.Do(func() {
++			m.gatewayConcurrencyMu.Lock()
++			defer m.gatewayConcurrencyMu.Unlock()
++			m.gatewayConcurrency[id]--
++			if m.gatewayConcurrency[id] == 0 {
++				delete(m.gatewayConcurrency, id)
++			}
++		})
++	}
++	if ctx == nil {
++		return release
++	}
++	stop := context.AfterFunc(ctx, release)
++	return func() { stop(); release() }
++}
++
++func (m *Manager) executeGatewayAttempt(ctx context.Context, executor ProviderExecutor, candidate *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
++	release := m.beginGatewayExecution(ctx, candidate)
++	defer release()
++	if countTokens {
++		return executor.CountTokens(ctx, candidate, req, opts)
++	}
++	return executor.Execute(ctx, candidate, req, opts)
++}
++
++func (m *Manager) executeGatewayStreamAttempt(ctx context.Context, executor ProviderExecutor, candidate *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	// Non-Codex providers keep their existing channel and cancellation semantics.
++	if _, ok := gatewayConcurrencyAccountID(candidate); !ok {
++		return executor.ExecuteStream(ctx, candidate, req, opts)
++	}
++	release := m.beginGatewayExecution(ctx, candidate)
++	handedOff := false
++	defer func() {
++		if !handedOff {
++			release()
++		}
++	}()
++	result, err := executor.ExecuteStream(ctx, candidate, req, opts)
++	if err != nil || result == nil || result.Chunks == nil {
++		return result, err
++	}
++	out := make(chan cliproxyexecutor.StreamChunk)
++	source := result.Chunks
++	var done <-chan struct{}
++	if ctx != nil {
++		done = ctx.Done()
++	}
++	go func() {
++		defer close(out)
++		defer release()
++		for {
++			select {
++			case <-done:
++				return
++			case chunk, ok := <-source:
++				if !ok {
++					return
++				}
++				// The failed attempt is finished before its error may trigger failover.
++				if chunk.Err != nil {
++					release()
++				}
++				select {
++				case <-done:
++					return
++				case out <- chunk:
++				}
++			}
++		}
++	}()
++	handedOff = true
++	return &cliproxyexecutor.StreamResult{Headers: result.Headers, Chunks: out}, nil
++}
++
++// CodexOAuthAccountIndex initializes index fields. Counters must never mutate a
++// snapshot shared by concurrent calls; the shallow copy is sufficient because
++// identity validation only reads the credential maps.
++func gatewayConcurrencyAccountID(candidate *Auth) (string, bool) {
++	if candidate == nil {
++		return "", false
++	}
++	snapshot := *candidate
++	return CodexOAuthAccountIndex(&snapshot)
++}
+diff --git a/sdk/cliproxy/auth/gateway_concurrency_test.go b/sdk/cliproxy/auth/gateway_concurrency_test.go
+new file mode 100644
+index 0000000..c225e70
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_concurrency_test.go
+@@ -0,0 +1,255 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++type gatewayConcurrencyExecutor struct {
++	gatewayPolicyExecutor
++	started chan string
++	release chan struct{}
++	chunks  chan cliproxyexecutor.StreamChunk
++}
++
++func (e *gatewayConcurrencyExecutor) Execute(ctx context.Context, candidate *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	e.started <- candidate.ID
++	select {
++	case <-ctx.Done():
++		return cliproxyexecutor.Response{}, ctx.Err()
++	case <-e.release:
++		return cliproxyexecutor.Response{Payload: []byte("ok")}, e.err
++	}
++}
++func (e *gatewayConcurrencyExecutor) ExecuteStream(ctx context.Context, candidate *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	e.started <- candidate.ID
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	case <-e.release:
++	}
++	if e.err != nil {
++		return nil, e.err
++	}
++	return &cliproxyexecutor.StreamResult{Chunks: e.chunks}, nil
++}
++func concurrencyCount(t *testing.T, m *Manager, id string) int64 {
++	t.Helper()
++	snapshot := m.GatewayConcurrency()
++	if snapshot.SampledAt.IsZero() {
++		t.Fatal("missing sample time")
++	}
++	for _, item := range snapshot.Accounts {
++		if item.ID == id {
++			return item.ActiveRequests
++		}
++	}
++	t.Fatalf("registered account %s absent from snapshot %+v", id, snapshot)
++	return -1
++}
++func awaitConcurrency(t *testing.T, m *Manager, id string, want int64) {
++	t.Helper()
++	deadline := time.Now().Add(2 * time.Second)
++	for time.Now().Before(deadline) {
++		if concurrencyCount(t, m, id) == want {
++			return
++		}
++		time.Sleep(time.Millisecond)
++	}
++	t.Fatalf("count=%d want=%d", concurrencyCount(t, m, id), want)
++}
++func TestGatewayConcurrencyWaitingSimultaneousAndDisabled(t *testing.T) {
++	m, a, _ := newGatewayAccountTestManager(t)
++	executor := &gatewayConcurrencyExecutor{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}, started: make(chan string, 2), release: make(chan struct{})}
++	m.RegisterExecutor(executor)
++	var wg sync.WaitGroup
++	for range 2 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			_, err := m.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, cliproxyexecutor.Options{})
++			if err != nil {
++				t.Error(err)
++			}
++		}()
++	}
++	for range 2 {
++		select {
++		case <-executor.started:
++		case <-time.After(2 * time.Second):
++			t.Fatal("execution did not start")
++		}
++	}
++	if got := concurrencyCount(t, m, a.Index); got != 2 {
++		t.Fatalf("waiting count=%d", got)
++	}
++	if _, err := m.SetGatewayAccountEnabled(a.Index, false); err != nil {
++		t.Fatal(err)
++	}
++	if got := concurrencyCount(t, m, a.Index); got != 2 {
++		t.Fatalf("disable hid in-flight requests: %d", got)
++	}
++	close(executor.release)
++	wg.Wait()
++	awaitConcurrency(t, m, a.Index, 0)
++}
++func TestGatewayConcurrencyStreamWaitOutputCloseCancelAndFailure(t *testing.T) {
++	for _, mode := range []string{"close", "cancel", "deadline", "error", "bootstrap-failure"} {
++		t.Run(mode, func(t *testing.T) {
++			m, a, _ := newGatewayAccountTestManager(t)
++			executor := &gatewayConcurrencyExecutor{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}, started: make(chan string, 1), release: make(chan struct{}), chunks: make(chan cliproxyexecutor.StreamChunk, 2)}
++			if mode == "bootstrap-failure" {
++				executor.err = errors.New("failed")
++			}
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			if mode == "deadline" {
++				var deadlineCancel context.CancelFunc
++				ctx, deadlineCancel = context.WithTimeout(context.Background(), 200*time.Millisecond)
++				defer deadlineCancel()
++			}
++			ready := make(chan *cliproxyexecutor.StreamResult, 1)
++			go func() {
++				result, _ := m.executeGatewayStreamAttempt(ctx, executor, a, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
++				ready <- result
++			}()
++			<-executor.started
++			if got := concurrencyCount(t, m, a.Index); got != 1 {
++				t.Fatalf("first response wait count=%d", got)
++			}
++			close(executor.release)
++			result := <-ready
++			if mode == "bootstrap-failure" {
++				awaitConcurrency(t, m, a.Index, 0)
++				return
++			}
++			executor.chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("first")}
++			<-result.Chunks
++			if got := concurrencyCount(t, m, a.Index); got != 1 {
++				t.Fatalf("stream count=%d", got)
++			}
++			switch mode {
++			case "close":
++				close(executor.chunks)
++			case "cancel":
++				cancel()
++			case "deadline":
++				<-ctx.Done()
++			case "error":
++				executor.chunks <- cliproxyexecutor.StreamChunk{Err: errors.New("stream failed")}
++				close(executor.chunks)
++			}
++			for range result.Chunks {
++			}
++			awaitConcurrency(t, m, a.Index, 0)
++		})
++	}
++}
++func TestGatewayConcurrencyRepeatedReleaseAndRaces(t *testing.T) {
++	m, a, _ := newGatewayAccountTestManager(t)
++	ctx, cancel := context.WithCancel(context.Background())
++	release := m.beginGatewayExecution(ctx, a)
++	var wg sync.WaitGroup
++	for range 64 {
++		wg.Add(1)
++		go func() { defer wg.Done(); release(); _ = m.GatewayConcurrency() }()
++	}
++	cancel()
++	wg.Wait()
++	awaitConcurrency(t, m, a.Index, 0)
++	var calls sync.WaitGroup
++	for range 64 {
++		calls.Add(1)
++		go func() {
++			defer calls.Done()
++			end := m.beginGatewayExecution(context.Background(), a)
++			_ = m.GatewayConcurrency()
++			end()
++			end()
++		}()
++	}
++	calls.Wait()
++	awaitConcurrency(t, m, a.Index, 0)
++}
++
++func TestGatewayConcurrencyFailoverSettlesEachAccount(t *testing.T) {
++	m, a, _ := newGatewayAccountTestManager(t)
++	b := gatewayRegisterAccount(t, m, "concurrency-b-"+a.ID, "concurrency-b-"+a.ID)
++	executor := &gatewayPolicyExecutor{id: "codex", err: errors.New("failed")}
++	for _, stream := range []bool{false, true} {
++		if stream {
++			result, _ := m.executeGatewayStreamAttempt(context.Background(), executor, a, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
++			for range result.Chunks {
++			}
++		} else {
++			_, _ = m.executeGatewayAttempt(context.Background(), executor, a, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, false)
++		}
++		if got := concurrencyCount(t, m, a.Index); got != 0 {
++			t.Fatalf("failed attempt remained active: %d", got)
++		}
++		release := m.beginGatewayExecution(context.Background(), b)
++		if concurrencyCount(t, m, a.Index) != 0 || concurrencyCount(t, m, b.Index) != 1 {
++			t.Fatal("retry counted under previous account")
++		}
++		release()
++	}
++}
++
++func TestGatewayConcurrencyFailedAndCancelledFinalAttribution(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		for _, failure := range []struct {
++			name     string
++			err      error
++			attempts int
++		}{
++			{name: "client failure", err: &Error{HTTPStatus: 400}, attempts: 1},
++			{name: "cancelled", err: context.Canceled, attempts: 1},
++			{name: "all accounts failed", err: &Error{HTTPStatus: 502}, attempts: 2},
++		} {
++			t.Run(failure.name+map[bool]string{false: "/json", true: "/stream"}[stream], func(t *testing.T) {
++				m, a, _ := newGatewayAccountTestManager(t)
++				gatewayRegisterAccount(t, m, "attribution-b-"+a.ID, "attribution-b-"+a.ID)
++				executor := &gatewayPolicyExecutor{id: "codex", err: failure.err}
++				m.RegisterExecutor(executor)
++				var attributed string
++				opts := cliproxyexecutor.Options{Metadata: map[string]any{cliproxyexecutor.UpstreamAccountIndexCallbackMetadataKey: func(id string) { attributed = id }}}
++				var err error
++				request := cliproxyexecutor.Request{Model: "gateway-model"}
++				if stream {
++					var result *cliproxyexecutor.StreamResult
++					result, err = m.ExecuteStream(context.Background(), []string{"codex"}, request, opts)
++					if result != nil {
++						for chunk := range result.Chunks {
++							if chunk.Err != nil {
++								err = chunk.Err
++							}
++						}
++					}
++				} else {
++					_, err = m.Execute(context.Background(), []string{"codex"}, request, opts)
++				}
++				calls := executor.Calls()
++				if err == nil || len(calls) != failure.attempts {
++					t.Fatalf("calls=%v error=%v", calls, err)
++				}
++				last, ok := m.GetByID(calls[len(calls)-1])
++				if !ok {
++					t.Fatal("last attempted account missing")
++				}
++				if attributed != last.Index {
++					t.Fatalf("attributed=%s want last attempt=%s", attributed, last.Index)
++				}
++				for _, item := range m.GatewayConcurrency().Accounts {
++					if item.ActiveRequests != 0 {
++						t.Fatalf("terminal attempt leaked count: %+v", item)
++					}
++				}
++			})
++		}
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go

@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
 应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
 规则的变化。补丁 SHA256 为
-`eaefd05c4c478e73703a951cc29f37dbfa12c7d807b40f0741ef2c5a0035aef8`。
+`cad1f15d9d14a85416cb6599ca85b42d97453d1903898f90979878d39f20f714`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -20,7 +20,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
 和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-eaefd05c4c478e73-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.2.150-c77b1369-cad1f15d9d14a854-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像升级到 Go 1.26.8；补丁同时将 go-git/v6 升级到
 `v6.0.0-alpha.5`、`golang.org/x/crypto` 升级到 `v0.55.0`，并更新所需的
@@ -63,6 +63,7 @@ Astra 冒烟和生产切换按下文规程执行。
   只能有一个进入路由池。
 - 只开放 Bearer 认证的 `GET /internal/upstream-accounts`、
   `GET /internal/upstream-accounts/capabilities`、
+  `GET /internal/upstream-accounts/concurrency`、
   `PUT /internal/upstream-accounts/{id}/status` 和固定 URL 的
   `POST /internal/upstream-accounts/{id}/quota`。额度接口只接受精确的
   `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
@@ -72,6 +73,11 @@ Astra 冒烟和生产切换按下文规程执行。
   经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
   或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
   CLIProxyAPI 完整管理 API 仍保持关闭。
+- 并发接口按稳定账号 ID 返回 `sampled_at` 和 `{id,active_requests}`，只包含实际执行中的
+  尝试；首响应等待和长流均计数，每次失败、取消、流关闭与账号切换分别释放。
+  禁用账号不会隐藏已有执行。接口只返回计数，缺失账号不代表零。
+  Gateway 的 `/admin/upstream-accounts/concurrency` 仅 Owner 可访问，并拒绝超出一分钟
+  时钟偏差的快照；旧服务不支持或读取失败时页面显示“暂不可用”。
 - 状态接口只接受 `{"enabled":true}` 或 `{"enabled":false}`，返回确认后的稳定
   账号 ID 与 `available`／`unavailable`。手动禁用与生成请求的结构化
   `usage_limit_reached` 都锁定整个账号，直到 Owner 手动重新启用。普通 429

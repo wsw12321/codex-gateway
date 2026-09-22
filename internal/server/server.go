@@ -33,6 +33,7 @@ type Server struct {
 	upstreamAccountSyncMu sync.Mutex
 	modelAccessRepo       modelAccessRepository
 	groupRepo             groupRepository
+	informationRepo       informationRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -120,6 +121,13 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
 	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
+	s.mux.Handle("GET /admin/upstream-accounts/concurrency", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountConcurrency))))
+	s.mux.Handle("GET /admin/information", s.requireSession(s.ownerOnly(http.HandlerFunc(s.informationJSON))))
+	s.mux.Handle("POST /admin/information/preview", s.browserOrigin(s.requireSession(s.ownerOnly(http.HandlerFunc(s.previewInformationCleanup)))))
+	s.mux.Handle("POST /admin/information/jobs", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createInformationCleanupJob)))))
+	s.mux.Handle("GET /admin/information/jobs/{id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.informationCleanupJobJSON))))
+	s.mux.Handle("GET /admin/information/deletable-users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.deletableInformationUsersJSON))))
+	s.mux.Handle("POST /admin/information/users/delete", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteInformationUsers)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/status", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountStatus)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/allocation-weight", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAllocationWeight)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))

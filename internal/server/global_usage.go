@@ -61,11 +61,12 @@ type globalUsagePeriod struct {
 }
 
 type globalUsageResponse struct {
-	Period    globalUsagePeriod      `json:"period"`
-	Summary   globalUsageSummary     `json:"summary"`
-	Users     []globalUserUsage      `json:"users"`
-	Pricing   globalPricingMeta      `json:"pricing"`
-	Breakdown globalPricingBreakdown `json:"breakdown"`
+	CleanedBefore *time.Time             `json:"cleaned_before"`
+	Period        globalUsagePeriod      `json:"period"`
+	Summary       globalUsageSummary     `json:"summary"`
+	Users         []globalUserUsage      `json:"users"`
+	Pricing       globalPricingMeta      `json:"pricing"`
+	Breakdown     globalPricingBreakdown `json:"breakdown"`
 }
 
 type globalPricingDimension struct {
@@ -138,6 +139,11 @@ func (s *Server) globalUsageJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Breakdown = formatGlobalPricingBreakdown(breakdownRows)
+	response.CleanedBefore, err = s.store.InformationCleanedBefore(r.Context())
+	if err != nil {
+		internalError(s, w, r, "global usage retention boundary", err)
+		return
+	}
 	response.Period = globalUsagePeriod{
 		Until: query.Until,
 		All:   query.All,

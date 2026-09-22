@@ -76,7 +76,7 @@ function dashboard(accounts = [account()], extra = {}) {
   filter.append(submit);
   const context = vm.createContext({
     document: {getElementById: (id) => nodes.get(id), createElement: (tag) => new TestElement(tag), querySelectorAll: (selector) => root.querySelectorAll(selector)},
-    window: {clearTimeout, setTimeout}, URLSearchParams, DOMException, accounts, extra,
+    window: {clearTimeout, setTimeout}, location: {hash: "#upstream-accounts"}, AbortController, URLSearchParams, DOMException, accounts, extra,
   });
   const source = readFileSync(path.join(__dirname, "../assets/app.js"), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstart().catch")), context);
@@ -426,4 +426,60 @@ test("re-enabling an account with zero weight preserves the draining explanation
   await ui.change();
   assert.match(ui.node("upstream-account-action-message").textContent, /系数仍为 0，停止接收新对话/);
   assert.match(ui.allocationState().textContent, /停止接收新对话/);
+});
+
+test("concurrency snapshots distinguish explicit zero, missing, malformed, and expired data without replacing edits", () => {
+  const ui = dashboard([account(), account("account-2")]);
+  const input = ui.weightInput();
+  input.value = "37";
+  ui.run('upstreamConcurrencySnapshot = {sampled_at: new Date().toISOString(), accounts: [{id: "account-1", active_requests: 0}]}; renderUpstreamConcurrency();');
+  assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "0");
+  assert.equal(ui.cards()[1].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+  assert.equal(ui.weightInput(), input);
+  assert.equal(input.value, "37");
+  for (const value of [-1, 1.5, "2", null]) {
+    ui.context.value = value;
+    ui.run('upstreamConcurrencySnapshot.accounts[0].active_requests = value; renderUpstreamConcurrency();');
+    assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+  }
+  ui.run('upstreamConcurrencySnapshot = {sampled_at: new Date(Date.now() - 16000).toISOString(), accounts: [{id:"account-1",active_requests:2}]}; renderUpstreamConcurrency();');
+  assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+});
+
+test("concurrency polling samples immediately and stops on hidden page, route change, logout, and role change", async () => {
+  for (const condition of ['document.visibilityState = "hidden"', 'location.hash = "#usage"', 'loggingOut = true', 'state.user.role = "member"']) {
+    const ui = dashboard();
+    const timers = new Map();
+    let id = 0, calls = 0;
+    ui.context.window.setTimeout = (fn, delay) => { timers.set(++id, {fn, delay}); return id; };
+    ui.context.window.clearTimeout = (id) => timers.delete(id);
+    ui.api(async () => { calls++; return {sampled_at: new Date().toISOString(), accounts: [{id: "account-1", active_requests: 3}]}; });
+    ui.run('startUpstreamConcurrency(); startUpstreamConcurrency();');
+    await new Promise(setImmediate);
+    assert.equal(calls, 1);
+    assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "3");
+    assert.equal([...timers.values()].some((timer) => timer.delay === 5000), true);
+    ui.run(`${condition}; syncVisiblePolling();`);
+    assert.equal(timers.size, 0);
+    assert.equal(ui.run("upstreamConcurrencyPolling"), false);
+    assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+  }
+});
+
+test("failed concurrency responses clear counts and an aborted request cannot restore them", async () => {
+  const ui = dashboard();
+  const response = deferred();
+  let signal;
+  ui.api((_, options) => { signal = options.signal; return response.promise; });
+  ui.run("startUpstreamConcurrency(); stopUpstreamConcurrency();");
+  assert.equal(signal.aborted, true);
+  response.resolve({sampled_at: new Date().toISOString(), accounts: [{id: "account-1", active_requests: 8}]});
+  await new Promise(setImmediate);
+  assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+
+  ui.api(async () => { throw new Error("unsupported old sidecar"); });
+  ui.run("startUpstreamConcurrency();");
+  await new Promise(setImmediate);
+  assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
+  ui.run("stopUpstreamConcurrency();");
 });

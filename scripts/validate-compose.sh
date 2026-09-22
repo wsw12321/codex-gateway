@@ -17,11 +17,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=eaefd05c4c478e73703a951cc29f37dbfa12c7d807b40f0741ef2c5a0035aef8
+compat_patch_sha256=cad1f15d9d14a85416cb6599ca85b42d97453d1903898f90979878d39f20f714
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-eaefd05c4c478e73-codex-only
+compat_image=codex-gateway-compat:v7.2.150-c77b1369-cad1f15d9d14a854-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -164,6 +164,11 @@ grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
 grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the narrow internal account API'
+grep -Fq 'internalAccounts.GET("/concurrency", s.getUpstreamConcurrency)' "$compat_patch" && \
+    grep -Fq 'TestGatewayConcurrencyRepeatedReleaseAndRaces' "$compat_patch" && \
+    grep -Fq 'TestGatewayConcurrencyStreamWaitOutputCloseCancelAndFailure' "$compat_patch" && \
+    grep -Fq 'TestInternalUpstreamConcurrencyRequiresBearerAndReturnsOnlyCounters' "$compat_patch" || \
+    fail 'CLIProxyAPI must expose authenticated execution concurrency with lifecycle regressions'
 grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
     grep -Fq '.gateway-account-state' "$compat_patch" && \
     grep -Fq 'TestGatewayAccountConcurrentControlsRemainDurable' "$compat_patch" && \

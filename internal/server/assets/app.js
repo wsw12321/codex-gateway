@@ -13,10 +13,12 @@ const sectionTitles = {
   usage: "使用统计",
   "model-access": "模型权限",
   "upstream-accounts": "上游账号",
+  information: "信息管理",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("model-access");
 ownerOnlySections.add("groups");
+ownerOnlySections.add("information");
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -68,6 +70,24 @@ let upstreamAccountSyncHealthy = false;
 let upstreamAccountListLoading = false;
 let upstreamAccountOperation = null;
 const upstreamQuotaStaleTimers = new Map();
+let upstreamConcurrencyTimer = 0;
+let upstreamConcurrencyStaleTimer = 0;
+let upstreamConcurrencyController = null;
+let upstreamConcurrencyGeneration = 0;
+let upstreamConcurrencyPolling = false;
+let upstreamConcurrencySnapshot = null;
+let informationSequence = 0;
+let informationOverviewSequence = 0;
+let informationUsersSequence = 0;
+let informationPreview = null;
+let informationJob = null;
+let informationOperation = false;
+let informationJobTimer = 0;
+let informationUsers = [];
+let informationSelectedUsers = new Set();
+let informationUsersOffset = 0;
+let informationUsersReady = false;
+let informationLoaded = false;
 let reauthResolve = null;
 let reauthReject = null;
 let reauthPromise = null;
@@ -238,6 +258,7 @@ function setBusy(host, busy, label = "处理中…") {
       host.closest?.(".billing-subscription-form, .billing-pagination")) syncBillingUserControls();
   if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
   if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh") syncGroupControls();
+  if (host.closest?.('[data-section="information"]')) syncInformationControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…", requestCurrent = null) {
@@ -305,6 +326,8 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  stopUpstreamConcurrency();
+  resetInformation();
   resetGroupManagement();
   identityGeneration++;
   cancelReauthentication();
@@ -414,6 +437,7 @@ async function api(path, options = {}, current = null) {
     const error = new Error(body?.error?.message || `请求失败 (${response.status})`);
     error.code = body?.error?.code;
     error.status = response.status;
+    error.blockers = Array.isArray(body?.blockers) ? body.blockers : [];
     throw error;
   }
   return body;
@@ -956,6 +980,8 @@ function renderState(value) {
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
+    stopUpstreamConcurrency();
+    resetInformation();
     identityGeneration++;
     resetGroupManagement();
     billingRequestSequence++;
@@ -2506,6 +2532,28 @@ function usageNameMaps() {
   };
 }
 
+function usageColumnCount() {
+  return state?.user?.role === "owner" ? 9 : 8;
+}
+
+function requestUpstreamCell(request) {
+  const id = request.upstream_account_id;
+  if (!id) return element("td", {text: "未归因"});
+  return element("td", {className: "usage-upstream"},
+    element("span", {text: request.upstream_masked_email || "邮箱不可用"}),
+    element("small", {}, element("code", {text: id})),
+  );
+}
+
+function renderCleanedHistory(cutoff) {
+  const node = byId("usage-cleaned-history");
+  if (!node || !cutoff) return;
+  const date = new Date(cutoff);
+  if (!Number.isFinite(date.getTime())) return;
+  node.textContent = `历史清理范围：${date.toISOString().replace("T", " ").replace(".000Z", " UTC")} 之前的旧账务已清理。仍被当前资金或未结算请求引用的记录会保留；统计仅包含保留记录，无法重建的 p95 显示为“—”。`;
+  show(node);
+}
+
 function resetPersonalUsageSummary(value = "—", busy = false) {
   for (const id of [
     "usage-requests", "usage-tokens", "usage-charged-usd", "metric-cache",
@@ -2521,8 +2569,9 @@ function renderPersonalUsage(result, updateOverview) {
   byId("usage-charged-usd").textContent = formatMoney(summary.charged_usd, "USD");
   byId("metric-cache").textContent = formatPercent(summary.cache_rate);
   byId("metric-cache-write").textContent = formatInteger(summary.cache_write_tokens);
-  byId("metric-ttft").textContent = `${formatInteger(summary.p95_ttft_ms)} ms`;
-  byId("metric-duration").textContent = `${formatInteger(summary.p95_duration_ms)} ms`;
+  byId("metric-ttft").textContent = summary.p95_ttft_ms == null ? "—" : `${formatInteger(summary.p95_ttft_ms)} ms`;
+  byId("metric-duration").textContent = summary.p95_duration_ms == null ? "—" : `${formatInteger(summary.p95_duration_ms)} ms`;
+  renderCleanedHistory(result.cleaned_before);
   byId("personal-usage-metrics").setAttribute("aria-busy", "false");
   if (updateOverview) {
     overviewSummary = summary;
@@ -2536,7 +2585,7 @@ function renderPersonalUsage(result, updateOverview) {
   const tbody = byId("usage-rows");
   tbody.closest("table")?.setAttribute("aria-busy", "false");
   if (!requests.length) {
-    tbody.replaceChildren(tableMessage(8, "当前筛选条件下没有请求记录。"));
+    tbody.replaceChildren(tableMessage(usageColumnCount(), "当前筛选条件下没有请求记录。"));
     return;
   }
   const names = usageNameMaps();
@@ -2566,6 +2615,7 @@ function renderPersonalUsage(result, updateOverview) {
       element("td", {text: field(request, "http_status", "HTTPStatus") ?? "—"}),
       element("td", {text: formatInteger(inputTokens + outputTokens)}),
     );
+    if (state?.user?.role === "owner") tr.append(requestUpstreamCell(request));
     return tr;
   });
   tbody.replaceChildren(...rows);
@@ -2576,7 +2626,7 @@ async function loadPersonalUsage(query, updateOverview = false) {
   const loading = byId("personal-loading");
   show(loading);
   resetPersonalUsageSummary("加载中…", true);
-  setTableBusy(byId("usage-rows"), 8, "正在加载使用明细…");
+  setTableBusy(byId("usage-rows"), usageColumnCount(), "正在加载使用明细…");
   const suffix = querySuffix(query);
   try {
     const result = await api(`/admin/usage${suffix}`);
@@ -2586,7 +2636,7 @@ async function loadPersonalUsage(query, updateOverview = false) {
     if (sequence === personalRequestSequence) {
       resetPersonalUsageSummary();
       byId("usage-rows").closest("table")?.setAttribute("aria-busy", "false");
-      byId("usage-rows").replaceChildren(tableMessage(8, friendlyError(error)));
+      byId("usage-rows").replaceChildren(tableMessage(usageColumnCount(), friendlyError(error)));
     }
     throw error;
   } finally {
@@ -2658,6 +2708,7 @@ async function drillDownUser(user) {
 }
 
 function renderGlobalUsage(result) {
+  renderCleanedHistory(result.cleaned_before);
   const summary = result.summary || {};
   const usage = summary.usage || {};
   byId("global-usd").textContent = formatMoney(usage.actual_cost_usd ?? usage.estimated_usd, "USD");
@@ -3507,6 +3558,77 @@ function upstreamAllocationBlock(account) {
   );
 }
 
+function ownerSectionVisible(section) {
+  return !loggingOut && state?.user?.role === "owner" && document.visibilityState !== "hidden" && location.hash === `#${section}`;
+}
+
+function renderUpstreamConcurrency() {
+  const snapshot = upstreamConcurrencySnapshot;
+  const sampled = Date.parse(snapshot?.sampled_at || "");
+  const age = Date.now() - sampled;
+  const valid = Number.isFinite(sampled) && age >= -5000 && age < 15000;
+  const accounts = new Map();
+  if (valid && Array.isArray(snapshot.accounts)) {
+    for (const account of snapshot.accounts) {
+      if (account?.id && Number.isSafeInteger(account.active_requests) && account.active_requests >= 0) {
+        accounts.set(account.id, account.active_requests);
+      }
+    }
+  }
+  for (const card of all(".upstream-account-card[data-account-id]")) {
+    const node = card.querySelector(".upstream-concurrency-count");
+    if (!node) continue;
+    const count = accounts.get(card.dataset.accountId);
+    node.textContent = count === undefined ? "暂不可用" : formatInteger(count);
+    node.dataset.available = count === undefined ? "false" : "true";
+  }
+  const note = byId("upstream-concurrency-sampled");
+  if (note) note.textContent = valid ? `最近采样：${formatDateTime(snapshot.sampled_at)} · 每 5 秒刷新` : "实时并发暂不可用 · 每 5 秒刷新";
+}
+
+function stopUpstreamConcurrency() {
+  upstreamConcurrencyGeneration++;
+  upstreamConcurrencyPolling = false;
+  if (upstreamConcurrencyTimer) window.clearTimeout(upstreamConcurrencyTimer);
+  if (upstreamConcurrencyStaleTimer) window.clearTimeout(upstreamConcurrencyStaleTimer);
+  upstreamConcurrencyTimer = 0;
+  upstreamConcurrencyStaleTimer = 0;
+  upstreamConcurrencyController?.abort();
+  upstreamConcurrencyController = null;
+  upstreamConcurrencySnapshot = null;
+  renderUpstreamConcurrency();
+}
+
+function startUpstreamConcurrency() {
+  if (!ownerSectionVisible("upstream-accounts") || upstreamConcurrencyPolling) return;
+  upstreamConcurrencyPolling = true;
+  const generation = ++upstreamConcurrencyGeneration;
+  const current = () => generation === upstreamConcurrencyGeneration && ownerSectionVisible("upstream-accounts");
+  const sample = async () => {
+    if (!current()) return;
+    upstreamConcurrencyController = new AbortController();
+    try {
+      const result = await api("/admin/upstream-accounts/concurrency", {signal: upstreamConcurrencyController.signal}, current);
+      if (!current()) return;
+      upstreamConcurrencySnapshot = result;
+      window.clearTimeout(upstreamConcurrencyStaleTimer);
+      const remaining = 15000 - (Date.now() - Date.parse(result?.sampled_at || ""));
+      if (Number.isFinite(remaining) && remaining > 0) {
+        upstreamConcurrencyStaleTimer = window.setTimeout(() => { if (current()) renderUpstreamConcurrency(); }, remaining);
+      }
+    } catch (_) {
+      if (!current()) return;
+      upstreamConcurrencySnapshot = null;
+    } finally {
+      if (current()) {
+        renderUpstreamConcurrency();
+        upstreamConcurrencyTimer = window.setTimeout(sample, 5000);
+      }
+    }
+  };
+  sample();
+}
+
 function upstreamAccountCard(account) {
   const quotaResult = element("div", {
     className: "upstream-quota-result",
@@ -3544,6 +3666,11 @@ function upstreamAccountCard(account) {
         element("p", {text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
       ),
       element("div", {className: "upstream-account-actions"}, badge, statusButton),
+    ),
+    element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
+      element("span", {text: "当前执行中"}),
+      element("strong", {className: "upstream-concurrency-count", text: "暂不可用"}),
+      element("small", {text: "包含等待响应与流式输出"}),
     ),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
     upstreamAccessBlock(account),
@@ -3597,6 +3724,7 @@ function renderUpstreamAccounts(result, query) {
     `近 24 小时：${formatDateTime(result.allocation_from)} 至 ${formatDateTime(result.allocation_until)} · ` : "";
   byId("upstream-allocation-period").textContent = `${allocationWindow}独立于历史统计筛选；费用占比以所有已归因账号费用为分母。`;
   syncUpstreamAccountControls();
+  renderUpstreamConcurrency();
 }
 
 function upstreamAccountQueryFromForm() {
@@ -3643,6 +3771,325 @@ async function loadUpstreamAccounts(query, {afterOperation = false} = {}) {
       syncUpstreamAccountControls();
     }
   }
+}
+
+const informationCountLabels = {
+  usage_requests: "请求明细", billing_reservations: "资金预留", quota_reservations: "额度预留",
+  billing_charge_allocations: "消费分摊", billing_ledger_entries: "账务流水", billing_operations: "账务操作快照",
+  billing_cash_credit_lots: "资金批次", billing_subscription_periods: "订阅周期", billing_subscriptions: "订阅历史",
+  usage_daily: "日汇总", usage_monthly: "月汇总", audit_events: "审计明细", concurrency_leases: "请求并发记录",
+  billing_subscription_operation_snapshots: "订阅操作快照",
+};
+const informationReasonLabels = {
+  current_balance: "支撑当前余额", active_subscription: "有效订阅", active_subscriptions: "有效订阅",
+  active_request: "请求仍在运行", in_progress: "请求仍在运行", unsettled_request: "请求尚未结算",
+  pending_reservation: "待结算预留", referenced: "被保留记录引用", required_dependency: "必要关联记录",
+  nonzero_balance: "余额不为零", owner: "管理员不可删除", not_member: "仅允许删除普通用户",
+  request_history: "仍有请求历史", usage_history: "仍有用量明细或汇总", billing_history: "仍有账务历史",
+  running_requests: "请求仍在运行", unsettled_billing: "资金预留尚未结算", unsettled_quota: "额度预留尚未结算",
+  available_cash: "支撑当前可用余额", referenced_history: "被当前资金或其他保留记录引用",
+  balance: "余额不为零", subscriptions: "仍有订阅记录", requests: "仍有请求历史", usage_summaries: "仍有用量汇总",
+  ledger: "仍有账务流水", billing_operations: "仍有账务操作记录", cash_lots: "仍有资金批次",
+  reservations: "仍有资金或额度预留", management_history: "仍有管理操作关联", not_found: "用户已不存在",
+};
+
+function informationIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function informationMessage(message = "", error = false) {
+  const node = byId("information-message");
+  if (!node) return;
+  node.textContent = message;
+  node.dataset.kind = error ? "error" : "ok";
+  node.classList.toggle("hidden", !message);
+}
+
+function informationJobRunning() {
+  return Boolean(informationJob && ["pending", "queued", "running"].includes(informationJob.status));
+}
+
+function informationCutoffText(value) {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString().replace("T", " ").replace(".000Z", " UTC") : "—";
+}
+
+function resetInformation() {
+  informationSequence++;
+  informationOverviewSequence++;
+  informationUsersSequence++;
+  if (informationJobTimer) window.clearTimeout(informationJobTimer);
+  informationJobTimer = 0;
+  informationPreview = null;
+  informationJob = null;
+  informationUsers = [];
+  informationSelectedUsers.clear();
+  informationUsersReady = false;
+  informationOperation = false;
+  informationLoaded = false;
+  informationUsersOffset = 0;
+  for (const id of ["information-preview-form", "information-users-form"]) {
+    const form = byId(id);
+    if (!form) continue;
+    delete form.dataset.operationId;
+    delete form.dataset.operationPayload;
+    form.reset();
+  }
+  byId("information-user-rows")?.replaceChildren(tableMessage(4, "登录后加载候选用户。"));
+  hide("information-preview");
+  hide("information-job");
+  hide("usage-cleaned-history");
+  informationMessage();
+  syncInformationControls();
+}
+
+function syncInformationControls() {
+  const unavailable = informationOperation || loggingOut || state?.user?.role !== "owner";
+  const preview = byId("information-preview-button");
+  if (!preview) return;
+  preview.disabled = unavailable || informationJobRunning();
+  byId("information-create-job").disabled = unavailable || informationJobRunning() || !informationPreview;
+  byId("information-refresh").disabled = unavailable;
+  byId("information-delete-users").disabled = unavailable || !informationUsersReady || informationSelectedUsers.size === 0 || informationSelectedUsers.size > 100;
+  byId("information-selected-count").textContent = `已选 ${informationSelectedUsers.size} / 100 人`;
+  byId("information-select-all").disabled = unavailable || !informationUsersReady || !informationUsers.length;
+  byId("information-select-all").checked = informationUsers.length > 0 && informationUsers.every((user) => informationSelectedUsers.has(user.id));
+  byId("information-select-all").indeterminate = informationSelectedUsers.size > 0 && !byId("information-select-all").checked;
+  byId("information-users-prev").disabled = unavailable || !informationUsersReady || informationUsersOffset === 0;
+  byId("information-users-next").disabled = unavailable || !informationUsersReady || informationUsers.length < 100;
+  all(".information-user-select").forEach((input) => { input.disabled = unavailable || !informationUsersReady; });
+}
+
+function renderInformationReport(report, target) {
+  const deletions = report?.delete_counts || {};
+  const retained = report?.retained_counts || {};
+  const kinds = [...new Set([...Object.keys(deletions), ...Object.keys(retained)])];
+  const tbody = element("tbody");
+  for (const kind of kinds) tbody.append(element("tr", {},
+    element("td", {text: informationCountLabels[kind] || "其他历史记录"}),
+    element("td", {text: formatInteger(deletions[kind] || 0)}),
+    element("td", {text: formatInteger(retained[kind] || 0)}),
+  ));
+  if (!kinds.length) tbody.append(tableMessage(3, "暂无统计结果。"));
+  const table = element("table", {},
+    element("thead", {}, element("tr", {}, ...["记录类型", "删除数量", "保留数量"].map((text) => element("th", {text})))), tbody);
+  const reasons = Object.entries(report?.retained_reasons || {}).map(([reason, count]) =>
+    element("li", {text: `${informationReasonLabels[reason] || reason}：${formatInteger(count)}`}));
+  target.replaceChildren(element("div", {className: "table-wrap"}, table));
+  if (reasons.length) target.append(element("p", {className: "muted", text: "保留原因（同一记录可能满足多个原因）"}), element("ul", {className: "information-reasons"}, ...reasons));
+}
+
+function renderInformationJob(job) {
+  informationJob = job || null;
+  if (!job) { hide("information-job"); syncInformationControls(); return; }
+  show("information-job");
+  byId("information-job-state").textContent = ({pending: "等待执行", queued: "等待执行", running: "正在分批清理", completed: "清理完成", failed: "清理失败"})[job.status] || "状态待确认";
+  byId("information-job-state").dataset.status = job.status;
+  byId("information-job-cutoff").textContent = `固定截止时间：${informationCutoffText(job.cutoff)} · 保留 ${formatInteger(job.retention_days)} 天`;
+  byId("information-job-updated").textContent = `任务 ${job.id} · 更新于 ${formatDateTime(job.updated_at)}`;
+  byId("information-job-error").textContent = job.error ? "上次分批清理未完成，服务端将自动重试。已完成的批次不会重复执行。" : "";
+  byId("information-job-error").classList.toggle("hidden", !job.error);
+  renderInformationReport(job.report, byId("information-job-report"));
+  if (job.status === "completed") renderCleanedHistory(job.cutoff);
+  syncInformationControls();
+}
+
+function scheduleInformationJob() {
+  window.clearTimeout(informationJobTimer);
+  if (!informationJobRunning() || !ownerSectionVisible("information")) return;
+  const current = informationIdentityCurrent();
+  const id = informationJob.id;
+  informationJobTimer = window.setTimeout(async () => {
+    if (!current() || !ownerSectionVisible("information") || informationJob?.id !== id) return;
+    try {
+      const job = await api(`/admin/information/jobs/${encodeURIComponent(id)}`, {}, current);
+      if (!current() || informationJob?.id !== id) return;
+      const finished = !["pending", "queued", "running"].includes(job.status);
+      renderInformationJob(job);
+      if (finished) await loadInformationUsers(0);
+    } catch (error) {
+      if (current()) informationMessage(`任务状态暂不可用：${friendlyError(error)}。任务仍会在服务端继续。`, true);
+    } finally { if (current()) scheduleInformationJob(); }
+  }, 5000);
+}
+
+async function loadInformationOverview() {
+  const sequence = ++informationOverviewSequence;
+  const identity = informationIdentityCurrent();
+  const current = () => identity() && sequence === informationOverviewSequence;
+  if (!current()) return;
+  const result = await api("/admin/information", {}, current);
+  if (!current()) return;
+  renderInformationJob(result.active_job || result.latest_job);
+  renderCleanedHistory(result.cleaned_before);
+  scheduleInformationJob();
+}
+
+async function previewInformation(event) {
+  const form = event.currentTarget;
+  if (informationOperation || informationJobRunning() || state?.user?.role !== "owner") return;
+  const raw = form.elements.retention_days.value.trim();
+  if (!/^[1-9]\d*$/.test(raw) || !Number.isSafeInteger(Number(raw))) throw new Error("保留天数必须为正整数。");
+  const days = Number(raw);
+  const sequence = ++informationSequence;
+  const identity = informationIdentityCurrent();
+  const current = () => identity() && sequence === informationSequence;
+  informationPreview = null;
+  hide("information-preview");
+  syncInformationControls();
+  const report = await api("/admin/information/preview", {method: "POST", body: JSON.stringify({retention_days: days})}, current);
+  if (!current()) return;
+  if (!Number.isFinite(Date.parse(report?.cutoff)) || (report.retention_days != null && report.retention_days !== days)) throw new Error("清理预览响应格式异常，请重新预览。");
+  informationPreview = {...report, retention_days: days};
+  byId("information-preview-cutoff").textContent = `将清理 ${informationCutoffText(report.cutoff)} 之前符合条件的记录。`;
+  renderInformationReport(report, byId("information-preview-report"));
+  show("information-preview");
+  informationMessage("预览已更新。执行时会重新检查依赖，实际数量可能变化。");
+  syncInformationControls();
+}
+
+async function informationMutation(form, path, payload) {
+  if (informationOperation) return null;
+  const current = informationIdentityCurrent();
+  if (!current()) return null;
+  const fingerprint = JSON.stringify({path, payload});
+  if (form.dataset.operationPayload !== fingerprint) {
+    form.dataset.operationPayload = fingerprint;
+    form.dataset.operationId = crypto.randomUUID();
+  }
+  const body = JSON.stringify({...payload, operation_id: form.dataset.operationId});
+  informationOperation = true;
+  syncInformationControls();
+  try {
+    const result = await sensitiveAction(() => api(path, {method: "POST", body}, current), current);
+    if (!current()) return null;
+    delete form.dataset.operationId;
+    delete form.dataset.operationPayload;
+    return result;
+  } finally {
+    if (current()) { informationOperation = false; syncInformationControls(); }
+  }
+}
+
+async function createInformationJob() {
+  if (!informationPreview || informationOperation || informationJobRunning() || loggingOut || state?.user?.role !== "owner") return;
+  const preview = informationPreview;
+  if (!window.confirm(`永久清理 ${informationCutoffText(preview.cutoff)} 之前符合条件的旧账务？\n保留 ${preview.retention_days} 天；当前余额、有效订阅及未结算请求所需记录会保留。此操作无法撤销。`)) return;
+  const current = informationIdentityCurrent();
+  informationOverviewSequence++;
+  const job = await informationMutation(byId("information-preview-form"), "/admin/information/jobs", {
+    retention_days: preview.retention_days, cutoff: preview.cutoff,
+  });
+  if (!job || !current()) return;
+  informationPreview = null;
+  hide("information-preview");
+  renderInformationJob(job);
+  informationMessage("清理任务已创建。任务会在服务端分批执行，离开页面或服务重启后仍会继续。");
+  scheduleInformationJob();
+}
+
+function renderInformationUsers() {
+  const rows = informationUsers.map((user) => {
+    const input = element("input", {type: "checkbox", className: "information-user-select", value: user.id,
+      attributes: {"aria-label": `选择 ${user.display_name || user.username}`}});
+    input.checked = informationSelectedUsers.has(user.id);
+    input.addEventListener("change", () => {
+      if (input.checked && informationSelectedUsers.size < 100) informationSelectedUsers.add(user.id);
+      else { informationSelectedUsers.delete(user.id); input.checked = false; }
+      syncInformationControls();
+    });
+    return element("tr", {}, element("td", {}, input),
+      element("td", {}, element("strong", {text: user.display_name || user.username}), element("small", {text: user.username})),
+      element("td", {}, statusBadge(user.status || "active")), element("td", {text: formatDateTime(user.created_at, "—")}));
+  });
+  byId("information-user-rows").replaceChildren(...(rows.length ? rows : [tableMessage(4, "当前没有符合条件的用户。") ]));
+  byId("information-users-page").textContent = informationUsers.length ? `第 ${informationUsersOffset + 1}–${informationUsersOffset + informationUsers.length} 位候选用户` : "没有候选用户";
+  syncInformationControls();
+}
+
+async function loadInformationUsers(offset = 0) {
+  const sequence = ++informationUsersSequence;
+  const identity = informationIdentityCurrent();
+  const current = () => identity() && sequence === informationUsersSequence;
+  if (!current() || informationOperation) return;
+  informationUsersReady = false;
+  informationSelectedUsers.clear();
+  syncInformationControls();
+  setTableBusy(byId("information-user-rows"), 4, "正在重新核验候选用户…");
+  try {
+    const query = new URLSearchParams({q: byId("information-user-search").value.trim(), limit: "100", offset: String(offset)});
+    const result = await api(`/admin/information/deletable-users?${query}`, {}, current);
+    if (!current()) return;
+    if (!Array.isArray(result?.users)) throw new Error("候选用户响应格式异常。");
+    informationUsers = result.users;
+    informationUsersOffset = offset;
+    informationUsersReady = true;
+    renderInformationUsers();
+  } catch (error) {
+    if (current()) byId("information-user-rows").replaceChildren(tableMessage(4, friendlyError(error)));
+    throw error;
+  } finally {
+    if (current()) { byId("information-user-rows").closest("table")?.setAttribute("aria-busy", "false"); syncInformationControls(); }
+  }
+}
+
+async function deleteInformationUsers() {
+  if (!informationUsersReady || informationOperation || informationSelectedUsers.size === 0 || informationSelectedUsers.size > 100 || loggingOut || state?.user?.role !== "owner") return;
+  const ids = [...informationSelectedUsers].sort();
+  const names = informationUsers.filter((user) => informationSelectedUsers.has(user.id)).map((user) => user.display_name || user.username);
+  if (!window.confirm(`永久删除 ${ids.length} 位无账务用户及其全部登录凭证？\n${names.slice(0, 8).join("、")}${names.length > 8 ? "等" : ""}\n删除后已有会话与 API Key 立即失效。任一用户不再符合条件时，整批取消。`)) return;
+  const current = informationIdentityCurrent();
+  try {
+    const result = await informationMutation(byId("information-users-form"), "/admin/information/users/delete", {user_ids: ids});
+    if (!result || !current()) return;
+    informationSelectedUsers.clear();
+    informationMessage(`已永久删除 ${formatInteger(result.deleted_count)} 位用户。`);
+    try {
+      await loadInformationUsers(0);
+    } catch (error) {
+      if (current()) informationMessage(`已永久删除 ${formatInteger(result.deleted_count)} 位用户，但候选列表刷新失败：${friendlyError(error)}。请刷新后继续。`, true);
+    }
+  } catch (error) {
+    if (!current()) return;
+    const reasons = (error.blockers || []).map((blocker) => {
+      const user = informationUsers.find((item) => item.id === blocker.user_id);
+      return `${user?.display_name || user?.username || blocker.user_id}：${(blocker.reasons || []).map((reason) => informationReasonLabels[reason] || reason).join("、")}`;
+    });
+    informationMessage(`整批删除未完成：${friendlyError(error)}${reasons.length ? `。${reasons.join("；")}` : ""}`, true);
+    if (error.status === 409) await loadInformationUsers(0);
+    throw error;
+  }
+}
+
+function bindInformation() {
+  bindAsync("information-preview-form", "submit", previewInformation, "正在预览…", informationIdentityCurrent);
+  bindAsync("information-create-job", "click", createInformationJob, "正在创建…", informationIdentityCurrent);
+  bindAsync("information-delete-users", "click", deleteInformationUsers, "正在删除…", informationIdentityCurrent);
+  bindAsync("information-users-form", "submit", () => loadInformationUsers(0), "正在查询…", informationIdentityCurrent);
+  bindAsync("information-refresh", "click", async () => {
+    await Promise.all([loadInformationOverview(), loadInformationUsers(0)]);
+    informationMessage("任务与候选用户已刷新。");
+  }, "正在刷新…", informationIdentityCurrent);
+  bindAsync("information-users-prev", "click", () => loadInformationUsers(Math.max(0, informationUsersOffset - 100)), "加载中…", informationIdentityCurrent);
+  bindAsync("information-users-next", "click", () => loadInformationUsers(informationUsersOffset + 100), "加载中…", informationIdentityCurrent);
+  byId("information-preview-form").elements.retention_days.addEventListener("input", () => {
+    informationSequence++;
+    informationPreview = null;
+    hide("information-preview");
+    syncInformationControls();
+  });
+  byId("information-select-all").addEventListener("change", (event) => {
+    informationSelectedUsers = event.currentTarget.checked ? new Set(informationUsers.slice(0, 100).map((user) => user.id)) : new Set();
+    renderInformationUsers();
+  });
+}
+
+function syncVisiblePolling() {
+  if (ownerSectionVisible("upstream-accounts")) startUpstreamConcurrency();
+  else if (upstreamConcurrencyPolling) stopUpstreamConcurrency();
+  window.clearTimeout(informationJobTimer);
+  if (ownerSectionVisible("information")) scheduleInformationJob();
 }
 
 async function loadAlerts() {
@@ -3783,6 +4230,16 @@ function routeFromHash(focusContent = true) {
   byId("page-title").textContent = sectionTitles[section];
   document.title = `${sectionTitles[section]} · Codex Gateway`;
   if (focusContent) byId("content").focus({preventScroll: true});
+  syncVisiblePolling();
+  if (section === "information" && !informationLoaded) {
+    informationLoaded = true;
+    const current = informationIdentityCurrent();
+    Promise.all([loadInformationOverview(), loadInformationUsers(0)]).catch((error) => {
+      if (!current() || error.code === "stale_request") return;
+      informationLoaded = false;
+      informationMessage(`信息管理加载失败：${friendlyError(error)}`, true);
+    });
+  }
 }
 
 async function loadDashboard() {
@@ -3863,6 +4320,8 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  bindInformation();
+  document.addEventListener("visibilitychange", syncVisiblePolling);
   bindGroupUI();
   billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
@@ -3884,6 +4343,8 @@ function bindUI() {
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
     loggingOut = true;
+    stopUpstreamConcurrency();
+    resetInformation();
     identityGeneration++;
     personalRequestSequence++;
     globalRequestSequence++;
@@ -3905,6 +4366,7 @@ function bindUI() {
       await api("/auth/logout", {method: "POST", body: "{}"});
     } catch (error) {
       loggingOut = false;
+      syncVisiblePolling();
       throw error;
     }
     location.assign("/");

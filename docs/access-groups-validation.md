@@ -76,7 +76,7 @@
 
 gateway 与 codex-compat 必须配套更新。网关每次 Codex 生成请求检查兼容服务的
 `upstream_account_access_v1` 能力；旧镜像缺少此能力会被拒绝，不能绕过专属限制。
-此版本兼容镜像为 `codex-gateway-compat:v7.2.150-c77b1369-eaefd05c4c478e73-codex-only`。
+此版本兼容镜像为 `codex-gateway-compat:v7.2.150-c77b1369-cad1f15d9d14a854-codex-only`。
 
 本次仅构建与验证，没有部署、启动生产服务、修改现有 `.env` 或操作真实 OAuth。
 直接侧车冒烟只检查元数据、模型目录和权限协议；真实 JSON／SSE 生成验证应使用

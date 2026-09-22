@@ -579,7 +579,17 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 		return fmt.Errorf("%w: aggregation timezone is empty", ErrInvalid)
 	}
 	dayText := day.Format("2006-01-02")
-	return s.withTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(tx *sql.Tx) error {
+	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockInformationMaintenanceTx(ctx, tx); err != nil {
+			return err
+		}
+		var cleaned bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM information_cleanup_jobs WHERE (cutoff AT TIME ZONE 'UTC')::date > $1::date)`, dayText).Scan(&cleaned); err != nil {
+			return mapDBError("check daily information retention", err)
+		}
+		if cleaned {
+			return nil
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM usage_daily WHERE usage_day = $1::date`, dayText,
 		); err != nil {
@@ -608,7 +618,7 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 				count(duration_ms)::bigint, COALESCE(sum(duration_ms), 0)::numeric,
 				ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms)
 					FILTER (WHERE duration_ms IS NOT NULL))::bigint,
-				now()
+				GREATEST(now(), max(completed_at))
 			FROM usage_requests
 			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
 			  AND (requested_at AT TIME ZONE $2)::date = $1::date
@@ -677,7 +687,27 @@ func (s *Store) AggregateUsageMonth(ctx context.Context, month time.Time, timezo
 		return fmt.Errorf("%w: aggregation timezone is empty", ErrInvalid)
 	}
 	monthText := monthBucket(month)
-	return s.withTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead}, func(tx *sql.Tx) error {
+	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockInformationMaintenanceTx(ctx, tx); err != nil {
+			return err
+		}
+		var cutoff *time.Time
+		if err := tx.QueryRowContext(ctx, `SELECT max(cutoff) FROM information_cleanup_jobs`).Scan(&cutoff); err != nil {
+			return mapDBError("check monthly information retention", err)
+		}
+		monthStart, _ := time.Parse("2006-01-02", monthText)
+		if cutoff != nil && !cutoff.Before(monthStart.AddDate(0, 1, 0)) {
+			// The durable cleanup worker owns removal and its reported counts.
+			// Aggregation must neither remove pending history early nor recreate
+			// a completed cleanup's expired month from retained requests.
+			return nil
+		}
+		if cutoff != nil && !cutoff.Before(monthStart) {
+			return rebuildInformationMonthTx(ctx, tx, *cutoff, timezone)
+		}
+		if monthStart.Before(s.now().UTC().AddDate(0, 0, -90)) {
+			return rebuildInformationMonthTx(ctx, tx, monthStart, timezone)
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM usage_monthly WHERE usage_month = $1::date`, monthText,
 		); err != nil {
@@ -770,7 +800,12 @@ func (s *Store) DeleteUsageRequestsBefore(ctx context.Context, before time.Time,
 	if limit <= 0 || limit > 100_000 {
 		limit = 10_000
 	}
-	result, err := s.db.ExecContext(ctx, `
+	var n int64
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockInformationMaintenanceTx(ctx, tx); err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `
 		DELETE FROM usage_requests
 		WHERE id IN (
 			SELECT u.id FROM usage_requests u
@@ -785,13 +820,15 @@ func (s *Store) DeleteUsageRequestsBefore(ctx context.Context, before time.Time,
 			  )
 			ORDER BY completed_at LIMIT $2
 		)`, before, limit,
-	)
-	if err != nil {
-		return 0, mapDBError("delete old usage requests", err)
-	}
-	n, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("delete old usage requests rows affected: %w", err)
-	}
-	return n, nil
+		)
+		if err != nil {
+			return mapDBError("delete old usage requests", err)
+		}
+		n, err = result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("delete old usage requests rows affected: %w", err)
+		}
+		return nil
+	})
+	return n, err
 }

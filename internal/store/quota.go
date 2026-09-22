@@ -891,6 +891,9 @@ func (s *Store) RetryUnsettledRequests(ctx context.Context, limit int) (int, err
 
 func (s *Store) DeleteQuotaStateBefore(ctx context.Context, before time.Time) error {
 	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockInformationMaintenanceTx(ctx, tx); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM quota_rate_windows WHERE window_start < $1`, before,
 		); err != nil {

@@ -111,6 +111,7 @@
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
           <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
+          <a href="#information" data-view="information" class="owner-only hidden">信息管理</a>
         </nav>
         <div class="profile">
           <div><strong id="whoami">—</strong><small id="role">—</small></div>
@@ -520,6 +521,7 @@
             <div class="section-head">
               <div><p class="eyebrow">METADATA ONLY</p><h2 id="usage-title">使用统计</h2><p>不包含提示词、代码或响应正文。</p></div>
             </div>
+            <p id="usage-cleaned-history" class="callout hidden" role="note"></p>
             <div class="tabs" role="tablist" aria-label="用量视图">
               <button id="personal-tab" type="button" role="tab" aria-selected="true" aria-controls="personal-usage" class="active">个人明细</button>
               <button id="global-tab" type="button" role="tab" aria-selected="false" aria-controls="global-usage" tabindex="-1" class="owner-only hidden">全员汇总</button>
@@ -574,8 +576,8 @@
               </div>
               <div class="table-wrap panel">
                 <table>
-                  <caption>最多显示 500 条请求元数据；汇总卡基于完整筛选区间。</caption>
-                  <thead><tr><th>时间</th><th>设备</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>HTTP</th><th>Token</th></tr></thead>
+                  <caption>最多显示 500 条请求元数据；汇总卡基于完整筛选区间。<span class="owner-only hidden">上游账号与 CSV 显示最终使用或最后尝试的账号；历史缺失显示“未归因”。</span></caption>
+                  <thead><tr><th>时间</th><th>设备</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>HTTP</th><th>Token</th><th class="owner-only hidden">上游账号</th></tr></thead>
                   <tbody id="usage-rows"><tr><td colspan="8" class="table-message">正在加载…</td></tr></tbody>
                 </table>
               </div>
@@ -716,6 +718,56 @@
             </div>
           </section>
 
+          <section class="view owner-only hidden" data-section="information" aria-labelledby="information-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="information-title">信息管理</h2><p>按保留期限清理旧账务，并永久删除已无账务关联的普通用户。</p></div>
+              <button id="information-refresh" type="button" class="secondary">刷新</button>
+            </div>
+            <p id="information-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div class="information-layout">
+              <article class="panel">
+                <div class="panel-heading"><div><p class="eyebrow">HISTORY RETENTION</p><h3>旧账务清理</h3><p>先预览，再确认固定截止时间。上线与打开本页不会自动执行清理。</p></div></div>
+                <p class="callout">清理旧请求、消费、充值、调整、订阅操作与对应汇总。当前余额、有效订阅、未结算请求所需关联及安全审计会保留。</p>
+                <form id="information-preview-form" class="information-retention-form" novalidate>
+                  <label>保留天数<input name="retention_days" type="text" inputmode="numeric" required value="90" autocomplete="off" aria-describedby="information-retention-help"></label>
+                  <button id="information-preview-button" type="submit" class="secondary">清理预览</button>
+                  <p id="information-retention-help" class="muted">输入正整数；截止时间为 UTC 当日零点减去保留天数。</p>
+                  <p class="form-message hidden" role="alert"></p>
+                </form>
+                <section id="information-preview" class="information-preview hidden" aria-labelledby="information-preview-title">
+                  <h4 id="information-preview-title">清理预览</h4><p id="information-preview-cutoff" class="information-cutoff"></p>
+                  <div id="information-preview-report"></div>
+                  <p class="muted">执行时会重新检查依赖，删除数量可能变化。跨月汇总按保留日汇总重建；无法精确重建的 p95 显示为“—”。</p>
+                  <button id="information-create-job" type="button" class="danger" disabled>确认并创建清理任务</button>
+                </section>
+              </article>
+              <article id="information-job" class="panel hidden" aria-labelledby="information-job-title">
+                <div class="panel-heading"><div><p class="eyebrow">PERSISTENT TASK</p><h3 id="information-job-title">最近清理任务</h3></div><span id="information-job-state" class="status-badge" role="status">—</span></div>
+                <p id="information-job-cutoff" class="information-cutoff"></p>
+                <p id="information-job-updated" class="muted information-job-meta"></p>
+                <p class="muted">同一时间只执行一个任务。离开页面、退出登录或服务重启后，已创建的任务仍会继续。</p>
+                <p id="information-job-error" class="form-message hidden" role="alert"></p>
+                <div id="information-job-report" aria-live="polite"></div>
+              </article>
+            </div>
+            <article class="panel information-users-panel">
+              <div class="panel-heading"><div><p class="eyebrow">EMPTY ACCOUNTS</p><h3>删除无账务用户</h3><p>仅列出余额为零，无有效订阅、请求、历史账务或待结算记录的普通用户。每批最多 100 人。</p></div><span id="information-selected-count" class="badge">已选 0 / 100 人</span></div>
+              <form id="information-users-form" class="information-search-form">
+                <label>搜索候选用户<input id="information-user-search" name="q" type="search" autocomplete="off" placeholder="用户名或显示名称"></label>
+                <button type="submit" class="secondary">查询</button>
+                <p class="form-message hidden" role="alert"></p>
+              </form>
+              <div class="table-wrap">
+                <table>
+                  <caption>删除时重新核验全部所选用户；任一用户不符合条件则整批取消。已有登录凭证和 API Key 会立即失效，群组已消耗额度不变。</caption>
+                  <thead><tr><th><input id="information-select-all" type="checkbox" aria-label="选择本页全部候选用户" disabled></th><th>用户</th><th>状态</th><th>创建时间</th></tr></thead>
+                  <tbody id="information-user-rows"><tr><td colspan="4" class="table-message">正在加载候选用户…</td></tr></tbody>
+                </table>
+              </div>
+              <div class="information-users-actions"><div class="button-group"><button id="information-users-prev" type="button" class="secondary" disabled>上一页</button><span id="information-users-page" class="muted">—</span><button id="information-users-next" type="button" class="secondary" disabled>下一页</button></div><button id="information-delete-users" type="button" class="danger" disabled>永久删除所选用户</button></div>
+            </article>
+          </section>
+
           <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">
             <div class="section-head">
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>管理 ChatGPT OAuth 账号状态及查看本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
@@ -740,6 +792,7 @@
             <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
             <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
+            <p id="upstream-concurrency-sampled" class="upstream-account-period muted" aria-live="polite">实时并发暂不可用 · 每 5 秒刷新</p>
             <p id="upstream-allocation-period" class="upstream-account-period muted" aria-live="polite">近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。</p>
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">
               <div class="empty">登录后加载上游账号。</div>

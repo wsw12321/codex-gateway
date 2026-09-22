@@ -43,7 +43,18 @@ func (s *Server) usageJSON(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "summarize usage", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"summary": summaryFromStore(exact), "requests": requests})
+	owner := userFrom(r.Context()).Role == store.UserRoleOwner
+	emails, err := s.usageAccountEmails(r.Context(), requests, owner)
+	if err != nil {
+		internalError(s, w, r, "list usage account metadata", err)
+		return
+	}
+	cleanedBefore, err := s.store.InformationCleanedBefore(r.Context())
+	if err != nil {
+		internalError(s, w, r, "get usage cleanup boundary", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summaryFromStore(exact), "requests": usageResponseDTO(requests, owner, emails), "cleaned_before": cleanedBefore})
 }
 
 func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
@@ -58,11 +69,21 @@ func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "export usage", err)
 		return
 	}
+	owner := userFrom(r.Context()).Role == store.UserRoleOwner
+	emails, err := s.usageAccountEmails(r.Context(), requests, owner)
+	if err != nil {
+		internalError(s, w, r, "export usage account metadata", err)
+		return
+	}
+	writeUsageCSV(w, requests, owner, emails)
+}
+
+func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner bool, emails map[string]string) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="codex-gateway-usage.csv"`)
 	w.Header().Set("Cache-Control", "no-store")
 	writer := csv.NewWriter(w)
-	_ = writer.Write([]string{
+	header := []string{
 		"request_id", "user_id", "device_id", "key_prefix", "project_id", "requested_model", "model",
 		"requested_service_tier", "actual_service_tier", "pricing_service_tier", "context_class",
 		"pricing_rule_version", "pricing_fallback_reason", "endpoint",
@@ -70,9 +91,13 @@ func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
 		"input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_tokens_present",
 		"output_tokens", "reasoning_tokens",
 		"request_bytes", "response_bytes", "upstream_request_id",
-	})
+	}
+	if owner {
+		header = append(header, "upstream_account_id", "upstream_masked_email")
+	}
+	_ = writer.Write(header)
 	for _, request := range requests {
-		_ = writer.Write([]string{
+		row := []string{
 			request.RequestID, request.UserID, request.DeviceID, request.KeyPrefix, stringPointer(request.ProjectID),
 			stringPointer(request.RequestedModel), request.Model,
 			stringPointer(request.RequestedServiceTier), stringPointer(request.ActualServiceTier),
@@ -85,7 +110,15 @@ func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
 			strconv.FormatInt(request.OutputTokens, 10), strconv.FormatInt(request.ReasoningTokens, 10),
 			strconv.FormatInt(request.RequestBytes, 10), strconv.FormatInt(request.ResponseBytes, 10),
 			stringPointer(request.UpstreamRequestID),
-		})
+		}
+		if owner {
+			id := stringPointer(request.UpstreamAccountID)
+			if !validUpstreamAccountID(id) {
+				id = ""
+			}
+			row = append(row, id, emails[id])
+		}
+		_ = writer.Write(row)
 	}
 	writer.Flush()
 }

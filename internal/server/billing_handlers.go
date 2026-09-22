@@ -258,6 +258,8 @@ func (s *Server) billingStoreError(w http.ResponseWriter, r *http.Request, opera
 	switch {
 	case errors.As(err, &insufficient):
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "insufficient_balance", "现金余额不足")
+	case errors.Is(err, store.ErrBillingOperationCleaned):
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "billing_operation_cleaned", "此 operation_id 的历史账务已清理，禁止再次执行；请为新操作使用新的 ID")
 	case errors.Is(err, store.ErrConflict):
 		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "billing_operation_conflict", "operation_id 已用于不同的账务操作")
 	case errors.Is(err, store.ErrInvalid):
