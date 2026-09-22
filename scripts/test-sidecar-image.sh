@@ -51,6 +51,8 @@ docker run --rm --network none --read-only --cap-drop ALL \
         done
         # No Gateway exists on this network: health must not wait for allocation.
         grep -Fq "strategy: \"gateway-allocation\"" /run/cliproxy/config.yaml
+        grep -A1 "^discovery:" /run/cliproxy/config.yaml | grep -Eq "enabled:[[:space:]]*false"
+        grep -A1 "^codex:" /run/cliproxy/config.yaml | grep -Eq "response-steering:[[:space:]]*false"
         {
             printf "GET /internal/upstream-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities

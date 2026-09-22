@@ -30,7 +30,7 @@ RUN git init \
     && git checkout --detach "${CLIPROXY_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
-COPY deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch /tmp/cliproxy-multi-account.patch
+COPY deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch /tmp/cliproxy-multi-account.patch
 RUN git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
@@ -43,16 +43,20 @@ RUN go test -count=1 \
     ./internal/api \
     ./internal/auth/codex \
     ./internal/logging \
+    ./internal/util \
     ./internal/watcher \
     ./internal/watcher/synthesizer \
     ./sdk/api/handlers \
+    ./sdk/api/handlers/openai \
     ./sdk/auth \
     ./sdk/cliproxy/auth \
+    ./sdk/cliproxy/session \
     ./sdk/cliproxy
 
 # Concurrency is part of the selection contract: the reverse callback must not
 # hold manager locks, and simultaneous first requests must share one binding.
-RUN go test -race -count=1 -run '^TestGateway(Allocation|Concurrency)' ./sdk/cliproxy/auth
+# Watcher revisions must also preserve canonical account identity under updates.
+RUN go test -race -count=1 -run '^TestGateway' ./sdk/cliproxy/auth ./internal/watcher
 
 RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/executor > /tmp/codex-regression-tests \
     && for test_name in \
@@ -63,13 +67,16 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexAstraUpgradeHTTPTransports \
         TestCodexGatewayQuotaSignal \
         TestCodexGatewayQuotaHTTPTransports \
+        TestCodexGatewayQuotaWebsocketSignal \
+        TestCodexGatewayTerminalAuthErrorDoesNotLockQuota \
+        TestCodexGatewayDuplexQuotaPersists \
         TestCodexGatewayControlQuotaPersistsAcrossExecutionModes \
         TestCodexGatewayControlKeepsInFlightRequestsAndRejectsStaleQuota \
         TestAuditHomeCodex426WebsocketToHTTPFreshSelection; do \
         grep -Fxq "$test_name" /tmp/codex-regression-tests; \
     done \
     && go test -count=1 \
-        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
 WORKDIR /src

@@ -5,34 +5,43 @@
 Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyring 卷，详见
 [Antigravity 接入说明](gemini-pro.md)。
 
-仓库固定在 CLIProxyAPI `v7.2.150`、commit
-`c77b13694318b0897f2c74104ef48aebdf8c34d6`。版本号和 commit 必须作为一组
+仓库固定在 2026-09-23 核对的[最新稳定版本 CLIProxyAPI `v7.3.12`](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.3.12)、commit
+`2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`。版本号和 commit 必须作为一组
 更新，Docker 构建会验证 tag 指向该 commit。仓库同时固定
-`deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch`；旧补丁不能仅靠忽略空白
-应用到新版本，本次重基保留安全契约，并适配上游请求头参数、session 亲和与重试
-规则的变化。补丁 SHA256 为
-`cad1f15d9d14a85416cb6599ca85b42d97453d1903898f90979878d39f20f714`。
+`deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch`；本次从 `v7.2.150`
+重基，适配上游会话解析、跨优先级选择、凭证更新序号及共享 WebSocket 执行路径，
+保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限。补丁 SHA256 为
+`64ac7f9db31f94dfed15ed7a5538c2d38bc0ab5c18e34adc46e5a472a8261b03`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
 
-重基同时保留上游父会话识别，隔离不同调用方，并让 OAuth 与内部请求头防护覆盖
-同名头的大小写变体。补丁保留原安全回归，新增 Astra 模型目录、HTTP/SSE/compact
-和调用方 session 隔离测试；Astra 上游传输使用模拟服务验证。
+上游统一的会话解析器继续识别父会话，Gateway 在解析后的身份上隔离调用方。
+重基保留已有模型目录、HTTP/SSE/compact、额度锁定和请求头安全回归，并增加新版
+优先级选择、凭证更新序号与 WebSocket 额度信号测试。上游传输使用模拟服务验证。
+部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
+继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.2.150-c77b1369-cad1f15d9d14a854-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
-兼容层构建镜像升级到 Go 1.26.8；补丁同时将 go-git/v6 升级到
-`v6.0.0-alpha.5`、`golang.org/x/crypto` 升级到 `v0.55.0`，并更新所需的
-go-billy/v6 与 x/text 间接依赖。Debian 运行时显式安装 `libpcre2-8-0`，
+兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
+go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
+更新到 `v0.56.0`、`klauspost/compress` 更新到 `v1.18.7`，修复扫描发现的
+SSH 死锁及压缩库越界读取问题。Debian 运行时显式安装 `libpcre2-8-0`，
 确保继承的基础包获得已发布的安全更新。`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
 `bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
-请求契约保持兼容，保留现有 Gemini 价格目录；本次数据库新增 forward-only 的
-`0011_upstream_account_access.sql` 和 `0012_user_groups.sql`，旧 Gateway 无法连接迁移后的数据库。
-原有 Owner 账号状态管理接口仍只管理 Codex。
+请求契约保持兼容，保留现有价格目录。此次兼容层版本升级没有新增数据库迁移，
+Owner 账号状态管理接口仍只管理 Codex。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
+
+2026-09-23 验证通过：Gateway 单元测试、race、vet，41 项部署脚本回归，
+合成配置下的 Compose 校验，三个应用镜像构建及两种 sidecar 隔离运行测试。
+CLIProxyAPI 构建覆盖 12 个相关包、账号与 watcher 竞态测试及 13 项执行器安全回归；
+容器内二进制报告上述版本和完整 commit。`govulncheck ./cmd/server` 未发现可达或
+已导入包漏洞；固定 Trivy 镜像按 CI 的 `--ignore-unfixed --severity HIGH,CRITICAL`
+条件扫描，系统包与 Go 二进制均为 0。原版补丁可从升级前的 Git revision 恢复。
 
 该补丁属于部署安全边界，而不是可选功能：
 
@@ -128,8 +137,8 @@ Astra 冒烟和生产切换按下文规程执行。
 完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
 compact 人工冒烟后才能恢复 Gateway 流量。
 
-本次必须配套升级 Gateway、兼容层和 `0011_upstream_account_access.sql`、
-`0012_user_groups.sql`。兼容层
+Gateway 必须支持现有用户账号权限、加权分配、账号控制及并发接口；从本次升级前的
+仓库版本部署时，无需额外数据库迁移。兼容层
 启动与健康检查不等待 Gateway，保持 `Gateway -> healthy sidecar` 的启动顺序；
 首次部署和登录后的生成冒烟必须等 Gateway `/readyz` 返回 200。
 登录脚本在 sidecar 健康后启动 Gateway 并等待就绪；独立
@@ -140,9 +149,10 @@ Gateway 使用真实用户 API Key，确保经过个人账务和群组额度准�
 Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从公网进入。
 未同步的新 OAuth 账号自动按系数 1、无历史费用参与首次分配，无须先打开管理员页面。
 
-失败回滚时保持停写，先停止候选实例，再将升级前数据库备份恢复到新的隔离卷，
-配套回退 Gateway 与兼容层。旧 Gateway 会拒绝迁移后的数据库，单独回退 sidecar
-也无法保留加权分配契约。任何时刻都不允许两个 sidecar
+失败回滚时保持停写，先停止候选实例。本次仅升级兼容层且没有写入新迁移时，
+可切回升级前仍支持相同权限、加权分配和账号控制契约的镜像；若同时部署了带新迁移
+的 Gateway，则须将升级前数据库备份恢复到新的隔离卷并配套回退。
+任何时刻都不允许两个 sidecar
 共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新
 执行 `scripts/codex-device-login.sh`。
 

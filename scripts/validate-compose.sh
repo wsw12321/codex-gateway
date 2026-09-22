@@ -16,12 +16,12 @@ relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v7.2.150-multi-account.patch
-compat_patch_sha256=cad1f15d9d14a85416cb6599ca85b42d97453d1903898f90979878d39f20f714
+compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch
+compat_patch_sha256=64ac7f9db31f94dfed15ed7a5538c2d38bc0ab5c18e34adc46e5a472a8261b03
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.2.150-c77b1369-cad1f15d9d14a854-codex-only
+compat_image=codex-gateway-compat:v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -48,6 +48,9 @@ if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.p
 fi
 grep -A1 '^plugins:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' || \
     fail 'codex-compat must disable plugins and ignore legacy Gemini credentials'
+grep -A1 '^discovery:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' && \
+    grep -A1 '^codex:' "$compat_entrypoint" | grep -Eq 'response-steering:[[:space:]]*false' || \
+    fail 'codex-compat must disable LAN advertising and experimental websocket steering'
 grep -Fq 'legacy-credentials.test.txt' "$compat_dockerfile" || \
     fail 'codex-compat must test preservation and rejection of legacy Gemini credentials'
 jq -e '.version == "1.2.4" and .platform == "linux_amd64" and
@@ -575,9 +578,9 @@ jq -e \
 ' "$tmp" >/dev/null
 
 jq -e '
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.2.150" and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.3.12" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "c77b13694318b0897f2c74104ef48aebdf8c34d6" and
+    "2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \

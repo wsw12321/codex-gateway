@@ -88,6 +88,10 @@ auth-dir: "${auth_dir}"
 proxy-url: "${proxy_url}"
 plugins:
   enabled: false
+discovery:
+  enabled: false
+codex:
+  response-steering: false
 debug: false
 commercial-mode: true
 logging-to-file: false
