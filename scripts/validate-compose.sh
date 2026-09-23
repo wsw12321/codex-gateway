@@ -17,11 +17,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch
-compat_patch_sha256=64ac7f9db31f94dfed15ed7a5538c2d38bc0ab5c18e34adc46e5a472a8261b03
+compat_patch_sha256=40cc02a0f66b5d28468db7ebc452a31950a2b222bbf40fb8e9ba04b986578134
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only
+compat_image=codex-gateway-compat:v7.3.12-2eb8dd11-40cc02a0f66b5d28-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
