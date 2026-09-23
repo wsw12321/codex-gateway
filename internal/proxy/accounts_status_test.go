@@ -39,6 +39,31 @@ func TestSetUpstreamAccountStatusUsesConfirmedAuthenticatedProtocol(t *testing.T
 	}
 }
 
+func TestSetUpstreamAccountStatusAcceptsSplitStatusResponse(t *testing.T) {
+	for _, test := range []struct {
+		enabled bool
+		body    string
+		manual  string
+		final   string
+	}{
+		{enabled: false, body: `{"id":"0123456789abcdef","status":"unavailable","cliproxy_status":"active","gateway_manual_status":"manual_disabled","gateway_quota_status":"available"}`, manual: "manual_disabled", final: "unavailable"},
+		{enabled: true, body: `{"id":"0123456789abcdef","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available"}`, manual: "enabled", final: "available"},
+	} {
+		t.Run(strconv.FormatBool(test.enabled), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			result, err := NewWithHTTPClient(base, "sidecar-secret", server.Client()).SetUpstreamAccountStatus(context.Background(), "0123456789abcdef", test.enabled)
+			if err != nil || result.Status != test.final || result.CliproxyStatus != "active" || result.GatewayManualStatus != test.manual || result.GatewayQuotaStatus != "available" {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestSetUpstreamAccountStatusRejectsUnconfirmedOrLeakingResponse(t *testing.T) {
 	for _, body := range []string{
 		`{}`, `null`, `{"id":"0123456789abcdef"}`, `{"status":"available"}`,

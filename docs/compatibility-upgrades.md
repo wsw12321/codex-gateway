@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch`；本次从 `v7.2.150`
 重基，适配上游会话解析、跨优先级选择、凭证更新序号及共享 WebSocket 执行路径，
 保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限。补丁 SHA256 为
-`64ac7f9db31f94dfed15ed7a5538c2d38bc0ab5c18e34adc46e5a472a8261b03`。
+`40cc02a0f66b5d28468db7ebc452a31950a2b222bbf40fb8e9ba04b986578134`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.12-2eb8dd11-40cc02a0f66b5d28-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -88,7 +88,8 @@ CLIProxyAPI 构建覆盖 12 个相关包、账号与 watcher 竞态测试及 13 
   Gateway 的 `/admin/upstream-accounts/concurrency` 仅 Owner 可访问，并拒绝超出一分钟
   时钟偏差的快照；旧服务不支持或读取失败时页面显示“暂不可用”。
 - 状态接口只接受 `{"enabled":true}` 或 `{"enabled":false}`，返回确认后的稳定
-  账号 ID 与 `available`／`unavailable`。手动禁用与生成请求的结构化
+  账号 ID、CLIProxyAPI 来源状态、Gateway 手动状态、Gateway 额度状态，以及仅在三者
+  均正常时为 `available` 的最终状态。手动禁用与生成请求的结构化
   `usage_limit_reached` 都锁定整个账号，直到 Owner 手动重新启用。普通 429
   仍按现有退避冷却；额度查询只读，认证和网络错误不触发额度锁定。
 - 控制状态按稳定 ID 写入 OAuth 持久卷中的 `.gateway-account-state`，通过

@@ -22,9 +22,9 @@ const candidates = [
   {id: "user-beta", username: "beta", display_name: "测试成员乙", status: "disabled", created_at: "2026-08-13T09:00:00Z"},
 ];
 const accounts = [
-  {id: "a1b2c3d4e5f60001", email_masked: "al***@example.test", status: "available", can_manage: true, plan: "Plus", allocation_weight: 1},
-  {id: "a1b2c3d4e5f60002", email_masked: "be***@example.test", status: "unavailable", can_manage: true, plan: "Pro", allocation_weight: 2},
-  {id: "a1b2c3d4e5f60003", email_masked: "ga***@example.test", status: "available", can_manage: true, plan: "Plus", allocation_weight: 1},
+  {id: "a1b2c3d4e5f60001", email_masked: "al***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true, plan: "Plus", allocation_weight: 1},
+  {id: "a1b2c3d4e5f60002", email_masked: "be***@example.test", status: "unavailable", cliproxy_status: "active", gateway_manual_status: "manual_disabled", gateway_quota_status: "available", can_manage: true, plan: "Pro", allocation_weight: 2},
+  {id: "a1b2c3d4e5f60003", email_masked: "ga***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true, plan: "Plus", allocation_weight: 1},
 ].map((account) => ({last_synced_at: "2026-09-22T09:00:00Z", request_count: 384, input_tokens: 78000, output_tokens: 24500,
   equivalent_cost_usd: "18.732", rolling_cost_usd: "2.43", rolling_cost_share: "0.25", target_share: "0.25", ...account}));
 
