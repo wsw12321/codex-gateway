@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 )
 
 func TestExtractTopLevelModel(t *testing.T) {
@@ -220,6 +222,34 @@ func TestRecordedUpstreamModelRejectsMalformedValues(t *testing.T) {
 		if got := recordedUpstreamModel(model); got != "" {
 			t.Fatalf("malformed upstream model %q was recorded as %q", model, got)
 		}
+	}
+}
+
+func TestDegradedUsageRequestModelComparison(t *testing.T) {
+	failed := &gatewayproxy.Failure{Code: "upstream_stream_error"}
+	tests := []struct {
+		name      string
+		method    string
+		requested string
+		upstream  string
+		failure   *gatewayproxy.Failure
+		want      bool
+	}{
+		{name: "different valid models", method: http.MethodPost, requested: "gpt-5", upstream: "gpt-5-mini", want: true},
+		{name: "same model", method: http.MethodPost, requested: "gpt-5", upstream: "gpt-5", want: false},
+		{name: "missing upstream model", method: http.MethodPost, requested: "gpt-5", want: false},
+		{name: "invalid upstream model", method: http.MethodPost, requested: "gpt-5", upstream: "../../model", want: false},
+		{name: "invalid requested model", method: http.MethodPost, requested: "gpt 5", upstream: "gpt-5-mini", want: false},
+		{name: "non POST request", method: http.MethodGet, requested: "gpt-5", upstream: "gpt-5-mini", want: false},
+		{name: "failure takes precedence", method: http.MethodPost, requested: "gpt-5", upstream: "gpt-5-mini", failure: failed, want: false},
+		{name: "comparison is case sensitive", method: http.MethodPost, requested: "GPT-5", upstream: "gpt-5", want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := degradedUsageRequest(test.method, test.requested, test.upstream, test.failure); got != test.want {
+				t.Fatalf("degradedUsageRequest() = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 

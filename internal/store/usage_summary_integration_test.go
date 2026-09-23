@@ -92,6 +92,9 @@ func TestUsageSummaryChargedUSDPostgresIntegration(t *testing.T) {
 		{name: "class", user: userA, device: deviceA1, key: keyA1, project: projectA1,
 			model: modelPrimary, endpoint: "responses", state: "completed", httpStatus: 404,
 			requested: now, input: 90, output: 9, charged: "9"},
+		{name: "degraded", user: userA, device: deviceA1, key: keyA1, project: projectA1,
+			model: modelPrimary, endpoint: "responses", state: "degraded", httpStatus: 200,
+			requested: now, input: 95, output: 9, charged: "11"},
 		{name: "user", user: userB, device: deviceB, key: keyB, project: projectB,
 			model: modelPrimary, endpoint: "responses", state: "completed", httpStatus: 200,
 			requested: now, input: 100, output: 10, charged: "10"},
@@ -148,8 +151,8 @@ func TestUsageSummaryChargedUSDPostgresIntegration(t *testing.T) {
 		wantCount  int64
 		wantCharge string
 	}{
-		{name: "time", filter: UsageFilter{From: &from, Until: &until, UserID: userA.ID}, wantCount: 10, wantCharge: "43.000000000001"},
-		{name: "user", filter: UsageFilter{UserID: userA.ID}, wantCount: 11, wantCharge: "45.000000000001"},
+		{name: "time", filter: UsageFilter{From: &from, Until: &until, UserID: userA.ID}, wantCount: 11, wantCharge: "54.000000000001"},
+		{name: "user", filter: UsageFilter{UserID: userA.ID}, wantCount: 12, wantCharge: "56.000000000001"},
 		{name: "device", filter: UsageFilter{DeviceID: deviceA2.ID}, wantCount: 1, wantCharge: "3.000000000000"},
 		{name: "key", filter: UsageFilter{APIKeyID: keyA2.ID}, wantCount: 1, wantCharge: "4.000000000000"},
 		{name: "project", filter: UsageFilter{ProjectID: projectA2.ID}, wantCount: 1, wantCharge: "5.000000000000"},
@@ -189,6 +192,14 @@ func TestUsageSummaryChargedUSDPostgresIntegration(t *testing.T) {
 					summary, len(details), test.wantCount, test.wantCharge)
 			}
 		})
+	}
+
+	allSummary, err := repository.SummarizeUsageRequests(ctx, UsageFilter{UserID: userA.ID})
+	if err != nil {
+		t.Fatalf("SummarizeUsageRequests(all): %v", err)
+	}
+	if allSummary.ErrorCount != 2 {
+		t.Fatalf("degraded request counted as error: summary=%+v", allSummary)
 	}
 }
 

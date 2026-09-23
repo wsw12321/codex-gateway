@@ -25,6 +25,8 @@ Current migrations:
   weights and admission bindings.
 - `internal/store/migrations/0010_billing_source_preferences.sql` — persistent
   user preferences to disable subscription and cash sources for new requests.
+- `internal/store/migrations/0015_degraded_usage_state.sql` — permits terminal
+  usage requests marked `degraded` when the upstream selected a different model.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

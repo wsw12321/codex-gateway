@@ -56,3 +56,20 @@ func TestPercentile95NearestRank(t *testing.T) {
 		t.Fatalf("p95 = %d", got)
 	}
 }
+
+func TestSummarizeUsageExcludesDegradedFromErrorRate(t *testing.T) {
+	statusOK := 200
+	statusBad := 503
+	code := "upstream_error"
+	summary := summarizeUsage([]store.UsageRequest{
+		{State: "completed", HTTPStatus: &statusOK},
+		{State: "degraded", HTTPStatus: &statusOK},
+		{State: "failed", HTTPStatus: &statusOK},
+		{State: "cancelled", HTTPStatus: &statusOK},
+		{State: "completed", HTTPStatus: &statusBad},
+		{State: "completed", HTTPStatus: &statusOK, ErrorCode: &code},
+	})
+	if summary.Requests != 6 || summary.ErrorRate != float64(4)/6 {
+		t.Fatalf("summary = %+v, want four errors out of six", summary)
+	}
+}

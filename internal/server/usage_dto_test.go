@@ -17,7 +17,7 @@ import (
 
 func TestUsageDTOExplicitOwnerAttributionAndPersonalIsolation(t *testing.T) {
 	id := "0123456789abcdef"
-	for _, state := range []string{"completed", "failed", "cancelled"} {
+	for _, state := range []string{"completed", "degraded", "failed", "cancelled"} {
 		rows := []store.UsageRequest{{RequestID: "request-1", State: state, UpstreamAccountID: &id}, {RequestID: "historical", State: "completed"}}
 		emails := map[string]string{id: "a***@example.com"}
 		owner, err := json.Marshal(usageResponseDTO(rows, true, emails))

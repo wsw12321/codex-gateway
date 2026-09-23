@@ -964,11 +964,16 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			billingIntegrationAdmission(user, device, key, terminalRequestID, terminalAt)); err != nil {
 			t.Fatalf("AdmitRequest(terminal): %v", err)
 		}
-		if _, err := repository.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
-			RequestID: terminalRequestID, State: "completed", HTTPStatus: 200,
+		terminalCompletion := CompleteUsageRequestParams{
+			RequestID: terminalRequestID, State: "degraded", HTTPStatus: 200,
 			CompletedAt: terminalAt.Add(time.Second), InputTokens: 1_000_000,
-		}); err != nil {
+			ActualModel: "billing-priced-model-upstream",
+		}
+		if _, err := repository.CompleteUsageRequest(ctx, terminalCompletion); err != nil {
 			t.Fatalf("CompleteUsageRequest(terminal): %v", err)
+		}
+		if _, err := repository.CompleteUsageRequest(ctx, terminalCompletion); err != nil {
+			t.Fatalf("CompleteUsageRequest(terminal degraded replay): %v", err)
 		}
 
 		staleRequestID := billingIntegrationRequestID(suffix, "atomic-stale", 1)

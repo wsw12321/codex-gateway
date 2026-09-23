@@ -512,3 +512,25 @@ func TestAPIKeyLifecycleAndPersonalUsageDashboard(t *testing.T) {
 		t.Error("API key action layout does not wrap multiple lifecycle buttons")
 	}
 }
+
+func TestUsageDashboardIncludesDegradedStatePresentation(t *testing.T) {
+	t.Parallel()
+
+	html := string(indexHTML)
+	javascript := string(appJS)
+	stylesheet := string(styleCSS)
+	for _, required := range []string{
+		`<option value="degraded">degraded（被降智）</option>`,
+		`degraded: "被降智"`,
+		`usageModelCell(request, requestState)`,
+		`requested_model`,
+		`→ ${actual}`,
+	} {
+		if !strings.Contains(html+javascript, required) {
+			t.Fatalf("usage dashboard is missing %s", required)
+		}
+	}
+	if !strings.Contains(stylesheet, `.status-badge[data-status="degraded"]`) {
+		t.Fatal("usage dashboard is missing degraded warning style")
+	}
+}

@@ -193,7 +193,7 @@ func summarizeUsage(requests []store.UsageRequest) usageSummary {
 		summary.CacheWriteTokens += request.CacheWriteTokens
 		summary.OutputTokens += request.OutputTokens
 		summary.ReasoningTokens += request.ReasoningTokens
-		if request.State != "completed" || (request.HTTPStatus != nil && *request.HTTPStatus >= 400) {
+		if (request.State == "failed" || request.State == "cancelled") || (request.HTTPStatus != nil && *request.HTTPStatus >= 400) || request.ErrorCode != nil {
 			errorsCount++
 		}
 		if request.TTFTMillis != nil {

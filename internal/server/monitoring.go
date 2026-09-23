@@ -118,6 +118,7 @@ type monitoringRequestDTO struct {
 	UserID              string     `json:"user_id"`
 	Username            string     `json:"username"`
 	DisplayName         string     `json:"display_name"`
+	RequestedModel      *string    `json:"requested_model"`
 	Model               string     `json:"model"`
 	State               string     `json:"state"`
 	HTTPStatus          *int       `json:"http_status"`
@@ -137,7 +138,7 @@ func monitoringRequestDTOFromStore(row store.MonitoringRequest) monitoringReques
 	return monitoringRequestDTO{
 		RequestID: row.RequestID, RequestedAt: row.RequestedAt, CompletedAt: row.CompletedAt,
 		UserID: row.UserID, Username: row.Username, DisplayName: row.DisplayName,
-		Model: row.Model, State: row.State, HTTPStatus: row.HTTPStatus,
+		RequestedModel: row.RequestedModel, Model: row.Model, State: row.State, HTTPStatus: row.HTTPStatus,
 		ErrorCode: row.ErrorCode, UpstreamAccountID: row.UpstreamAccountID,
 		UpstreamMaskedEmail: row.UpstreamMaskedEmail,
 	}

@@ -608,6 +608,7 @@ nav a.active {
 }
 
 .status-badge[data-status="archived"],
+.status-badge[data-status="degraded"],
 .status-badge[data-status="in_progress"],
 .status-badge[data-status="stale"] {
   border-color: rgb(255 209 102 / 35%);

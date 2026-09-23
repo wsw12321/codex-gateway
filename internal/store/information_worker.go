@@ -245,7 +245,7 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 	), detail AS (
 		SELECT (requested_at AT TIME ZONE $3)::date usage_day,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,
 		COALESCE(http_status/100,0)::smallint status_class,error_code,count(*)::bigint request_count,
-		count(*) FILTER (WHERE http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
+		count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
 		sum(input_tokens)::bigint input_tokens,sum(cached_input_tokens)::bigint cached_input_tokens,
 		sum(cache_write_tokens)::bigint cache_write_tokens,sum(output_tokens)::bigint output_tokens,
 		sum(reasoning_tokens)::bigint reasoning_tokens,sum(request_bytes)::bigint request_bytes,sum(response_bytes)::bigint response_bytes,
@@ -257,7 +257,7 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 		FROM raw GROUP BY (requested_at AT TIME ZONE $3)::date,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,COALESCE(http_status/100,0)::smallint,error_code
 	), late AS (
 		SELECT snapshot_id,count(*)::bigint request_count,
-		count(*) FILTER (WHERE http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
+		count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
 		sum(input_tokens)::bigint input_tokens,sum(cached_input_tokens)::bigint cached_input_tokens,
 		sum(cache_write_tokens)::bigint cache_write_tokens,sum(output_tokens)::bigint output_tokens,
 		sum(reasoning_tokens)::bigint reasoning_tokens,sum(request_bytes)::bigint request_bytes,sum(response_bytes)::bigint response_bytes,

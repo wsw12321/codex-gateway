@@ -65,6 +65,7 @@ func TestUpstreamAccountsPostgresIntegration(t *testing.T) {
 		output    int64
 	}{
 		{accountRequestID, "completed", 200, traceID, 120, 30},
+		{"upstream-degraded-" + suffix, "degraded", 200, traceID, 60, 15},
 		{unattributedRequestID, "failed", 500, "full@example.com", 40, 10},
 	} {
 		if _, err := repository.BeginUsageRequest(ctx, BeginUsageRequestParams{
@@ -172,9 +173,9 @@ func TestUpstreamAccountsPostgresIntegration(t *testing.T) {
 	).Scan(&dailyAttributed, &dailyUnattributed, &monthlyAttributed, &monthlyUnattributed); err != nil {
 		t.Fatalf("read upstream account aggregates: %v", err)
 	}
-	if dailyAttributed != 1 || dailyUnattributed != 1 ||
-		monthlyAttributed != 1 || monthlyUnattributed != 1 {
-		t.Fatalf("daily/monthly upstream groups = %d/%d %d/%d, want 1/1 1/1",
+	if dailyAttributed != 2 || dailyUnattributed != 1 ||
+		monthlyAttributed != 2 || monthlyUnattributed != 1 {
+		t.Fatalf("daily/monthly upstream groups = %d/%d %d/%d, want 2/1 2/1",
 			dailyAttributed, dailyUnattributed, monthlyAttributed, monthlyUnattributed)
 	}
 	deleted, err := repository.DeleteUsageRequestsBefore(ctx, now.Add(-90*24*time.Hour), 100_000)
@@ -194,8 +195,8 @@ func TestUpstreamAccountsPostgresIntegration(t *testing.T) {
 	}
 	trace := findUpstreamAccountSummary(summaries, &traceID)
 	if trace == nil || trace.MaskedEmail != "t***@example.com" || trace.Plan != "pro" ||
-		trace.Status != UpstreamAccountStatusUnavailable || trace.RequestCount != 1 ||
-		trace.ErrorCount != 0 || trace.InputTokens != 120 || trace.OutputTokens != 30 ||
+		trace.Status != UpstreamAccountStatusUnavailable || trace.RequestCount != 2 ||
+		trace.ErrorCount != 0 || trace.InputTokens != 180 || trace.OutputTokens != 45 ||
 		trace.EquivalentCostUSD != "1.250000000000" {
 		t.Fatalf("retained trace summary = %+v", trace)
 	}

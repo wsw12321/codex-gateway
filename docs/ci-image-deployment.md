@@ -64,9 +64,8 @@ scp deployment-images.json wsw@45.91.81.12:/tmp/deployment-images.json
 以下命令需要在同一个 shell 中依次执行：
 
 ```sh
-revision=$(jq -er '.revision' /tmp/deployment-images.json)
-git fetch origin main
-git checkout --detach "$revision"
+git pull
+revision=$(jq -er '.revision' ~/tmp/deployment-images.json)
 
 sed -i \
   -e "s/^GATEWAY_IMAGE_TAG=.*/GATEWAY_IMAGE_TAG=$revision/" \
@@ -74,7 +73,7 @@ sed -i \
   -e "s/^GATEWAY_REVISION=.*/GATEWAY_REVISION=$revision/" \
   .env
 
-./scripts/pull-ci-images.sh /tmp/deployment-images.json
+./scripts/pull-ci-images.sh ~/tmp/deployment-images.json
 ```
 
 脚本会检查提交号、版本配置、镜像仓库路径、digest 和架构，然后拉取三个镜像并

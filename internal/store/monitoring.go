@@ -24,6 +24,7 @@ type MonitoringRequest struct {
 	UserID              string
 	Username            string
 	DisplayName         string
+	RequestedModel      *string
 	Model               string
 	State               string
 	HTTPStatus          *int
@@ -81,6 +82,7 @@ WITH bounds AS (
 			u.user_id::text,
 			usr.username,
 			usr.display_name,
+			u.requested_model,
 			u.model,
 			u.state,
 			u.http_status,
@@ -108,6 +110,7 @@ WITH bounds AS (
 			u.user_id::text,
 			usr.username,
 			usr.display_name,
+			u.requested_model,
 			u.model,
 			u.state,
 			u.http_status,
@@ -136,6 +139,7 @@ WITH bounds AS (
 			u.user_id::text,
 			usr.username,
 			usr.display_name,
+			u.requested_model,
 			u.model,
 			u.state,
 			u.http_status,
@@ -170,6 +174,7 @@ WITH bounds AS (
 			NULL::text AS user_id,
 			NULL::text AS username,
 			NULL::text AS display_name,
+			NULL::text AS requested_model,
 			NULL::text AS model,
 			NULL::text AS state,
 			NULL::smallint AS http_status,
@@ -181,8 +186,8 @@ WITH bounds AS (
 			NULL::bigint AS request_sort_id
 		FROM bounds b
 	)
-SELECT bucket_order, bucket, request_id, requested_at, completed_at,
-	       user_id, username, display_name, model, state, http_status,
+	SELECT bucket_order, bucket, request_id, requested_at, completed_at,
+	       user_id, username, display_name, requested_model, model, state, http_status,
 	       error_code, upstream_account_id, masked_email, sampled_at, sort_at,
 	       request_sort_id
 FROM (
@@ -213,6 +218,7 @@ FROM (
 			userID            sql.NullString
 			username          sql.NullString
 			displayName       sql.NullString
+			requestedModel    sql.NullString
 			model             sql.NullString
 			state             sql.NullString
 			httpStatus        sql.NullInt64
@@ -225,7 +231,7 @@ FROM (
 		)
 		if err := rows.Scan(
 			&bucketOrder, &bucket, &requestID, &requestedAt, &completedAt,
-			&userID, &username, &displayName, &model, &state, &httpStatus,
+			&userID, &username, &displayName, &requestedModel, &model, &state, &httpStatus,
 			&errorCode, &upstreamAccountID, &maskedEmail, &sampledAt, &sortAt, &requestSortID,
 		); err != nil {
 			return MonitoringSnapshot{}, fmt.Errorf("scan monitoring request: %w", err)
@@ -240,7 +246,8 @@ FROM (
 		}
 		request := MonitoringRequest{
 			RequestID: requestID.String, RequestedAt: requestedAt.Time.UTC(), UserID: userID.String,
-			Username: username.String, DisplayName: displayName.String, Model: model.String,
+			Username: username.String, DisplayName: displayName.String,
+			RequestedModel: nullableString(requestedModel), Model: model.String,
 			State: state.String,
 		}
 		if completedAt.Valid {

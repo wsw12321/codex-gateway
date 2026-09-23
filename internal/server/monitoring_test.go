@@ -30,10 +30,11 @@ func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.
 		UserID: "user-active", Username: "alice", DisplayName: "张三",
 		Model: "gpt-6-astra", State: "in_progress",
 	}
+	requestedModel := "gpt-6-codex"
 	failure := store.MonitoringRequest{
 		RequestID: "request-monitoring-failed", RequestedAt: sampledAt.Add(-2 * time.Minute),
 		CompletedAt: &completedAt, UserID: "user-failed", Username: "bob", DisplayName: "Bob",
-		Model: "gpt-6-sol", State: "failed",
+		RequestedModel: &requestedModel, Model: "gpt-6-sol", State: "failed",
 	}
 	repository := &fakeMonitoringRepository{snapshot: store.MonitoringSnapshot{
 		SampledAt: sampledAt, InProgress: []store.MonitoringRequest{active},
@@ -66,6 +67,9 @@ func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.
 	}
 	if document.Failures[0].UpstreamAccountID != nil {
 		t.Fatalf("terminal attribution was changed: %#v", document.Failures[0])
+	}
+	if document.Failures[0].RequestedModel == nil || *document.Failures[0].RequestedModel != requestedModel {
+		t.Fatalf("requested model was not preserved: %#v", document.Failures[0])
 	}
 }
 

@@ -272,6 +272,12 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			httpx.WriteError(w, r, failure.Status, failure.Type, failure.Code, failure.Message)
 		}
 	}
+	// A successful POST whose upstream selected a different valid model is
+	// persisted separately so the dashboard can surface the downgrade while
+	// retaining normal successful-request billing and settlement semantics.
+	if state == "completed" && degradedUsageRequest(r.Method, model, result.Model, failure) {
+		state = "degraded"
+	}
 	if effectiveStatus < 100 || effectiveStatus > 599 {
 		effectiveStatus = http.StatusBadGateway
 	}
@@ -312,6 +318,14 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
 	}
+}
+
+func degradedUsageRequest(method, requestedModel, upstreamModel string, failure *gatewayproxy.Failure) bool {
+	if method != http.MethodPost || failure != nil || !validModel(requestedModel) {
+		return false
+	}
+	recorded := recordedUpstreamModel(upstreamModel)
+	return recorded != "" && recorded != requestedModel
 }
 
 func upstreamAffinityScope(secret []byte, apiKeyID string) string {

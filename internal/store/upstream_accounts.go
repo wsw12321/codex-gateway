@@ -255,7 +255,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 			FROM usage_monthly WHERE usage_month < $1::date
 			UNION ALL
 			SELECT upstream_account_id, 1::bigint,
-				CASE WHEN state <> 'completed' OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint,
+				CASE WHEN state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint,
 				input_tokens, cached_input_tokens, cache_write_tokens,
 				output_tokens, reasoning_tokens
 			FROM usage_requests
@@ -269,7 +269,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		}
 		usageSource = `
 			SELECT upstream_account_id, 1::bigint AS request_count,
-				CASE WHEN state <> 'completed' OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint AS error_count,
+				CASE WHEN state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint AS error_count,
 				input_tokens, cached_input_tokens, cache_write_tokens,
 				output_tokens, reasoning_tokens
 			FROM usage_requests

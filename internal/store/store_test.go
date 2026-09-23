@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 14 {
-		t.Fatalf("migration count = %d, want 14", len(migrations))
+	if len(migrations) != 15 {
+		t.Fatalf("migration count = %d, want 15", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -56,6 +56,28 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		if strings.Contains(strings.ToLower(sql), strings.ToLower(forbidden)) {
 			t.Errorf("migration contains sensitive payload column %q", forbidden)
 		}
+	}
+}
+
+func TestDegradedUsageStateMigrationAllowsDegradedTerminalState(t *testing.T) {
+	t.Parallel()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrationSQL string
+	for _, migration := range migrations {
+		if migration.Name == "0015_degraded_usage_state.sql" {
+			migrationSQL = migration.SQL
+			break
+		}
+	}
+	if migrationSQL == "" {
+		t.Fatal("0015_degraded_usage_state.sql is missing")
+	}
+	if !strings.Contains(migrationSQL, "DROP CONSTRAINT usage_requests_state_valid") ||
+		!strings.Contains(migrationSQL, "'degraded'") {
+		t.Fatalf("degraded state migration does not replace state constraint: %s", migrationSQL)
 	}
 }
 

@@ -136,7 +136,7 @@ type CompleteUsageRequestParams struct {
 
 func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRequestParams) (UsageRequest, error) {
 	if params.RequestID == "" ||
-		(params.State != "completed" && params.State != "failed" && params.State != "cancelled") {
+		(params.State != "completed" && params.State != "degraded" && params.State != "failed" && params.State != "cancelled") {
 		return UsageRequest{}, fmt.Errorf("%w: invalid terminal usage state", ErrInvalid)
 	}
 	if params.HTTPStatus < 100 || params.HTTPStatus > 599 || params.InputTokens < 0 ||
@@ -348,7 +348,7 @@ func (s *Store) SummarizeUsageRequests(ctx context.Context, filter UsageFilter) 
 	where, args := usageFilterWhere(filter, "u")
 	query := `SELECT
 		count(*)::bigint,
-		count(*) FILTER (WHERE u.state <> 'completed' OR u.http_status >= 400)::bigint,
+		count(*) FILTER (WHERE u.state IN ('failed', 'cancelled') OR u.http_status >= 400 OR u.error_code IS NOT NULL)::bigint,
 		COALESCE(sum(u.input_tokens), 0)::bigint,
 		COALESCE(sum(u.cached_input_tokens), 0)::bigint,
 		COALESCE(sum(u.cache_write_tokens), 0)::bigint,
@@ -608,7 +608,7 @@ func (s *Store) AggregateUsageDay(ctx context.Context, day time.Time, timezone s
 				upstream_account_id, model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code,
 				count(*)::bigint,
-				count(*) FILTER (WHERE http_status >= 400 OR error_code IS NOT NULL)::bigint,
+				count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL)::bigint,
 				sum(input_tokens)::bigint, sum(cached_input_tokens)::bigint,
 				sum(cache_write_tokens)::bigint, sum(output_tokens)::bigint, sum(reasoning_tokens)::bigint,
 				sum(request_bytes)::bigint, sum(response_bytes)::bigint,
@@ -725,7 +725,7 @@ func (s *Store) AggregateUsageMonth(ctx context.Context, month time.Time, timezo
 				upstream_account_id, model, endpoint,
 				COALESCE(http_status / 100, 0)::smallint, error_code,
 				count(*)::bigint,
-				count(*) FILTER (WHERE http_status >= 400 OR error_code IS NOT NULL)::bigint,
+				count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL)::bigint,
 				sum(input_tokens)::bigint, sum(cached_input_tokens)::bigint,
 				sum(cache_write_tokens)::bigint, sum(output_tokens)::bigint, sum(reasoning_tokens)::bigint,
 				sum(request_bytes)::bigint, sum(response_bytes)::bigint,

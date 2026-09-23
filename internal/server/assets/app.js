@@ -215,7 +215,7 @@ function inputDate(date) {
 function statusLabel(status) {
   return ({
     active: "活跃", available: "可用", disabled: "已停用", unavailable: "不可用", archived: "已归档", revoked: "已撤销",
-    completed: "已完成", failed: "失败", cancelled: "已取消", in_progress: "进行中",
+    completed: "已完成", degraded: "被降智", failed: "失败", cancelled: "已取消", in_progress: "进行中",
     open: "开放", acknowledged: "已确认", resolved: "已解决", stale: "可能已过时",
   })[status] || status || "未知";
 }
@@ -2787,6 +2787,15 @@ function resetPersonalUsageSummary(value = "—", busy = false) {
   byId("personal-usage-metrics").setAttribute("aria-busy", busy ? "true" : "false");
 }
 
+function usageModelCell(request, requestState = field(request, "state", "State")) {
+  const actual = field(request, "model", "Model") || "—";
+  const requested = field(request, "requested_model", "RequestedModel");
+  if (requestState === "degraded" && requested && requested !== actual) {
+    return element("code", {className: "usage-model-degraded", text: `${requested} → ${actual}`});
+  }
+  return element("code", {text: actual});
+}
+
 function renderPersonalUsage(result, updateOverview) {
   const summary = result.summary || {};
   byId("usage-requests").textContent = formatInteger(summary.requests);
@@ -2829,7 +2838,7 @@ function renderPersonalUsage(result, updateOverview) {
       element("td", {text: names.keys.get(keyID) || keyPrefix}),
       element("td", {text: projectID ? (names.projects.get(projectID) || projectID) : "未分配"}),
       element("td", {},
-        element("code", {text: field(request, "model", "Model") || "—"}),
+        usageModelCell(request, requestState),
         element("small", {text: [
           field(request, "pricing_service_tier", "PricingServiceTier"),
           field(request, "context_class", "ContextClass"),
@@ -3847,11 +3856,10 @@ function monitoringRow(request, windowName) {
   const timestamp = active || windowName === "recent"
     ? monitoringField(request, "requested_at", "RequestedAt")
     : monitoringField(request, "completed_at", "CompletedAt");
-  const model = monitoringField(request, "model", "Model") || "—";
   return element("tr", {dataset: {requestId: monitoringField(request, "request_id", "RequestID") || ""}},
     element("td", {text: formatDateTime(timestamp, "—")}),
     element("td", {}, monitoringUserLink(request)),
-    element("td", {}, element("code", {text: model})),
+    element("td", {}, usageModelCell(request, monitoringField(request, "state", "State"))),
     element("td", {}, monitoringUpstreamCell(request, active)),
     monitoringStatusCell(request),
   );
