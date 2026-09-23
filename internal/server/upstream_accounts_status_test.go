@@ -81,8 +81,8 @@ func TestUpstreamStatusUsesConfirmationAndAuditsOutcome(t *testing.T) {
 		name, body, remoteBody, code, event string
 		remoteStatus, wantStatus            int
 	}{
-		{"disable", `{"enabled":false}`, `{"id":"0123456789abcdef","status":"unavailable","cliproxy_status":"active","gateway_manual_status":"manual_disabled","gateway_quota_status":"available"}`, "ok", "upstream_account.disabled", 200, 200},
-		{"enable", `{"enabled":true}`, `{"id":"0123456789abcdef","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available"}`, "ok", "upstream_account.enabled", 200, 200},
+		{"disable", `{"enabled":false}`, `{"id":"0123456789abcdef","status":"unavailable"}`, "ok", "upstream_account.disabled", 200, 200},
+		{"enable", `{"enabled":true}`, `{"id":"0123456789abcdef","status":"available"}`, "ok", "upstream_account.enabled", 200, 200},
 		{"persistence failure", `{"enabled":true}`, `{"error":"account_status_persistence_failed"}`, "upstream_account_status_persistence_failed", "upstream_account.enabled", 503, 503},
 		{"missing account", `{"enabled":false}`, `{"error":"upstream_account_not_found"}`, "invalid_upstream_account", "upstream_account.disabled", 404, 404},
 		{"identity invalid", `{"enabled":true}`, `{"error":"account_status_identity_invalid"}`, "upstream_account_identity_invalid", "upstream_account.enabled", 409, 409},
@@ -128,25 +128,12 @@ func TestUpstreamStatusSuccessSurvivesAuditDatabaseFailure(t *testing.T) {
 	defer db.Close()
 	base, _ := url.Parse("http://sidecar.internal")
 	server := &Server{store: store.New(db), upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available"}`))}, nil
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"available"}`))}, nil
 	})})}
 	response := httptest.NewRecorder()
 	server.setUpstreamAccountStatus(response, statusTestRequest(`{"enabled":true}`))
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"available"`) {
 		t.Fatalf("confirmation lost after audit failure: %d %s", response.Code, response.Body.String())
-	}
-}
-
-func TestUpstreamStatusRejectsLegacyConfirmationWithoutSourceStates(t *testing.T) {
-	repository, _ := newUpstreamAuditStore(t)
-	base, _ := url.Parse("http://sidecar.internal")
-	server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"available"}`))}, nil
-	})})}
-	response := httptest.NewRecorder()
-	server.setUpstreamAccountStatus(response, statusTestRequest(`{"enabled":true}`))
-	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "sidecar_account_status_protocol_error") {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -229,9 +216,9 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 				body := `{"accounts":[]}`
 				if r.Method == http.MethodPut {
 					controls.Add(1)
-					body = `{"id":"0123456789abcdef","status":"unavailable","cliproxy_status":"active","gateway_manual_status":"manual_disabled","gateway_quota_status":"available"}`
+					body = `{"id":"0123456789abcdef","status":"unavailable"}`
 				} else if live {
-					body = `{"accounts":[{"id":"0123456789abcdef","masked_email":"u***@example.com","plan":"plus","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available","last_synced_at":"2026-09-01T00:00:00Z"}]}`
+					body = `{"accounts":[{"id":"0123456789abcdef","masked_email":"u***@example.com","plan":"plus","status":"active","last_synced_at":"2026-09-01T00:00:00Z"}]}`
 				}
 				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
 			})})}
@@ -258,11 +245,7 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 			<-listDone
 			<-statusDone
 			var list upstreamAccountsResponse
-			if json.Unmarshal(listResponse.Body.Bytes(), &list) != nil || len(list.Accounts) != 1 || list.Accounts[0].CanManage != live ||
-				(live && (list.Accounts[0].Status != "available" || list.Accounts[0].CliproxyStatus != "active" ||
-					list.Accounts[0].GatewayManualStatus != "enabled" || list.Accounts[0].GatewayQuotaStatus != "available")) ||
-				(!live && (list.Accounts[0].Status != "unknown" || list.Accounts[0].CliproxyStatus != "unknown")) ||
-				statusResponse.Code != 200 || controls.Load() != 1 {
+			if json.Unmarshal(listResponse.Body.Bytes(), &list) != nil || len(list.Accounts) != 1 || list.Accounts[0].CanManage != live || statusResponse.Code != 200 || controls.Load() != 1 {
 				t.Fatalf("list=%s status=%s controls=%d", listResponse.Body.String(), statusResponse.Body.String(), controls.Load())
 			}
 		})

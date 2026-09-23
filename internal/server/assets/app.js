@@ -224,49 +224,6 @@ function statusBadge(status) {
   return element("span", {className: "status-badge", text: statusLabel(status), dataset: {status: status || "unknown"}});
 }
 
-const upstreamCliproxyStatusLabels = {
-  active: "可用", unavailable: "暂不可用", disabled: "凭据已停用", error: "状态错误", unknown: "状态未知",
-};
-const upstreamGatewayManualStatusLabels = {
-  enabled: "已启用", manual_disabled: "手动禁用", unknown: "状态未知",
-};
-const upstreamGatewayQuotaStatusLabels = {
-  available: "正常", quota_exhausted: "已锁定", unknown: "状态未知",
-};
-const upstreamFinalStatusLabels = {
-  available: "可用", unavailable: "不可用", unknown: "状态未知",
-};
-
-function upstreamStatusKnown(account) {
-  return ["active", "unavailable", "disabled", "error"].includes(account?.cliproxy_status) &&
-    ["enabled", "manual_disabled"].includes(account?.gateway_manual_status) &&
-    ["available", "quota_exhausted"].includes(account?.gateway_quota_status);
-}
-
-function upstreamFinalStatus(account) {
-  if (!upstreamStatusKnown(account)) return "unknown";
-  return account.status === "available" || account.status === "unavailable" ? account.status : "unknown";
-}
-
-function upstreamStatusBadge(label, status, labels, className = "") {
-  const value = Object.prototype.hasOwnProperty.call(labels, status) ? status : "unknown";
-  const badge = statusBadge(value);
-  badge.textContent = `${label}：${labels[value]}`;
-  if (className) badge.classList.add(className);
-  return badge;
-}
-
-function upstreamAccountStatusBadges(account) {
-  const final = upstreamFinalStatus(account);
-  const finalBadge = upstreamStatusBadge("最终分流", final, upstreamFinalStatusLabels, "upstream-account-status");
-  return [
-    upstreamStatusBadge("CLIProxyAPI", account?.cliproxy_status, upstreamCliproxyStatusLabels, "upstream-account-cliproxy-status"),
-    upstreamStatusBadge("Gateway手动", account?.gateway_manual_status, upstreamGatewayManualStatusLabels, "upstream-account-manual-status"),
-    upstreamStatusBadge("Gateway额度", account?.gateway_quota_status, upstreamGatewayQuotaStatusLabels, "upstream-account-quota-status"),
-    finalBadge,
-  ];
-}
-
 function friendlyError(error) {
   if (!error) return "操作失败，请重试。";
   if (error.name === "NotAllowedError") return "已取消 Passkey 操作，或验证等待超时。";
@@ -3674,39 +3631,19 @@ function syncUpstreamAccountControls() {
     if (accessButton) accessButton.disabled = !account?.id || !upstreamAccountSyncHealthy || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
     const button = card.querySelector(".upstream-account-status-button");
     const badge = card.querySelector(".upstream-account-status");
-    const cliproxyBadge = card.querySelector(".upstream-account-cliproxy-status");
-    const manualBadge = card.querySelector(".upstream-account-manual-status");
-    const quotaBadge = card.querySelector(".upstream-account-quota-status");
     const note = card.querySelector(".upstream-account-manage-note");
     if (!account || !button) continue;
-    const knownStatus = upstreamStatusKnown(account) && ["available", "unavailable"].includes(account.status);
+    const knownStatus = ["available", "unavailable"].includes(account.status);
     const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && upstreamAccountSyncHealthy;
     button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
       loggingOut || state?.user?.role !== "owner";
     const pending = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "status";
-    const gatewayBlocked = account.gateway_manual_status === "manual_disabled" || account.gateway_quota_status === "quota_exhausted";
     button.textContent = pending ? (upstreamAccountOperation.enabled ? "启用中…" : "禁用中…") :
-      (gatewayBlocked ? "重新启用" : "禁用");
+      (account.status === "available" ? "禁用" : "重新启用");
     button.setAttribute("aria-busy", String(pending));
     button.title = canManage ? "" : "账号未在最近一次同步中确认，刷新列表后再试。";
-    const finalStatus = upstreamFinalStatus(account);
-    badge.dataset.status = finalStatus;
-    badge.textContent = `最终分流：${upstreamFinalStatusLabels[finalStatus] || upstreamFinalStatusLabels.unknown}`;
-    if (cliproxyBadge) {
-      const value = upstreamCliproxyStatusLabels[account.cliproxy_status] ? account.cliproxy_status : "unknown";
-      cliproxyBadge.dataset.status = value;
-      cliproxyBadge.textContent = `CLIProxyAPI：${upstreamCliproxyStatusLabels[value]}`;
-    }
-    if (manualBadge) {
-      const value = upstreamGatewayManualStatusLabels[account.gateway_manual_status] ? account.gateway_manual_status : "unknown";
-      manualBadge.dataset.status = value;
-      manualBadge.textContent = `Gateway手动：${upstreamGatewayManualStatusLabels[value]}`;
-    }
-    if (quotaBadge) {
-      const value = upstreamGatewayQuotaStatusLabels[account.gateway_quota_status] ? account.gateway_quota_status : "unknown";
-      quotaBadge.dataset.status = value;
-      quotaBadge.textContent = `Gateway额度：${upstreamGatewayQuotaStatusLabels[value]}`;
-    }
+    badge.dataset.status = account.status || "unknown";
+    badge.textContent = statusLabel(account.status);
     note.textContent = canManage ? "" : "账号未在最近一次同步中确认，暂不可操作。";
     note.classList.toggle("hidden", canManage);
     const weightInput = card.querySelector(".upstream-allocation-input");
@@ -3719,7 +3656,7 @@ function syncUpstreamAccountControls() {
     weightButton.setAttribute("aria-busy", String(savingWeight));
     allocationState.dataset.draining = String(account.allocation_weight === 0);
     allocationState.textContent = account.allocation_weight === 0 ? "停止接收新对话 · 已有有效绑定继续使用" :
-      (finalStatus === "available" ? "参与新对话分配" : finalStatus === "unknown" ? "状态未知 · 暂停新对话分配" : "账号不可用 · 暂不参与新对话分配");
+      (account.status === "available" ? "参与新对话分配" : "账号不可用 · 暂不参与新对话分配");
   }
   const filter = byId("upstream-account-filter");
   filter.querySelector("button[type=submit]").disabled = Boolean(upstreamAccountOperation) || filter.dataset.busy === "true";
@@ -3728,8 +3665,8 @@ function syncUpstreamAccountControls() {
 async function changeUpstreamAccountStatus(account) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
       !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
-      !upstreamAccounts.includes(account) || !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
-  const operation = {id: account.id, kind: "status", enabled: account.gateway_manual_status === "manual_disabled" || account.gateway_quota_status === "quota_exhausted"};
+      !upstreamAccounts.includes(account) || !["available", "unavailable"].includes(account.status)) return;
+  const operation = {id: account.id, kind: "status", enabled: account.status !== "available"};
   upstreamAccountOperation = operation;
   upstreamAccountRequestSequence++;
   setUpstreamAccountMessage("upstream-account-action-message");
@@ -3746,15 +3683,11 @@ async function changeUpstreamAccountStatus(account) {
       });
     });
     if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
-    const responseKnown = upstreamStatusKnown(response) && ["available", "unavailable"].includes(response.status);
-    if (response?.id !== account.id || !responseKnown) {
+    if (response?.id !== account.id || response.status !== (operation.enabled ? "available" : "unavailable")) {
       throw new Error("上游账号状态响应格式异常，请刷新列表确认结果。");
     }
     confirmed = true;
     account.status = response.status;
-    account.cliproxy_status = response.cliproxy_status;
-    account.gateway_manual_status = response.gateway_manual_status;
-    account.gateway_quota_status = response.gateway_quota_status;
     syncUpstreamAccountControls();
     const enabledMessage = account.allocation_weight === 0 ? "系数仍为 0，停止接收新对话；已有有效绑定继续使用。" : "已恢复参与分流；若额度仍不足，将再次锁定。";
     const message = `${account.email_masked || "该上游账号"} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
@@ -3780,7 +3713,7 @@ async function changeUpstreamAccountStatus(account) {
 async function saveUpstreamAllocationWeight(account, form) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
       !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
-      !upstreamAccounts.includes(account) || !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
+      !upstreamAccounts.includes(account) || !["available", "unavailable"].includes(account.status)) return;
   const input = form.querySelector(".upstream-allocation-input");
   const raw = String(input.value || "").trim();
   const weight = Number(raw);
@@ -4129,14 +4062,15 @@ function upstreamAccountCard(account) {
     attributes: {"aria-describedby": "upstream-account-control-help"},
   });
   statusButton.addEventListener("click", () => changeUpstreamAccountStatus(account));
-  const badges = upstreamAccountStatusBadges(account);
+  const badge = statusBadge(account.status);
+  badge.classList.add("upstream-account-status");
   return element("article", {className: "panel upstream-account-card", dataset: {accountId: account.id || ""}},
     element("div", {className: "panel-heading upstream-account-heading"},
       element("div", {className: "upstream-account-identity"},
         element("h3", {text: account.email_masked || "邮箱不可用"}),
         element("p", {text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
       ),
-      element("div", {className: "upstream-account-actions"}, ...badges, statusButton),
+      element("div", {className: "upstream-account-actions"}, badge, statusButton),
     ),
     element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
       element("span", {text: "当前执行中"}),

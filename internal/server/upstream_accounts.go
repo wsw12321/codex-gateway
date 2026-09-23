@@ -97,29 +97,26 @@ type upstreamAccountUsageDTO struct {
 }
 
 type upstreamAccountDTO struct {
-	ID                  string     `json:"id"`
-	EmailMasked         string     `json:"email_masked"`
-	Plan                string     `json:"plan"`
-	Status              string     `json:"status"`
-	CliproxyStatus      string     `json:"cliproxy_status"`
-	GatewayManualStatus string     `json:"gateway_manual_status"`
-	GatewayQuotaStatus  string     `json:"gateway_quota_status"`
-	CanManage           bool       `json:"can_manage"`
-	LastSyncedAt        *time.Time `json:"last_synced_at"`
-	RequestCount        int64      `json:"request_count"`
-	ErrorCount          int64      `json:"error_count"`
-	InputTokens         int64      `json:"input_tokens"`
-	CachedInputTokens   int64      `json:"cached_input_tokens"`
-	CacheWriteTokens    int64      `json:"cache_write_tokens"`
-	OutputTokens        int64      `json:"output_tokens"`
-	ReasoningTokens     int64      `json:"reasoning_tokens"`
-	EquivalentCostUSD   string     `json:"equivalent_cost_usd"`
-	AllocationWeight    int        `json:"allocation_weight"`
-	RollingCostUSD      string     `json:"rolling_cost_usd"`
-	RollingCostShare    string     `json:"rolling_cost_share"`
-	TargetShare         string     `json:"target_share"`
-	AccessMode          string     `json:"access_mode"`
-	AuthorizedUserIDs   []string   `json:"authorized_user_ids"`
+	ID                string     `json:"id"`
+	EmailMasked       string     `json:"email_masked"`
+	Plan              string     `json:"plan"`
+	Status            string     `json:"status"`
+	CanManage         bool       `json:"can_manage"`
+	LastSyncedAt      *time.Time `json:"last_synced_at"`
+	RequestCount      int64      `json:"request_count"`
+	ErrorCount        int64      `json:"error_count"`
+	InputTokens       int64      `json:"input_tokens"`
+	CachedInputTokens int64      `json:"cached_input_tokens"`
+	CacheWriteTokens  int64      `json:"cache_write_tokens"`
+	OutputTokens      int64      `json:"output_tokens"`
+	ReasoningTokens   int64      `json:"reasoning_tokens"`
+	EquivalentCostUSD string     `json:"equivalent_cost_usd"`
+	AllocationWeight  int        `json:"allocation_weight"`
+	RollingCostUSD    string     `json:"rolling_cost_usd"`
+	RollingCostShare  string     `json:"rolling_cost_share"`
+	TargetShare       string     `json:"target_share"`
+	AccessMode        string     `json:"access_mode"`
+	AuthorizedUserIDs []string   `json:"authorized_user_ids"`
 }
 
 type upstreamAccountsResponse struct {
@@ -154,7 +151,6 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	cancelSync()
 	syncWarning := ""
 	manageable := make(map[string]bool, len(remoteAccounts))
-	remoteStatus := make(map[string]gatewayproxy.UpstreamAccount, len(remoteAccounts))
 	if err != nil {
 		syncWarning = "upstream_account_sync_unavailable"
 		if s.logger != nil {
@@ -164,11 +160,9 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	} else {
 		snapshots := make([]store.UpstreamAccountSnapshot, 0, len(remoteAccounts))
 		for _, account := range remoteAccounts {
-			known := upstreamAccountSourceStatusKnown(account)
-			manageable[account.ID] = known
-			remoteStatus[account.ID] = account
+			manageable[account.ID] = true
 			status := store.UpstreamAccountStatusUnavailable
-			if known && account.Status == "available" {
+			if account.Status == "active" {
 				status = store.UpstreamAccountStatusAvailable
 			}
 			snapshots = append(snapshots, store.UpstreamAccountSnapshot{
@@ -234,23 +228,12 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		allocation := allocationByID[*row.AccountID]
 		accountAccess := accessByID[*row.AccountID]
-		remote, present := remoteStatus[*row.AccountID]
-		sourceKnown := present && upstreamAccountSourceStatusKnown(remote)
-		cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, finalStatus := "unknown", "unknown", "unknown", "unknown"
-		if sourceKnown {
-			cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus = remote.CliproxyStatus, remote.GatewayManualStatus, remote.GatewayQuotaStatus
-			finalStatus = row.Status
-			if finalStatus != store.UpstreamAccountStatusAvailable && finalStatus != store.UpstreamAccountStatusUnavailable {
-				finalStatus = "unknown"
-			}
-		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
 			AccessMode: accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
 			AllocationWeight: allocation.AllocationWeight, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
 			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,
-			Status: finalStatus, CliproxyStatus: cliproxyStatus, GatewayManualStatus: gatewayManualStatus,
-			GatewayQuotaStatus: gatewayQuotaStatus, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
+			Status: row.Status, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,
 			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
 			CacheWriteTokens: usage.CacheWriteTokens, OutputTokens: usage.OutputTokens,
@@ -258,10 +241,6 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, response)
-}
-
-func upstreamAccountSourceStatusKnown(account gatewayproxy.UpstreamAccount) bool {
-	return account.CliproxyStatus != "" && account.GatewayManualStatus != "" && account.GatewayQuotaStatus != ""
 }
 
 func upstreamUsageDTO(row store.UpstreamAccountSummary) upstreamAccountUsageDTO {
@@ -346,12 +325,6 @@ func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request
 	result, err := s.upstream.SetUpstreamAccountStatus(ctx, accountID, enabled)
 	cancel()
 	if err != nil {
-		resultCode, resultStatus = upstreamManagementErrorDetails(err)
-		writeUpstreamManagementError(w, r, err, "无法修改上游账号状态")
-		return
-	}
-	if result.CliproxyStatus == "" || result.GatewayManualStatus == "" || result.GatewayQuotaStatus == "" {
-		err := &gatewayproxy.InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_account_status_protocol_error"}
 		resultCode, resultStatus = upstreamManagementErrorDetails(err)
 		writeUpstreamManagementError(w, r, err, "无法修改上游账号状态")
 		return

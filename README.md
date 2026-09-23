@@ -315,7 +315,7 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v7.3.12` / commit
 `2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`，兼容层镜像标签为
-`v7.3.12-2eb8dd11-40cc02a0f66b5d28-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
+`v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。

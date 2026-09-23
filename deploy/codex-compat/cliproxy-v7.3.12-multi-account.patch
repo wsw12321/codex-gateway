@@ -332,7 +332,7 @@ new file mode 100644
 index 00000000..c5d2ba72
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,720 @@
+@@ -0,0 +1,687 @@
 +package api
 +
 +import (
@@ -388,14 +388,11 @@ index 00000000..c5d2ba72
 +}
 +
 +type upstreamAccountView struct {
-+	ID                  string `json:"id"`
-+	MaskedEmail         string `json:"masked_email"`
-+	Plan                string `json:"plan"`
-+	Status              string `json:"status"`
-+	CliproxyStatus      string `json:"cliproxy_status"`
-+	GatewayManualStatus string `json:"gateway_manual_status"`
-+	GatewayQuotaStatus  string `json:"gateway_quota_status"`
-+	LastSyncedAt        string `json:"last_synced_at"`
++	ID           string `json:"id"`
++	MaskedEmail  string `json:"masked_email"`
++	Plan         string `json:"plan"`
++	Status       string `json:"status"`
++	LastSyncedAt string `json:"last_synced_at"`
 +}
 +
 +type quotaRPCRequest struct {
@@ -516,16 +513,12 @@ index 00000000..c5d2ba72
 +			continue
 +		}
 +		accountTimes[id] = syncedAt
-+		cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, finalStatus := upstreamAccountStatuses(s.handlers.AuthManager, candidate)
 +		accountsByID[id] = upstreamAccountView{
-+			ID:                  id,
-+			MaskedEmail:         maskUpstreamEmail(authEmail(candidate)),
-+			Plan:                accountPlanView(candidate.Attributes["plan_type"]),
-+			Status:              finalStatus,
-+			CliproxyStatus:      cliproxyStatus,
-+			GatewayManualStatus: gatewayManualStatus,
-+			GatewayQuotaStatus:  gatewayQuotaStatus,
-+			LastSyncedAt:        formatOptionalTime(syncedAt),
++			ID:           id,
++			MaskedEmail:  maskUpstreamEmail(authEmail(candidate)),
++			Plan:         accountPlanView(candidate.Attributes["plan_type"]),
++			Status:       upstreamAccountStatus(candidate),
++			LastSyncedAt: formatOptionalTime(syncedAt),
 +		}
 +	}
 +	accounts := make([]upstreamAccountView, 0, len(accountsByID))
@@ -797,47 +790,21 @@ index 00000000..c5d2ba72
 +	return true
 +}
 +
-+func upstreamAccountStatuses(manager *auth.Manager, candidate *auth.Auth) (cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, finalStatus string) {
-+	cliproxyStatus = upstreamCliproxyStatus(candidate)
-+	index := stableCodexAccountID(candidate)
-+	gatewayManualStatus, gatewayQuotaStatus = "unknown", "unknown"
-+	if manager != nil && index != "" {
-+		if manual, quota, ok := manager.GatewayAccountStatuses(index); ok {
-+			gatewayManualStatus, gatewayQuotaStatus = manual, quota
-+		}
-+	}
-+	if cliproxyStatus == "error" || gatewayManualStatus == "unknown" || gatewayQuotaStatus == "unknown" {
-+		return cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, "unavailable"
-+	}
-+	finalStatus = "unavailable"
-+	if cliproxyStatus == "active" && gatewayManualStatus == "enabled" && gatewayQuotaStatus == "available" {
-+		finalStatus = "available"
-+	}
-+	return cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, finalStatus
-+}
-+
-+// upstreamAccountStatus remains as a small compatibility helper for callers
-+// that only have an Auth value. New account APIs must use
-+// upstreamAccountStatuses so the two Gateway controls stay visible.
 +func upstreamAccountStatus(candidate *auth.Auth) string {
-+	if candidate == nil || !auth.GatewayAccountAvailable(candidate) {
-+		return "unavailable"
-+	}
-+	return upstreamCliproxyStatus(candidate)
-+}
-+
-+func upstreamCliproxyStatus(candidate *auth.Auth) string {
 +	if candidate == nil {
 +		return "error"
++	}
++	if !auth.GatewayAccountAvailable(candidate) {
++		return "unavailable"
 +	}
 +	if candidate.Disabled || candidate.Status == auth.StatusDisabled {
 +		return "disabled"
 +	}
-+	if candidate.Status == auth.StatusError || candidate.Status == auth.StatusUnknown || candidate.Status == "" {
-+		return "error"
-+	}
 +	if candidate.Unavailable || candidate.Quota.Exceeded || candidate.Status == auth.StatusPending || candidate.Status == auth.StatusRefreshing {
 +		return "unavailable"
++	}
++	if candidate.Status == auth.StatusError || candidate.Status == auth.StatusUnknown || candidate.Status == "" {
++		return "error"
 +	}
 +	if candidate.Status == auth.StatusActive {
 +		return "active"
@@ -1058,7 +1025,7 @@ new file mode 100644
 index 00000000..e00a5fe2
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
-@@ -0,0 +1,634 @@
+@@ -0,0 +1,632 @@
 +package api
 +
 +import (
@@ -1230,9 +1197,7 @@ index 00000000..e00a5fe2
 +		t.Fatalf("accounts = %#v, want one", response.Accounts)
 +	}
 +	account := response.Accounts[0]
-+	if account.ID != registered.EnsureIndex() || account.MaskedEmail != "u***@example.com" || account.Plan != "plus" ||
-+		account.Status != "available" || account.CliproxyStatus != "active" || account.GatewayManualStatus != "enabled" ||
-+		account.GatewayQuotaStatus != "available" {
++	if account.ID != registered.EnsureIndex() || account.MaskedEmail != "u***@example.com" || account.Plan != "plus" || account.Status != "active" {
 +		t.Fatalf("account = %#v", account)
 +	}
 +}
@@ -1698,7 +1663,7 @@ new file mode 100644
 index 00000000..550a42f8
 --- /dev/null
 +++ b/internal/api/codex_gateway_status.go
-@@ -0,0 +1,97 @@
+@@ -0,0 +1,93 @@
 +package api
 +
 +import (
@@ -1738,7 +1703,7 @@ index 00000000..550a42f8
 +		}
 +		return
 +	}
-+	_, err := s.handlers.AuthManager.SetGatewayAccountEnabled(id, enabled)
++	status, err := s.handlers.AuthManager.SetGatewayAccountEnabled(id, enabled)
 +	if err != nil {
 +		switch {
 +		case errors.Is(err, auth.ErrGatewayAccountNotFound):
@@ -1750,11 +1715,7 @@ index 00000000..550a42f8
 +		}
 +		return
 +	}
-+	candidate := findCodexOAuthAccount(s.handlers.AuthManager.List(), id)
-+	cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus, finalStatus := upstreamAccountStatuses(s.handlers.AuthManager, candidate)
-+	c.JSON(http.StatusOK, gin.H{"id": id, "status": finalStatus,
-+		"cliproxy_status": cliproxyStatus, "gateway_manual_status": gatewayManualStatus,
-+		"gateway_quota_status": gatewayQuotaStatus})
++	c.JSON(http.StatusOK, gin.H{"id": id, "status": status})
 +}
 +
 +func validGatewayAccountIndex(id string) bool {
@@ -7745,7 +7706,7 @@ new file mode 100644
 index 00000000..0764d7bb
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_account_state.go
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,405 @@
 +package auth
 +
 +import (
@@ -7793,30 +7754,6 @@ index 00000000..0764d7bb
 +// Transient cooldown remains the responsibility of the ordinary availability code.
 +func GatewayAccountAvailable(auth *Auth) bool {
 +	return auth != nil && !auth.GatewayAccountBlocked && !auth.Disabled && auth.Status != StatusDisabled
-+}
-+
-+// GatewayAccountStatuses exposes the two durable Gateway controls without
-+// exposing the state document or allowing callers to infer them from the
-+// merged routing result. Missing state means both controls are healthy.
-+func (m *Manager) GatewayAccountStatuses(index string) (manual, quota string, ok bool) {
-+	if m == nil || len(index) != 16 || !isLowerHexString(index) {
-+		return "unknown", "unknown", false
-+	}
-+	m.mu.RLock()
-+	defer m.mu.RUnlock()
-+	state, exists := m.gatewayAccountStates[index]
-+	if !exists {
-+		return "enabled", "available", true
-+	}
-+	manual = "enabled"
-+	if state.ManualDisabled {
-+		manual = "manual_disabled"
-+	}
-+	quota = "available"
-+	if state.QuotaExhausted {
-+		quota = "quota_exhausted"
-+	}
-+	return manual, quota, true
 +}
 +
 +// LoadGatewayAccountState must complete before credentials are loaded or served.
@@ -8090,15 +8027,6 @@ index 00000000..0764d7bb
 +		m.gatewayAccountStates = make(map[string]gatewayAccountState)
 +	}
 +	m.gatewayAccountStates[index] = state
-+	// A quota lock is a Gateway control state. Clear the transient sidecar
-+	// cooldown markers so the account view does not report that lock as a
-+	// CLIProxyAPI outage.
-+	auth.Unavailable = false
-+	auth.NextRetryAfter = time.Time{}
-+	auth.Quota = QuotaState{}
-+	if auth.Status == StatusPending || auth.Status == StatusRefreshing {
-+		auth.Status = StatusActive
-+	}
 +	if err := m.persistGatewayAccountStatesLocked(); err != nil {
 +		logEntryWithRequestID(nil).Error("gateway account quota state persistence failed")
 +	}

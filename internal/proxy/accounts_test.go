@@ -78,51 +78,6 @@ func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 	}
 }
 
-func TestInternalAccountAPIValidatesSplitStatusCombinations(t *testing.T) {
-	for _, test := range []struct {
-		name, cliproxy, manual, quota, final string
-	}{
-		{"all available", "active", "enabled", "available", "available"},
-		{"sidecar unavailable", "unavailable", "enabled", "available", "unavailable"},
-		{"manual disabled", "active", "manual_disabled", "available", "unavailable"},
-		{"quota exhausted", "active", "enabled", "quota_exhausted", "unavailable"},
-		{"both gateway controls", "active", "manual_disabled", "quota_exhausted", "unavailable"},
-		{"credential disabled", "disabled", "enabled", "available", "unavailable"},
-		{"sidecar error", "error", "enabled", "available", "unavailable"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = fmt.Fprintf(w, `{"accounts":[{"id":"0123456789abcdef","masked_email":"u***@example.com","plan":"plus","status":"%s","cliproxy_status":"%s","gateway_manual_status":"%s","gateway_quota_status":"%s","last_synced_at":"2026-08-24T12:00:00Z"}]}`, test.final, test.cliproxy, test.manual, test.quota)
-			}))
-			defer server.Close()
-			base, _ := url.Parse(server.URL)
-			accounts, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
-			if err != nil || len(accounts) != 1 {
-				t.Fatalf("accounts=%+v err=%v", accounts, err)
-			}
-			got := accounts[0]
-			if got.Status != test.final || got.CliproxyStatus != test.cliproxy || got.GatewayManualStatus != test.manual || got.GatewayQuotaStatus != test.quota {
-				t.Fatalf("account=%+v", got)
-			}
-		})
-	}
-}
-
-func TestInternalAccountAPIRejectsInconsistentSplitStatus(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"accounts":[{"id":"0123456789abcdef","masked_email":"u***@example.com","plan":"plus","status":"available","cliproxy_status":"unavailable","gateway_manual_status":"enabled","gateway_quota_status":"available","last_synced_at":"2026-08-24T12:00:00Z"}]}`)
-	}))
-	defer server.Close()
-	base, _ := url.Parse(server.URL)
-	_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
-	var internalErr *InternalAPIError
-	if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
-		t.Fatalf("error=%v", err)
-	}
-}
-
 func TestInternalAccountAPIRejectsLeaksAndSchemaDrift(t *testing.T) {
 	tests := []struct {
 		name string

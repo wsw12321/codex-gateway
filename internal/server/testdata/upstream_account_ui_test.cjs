@@ -56,14 +56,8 @@ function deferred() {
 }
 
 function account(id = "account-1", status = "available", can_manage = true) {
-  const manual = status === "unavailable" ? "manual_disabled" : "enabled";
-  return {id, status, can_manage, cliproxy_status: "active", gateway_manual_status: manual, gateway_quota_status: "available",
-    email_masked: `${id}@example.test`, plan: "Plus", allocation_weight: 1,
+  return {id, status, can_manage, email_masked: `${id}@example.test`, plan: "Plus", allocation_weight: 1,
     rolling_cost_usd: "1.00", rolling_cost_share: "0.2", target_share: "0.2"};
-}
-
-function statusResponse(id, status) {
-  return {...account(id, status), id, status};
 }
 
 function dashboard(accounts = [account()], extra = {}) {
@@ -114,24 +108,6 @@ test("available, unavailable, historical, and failed-sync accounts have safe con
   assert.equal(ui.button().disabled, true);
 });
 
-test("split source statuses render independently and final routing is fail-closed", () => {
-  const ui = dashboard([
-    {...account("sidecar-down"), status: "unavailable", cliproxy_status: "unavailable", gateway_manual_status: "enabled", gateway_quota_status: "available"},
-    {...account("manual-off", "unavailable"), cliproxy_status: "active", gateway_manual_status: "manual_disabled"},
-    {...account("quota-locked"), status: "unavailable", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "quota_exhausted"},
-    {id: "old-sidecar", status: "available", can_manage: true},
-  ]);
-  assert.match(ui.cards()[0].querySelector(".upstream-account-cliproxy-status").textContent, /暂不可用/);
-  assert.match(ui.cards()[0].querySelector(".upstream-account-manual-status").textContent, /已启用/);
-  assert.equal(ui.badge(0).dataset.status, "unavailable");
-  assert.equal(ui.button(0).textContent, "禁用");
-  assert.equal(ui.button(0).disabled, false);
-  assert.equal(ui.button(1).textContent, "重新启用");
-  assert.equal(ui.button(2).textContent, "重新启用");
-  assert.equal(ui.badge(3).dataset.status, "unknown");
-  assert.equal(ui.button(3).disabled, true);
-});
-
 test("disable and re-enable use confirmed responses and never query quota", async () => {
   const ui = dashboard();
   const calls = [];
@@ -140,7 +116,7 @@ test("disable and re-enable use confirmed responses and never query quota", asyn
     calls.push({url, options});
     if (options?.method === "PUT") {
       status = JSON.parse(options.body).enabled ? "available" : "unavailable";
-      return statusResponse("account-1", status);
+      return {id: "account-1", status};
     }
     return {accounts: [account("account-1", status)]};
   });
@@ -167,7 +143,7 @@ test("pending operations block duplicate submissions and list refreshes", async 
   await ui.change(1);
   await ui.load();
   assert.equal(calls, 1);
-  status.resolve(statusResponse("account-1", "unavailable"));
+  status.resolve({id: "account-1", status: "unavailable"});
   await new Promise(setImmediate);
   assert.equal(ui.badge().dataset.status, "unavailable");
   assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
@@ -181,7 +157,7 @@ test("pending operations block duplicate submissions and list refreshes", async 
 test("refresh failure preserves confirmed status and reports it separately", async () => {
   const ui = dashboard();
   ui.api(async (_, options) => {
-    if (options) return statusResponse("account-1", "unavailable");
+    if (options) return {id: "account-1", status: "unavailable"};
     throw new Error("统计服务暂不可用");
   });
   await ui.change();
@@ -212,7 +188,7 @@ test("mismatched confirmation and vanished account errors fail closed", async ()
 
 test("a failed sidecar synchronization disables controls while retaining action success", async () => {
   const ui = dashboard();
-  ui.api(async (_, options) => options ? statusResponse("account-1", "unavailable") :
+  ui.api(async (_, options) => options ? {id: "account-1", status: "unavailable"} :
     {accounts: [account("account-1", "unavailable")], sync_warning: "upstream_account_sync_unavailable"});
   await ui.change();
   assert.equal(ui.badge().dataset.status, "unavailable");
@@ -227,7 +203,7 @@ test("recent verification completes before the PUT and cancellation sends no PUT
   ui.context.verification = verification.promise;
   ui.run("state.recently_verified = false; reauthenticate = () => verification;");
   let calls = 0;
-  ui.api(async (_, options) => { calls++; return options ? statusResponse("account-1", "unavailable") : {accounts: [account("account-1", "unavailable")]}; });
+  ui.api(async (_, options) => { calls++; return options ? {id: "account-1", status: "unavailable"} : {accounts: [account("account-1", "unavailable")]}; });
   const pending = ui.change();
   assert.equal(calls, 0);
   verification.resolve();
@@ -258,7 +234,7 @@ test("an older list response cannot overwrite an in-flight status operation", as
   await oldRequest;
   assert.equal(ui.cards()[0].dataset.accountId, "account-1");
   assert.equal(ui.button().textContent, "禁用中…");
-  status.resolve(statusResponse("account-1", "unavailable"));
+  status.resolve({id: "account-1", status: "unavailable"});
   await pending;
   assert.equal(ui.badge().dataset.status, "unavailable");
 });
@@ -270,7 +246,7 @@ test("a status result from an invalidated session cannot change the dashboard", 
   ui.api(async () => { calls++; return status.promise; });
   const pending = ui.change();
   ui.run("upstreamAccountOperation = null; state = null;");
-  status.resolve(statusResponse("account-1", "unavailable"));
+  status.resolve({id: "account-1", status: "unavailable"});
   await pending;
   assert.equal(calls, 1);
   assert.equal(ui.badge().dataset.status, "available");
@@ -445,7 +421,7 @@ test("an invalidated allocation operation cannot alter the dashboard", async () 
 
 test("re-enabling an account with zero weight preserves the draining explanation", async () => {
   const ui = dashboard([{...account("account-1", "unavailable"), allocation_weight: 0}]);
-  ui.api(async (_, options) => options ? statusResponse("account-1", "available") :
+  ui.api(async (_, options) => options ? {id: "account-1", status: "available"} :
     {accounts: [{...account(), allocation_weight: 0}]});
   await ui.change();
   assert.match(ui.node("upstream-account-action-message").textContent, /系数仍为 0，停止接收新对话/);

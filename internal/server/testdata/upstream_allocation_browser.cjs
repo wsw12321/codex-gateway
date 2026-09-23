@@ -14,13 +14,13 @@ const app = source.slice(0, source.lastIndexOf("\nstart().catch("));
 const initialState = {user: {id: "owner", username: "owner", display_name: "团队管理员", role: "owner", status: "active"},
   recently_verified: true, login_methods: {password: true}, devices: [], projects: [], api_keys: [], passkeys: []};
 const accounts = [
-  {id: "account-alpha", email_masked: "al***@example.test", plan: "Plus", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true,
+  {id: "account-alpha", email_masked: "al***@example.test", plan: "Plus", status: "available", can_manage: true,
     allocation_weight: 5, rolling_cost_usd: "12.345678", rolling_cost_share: "0.25", target_share: "0.2",
     request_count: 128, input_tokens: 384000, cached_input_tokens: 102000, output_tokens: 18200, error_count: 2, equivalent_cost_usd: "145.6728"},
-  {id: "account-beta", email_masked: "be***@example.test", plan: "Pro", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true,
+  {id: "account-beta", email_masked: "be***@example.test", plan: "Pro", status: "available", can_manage: true,
     allocation_weight: 20, rolling_cost_usd: "37.037034", rolling_cost_share: "0.75", target_share: "0.8",
     request_count: 410, input_tokens: 892000, cached_input_tokens: 452000, output_tokens: 78300, error_count: 0, equivalent_cost_usd: "481.2941"},
-  {id: "account-gamma", email_masked: "ga***@example.test", plan: "Plus", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true,
+  {id: "account-gamma", email_masked: "ga***@example.test", plan: "Plus", status: "available", can_manage: true,
     allocation_weight: 0, rolling_cost_usd: "0", rolling_cost_share: "0", target_share: "0",
     request_count: 12, input_tokens: 47000, output_tokens: 1300, error_count: 0, equivalent_cost_usd: "3.4629"},
 ].map((account) => ({last_synced_at: "2026-09-20T08:00:00Z", ...account}));
@@ -58,11 +58,7 @@ async function main() {
         writes.push({path: url.pathname, body});
         events.push("write");
         if (failSave) return send({error: {message: "模拟配置保存失败"}}, 503);
-        if (match[2] === "status") {
-          account.status = body.enabled ? "available" : "unavailable";
-          account.gateway_manual_status = body.enabled ? "enabled" : "manual_disabled";
-          return send({...account, id: account.id, status: account.status});
-        }
+        if (match[2] === "status") { account.status = body.enabled ? "available" : "unavailable"; return send({id: account.id, status: account.status}); }
         account.allocation_weight = body.weight;
         return send({id: account.id, allocation_weight: account.allocation_weight});
       }

@@ -94,33 +94,24 @@ var internalErrorCodes = map[int]map[string]string{
 }
 
 type UpstreamAccount struct {
-	ID                   string    `json:"id"`
-	MaskedEmail          string    `json:"masked_email"`
-	Plan                 string    `json:"plan"`
-	Status               string    `json:"status"`
-	CliproxyStatus       string    `json:"cliproxy_status,omitempty"`
-	GatewayManualStatus  string    `json:"gateway_manual_status,omitempty"`
-	GatewayQuotaStatus   string    `json:"gateway_quota_status,omitempty"`
-	LastSyncedAt         time.Time `json:"last_synced_at"`
+	ID           string    `json:"id"`
+	MaskedEmail  string    `json:"masked_email"`
+	Plan         string    `json:"plan"`
+	Status       string    `json:"status"`
+	LastSyncedAt time.Time `json:"last_synced_at"`
 }
 
 type UpstreamAccountStatus struct {
-	ID                  string `json:"id"`
-	Status              string `json:"status"`
-	CliproxyStatus      string `json:"cliproxy_status,omitempty"`
-	GatewayManualStatus string `json:"gateway_manual_status,omitempty"`
-	GatewayQuotaStatus  string `json:"gateway_quota_status,omitempty"`
+	ID     string `json:"id"`
+	Status string `json:"status"`
 }
 
 type upstreamAccountWire struct {
-	ID                  *string    `json:"id"`
-	MaskedEmail         *string    `json:"masked_email"`
-	Plan                *string    `json:"plan"`
-	Status              *string    `json:"status"`
-	CliproxyStatus      *string    `json:"cliproxy_status"`
-	GatewayManualStatus *string    `json:"gateway_manual_status"`
-	GatewayQuotaStatus  *string    `json:"gateway_quota_status"`
-	LastSyncedAt        *time.Time `json:"last_synced_at"`
+	ID           *string    `json:"id"`
+	MaskedEmail  *string    `json:"masked_email"`
+	Plan         *string    `json:"plan"`
+	Status       *string    `json:"status"`
+	LastSyncedAt *time.Time `json:"last_synced_at"`
 }
 
 type RateLimitWindow struct {
@@ -214,23 +205,6 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 			ID: *wire.ID, MaskedEmail: *wire.MaskedEmail, Plan: *wire.Plan,
 			Status: *wire.Status, LastSyncedAt: *wire.LastSyncedAt,
 		}
-		sourceFields := []*string{wire.CliproxyStatus, wire.GatewayManualStatus, wire.GatewayQuotaStatus}
-		knownSources := sourceFields[0] != nil && sourceFields[1] != nil && sourceFields[2] != nil
-		if !knownSources && (sourceFields[0] != nil || sourceFields[1] != nil || sourceFields[2] != nil) {
-			return nil, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-		}
-		if knownSources {
-			account.CliproxyStatus = *wire.CliproxyStatus
-			account.GatewayManualStatus = *wire.GatewayManualStatus
-			account.GatewayQuotaStatus = *wire.GatewayQuotaStatus
-			if !validCliproxyStatus(account.CliproxyStatus) ||
-				!validGatewayManualStatus(account.GatewayManualStatus) ||
-				!validGatewayQuotaStatus(account.GatewayQuotaStatus) ||
-				!validFinalAccountStatus(account.Status) ||
-				account.Status != finalAccountStatus(account.CliproxyStatus, account.GatewayManualStatus, account.GatewayQuotaStatus) {
-				return nil, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-			}
-		}
 		if !upstreamAccountPattern.MatchString(account.ID) ||
 			!safeMaskedEmail(account.MaskedEmail) ||
 			!validUpstreamPlan(account.Plan) ||
@@ -258,28 +232,13 @@ func (c *Client) SetUpstreamAccountStatus(ctx context.Context, accountID string,
 		return UpstreamAccountStatus{}, err
 	}
 	var result UpstreamAccountStatus
-	if json.Unmarshal(wire["id"], &result.ID) != nil ||
-		json.Unmarshal(wire["status"], &result.Status) != nil || result.ID != accountID {
-		return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+	wantStatus := "unavailable"
+	if enabled {
+		wantStatus = "available"
 	}
-	if len(wire) == 5 {
-		if json.Unmarshal(wire["cliproxy_status"], &result.CliproxyStatus) != nil ||
-			json.Unmarshal(wire["gateway_manual_status"], &result.GatewayManualStatus) != nil ||
-			json.Unmarshal(wire["gateway_quota_status"], &result.GatewayQuotaStatus) != nil ||
-			!validCliproxyStatus(result.CliproxyStatus) || !validGatewayManualStatus(result.GatewayManualStatus) ||
-			!validGatewayQuotaStatus(result.GatewayQuotaStatus) || result.Status != finalAccountStatus(result.CliproxyStatus, result.GatewayManualStatus, result.GatewayQuotaStatus) {
-			return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-		}
-	} else if len(wire) != 2 {
+	if len(wire) != 2 || json.Unmarshal(wire["id"], &result.ID) != nil ||
+		json.Unmarshal(wire["status"], &result.Status) != nil || result.ID != accountID || result.Status != wantStatus {
 		return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-	} else {
-		wantStatus := "unavailable"
-		if enabled {
-			wantStatus = "available"
-		}
-		if result.Status != wantStatus {
-			return UpstreamAccountStatus{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-		}
 	}
 	return result, nil
 }
@@ -439,39 +398,11 @@ func safeMaskedEmail(value string) bool {
 
 func validAccountStatus(value string) bool {
 	switch value {
-	case "active", "available", "unavailable", "disabled", "error":
-		return true
-	default:
-		return false
-	}
-}
-
-func validCliproxyStatus(value string) bool {
-	switch value {
 	case "active", "unavailable", "disabled", "error":
 		return true
 	default:
 		return false
 	}
-}
-
-func validGatewayManualStatus(value string) bool {
-	return value == "enabled" || value == "manual_disabled"
-}
-
-func validGatewayQuotaStatus(value string) bool {
-	return value == "available" || value == "quota_exhausted"
-}
-
-func validFinalAccountStatus(value string) bool {
-	return value == "available" || value == "unavailable"
-}
-
-func finalAccountStatus(cliproxyStatus, gatewayManualStatus, gatewayQuotaStatus string) string {
-	if cliproxyStatus == "active" && gatewayManualStatus == "enabled" && gatewayQuotaStatus == "available" {
-		return "available"
-	}
-	return "unavailable"
 }
 
 func validUpstreamPlan(value string) bool {

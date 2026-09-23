@@ -190,7 +190,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.3.12` 的 peeled commit 正是
 `2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`，不匹配就会失败。兼容层镜像标签为
-`v7.3.12-2eb8dd11-40cc02a0f66b5d28-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.3.12-2eb8dd11-64ac7f9db31f94df-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -632,8 +632,7 @@ Owner 可在“上游账号”页面禁用可用账号，或对不可用账号�
 sidecar 消失时接口返回固定的不存在错误。
 
 管理接口为 `PUT /admin/upstream-accounts/{id}/status`，请求只能包含布尔字段
-`enabled`，成功返回稳定账号 ID、`cliproxy_status`、`gateway_manual_status`、
-`gateway_quota_status` 和由三者计算的 `status`（`available` 仅在三者均正常时出现）。
+`enabled`，成功返回 `{"id":"稳定账号ID","status":"available或unavailable"}`。
 启用／禁用审计记录执行人、稳定账号 ID、结果和 `metadata.result_code`，事件为
 `upstream_account.enabled`／`upstream_account.disabled`。内部接口只允许 Bearer
 认证，不向外公开。

@@ -616,30 +616,6 @@ nav a.active {
   background: rgb(255 209 102 / 7%);
 }
 
-.upstream-account-manual-status[data-status="enabled"],
-.upstream-account-quota-status[data-status="available"] {
-  border-color: rgb(114 230 173 / 35%);
-  color: #aef0cd;
-  background: rgb(114 230 173 / 7%);
-}
-
-.upstream-account-cliproxy-status[data-status="error"],
-.upstream-account-manual-status[data-status="manual_disabled"],
-.upstream-account-quota-status[data-status="quota_exhausted"] {
-  border-color: rgb(255 143 145 / 35%);
-  color: #ffc0c2;
-  background: rgb(255 143 145 / 7%);
-}
-
-.upstream-account-status[data-status="unknown"],
-.upstream-account-cliproxy-status[data-status="unknown"],
-.upstream-account-manual-status[data-status="unknown"],
-.upstream-account-quota-status[data-status="unknown"] {
-  border-color: rgb(255 209 102 / 35%);
-  color: #ffe09a;
-  background: rgb(255 209 102 / 7%);
-}
-
 .summary-list {
   display: grid;
   gap: .15rem;
