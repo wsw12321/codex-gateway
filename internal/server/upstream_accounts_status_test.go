@@ -281,10 +281,12 @@ func TestUpstreamStatusSerializesConcurrentOperations(t *testing.T) {
 		}
 		body, _ := io.ReadAll(r.Body)
 		status := "unavailable"
+		manualStatus := "manual_disabled"
 		if string(body) == `{"enabled":true}` {
 			status = "available"
+			manualStatus = "enabled"
 		}
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"` + status + `"}`))}, nil
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"` + status + `","cliproxy_status":"active","gateway_manual_status":"` + manualStatus + `","gateway_quota_status":"available"}`))}, nil
 	})})}
 	firstDone, secondDone := make(chan struct{}), make(chan struct{})
 	firstResponse, secondResponse := httptest.NewRecorder(), httptest.NewRecorder()
