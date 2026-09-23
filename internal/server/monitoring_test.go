@@ -45,6 +45,9 @@ func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.
 		activeAttributions: map[string]activeRequestAttribution{
 			active.RequestID: {AccountID: "0123456789abcdef", UpdatedAt: sampledAt},
 		},
+		activeConversations: map[string]activeRequestConversation{
+			active.RequestID: {Hash: "conv-0123456789abcdef0123456789abcdef", UpdatedAt: sampledAt},
+		},
 	}
 	response := httptest.NewRecorder()
 	server.monitoringJSON(response, httptest.NewRequest(http.MethodGet, "/admin/monitoring", nil))
@@ -63,6 +66,9 @@ func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.
 	for _, row := range []monitoringRequestDTO{document.InProgress[0], document.Recent[0]} {
 		if row.UpstreamAccountID == nil || *row.UpstreamAccountID != "0123456789abcdef" {
 			t.Fatalf("active attribution missing: %#v", row)
+		}
+		if row.ConversationHash == nil || *row.ConversationHash != "conv-0123456789abcdef0123456789abcdef" {
+			t.Fatalf("active conversation missing: %#v", row)
 		}
 	}
 	if document.Failures[0].UpstreamAccountID != nil {
@@ -92,5 +98,26 @@ func TestActiveAttributionLifecycleRejectsInvalidValuesAndPrunesExpiredEntries(t
 	server.clearActiveAttribution("request-a")
 	if got := server.activeAttributionSnapshot(time.Now()); len(got) != 0 {
 		t.Fatalf("cleared attribution was retained: %#v", got)
+	}
+}
+
+func TestActiveConversationLifecycleRejectsInvalidValuesAndPrunesExpiredEntries(t *testing.T) {
+	server := &Server{activeConversations: make(map[string]activeRequestConversation)}
+	server.rememberActiveConversation("request-a", "conv-0123456789abcdef0123456789abcdef")
+	server.rememberActiveConversation("request-b", "conv-not-valid")
+	if got := server.activeConversationSnapshot(time.Now()); len(got) != 1 || got["request-a"] == "" {
+		t.Fatalf("active conversations=%v", got)
+	}
+	server.activeConversationsMu.Lock()
+	server.activeConversations["expired"] = activeRequestConversation{
+		Hash: "conv-abcdefabcdefabcdefabcdefabcdefab", UpdatedAt: time.Now().Add(-activeConversationTTL - time.Second),
+	}
+	server.activeConversationsMu.Unlock()
+	if got := server.activeConversationSnapshot(time.Now()); len(got) != 1 {
+		t.Fatalf("active conversations after prune=%v", got)
+	}
+	server.clearActiveConversation("request-a")
+	if got := server.activeConversationSnapshot(time.Now()); len(got) != 0 {
+		t.Fatalf("active conversations after clear=%v", got)
 	}
 }

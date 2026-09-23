@@ -14,6 +14,7 @@ import (
 // observation when forwarding completes; the TTL is only a safety net for a
 // process crash, a cancelled handler, or a caller that forgets to clean up.
 const activeAttributionTTL = 15 * time.Minute
+const activeConversationTTL = 15 * time.Minute
 
 type monitoringRepository interface {
 	Monitoring(context.Context) (store.MonitoringSnapshot, error)
@@ -32,6 +33,67 @@ func (s *Server) monitoringStorage() monitoringRepository {
 type activeRequestAttribution struct {
 	AccountID string
 	UpdatedAt time.Time
+}
+
+type activeRequestConversation struct {
+	Hash      string
+	UpdatedAt time.Time
+}
+
+func (s *Server) rememberActiveConversation(requestID, conversationHash string) {
+	requestID = strings.TrimSpace(requestID)
+	conversationHash = strings.TrimSpace(conversationHash)
+	if s == nil || requestID == "" || !store.ValidConversationHash(conversationHash) {
+		return
+	}
+	now := time.Now().UTC()
+	s.activeConversationsMu.Lock()
+	defer s.activeConversationsMu.Unlock()
+	if s.activeConversations == nil {
+		s.activeConversations = make(map[string]activeRequestConversation)
+	}
+	s.pruneActiveConversationsLocked(now)
+	s.activeConversations[requestID] = activeRequestConversation{Hash: conversationHash, UpdatedAt: now}
+}
+
+func (s *Server) clearActiveConversation(requestID string) {
+	if s == nil || requestID == "" {
+		return
+	}
+	s.activeConversationsMu.Lock()
+	delete(s.activeConversations, requestID)
+	s.activeConversationsMu.Unlock()
+}
+
+func (s *Server) pruneActiveConversationsLocked(now time.Time) {
+	if len(s.activeConversations) == 0 {
+		return
+	}
+	cutoff := now.Add(-activeConversationTTL)
+	for requestID, conversation := range s.activeConversations {
+		if conversation.UpdatedAt.Before(cutoff) || !store.ValidConversationHash(conversation.Hash) {
+			delete(s.activeConversations, requestID)
+		}
+	}
+}
+
+func (s *Server) activeConversationSnapshot(now time.Time) map[string]string {
+	result := make(map[string]string)
+	if s == nil {
+		return result
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	} else {
+		now = now.UTC()
+	}
+	s.activeConversationsMu.Lock()
+	s.pruneActiveConversationsLocked(now)
+	for requestID, conversation := range s.activeConversations {
+		result[requestID] = conversation.Hash
+	}
+	s.activeConversationsMu.Unlock()
+	return result
 }
 
 // rememberActiveAttribution records the account reported by an upstream
@@ -113,6 +175,7 @@ func (s *Server) activeAttributionSnapshot(now time.Time) map[string]string {
 
 type monitoringRequestDTO struct {
 	RequestID           string     `json:"request_id"`
+	ConversationHash    *string    `json:"conversation_hash,omitempty"`
 	RequestedAt         time.Time  `json:"requested_at"`
 	CompletedAt         *time.Time `json:"completed_at"`
 	UserID              string     `json:"user_id"`
@@ -136,7 +199,7 @@ type monitoringResponse struct {
 
 func monitoringRequestDTOFromStore(row store.MonitoringRequest) monitoringRequestDTO {
 	return monitoringRequestDTO{
-		RequestID: row.RequestID, RequestedAt: row.RequestedAt, CompletedAt: row.CompletedAt,
+		RequestID: row.RequestID, ConversationHash: row.ConversationHash, RequestedAt: row.RequestedAt, CompletedAt: row.CompletedAt,
 		UserID: row.UserID, Username: row.Username, DisplayName: row.DisplayName,
 		RequestedModel: row.RequestedModel, Model: row.Model, State: row.State, HTTPStatus: row.HTTPStatus,
 		ErrorCode: row.ErrorCode, UpstreamAccountID: row.UpstreamAccountID,
@@ -172,6 +235,21 @@ func overlayActiveAttribution(rows []store.MonitoringRequest, active map[string]
 	}
 }
 
+func overlayActiveConversation(rows []store.MonitoringRequest, active map[string]string) {
+	for index := range rows {
+		row := &rows[index]
+		if row.State != "in_progress" {
+			continue
+		}
+		conversationHash := active[row.RequestID]
+		if !store.ValidConversationHash(conversationHash) {
+			continue
+		}
+		value := conversationHash
+		row.ConversationHash = &value
+	}
+}
+
 func (s *Server) monitoringJSON(w http.ResponseWriter, r *http.Request) {
 	repository := s.monitoringStorage()
 	if repository == nil {
@@ -184,8 +262,11 @@ func (s *Server) monitoringJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	active := s.activeAttributionSnapshot(snapshot.SampledAt)
+	conversations := s.activeConversationSnapshot(snapshot.SampledAt)
 	overlayActiveAttribution(snapshot.InProgress, active)
 	overlayActiveAttribution(snapshot.Recent, active)
+	overlayActiveConversation(snapshot.InProgress, conversations)
+	overlayActiveConversation(snapshot.Recent, conversations)
 	writeJSON(w, http.StatusOK, monitoringResponse{
 		SampledAt:  snapshot.SampledAt,
 		InProgress: monitoringDTOs(snapshot.InProgress),

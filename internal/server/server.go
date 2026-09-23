@@ -36,12 +36,14 @@ type Server struct {
 	// durable usage row is updated only after completion; keeping this separate
 	// allows the owner monitor to show the account immediately without changing
 	// the historical single-account contract.
-	activeAttributionsMu sync.Mutex
-	activeAttributions   map[string]activeRequestAttribution
-	monitoringRepo       monitoringRepository
-	modelAccessRepo      modelAccessRepository
-	groupRepo            groupRepository
-	informationRepo      informationRepository
+	activeAttributionsMu  sync.Mutex
+	activeAttributions    map[string]activeRequestAttribution
+	activeConversationsMu sync.Mutex
+	activeConversations   map[string]activeRequestConversation
+	monitoringRepo        monitoringRepository
+	modelAccessRepo       modelAccessRepository
+	groupRepo             groupRepository
+	informationRepo       informationRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -67,10 +69,11 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
-		monitoringRepo:     repository,
-		modelAccessRepo:    repository,
-		spoolSlots:         make(chan struct{}, maxConcurrentRequestSpools),
-		activeAttributions: make(map[string]activeRequestAttribution),
+		monitoringRepo:      repository,
+		modelAccessRepo:     repository,
+		spoolSlots:          make(chan struct{}, maxConcurrentRequestSpools),
+		activeAttributions:  make(map[string]activeRequestAttribution),
+		activeConversations: make(map[string]activeRequestConversation),
 	}
 	if cfg.AntigravityBridgeURL != nil {
 		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)

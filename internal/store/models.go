@@ -174,6 +174,7 @@ func (APIKeySecret) MarshalJSON() ([]byte, error) {
 type UsageRequest struct {
 	ID                      int64
 	RequestID               string
+	ConversationHash        *string `json:"-"`
 	UserID                  string
 	DeviceID                string
 	APIKeyID                string

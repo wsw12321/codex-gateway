@@ -19,6 +19,7 @@ import (
 // unknown or its metadata has not been synchronized.
 type MonitoringRequest struct {
 	RequestID           string
+	ConversationHash    *string
 	RequestedAt         time.Time
 	CompletedAt         *time.Time
 	UserID              string
@@ -77,6 +78,7 @@ WITH bounds AS (
 			1::smallint AS bucket_order,
 			'in_progress'::text AS bucket,
 			u.request_id::text,
+			u.conversation_hash,
 			u.requested_at,
 			u.completed_at,
 			u.user_id::text,
@@ -105,6 +107,7 @@ WITH bounds AS (
 			2::smallint AS bucket_order,
 			'recent'::text AS bucket,
 			u.request_id::text,
+			u.conversation_hash,
 			u.requested_at,
 			u.completed_at,
 			u.user_id::text,
@@ -134,6 +137,7 @@ WITH bounds AS (
 			3::smallint AS bucket_order,
 			'failures'::text AS bucket,
 			u.request_id::text,
+			u.conversation_hash,
 			u.requested_at,
 			u.completed_at,
 			u.user_id::text,
@@ -169,6 +173,7 @@ WITH bounds AS (
 			0::smallint AS bucket_order,
 			'__sampled__'::text AS bucket,
 			NULL::text AS request_id,
+			NULL::text AS conversation_hash,
 			NULL::timestamptz AS requested_at,
 			NULL::timestamptz AS completed_at,
 			NULL::text AS user_id,
@@ -186,7 +191,7 @@ WITH bounds AS (
 			NULL::bigint AS request_sort_id
 		FROM bounds b
 	)
-	SELECT bucket_order, bucket, request_id, requested_at, completed_at,
+	SELECT bucket_order, bucket, request_id, conversation_hash, requested_at, completed_at,
 	       user_id, username, display_name, requested_model, model, state, http_status,
 	       error_code, upstream_account_id, masked_email, sampled_at, sort_at,
 	       request_sort_id
@@ -213,6 +218,7 @@ FROM (
 			bucketOrder       int16
 			bucket            string
 			requestID         sql.NullString
+			conversationHash  sql.NullString
 			requestedAt       sql.NullTime
 			completedAt       sql.NullTime
 			userID            sql.NullString
@@ -230,7 +236,7 @@ FROM (
 			requestSortID     sql.NullInt64
 		)
 		if err := rows.Scan(
-			&bucketOrder, &bucket, &requestID, &requestedAt, &completedAt,
+			&bucketOrder, &bucket, &requestID, &conversationHash, &requestedAt, &completedAt,
 			&userID, &username, &displayName, &requestedModel, &model, &state, &httpStatus,
 			&errorCode, &upstreamAccountID, &maskedEmail, &sampledAt, &sortAt, &requestSortID,
 		); err != nil {
@@ -249,6 +255,10 @@ FROM (
 			Username: username.String, DisplayName: displayName.String,
 			RequestedModel: nullableString(requestedModel), Model: model.String,
 			State: state.String,
+		}
+		if conversationHash.Valid && strings.TrimSpace(conversationHash.String) != "" {
+			value := conversationHash.String
+			request.ConversationHash = &value
 		}
 		if completedAt.Valid {
 			value := completedAt.Time.UTC()

@@ -637,7 +637,7 @@
 
           <section class="view owner-only hidden" data-section="monitoring" aria-labelledby="monitoring-title">
             <div class="section-head monitoring-head">
-              <div><p class="eyebrow">REQUEST MONITORING</p><h2 id="monitoring-title">请求监控</h2><p>查看正在执行、最近创建以及最近失败的请求。页面可见时每 5 秒自动刷新。</p></div>
+              <div><p class="eyebrow">REQUEST MONITORING</p><h2 id="monitoring-title">请求监控</h2><p>查看最近创建以及最近失败的请求，并按对话标识归组。页面可见时每 5 秒自动刷新。</p></div>
               <div class="monitoring-toolbar"><span id="monitoring-sampled-at" class="muted" role="status" aria-live="polite">尚未采样</span><button id="monitoring-refresh" type="button" class="secondary">立即刷新</button></div>
             </div>
             <p id="monitoring-message" class="form-message hidden" role="status" aria-live="polite"></p>
@@ -645,11 +645,11 @@
             <div class="monitoring-grid">
               <article class="panel monitoring-window" data-monitor-window="recent">
                 <div class="panel-heading"><div><p class="eyebrow">RECENT</p><h3>最近 2 分钟</h3><p>按 requested_at 计算的请求</p></div><span id="monitoring-recent-count" class="badge">—</span></div>
-                <div class="table-wrap" tabindex="0" role="region" aria-label="最近两分钟请求"><table><caption class="sr-only">最近两分钟请求</caption><thead><tr><th>请求时间</th><th>用户</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-recent-rows"><tr><td colspan="5" class="table-message">登录后加载。</td></tr></tbody></table></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近两分钟请求"><table><caption class="sr-only">最近两分钟请求</caption><thead><tr><th>请求时间</th><th>用户</th><th>对话</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-recent-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
               </article>
               <article class="panel monitoring-window" data-monitor-window="failures">
                 <div class="panel-heading"><div><p class="eyebrow">FAILED</p><h3>最近 1 小时失败</h3><p>按 completed_at 计算且 state = failed</p></div><span id="monitoring-failures-count" class="badge">—</span></div>
-                <div class="table-wrap" tabindex="0" role="region" aria-label="最近一小时失败请求"><table><caption class="sr-only">最近一小时失败请求</caption><thead><tr><th>结束时间</th><th>用户</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-failures-rows"><tr><td colspan="5" class="table-message">登录后加载。</td></tr></tbody></table></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近一小时失败请求"><table><caption class="sr-only">最近一小时失败请求</caption><thead><tr><th>结束时间</th><th>用户</th><th>对话</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-failures-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
               </article>
             </div>
           </section>

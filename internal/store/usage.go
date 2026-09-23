@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const usageRequestColumns = `id, request_id, user_id, device_id, api_key_id, key_prefix,
+const usageRequestColumns = `id, request_id, conversation_hash, user_id, device_id, api_key_id, key_prefix,
 	project_id, model, requested_model, requested_service_tier, actual_service_tier,
 	endpoint, state, http_status, error_code, requested_at,
 	first_token_at, completed_at, ttft_ms, duration_ms, input_tokens,
@@ -20,8 +20,9 @@ const usageRequestColumns = `id, request_id, user_id, device_id, api_key_id, key
 
 func scanUsageRequest(row rowScanner) (UsageRequest, error) {
 	var request UsageRequest
+	var conversationHash sql.NullString
 	err := row.Scan(
-		&request.ID, &request.RequestID, &request.UserID, &request.DeviceID,
+		&request.ID, &request.RequestID, &conversationHash, &request.UserID, &request.DeviceID,
 		&request.APIKeyID, &request.KeyPrefix, &request.ProjectID, &request.Model,
 		&request.RequestedModel, &request.RequestedServiceTier, &request.ActualServiceTier,
 		&request.Endpoint, &request.State, &request.HTTPStatus, &request.ErrorCode,
@@ -34,6 +35,10 @@ func scanUsageRequest(row rowScanner) (UsageRequest, error) {
 		&request.PricingRuleVersion, &request.PricingServiceTier,
 		&request.ContextClass, &request.PricingFallbackReason,
 	)
+	if err == nil && conversationHash.Valid {
+		value := conversationHash.String
+		request.ConversationHash = &value
+	}
 	return request, err
 }
 
@@ -115,6 +120,7 @@ func (s *Store) MarkUsageFirstToken(ctx context.Context, requestID string, at ti
 
 type CompleteUsageRequestParams struct {
 	RequestID               string
+	ConversationHash        string
 	State                   string
 	HTTPStatus              int
 	ErrorCode               string
@@ -151,6 +157,9 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		params.CompletedAt = s.now().UTC()
 	}
 	params.ActualModel = strings.TrimSpace(params.ActualModel)
+	if !ValidConversationHash(params.ConversationHash) {
+		params.ConversationHash = ""
+	}
 	params.ActualServiceTier = strings.TrimSpace(params.ActualServiceTier)
 	params.UpstreamAccountID = strings.TrimSpace(params.UpstreamAccountID)
 	normalizedAccountID, accountIDErr := normalizeUpstreamAccountID(params.UpstreamAccountID)
@@ -176,6 +185,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		params.OutputTokens, params.ReasoningTokens, params.RequestBytes, params.ResponseBytes,
 		valueOrNil(params.UpstreamRequestID), params.ActualModel,
 		valueOrNil(params.ActualServiceTier), valueOrNil(params.UpstreamAccountID),
+		valueOrNil(params.ConversationHash),
 	}
 	request, err := scanUsageRequest(s.db.QueryRowContext(ctx, `
 		UPDATE usage_requests
@@ -191,7 +201,8 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 			reasoning_tokens = $12, request_bytes = $13, response_bytes = $14,
 			upstream_request_id = $15, model = COALESCE(NULLIF($16, ''), model),
 			actual_service_tier = $17,
-			upstream_account_id = (SELECT id FROM upstream_accounts WHERE id = $18)
+			upstream_account_id = (SELECT id FROM upstream_accounts WHERE id = $18),
+			conversation_hash = $19
 		WHERE request_id = $1 AND state = 'in_progress'
 		  AND $6 >= requested_at
 		  AND ($5::timestamptz IS NULL OR ($5 >= requested_at AND $5 <= $6))
@@ -222,6 +233,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		  AND first_token_at IS NOT DISTINCT FROM $5::timestamptz
 		  AND ($16::text = '' OR model = $16)
 		  AND actual_service_tier IS NOT DISTINCT FROM $17::text
+		  AND conversation_hash IS NOT DISTINCT FROM $19::text
 		  AND upstream_account_id IS NOT DISTINCT FROM
 		      (SELECT id FROM upstream_accounts WHERE id = $18::text)`, args...,
 	))

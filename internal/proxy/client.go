@@ -27,13 +27,15 @@ const (
 	affinityHeader               = "X-Codex-Gateway-Affinity"
 	gatewayUserHeader            = "X-Codex-Gateway-User"
 	upstreamAccountHeader        = "X-Codex-Upstream-Account"
+	conversationHashHeader       = "X-Codex-Conversation-Hash"
 	maxInternalResponseBodyBytes = 1 << 20
 )
 
 var (
-	affinityScopePattern   = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
-	upstreamAccountPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
-	gatewayUserPattern     = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+	affinityScopePattern    = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	upstreamAccountPattern  = regexp.MustCompile(`^[a-f0-9]{16}$`)
+	conversationHashPattern = regexp.MustCompile(`^conv-[a-f0-9]{32}$`)
+	gatewayUserPattern      = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
 )
 
 var allowedRequestHeaders = map[string]struct{}{
@@ -72,6 +74,7 @@ type Result struct {
 	Model             string
 	ServiceTier       string
 	UpstreamAccountID string
+	ConversationHash  string
 	UpstreamRequestID string
 	Usage             Usage
 	BytesOut          int64
@@ -118,6 +121,10 @@ type ForwardOptions struct {
 	// malformed or ambiguous headers are ignored. Callers must keep the
 	// callback lightweight because it runs on the forwarding goroutine.
 	OnUpstreamAccount func(accountID string)
+	// OnConversation is called after a trusted sidecar response supplies the
+	// canonical opaque conversation hash. The hash is never accepted from the
+	// caller request and is not forwarded back to the caller.
+	OnConversation func(conversationHash string)
 }
 
 func New(baseURL *url.URL, token string) *Client {
@@ -207,9 +214,11 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 		StatusCode:        response.StatusCode,
 		ContentType:       response.Header.Get("Content-Type"),
 		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
+		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
+	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
@@ -429,9 +438,11 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		StatusCode:        response.StatusCode,
 		ContentType:       response.Header.Get("Content-Type"),
 		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
+		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
+	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
@@ -524,6 +535,29 @@ func notifyUpstreamAccount(options ForwardOptions, accountID string) {
 		return
 	}
 	options.OnUpstreamAccount(accountID)
+}
+
+func safeConversationHash(value string) string {
+	value = strings.TrimSpace(value)
+	if !conversationHashPattern.MatchString(value) {
+		return ""
+	}
+	return value
+}
+
+func safeConversationHashHeader(header http.Header) string {
+	values := header.Values(conversationHashHeader)
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return ""
+	}
+	return safeConversationHash(values[0])
+}
+
+func notifyConversation(options ForwardOptions, conversationHash string) {
+	if conversationHash == "" || options.OnConversation == nil {
+		return
+	}
+	options.OnConversation(conversationHash)
 }
 
 func safeContentType(value string) string {

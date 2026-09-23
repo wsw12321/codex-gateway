@@ -221,8 +221,12 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	// remove it on every terminal path; the durable usage row remains the
 	// single-account final/last-attempt contract.
 	defer s.clearActiveAttribution(requestID)
+	defer s.clearActiveConversation(requestID)
 	onUpstreamAccount := func(accountID string) {
 		s.rememberActiveAttribution(requestID, accountID)
+	}
+	onConversation := func(conversationHash string) {
+		s.rememberActiveConversation(requestID, conversationHash)
 	}
 	defer func() {
 		if !forwardingStarted {
@@ -243,12 +247,14 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:            key.UserID,
 			OnUpstreamAccount: onUpstreamAccount,
+			OnConversation:    onConversation,
 		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:            key.UserID,
 			OnUpstreamAccount: onUpstreamAccount,
+			OnConversation:    onConversation,
 		})
 	}
 
@@ -289,7 +295,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 	defer cancel()
 	completion := store.CompleteUsageRequestParams{
-		RequestID: requestID, State: state, HTTPStatus: effectiveStatus,
+		RequestID: requestID, ConversationHash: result.ConversationHash, State: state, HTTPStatus: effectiveStatus,
 		ErrorCode: errorCode, FirstTokenAt: timeOrNilValue(result.FirstTokenAt), CompletedAt: completedAt,
 		InputTokens: result.Usage.InputTokens, CachedInputTokens: result.Usage.CachedTokens,
 		CacheWriteTokens:        result.Usage.CacheWriteTokens,

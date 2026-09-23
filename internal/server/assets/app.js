@@ -3898,6 +3898,11 @@ function monitoringUserLink(request) {
   return link;
 }
 
+function monitoringConversationCell(request) {
+  const hash = monitoringField(request, "conversation_hash", "ConversationHash");
+  return element("span", {className: hash ? "monitoring-conversation" : "monitoring-unattributed", text: hash || "未识别"});
+}
+
 function monitoringUpstreamCell(request, active = false) {
   const id = monitoringField(request, "upstream_account_id", "UpstreamAccountID");
   const masked = monitoringField(request, "upstream_masked_email", "UpstreamMaskedEmail", "email_masked");
@@ -3926,6 +3931,7 @@ function monitoringRow(request, windowName) {
   return element("tr", {dataset: {requestId: monitoringField(request, "request_id", "RequestID") || ""}},
     element("td", {text: formatDateTime(timestamp, "—")}),
     element("td", {}, monitoringUserLink(request)),
+    element("td", {}, monitoringConversationCell(request)),
     element("td", {}, usageModelCell(request, monitoringField(request, "state", "State"))),
     element("td", {}, monitoringUpstreamCell(request, active)),
     monitoringStatusCell(request),
@@ -3942,7 +3948,7 @@ function renderMonitoring(result) {
     const tbody = byId(`monitoring-${name}-rows`);
     if (!tbody) continue;
     tbody.closest("table")?.setAttribute("aria-busy", "false");
-    tbody.replaceChildren(...(rows.length ? rows.map((request) => monitoringRow(request, name)) : [tableMessage(5, "当前窗口没有请求。" )]));
+    tbody.replaceChildren(...(rows.length ? rows.map((request) => monitoringRow(request, name)) : [tableMessage(6, "当前窗口没有请求。" )]));
     byId(`monitoring-${name}-count`).textContent = formatInteger(rows.length);
   }
   const sampled = result?.sampled_at;
@@ -3963,7 +3969,7 @@ function resetMonitoring(message = "登录后加载请求监控。") {
   monitoringSnapshot = null;
   for (const name of ["recent", "failures"]) {
     const rows = byId(`monitoring-${name}-rows`);
-    if (rows) rows.replaceChildren(tableMessage(5, message));
+    if (rows) rows.replaceChildren(tableMessage(6, message));
     const count = byId(`monitoring-${name}-count`);
     if (count) count.textContent = "—";
   }
@@ -3996,7 +4002,7 @@ async function loadMonitoring({manual = false} = {}) {
     message.classList.remove("hidden");
     hide("monitoring-loading");
     for (const name of ["recent", "failures"]) {
-      byId(`monitoring-${name}-rows`)?.replaceChildren(tableMessage(5, friendlyError(error)));
+      byId(`monitoring-${name}-rows`)?.replaceChildren(tableMessage(6, friendlyError(error)));
     }
     if (manual) throw error;
   } finally {
