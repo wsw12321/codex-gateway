@@ -30,7 +30,7 @@ RUN git init \
     && git checkout --detach "${CLIPROXY_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
-COPY deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch /tmp/cliproxy-multi-account.patch
+COPY deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch /tmp/cliproxy-multi-account.patch
 RUN git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check

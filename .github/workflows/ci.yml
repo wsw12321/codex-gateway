@@ -151,9 +151,9 @@ jobs:
           agy_manifest_url=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
           agy_url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz
           agy_sha512=5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897
-          grep -q 'CLIProxyAPI v7.3.12' THIRD_PARTY_NOTICES
-          grep -q '2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6' THIRD_PARTY_NOTICES
-          grep -q '2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6' docker-compose.yml
+          grep -q 'CLIProxyAPI v7.3.15' THIRD_PARTY_NOTICES
+          grep -q '673131f57484517c3a1eae7e36c4cfa7b9bb4efc' THIRD_PARTY_NOTICES
+          grep -q '673131f57484517c3a1eae7e36c4cfa7b9bb4efc' docker-compose.yml
           grep -q 'Google Antigravity CLI' THIRD_PARTY_NOTICES
           grep -Fq "$agy_url" THIRD_PARTY_NOTICES
           grep -Fq "$agy_sha512" THIRD_PARTY_NOTICES

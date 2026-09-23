@@ -5,13 +5,13 @@
 Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyring 卷，详见
 [Antigravity 接入说明](gemini-pro.md)。
 
-仓库固定在 2026-09-23 核对的[最新稳定版本 CLIProxyAPI `v7.3.12`](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.3.12)、commit
-`2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`。版本号和 commit 必须作为一组
+仓库固定在 2026-09-23 核对的[最新稳定版本 CLIProxyAPI `v7.3.15`](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.3.15)、commit
+`673131f57484517c3a1eae7e36c4cfa7b9bb4efc`。版本号和 commit 必须作为一组
 更新，Docker 构建会验证 tag 指向该 commit。仓库同时固定
-`deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch`；本次从 `v7.2.150`
-重基，适配上游会话解析、跨优先级选择、凭证更新序号及共享 WebSocket 执行路径，
-保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限。补丁 SHA256 为
-`53593f9b6bd99d7570da3f6361faddd03ac6bf803996dc7805fb6f964bca6919`。
+`deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
+重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
+上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
+`be3a7f7524f6451ba76ed861dce0e959640aa4d90930758b19366d8a0cc69209`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.12-2eb8dd11-53593f9b6bd99d75-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.15-673131f5-be3a7f7524f6451b-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -36,12 +36,11 @@ Owner 账号状态管理接口仍只管理 Codex。
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
 
-2026-09-23 验证通过：Gateway 单元测试、race、vet，41 项部署脚本回归，
-合成配置下的 Compose 校验，三个应用镜像构建及两种 sidecar 隔离运行测试。
-CLIProxyAPI 构建覆盖 12 个相关包、账号与 watcher 竞态测试及 13 项执行器安全回归；
-容器内二进制报告上述版本和完整 commit。`govulncheck ./cmd/server` 未发现可达或
-已导入包漏洞；固定 Trivy 镜像按 CI 的 `--ignore-unfixed --severity HIGH,CRITICAL`
-条件扫描，系统包与 Go 二进制均为 0。原版补丁可从升级前的 Git revision 恢复。
+每次兼容层升级都必须重新执行 Gateway 单元测试、race、vet、部署脚本回归、
+合成配置下的 Compose 校验，以及 CLIProxyAPI 补丁覆盖的相关包、账号与 watcher
+竞态测试和执行器安全回归；还要确认容器内二进制报告本节锁定的版本与完整 commit。
+生产切换前按下文规程完成固定 Trivy 条件扫描、真实 OAuth 冒烟和回滚演练；原版补丁
+应能从升级前的 Git revision 恢复。
 
 该补丁属于部署安全边界，而不是可选功能：
 

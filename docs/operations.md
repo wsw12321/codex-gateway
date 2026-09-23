@@ -192,9 +192,9 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ```
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
-`latest`。CLIProxyAPI 的构建还会证明 `v7.3.12` 的 peeled commit 正是
-`2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`，不匹配就会失败。兼容层镜像标签为
-`v7.3.12-2eb8dd11-53593f9b6bd99d75-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`latest`。CLIProxyAPI 的构建还会证明 `v7.3.15` 的 peeled commit 正是
+`673131f57484517c3a1eae7e36c4cfa7b9bb4efc`，不匹配就会失败。兼容层镜像标签为
+`v7.3.15-673131f5-be3a7f7524f6451b-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -740,7 +740,7 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 镜像。升级 CLIProxyAPI 前还必须：
 
 1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
-2. 将固定多账号补丁重放到新 commit；对 `v7.3.12` 使用
+2. 将固定多账号补丁重放到新 commit；对 `v7.3.15` 使用
    `git apply --check --ignore-space-change` 校验，再用
    `git apply --ignore-space-change` 应用。审阅完整 diff，并在 CI 运行调用方作用域
    隔离、按费用加权新分配／既有会话粘滞、两账号失败切换、SSE 首字节边界、窄内部接口、Responses
@@ -751,7 +751,7 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 4. 用测试 OAuth 状态完成契约验证，再用至少一个已授权 Plus/Pro 账号进行人工冒烟。
 5. 单实例滚动替换；失败时停止新实例，再回到旧镜像，不能并行回滚。
 
-`v7.3.12` 仓库升级沿用现有 Go 1.26 构建镜像，不更改公共 API、数据库结构或模型
+`v7.3.15` 仓库升级沿用现有 Go 1.26 构建镜像，不更改公共 API、数据库结构或模型
 价格配置。仓库交付覆盖 Compose、两个镜像构建、构建内安全回归及 Gateway 单元
 测试、race 和 vet；生产切换与真实 OAuth 账号的 Astra 模型列表、普通/SSE
 Responses、compact 冒烟仍按上述步骤及

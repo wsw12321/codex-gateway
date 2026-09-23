@@ -38,7 +38,7 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v7.3.12
+  CLIProxyAPI v7.3.15
       │ HTTP(S)_PROXY；无直接互联网路由
       ▼
   Squid 域名白名单出口
@@ -313,9 +313,9 @@ connector token 以精确 `0640` 保存为
 CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v7.3.12` / commit
-`2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`，兼容层镜像标签为
-`v7.3.12-2eb8dd11-53593f9b6bd99d75-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
+锁定；CLIProxyAPI 固定为 `v7.3.15` / commit
+`673131f57484517c3a1eae7e36c4cfa7b9bb4efc`，兼容层镜像标签为
+`v7.3.15-673131f5-be3a7f7524f6451b-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
 按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。

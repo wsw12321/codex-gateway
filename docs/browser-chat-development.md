@@ -1046,8 +1046,8 @@ PDF 文字问答、DOCX 简单表格、停止生成、长回复、额度不足�
 - 当前 Gateway：[路由](../internal/server/server.go)、[API 处理](../internal/server/api.go)、
   [认证](../internal/server/middleware.go)、[请求暂存](../internal/server/model.go)、
   [代理与 SSE](../internal/proxy/client.go)、[部署](../docker-compose.yml)。
-- CLIProxyAPI 锁定版本：[Codex 普通请求](https://github.com/router-for-me/CLIProxyAPI/blob/c77b13694318b0897f2c74104ef48aebdf8c34d6/internal/runtime/executor/codex_executor_execute.go)、
-  [流式请求](https://github.com/router-for-me/CLIProxyAPI/blob/c77b13694318b0897f2c74104ef48aebdf8c34d6/internal/runtime/executor/codex_executor_stream.go)。
+- CLIProxyAPI 锁定版本：[Codex 普通请求](https://github.com/router-for-me/CLIProxyAPI/blob/673131f57484517c3a1eae7e36c4cfa7b9bb4efc/internal/runtime/executor/codex_executor_execute.go)、
+  [流式请求](https://github.com/router-for-me/CLIProxyAPI/blob/673131f57484517c3a1eae7e36c4cfa7b9bb4efc/internal/runtime/executor/codex_executor_stream.go)。
 - OpenAI：[Responses 流式事件](https://developers.openai.com/api/docs/guides/streaming-responses)、
   [图片输入](https://developers.openai.com/api/docs/guides/images-vision)、
   [Responses 与 Chat Completions](https://developers.openai.com/api/docs/guides/migrate-to-responses)。

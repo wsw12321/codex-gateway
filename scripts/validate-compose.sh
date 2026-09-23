@@ -16,12 +16,12 @@ relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.12-multi-account.patch
-compat_patch_sha256=53593f9b6bd99d7570da3f6361faddd03ac6bf803996dc7805fb6f964bca6919
+compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch
+compat_patch_sha256=be3a7f7524f6451ba76ed861dce0e959640aa4d90930758b19366d8a0cc69209
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.3.12-2eb8dd11-53593f9b6bd99d75-codex-only
+compat_image=codex-gateway-compat:v7.3.15-673131f5-be3a7f7524f6451b-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -582,9 +582,9 @@ jq -e \
 ' "$tmp" >/dev/null
 
 jq -e '
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.3.12" and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.3.15" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6" and
+    "673131f57484517c3a1eae7e36c4cfa7b9bb4efc" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \

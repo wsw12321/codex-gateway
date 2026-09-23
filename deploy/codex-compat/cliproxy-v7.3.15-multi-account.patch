@@ -1,5 +1,5 @@
 diff --git a/go.mod b/go.mod
-index 52b26439..f339b158 100644
+index 52b2643928101eb64671e29e215d92313462b01b..f339b158c906d8a5dc76b7bc9d0e97dec377ef24 100644
 --- a/go.mod
 +++ b/go.mod
 @@ -10,12 +10,12 @@ require (
@@ -42,7 +42,7 @@ index 52b26439..f339b158 100644
  	github.com/go-playground/universal-translator v0.18.1 // indirect
  	github.com/go-playground/validator/v10 v10.20.0 // indirect
 diff --git a/go.sum b/go.sum
-index 5b69fa62..00381a1b 100644
+index 5b69fa6240a650b7ca28859ebc8b05609a26d5f6..00381a1b364ec5a95b182e9152d828553b7adae5 100644
 --- a/go.sum
 +++ b/go.sum
 @@ -75,10 +75,14 @@ github.com/go-git/gcfg/v2 v2.0.2 h1:MY5SIIfTGGEMhdA7d7JePuVVxtKL7Hp+ApGDJAJ7dpo=
@@ -91,7 +91,7 @@ index 5b69fa62..00381a1b 100644
  golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
 diff --git a/internal/api/astra_upgrade_smoke_test.go b/internal/api/astra_upgrade_smoke_test.go
 new file mode 100644
-index 00000000..8fbfb6e5
+index 0000000000000000000000000000000000000000..8fbfb6e5df1923762d96d5090e9aaccf11537876
 --- /dev/null
 +++ b/internal/api/astra_upgrade_smoke_test.go
 @@ -0,0 +1,183 @@
@@ -280,7 +280,7 @@ index 00000000..8fbfb6e5
 +}
 diff --git a/internal/api/codex_gateway_concurrency_test.go b/internal/api/codex_gateway_concurrency_test.go
 new file mode 100644
-index 00000000..be65d6df
+index 0000000000000000000000000000000000000000..be65d6df3f143b0e8e40472f95628be307ccd74e
 --- /dev/null
 +++ b/internal/api/codex_gateway_concurrency_test.go
 @@ -0,0 +1,43 @@
@@ -329,7 +329,7 @@ index 00000000..be65d6df
 +}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 00000000..c5d2ba72
+index 0000000000000000000000000000000000000000..1ba091e6656c7afb6f5994fc0f6678efb0c8bba9
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
 @@ -0,0 +1,720 @@
@@ -1055,7 +1055,7 @@ index 00000000..c5d2ba72
 +}
 diff --git a/internal/api/codex_gateway_internal_test.go b/internal/api/codex_gateway_internal_test.go
 new file mode 100644
-index 00000000..e00a5fe2
+index 0000000000000000000000000000000000000000..7d4cbbe71547a950b86450a213181d5917a3cf64
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal_test.go
 @@ -0,0 +1,634 @@
@@ -1695,7 +1695,7 @@ index 00000000..e00a5fe2
 +}
 diff --git a/internal/api/codex_gateway_status.go b/internal/api/codex_gateway_status.go
 new file mode 100644
-index 00000000..550a42f8
+index 0000000000000000000000000000000000000000..1249e91d1a366b150818108cd85aa028c9d66c08
 --- /dev/null
 +++ b/internal/api/codex_gateway_status.go
 @@ -0,0 +1,97 @@
@@ -1798,7 +1798,7 @@ index 00000000..550a42f8
 +}
 diff --git a/internal/api/codex_gateway_status_test.go b/internal/api/codex_gateway_status_test.go
 new file mode 100644
-index 00000000..08220bba
+index 0000000000000000000000000000000000000000..08220bba328fe1de3db3b2d7f5e9c7756984d76a
 --- /dev/null
 +++ b/internal/api/codex_gateway_status_test.go
 @@ -0,0 +1,140 @@
@@ -1943,10 +1943,10 @@ index 00000000..08220bba
 +	}
 +}
 diff --git a/internal/api/server.go b/internal/api/server.go
-index 8108d5bf..24cd0588 100644
+index ec04949c46586a91116a07a40b61dd19ab0720f3..ef77b3641fbce5b109b0853353d2c3c9586ac95d 100644
 --- a/internal/api/server.go
 +++ b/internal/api/server.go
-@@ -137,6 +137,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
+@@ -143,6 +143,13 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
  	engine.Use(logging.GinLogrusLogger())
  	engine.Use(logging.GinLogrusRecovery())
  	engine.Use(logging.CPATraceIDMiddleware())
@@ -1961,7 +1961,7 @@ index 8108d5bf..24cd0588 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index 74d5189f..3959f4b0 100644
+index a605948e0a6f8ffeb7afd5a8cbad6373aaf50da2..f89a3b9b54215112f8b961bb62fb96509a6bd4eb 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
 @@ -117,6 +117,29 @@ func (s *Server) setupRoutes() {
@@ -1995,7 +1995,7 @@ index 74d5189f..3959f4b0 100644
  	v1beta := s.engine.Group("/v1beta")
  	v1beta.Use(AuthMiddleware(s.accessManager))
 diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
-index 2c1eac08..2f851ae2 100644
+index 2c1eac086f491244c2a76627ed20d9f66af0f633..2f851ae212e5823fb78dd53683d6952241c0e10c 100644
 --- a/internal/auth/codex/openai_auth.go
 +++ b/internal/auth/codex/openai_auth.go
 @@ -7,6 +7,7 @@ package codex
@@ -2199,7 +2199,7 @@ index 2c1eac08..2f851ae2 100644
  
  // UpdateTokenStorage updates an existing CodexTokenStorage with new token data.
 diff --git a/internal/auth/codex/openai_auth_test.go b/internal/auth/codex/openai_auth_test.go
-index 55942c7b..0e9ced9a 100644
+index 55942c7bf0a7c5c35385645e339a499c3374e022..0e9ced9ae171658295a02a381939eb909499ec45 100644
 --- a/internal/auth/codex/openai_auth_test.go
 +++ b/internal/auth/codex/openai_auth_test.go
 @@ -26,6 +26,115 @@ func TestNewCodexAuthDoesNotSetRequestTimeout(t *testing.T) {
@@ -2319,7 +2319,7 @@ index 55942c7b..0e9ced9a 100644
  	resetCodexRefreshGroupForTest()
  	defer resetCodexRefreshGroupForTest()
 diff --git a/internal/auth/codex/token.go b/internal/auth/codex/token.go
-index c7ea0fb6..61b855de 100644
+index c7ea0fb6d23ba0acbd76c6f6f23c3dce8647b4f7..61b855deb6f71e852eeeaeb688d520849770945c 100644
 --- a/internal/auth/codex/token.go
 +++ b/internal/auth/codex/token.go
 @@ -44,6 +44,15 @@ func (ts *CodexTokenStorage) SetMetadata(meta map[string]any) {
@@ -2339,7 +2339,7 @@ index c7ea0fb6..61b855de 100644
  // This method creates the necessary directory structure and writes the token
  // data in JSON format to the specified file path for persistent storage.
 diff --git a/internal/logging/cpa_trace.go b/internal/logging/cpa_trace.go
-index bc1d243a..cc38b0f8 100644
+index bc1d243a88ae727308e1ffe6d8f759af01473197..cc38b0f84ccafcb1ad0ccfe39f50b09f2c4a6ea1 100644
 --- a/internal/logging/cpa_trace.go
 +++ b/internal/logging/cpa_trace.go
 @@ -11,6 +11,11 @@ import (
@@ -2481,7 +2481,7 @@ index bc1d243a..cc38b0f8 100644
 +	return true
  }
 diff --git a/internal/logging/cpa_trace_test.go b/internal/logging/cpa_trace_test.go
-index 2202e509..4f137f73 100644
+index 2202e5092e1c87118aa5734e53eec74ccccbb747..4f137f73e3c08b766a50b82d1101f4027e3cafb8 100644
 --- a/internal/logging/cpa_trace_test.go
 +++ b/internal/logging/cpa_trace_test.go
 @@ -35,12 +35,14 @@ func TestFormatCPATraceID(t *testing.T) {
@@ -2650,7 +2650,7 @@ index 2202e509..4f137f73 100644
 +}
 diff --git a/internal/runtime/executor/codex_astra_upgrade_test.go b/internal/runtime/executor/codex_astra_upgrade_test.go
 new file mode 100644
-index 00000000..df4b3fb8
+index 0000000000000000000000000000000000000000..df4b3fb85f532768e9d664b1e8c58a6d4c5b323d
 --- /dev/null
 +++ b/internal/runtime/executor/codex_astra_upgrade_test.go
 @@ -0,0 +1,114 @@
@@ -2769,7 +2769,7 @@ index 00000000..df4b3fb8
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_executor_auth.go b/internal/runtime/executor/codex_executor_auth.go
-index d73e223c..a0d04828 100644
+index 5fa2b5a9a00050cd5c147ead64d711c089848578..4330cbb9e6601c08097a72b0ac61f43c1dba59ed 100644
 --- a/internal/runtime/executor/codex_executor_auth.go
 +++ b/internal/runtime/executor/codex_executor_auth.go
 @@ -44,6 +44,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
@@ -2789,7 +2789,7 @@ index d73e223c..a0d04828 100644
  }
  
 diff --git a/internal/runtime/executor/codex_executor_cache_test.go b/internal/runtime/executor/codex_executor_cache_test.go
-index 8bd5298f..c46be64c 100644
+index 8bd5298f12ce948df91af326cbb9dcd20417d7e2..c46be64c93e490b2076f89fcb3c903906b7612e3 100644
 --- a/internal/runtime/executor/codex_executor_cache_test.go
 +++ b/internal/runtime/executor/codex_executor_cache_test.go
 @@ -257,8 +257,12 @@ func TestApplyCodexHeadersUsesAccountHeaderForOAuth(t *testing.T) {
@@ -2807,7 +2807,7 @@ index 8bd5298f..c46be64c 100644
  	applyCodexHeaders(httpReq, auth, "oauth-token", true, nil)
  
 diff --git a/internal/runtime/executor/codex_executor_execute.go b/internal/runtime/executor/codex_executor_execute.go
-index fa988c10..c4e828a6 100644
+index fa988c10d752d7dc211593cc3e979e6a500080b1..c4e828a67f853bb3cfa92baa20133042ec38ed1f 100644
 --- a/internal/runtime/executor/codex_executor_execute.go
 +++ b/internal/runtime/executor/codex_executor_execute.go
 @@ -83,8 +83,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
@@ -2860,7 +2860,7 @@ index fa988c10..c4e828a6 100644
  	reporter.EnsurePublished(ctx)
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
-index 00000000..2670fa1e
+index 0000000000000000000000000000000000000000..2670fa1e7d72763a5613bac9a5fd27b6f5a02833
 --- /dev/null
 +++ b/internal/runtime/executor/codex_executor_redirect_test.go
 @@ -0,0 +1,360 @@
@@ -3225,10 +3225,10 @@ index 00000000..2670fa1e
 +	})
 +}
 diff --git a/internal/runtime/executor/codex_executor_request.go b/internal/runtime/executor/codex_executor_request.go
-index b67eda88..d003957a 100644
+index 49f6ccbce56328339e2e7d5e16dc907ca8d7fb7b..5fdf22f4242855bacefa854ecf803e297c403dbd 100644
 --- a/internal/runtime/executor/codex_executor_request.go
 +++ b/internal/runtime/executor/codex_executor_request.go
-@@ -64,6 +64,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
+@@ -65,6 +65,7 @@ func (e *CodexExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Aut
  		attrs = auth.Attributes
  	}
  	util.ApplyCustomHeadersFromAttrs(req, attrs)
@@ -3236,7 +3236,7 @@ index b67eda88..d003957a 100644
  	return nil
  }
  
-@@ -79,10 +80,51 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
+@@ -80,10 +81,51 @@ func (e *CodexExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
  	if err := e.PrepareRequest(httpReq, auth); err != nil {
  		return nil, err
  	}
@@ -3289,7 +3289,7 @@ index b67eda88..d003957a 100644
  type codexIdentityConfuseState struct {
  	enabled                bool
  	authID                 string
-@@ -304,6 +346,18 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
+@@ -305,6 +347,18 @@ func applyModelHeaderOverrides(headers http.Header, modelName string) {
  	}
  }
  
@@ -3308,16 +3308,16 @@ index b67eda88..d003957a 100644
  // applyCodexDirectImageHeaders sets Codex upstream headers for direct /images/* calls.
  // Downstream client User-Agent values are not forwarded to reduce Cloudflare 1010 blocks.
  func applyCodexDirectImageHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config, clientHeaders ...http.Header) {
-@@ -367,6 +421,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
+@@ -368,6 +422,7 @@ func applyCodexHeadersFromSources(r *http.Request, auth *cliproxyauth.Auth, toke
  	}
  	util.ApplyCustomHeadersFromAttrs(r, attrs, ginHeaders)
- 	applyCodexCloakingHeaders(r.Header, cfg)
+ 	applyCodexCloakingHeaders(r.Header, cfg, auth)
 +	protectCodexOAuthRequestHeaders(r, auth)
  }
  
- func applyCodexCloakingHeaders(headers http.Header, cfg *config.Config) {
+ func isCodexCloakingDisabled(cfg *config.Config, auth *cliproxyauth.Auth) bool {
 diff --git a/internal/runtime/executor/codex_executor_stream.go b/internal/runtime/executor/codex_executor_stream.go
-index e70e88ea..44d6050e 100644
+index e70e88eae10c3d527a759cd5ca217d9772a02094..44d6050e19b75fec181299e6d7f119df0fa5fcb2 100644
 --- a/internal/runtime/executor/codex_executor_stream.go
 +++ b/internal/runtime/executor/codex_executor_stream.go
 @@ -91,8 +91,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
@@ -3340,7 +3340,7 @@ index e70e88ea..44d6050e 100644
  	httpResp, err := httpClient.Do(httpReq)
  	if err != nil {
 diff --git a/internal/runtime/executor/codex_executor_terminal.go b/internal/runtime/executor/codex_executor_terminal.go
-index b91b2769..66c5c7d8 100644
+index b91b276945e9291c256cdba53b03231eac63caed..66c5c7d8ad4961d9b39c779f0519f1b43e542a65 100644
 --- a/internal/runtime/executor/codex_executor_terminal.go
 +++ b/internal/runtime/executor/codex_executor_terminal.go
 @@ -157,7 +157,11 @@ func codexTerminalStreamErrWithCooling(eventData []byte, modelLevelCooling bool)
@@ -3386,7 +3386,7 @@ index b91b2769..66c5c7d8 100644
  	candidates := []string{
 diff --git a/internal/runtime/executor/codex_gateway_control_test.go b/internal/runtime/executor/codex_gateway_control_test.go
 new file mode 100644
-index 00000000..3142de60
+index 0000000000000000000000000000000000000000..3142de603c7b9f95e219d6206a1206cda97c3d7b
 --- /dev/null
 +++ b/internal/runtime/executor/codex_gateway_control_test.go
 @@ -0,0 +1,261 @@
@@ -3653,7 +3653,7 @@ index 00000000..3142de60
 +}
 diff --git a/internal/runtime/executor/codex_gateway_quota_test.go b/internal/runtime/executor/codex_gateway_quota_test.go
 new file mode 100644
-index 00000000..83c67569
+index 0000000000000000000000000000000000000000..83c6756905f5df85edbc02848b61a927be6be44d
 --- /dev/null
 +++ b/internal/runtime/executor/codex_gateway_quota_test.go
 @@ -0,0 +1,265 @@
@@ -3923,7 +3923,7 @@ index 00000000..83c67569
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_openai_images.go b/internal/runtime/executor/codex_openai_images.go
-index d20b00a9..28bfa00c 100644
+index d20b00a91f2aded5d4284065878e81b27751c84f..28bfa00ceee9ddbc5387f54b44691d4762265596 100644
 --- a/internal/runtime/executor/codex_openai_images.go
 +++ b/internal/runtime/executor/codex_openai_images.go
 @@ -116,11 +116,10 @@ func (e *CodexExecutor) executeOpenAIImage(ctx context.Context, auth *cliproxyau
@@ -3989,7 +3989,7 @@ index d20b00a9..28bfa00c 100644
  	httpResp, errDo := httpClient.Do(httpReq)
  	if errDo != nil {
 diff --git a/internal/runtime/executor/codex_websockets_errors.go b/internal/runtime/executor/codex_websockets_errors.go
-index 16d4aef6..4d3225f7 100644
+index 16d4aef64b911176db84dbfd51b45d40980857ae..4d3225f7f4f488255280a87b848cf4b3a35559ab 100644
 --- a/internal/runtime/executor/codex_websockets_errors.go
 +++ b/internal/runtime/executor/codex_websockets_errors.go
 @@ -47,11 +47,15 @@ func parseCodexWebsocketErrorWithCooling(payload []byte, modelLevelCooling bool)
@@ -4011,7 +4011,7 @@ index 16d4aef6..4d3225f7 100644
  	if retryAfter := parseCodexRetryAfter(status, out, time.Now()); retryAfter != nil {
  		statusError.retryAfter = retryAfter
 diff --git a/internal/runtime/executor/codex_websockets_execute.go b/internal/runtime/executor/codex_websockets_execute.go
-index 94829bd0..b9852989 100644
+index 94829bd089be2ba0be6362b7d103543041bddb9d..b9852989ac4f9582923c9af7ae44030d97fb570a 100644
 --- a/internal/runtime/executor/codex_websockets_execute.go
 +++ b/internal/runtime/executor/codex_websockets_execute.go
 @@ -88,8 +88,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
@@ -4025,19 +4025,19 @@ index 94829bd0..b9852989 100644
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
 diff --git a/internal/runtime/executor/codex_websockets_request.go b/internal/runtime/executor/codex_websockets_request.go
-index 2c75bff6..d54c1060 100644
+index 13c4bfe0f85eb5f68317aa51655458e4693c7eb6..dfaa6626f07823f3f14070ce0aab22f211c110b1 100644
 --- a/internal/runtime/executor/codex_websockets_request.go
 +++ b/internal/runtime/executor/codex_websockets_request.go
 @@ -144,6 +144,7 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
  	req := (&http.Request{Header: headers}).WithContext(ctx)
  	util.ApplyCustomHeadersFromAttrs(req, attrs, ginHeaders)
- 	applyCodexCloakingHeaders(headers, cfg)
+ 	applyCodexCloakingHeaders(headers, cfg, auth)
 +	protectCodexOAuthRequestHeaders(&http.Request{Header: headers}, auth)
  
  	return headers
  }
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
-index e42cfe11..b53e2ec4 100644
+index e42cfe119f9b9d28858ef9cd9fc37e1706eef4b6..b53e2ec48727ea3b56e6fc9e4c103036a8cf8cb1 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
 +++ b/internal/runtime/executor/codex_websockets_stream.go
 @@ -816,8 +816,7 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
@@ -4051,7 +4051,7 @@ index e42cfe11..b53e2ec4 100644
  	return &codexWebsocketPrepared{
  		from:                 from,
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
-index 7dc4a02a..8716cd35 100644
+index 7dc4a02a05cf8fe242d7bcb4fb74c86d2fe45faa..8716cd35604ca149d66ff129b8be65915478f671 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
 +++ b/internal/runtime/executor/openai_compat_executor.go
 @@ -1025,6 +1025,7 @@ type statusErr struct {
@@ -4071,7 +4071,7 @@ index 7dc4a02a..8716cd35 100644
  const openAICompatTPMFallbackRetryAfter = time.Minute
  
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index a1697836..dcde4872 100644
+index a16978360de4d9bb05ace80aa24e78776cc40195..dcde48724e0cd6e627cc6bbe6707946654a23db4 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
 @@ -43,6 +43,12 @@ func HasExplicitSessionID(ctx context.Context) bool {
@@ -4120,7 +4120,7 @@ index a1697836..dcde4872 100644
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
-index c660b01a..52620128 100644
+index c660b01a8b9a06cf9a89530fb81a44ee2b7620ac..526201281f21b82eaf20b1244ec0aba77eacef77 100644
 --- a/internal/watcher/clients.go
 +++ b/internal/watcher/clients.go
 @@ -97,7 +97,7 @@ func (w *Watcher) reloadClients(rescanAuth bool, affectedOAuthProviders []string
@@ -4277,7 +4277,7 @@ index c660b01a..52620128 100644
  		}
  		authFileCount++
 diff --git a/internal/watcher/dispatcher.go b/internal/watcher/dispatcher.go
-index 89b4aae5..a875abe6 100644
+index 89b4aae5d316f722fe786fdb296ac2da0b1be212..a875abe6bb30b17e610a0cd74bd96cc2818a8e01 100644
 --- a/internal/watcher/dispatcher.go
 +++ b/internal/watcher/dispatcher.go
 @@ -113,7 +113,38 @@ func (w *Watcher) dispatchPersistedAuthUpdateWithRevision(update *AuthUpdate) (b
@@ -4388,7 +4388,7 @@ index 89b4aae5..a875abe6 100644
  	if len(updates) == 0 {
  		return
 diff --git a/internal/watcher/events.go b/internal/watcher/events.go
-index 9f64e6e2..02fdc961 100644
+index 9f64e6e2c4b9b359c1c216603c31870f1412e735..02fdc96124962273af90d6a8aca77bcfabf3444c 100644
 --- a/internal/watcher/events.go
 +++ b/internal/watcher/events.go
 @@ -13,6 +13,7 @@ import (
@@ -4411,7 +4411,7 @@ index 9f64e6e2..02fdc961 100644
  	normalizedName := w.normalizeAuthPath(event.Name)
 diff --git a/internal/watcher/gateway_account_state_test.go b/internal/watcher/gateway_account_state_test.go
 new file mode 100644
-index 00000000..7b9f39ae
+index 0000000000000000000000000000000000000000..7b9f39ae72a4aaf3df6c4aacfe6097c095329903
 --- /dev/null
 +++ b/internal/watcher/gateway_account_state_test.go
 @@ -0,0 +1,29 @@
@@ -4446,7 +4446,7 @@ index 00000000..7b9f39ae
 +}
 diff --git a/internal/watcher/gateway_revision_test.go b/internal/watcher/gateway_revision_test.go
 new file mode 100644
-index 00000000..53b398f9
+index 0000000000000000000000000000000000000000..53b398f95526753e05c176ea9da56be73a9deab0
 --- /dev/null
 +++ b/internal/watcher/gateway_revision_test.go
 @@ -0,0 +1,120 @@
@@ -4571,7 +4571,7 @@ index 00000000..53b398f9
 +	}
 +}
 diff --git a/internal/watcher/synthesizer/file.go b/internal/watcher/synthesizer/file.go
-index fcbc2e93..cf6fbe4f 100644
+index fcbc2e93632bee133de492cf7619fc544046e1df..cf6fbe4f0626c91ff0c0f7841d78f34f252591e8 100644
 --- a/internal/watcher/synthesizer/file.go
 +++ b/internal/watcher/synthesizer/file.go
 @@ -45,7 +45,7 @@ func (s *FileSynthesizer) Synthesize(ctx *SynthesisContext) ([]*coreauth.Auth, e
@@ -4624,7 +4624,7 @@ index fcbc2e93..cf6fbe4f 100644
  	if parser == nil {
  		return nil, false, nil
 diff --git a/internal/watcher/synthesizer/file_test.go b/internal/watcher/synthesizer/file_test.go
-index dd6ac9f1..538739c7 100644
+index dd6ac9f136b3a424c85d0c6471776a87c992ba87..538739c7ff69f5a450b1189749d03fed8dcdaca0 100644
 --- a/internal/watcher/synthesizer/file_test.go
 +++ b/internal/watcher/synthesizer/file_test.go
 @@ -5,6 +5,7 @@ import (
@@ -4704,7 +4704,7 @@ index dd6ac9f1..538739c7 100644
  func (f multiAuthParserFunc) ParseAuth(context.Context, pluginapi.AuthParseRequest) (*coreauth.Auth, bool, error) {
 diff --git a/internal/watcher/synthesizer/gateway_account_state_test.go b/internal/watcher/synthesizer/gateway_account_state_test.go
 new file mode 100644
-index 00000000..7eff1f76
+index 0000000000000000000000000000000000000000..7eff1f76bdf17b4f2d63b8310cc5c2454dba6c1f
 --- /dev/null
 +++ b/internal/watcher/synthesizer/gateway_account_state_test.go
 @@ -0,0 +1,29 @@
@@ -4738,7 +4738,7 @@ index 00000000..7eff1f76
 +	}
 +}
 diff --git a/internal/watcher/watcher_test.go b/internal/watcher/watcher_test.go
-index 1ef2ba87..b816756c 100644
+index 1ef2ba87f9d5254dabcc76dd8cab350822491817..b816756c67e452b8f073dc5c575fc7e14924640c 100644
 --- a/internal/watcher/watcher_test.go
 +++ b/internal/watcher/watcher_test.go
 @@ -466,6 +466,45 @@ func TestAuthFileEventsDoNotInvokeSnapshotCoreAuths(t *testing.T) {
@@ -4824,7 +4824,7 @@ index 1ef2ba87..b816756c 100644
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index dcf1a48c..d6524c29 100644
+index b912697bc8ee7d651a09f6ac164919f2310da08d..c45a7558fadfb0207142fcec3e5083f153b33ded 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
 @@ -5,6 +5,7 @@ package handlers
@@ -4940,10 +4940,10 @@ index dcf1a48c..d6524c29 100644
  	if meta == nil {
  		return
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index 5ab3b6b2..3f16d272 100644
+index 24453b98724bfebd305b7d22f5e78165d9949cfe..3f6cb1df6a2f079b4d602239d9d44017ac07321e 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
-@@ -69,6 +69,74 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
+@@ -92,6 +92,74 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
  	}
  }
  
@@ -5018,7 +5018,7 @@ index 5ab3b6b2..3f16d272 100644
  func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
  	gin.SetMode(gin.TestMode)
  
-@@ -85,6 +153,9 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
+@@ -108,6 +176,9 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
  		if _, exists := meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey]; exists {
  			t.Fatal("unexpected selected auth index callback for websocket upgrade")
  		}
@@ -5028,7 +5028,7 @@ index 5ab3b6b2..3f16d272 100644
  	})
  
  	t.Run("keeps callback for incomplete upgrade headers", func(t *testing.T) {
-@@ -99,6 +170,9 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
+@@ -122,6 +193,9 @@ func TestRequestExecutionMetadataTraceCallbackWebsocketDetection(t *testing.T) {
  		if _, exists := meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey]; !exists {
  			t.Fatal("missing selected auth index callback for ordinary HTTP request")
  		}
@@ -5038,7 +5038,7 @@ index 5ab3b6b2..3f16d272 100644
  	})
  }
  
-@@ -300,3 +374,25 @@ func TestEnrichContextWithSessionHierarchyFromBody(t *testing.T) {
+@@ -323,3 +397,25 @@ func TestEnrichContextWithSessionHierarchyFromBody(t *testing.T) {
  		t.Fatalf("OpenCode parent_id session = (%q, %q), want (session:opencode-sess-1, session:opencode-root-1)", meta8.SessionID, meta8.ParentSessionID)
  	}
  }
@@ -5065,7 +5065,7 @@ index 5ab3b6b2..3f16d272 100644
 +	}
 +}
 diff --git a/sdk/api/handlers/handlers_stream_bootstrap_test.go b/sdk/api/handlers/handlers_stream_bootstrap_test.go
-index 8ee322fc..df83eadc 100644
+index 8ee322fc8dbc56cb110db78fbedb19f679cac4dd..df83eadc121aabdaabb2efdf75f44648c4d4b380 100644
 --- a/sdk/api/handlers/handlers_stream_bootstrap_test.go
 +++ b/sdk/api/handlers/handlers_stream_bootstrap_test.go
 @@ -637,8 +637,8 @@ func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
@@ -5080,7 +5080,7 @@ index 8ee322fc..df83eadc 100644
  }
  
 diff --git a/sdk/api/handlers/header_filter.go b/sdk/api/handlers/header_filter.go
-index e7246745..864cebd3 100644
+index e72467459aae14972ee7f23037fbae91bbc169c3..864cebd35e941e353973f6a821fa4684d10018ce 100644
 --- a/sdk/api/handlers/header_filter.go
 +++ b/sdk/api/handlers/header_filter.go
 @@ -44,6 +44,7 @@ var cpaReservedResponseHeaders = map[string]struct{}{
@@ -5092,7 +5092,7 @@ index e7246745..864cebd3 100644
  
  // IsCPAReservedResponseHeader reports whether a downstream response header is managed by CPA.
 diff --git a/sdk/auth/codex_device.go b/sdk/auth/codex_device.go
-index d7ea4e1f..2a6254e8 100644
+index d7ea4e1fe93439ad6e14321c195adbaea75e7f1b..2a6254e80b52558dae5a4ce72cbfa7b2cbfeb054 100644
 --- a/sdk/auth/codex_device.go
 +++ b/sdk/auth/codex_device.go
 @@ -61,12 +61,17 @@ func shouldUseCodexDeviceFlow(opts *LoginOptions) bool {
@@ -5124,7 +5124,7 @@ index d7ea4e1f..2a6254e8 100644
  
  	fmt.Println("Codex authentication successful")
 diff --git a/sdk/auth/filestore.go b/sdk/auth/filestore.go
-index 94e68e44..f4807237 100644
+index 94e68e44188214a10f1b1545c243a86eba2a9738..f48072377f2e0f144ce85e2583c3795fbe2d4fd9 100644
 --- a/sdk/auth/filestore.go
 +++ b/sdk/auth/filestore.go
 @@ -160,6 +160,7 @@ func (s *FileTokenStore) Save(ctx context.Context, auth *cliproxyauth.Auth) (str
@@ -5181,7 +5181,7 @@ index 94e68e44..f4807237 100644
  
 diff --git a/sdk/auth/filestore_gateway_state_test.go b/sdk/auth/filestore_gateway_state_test.go
 new file mode 100644
-index 00000000..7c3386f5
+index 0000000000000000000000000000000000000000..7c3386f5a87458691522cef627a4689109dda62e
 --- /dev/null
 +++ b/sdk/auth/filestore_gateway_state_test.go
 @@ -0,0 +1,29 @@
@@ -5215,7 +5215,7 @@ index 00000000..7c3386f5
 +	}
 +}
 diff --git a/sdk/auth/filestore_test.go b/sdk/auth/filestore_test.go
-index 4ce9883f..18865885 100644
+index 4ce9883f7cd2e57bd28ec8af5d2017a4dde68119..18865885739d2f95cac21907d77a059a0b8fc3cc 100644
 --- a/sdk/auth/filestore_test.go
 +++ b/sdk/auth/filestore_test.go
 @@ -2,10 +2,15 @@ package auth
@@ -5390,7 +5390,7 @@ index 4ce9883f..18865885 100644
  	store := NewFileTokenStore()
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe.go b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 new file mode 100644
-index 00000000..3c845733
+index 0000000000000000000000000000000000000000..3c845733c93805cc6ec7f75e2f1346f9707de96f
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 @@ -0,0 +1,348 @@
@@ -5744,7 +5744,7 @@ index 00000000..3c845733
 +}
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe_test.go b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 new file mode 100644
-index 00000000..d89da81e
+index 0000000000000000000000000000000000000000..d89da81e1254751bc76193735ed59e5539f27a66
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe_test.go
 @@ -0,0 +1,358 @@
@@ -6107,7 +6107,7 @@ index 00000000..d89da81e
 +	return auth
 +}
 diff --git a/sdk/cliproxy/auth/conductor.go b/sdk/cliproxy/auth/conductor.go
-index e0a1dbd9..3071db78 100644
+index e0a1dbd96b13d0691207ebfc67f41268e961eee9..3071db780b65db45d20f8e4ff699cf836a4dcfdc 100644
 --- a/sdk/cliproxy/auth/conductor.go
 +++ b/sdk/cliproxy/auth/conductor.go
 @@ -46,6 +46,9 @@ type ExecutionSessionCloser interface {
@@ -6132,7 +6132,7 @@ index e0a1dbd9..3071db78 100644
  	configCooldownMu          sync.Mutex
  	syncSchedulerMu           sync.Mutex
 diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
-index 272c6c2f..4b0e415c 100644
+index 272c6c2f5ba8a9f121abde1802492fd22b3e8503..4b0e415c4547a1d96995f6eee6abb0ad6e6592e8 100644
 --- a/sdk/cliproxy/auth/conductor_cooldown.go
 +++ b/sdk/cliproxy/auth/conductor_cooldown.go
 @@ -357,7 +357,7 @@ func (m *Manager) restoreCooldownRecordLocked(record CooldownStateRecord, now ti
@@ -6214,7 +6214,7 @@ index 272c6c2f..4b0e415c 100644
  	case isExplicitModelNotFoundError(err, ""):
  		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index b365f5d8..fce374b7 100644
+index b365f5d85c5d011c765272ca410720d8de563c9e..fce374b79c81472dbb3aef8c7568fcb93578762f 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -6,7 +6,9 @@ import (
@@ -6621,7 +6621,7 @@ index b365f5d8..fce374b7 100644
  
  func (m *Manager) executorFor(provider string) ProviderExecutor {
 diff --git a/sdk/cliproxy/auth/conductor_execution_quota_test.go b/sdk/cliproxy/auth/conductor_execution_quota_test.go
-index 1e53a178..9ca3a452 100644
+index 1e53a178459338a1fce21248d3cd11f51fbe1c40..9ca3a452a8a1790f2cb283926caa614a24c8f256 100644
 --- a/sdk/cliproxy/auth/conductor_execution_quota_test.go
 +++ b/sdk/cliproxy/auth/conductor_execution_quota_test.go
 @@ -210,6 +210,44 @@ func TestSyncMetadataSessionToContext(t *testing.T) {
@@ -6671,7 +6671,7 @@ index 1e53a178..9ca3a452 100644
  		Model:   "gpt-5.6-luna",
 diff --git a/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 new file mode 100644
-index 00000000..5fb8987e
+index 0000000000000000000000000000000000000000..5fb8987e2c0b810b4fd83deda42f929c3e077923
 --- /dev/null
 +++ b/sdk/cliproxy/auth/conductor_gateway_retry_policy_test.go
 @@ -0,0 +1,321 @@
@@ -6997,7 +6997,7 @@ index 00000000..5fb8987e
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/conductor_home.go b/sdk/cliproxy/auth/conductor_home.go
-index 88434111..8137a631 100644
+index 88434111664e6f8acf4e32bf81f58aef382ba2f6..8137a63189f1abdf380570dd57416af26efe9f9e 100644
 --- a/sdk/cliproxy/auth/conductor_home.go
 +++ b/sdk/cliproxy/auth/conductor_home.go
 @@ -281,7 +281,7 @@ func isHomeRequestRetryExceededError(err error) bool {
@@ -7038,7 +7038,7 @@ index 88434111..8137a631 100644
  				result.Error = resultErrorFromError(errExec)
  				if ra := retryAfterFromError(errExec); ra != nil {
 diff --git a/sdk/cliproxy/auth/conductor_home_execution.go b/sdk/cliproxy/auth/conductor_home_execution.go
-index 300ed99a..e0508195 100644
+index 300ed99a2f8da288e3923e0a69ea946f0b4386a6..e050819511d58c6ab695fd82a10a44163e3fd36f 100644
 --- a/sdk/cliproxy/auth/conductor_home_execution.go
 +++ b/sdk/cliproxy/auth/conductor_home_execution.go
 @@ -159,7 +159,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
@@ -7072,7 +7072,7 @@ index 300ed99a..e0508195 100644
  				m.reportHomeResult(execCtx, result, preparedAuth)
  				releaseAttempt()
 diff --git a/sdk/cliproxy/auth/conductor_lifecycle.go b/sdk/cliproxy/auth/conductor_lifecycle.go
-index 980398d2..8e95c303 100644
+index 980398d29a119c11245c66a2d39b4d4ed186ca2d..8e95c3032ba1fcb1e5c455610499ebeaabd79cbb 100644
 --- a/sdk/cliproxy/auth/conductor_lifecycle.go
 +++ b/sdk/cliproxy/auth/conductor_lifecycle.go
 @@ -81,6 +81,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
@@ -7133,7 +7133,7 @@ index 980398d2..8e95c303 100644
  	}
  
 diff --git a/sdk/cliproxy/auth/conductor_models.go b/sdk/cliproxy/auth/conductor_models.go
-index 20cc1a56..3ea036ea 100644
+index 20cc1a56da4aa552452f4bd747071f390dc47a1d..3ea036ea6e147ac2102c2f41abcb142c5faba31d 100644
 --- a/sdk/cliproxy/auth/conductor_models.go
 +++ b/sdk/cliproxy/auth/conductor_models.go
 @@ -235,7 +235,7 @@ func (m *Manager) clientModelProjectionForAuth(auth *Auth, routeModel string, no
@@ -7146,7 +7146,7 @@ index 20cc1a56..3ea036ea 100644
  		isSuspended = true
  	}
 diff --git a/sdk/cliproxy/auth/conductor_overrides_test.go b/sdk/cliproxy/auth/conductor_overrides_test.go
-index 27665bf1..1da6c173 100644
+index 27665bf1fc6cdfddf67e91be7ec0f3cbb8a4a3d0..1da6c173083d85a8073c8dd5ab6ee945418f4a57 100644
 --- a/sdk/cliproxy/auth/conductor_overrides_test.go
 +++ b/sdk/cliproxy/auth/conductor_overrides_test.go
 @@ -1433,10 +1433,6 @@ func TestManager_Execute_DisableCooling_RetriesAfter429RetryAfter(t *testing.T)
@@ -7170,7 +7170,7 @@ index 27665bf1..1da6c173 100644
  		{name: "streaming xai websocket message too big", provider: "xai", stream: true, err: messageTooBigErr, wantStatus: http.StatusRequestEntityTooLarge},
  		{name: "non-streaming invalid request", err: invalidRequestErr, wantStatus: http.StatusBadRequest},
 diff --git a/sdk/cliproxy/auth/conductor_refresh.go b/sdk/cliproxy/auth/conductor_refresh.go
-index d41551d8..24e26946 100644
+index d41551d8ba876fd44cf1f95743d2145aa8e32551..24e269468e403ed989d85c05d7c99873c901e307 100644
 --- a/sdk/cliproxy/auth/conductor_refresh.go
 +++ b/sdk/cliproxy/auth/conductor_refresh.go
 @@ -489,6 +489,7 @@ func (m *Manager) tryRefreshAfterUnauthorized(ctx context.Context, auth *Auth, e
@@ -7219,7 +7219,7 @@ index d41551d8..24e26946 100644
 +	return !updatedValid || previousIndex != updatedIndex
 +}
 diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
-index 003cf025..4dc70cc7 100644
+index 003cf025b7622750101f5fa19111313c4481d9e9..4dc70cc791bfce701b88a8d008d24bc8fea3e145 100644
 --- a/sdk/cliproxy/auth/conductor_selection.go
 +++ b/sdk/cliproxy/auth/conductor_selection.go
 @@ -620,8 +620,8 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
@@ -7399,7 +7399,7 @@ index 003cf025..4dc70cc7 100644
  		}
  		providerKey := executorKeyFromAuth(candidate)
 diff --git a/sdk/cliproxy/auth/conductor_stream.go b/sdk/cliproxy/auth/conductor_stream.go
-index 7e61160e..d92c7b05 100644
+index 7e61160ef6bff3c10f8ff9e42532334a87e61e19..d92c7b05724efb49a8919a7277e6c678ff1cac6f 100644
 --- a/sdk/cliproxy/auth/conductor_stream.go
 +++ b/sdk/cliproxy/auth/conductor_stream.go
 @@ -78,12 +78,21 @@ func streamErrorResult(headers http.Header, err error) *cliproxyexecutor.StreamR
@@ -7566,7 +7566,7 @@ index 7e61160e..d92c7b05 100644
  			if idx < len(execModels)-1 {
  				lastErr = emptyErr
 diff --git a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
-index 37451925..62c4cb86 100644
+index 37451925076ee1e16b5a79f92f5d597f51b3190f..62c4cb862d3af518e577327ff05399b549fa59e6 100644
 --- a/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 +++ b/sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go
 @@ -13,13 +13,15 @@ import (
@@ -7713,7 +7713,7 @@ index 37451925..62c4cb86 100644
  	m, executor, primary, backup, model := newUnauthorizedRefreshFixture(t, true)
  
 diff --git a/sdk/cliproxy/auth/errors.go b/sdk/cliproxy/auth/errors.go
-index d11d7061..41096459 100644
+index d11d7061d68c399e0ad89d1b86a4cb3b5cd5b27f..4109645902a0625d8158d270db1662c6d336fb0f 100644
 --- a/sdk/cliproxy/auth/errors.go
 +++ b/sdk/cliproxy/auth/errors.go
 @@ -40,6 +40,8 @@ type Error struct {
@@ -7726,7 +7726,7 @@ index d11d7061..41096459 100644
  
  // IsTerminalAuthError checks if err or any error in its chain represents a permanent upstream auth failure.
 diff --git a/sdk/cliproxy/auth/errors_compat_test.go b/sdk/cliproxy/auth/errors_compat_test.go
-index db058ab6..19cb5b0a 100644
+index db058ab672923523d57b4857acef25f00c0d7206..19cb5b0a627e80d4efa3d4f16d2c81ee3336fa24 100644
 --- a/sdk/cliproxy/auth/errors_compat_test.go
 +++ b/sdk/cliproxy/auth/errors_compat_test.go
 @@ -7,8 +7,8 @@ import (
@@ -7742,7 +7742,7 @@ index db058ab6..19cb5b0a 100644
  		t.Fatalf("unexpected error fields: %#v", err)
 diff --git a/sdk/cliproxy/auth/gateway_account_state.go b/sdk/cliproxy/auth/gateway_account_state.go
 new file mode 100644
-index 00000000..0764d7bb
+index 0000000000000000000000000000000000000000..4baeac888658d4db7d096323267387fdfd8c3df0
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_account_state.go
 @@ -0,0 +1,438 @@
@@ -8186,7 +8186,7 @@ index 00000000..0764d7bb
 +}
 diff --git a/sdk/cliproxy/auth/gateway_account_state_test.go b/sdk/cliproxy/auth/gateway_account_state_test.go
 new file mode 100644
-index 00000000..6fc80926
+index 0000000000000000000000000000000000000000..6fc809264ea1485846ec1dc9ab95568f1d24ccc9
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_account_state_test.go
 @@ -0,0 +1,418 @@
@@ -8610,7 +8610,7 @@ index 00000000..6fc80926
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 00000000..df73ee7b
+index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a32b023f8e
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
 @@ -0,0 +1,348 @@
@@ -8964,7 +8964,7 @@ index 00000000..df73ee7b
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector_test.go b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
 new file mode 100644
-index 00000000..8ea2d4b3
+index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf5565b390a8
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
 @@ -0,0 +1,515 @@
@@ -9485,7 +9485,7 @@ index 00000000..8ea2d4b3
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
 new file mode 100644
-index 00000000..b2750acc
+index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2955eaa47
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency.go
 @@ -0,0 +1,141 @@
@@ -9632,7 +9632,7 @@ index 00000000..b2750acc
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency_test.go b/sdk/cliproxy/auth/gateway_concurrency_test.go
 new file mode 100644
-index 00000000..c225e703
+index 0000000000000000000000000000000000000000..c225e7036985f970371642763d178b51feefa8e0
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency_test.go
 @@ -0,0 +1,255 @@
@@ -9892,7 +9892,7 @@ index 00000000..c225e703
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/home_session_alias.go b/sdk/cliproxy/auth/home_session_alias.go
-index 9047a298..7523ede2 100644
+index 9047a298c4aa198dfd97b16c10bdaf6f62a23ae5..7523ede2aebae09536680c9ab8f65453a7e1bc82 100644
 --- a/sdk/cliproxy/auth/home_session_alias.go
 +++ b/sdk/cliproxy/auth/home_session_alias.go
 @@ -239,6 +239,14 @@ func isHierarchyParent(primary, fallback string) bool {
@@ -9911,7 +9911,7 @@ index 9047a298..7523ede2 100644
  		return true
  	}
 diff --git a/sdk/cliproxy/auth/scheduler.go b/sdk/cliproxy/auth/scheduler.go
-index 4aad81b3..6437ce53 100644
+index 4aad81b3267daaeb418c975c5885da40c6b540d9..6437ce532258458515cc6c9a9b760df39f152e2f 100644
 --- a/sdk/cliproxy/auth/scheduler.go
 +++ b/sdk/cliproxy/auth/scheduler.go
 @@ -865,7 +865,7 @@ func (s *authScheduler) upsertAuthLifecycleLocked(auth *Auth, now time.Time) {
@@ -9924,7 +9924,7 @@ index 4aad81b3..6437ce53 100644
  		return
  	}
 diff --git a/sdk/cliproxy/auth/selected_auth_metadata_test.go b/sdk/cliproxy/auth/selected_auth_metadata_test.go
-index 2a7433e4..95d86659 100644
+index 2a7433e447db8a104451effd52b259f815ef5bea..95d866597dd31e92b5f08e048813666d4b1f732d 100644
 --- a/sdk/cliproxy/auth/selected_auth_metadata_test.go
 +++ b/sdk/cliproxy/auth/selected_auth_metadata_test.go
 @@ -11,9 +11,14 @@ func TestPublishSelectedAuthMetadataIncludesStableIndex(t *testing.T) {
@@ -10037,7 +10037,7 @@ index 2a7433e4..95d86659 100644
 +	}
  }
 diff --git a/sdk/cliproxy/auth/selector.go b/sdk/cliproxy/auth/selector.go
-index 985e792c..2150619b 100644
+index 985e792c2ad62a8ac0b813c0435b18a73a60964c..2150619b622a6c1793f56284b522c7ba12b49933 100644
 --- a/sdk/cliproxy/auth/selector.go
 +++ b/sdk/cliproxy/auth/selector.go
 @@ -824,7 +824,7 @@ func isAuthBlockedForModel(auth *Auth, model string, now time.Time) (bool, block
@@ -10116,7 +10116,7 @@ index 985e792c..2150619b 100644
  
  func extractMessageHashIDs(payload []byte) (primaryID, fallbackID string) {
 diff --git a/sdk/cliproxy/auth/selector_test.go b/sdk/cliproxy/auth/selector_test.go
-index d8a17a07..6bf5a849 100644
+index d8a17a0779f529749220a775380e21ff47ef252d..6bf5a8493201e24ba398596d4d4999c743ed1ea5 100644
 --- a/sdk/cliproxy/auth/selector_test.go
 +++ b/sdk/cliproxy/auth/selector_test.go
 @@ -2040,6 +2040,61 @@ func TestSessionAffinitySelector_CrossProviderIsolation(t *testing.T) {
@@ -10218,7 +10218,7 @@ index d8a17a07..6bf5a849 100644
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/types.go b/sdk/cliproxy/auth/types.go
-index 7791230e..4f1bccf7 100644
+index 7791230e042c2861f25db72278ecfba83a84232d..4f1bccf7128b8ea6d0d0f4d7990fd5a202b47e3c 100644
 --- a/sdk/cliproxy/auth/types.go
 +++ b/sdk/cliproxy/auth/types.go
 @@ -70,6 +70,10 @@ type Auth struct {
@@ -10249,7 +10249,7 @@ index 7791230e..4f1bccf7 100644
  	}
  	return &copyState
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index 2d1f7658..23e022be 100644
+index 2d1f765809d8b287a0dd46aa8c5dffecd985ddfe..23e022be4d550b6cc8be14fe0a1ff63226b57e24 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
 @@ -39,9 +39,15 @@ const (
@@ -10269,7 +10269,7 @@ index 2d1f7658..23e022be 100644
  	ExecutionSessionMetadataKey = "execution_session_id"
  	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
 diff --git a/sdk/cliproxy/service_config.go b/sdk/cliproxy/service_config.go
-index 936af33d..c25ae7c9 100644
+index 936af33d78dfde6cda67eaa24a6753d106bfbfbe..c25ae7c98ed3b15f3eec75bb6c84f0d0bc0570ee 100644
 --- a/sdk/cliproxy/service_config.go
 +++ b/sdk/cliproxy/service_config.go
 @@ -42,6 +42,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -10292,7 +10292,7 @@ index 936af33d..c25ae7c9 100644
  	case "fill-first":
 diff --git a/sdk/cliproxy/service_gateway_account_state_test.go b/sdk/cliproxy/service_gateway_account_state_test.go
 new file mode 100644
-index 00000000..a47f7b58
+index 0000000000000000000000000000000000000000..a47f7b58caa4d5bce09c9fec24fd009da0d6f56a
 --- /dev/null
 +++ b/sdk/cliproxy/service_gateway_account_state_test.go
 @@ -0,0 +1,23 @@
@@ -10321,7 +10321,7 @@ index 00000000..a47f7b58
 +}
 diff --git a/sdk/cliproxy/service_gateway_allocation_test.go b/sdk/cliproxy/service_gateway_allocation_test.go
 new file mode 100644
-index 00000000..d4f76fd6
+index 0000000000000000000000000000000000000000..d4f76fd63776ab7a1ceeea10312a6e5857d75fa0
 --- /dev/null
 +++ b/sdk/cliproxy/service_gateway_allocation_test.go
 @@ -0,0 +1,18 @@
@@ -10344,7 +10344,7 @@ index 00000000..d4f76fd6
 +	selector.Stop()
 +}
 diff --git a/sdk/cliproxy/service_lifecycle.go b/sdk/cliproxy/service_lifecycle.go
-index 9195a30b..b04f38d8 100644
+index 9195a30baf67b2583d61145869b069a4829bf646..b04f38d86e12e514e96d8fa6a71a64e8933b7223 100644
 --- a/sdk/cliproxy/service_lifecycle.go
 +++ b/sdk/cliproxy/service_lifecycle.go
 @@ -75,6 +75,9 @@ func (s *Service) Run(ctx context.Context) error {
