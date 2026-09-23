@@ -10357,3 +10357,34 @@ index 9195a30baf67b2583d61145869b069a4829bf646..b04f38d86e12e514e96d8fa6a71a64e8
  		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
  			log.Warnf("failed to load auth store: %v", errLoad)
  		}
+diff --git a/sdk/cliproxy/antigravity_models.go b/sdk/cliproxy/antigravity_models.go
+index 4b9dd15..f918159 100644
+--- a/sdk/cliproxy/antigravity_models.go
++++ b/sdk/cliproxy/antigravity_models.go
+@@ -352,9 +352,11 @@ func applyAntigravityFetchedModelCapabilities(models []*ModelInfo, hints antigra
+ 			continue
+ 		}
+ 		modelID := normalizeAntigravityFetchedModelID(model.ID)
+-		if _, ok := hints.WebSearchModelIDs[modelID]; ok {
+-			model.SupportsWebSearch = true
+-		}
++		_, ok := hints.WebSearchModelIDs[modelID]
++		// The fetchAvailableModels response is authoritative for this account.
++		// Clear static-registry capabilities when the account does not advertise
++		// native web search for the model.
++		model.SupportsWebSearch = ok
+ 	}
+ 	return models
+ }
+@@ -432,9 +434,8 @@ func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *c
+ 		// Atomically update capabilities on existing registered models if epoch matches
+ 		updated := GlobalModelRegistry().ApplyClientModelCapabilities(authClone.ID, expectedRegEpoch, func(modelID string, info *ModelInfo) {
+ 			upstreamID := resolveAntigravityUpstreamModelID(modelID, authClone.Prefix, aliasMap)
+-			if _, ok := hints.WebSearchModelIDs[upstreamID]; ok {
+-				info.SupportsWebSearch = true
+-			}
++			_, ok := hints.WebSearchModelIDs[upstreamID]
++			info.SupportsWebSearch = ok
+ 		})
+ 		if !updated {
+ 			return
