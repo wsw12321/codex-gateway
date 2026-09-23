@@ -22,8 +22,8 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 
 ## 计价口径
 
-模板包含当前 Codex API 模型目录中的 `gpt-6-astra`、`gpt-5.6-sol`、
-`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、
+模板包含当前 Codex API 模型目录中的 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
+`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、
 `gpt-5.4-mini`，以及隐藏的 `codex-auto-review`。GPT-5.2 等未加入完整规则的模型
 会在转发前拒绝，不能用别名或相近模型价格代替。
 
@@ -35,6 +35,12 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 | GPT-6 Astra Standard | `10 / 1 / 12.5 / 50` | `20 / 2 / 25 / 75` |
 | GPT-6 Astra Flex | `5 / 0.5 / 6.25 / 25` | `10 / 1 / 12.5 / 37.5` |
 | GPT-6 Astra Fast | `20 / 2 / 25 / 100` | `40 / 4 / 50 / 150` |
+| GPT-6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
+| GPT-6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
+| GPT-6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
+| GPT-6 Luna Standard | `0.2 / 0.02 / 0.25 / 1.2` | `0.4 / 0.04 / 0.5 / 1.8` |
+| GPT-6 Luna Flex | `0.1 / 0.01 / 0.125 / 0.6` | `0.2 / 0.02 / 0.25 / 0.9` |
+| GPT-6 Luna Fast | `0.4 / 0.04 / 0.5 / 2.4` | `0.8 / 0.08 / 1 / 3.6` |
 | GPT-5.6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
 | GPT-5.6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
 | GPT-5.6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
@@ -58,7 +64,8 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 的最大输入为 272000，只配置短档；若上游仍报告更大输入，会记录缺失组合并用该
 模型最高已公布分量兜底。
 
-GPT-6 和 GPT-5.6 的 `cache_write_mode` 是 `separate`：
+GPT-6 和 GPT-5.6 的 `cache_write_mode` 是 `separate`。GPT-6 Sol/Luna 的价格
+分别沿用 GPT-5.6 Sol/Luna 的对应长短档和服务层：
 
 ```text
 ordinary = input - cached - cache_write

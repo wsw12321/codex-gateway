@@ -278,7 +278,7 @@ chmod 0600 .env
 
 `deploy/env.example` 已包含
 [deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
-覆盖 GPT-6 Astra、GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini 和内部零价
+覆盖 GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini 和内部零价
 `codex-auto-review`。部署前仍必须对照
 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 复核每百万
 Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`；不要把 v1

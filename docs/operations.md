@@ -109,12 +109,16 @@ v2 的结构如下（片段不能单独部署）：
 }
 ```
 
-完整模板覆盖 `gpt-6-astra`、`gpt-5.6-sol`、`gpt-5.6-terra`、
-`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
+完整模板覆盖 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
+`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
 `codex-auto-review`。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
 用户模型权限、API Key 白名单逐一核对。
+
+`gpt-6-sol` 的 Standard/Flex/Fast 长短档价格与 `gpt-5.6-sol` 完全一致，
+`gpt-6-luna` 的对应价格与 `gpt-5.6-luna` 完全一致；两者都使用独立计费的
+`cache_write_mode=separate`。
 
 v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
 `schema_version` 的配置仍按 v1 解析，只用于过渡和升级时结算已经执行中的 v1
