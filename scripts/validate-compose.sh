@@ -8,7 +8,7 @@ env_file=$root/.env
 compose=$root/scripts/compose.sh
 caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
-pricing_template=$root/deploy/pricing-v2.1.example.json
+pricing_template=$root/deploy/pricing-v2.example.json
 egress_config=$root/deploy/egress/squid.conf
 egress_entrypoint=$root/deploy/egress/entrypoint.sh
 relay_config=$root/deploy/relay/squid.conf
@@ -381,13 +381,9 @@ pricing_validator='
       "gpt-5.6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
-      "gpt-6-astra",
-      "gpt-6-luna",
-      "gpt-6-sol"
+      "gpt-6-astra"
     ]) and
     (.["gpt-6-astra"] | separate_long_model) and
-    (.["gpt-6-sol"] | separate_long_model) and
-    (.["gpt-6-luna"] | separate_long_model) and
     (.["gpt-5.6-sol"] | separate_long_model) and
     (.["gpt-5.6-terra"] | separate_long_model) and
     (.["gpt-5.6-luna"] | separate_long_model) and
@@ -406,7 +402,7 @@ printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
 # or an unpublished service tier.
 test -r "$pricing_template" || fail "pricing template is missing: $pricing_template"
 jq -e "$pricing_validator" "$pricing_template" >/dev/null 2>&1 || \
-    fail 'deploy/pricing-v2.1.example.json does not pass the production pricing validator'
+    fail 'deploy/pricing-v2.example.json does not pass the production pricing validator'
 reject_pricing_mutation() {
     pricing_mutation=$1
     pricing_rejection=$2
