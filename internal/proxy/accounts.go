@@ -94,14 +94,14 @@ var internalErrorCodes = map[int]map[string]string{
 }
 
 type UpstreamAccount struct {
-	ID                   string    `json:"id"`
-	MaskedEmail          string    `json:"masked_email"`
-	Plan                 string    `json:"plan"`
-	Status               string    `json:"status"`
-	CliproxyStatus       string    `json:"cliproxy_status,omitempty"`
-	GatewayManualStatus  string    `json:"gateway_manual_status,omitempty"`
-	GatewayQuotaStatus   string    `json:"gateway_quota_status,omitempty"`
-	LastSyncedAt         time.Time `json:"last_synced_at"`
+	ID                  string    `json:"id"`
+	MaskedEmail         string    `json:"masked_email"`
+	Plan                string    `json:"plan"`
+	Status              string    `json:"status"`
+	CliproxyStatus      string    `json:"cliproxy_status,omitempty"`
+	GatewayManualStatus string    `json:"gateway_manual_status,omitempty"`
+	GatewayQuotaStatus  string    `json:"gateway_quota_status,omitempty"`
+	LastSyncedAt        time.Time `json:"last_synced_at"`
 }
 
 type UpstreamAccountStatus struct {
