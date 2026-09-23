@@ -190,7 +190,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.3.12` 的 peeled commit 正是
 `2eb8dd11d2480c5fd8bc8f2796cec6af534bc3b6`，不匹配就会失败。兼容层镜像标签为
-`v7.3.12-2eb8dd11-40cc02a0f66b5d28-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.3.12-2eb8dd11-53593f9b6bd99d75-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
