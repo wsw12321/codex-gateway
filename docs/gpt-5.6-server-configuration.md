@@ -2,7 +2,7 @@
 
 本指南使用 [`deploy/env.gpt-5.6.example`](../deploy/env.gpt-5.6.example) 生成
 生产 `.env`。完整可读目录是
-[`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，模型单价和
+[`deploy/pricing-v2.1.example.json`](../deploy/pricing-v2.1.example.json)，模型单价和
 缓存语义于 2026-09-05 对照以下官方文档核对：
 
 - [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)

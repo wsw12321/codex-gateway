@@ -66,7 +66,7 @@ chmod 0600 .env
 联网抓取价格或汇率；操作者必须在启动前从
 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 人工核对所有
 允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
-完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
+完整目录是 [`deploy/pricing-v2.1.example.json`](../deploy/pricing-v2.1.example.json)，
 `deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
 `.env` 中的 JSON 必须保持一行。模板中的 GPT-5.6 Sol 按部署要求采用降价前
 历史价格，来源和恢复日期见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
@@ -810,7 +810,7 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
 
 3. 检出已审阅 revision，确认工作树为空；将 `.env` 的
    `GATEWAY_USAGE_PRICING_JSON` 一次性替换为
-   `deploy/pricing-v2.example.json` 的完整单行矩阵，并复核目录/汇率日期。同步
+   `deploy/pricing-v2.1.example.json` 的完整单行矩阵，并复核目录/汇率日期。同步
    更新三个版本字段，运行 `./scripts/validate-compose.sh`，再执行
    `./scripts/compose.sh build gateway`。不要分批部署只有部分模型或部分服务层的
    目录。

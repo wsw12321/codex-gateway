@@ -41,8 +41,8 @@ func TestParseUsagePricing(t *testing.T) {
 	}
 }
 
-func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+func TestOfficialPricingV3TemplateMatrix(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.1.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +59,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	wantModels := []string{
 		"codex-auto-review", "gemini-3.1-pro-preview", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
 		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra",
+		"gpt-6-luna", "gpt-6-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
 	for model := range pricing.Models {
@@ -72,6 +73,8 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	// Sol deliberately uses the pre-promotion rates from the 2026-08-20 template.
 	short := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"10", "1", "12.5", "50"}, "flex": {"5", "0.5", "6.25", "25"}, "priority": {"20", "2", "25", "100"}},
+		"gpt-6-sol":     {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
+		"gpt-6-luna":    {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
 		"gpt-5.6-sol":   {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
 		"gpt-5.6-luna":  {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
@@ -101,6 +104,8 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	long := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"20", "2", "25", "75"}, "flex": {"10", "1", "12.5", "37.5"}, "priority": {"40", "4", "50", "150"}},
+		"gpt-6-sol":     {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
+		"gpt-6-luna":    {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
 		"gpt-5.6-sol":   {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
 		"gpt-5.6-luna":  {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
@@ -147,8 +152,8 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 }
 
-func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+func TestGeminiPricingV3StandardBoundaries(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.1.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +232,8 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 	}
 }
 
-func TestOfficialPricingV2EnvironmentCopies(t *testing.T) {
-	templateRaw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+func TestOfficialPricingV3EnvironmentCopies(t *testing.T) {
+	templateRaw, err := os.ReadFile("../../deploy/pricing-v2.1.example.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +258,7 @@ func TestOfficialPricingV2EnvironmentCopies(t *testing.T) {
 				t.Fatalf("found %d pricing environment lines", len(matches))
 			}
 			if matches[0] != want {
-				t.Fatal("pricing environment copy differs from deploy/pricing-v2.example.json")
+				t.Fatal("pricing environment copy differs from deploy/pricing-v2.1.example.json")
 			}
 		})
 	}
