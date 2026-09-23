@@ -1208,15 +1208,18 @@ code {
 }
 
 .upstream-account-heading {
-  align-items: center;
+  align-items: stretch;
+  flex-direction: column;
+  gap: .8rem;
 }
 
 .upstream-account-actions {
   display: flex;
+  width: 100%;
   flex-shrink: 0;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: .6rem;
 }
 
@@ -2372,7 +2375,7 @@ dialog form {
   }
 
   .upstream-account-actions {
-    justify-content: space-between;
+    justify-content: flex-start;
   }
 
   .upstream-allocation-stats {
