@@ -3919,7 +3919,7 @@ function monitoringStatusCell(request) {
 }
 
 function monitoringRow(request, windowName) {
-  const active = windowName === "in_progress";
+  const active = monitoringField(request, "state", "State") === "in_progress";
   const timestamp = active || windowName === "recent"
     ? monitoringField(request, "requested_at", "RequestedAt")
     : monitoringField(request, "completed_at", "CompletedAt");
@@ -3935,7 +3935,6 @@ function monitoringRow(request, windowName) {
 function renderMonitoring(result) {
   monitoringSnapshot = result || {};
   const windows = {
-    in_progress: Array.isArray(result?.in_progress) ? result.in_progress : [],
     recent: Array.isArray(result?.recent) ? result.recent : [],
     failures: Array.isArray(result?.failures) ? result.failures : [],
   };
@@ -3962,7 +3961,7 @@ function resetMonitoring(message = "登录后加载请求监控。") {
   monitoringController?.abort();
   monitoringController = null;
   monitoringSnapshot = null;
-  for (const name of ["in_progress", "recent", "failures"]) {
+  for (const name of ["recent", "failures"]) {
     const rows = byId(`monitoring-${name}-rows`);
     if (rows) rows.replaceChildren(tableMessage(5, message));
     const count = byId(`monitoring-${name}-count`);
@@ -3981,7 +3980,7 @@ async function loadMonitoring({manual = false} = {}) {
   const generation = identityGeneration;
   const current = monitoringIdentityCurrent(generation, sequence);
   if (manual || !monitoringSnapshot) show("monitoring-loading");
-  for (const name of ["in_progress", "recent", "failures"]) {
+  for (const name of ["recent", "failures"]) {
     byId(`monitoring-${name}-rows`)?.closest("table")?.setAttribute("aria-busy", "true");
   }
   try {
@@ -3996,7 +3995,7 @@ async function loadMonitoring({manual = false} = {}) {
     message.dataset.kind = "error";
     message.classList.remove("hidden");
     hide("monitoring-loading");
-    for (const name of ["in_progress", "recent", "failures"]) {
+    for (const name of ["recent", "failures"]) {
       byId(`monitoring-${name}-rows`)?.replaceChildren(tableMessage(5, friendlyError(error)));
     }
     if (manual) throw error;

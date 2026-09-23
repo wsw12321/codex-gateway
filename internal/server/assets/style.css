@@ -1855,7 +1855,7 @@ code {
 
 .monitoring-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
 }
@@ -1883,6 +1883,12 @@ code {
 
 .monitoring-window table {
   min-width: 42rem;
+}
+
+@media (max-width: 850px) {
+  .monitoring-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .monitoring-window td small,
