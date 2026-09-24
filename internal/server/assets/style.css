@@ -1266,7 +1266,25 @@ code {
   min-width: 0;
 }
 
-.upstream-allocation-input {
+.upstream-concurrency-limit-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: .65rem;
+  margin-top: .85rem;
+}
+
+.upstream-concurrency-limit-form label {
+  min-width: 0;
+}
+
+.upstream-concurrency-limit-form .form-message {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.upstream-allocation-input,
+.upstream-concurrency-limit-input {
   width: 100%;
   min-width: 0;
   font-variant-numeric: tabular-nums;

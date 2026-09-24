@@ -3720,9 +3720,65 @@ function syncUpstreamAccountControls() {
     allocationState.dataset.draining = String(account.allocation_weight === 0);
     allocationState.textContent = account.allocation_weight === 0 ? "停止接收新对话 · 已有有效绑定继续使用" :
       (finalStatus === "available" ? "参与新对话分配" : finalStatus === "unknown" ? "状态未知 · 暂停新对话分配" : "账号不可用 · 暂不参与新对话分配");
+    const limitInput = card.querySelector(".upstream-concurrency-limit-input");
+    const limitButton = card.querySelector(".upstream-concurrency-limit-save");
+    const savingLimit = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "limit";
+    if (limitInput && limitButton) {
+      limitInput.disabled = weightInput.disabled;
+      limitButton.disabled = weightInput.disabled;
+      limitButton.textContent = savingLimit ? "保存中…" : "保存并发上限";
+      limitButton.setAttribute("aria-busy", String(savingLimit));
+    }
   }
   const filter = byId("upstream-account-filter");
   filter.querySelector("button[type=submit]").disabled = Boolean(upstreamAccountOperation) || filter.dataset.busy === "true";
+}
+
+async function saveUpstreamConcurrentLimit(account, form) {
+  if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
+      !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id || !upstreamAccounts.includes(account) ||
+      !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
+  const input = form.querySelector(".upstream-concurrency-limit-input");
+  const raw = String(input.value || "").trim();
+  const limit = Number(raw);
+  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(limit) || limit < 1 || limit > 2147483647) {
+    input.setAttribute("aria-invalid", "true");
+    setLocalMessage(form, "请输入 1 至 2147483647 的整数。");
+    return;
+  }
+  input.setAttribute("aria-invalid", "false");
+  setLocalMessage(form);
+  const operation = {id: account.id, kind: "limit", limit};
+  upstreamAccountOperation = operation;
+  upstreamAccountRequestSequence++;
+  setUpstreamAccountMessage("upstream-account-action-message");
+  setUpstreamAccountMessage("upstream-account-refresh-message");
+  syncUpstreamAccountControls();
+  let confirmed = false;
+  try {
+    const response = await sensitiveAction(() => {
+      if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
+        throw new DOMException("操作已取消。", "AbortError");
+      }
+      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/concurrent-limit`, {
+        method: "PUT", body: JSON.stringify({concurrent_limit: operation.limit}),
+      });
+    });
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (response?.id !== account.id || response.concurrent_limit !== operation.limit) throw new Error("并发上限响应格式异常，请刷新列表确认结果。");
+    confirmed = true;
+    account.concurrent_limit = response.concurrent_limit;
+    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} 并发对话上限已保存为 ${operation.limit}。`, "ok");
+    announce(`已保存 ${account.email_masked || "该上游账号"} 的并发对话上限。`);
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
+  } catch (error) {
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    upstreamAccountSyncHealthy = false;
+    setUpstreamAccountMessage(confirmed ? "upstream-account-refresh-message" : "upstream-account-action-message",
+      `${confirmed ? "操作已成功，但列表刷新失败" : "并发上限保存未确认"}：${friendlyError(error)} 请刷新列表后再试。`);
+  } finally {
+    if (upstreamAccountOperation === operation) { upstreamAccountOperation = null; syncUpstreamAccountControls(); }
+  }
 }
 
 async function changeUpstreamAccountStatus(account) {
@@ -3847,8 +3903,21 @@ function upstreamAllocationBlock(account) {
     element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
   );
   form.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamAllocationWeight(account, form); });
+  const limitInput = element("input", {
+    type: "text", className: "upstream-concurrency-limit-input",
+    attributes: {inputmode: "numeric", pattern: "[0-9]+", maxlength: "10", required: "",
+      "aria-describedby": "upstream-concurrency-limit-help", autocomplete: "off"},
+  });
+  limitInput.value = String(account.concurrent_limit ?? 1);
+  const limitButton = element("button", {type: "submit", className: "secondary upstream-concurrency-limit-save", text: "保存并发上限"});
+  const limitForm = element("form", {className: "upstream-concurrency-limit-form", attributes: {novalidate: ""}},
+    element("label", {}, element("span", {text: "并发对话数量"}), limitInput), limitButton,
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
+  );
+  limitForm.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamConcurrentLimit(account, limitForm); });
   return element("section", {className: "upstream-allocation"},
     form,
+    limitForm,
     element("p", {className: "upstream-allocation-state", attributes: {"aria-live": "polite"}}),
     element("div", {className: "upstream-allocation-stats"},
       upstreamAccountStat("近 24 小时费用", formatUSD(account.rolling_cost_usd), "已结算 · 跨用户与模型"),

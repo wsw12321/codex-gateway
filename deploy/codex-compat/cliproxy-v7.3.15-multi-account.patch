@@ -8961,10 +8961,10 @@ index 0000000000000000000000000000000000000000..6fc809264ea1485846ec1dc9ab95568f
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a32b023f8e
+index 0000000000000000000000000000000000000000..0bfdbcf6a9e640cb5a48f5529d0b667c2fd3efa1
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,372 @@
 +package auth
 +
 +import (
@@ -8997,10 +8997,12 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +// Its lock protects only in-memory lookup and binding, never the HTTP callback.
 +type GatewayAllocationSelector struct {
 +	mu       sync.Mutex
++	limitMu  sync.RWMutex
 +	affinity *SessionAffinitySelector
 +	probe    *gatewayAllocationProbe
 +	client   *http.Client
 +	key      string
++	limits   map[string]int64
 +}
 +
 +type gatewayAllocationProbe struct {
@@ -9029,7 +9031,8 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +	key, _ := os.ReadFile(keyFile)
 +	p := &gatewayAllocationProbe{}
 +	return &GatewayAllocationSelector{
-+		probe: p,
++		probe:  p,
++		limits: make(map[string]int64),
 +		affinity: NewSessionAffinitySelectorWithConfig(SessionAffinityConfig{
 +			Fallback: p, TTL: ttl, SubagentAffinity: &subagents,
 +		}),
@@ -9147,6 +9150,9 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +	}
 +	defer response.Body.Close()
 +	if response.StatusCode != http.StatusOK {
++		if response.StatusCode == http.StatusTooManyRequests {
++			return "", gatewayConcurrencyExceeded()
++		}
 +		return "", gatewayAllocationUnavailable()
 +	}
 +	data, err := io.ReadAll(io.LimitReader(response.Body, 1025))
@@ -9202,18 +9208,25 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +	if err != nil || len(data) > 8192 {
 +		return nil, gatewayAllocationUnavailable()
 +	}
-+	fields, err := decodeGatewayObject(data, "account_ids")
-+	var allowed []string
-+	if err != nil || json.Unmarshal(fields["account_ids"], &allowed) != nil {
++	fields, err := decodeGatewayObject(data, "accounts")
++	var allowed []struct {
++		ID              string `json:"id"`
++		ConcurrentLimit int64  `json:"concurrent_limit"`
++	}
++	if err != nil || json.Unmarshal(fields["accounts"], &allowed) != nil {
 +		return nil, gatewayAllocationUnavailable()
 +	}
 +	permitted := make(map[string]bool, len(allowed))
-+	for _, id := range allowed {
-+		if !seen[id] || permitted[id] {
++	s.limitMu.Lock()
++	for _, item := range allowed {
++		if !seen[item.ID] || permitted[item.ID] || item.ConcurrentLimit < 1 || item.ConcurrentLimit > 1<<31-1 {
++			s.limitMu.Unlock()
 +			return nil, gatewayAllocationUnavailable()
 +		}
-+		permitted[id] = true
++		permitted[item.ID] = true
++		s.limits[item.ID] = item.ConcurrentLimit
 +	}
++	s.limitMu.Unlock()
 +	result := make([]*Auth, 0, len(allowed))
 +	for _, candidate := range candidates {
 +		if permitted[gatewayAccountResultIndex(candidate)] {
@@ -9256,6 +9269,17 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +	if fallback != primary && !isSubagentSession(primary, fallback) {
 +		remove(fallback)
 +	}
++}
++
++func (s *GatewayAllocationSelector) concurrencyLimit(id string) int64 {
++	s.limitMu.RLock()
++	defer s.limitMu.RUnlock()
++	if limit, ok := s.limits[id]; ok && limit > 0 {
++		return limit
++	}
++	// A Gateway-selected account is fail-closed until its eligibility response
++	// supplies an owner-configured value. The database default is one.
++	return 1
 +}
 +
 +func (s *GatewayAllocationSelector) Stop() {
@@ -9315,10 +9339,10 @@ index 0000000000000000000000000000000000000000..df73ee7bece02a335b834f2567bd32a3
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector_test.go b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf5565b390a8
+index 0000000000000000000000000000000000000000..e529a1a5685aeb96be09aaf1fba46586b734b79c
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector_test.go
-@@ -0,0 +1,515 @@
+@@ -0,0 +1,536 @@
 +package auth
 +
 +import (
@@ -9349,7 +9373,11 @@ index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf55
 +		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.UserID != "00000000-0000-0000-0000-000000000001" {
 +			return allocationResponse(400, `{}`), nil
 +		}
-+		data, _ := json.Marshal(map[string]any{"account_ids": request.AccountIDs})
++		accounts := make([]map[string]any, 0, len(request.AccountIDs))
++		for _, id := range request.AccountIDs {
++			accounts = append(accounts, map[string]any{"id": id, "concurrent_limit": 1})
++		}
++		data, _ := json.Marshal(map[string]any{"accounts": accounts})
 +		return allocationResponse(200, string(data)), nil
 +	}
 +	return f(r)
@@ -9491,6 +9519,19 @@ index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf55
 +			assertAllocation503(t, err)
 +		})
 +	}
++	s, auths := allocationFixture(t)
++	s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++		if r.URL.String() == gatewayEligibilityURL {
++			return allocationResponse(200, fmt.Sprintf(`{"accounts":[{"id":%q,"concurrent_limit":1}]}`, gatewayAccountResultIndex(auths[0]))), nil
++		}
++		return allocationResponse(http.StatusTooManyRequests, `{"error":{"code":"upstream_concurrency_exceeded"}}`), nil
++	})
++	_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("select-429"), auths)
++	var apiErr *Error
++	if !errors.As(err, &apiErr) || apiErr.Code != "upstream_concurrency_exceeded" || apiErr.HTTPStatus != http.StatusTooManyRequests {
++		t.Fatalf("select 429 error = %#v, want typed 429", err)
++	}
++
 +	for _, status := range []int{401, 302, 503} {
 +		t.Run(fmt.Sprint(status), func(t *testing.T) {
 +			s, auths := allocationFixture(t)
@@ -9783,7 +9824,11 @@ index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf55
 +			if fail {
 +				return allocationResponse(503, `{}`), nil
 +			}
-+			data, _ := json.Marshal(map[string]any{"account_ids": allowed})
++			accounts := make([]map[string]any, 0, len(allowed))
++			for _, id := range allowed {
++				accounts = append(accounts, map[string]any{"id": id, "concurrent_limit": 1})
++			}
++			data, _ := json.Marshal(map[string]any{"accounts": accounts})
 +			return allocationResponse(200, string(data)), nil
 +		}
 +		if len(allowed) == 1 && (len(req.AccountIDs) != 1 || req.AccountIDs[0] != b) {
@@ -9827,7 +9872,7 @@ index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf55
 +		_, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths)
 +		assertAllocation503(t, err)
 +	}
-+	for _, body := range []string{`{"account_ids":["ffffffffffffffff"]}`, `{"account_ids":[]}`, `{"account_ids":null}`, `{"account_ids":[],"account_ids":[]}`} {
++	for _, body := range []string{`{"account_ids":["ffffffffffffffff"]}`, `{"account_ids":[]}`, `{"account_ids":null}`, `{"accounts":[]}`, `{"accounts":null}`, `{"accounts":[{"id":"ffffffffffffffff","concurrent_limit":1}]}`, `{"accounts":[{"id":"allocation-account-a","concurrent_limit":0}]}`, `{"accounts":[{"id":"allocation-account-a","concurrent_limit":1},{"id":"allocation-account-a","concurrent_limit":1}]}`} {
 +		s, auths := allocationFixture(t)
 +		s.client.Transport = gatewayAccessTransport(func(*http.Request) (*http.Response, error) { return allocationResponse(200, body), nil })
 +		_, err := s.Pick(context.Background(), "codex", "gateway-model", allocationOptions("denied"), auths)
@@ -9836,14 +9881,15 @@ index 0000000000000000000000000000000000000000..8ea2d4b3f38f8a330c4927f65d4ebf55
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2955eaa47
+index 0000000000000000000000000000000000000000..c9fba3994b20d220a7be94c2195a0a54c489fc1c
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency.go
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,181 @@
 +package auth
 +
 +import (
 +	"context"
++	"net/http"
 +	"sort"
 +	"sync"
 +	"time"
@@ -9852,8 +9898,9 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +)
 +
 +type GatewayAccountConcurrency struct {
-+	ID             string `json:"id"`
-+	ActiveRequests int64  `json:"active_requests"`
++	ID              string `json:"id"`
++	ActiveRequests  int64  `json:"active_requests"`
++	ConcurrentLimit int64  `json:"concurrent_limit"`
 +}
 +
 +type GatewayConcurrencySnapshot struct {
@@ -9878,20 +9925,37 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +		known[id] = true
 +	}
 +	for id := range known {
-+		result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ActiveRequests: m.gatewayConcurrency[id]})
++		result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ActiveRequests: m.gatewayConcurrency[id], ConcurrentLimit: m.gatewayConcurrencyLimit(id)})
 +	}
 +	sort.Slice(result.Accounts, func(i, j int) bool { return result.Accounts[i].ID < result.Accounts[j].ID })
 +	return result
 +}
 +
-+func (m *Manager) beginGatewayExecution(ctx context.Context, candidate *Auth) func() {
++func (m *Manager) gatewayConcurrencyLimit(id string) int64 {
++	selector, _ := m.Selector().(*GatewayAllocationSelector)
++	if selector == nil {
++		return 0
++	}
++	return selector.concurrencyLimit(id)
++}
++
++func gatewayConcurrencyExceeded() error {
++	return &Error{Code: "upstream_concurrency_exceeded", Message: "upstream account concurrency limit reached", Retryable: true, HTTPStatus: http.StatusTooManyRequests}
++}
++
++func (m *Manager) tryBeginGatewayExecution(ctx context.Context, candidate *Auth) (func(), error) {
 +	id, ok := gatewayConcurrencyAccountID(candidate)
 +	if !ok {
-+		return func() {}
++		return func() {}, nil
 +	}
 +	m.gatewayConcurrencyMu.Lock()
 +	if m.gatewayConcurrency == nil {
 +		m.gatewayConcurrency = make(map[string]int64)
++	}
++	limit := m.gatewayConcurrencyLimit(id)
++	if limit > 0 && m.gatewayConcurrency[id] >= limit {
++		m.gatewayConcurrencyMu.Unlock()
++		return nil, gatewayConcurrencyExceeded()
 +	}
 +	m.gatewayConcurrency[id]++
 +	m.gatewayConcurrencyMu.Unlock()
@@ -9906,6 +9970,14 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +			}
 +		})
 +	}
++	return release, nil
++}
++
++func (m *Manager) beginGatewayExecution(ctx context.Context, candidate *Auth) func() {
++	release, err := m.tryBeginGatewayExecution(ctx, candidate)
++	if err != nil || release == nil {
++		return func() {}
++	}
 +	if ctx == nil {
 +		return release
 +	}
@@ -9914,7 +9986,10 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +}
 +
 +func (m *Manager) executeGatewayAttempt(ctx context.Context, executor ProviderExecutor, candidate *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
-+	release := m.beginGatewayExecution(ctx, candidate)
++	release, err := m.tryBeginGatewayExecution(ctx, candidate)
++	if err != nil {
++		return cliproxyexecutor.Response{}, err
++	}
 +	defer release()
 +	if countTokens {
 +		return executor.CountTokens(ctx, candidate, req, opts)
@@ -9927,7 +10002,10 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +	if _, ok := gatewayConcurrencyAccountID(candidate); !ok {
 +		return executor.ExecuteStream(ctx, candidate, req, opts)
 +	}
-+	release := m.beginGatewayExecution(ctx, candidate)
++	release, acquireErr := m.tryBeginGatewayExecution(ctx, candidate)
++	if acquireErr != nil {
++		return nil, acquireErr
++	}
 +	handedOff := false
 +	defer func() {
 +		if !handedOff {
@@ -9947,22 +10025,29 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +	go func() {
 +		defer close(out)
 +		defer release()
++		cancelled := false
 +		for {
++			if cancelled {
++				// Do not release an upstream slot until the provider closes its
++				// source. The context may be cancelled while the provider is still
++				// unwinding, and admitting a replacement before then exceeds the
++				// configured cap.
++				if _, ok := <-source; !ok {
++					return
++				}
++				continue
++			}
 +			select {
 +			case <-done:
-+				return
++				cancelled = true
 +			case chunk, ok := <-source:
 +				if !ok {
 +					return
 +				}
-+				// The failed attempt is finished before its error may trigger failover.
-+				if chunk.Err != nil {
-+					release()
-+				}
 +				select {
-+				case <-done:
-+					return
 +				case out <- chunk:
++				case <-done:
++					cancelled = true
 +				}
 +			}
 +		}
@@ -9980,6 +10065,349 @@ index 0000000000000000000000000000000000000000..b2750accbc55176b786d3fc6866a09f2
 +	}
 +	snapshot := *candidate
 +	return CodexOAuthAccountIndex(&snapshot)
++}
+diff --git a/sdk/cliproxy/auth/gateway_concurrency_limit_test.go b/sdk/cliproxy/auth/gateway_concurrency_limit_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf4064b2dc
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_concurrency_limit_test.go
+@@ -0,0 +1,337 @@
++package auth
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"strings"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++const gatewayTestUserID = "00000000-0000-0000-0000-000000000001"
++
++type gatewayLimitTransport func(*http.Request) (*http.Response, error)
++
++func (f gatewayLimitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	return f(r)
++}
++
++func gatewayLimitResponse(status int, body string) *http.Response {
++	return &http.Response{
++		StatusCode: status,
++		Header:     make(http.Header),
++		Body:       io.NopCloser(strings.NewReader(body)),
++	}
++}
++
++// newGatewayConcurrencyLimitFixture registers real Codex accounts with a
++// GatewayAllocationSelector and primes the selector from the same eligibility
++// payload used by the sidecar. This makes the admission tests exercise the
++// production account identity and per-account limit map.
++func newGatewayConcurrencyLimitFixture(t *testing.T) (*Manager, *GatewayAllocationSelector, []*Auth, map[string]int64) {
++	t.Helper()
++	selector, prototypes := allocationFixture(t)
++	manager := NewManager(nil, selector, nil)
++	manager.SetRetryConfig(0, 0, 0)
++	accounts := make([]*Auth, 0, len(prototypes))
++	for _, prototype := range prototypes {
++		accountID, _ := prototype.Metadata["account_id"].(string)
++		account := gatewayRegisterAccount(t, manager, prototype.ID, accountID)
++		accounts = append(accounts, account)
++	}
++	limits := make(map[string]int64, len(accounts))
++	for _, account := range accounts {
++		limits[gatewayAccountResultIndex(account)] = 1
++	}
++	selector.client.Transport = gatewayLimitTransport(func(r *http.Request) (*http.Response, error) {
++		if r.URL.String() != gatewayEligibilityURL {
++			return gatewayLimitResponse(http.StatusInternalServerError, `{}`), nil
++		}
++		var request struct {
++			AccountIDs []string `json:"account_ids"`
++			UserID     string   `json:"user_id"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.UserID != gatewayTestUserID {
++			return gatewayLimitResponse(http.StatusBadRequest, `{}`), nil
++		}
++		payload := make([]map[string]any, 0, len(request.AccountIDs))
++		for _, id := range request.AccountIDs {
++			limit, ok := limits[id]
++			if !ok {
++				return gatewayLimitResponse(http.StatusOK, `{"accounts":[]}`), nil
++			}
++			payload = append(payload, map[string]any{"id": id, "concurrent_limit": limit})
++		}
++		body, _ := json.Marshal(map[string]any{"accounts": payload})
++		return gatewayLimitResponse(http.StatusOK, string(body)), nil
++	})
++	primeGatewayConcurrencyLimits(t, selector, accounts)
++	return manager, selector, accounts, limits
++}
++
++func primeGatewayConcurrencyLimits(t *testing.T, selector *GatewayAllocationSelector, accounts []*Auth) {
++	t.Helper()
++	if _, err := selector.eligibleAccounts(context.Background(), gatewayTestUserID, accounts); err != nil {
++		t.Fatalf("prime eligibility: %v", err)
++	}
++}
++
++func assertGatewayConcurrency429(t *testing.T, err error) {
++	t.Helper()
++	var apiErr *Error
++	if !errors.As(err, &apiErr) {
++		t.Fatalf("error = %v, want typed 429", err)
++	}
++	if apiErr.Code != "upstream_concurrency_exceeded" || apiErr.HTTPStatus != http.StatusTooManyRequests {
++		t.Fatalf("error = %#v, want upstream_concurrency_exceeded/429", apiErr)
++	}
++}
++
++func gatewayConcurrencySnapshotCount(t *testing.T, manager *Manager, id string) int64 {
++	t.Helper()
++	for _, account := range manager.GatewayConcurrency().Accounts {
++		if account.ID == id {
++			return account.ActiveRequests
++		}
++	}
++	return 0
++}
++
++type blockingGatewayLimitExecutor struct {
++	id      string
++	started chan string
++	release chan struct{}
++	calls   atomic.Int64
++}
++
++func (e *blockingGatewayLimitExecutor) Identifier() string { return e.id }
++
++func (e *blockingGatewayLimitExecutor) Execute(ctx context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	e.calls.Add(1)
++	e.started <- auth.ID
++	select {
++	case <-ctx.Done():
++		return cliproxyexecutor.Response{}, ctx.Err()
++	case <-e.release:
++		return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
++	}
++}
++
++func (e *blockingGatewayLimitExecutor) ExecuteStream(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	return nil, errors.New("stream not used")
++}
++func (*blockingGatewayLimitExecutor) Refresh(context.Context, *Auth) (*Auth, error) { return nil, nil }
++func (e *blockingGatewayLimitExecutor) CountTokens(ctx context.Context, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	return e.Execute(ctx, auth, req, opts)
++}
++func (*blockingGatewayLimitExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
++	return nil, nil
++}
++
++func TestGatewayConcurrencyLimitIsAtomicAndReturns429WithoutCooldown(t *testing.T) {
++	manager, selector, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	executor := &blockingGatewayLimitExecutor{id: "codex", started: make(chan string, 2), release: make(chan struct{})}
++	manager.RegisterExecutor(executor)
++
++	firstDone := make(chan error, 1)
++	go func() {
++		_, err := manager.executeGatewayAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, false)
++		firstDone <- err
++	}()
++	select {
++	case <-executor.started:
++	case <-time.After(2 * time.Second):
++		t.Fatal("first execution did not start")
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("active count = %d, want 1", got)
++	}
++	if got := selector.concurrencyLimit(gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("configured limit = %d, want 1", got)
++	}
++
++	if _, err := manager.executeGatewayAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}, false); err == nil {
++		t.Fatal("second execution bypassed the account cap")
++	} else {
++		assertGatewayConcurrency429(t, err)
++	}
++	if got := executor.calls.Load(); got != 1 {
++		t.Fatalf("executor calls = %d, want 1", got)
++	}
++	current, ok := manager.GetByID(account.ID)
++	if !ok || !GatewayAccountAvailable(current) || current.Unavailable || current.Quota.Exceeded {
++		t.Fatalf("local cap rejection poisoned credential state: %#v", current)
++	}
++
++	close(executor.release)
++	if err := <-firstDone; err != nil {
++		t.Fatalf("first execution: %v", err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("active count after release = %d, want 0", got)
++	}
++
++	// A concurrent admission race must still admit no more than the configured
++	// one request. Hold the winner until every contender has attempted admission
++	// so a fast release cannot make the test accidentally sequential.
++	start := make(chan struct{})
++	winners := make(chan func(), 64)
++	var wg sync.WaitGroup
++	for range 64 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			<-start
++			release, err := manager.tryBeginGatewayExecution(context.Background(), account)
++			if err == nil {
++				winners <- release
++			}
++		}()
++	}
++	close(start)
++	wg.Wait()
++	if got := len(winners); got != 1 {
++		t.Fatalf("concurrent admissions = %d, want exactly one", got)
++	}
++	(<-winners)()
++}
++
++func TestGatewayConcurrencyLimitUsesFreeAccountAndRejectsWhenAllAreFull(t *testing.T) {
++	manager, selector, accounts, limits := newGatewayConcurrencyLimitFixture(t)
++	first, second := accounts[0], accounts[1]
++	firstIndex, secondIndex := gatewayAccountResultIndex(first), gatewayAccountResultIndex(second)
++	limits[firstIndex] = 1
++	limits[secondIndex] = 1
++	primeGatewayConcurrencyLimits(t, selector, accounts)
++
++	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), first)
++	if err != nil {
++		t.Fatal(err)
++	}
++	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), second)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, firstIndex); got != 1 {
++		t.Fatalf("first account count = %d, want 1", got)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, secondIndex); got != 1 {
++		t.Fatalf("second account count = %d, want 1", got)
++	}
++	if _, err := manager.tryBeginGatewayExecution(context.Background(), first); err == nil {
++		t.Fatal("bound account admitted a second request")
++	} else {
++		assertGatewayConcurrency429(t, err)
++	}
++	firstRelease()
++	secondRelease()
++	if got := gatewayConcurrencySnapshotCount(t, manager, firstIndex) + gatewayConcurrencySnapshotCount(t, manager, secondIndex); got != 0 {
++		t.Fatalf("active count after releasing both accounts = %d", got)
++	}
++}
++
++type streamGatewayLimitExecutor struct {
++	id      string
++	started chan string
++	chunks  chan cliproxyexecutor.StreamChunk
++}
++
++func (e *streamGatewayLimitExecutor) Identifier() string { return e.id }
++func (e *streamGatewayLimitExecutor) Execute(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	return cliproxyexecutor.Response{}, errors.New("ordinary execution not used")
++}
++func (e *streamGatewayLimitExecutor) ExecuteStream(_ context.Context, auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	e.started <- auth.ID
++	return &cliproxyexecutor.StreamResult{Chunks: e.chunks}, nil
++}
++func (*streamGatewayLimitExecutor) Refresh(context.Context, *Auth) (*Auth, error) { return nil, nil }
++func (*streamGatewayLimitExecutor) CountTokens(context.Context, *Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	return cliproxyexecutor.Response{}, errors.New("count tokens not used")
++}
++func (*streamGatewayLimitExecutor) HttpRequest(context.Context, *Auth, *http.Request) (*http.Response, error) {
++	return nil, nil
++}
++
++func TestGatewayConcurrencyLimitCoversBoundStreamingUntilStreamTerminates(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	executor := &streamGatewayLimitExecutor{id: "codex", started: make(chan string, 2), chunks: make(chan cliproxyexecutor.StreamChunk, 1)}
++	first, err := manager.executeGatewayStreamAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, cliproxyexecutor.Options{})
++	if err != nil {
++		t.Fatalf("first stream: %v", err)
++	}
++	<-executor.started
++	if first == nil || first.Chunks == nil {
++		t.Fatal("first stream has no chunk source")
++	}
++	if _, err := manager.executeGatewayStreamAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, cliproxyexecutor.Options{}); err == nil {
++		t.Fatal("second bound stream bypassed the cap")
++	} else {
++		assertGatewayConcurrency429(t, err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("active stream count = %d, want 1", got)
++	}
++
++	executor.chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("one")}
++	if chunk, ok := <-first.Chunks; !ok || string(chunk.Payload) != "one" {
++		t.Fatalf("first stream chunk = %#v, open = %t", chunk, ok)
++	}
++	close(executor.chunks)
++	for range first.Chunks {
++	}
++	deadline := time.Now().Add(2 * time.Second)
++	for time.Now().Before(deadline) && gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)) != 0 {
++		time.Sleep(time.Millisecond)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("active stream count after termination = %d, want 0", got)
++	}
++}
++
++func TestGatewayConcurrencyLimitAllAccountsFullReturns429FromAllocator(t *testing.T) {
++	manager, selector, accounts, limits := newGatewayConcurrencyLimitFixture(t)
++	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[0])
++	if err != nil {
++		t.Fatal(err)
++	}
++	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[1])
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer firstRelease()
++	defer secondRelease()
++
++	selector.client.Transport = gatewayLimitTransport(func(r *http.Request) (*http.Response, error) {
++		var request struct {
++			AccountIDs []string `json:"account_ids"`
++			UserID     string   `json:"user_id"`
++		}
++		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.UserID != gatewayTestUserID {
++			return gatewayLimitResponse(http.StatusBadRequest, `{}`), nil
++		}
++		if r.URL.String() == gatewayAllocationURL {
++			return gatewayLimitResponse(http.StatusTooManyRequests, `{"error":"upstream_concurrency_exceeded"}`), nil
++		}
++		if r.URL.String() != gatewayEligibilityURL {
++			return gatewayLimitResponse(http.StatusNotFound, `{}`), nil
++		}
++		payload := make([]map[string]any, 0, len(request.AccountIDs))
++		for _, id := range request.AccountIDs {
++			payload = append(payload, map[string]any{"id": id, "concurrent_limit": limits[id]})
++		}
++		body, _ := json.Marshal(map[string]any{"accounts": payload})
++		return gatewayLimitResponse(http.StatusOK, string(body)), nil
++	})
++	primeGatewayConcurrencyLimits(t, selector, accounts)
++	_, err = selector.Pick(context.Background(), "codex", "gateway-model", allocationOptions("all-full"), accounts)
++	assertGatewayConcurrency429(t, err)
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency_test.go b/sdk/cliproxy/auth/gateway_concurrency_test.go
 new file mode 100644

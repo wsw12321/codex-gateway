@@ -101,7 +101,7 @@ func TestUpstreamAllocationUsesOnlyDatabaseAndFailsClosed(t *testing.T) {
 		want   int
 	}{
 		{"new account default", 1, false, 200},
-		{"single draining account", 0, false, 503},
+		{"single draining account", 0, false, 429},
 		{"database failure", 1, true, 503},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -128,6 +128,9 @@ func TestUpstreamAllocationUsesOnlyDatabaseAndFailsClosed(t *testing.T) {
 			}
 			if test.want == 200 && strings.TrimSpace(w.Body.String()) != `{"account_id":"0123456789abcdef"}` {
 				t.Fatalf("selection=%s", w.Body.String())
+			}
+			if test.want == 429 && !strings.Contains(w.Body.String(), "upstream_concurrency_exceeded") {
+				t.Fatalf("unavailable account did not return the concurrency error: %s", w.Body.String())
 			}
 		})
 	}
@@ -184,6 +187,49 @@ func TestUpstreamWeightRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
+func concurrentLimitTestRequest(body string) *http.Request {
+	r := statusTestRequest(body)
+	r.URL.Path = "/admin/upstream-accounts/0123456789abcdef/concurrent-limit"
+	return r
+}
+
+func TestUpstreamConcurrentLimitRejectsInvalidRequests(t *testing.T) {
+	for _, body := range []string{
+		``, `{}`, `null`, `[]`, `{"concurrent_limit":null}`, `{"concurrent_limit":0}`,
+		`{"concurrent_limit":-1}`, `{"concurrent_limit":2147483648}`, `{"concurrent_limit":1.1}`,
+		`{"concurrent_limit":1.0}`, `{"concurrent_limit":1e1}`, `{"concurrent_limit":"2"}`,
+		`{"concurrent_limit":true}`, `{"Concurrent_limit":2}`, `{"concurrent_limit":1,"concurrent_limit":2}`,
+		`{"concurrent_limit":2,"token":"sensitive-canary"}`, `{"concurrent_limit":2}{}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			(&Server{}).setUpstreamAccountConcurrentLimit(w, concurrentLimitTestRequest(body))
+			if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "sensitive-canary") {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, mutate := range []func(*http.Request){
+		func(r *http.Request) { r.Header.Del("Content-Type") },
+		func(r *http.Request) { r.URL.RawQuery = "concurrent_limit=2" },
+	} {
+		r := concurrentLimitTestRequest(`{"concurrent_limit":2}`)
+		mutate(r)
+		w := httptest.NewRecorder()
+		(&Server{}).setUpstreamAccountConcurrentLimit(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("protocol status=%d", w.Code)
+		}
+	}
+	r := concurrentLimitTestRequest(`{"concurrent_limit":2}`)
+	r.SetPathValue("id", "INVALID")
+	w := httptest.NewRecorder()
+	(&Server{}).setUpstreamAccountConcurrentLimit(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("id status=%d", w.Code)
+	}
+}
+
 func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 	for _, weight := range []int64{0, 20, store.MaxUpstreamAllocationWeight} {
 		for _, fail := range []bool{false, true} {
@@ -199,7 +245,7 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 					if !strings.Contains(query, "UPDATE upstream_accounts") || args[1].Value != weight {
 						t.Fatalf("unexpected write query %s %+v", query, args)
 					}
-					return &upstreamAuditRows{columns: make([]string, 8), values: []driver.Value{"0123456789abcdef", "u***@example.com", "plus", "available", now, now, now, weight}}, nil
+					return &upstreamAuditRows{columns: make([]string, 9), values: []driver.Value{"0123456789abcdef", "u***@example.com", "plus", "available", now, now, now, weight, int64(1)}}, nil
 				}}})
 				defer db.Close()
 				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -242,5 +288,33 @@ func TestUpstreamEligibilityRequiresAuthenticatedCanonicalUser(t *testing.T) {
 	server.eligibleUpstreamAccounts(w, request)
 	if w.Code != 401 {
 		t.Fatal("eligibility endpoint accepted unauthenticated request")
+	}
+}
+
+func TestUpstreamEligibilityReturnsPerAccountConcurrentLimits(t *testing.T) {
+	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if !strings.Contains(query, "COALESCE(a.concurrent_limit, 1)") || len(args) != 2 {
+			return nil, fmt.Errorf("unexpected eligibility query: %s %+v", query, args)
+		}
+		return &upstreamAuditRows{columns: []string{"id", "concurrent_limit"}, values: []driver.Value{"0123456789abcdef", int64(3)}}, nil
+	}}})
+	defer db.Close()
+	server := &Server{config: config.Config{SidecarToken: "sidecar-test-secret"}, store: store.New(db)}
+	w := httptest.NewRecorder()
+	server.eligibleUpstreamAccounts(w, allocationTestRequest(`{"account_ids":["0123456789abcdef"],"user_id":"00000000-0000-0000-0000-000000000001"}`))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var result struct {
+		Accounts []struct {
+			ID              string `json:"id"`
+			ConcurrentLimit int    `json:"concurrent_limit"`
+		} `json:"accounts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Accounts) != 1 || result.Accounts[0].ID != "0123456789abcdef" || result.Accounts[0].ConcurrentLimit != 3 {
+		t.Fatalf("eligibility response=%s", w.Body.String())
 	}
 }

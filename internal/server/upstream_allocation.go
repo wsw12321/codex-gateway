@@ -61,23 +61,62 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if eligibility {
-		allowed, err := s.store.EligibleUpstreamAccounts(r.Context(), userID, ids)
+		allowed, err := s.store.EligibleUpstreamAccountLimits(r.Context(), userID, ids)
 		if err != nil {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"account_ids": allowed})
+		accounts := make([]map[string]any, 0, len(allowed))
+		for _, account := range allowed {
+			accounts = append(accounts, map[string]any{"id": account.ID, "concurrent_limit": account.ConcurrentLimit})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
 		return
 	}
 	id, err := s.store.SelectUpstreamAccount(r.Context(), userID, ids, time.Now().UTC())
 	if err != nil {
-		if s.logger != nil && !errors.Is(err, store.ErrNoUpstreamAccount) {
+		if errors.Is(err, store.ErrNoUpstreamAccount) {
+			httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "upstream_concurrency_exceeded", "暂无可用的上游账号，请稍后重试")
+			return
+		}
+		if s.logger != nil {
 			s.logger.Error("select upstream account failed", "request_id", httpx.RequestID(r.Context()))
 		}
 		httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法分配上游账号")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"account_id": id})
+}
+
+func (s *Server) setUpstreamAccountConcurrentLimit(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUpstreamAccountID(id) {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
+		return
+	}
+	if !strictJSONRequest(r) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_request", "并发对话数量请求必须为 JSON，且不能包含查询参数")
+		return
+	}
+	var limit *int64
+	if err := decodeSingleJSONField(r, upstreamWeightRequestBytes, "concurrent_limit", &limit); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	if limit == nil || *limit < 1 || *limit > store.MaxUpstreamConcurrentLimit {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_limit", "并发对话数量必须是 1 至 2147483647 的整数")
+		return
+	}
+	account, err := s.store.SetUpstreamAccountConcurrentLimit(r.Context(), store.SetUpstreamAccountConcurrentLimitParams{
+		AccountID: id, Limit: int(*limit), At: time.Now().UTC(),
+		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
+		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
+	})
+	if err != nil {
+		s.storeWriteError(w, r, "set upstream concurrent limit", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": account.ID, "concurrent_limit": account.ConcurrentLimit})
 }
 
 func (s *Server) setUpstreamAccountAccess(w http.ResponseWriter, r *http.Request) {

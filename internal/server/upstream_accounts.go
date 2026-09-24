@@ -115,6 +115,7 @@ type upstreamAccountDTO struct {
 	ReasoningTokens     int64      `json:"reasoning_tokens"`
 	EquivalentCostUSD   string     `json:"equivalent_cost_usd"`
 	AllocationWeight    int        `json:"allocation_weight"`
+	ConcurrentLimit     int        `json:"concurrent_limit"`
 	RollingCostUSD      string     `json:"rolling_cost_usd"`
 	RollingCostShare    string     `json:"rolling_cost_share"`
 	TargetShare         string     `json:"target_share"`
@@ -246,7 +247,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
 			AccessMode: accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
-			AllocationWeight: allocation.AllocationWeight, RollingCostUSD: allocation.CostUSD,
+			AllocationWeight: allocation.AllocationWeight, ConcurrentLimit: row.ConcurrentLimit, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
 			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,
 			Status: finalStatus, CliproxyStatus: cliproxyStatus, GatewayManualStatus: gatewayManualStatus,

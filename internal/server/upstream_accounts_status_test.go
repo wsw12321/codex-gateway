@@ -166,7 +166,7 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 		{name: "expired verification", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, age: 6 * time.Minute, code: "recent_identity_verification_required", wantStatus: 403},
 		{name: "verified owner reaches handler", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, code: "invalid_json", wantStatus: 400},
 	} {
-		for _, control := range []string{"status", "allocation-weight", "access"} {
+		for _, control := range []string{"status", "allocation-weight", "concurrent-limit", "access"} {
 			t.Run(test.name+"/"+control, func(t *testing.T) {
 				now := time.Now().UTC()
 				var verified driver.Value

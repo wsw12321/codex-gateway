@@ -58,7 +58,7 @@ function deferred() {
 function account(id = "account-1", status = "available", can_manage = true) {
   const manual = status === "unavailable" ? "manual_disabled" : "enabled";
   return {id, status, can_manage, cliproxy_status: "active", gateway_manual_status: manual, gateway_quota_status: "available",
-    email_masked: `${id}@example.test`, plan: "Plus", allocation_weight: 1,
+    email_masked: `${id}@example.test`, plan: "Plus", allocation_weight: 1, concurrent_limit: 1,
     rolling_cost_usd: "1.00", rolling_cost_share: "0.2", target_share: "0.2"};
 }
 
@@ -95,9 +95,13 @@ function dashboard(accounts = [account()], extra = {}) {
     weightButton: (index = 0) => root.querySelectorAll(".upstream-allocation-save")[index],
     allocationState: (index = 0) => root.querySelectorAll(".upstream-allocation-state")[index],
     weightForm: (index = 0) => root.querySelectorAll(".upstream-allocation-form")[index],
+    limitInput: (index = 0) => root.querySelectorAll(".upstream-concurrency-limit-input")[index],
+    limitButton: (index = 0) => root.querySelectorAll(".upstream-concurrency-limit-save")[index],
+    limitForm: (index = 0) => root.querySelectorAll(".upstream-concurrency-limit-form")[index],
     api: (handler) => { context.handler = handler; run("api = handler;"); },
     change: (index = 0) => run(`changeUpstreamAccountStatus(upstreamAccounts[${index}])`),
     saveWeight: (index = 0) => run(`saveUpstreamAllocationWeight(upstreamAccounts[${index}], all(".upstream-allocation-form")[${index}])`),
+    saveLimit: (index = 0) => run(`saveUpstreamConcurrentLimit(upstreamAccounts[${index}], all(".upstream-concurrency-limit-form")[${index}])`),
     load: () => run('loadUpstreamAccounts(new URLSearchParams("all=true"))'),
   };
 }
@@ -317,6 +321,38 @@ test("allocation inputs reject invalid integers locally without issuing requests
     assert.equal(ui.weightButton().disabled, false);
   }
   assert.equal(calls, 0);
+});
+
+test("per-account concurrency limits reject invalid integers locally", async () => {
+  const ui = dashboard();
+  let calls = 0;
+  ui.api(async () => { calls++; throw new Error("must not request"); });
+  for (const invalid of ["", "0", "-1", "1.5", "1e2", "2147483648", "9007199254740993"]) {
+    ui.limitInput().value = invalid;
+    await ui.saveLimit();
+    assert.equal(ui.limitInput().attributes["aria-invalid"], "true", invalid);
+    assert.match(ui.limitForm().querySelector(".form-message").textContent, /1 至 2147483647 的整数/);
+    assert.equal(ui.limitButton().disabled, false);
+  }
+  assert.equal(calls, 0);
+});
+
+test("per-account concurrency limit saves the confirmed integer and refreshes", async () => {
+  const ui = dashboard();
+  const writes = [];
+  ui.api(async (_, options) => {
+    if (options) {
+      writes.push({url: _, method: options.method, body: JSON.parse(options.body)});
+      return {id: "account-1", concurrent_limit: 7};
+    }
+    return {accounts: [{...account(), concurrent_limit: 7}]};
+  });
+  ui.limitInput().value = "7";
+  await ui.saveLimit();
+  assert.deepEqual(writes, [{url: "/admin/upstream-accounts/account-1/concurrent-limit", method: "PUT", body: {concurrent_limit: 7}}]);
+  assert.equal(ui.run("upstreamAccounts[0].concurrent_limit"), 7);
+  assert.equal(ui.limitInput().value, "7");
+  assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
 });
 
 test("allocation save accepts zero and PostgreSQL integer maximum and confirms exact values", async () => {

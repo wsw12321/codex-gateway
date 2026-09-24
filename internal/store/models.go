@@ -321,6 +321,7 @@ type UpstreamAccount struct {
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 	AllocationWeight int
+	ConcurrentLimit  int
 }
 
 // UpstreamAccountSnapshot is one entry in an authoritative sidecar metadata
@@ -341,6 +342,7 @@ type UpstreamAccountSummary struct {
 	MaskedEmail       string
 	Plan              string
 	Status            string
+	ConcurrentLimit   int
 	LastSyncedAt      *time.Time
 	RequestCount      int64
 	ErrorCount        int64

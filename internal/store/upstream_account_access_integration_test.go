@@ -45,6 +45,15 @@ func TestUpstreamAccountAccessPostgresIntegration(t *testing.T) {
 		if err != nil || len(got) != want {
 			t.Fatalf("eligibility %s=%v %v", user, got, err)
 		}
+		withLimits, err := s.EligibleUpstreamAccountLimits(ctx, user, []string{shared, exclusive})
+		if err != nil || len(withLimits) != want {
+			t.Fatalf("eligibility limits %s=%v %v", user, withLimits, err)
+		}
+		for _, item := range withLimits {
+			if item.ConcurrentLimit != 1 {
+				t.Fatalf("default concurrent limit for %s = %d", item.ID, item.ConcurrentLimit)
+			}
+		}
 	}
 	assertEligible(owner.ID, 1)
 	assertEligible(member.ID, 2)

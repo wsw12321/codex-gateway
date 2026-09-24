@@ -479,12 +479,12 @@ func (upstreamSummaryConn) QueryContext(_ context.Context, query string, _ []dri
 	}
 	return &upstreamAuditRows{
 		columns: []string{
-			"upstream_account_id", "masked_email", "plan", "status", "last_synced_at",
+			"upstream_account_id", "masked_email", "plan", "status", "concurrent_limit", "last_synced_at",
 			"request_count", "error_count", "input_tokens", "cached_input_tokens",
 			"cache_write_tokens", "output_tokens", "reasoning_tokens", "equivalent_cost_usd",
 		},
 		values: []driver.Value{
-			"0123456789abcdef", "u***@example.com", "plus", "available",
+			"0123456789abcdef", "u***@example.com", "plus", "available", int64(1),
 			time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC),
 			int64(3), int64(1), int64(100), int64(20), int64(10), int64(30), int64(5), "0.125",
 		},
