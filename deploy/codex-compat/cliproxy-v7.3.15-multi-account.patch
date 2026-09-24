@@ -9881,10 +9881,10 @@ index 0000000000000000000000000000000000000000..e529a1a5685aeb96be09aaf1fba46586
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c9fba3994b20d220a7be94c2195a0a54c489fc1c
+index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca9660178cd12
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency.go
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,183 @@
 +package auth
 +
 +import (
@@ -10023,31 +10023,33 @@ index 0000000000000000000000000000000000000000..c9fba3994b20d220a7be94c2195a0a54
 +		done = ctx.Done()
 +	}
 +	go func() {
-+		defer close(out)
 +		defer release()
-+		cancelled := false
-+		for {
-+			if cancelled {
-+				// Do not release an upstream slot until the provider closes its
-+				// source. The context may be cancelled while the provider is still
-+				// unwinding, and admitting a replacement before then exceeds the
-+				// configured cap.
-+				if _, ok := <-source; !ok {
-+					return
-+				}
-+				continue
++		outputClosed := false
++		closeOutput := func() {
++			if !outputClosed {
++				close(out)
++				outputClosed = true
 +			}
++		}
++		for {
 +			select {
 +			case <-done:
-+				cancelled = true
++				// The client request has ended. Close the client-facing stream
++				// immediately and release the admission slot exactly once. The
++				// provider receives the same cancelled context and is responsible
++				// for stopping its own source.
++				closeOutput()
++				return
 +			case chunk, ok := <-source:
 +				if !ok {
++					closeOutput()
 +					return
 +				}
 +				select {
 +				case out <- chunk:
 +				case <-done:
-+					cancelled = true
++					closeOutput()
++					return
 +				}
 +			}
 +		}
