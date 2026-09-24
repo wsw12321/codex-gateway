@@ -29,6 +29,35 @@ func TestUpstreamAccountConcurrencyAuthenticatedSnapshot(t *testing.T) {
 	}
 }
 
+func TestUpstreamAccountConcurrencySidecarWireFormat(t *testing.T) {
+	now := time.Now().UTC()
+	for _, test := range []struct {
+		name  string
+		limit string
+	}{
+		{name: "legacy snapshot"},
+		{name: "unset limit", limit: ",\"concurrent_limit\":0"},
+		{name: "default limit", limit: ",\"concurrent_limit\":1"},
+		{name: "large limit", limit: ",\"concurrent_limit\":9223372036854775807"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Match the sidecar's snapshot directly rather than serializing the
+			// gateway's deliberately smaller public response type.
+			body := fmt.Sprintf(`{"sampled_at":%q,"accounts":[{"id":"0123456789abcdef","active_requests":0%s},{"id":"fedcba9876543210","active_requests":3%s}]}`, now.Format(time.RFC3339Nano), test.limit, test.limit)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, body)
+			}))
+			defer server.Close()
+			base, _ := url.Parse(server.URL)
+			result, err := NewWithHTTPClient(base, "internal-secret", server.Client()).UpstreamAccountConcurrency(context.Background())
+			if err != nil || !result.SampledAt.Equal(now) || len(result.Accounts) != 2 || result.Accounts[0].ActiveRequests != 0 || result.Accounts[1].ActiveRequests != 3 {
+				t.Fatalf("snapshot=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestUpstreamAccountConcurrencyRejectsMissingStaleOrUnsafeValues(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, body := range []string{
@@ -41,6 +70,12 @@ func TestUpstreamAccountConcurrencyRejectsMissingStaleOrUnsafeValues(t *testing.
 		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":1.5}]}`,
 		`{"sampled_at":"` + now + `","accounts":[{"id":"secret@example.com","active_requests":0}]}`,
 		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"token":"secret"}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":1,"token":"secret"}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":null}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":-1}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":1.5}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":"1"}]}`,
+		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0,"concurrent_limit":9223372036854775808}]}`,
 		`{"sampled_at":"` + now + `","accounts":[{"id":"0123456789abcdef","active_requests":0},{"id":"0123456789abcdef","active_requests":1}]}`,
 	} {
 		t.Run(body, func(t *testing.T) {

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"time"
 )
@@ -23,8 +24,9 @@ func (c *Client) UpstreamAccountConcurrency(ctx context.Context) (UpstreamConcur
 	var wire struct {
 		SampledAt *time.Time `json:"sampled_at"`
 		Accounts  *[]struct {
-			ID             *string `json:"id"`
-			ActiveRequests *int64  `json:"active_requests"`
+			ID              *string         `json:"id"`
+			ActiveRequests  *int64          `json:"active_requests"`
+			ConcurrentLimit json.RawMessage `json:"concurrent_limit"`
 		} `json:"accounts"`
 	}
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/concurrency", &wire); err != nil {
@@ -45,6 +47,14 @@ func (c *Client) UpstreamAccountConcurrency(ctx context.Context) (UpstreamConcur
 		if account.ID == nil || !upstreamAccountPattern.MatchString(*account.ID) || seen[*account.ID] ||
 			account.ActiveRequests == nil || *account.ActiveRequests < 0 {
 			return UpstreamConcurrency{}, invalid
+		}
+		// Current sidecars include the configured limit with every counter.
+		// Older snapshots omit it; zero is valid without an allocation selector.
+		if len(account.ConcurrentLimit) != 0 {
+			var limit *int64
+			if err := json.Unmarshal(account.ConcurrentLimit, &limit); err != nil || limit == nil || *limit < 0 {
+				return UpstreamConcurrency{}, invalid
+			}
 		}
 		seen[*account.ID] = true
 		result.Accounts = append(result.Accounts, UpstreamAccountConcurrency{ID: *account.ID, ActiveRequests: *account.ActiveRequests})

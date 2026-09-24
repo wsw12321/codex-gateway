@@ -90,7 +90,10 @@ Astra 冒烟和生产切换按下文规程执行。
   经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
   或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
   CLIProxyAPI 完整管理 API 仍保持关闭。
-- 并发接口按稳定账号 ID 返回 `sampled_at` 和 `{id,active_requests}`，其中
+- 兼容服务并发接口按稳定账号 ID 返回 `sampled_at` 和
+  `{id,active_requests,concurrent_limit}`。Gateway 接受并校验非负整数
+  `concurrent_limit`（未启用分配选择器时为 `0`），也兼容省略该字段的旧快照；
+  Owner 接口仅输出 `{id,active_requests}`，其他未知字段仍拒绝解析。其中
   `active_requests` 表示该账号当前活跃的 root 对话数。首响应等待和长流均计数；同一
   root 在同一账号上的重叠执行只占一个名额，root 的最后一个执行结束、失败、取消或流
   关闭后才释放。不同 root 分别计数，同一 root 切换到另一个账号时在另一个账号独立计数。
