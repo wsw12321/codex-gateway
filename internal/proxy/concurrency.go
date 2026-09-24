@@ -14,8 +14,9 @@ type UpstreamConcurrency struct {
 }
 
 type UpstreamAccountConcurrency struct {
-	ID             string `json:"id"`
-	ActiveRequests int64  `json:"active_requests"`
+	ID string `json:"id"`
+	// ActiveRequests retains the wire name but counts active root conversations.
+	ActiveRequests int64 `json:"active_requests"`
 }
 
 func (c *Client) UpstreamAccountConcurrency(ctx context.Context) (UpstreamConcurrency, error) {

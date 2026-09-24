@@ -17,11 +17,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch
-compat_patch_sha256=93567c44d6e60f0f77ef7231f2ce88cb9e4db03aa6568676ffacb2fab388a060
+compat_patch_sha256=649273bb97bef57458e6940278324f3238ceca388e6900da4fd3ea86deddae24
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.3.15-673131f5-be3a7f7524f6451b-codex-only
+compat_image=codex-gateway-compat:v7.3.15-673131f5-649273bb97bef574-codex-only
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -172,6 +172,12 @@ grep -Fq 'internalAccounts.GET("/concurrency", s.getUpstreamConcurrency)' "$comp
     grep -Fq 'TestGatewayConcurrencyStreamWaitOutputCloseCancelAndFailure' "$compat_patch" && \
     grep -Fq 'TestInternalUpstreamConcurrencyRequiresBearerAndReturnsOnlyCounters' "$compat_patch" || \
     fail 'CLIProxyAPI must expose authenticated execution concurrency with lifecycle regressions'
+grep -Fq 'TestConversationRootRecognizedHierarchy' "$compat_patch" && \
+    grep -Fq 'TestConversationRootConcurrentManagerExecutions' "$compat_patch" && \
+    grep -Fq 'TestGatewayConcurrencyDeduplicatesRootExecutions' "$compat_patch" && \
+    grep -Fq 'TestGatewayConcurrencySameRootCountsPerAccount' "$compat_patch" && \
+    grep -Fq -- "-run '^Test(Gateway|ConversationRoot)'" "$compat_dockerfile" || \
+    fail 'CLIProxyAPI must test caller-scoped root identity and account root concurrency under the race detector'
 grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
     grep -Fq '.gateway-account-state' "$compat_patch" && \
     grep -Fq 'TestGatewayAccountConcurrentControlsRemainDurable' "$compat_patch" && \

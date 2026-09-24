@@ -56,7 +56,7 @@ RUN go test -count=1 \
 # Concurrency is part of the selection contract: the reverse callback must not
 # hold manager locks, and simultaneous first requests must share one binding.
 # Watcher revisions must also preserve canonical account identity under updates.
-RUN go test -race -count=1 -run '^TestGateway' ./sdk/cliproxy/auth ./internal/watcher
+RUN go test -race -count=1 -run '^Test(Gateway|ConversationRoot)' ./sdk/cliproxy/auth ./internal/watcher
 
 RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/executor > /tmp/codex-regression-tests \
     && for test_name in \

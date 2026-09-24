@@ -802,7 +802,7 @@
             </div>
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
             <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。</p>
-            <p id="upstream-concurrency-limit-help" class="callout" role="note"><strong>并发对话数量：</strong>每个账号默认上限为 1，按正在执行的请求计数。同一对话的重叠请求也分别占用名额，已有绑定同样受限。所有账号都不可用时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新请求。</p>
+            <p id="upstream-concurrency-limit-help" class="callout" role="note"><strong>并发对话数量：</strong>每个账号默认上限为 1，按活跃 root 对话计数。同一 root 的重叠主请求、subagent、fork 和 side 对话在同一账号只占一个名额；不同 root 分别计数。Gateway 自身的请求级并发仍按每个请求计数。所有账号都无法接收新对话时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新的 root 对话，活跃 root 的后续请求仍可进入。</p>
             <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
             <form id="upstream-account-filter" class="filters upstream-account-filters">
               <label>历史统计区间

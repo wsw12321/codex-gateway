@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
 重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
 上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
-`be3a7f7524f6451ba76ed861dce0e959640aa4d90930758b19366d8a0cc69209`。
+`649273bb97bef57458e6940278324f3238ceca388e6900da4fd3ea86deddae24`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.15-673131f5-be3a7f7524f6451b-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.15-673131f5-649273bb97bef574-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -61,6 +61,15 @@ Astra 冒烟和生产切换按下文规程执行。
   `X-Codex-Gateway-Affinity` 是每个调用方的 43 字符不透明 HMAC 作用域；sidecar
   校验并消费该头，所有显式及派生 session ID 都以该作用域命名空间隔离，且该头
   永不发送给 OpenAI。
+- sidecar 会把主会话、Codex/Claude subagent、fork、LCP parent 和 side 对话解析为
+  caller-scoped 的 root session。root 关系只来自已识别的 session/parent/turn 元数据；
+  无法解析父关系时使用当前会话自身，缺少会话标识时保留请求级行为。生成给 Gateway
+  的 `conversation_hash` 使用 root identity，客户端伪造的同名请求头不可信，也不会
+  被转发到真实上游。
+  parent registry 在单个 sidecar 实例内保存，TTL 为一小时、容量为 65536；重启、过期
+  或逐出后，仅依据当前请求能识别的关系解析 root。亲和绑定仍使用叶子 session、provider
+  和 model，不新增 root 级账号绑定。新 hash 继续写入 `usage_requests.conversation_hash`，
+  使用独立 root hash domain；不增加数据库列，也不回填历史 leaf hash。
 - 每个请求最多触达两个不同 OAuth 账号。仅认证、额度、429、408、网络错误和
   5xx 可在首个下游字节前切换账号；3xx、其他 4xx、客户端取消及首字节后的流式
   错误都不得重放。部署配置必须把 handler 层 `streaming.bootstrap-retries` 固定为
@@ -81,9 +90,12 @@ Astra 冒烟和生产切换按下文规程执行。
   经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
   或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
   CLIProxyAPI 完整管理 API 仍保持关闭。
-- 并发接口按稳定账号 ID 返回 `sampled_at` 和 `{id,active_requests}`，只包含实际执行中的
-  尝试；首响应等待和长流均计数，每次失败、取消、流关闭与账号切换分别释放。
-  禁用账号不会隐藏已有执行。接口只返回计数，缺失账号不代表零。
+- 并发接口按稳定账号 ID 返回 `sampled_at` 和 `{id,active_requests}`，其中
+  `active_requests` 表示该账号当前活跃的 root 对话数。首响应等待和长流均计数；同一
+  root 在同一账号上的重叠执行只占一个名额，root 的最后一个执行结束、失败、取消或流
+  关闭后才释放。不同 root 分别计数，同一 root 切换到另一个账号时在另一个账号独立计数。
+  禁用账号不会隐藏已有执行。接口只返回计数，缺失账号不代表零；Gateway 自身的请求级
+  lease 仍按每个请求计数。
   Gateway 的 `/admin/upstream-accounts/concurrency` 仅 Owner 可访问，并拒绝超出一分钟
   时钟偏差的快照；旧服务不支持或读取失败时页面显示“暂不可用”。
 - 状态接口只接受 `{"enabled":true}` 或 `{"enabled":false}`，返回确认后的稳定

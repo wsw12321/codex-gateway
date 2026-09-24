@@ -2939,10 +2939,10 @@ index fa988c10d752d7dc211593cc3e979e6a500080b1..c4e828a67f853bb3cfa92baa20133042
  	reporter.EnsurePublished(ctx)
 diff --git a/internal/runtime/executor/codex_executor_redirect_test.go b/internal/runtime/executor/codex_executor_redirect_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..2670fa1e7d72763a5613bac9a5fd27b6f5a02833
+index 0000000000000000000000000000000000000000..e553c4cf7de766e3b34e9fe5f81b334b0d39b125
 --- /dev/null
 +++ b/internal/runtime/executor/codex_executor_redirect_test.go
-@@ -0,0 +1,360 @@
+@@ -0,0 +1,372 @@
 +package executor
 +
 +import (
@@ -3048,11 +3048,17 @@ index 0000000000000000000000000000000000000000..2670fa1e7d72763a5613bac9a5fd27b6
 +	registry.GetGlobalRegistry().RegisterClient(canaryClient, "codex", []*registry.ModelInfo{{
 +		ID: canaryModel,
 +		Config: &registry.ModelConfig{OverrideHeader: map[string]string{
-+			"Authorization":            "Bearer model-override-token",
-+			"Chatgpt-Account-Id":       "model-override-account",
-+			"X-Codex-Gateway-Affinity": "model-override-internal",
-+			"X-Codex-Gateway-User":     "model-override-user",
-+			"X-Codex-Upstream-Account": "model-override-internal",
++			"Authorization":                 "Bearer model-override-token",
++			"Chatgpt-Account-Id":            "model-override-account",
++			"X-Codex-Gateway-Affinity":      "model-override-internal",
++			"X-Codex-Gateway-User":          "model-override-user",
++			"X-Codex-Upstream-Account":      "model-override-internal",
++			"X-Codex-Conversation-Hash":     "model-override-hash",
++			"Thread-Id":                     "model-override-thread",
++			"X-Parent-Session-Id":           "model-override-parent",
++			"X-Parent-Task-Id":              "model-override-task",
++			"X-Side-Session-Id":             "model-override-side",
++			"X-Claude-Code-Parent-Agent-Id": "model-override-agent",
 +		}},
 +	}})
 +	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(canaryClient) })
@@ -3087,7 +3093,7 @@ index 0000000000000000000000000000000000000000..2670fa1e7d72763a5613bac9a5fd27b6
 +		if got := headers.Get("Chatgpt-Account-Id"); got != "canonical-account" {
 +			t.Fatalf("Chatgpt-Account-Id = %q, want canonical account", got)
 +		}
-+		for _, name := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Gateway-User", "X-Codex-Upstream-Account"} {
++		for _, name := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Gateway-User", "X-Codex-Upstream-Account", "X-Codex-Conversation-Hash", "Thread-Id", "Thread_id", "X-Parent-Session-Id", "X-Parent-Task-Id", "X-Side-Session-Id", "X-Claude-Code-Parent-Agent-Id"} {
 +			if got := headers.Get(name); got != "" {
 +				t.Fatalf("%s leaked upstream as %q", name, got)
 +			}
@@ -3102,11 +3108,17 @@ index 0000000000000000000000000000000000000000..2670fa1e7d72763a5613bac9a5fd27b6
 +		SourceFormat:   sdktranslator.FromString("openai-response"),
 +		ResponseFormat: sdktranslator.FromString("openai-response"),
 +		Headers: http.Header{
-+			"X-Codex-Turn-Metadata":    {"options-header-canary"},
-+			"Authorization":            {"Bearer options-override-token"},
-+			"Chatgpt-Account-Id":       {"options-override-account"},
-+			"X-Codex-Gateway-Affinity": {"options-internal-canary"},
-+			"X-Codex-Upstream-Account": {"options-internal-canary"},
++			"X-Codex-Turn-Metadata":         {"options-header-canary"},
++			"Authorization":                 {"Bearer options-override-token"},
++			"Chatgpt-Account-Id":            {"options-override-account"},
++			"X-Codex-Gateway-Affinity":      {"options-internal-canary"},
++			"X-Codex-Upstream-Account":      {"options-internal-canary"},
++			"X-Codex-Conversation-Hash":     {"options-internal-hash"},
++			"Thread_id":                     {"options-thread"},
++			"X-Parent-Session-Id":           {"options-parent"},
++			"X-Parent-Task-Id":              {"options-task"},
++			"X-Side-Session-Id":             {"options-side"},
++			"X-Claude-Code-Parent-Agent-Id": {"options-agent"},
 +		},
 +	}
 +	for _, path := range []struct {
@@ -4150,7 +4162,7 @@ index 7dc4a02a05cf8fe242d7bcb4fb74c86d2fe45faa..8716cd35604ca149d66ff129b8be6591
  const openAICompatTPMFallbackRetryAfter = time.Minute
  
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index a16978360de4d9bb05ace80aa24e78776cc40195..dcde48724e0cd6e627cc6bbe6707946654a23db4 100644
+index a16978360de4d9bb05ace80aa24e78776cc40195..6828aea8c8b8603bfdec212e49529c9ad921842e 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
 @@ -43,6 +43,12 @@ func HasExplicitSessionID(ctx context.Context) bool {
@@ -4176,19 +4188,20 @@ index a16978360de4d9bb05ace80aa24e78776cc40195..dcde48724e0cd6e627cc6bbe67079466
  		// net/http reads Host from req.Host (not req.Header) when writing
  		// a real request, so we must mirror it there. Some callers pass
  		// synthetic requests (e.g. &http.Request{Header: ...}) and only
-@@ -213,3 +222,21 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
+@@ -213,3 +222,37 @@ func applyCustomHeaders(r *http.Request, headers map[string]string) {
  		r.Header.Set(k, v)
  	}
  }
 +
-+// RemoveCodexInternalHeaders removes gateway-only routing and attribution
-+// headers at the final provider request assembly boundary.
++// RemoveCodexInternalHeaders removes routing, attribution, and hierarchy hints
++// at the final provider request assembly boundary. Session-Id / Session_id and
++// X-Codex-Turn-Metadata retain the existing Codex provider cache/turn semantics.
 +func RemoveCodexInternalHeaders(headers http.Header) {
 +	if headers == nil {
 +		return
 +	}
 +	for name := range headers {
-+		if isCodexInternalHeader(name) {
++		if isCodexInternalHeader(name) || isCodexRelationHeader(name) {
 +			delete(headers, name)
 +		}
 +	}
@@ -4196,7 +4209,59 @@ index a16978360de4d9bb05ace80aa24e78776cc40195..dcde48724e0cd6e627cc6bbe67079466
 +
 +func isCodexInternalHeader(name string) bool {
 +	return strings.EqualFold(strings.TrimSpace(name), CodexGatewayUserHeader) || strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
-+		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader)
++		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader) || strings.EqualFold(strings.TrimSpace(name), "X-Codex-Conversation-Hash")
++}
++
++func isCodexRelationHeader(name string) bool {
++	switch strings.ToLower(strings.ReplaceAll(name, "_", "-")) {
++	case "thread-id", "x-codex-parent-thread-id", "x-openai-subagent",
++		"x-claude-code-session-id", "x-claude-code-agent-id", "x-claude-code-parent-agent-id",
++		"x-claude-code-parent-session-id", "x-claude-parent-session-id", "x-claude-code-side-session-id",
++		"x-http-session-id", "x-session-id", "x-session-affinity", "x-slot-session-id", "x-task-id",
++		"x-conversation-id", "x-thread-id", "x-client-request-id", "x-side-session-id", "x-side-thread-id",
++		"x-parent-id", "x-parent-session", "x-parent-session-id", "x-parent-thread-id", "x-parent-task-id",
++		"x-parent-conversation-id", "x-parent-session-affinity", "x-parent-slot-session-id",
++		"x-parent-side-session-id", "x-parent-side-thread-id":
++		return true
++	}
++	return false
++}
+diff --git a/internal/util/header_helpers_conversation_test.go b/internal/util/header_helpers_conversation_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..7d011ac0aa90e603a8547b2241e262a1b803f792
+--- /dev/null
++++ b/internal/util/header_helpers_conversation_test.go
+@@ -0,0 +1,31 @@
++package util
++
++import (
++	"net/http"
++	"testing"
++)
++
++func TestRemoveCodexInternalHeadersConsumesConversationRelations(t *testing.T) {
++	headers := http.Header{}
++	for _, name := range []string{
++		"Thread-Id", "Thread_id", "X-Codex-Parent-Thread-Id", "X-Openai-Subagent",
++		"X-Claude-Code-Session-Id", "X-Claude-Code-Agent-Id", "X-Claude-Code-Parent-Agent-Id",
++		"X-Claude-Code-Parent-Session-Id", "X-Claude-Parent-Session-Id", "X-Claude-Code-Side-Session-Id",
++		"X-Http-Session-Id", "X-Session-Id", "X-Session-Affinity", "X-Slot-Session-Id", "X-Task_id",
++		"X-Conversation-Id", "X-Thread-Id", "X-Client-Request-Id", "X-Side-Session-Id", "X-Side-Thread-Id",
++		"X-Parent-Id", "X-Parent-Session", "X-Parent-Session_id", "X-Parent-Thread-Id", "X-Parent-Task-Id",
++		"X-Parent-Conversation-Id", "X-Parent-Session-Affinity", "X-Parent-Slot-Session-Id",
++		"X-Parent-Side-Session-Id", "X-Parent-Side-Thread-Id",
++		CodexGatewayUserHeader, CodexGatewayAffinityHeader, CodexUpstreamAccountHeader, "x-codex-conversation-hash",
++	} {
++		headers[name] = []string{"internal"}
++	}
++	headers.Set("Session_id", "provider-cache-session")
++	headers.Set("Session-Id", "provider-http-cache-session")
++	headers.Set("Content-Type", "application/json")
++	headers.Set("X-Codex-Turn-Metadata", `{"turn_id":"provider-turn"}`)
++	RemoveCodexInternalHeaders(headers)
++	if len(headers) != 4 || headers.Get("Session_id") != "provider-cache-session" || headers.Get("Session-Id") != "provider-http-cache-session" || headers.Get("Content-Type") != "application/json" || headers.Get("X-Codex-Turn-Metadata") != `{"turn_id":"provider-turn"}` {
++		t.Fatalf("outbound headers=%v; want only provider session, native turn metadata, and content type", headers)
++	}
 +}
 diff --git a/internal/watcher/clients.go b/internal/watcher/clients.go
 index c660b01a8b9a06cf9a89530fb81a44ee2b7620ac..526201281f21b82eaf20b1244ec0aba77eacef77 100644
@@ -6284,7 +6349,7 @@ index 0000000000000000000000000000000000000000..d89da81e1254751bc76193735ed59e55
 +	return auth
 +}
 diff --git a/sdk/cliproxy/auth/conductor.go b/sdk/cliproxy/auth/conductor.go
-index e0a1dbd96b13d0691207ebfc67f41268e961eee9..3071db780b65db45d20f8e4ff699cf836a4dcfdc 100644
+index e0a1dbd96b13d0691207ebfc67f41268e961eee9..c8800835d1d89b6789df5287c3a8d404adb6fda5 100644
 --- a/sdk/cliproxy/auth/conductor.go
 +++ b/sdk/cliproxy/auth/conductor.go
 @@ -46,6 +46,9 @@ type ExecutionSessionCloser interface {
@@ -6297,12 +6362,13 @@ index e0a1dbd96b13d0691207ebfc67f41268e961eee9..3071db780b65db45d20f8e4ff699cf83
  	// Provider is copied for convenience when emitting hooks.
  	Provider string
  	// Model is the upstream model identifier used for the request.
-@@ -145,6 +148,10 @@ type Manager struct {
+@@ -145,6 +148,11 @@ type Manager struct {
  	hook                      Hook
  	resultPolicy              atomic.Pointer[resultPolicyHolder]
  	mu                        sync.RWMutex
 +	gatewayConcurrencyMu      sync.Mutex
-+	gatewayConcurrency        map[string]int64
++	gatewayConcurrency        map[string]map[string]int64
++	gatewayConcurrencySeq     uint64
 +	gatewayAccountStatePath   string
 +	gatewayAccountStates      map[string]gatewayAccountState
  	selectorMu                sync.Mutex
@@ -6391,7 +6457,7 @@ index 272c6c2f5ba8a9f121abde1802492fd22b3e8503..4b0e415c4547a1d96995f6eee6abb0ad
  	case isExplicitModelNotFoundError(err, ""):
  		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c93934a1191e 100644
+index b365f5d85c5d011c765272ca410720d8de563c9e..475da56698276d9d98480ca8017f7e646b5d347a 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -3,10 +3,14 @@ package auth
@@ -6409,9 +6475,16 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  	"path/filepath"
  	"sort"
  	"strconv"
-@@ -343,6 +347,11 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
+@@ -342,48 +346,72 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
+ 		Body:           bytes.Clone(req.Payload),
  		Metadata:       opts.Metadata,
  	})
++	previousPayload := opts.OriginalRequest
++	if len(previousPayload) == 0 {
++		previousPayload = req.Payload
++	}
++	previousSession, _ := cliproxysession.ExtractSessionInfo(opts.Headers, previousPayload, nil)
++	previousIdentity, _ := cliproxysession.ExtractSessionInfo(opts.Headers, nil, nil)
  	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
 +	if opts.Headers != nil {
 +		// This is emitted only on the sidecar response boundary. Never forward a
@@ -6421,35 +6494,88 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  	if len(resp.Body) > 0 {
  		req.Payload = bytes.Clone(resp.Body)
  		opts.OriginalRequest = bytes.Clone(resp.Body)
-@@ -361,6 +370,9 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
- 		}
- 		info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata)
- 		if ok && info.SessionID != "" {
-+			if info.ClientType != "lcp" {
-+				info.SessionID, info.ParentSessionID = callerScopedSessionIDs(info.SessionID, info.ParentSessionID, opts.Metadata)
+ 	}
+-	if resp.Terminate {
+-		return req, opts, &cliproxyexecutor.RequestTerminatedError{
+-			HTTPStatus: resp.StatusCode,
+-			Header:     cloneRequestHeaders(resp.ResponseHeaders),
+-			Body:       bytes.Clone(resp.ResponseBody),
+-		}
+-	}
+-	if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 {
++
++	if len(resp.ClearHeaders) > 0 || len(resp.Headers) > 0 || len(resp.Body) > 0 {
++		opts.Metadata = cloneRequestMetadata(opts.Metadata)
++		currentIdentity, _ := cliproxysession.ExtractSessionInfo(opts.Headers, nil, nil)
++		preserveMetadataIdentity := len(resp.Body) == 0 && previousIdentity.UnboundedSessionID == currentIdentity.UnboundedSessionID && previousIdentity.UnboundedParentSessionID == currentIdentity.UnboundedParentSessionID
++		// Reparse the final request. Derived identity from the original body or
++		// a previous selection must not override an interceptor's rewrite.
++		for _, key := range []string{
++			cliproxyexecutor.CanonicalSessionIDMetadataKey,
++			cliproxyexecutor.ParentSessionIDMetadataKey,
++			cliproxyexecutor.LCPAffinitySessionIDMetadataKey,
++			cliproxyexecutor.DerivedSessionIDMetadataKey,
++			cliproxyexecutor.IsForkMetadataKey,
++		} {
++			if !preserveMetadataIdentity {
++				delete(opts.Metadata, key)
 +			}
- 			if opts.Metadata == nil {
- 				opts.Metadata = make(map[string]any, 2)
- 			}
-@@ -377,6 +389,9 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
++		}
++		delete(opts.Metadata, cliproxyexecutor.ConversationRootSessionIDMetadataKey)
++		delete(opts.Metadata, cliproxyexecutor.ConversationHashMetadataKey)
++		delete(opts.Metadata, conversationRootStateKey)
+ 		evalPayload := opts.OriginalRequest
+ 		if len(evalPayload) == 0 {
+ 			evalPayload = req.Payload
  		}
- 	} else if len(resp.Headers) > 0 {
- 		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
-+			if info.ClientType != "lcp" {
-+				info.SessionID, info.ParentSessionID = callerScopedSessionIDs(info.SessionID, info.ParentSessionID, opts.Metadata)
-+			}
+-		info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata)
+-		if ok && info.SessionID != "" {
++		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata); ok && info.SessionID != "" {
  			if opts.Metadata == nil {
- 				opts.Metadata = make(map[string]any, 2)
+-				opts.Metadata = make(map[string]any, 2)
++				opts.Metadata = make(map[string]any)
  			}
-@@ -386,6 +401,7 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
+-			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+-			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+-				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
+-			} else {
+-				delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
++			primary, parent := info.SessionID, info.ParentSessionID
++			if info.ClientType != "lcp" {
++				primary, parent = callerScopedSessionIDs(primary, parent, opts.Metadata)
  			}
+-		} else {
+-			delete(opts.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey)
++			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(primary)
+ 			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+-			delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
+-		}
+-	} else if len(resp.Headers) > 0 {
+-		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
+-			if opts.Metadata == nil {
+-				opts.Metadata = make(map[string]any, 2)
++			if parent != "" && parent != primary {
++				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(parent)
+ 			}
+-			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+-			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+-				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
++			if previousSession.UnboundedSessionID == info.UnboundedSessionID && previousSession.UnboundedParentSessionID != "" && info.UnboundedParentSessionID == "" {
++				forgetConversationRootRelation(opts.Metadata, info.UnboundedSessionID)
+ 			}
++			recordConversationRootSessionMetadata(opts.Metadata, info.UnboundedSessionID, info.UnboundedParentSessionID)
++		}
++	}
++	publishConversationHashMetadata(opts.Metadata)
++	if resp.Terminate {
++		return req, opts, &cliproxyexecutor.RequestTerminatedError{
++			HTTPStatus: resp.StatusCode,
++			Header:     cloneRequestHeaders(resp.ResponseHeaders),
++			Body:       bytes.Clone(resp.ResponseBody),
  		}
  	}
-+	publishConversationHashMetadata(opts.Metadata)
  	return req, opts, nil
- }
- 
-@@ -529,9 +545,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -529,9 +557,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
@@ -6464,7 +6590,21 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			continue
  		}
  		var authErr error
-@@ -575,7 +594,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -557,6 +588,13 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+ 					} else {
+ 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+ 					}
++					for _, key := range []string{cliproxyexecutor.ConversationRootSessionIDMetadataKey, conversationRootStateKey} {
++						if value, exists := pickOpts.Metadata[key]; exists {
++							meta[key] = value
++						} else {
++							delete(meta, key)
++						}
++					}
+ 					execOpts.Metadata = meta
+ 				}
+ 			}
+@@ -575,7 +613,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			}
  			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
  			startExec := time.Now()
@@ -6473,7 +6613,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
  			durationExec := time.Since(startExec)
  			if errExec != nil {
-@@ -588,11 +607,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -588,11 +626,12 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				refreshCtx := newUpstreamAttemptContext(execCtx)
  				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
  					auth = refreshed
@@ -6487,7 +6627,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
  					durationRetry := time.Since(startRetry)
  					if errExec != nil {
-@@ -611,7 +631,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -611,7 +650,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
  				return cliproxyexecutor.Response{}, errCancel
  			}
@@ -6496,7 +6636,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			if errExec != nil {
  				result.Error = resultErrorFromError(errExec)
  				if ra := retryAfterFromError(errExec); ra != nil {
-@@ -622,11 +642,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -622,11 +661,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				}
  				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.runtimeConfigSnapshot())
  				applyRequestScopedActionToResult(action, okAction, &result)
@@ -6513,7 +6653,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  				if okAction {
  					if isRequestScopedStop(action, okAction) {
  						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
-@@ -637,7 +661,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -637,7 +680,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  					}
  					continue
  				}
@@ -6522,7 +6662,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  					return cliproxyexecutor.Response{}, errExec
  				}
  				authErr = errExec
-@@ -652,6 +676,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -652,6 +695,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  			return resp, nil
  		}
  		if authErr != nil {
@@ -6532,7 +6672,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
  			if okAction {
  				if isRequestScopedStop(action, okAction) {
-@@ -663,7 +690,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
+@@ -663,7 +709,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req
  				}
  				continue
  			}
@@ -6541,7 +6681,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  				return cliproxyexecutor.Response{}, authErr
  			}
  			lastErr = authErr
-@@ -742,9 +769,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -742,9 +788,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
@@ -6556,7 +6696,21 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			continue
  		}
  		var authErr error
-@@ -788,7 +818,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -770,6 +819,13 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+ 					} else {
+ 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+ 					}
++					for _, key := range []string{cliproxyexecutor.ConversationRootSessionIDMetadataKey, conversationRootStateKey} {
++						if value, exists := pickOpts.Metadata[key]; exists {
++							meta[key] = value
++						} else {
++							delete(meta, key)
++						}
++					}
+ 					execOpts.Metadata = meta
+ 				}
+ 			}
+@@ -788,7 +844,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  			}
  			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
  			startExec := time.Now()
@@ -6565,7 +6719,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
  			durationExec := time.Since(startExec)
  			if errExec != nil {
-@@ -801,11 +831,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -801,11 +857,12 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  				refreshCtx := newUpstreamAttemptContext(execCtx)
  				if refreshed, okRefresh := m.tryRefreshAfterUnauthorized(refreshCtx, auth, errExec, didRefreshOnUnauthorized); okRefresh {
  					auth = refreshed
@@ -6579,7 +6733,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
  					durationRetry := time.Since(startRetry)
  					if errExec != nil {
-@@ -824,7 +855,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -824,7 +881,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errExec); errCancel != nil {
  				return cliproxyexecutor.Response{}, errCancel
  			}
@@ -6588,7 +6742,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			if errExec != nil {
  				result.Error = resultErrorFromError(errExec)
  				if ra := retryAfterFromError(errExec); ra != nil {
-@@ -836,7 +867,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -836,7 +893,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  				// count_tokens route and return a generic endpoint 404. Record
  				// the failure for hooks and metrics without suspending a model
  				// that remains usable through the messages endpoint.
@@ -6598,7 +6752,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  					m.recordAvailabilityNeutralResult(execCtx, result)
  				} else {
  					if isCredentialScopedError(errExec) {
-@@ -844,6 +876,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -844,6 +902,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  					}
  					m.MarkResult(execCtx, result)
  				}
@@ -6608,7 +6762,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  				if okAction {
  					if isRequestScopedStop(action, okAction) {
  						return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
-@@ -854,7 +889,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -854,7 +915,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  					}
  					continue
  				}
@@ -6617,7 +6771,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  					return cliproxyexecutor.Response{}, errExec
  				}
  				authErr = errExec
-@@ -869,6 +904,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -869,6 +930,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  			return resp, nil
  		}
  		if authErr != nil {
@@ -6627,7 +6781,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
  			if okAction {
  				if isRequestScopedStop(action, okAction) {
-@@ -880,7 +918,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
+@@ -880,7 +944,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
  				}
  				continue
  			}
@@ -6636,7 +6790,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  				return cliproxyexecutor.Response{}, authErr
  			}
  			lastErr = authErr
-@@ -902,6 +940,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -902,6 +966,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  	opts = ensureRequestedModelMetadata(opts, routeModel)
  	homeMode := m.HomeEnabled()
  	homeAuthCount := 1
@@ -6644,7 +6798,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  	tried := make(map[string]struct{})
  	if !homeMode {
  		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
-@@ -1088,17 +1127,23 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1088,17 +1153,23 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  			if stateModel == "" {
  				stateModel = canonicalModelKey(routeModel)
  			}
@@ -6672,7 +6826,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			if selection != nil {
  				if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
  					return nil, errEnd
-@@ -1180,6 +1225,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1180,6 +1251,11 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
  				return nil, errCtx
  			}
@@ -6684,7 +6838,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
  			if okAction {
  				if isRequestScopedStop(action, okAction) {
-@@ -1194,9 +1244,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
+@@ -1194,9 +1270,12 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
  				}
  				continue
  			}
@@ -6698,7 +6852,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  			lastErr = errStream
  			if homeMode {
  				roundTiming.Observe(lastErr)
-@@ -1257,6 +1310,88 @@ func cloneRequestMetadata(src map[string]any) map[string]any {
+@@ -1257,6 +1336,88 @@ func cloneRequestMetadata(src map[string]any) map[string]any {
  	return dst
  }
  
@@ -6787,7 +6941,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
  	opts.Metadata = cloneRequestMetadata(opts.Metadata)
  	requestedModel = strings.TrimSpace(requestedModel)
-@@ -1503,7 +1638,17 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
+@@ -1503,7 +1664,17 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
  	return prepare()
  }
  
@@ -6806,7 +6960,7 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  	if m == nil || executor == nil || auth == nil {
  		return auth, nil
  	}
-@@ -1741,6 +1886,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+@@ -1741,6 +1912,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
  			callback(authIndex)
  		}
  	}
@@ -6822,35 +6976,39 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
  }
  
  func (m *Manager) executorFor(provider string) ProviderExecutor {
-@@ -2062,13 +2216,20 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
+@@ -2062,21 +2242,64 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
  }
  
  func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {
-+	if headers != nil {
-+		// This is emitted only on the sidecar response boundary. Never forward a
-+		// client-supplied or plugin-forged value to an upstream provider.
-+		stripConversationHashHeader(headers)
+-	if metadata != nil {
+-		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
+-			return metadata
++	stripConversationHashHeader(headers)
++	if metadata == nil {
++		metadata = make(map[string]any)
 +	}
- 	if metadata != nil {
- 		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
-+			publishConversationHashMetadata(metadata)
- 			return metadata
++	canonicalID, _ := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
++	if strings.TrimSpace(canonicalID) == "" {
++		canonicalID = CanonicalSessionID(headers, payload, metadata)
++		if canonicalID != "" {
++			metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
  		}
  	}
- 	canonicalID := CanonicalSessionID(headers, payload, metadata)
- 	if canonicalID == "" {
-+		publishConversationHashMetadata(metadata)
- 		return metadata
+-	canonicalID := CanonicalSessionID(headers, payload, metadata)
+-	if canonicalID == "" {
+-		return metadata
++	// Extract again from the actual request before bounding, including when
++	// Enrich or the affinity selector already supplied a bounded canonical ID.
++	if info, ok := cliproxysession.ExtractSessionInfo(headers, payload, nil); ok && canonicalID != "" {
++		recordConversationRootSessionMetadata(metadata, info.UnboundedSessionID, info.UnboundedParentSessionID)
  	}
- 	out := make(map[string]any, len(metadata)+1)
-@@ -2076,9 +2237,49 @@ func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header
- 		out[k] = v
- 	}
- 	out[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
-+	publishConversationHashMetadata(out)
- 	return out
- }
- 
+-	out := make(map[string]any, len(metadata)+1)
+-	for k, v := range metadata {
+-		out[k] = v
++	publishConversationHashMetadata(metadata)
++	return metadata
++}
++
 +func stripConversationHashHeader(headers http.Header) {
 +	for key := range headers {
 +		if strings.EqualFold(key, logging.ConversationHashHeader) {
@@ -6859,26 +7017,27 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
 +	}
 +}
 +
-+const conversationHashDomain = "codex-gateway/conversation/v1\x00"
++const conversationHashDomain = "codex-gateway/conversation-root/v2\x00"
 +
 +// publishConversationHashMetadata derives a stable opaque identity from the
-+// canonical session identity selected by the sidecar. Raw session IDs remain
++// caller-scoped root session selected by the sidecar. Raw session IDs remain
 +// inside metadata and never cross the response boundary.
 +func publishConversationHashMetadata(metadata map[string]any) {
 +	if metadata == nil {
 +		return
 +	}
-+	canonicalID, _ := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
-+	canonicalID = strings.TrimSpace(canonicalID)
++	ensureConversationRootSessionMetadata(metadata)
++	rootID, _ := metadata[cliproxyexecutor.ConversationRootSessionIDMetadataKey].(string)
++	rootID = strings.TrimSpace(rootID)
 +	callerScope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
 +	callerScope = strings.TrimSpace(callerScope)
 +	hashValue := ""
-+	if canonicalID != "" {
++	if rootID != "" {
 +		digest := sha256.New()
 +		_, _ = digest.Write([]byte(conversationHashDomain))
 +		_, _ = digest.Write([]byte(callerScope))
 +		_, _ = digest.Write([]byte{0})
-+		_, _ = digest.Write([]byte(canonicalID))
++		_, _ = digest.Write([]byte(rootID))
 +		full := digest.Sum(nil)
 +		hashValue = "conv-" + hex.EncodeToString(full[:16])
 +		metadata[cliproxyexecutor.ConversationHashMetadataKey] = hashValue
@@ -6887,12 +7046,12 @@ index b365f5d85c5d011c765272ca410720d8de563c9e..b9aa8f21d247e606e253f03870d2c939
 +	}
 +	if callback, ok := metadata[cliproxyexecutor.ConversationHashCallbackMetadataKey].(func(string)); ok && callback != nil {
 +		callback(hashValue)
-+	}
-+}
-+
+ 	}
+-	out[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+-	return out
+ }
+ 
  func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) context.Context {
- 	if ctx == nil {
- 		return nil
 diff --git a/sdk/cliproxy/auth/conductor_execution_quota_test.go b/sdk/cliproxy/auth/conductor_execution_quota_test.go
 index 1e53a178459338a1fce21248d3cd11f51fbe1c40..9ca3a452a8a1790f2cb283926caa614a24c8f256 100644
 --- a/sdk/cliproxy/auth/conductor_execution_quota_test.go
@@ -8061,6 +8220,684 @@ index 0000000000000000000000000000000000000000..e6d0864878a9fcac41ea5035c18707bd
 +	}
 +	if got, _ := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); got == "" {
 +		t.Fatal("canonical session identity was not derived after stripping forged hash")
++	}
++}
+diff --git a/sdk/cliproxy/auth/conversation_root.go b/sdk/cliproxy/auth/conversation_root.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d9a3283e6ca0b261ea81682d2339ae23b90b1d9e
+--- /dev/null
++++ b/sdk/cliproxy/auth/conversation_root.go
+@@ -0,0 +1,240 @@
++package auth
++
++import (
++	"container/list"
++	"strings"
++	"sync"
++	"time"
++	"unicode"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
++)
++
++const (
++	conversationRootSessionTTL      = time.Hour
++	conversationRootSessionCapacity = 65536
++	conversationRootStateKey        = "gateway_conversation_root_state"
++)
++
++type conversationRootKey struct{ scope, session string }
++type conversationRootEntry struct {
++	key     conversationRootKey
++	parent  string
++	expires time.Time
++}
++
++// Parent relationships are process-local and bounded like session affinity.
++// The LRU list keeps expiration and eviction independent of registry capacity.
++type conversationRootParentRegistry struct {
++	mu       sync.Mutex
++	entries  map[conversationRootKey]*list.Element
++	lru      list.List
++	ttl      time.Duration
++	capacity int
++}
++
++var conversationRoots = newConversationRootRegistry(conversationRootSessionCapacity, conversationRootSessionTTL)
++
++func newConversationRootRegistry(capacity int, ttl time.Duration) *conversationRootParentRegistry {
++	return &conversationRootParentRegistry{entries: make(map[conversationRootKey]*list.Element), capacity: capacity, ttl: ttl}
++}
++
++// A private typed value ties the uncompressed result to the exact leaf metadata.
++// Copying an old public root/hash string onto a different leaf cannot reuse it.
++type conversationRootState struct{ canonical, parent, scope, root, rawSession, rawParent string }
++
++func conversationRootMetadataState(metadata map[string]any) conversationRootState {
++	canonical, _ := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
++	parent, _ := metadata[cliproxyexecutor.ParentSessionIDMetadataKey].(string)
++	scope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	return conversationRootState{canonical: canonical, parent: parent, scope: scope}
++}
++
++func recordConversationRootSessionMetadata(metadata map[string]any, primary, parent string) {
++	if metadata == nil {
++		return
++	}
++	state := conversationRootMetadataState(metadata)
++	if state.canonical == "" {
++		delete(metadata, cliproxyexecutor.ConversationRootSessionIDMetadataKey)
++		delete(metadata, conversationRootStateKey)
++		return
++	}
++	state.rawSession, state.rawParent = primary, parent
++	state.root = resolveConversationRootSessionID(primary, parent, metadata)
++	metadata[cliproxyexecutor.ConversationRootSessionIDMetadataKey] = state.root
++	metadata[conversationRootStateKey] = state
++}
++
++func ensureConversationRootSessionMetadata(metadata map[string]any) {
++	if metadata == nil {
++		return
++	}
++	state := conversationRootMetadataState(metadata)
++	if prior, ok := metadata[conversationRootStateKey].(conversationRootState); ok && state.canonical != "" && prior.canonical == state.canonical && prior.parent == state.parent && prior.scope == state.scope {
++		recordConversationRootSessionMetadata(metadata, prior.rawSession, prior.rawParent)
++		return
++	}
++	recordConversationRootSessionMetadata(metadata, state.canonical, state.parent)
++}
++
++func resolveConversationRootSessionID(primary, parent string, metadata map[string]any) string {
++	scope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	scope = strings.TrimSpace(scope)
++	primary = strings.TrimSpace(primary)
++	parent = strings.TrimSpace(parent)
++	if !validConversationSessionID(primary) {
++		return ""
++	}
++	// Caller prefixes are internal; reject conflicting parent namespaces. Keep
++	// the leaf itself scoped by the authenticated metadata even if it is stale.
++	prefix := "caller:" + scope + ":"
++	scoped := func(id string) (string, bool) {
++		if !validConversationSessionID(id) {
++			return "", false
++		}
++		if strings.HasPrefix(id, "caller:") {
++			parts := strings.SplitN(id, ":", 3)
++			if len(parts) != 3 || parts[1] != scope {
++				return "", false
++			}
++			return id, true
++		}
++		if scope != "" {
++			return prefix + id, true
++		}
++		return id, true
++	}
++	child, ok := scoped(primary)
++	if !ok {
++		child = prefix + primary
++	}
++	if parent != "" {
++		var valid bool
++		parent, valid = scoped(parent)
++		if !valid {
++			conversationRoots.forget(scope, child)
++			return cliproxysession.BoundSessionIdentity(child)
++		}
++	}
++	return conversationRoots.resolve(scope, child, parent, time.Now())
++}
++
++// An interceptor explicitly removing a parent must also invalidate the old
++// edge, even though ordinary requests can reuse remembered parent relations.
++func forgetConversationRootRelation(metadata map[string]any, primary string) {
++	scope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	primary, _ = callerScopedSessionIDs(primary, "", metadata)
++	conversationRoots.forget(strings.TrimSpace(scope), primary)
++}
++
++func (r *conversationRootParentRegistry) forget(scope, child string) {
++	key := conversationRootKey{scope, cliproxysession.BoundSessionIdentity(child)}
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.remove(r.entries[key])
++}
++
++func validConversationSessionID(id string) bool {
++	if id == "" || len(id) > 4096 {
++		return false
++	}
++	for _, c := range id {
++		if unicode.IsControl(c) {
++			return false
++		}
++	}
++	return true
++}
++
++// Hierarchy is decoded before bounding either key, including when the parent
++// itself is a nested agent not yet seen by this process.
++func conversationHierarchyParent(id string) string {
++	if i := strings.LastIndex(id, ":agent:"); i > 0 {
++		return id[:i]
++	}
++	return ""
++}
++
++func (r *conversationRootParentRegistry) resolve(scope, child, parent string, now time.Time) string {
++	leaf := cliproxysession.BoundSessionIdentity(child)
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	for e := r.lru.Front(); e != nil; e = r.lru.Front() {
++		if e.Value.(conversationRootEntry).expires.After(now) {
++			break
++		}
++		r.remove(e)
++	}
++	// Store explicit relationships and the parent hierarchy, not affinity aliases.
++	if parent == "" {
++		parent = conversationHierarchyParent(child)
++	}
++	if parent != "" {
++		if child == parent {
++			r.remove(r.entries[conversationRootKey{scope, leaf}])
++			return leaf
++		}
++		r.set(scope, child, parent, now)
++		for ancestor := parent; ; {
++			next := conversationHierarchyParent(ancestor)
++			if next == "" {
++				break
++			}
++			key := conversationRootKey{scope, cliproxysession.BoundSessionIdentity(ancestor)}
++			if _, known := r.entries[key]; !known {
++				r.set(scope, ancestor, next, now)
++			}
++			ancestor = next
++		}
++	}
++	current := leaf
++	seen := make(map[conversationRootKey]bool)
++	for len(seen) <= r.capacity {
++		key := conversationRootKey{scope, current}
++		if seen[key] {
++			// Remove every edge in an invalid chain so later requests cannot
++			// accidentally treat another member of the cycle as a valid root.
++			for invalid := range seen {
++				if e := r.entries[invalid]; e != nil {
++					r.remove(e)
++				}
++			}
++			return leaf
++		}
++		seen[key] = true
++		e := r.entries[key]
++		if e == nil {
++			return current
++		}
++		entry := e.Value.(conversationRootEntry)
++		entry.expires = now.Add(r.ttl)
++		e.Value = entry
++		r.lru.MoveToBack(e)
++		current = entry.parent
++	}
++	return leaf
++}
++
++func (r *conversationRootParentRegistry) set(scope, child, parent string, now time.Time) {
++	key := conversationRootKey{scope, cliproxysession.BoundSessionIdentity(child)}
++	entry := conversationRootEntry{key: key, parent: cliproxysession.BoundSessionIdentity(parent), expires: now.Add(r.ttl)}
++	if e := r.entries[key]; e != nil {
++		e.Value = entry
++		r.lru.MoveToBack(e)
++		return
++	}
++	if len(r.entries) >= r.capacity {
++		r.remove(r.lru.Front())
++	}
++	r.entries[key] = r.lru.PushBack(entry)
++}
++
++func (r *conversationRootParentRegistry) remove(e *list.Element) {
++	if e == nil {
++		return
++	}
++	delete(r.entries, e.Value.(conversationRootEntry).key)
++	r.lru.Remove(e)
++}
+diff --git a/sdk/cliproxy/auth/conversation_root_execution_test.go b/sdk/cliproxy/auth/conversation_root_execution_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3f8ce82cbe0dfdfc27d9c128e9ee95b631af246b
+--- /dev/null
++++ b/sdk/cliproxy/auth/conversation_root_execution_test.go
+@@ -0,0 +1,160 @@
++package auth
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++type conversationRootExecutionCapture struct {
++	gatewayPolicyExecutor
++	mu       sync.Mutex
++	metadata map[string]any
++}
++
++func (e *conversationRootExecutionCapture) capture(opts cliproxyexecutor.Options) {
++	e.mu.Lock()
++	defer e.mu.Unlock()
++	e.metadata = cloneRequestMetadata(opts.Metadata)
++}
++
++func (e *conversationRootExecutionCapture) Execute(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	e.capture(opts)
++	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
++}
++
++func (e *conversationRootExecutionCapture) ExecuteStream(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	e.capture(opts)
++	chunks := make(chan cliproxyexecutor.StreamChunk, 1)
++	chunks <- cliproxyexecutor.StreamChunk{Payload: []byte("ok")}
++	close(chunks)
++	return &cliproxyexecutor.StreamResult{Chunks: chunks}, nil
++}
++
++func (e *conversationRootExecutionCapture) CountTokens(_ context.Context, _ *Auth, _ cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	e.capture(opts)
++	return cliproxyexecutor.Response{Payload: []byte("ok")}, nil
++}
++
++func TestConversationRootInheritedExecutionMetadata(t *testing.T) {
++	for _, mode := range []string{"json", "stream", "count"} {
++		t.Run(mode, func(t *testing.T) {
++			manager, _, _ := newGatewayAccountTestManager(t)
++			capture := &conversationRootExecutionCapture{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}}
++			manager.RegisterExecutor(capture)
++			scope := uuid.NewString()
++			var rootHash string
++			for _, node := range []struct{ session, parent string }{
++				{session: "session:root"},
++				{session: "session:worker", parent: "session:root"},
++				{session: "session:nested-worker", parent: "session:worker"},
++			} {
++				var published string
++				options := cliproxyexecutor.Options{Metadata: map[string]any{
++					cliproxyexecutor.CallerScopeMetadataKey:              scope,
++					cliproxyexecutor.CanonicalSessionIDMetadataKey:       node.session,
++					cliproxyexecutor.ParentSessionIDMetadataKey:          node.parent,
++					cliproxyexecutor.ConversationHashCallbackMetadataKey: func(hash string) { published = hash },
++				}}
++				request := cliproxyexecutor.Request{Model: "gateway-model"}
++				var err error
++				switch mode {
++				case "stream":
++					var result *cliproxyexecutor.StreamResult
++					result, err = manager.ExecuteStream(context.Background(), []string{"codex"}, request, options)
++					if result != nil {
++						for chunk := range result.Chunks {
++							if chunk.Err != nil {
++								err = chunk.Err
++							}
++						}
++					}
++				case "count":
++					_, err = manager.ExecuteCount(context.Background(), []string{"codex"}, request, options)
++				default:
++					_, err = manager.Execute(context.Background(), []string{"codex"}, request, options)
++				}
++				if err != nil {
++					t.Fatalf("%s execution: %v", node.session, err)
++				}
++				capture.mu.Lock()
++				metadata := cloneRequestMetadata(capture.metadata)
++				capture.mu.Unlock()
++				gotHash, _ := metadata[cliproxyexecutor.ConversationHashMetadataKey].(string)
++				if gotHash == "" || gotHash != published {
++					t.Fatalf("%s executor hash=%q published=%q", node.session, gotHash, published)
++				}
++				if rootHash == "" {
++					rootHash = gotHash
++				} else if gotHash != rootHash {
++					t.Fatalf("%s lost inherited root hash: got=%q root=%q", node.session, gotHash, rootHash)
++				}
++				if got := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != node.session {
++					t.Fatalf("%s leaf identity changed: %v", node.session, got)
++				}
++			}
++		})
++	}
++}
++
++func TestConversationRootConcurrentManagerExecutions(t *testing.T) {
++	manager, selector, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	previousTransport := selector.client.Transport
++	selector.client.Transport = gatewayLimitTransport(func(r *http.Request) (*http.Response, error) {
++		if r.URL.String() == gatewayAllocationURL {
++			return gatewayLimitResponse(http.StatusOK, fmt.Sprintf(`{"account_id":%q}`, gatewayAccountResultIndex(accounts[0]))), nil
++		}
++		return previousTransport.RoundTrip(r)
++	})
++	blocking := &gatewayConcurrencyExecutor{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}, started: make(chan string, 2), release: make(chan struct{})}
++	manager.RegisterExecutor(blocking)
++	done := make(chan error, 2)
++	defer func() {
++		close(blocking.release)
++		for range 2 {
++			select {
++			case <-done:
++			case <-time.After(2 * time.Second):
++				t.Error("execution cleanup timed out")
++			}
++		}
++	}()
++	scope := t.Name()
++	start := func(session, parent string) {
++		go func() {
++			headers := http.Header{"Session-Id": {session}}
++			if parent != "" {
++				headers.Set("X-Codex-Parent-Thread-Id", parent)
++			}
++			_, err := manager.Execute(context.Background(), []string{"codex"}, cliproxyexecutor.Request{Model: "gateway-model"}, cliproxyexecutor.Options{Headers: headers, Metadata: map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope, cliproxyexecutor.GatewayUserIDMetadataKey: gatewayTestUserID}})
++			done <- err
++		}()
++	}
++	start("root", "")
++	select {
++	case <-blocking.started:
++	case err := <-done:
++		t.Fatalf("root failed: %v", err)
++	case <-time.After(2 * time.Second):
++		t.Fatal("root did not start")
++	}
++	start("child", "root")
++	select {
++	case <-blocking.started:
++	case err := <-done:
++		t.Fatalf("child failed at account limit: %v", err)
++	case <-time.After(2 * time.Second):
++		t.Fatal("child did not start")
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(accounts[0])); got != 1 {
++		t.Fatalf("manager root count=%d, want 1", got)
++	}
++	// Releasing the executors is deferred; references remain active throughout
++	// both admissions, so passing cannot be an accidentally sequential result.
++}
+diff --git a/sdk/cliproxy/auth/conversation_root_test.go b/sdk/cliproxy/auth/conversation_root_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..3fd96776ea8bb326518b46ba6a8f2c302c79ca9b
+--- /dev/null
++++ b/sdk/cliproxy/auth/conversation_root_test.go
+@@ -0,0 +1,260 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
++)
++
++func rootRequestMetadata(scope string, headers http.Header, body string) map[string]any {
++	return ensureCanonicalSessionMetadata(map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope}, headers, []byte(body))
++}
++
++func TestConversationRootRecognizedHierarchy(t *testing.T) {
++	scope := t.Name()
++	root := rootRequestMetadata(scope, http.Header{"Session-Id": {"main"}}, "")
++	want := root[cliproxyexecutor.ConversationHashMetadataKey]
++	for _, tc := range []struct {
++		name    string
++		headers http.Header
++		body    string
++	}{
++		{name: "ultra", headers: http.Header{"Session-Id": {"main"}, "X-Codex-Turn-Metadata": {`{"session_id":"main","thread_id":"worker-thread","parent_thread_id":"main","agent_name":"/root/worker","subagent_kind":"thread_spawn"}`}}},
++		{name: "nested agent", headers: http.Header{"Session-Id": {"main:agent:worker:agent:nested"}}},
++		{name: "fork", headers: http.Header{"Session-Id": {"main"}, "X-Codex-Turn-Metadata": {`{"session_id":"main","thread_id":"fork-thread","forked_from_thread_id":"main"}`}}},
++		{name: "child", headers: http.Header{"Session-Id": {"child"}, "X-Codex-Parent-Thread-Id": {"main"}}},
++		{name: "side", headers: http.Header{"Session-Id": {"main"}, "X-Side-Session-Id": {"side"}}},
++		{name: "grandchild", headers: http.Header{"Session-Id": {"grandchild"}, "X-Codex-Parent-Thread-Id": {"child"}}},
++		{name: "remembered child", headers: http.Header{"Session-Id": {"grandchild"}}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			meta := rootRequestMetadata(scope, tc.headers, tc.body)
++			if got := meta[cliproxyexecutor.ConversationHashMetadataKey]; got != want {
++				t.Fatalf("hash=%v want=%v metadata=%v", got, want, meta)
++			}
++			if meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] == root[cliproxyexecutor.CanonicalSessionIDMetadataKey] {
++				t.Fatal("child lost its leaf affinity identity")
++			}
++		})
++	}
++	for _, meta := range []map[string]any{
++		rootRequestMetadata(scope+"-other", http.Header{"Session-Id": {"main"}}, ""),
++		rootRequestMetadata(scope, http.Header{"Session-Id": {"other"}}, ""),
++	} {
++		if meta[cliproxyexecutor.ConversationHashMetadataKey] == want {
++			t.Fatal("distinct caller/root merged")
++		}
++	}
++}
++
++func TestConversationRootClaudeLongHierarchy(t *testing.T) {
++	for _, length := range []int{8, 240} {
++		session := strings.Repeat("s", length)
++		scope := t.Name() + session
++		main := rootRequestMetadata(scope, http.Header{"X-Claude-Code-Session-Id": {session}}, "")
++		for _, headers := range []http.Header{
++			{"X-Claude-Code-Session-Id": {session}, "X-Claude-Code-Agent-Id": {"worker"}},
++			{"X-Claude-Code-Session-Id": {session}, "X-Claude-Code-Agent-Id": {"nested"}, "X-Claude-Code-Parent-Agent-Id": {"worker"}},
++		} {
++			meta := rootRequestMetadata(scope, headers, "")
++			if meta[cliproxyexecutor.ConversationHashMetadataKey] != main[cliproxyexecutor.ConversationHashMetadataKey] {
++				t.Fatalf("long hierarchy root lost: %v", meta)
++			}
++			canonical := meta[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
++			if len(canonical) > 256 {
++				t.Fatalf("affinity canonical no longer bounded: %d", len(canonical))
++			}
++			publishConversationHashMetadata(meta)
++			if meta[cliproxyexecutor.ConversationHashMetadataKey] != main[cliproxyexecutor.ConversationHashMetadataKey] {
++				t.Fatal("publishing compressed leaf lost root")
++			}
++		}
++	}
++}
++
++func TestConversationRootLCPAndInvalidMetadata(t *testing.T) {
++	scope := t.Name()
++	hashes := []any{}
++	for _, pair := range [][2]string{{"lcp:v1:root", ""}, {"lcp:v1:child", "lcp:v1:root"}, {"lcp:v1:grandchild", "lcp:v1:child"}} {
++		meta := map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope, cliproxyexecutor.CanonicalSessionIDMetadataKey: pair[0], cliproxyexecutor.LCPAffinitySessionIDMetadataKey: pair[0], cliproxyexecutor.ParentSessionIDMetadataKey: pair[1]}
++		meta = ensureCanonicalSessionMetadata(meta, nil, nil)
++		hashes = append(hashes, meta[cliproxyexecutor.ConversationHashMetadataKey])
++	}
++	if hashes[0] == nil || hashes[0] != hashes[1] || hashes[0] != hashes[2] {
++		t.Fatalf("LCP root hashes=%v", hashes)
++	}
++	meta := rootRequestMetadata(scope, http.Header{"Session-Id": {"valid"}}, "")
++	oldHash := meta[cliproxyexecutor.ConversationHashMetadataKey]
++	meta[cliproxyexecutor.CanonicalSessionIDMetadataKey] = "codex:different"
++	meta[cliproxyexecutor.ConversationRootSessionIDMetadataKey] = "caller:" + scope + ":codex:valid"
++	publishConversationHashMetadata(meta)
++	if meta[cliproxyexecutor.ConversationHashMetadataKey] == oldHash {
++		t.Fatal("stale root reused for changed leaf")
++	}
++	for _, parent := range []string{"caller:another-caller:codex:valid", "invalid\nparent"} {
++		meta[cliproxyexecutor.ParentSessionIDMetadataKey] = parent
++		publishConversationHashMetadata(meta)
++		if meta[cliproxyexecutor.ConversationHashMetadataKey] == oldHash {
++			t.Fatal("invalid parent merged with root")
++		}
++	}
++	delete(meta, cliproxyexecutor.CanonicalSessionIDMetadataKey)
++	publishConversationHashMetadata(meta)
++	if meta[cliproxyexecutor.ConversationHashMetadataKey] != nil || meta[cliproxyexecutor.ConversationRootSessionIDMetadataKey] != nil {
++		t.Fatal("identity-free request retained stale root/hash")
++	}
++	if got := rootRequestMetadata(scope, nil, `{}`)[cliproxyexecutor.ConversationHashMetadataKey]; got != nil {
++		t.Fatalf("session-free request hash=%v", got)
++	}
++}
++
++func TestConversationRootRegistryCycleTTLAndCapacity(t *testing.T) {
++	now := time.Now()
++	r := newConversationRootRegistry(3, time.Hour)
++	if got := r.resolve("scope", "a", "b", now); got != "b" {
++		t.Fatal(got)
++	}
++	if got := r.resolve("scope", "b", "a", now); got != "b" {
++		t.Fatalf("cycle root=%q", got)
++	}
++	if got := r.resolve("scope", "a", "", now); got != "a" {
++		t.Fatalf("cycle left stale edge=%q", got)
++	}
++	r.resolve("scope", "a", "root", now)
++	if got := r.resolve("scope", "a", "", now.Add(30*time.Minute)); got != "root" {
++		t.Fatal("lost remembered relation")
++	}
++	if got := r.resolve("other", "a", "", now.Add(30*time.Minute)); got != "a" {
++		t.Fatal("registry leaked caller")
++	}
++	if got := r.resolve("scope", "a", "", now.Add(2*time.Hour)); got != "a" {
++		t.Fatal("expired relation survived")
++	}
++	for _, id := range []string{"a", "b", "c", "d"} {
++		r.resolve("scope", id, "root", now.Add(3*time.Hour))
++	}
++	if len(r.entries) != 3 {
++		t.Fatalf("capacity=%d", len(r.entries))
++	}
++	if got := r.resolve("scope", "a", "", now.Add(3*time.Hour)); got != "a" {
++		t.Fatal("oldest relation not evicted")
++	}
++}
++
++func TestConversationRootRegistryConcurrentAccess(t *testing.T) {
++	r := newConversationRootRegistry(65536, time.Hour)
++	var wg sync.WaitGroup
++	for range 32 {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for range 100 {
++				if got := r.resolve("scope", "child:agent:nested", "root:agent:worker", time.Now()); got != "root" {
++					t.Errorf("root=%s", got)
++				}
++			}
++		}()
++	}
++	wg.Wait()
++}
++
++func TestConversationRootRegistrySelfParentClearsOnlyCurrentCallerEdge(t *testing.T) {
++	now := time.Now()
++	r := newConversationRootRegistry(8, time.Hour)
++	r.resolve("other", "child", "other-root", now)
++	if got := r.resolve("scope", "child", "old-root", now); got != "old-root" {
++		t.Fatalf("initial root=%q", got)
++	}
++	if got := r.resolve("scope", "child", "child", now); got != "child" {
++		t.Fatalf("self-parent root=%q", got)
++	}
++	if got := r.resolve("scope", "child", "", now); got != "child" {
++		t.Fatalf("self-parent left stale edge=%q", got)
++	}
++	if got := r.resolve("other", "child", "", now); got != "other-root" {
++		t.Fatalf("self-parent removed another caller's edge=%q", got)
++	}
++}
++
++func TestConversationRootInvalidParentClearsOnlyCurrentCallerEdge(t *testing.T) {
++	for _, test := range []struct{ name, parent string }{
++		{name: "control", parent: "invalid\nparent"},
++		{name: "long", parent: strings.Repeat("p", 4097)},
++		{name: "foreign-caller", parent: "caller:other:codex:root"},
++	} {
++		scope := t.Name() + "-" + test.name
++		metadata := map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope}
++		otherMetadata := map[string]any{cliproxyexecutor.CallerScopeMetadataKey: scope + "-other"}
++		wantOther := resolveConversationRootSessionID("codex:child", "codex:other-root", otherMetadata)
++		old := resolveConversationRootSessionID("codex:child", "codex:old-root", metadata)
++		wantLeaf := cliproxysession.BoundSessionIdentity("caller:" + scope + ":codex:child")
++		if old == wantLeaf {
++			t.Fatal("initial parent relationship was not recorded")
++		}
++		if got := resolveConversationRootSessionID("codex:child", test.parent, metadata); got != wantLeaf {
++			t.Fatalf("invalid parent root=%q want=%q", got, wantLeaf)
++		}
++		if got := resolveConversationRootSessionID("codex:child", "", metadata); got != wantLeaf {
++			t.Fatalf("invalid parent left stale edge=%q", got)
++		}
++		if got := resolveConversationRootSessionID("codex:child", "", otherMetadata); got != wantOther {
++			t.Fatalf("invalid parent removed another caller's edge=%q want=%q", got, wantOther)
++		}
++	}
++}
++
++func TestConversationRootInterceptorRewritesAndClears(t *testing.T) {
++	for _, mode := range []string{"headers", "body", "clear", "parent-only", "remove-parent"} {
++		t.Run(mode, func(t *testing.T) {
++			scope := t.Name()
++			headers := http.Header{"Session-Id": {"old-child"}, "X-Codex-Parent-Thread-Id": {"old-root"}}
++			meta := rootRequestMetadata(scope, headers, "")
++			originalHash := meta[cliproxyexecutor.ConversationHashMetadataKey]
++			opts := cliproxyexecutor.Options{Headers: headers, Metadata: meta, RequestAfterAuthInterceptor: func(context.Context, cliproxyexecutor.RequestAfterAuthInterceptRequest) cliproxyexecutor.RequestAfterAuthInterceptResponse {
++				switch mode {
++				case "headers":
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{Headers: http.Header{"Session-Id": {"new-root"}}, ClearHeaders: []string{"X-Codex-Parent-Thread-Id"}}
++				case "body":
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{Body: []byte(`{"session_id":"new-root"}`), ClearHeaders: []string{"Session-Id", "X-Codex-Parent-Thread-Id"}}
++				case "remove-parent":
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{ClearHeaders: []string{"X-Codex-Parent-Thread-Id"}}
++				case "parent-only":
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{Headers: http.Header{"X-Codex-Parent-Thread-Id": {"new-root"}}}
++				default:
++					return cliproxyexecutor.RequestAfterAuthInterceptResponse{ClearHeaders: []string{"Session-Id", "X-Codex-Parent-Thread-Id"}}
++				}
++			}}
++			_, changed, err := applyRequestAfterAuthInterceptor(context.Background(), nil, "codex", cliproxyexecutor.Request{}, opts, "model")
++			if err != nil {
++				t.Fatal(err)
++			}
++			if got := changed.Metadata[cliproxyexecutor.ConversationHashMetadataKey]; got == originalHash {
++				t.Fatal("interceptor retained old root hash")
++			}
++			if mode == "clear" {
++				if changed.Metadata[cliproxyexecutor.ConversationHashMetadataKey] != nil {
++					t.Fatal("cleared request hash survived")
++				}
++				return
++			}
++			prefix := "codex:"
++			if mode == "body" {
++				prefix = "session:"
++			}
++			rootID := "new-root"
++			if mode == "remove-parent" {
++				rootID = "old-child"
++			}
++			wantRoot := cliproxysession.BoundSessionIdentity("caller:" + scope + ":" + prefix + rootID)
++			if got := changed.Metadata[cliproxyexecutor.ConversationRootSessionIDMetadataKey]; got != wantRoot {
++				t.Fatalf("rewritten root=%v want=%s", got, wantRoot)
++			}
++		})
 +	}
 +}
 diff --git a/sdk/cliproxy/auth/errors.go b/sdk/cliproxy/auth/errors.go
@@ -9881,26 +10718,32 @@ index 0000000000000000000000000000000000000000..e529a1a5685aeb96be09aaf1fba46586
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca9660178cd12
+index 0000000000000000000000000000000000000000..e8d1b5c7a066b6f5947a732de1b01c9f71f9feaa
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency.go
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,243 @@
 +package auth
 +
 +import (
 +	"context"
++	"encoding/hex"
++	"fmt"
 +	"net/http"
 +	"sort"
++	"strings"
 +	"sync"
++	"sync/atomic"
 +	"time"
 +
 +	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 +)
 +
 +type GatewayAccountConcurrency struct {
-+	ID              string `json:"id"`
-+	ActiveRequests  int64  `json:"active_requests"`
-+	ConcurrentLimit int64  `json:"concurrent_limit"`
++	ID string `json:"id"`
++	// ActiveRequests keeps the Gateway-compatible field name; it counts active
++	// root conversations, not overlapping executions within one root.
++	ActiveRequests  int64 `json:"active_requests"`
++	ConcurrentLimit int64 `json:"concurrent_limit"`
 +}
 +
 +type GatewayConcurrencySnapshot struct {
@@ -9908,9 +10751,9 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +	Accounts  []GatewayAccountConcurrency `json:"accounts"`
 +}
 +
-+// GatewayConcurrency samples the actual execution attempts, including the wait
-+// for the first response and streaming. Registered disabled accounts remain in
-+// the snapshot; removing credentials cannot hide their still-active requests.
++// GatewayConcurrency samples active root conversations, including the wait for
++// the first response and streaming. A root may have multiple overlapping
++// executions; they share one account slot while references are held.
 +func (m *Manager) GatewayConcurrency() GatewayConcurrencySnapshot {
 +	known := make(map[string]bool)
 +	for _, candidate := range m.List() {
@@ -9921,11 +10764,14 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +	m.gatewayConcurrencyMu.Lock()
 +	defer m.gatewayConcurrencyMu.Unlock()
 +	result := GatewayConcurrencySnapshot{SampledAt: time.Now().UTC(), Accounts: make([]GatewayAccountConcurrency, 0, len(known))}
-+	for id := range m.gatewayConcurrency {
++	for id, roots := range m.gatewayConcurrency {
 +		known[id] = true
++		result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ActiveRequests: int64(len(roots)), ConcurrentLimit: m.gatewayConcurrencyLimit(id)})
 +	}
 +	for id := range known {
-+		result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ActiveRequests: m.gatewayConcurrency[id], ConcurrentLimit: m.gatewayConcurrencyLimit(id)})
++		if _, present := m.gatewayConcurrency[id]; !present {
++			result.Accounts = append(result.Accounts, GatewayAccountConcurrency{ID: id, ConcurrentLimit: m.gatewayConcurrencyLimit(id)})
++		}
 +	}
 +	sort.Slice(result.Accounts, func(i, j int) bool { return result.Accounts[i].ID < result.Accounts[j].ID })
 +	return result
@@ -9943,38 +10789,89 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +	return &Error{Code: "upstream_concurrency_exceeded", Message: "upstream account concurrency limit reached", Retryable: true, HTTPStatus: http.StatusTooManyRequests}
 +}
 +
-+func (m *Manager) tryBeginGatewayExecution(ctx context.Context, candidate *Auth) (func(), error) {
++// gatewayExecutionRootKey returns a trusted root conversation identity produced
++// by sidecar metadata. A missing identity deliberately gets a unique key so
++// legacy requests retain request-level admission behavior.
++func gatewayExecutionRootKey(opts cliproxyexecutor.Options) string {
++	if opts.Metadata != nil {
++		if raw, ok := opts.Metadata[cliproxyexecutor.ConversationHashMetadataKey].(string); ok {
++			if hash := strings.TrimSpace(raw); validGatewayConversationHash(hash) {
++				return "root:" + hash
++			}
++		}
++	}
++	return ""
++}
++
++func validGatewayConversationHash(value string) bool {
++	if len(value) != len("conv-")+32 || !strings.HasPrefix(value, "conv-") {
++		return false
++	}
++	digits := value[len("conv-"):]
++	if strings.ToLower(digits) != digits {
++		return false
++	}
++	_, err := hex.DecodeString(digits)
++	return err == nil
++}
++
++func (m *Manager) tryBeginGatewayExecution(_ context.Context, candidate *Auth, executionOpts cliproxyexecutor.Options) (func(), error) {
 +	id, ok := gatewayConcurrencyAccountID(candidate)
 +	if !ok {
 +		return func() {}, nil
 +	}
++	rootKey := gatewayExecutionRootKey(executionOpts)
++	if rootKey == "" {
++		rootKey = fmt.Sprintf("execution:%d", atomic.AddUint64(&m.gatewayConcurrencySeq, 1))
++	}
 +	m.gatewayConcurrencyMu.Lock()
 +	if m.gatewayConcurrency == nil {
-+		m.gatewayConcurrency = make(map[string]int64)
++		m.gatewayConcurrency = make(map[string]map[string]int64)
++	}
++	roots := m.gatewayConcurrency[id]
++	if roots == nil {
++		roots = make(map[string]int64)
++		m.gatewayConcurrency[id] = roots
++	}
++	if refs, present := roots[rootKey]; present {
++		roots[rootKey] = refs + 1
++		m.gatewayConcurrencyMu.Unlock()
++		return gatewayConcurrencyRelease(m, id, rootKey), nil
 +	}
 +	limit := m.gatewayConcurrencyLimit(id)
-+	if limit > 0 && m.gatewayConcurrency[id] >= limit {
++	if limit > 0 && int64(len(roots)) >= limit {
 +		m.gatewayConcurrencyMu.Unlock()
 +		return nil, gatewayConcurrencyExceeded()
 +	}
-+	m.gatewayConcurrency[id]++
++	roots[rootKey] = 1
 +	m.gatewayConcurrencyMu.Unlock()
++	return gatewayConcurrencyRelease(m, id, rootKey), nil
++}
++
++func gatewayConcurrencyRelease(m *Manager, accountID, rootKey string) func() {
 +	var once sync.Once
-+	release := func() {
++	return func() {
 +		once.Do(func() {
 +			m.gatewayConcurrencyMu.Lock()
 +			defer m.gatewayConcurrencyMu.Unlock()
-+			m.gatewayConcurrency[id]--
-+			if m.gatewayConcurrency[id] == 0 {
-+				delete(m.gatewayConcurrency, id)
++			roots := m.gatewayConcurrency[accountID]
++			if roots == nil {
++				return
++			}
++			if refs := roots[rootKey]; refs > 1 {
++				roots[rootKey] = refs - 1
++			} else {
++				delete(roots, rootKey)
++				if len(roots) == 0 {
++					delete(m.gatewayConcurrency, accountID)
++				}
 +			}
 +		})
 +	}
-+	return release, nil
 +}
 +
-+func (m *Manager) beginGatewayExecution(ctx context.Context, candidate *Auth) func() {
-+	release, err := m.tryBeginGatewayExecution(ctx, candidate)
++func (m *Manager) beginGatewayExecution(ctx context.Context, candidate *Auth, executionOpts cliproxyexecutor.Options) func() {
++	release, err := m.tryBeginGatewayExecution(ctx, candidate, executionOpts)
 +	if err != nil || release == nil {
 +		return func() {}
 +	}
@@ -9986,7 +10883,7 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +}
 +
 +func (m *Manager) executeGatewayAttempt(ctx context.Context, executor ProviderExecutor, candidate *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, countTokens bool) (cliproxyexecutor.Response, error) {
-+	release, err := m.tryBeginGatewayExecution(ctx, candidate)
++	release, err := m.tryBeginGatewayExecution(ctx, candidate, opts)
 +	if err != nil {
 +		return cliproxyexecutor.Response{}, err
 +	}
@@ -10002,7 +10899,7 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +	if _, ok := gatewayConcurrencyAccountID(candidate); !ok {
 +		return executor.ExecuteStream(ctx, candidate, req, opts)
 +	}
-+	release, acquireErr := m.tryBeginGatewayExecution(ctx, candidate)
++	release, acquireErr := m.tryBeginGatewayExecution(ctx, candidate, opts)
 +	if acquireErr != nil {
 +		return nil, acquireErr
 +	}
@@ -10070,7 +10967,7 @@ index 0000000000000000000000000000000000000000..1c2a35cb0a8fb0245188358e9daca966
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency_limit_test.go b/sdk/cliproxy/auth/gateway_concurrency_limit_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf4064b2dc
+index 0000000000000000000000000000000000000000..1dc7ad46c7cf8e4c904e95ce830368afe05d408d
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency_limit_test.go
 @@ -0,0 +1,337 @@
@@ -10266,7 +11163,7 @@ index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf
 +		go func() {
 +			defer wg.Done()
 +			<-start
-+			release, err := manager.tryBeginGatewayExecution(context.Background(), account)
++			release, err := manager.tryBeginGatewayExecution(context.Background(), account, cliproxyexecutor.Options{})
 +			if err == nil {
 +				winners <- release
 +			}
@@ -10288,11 +11185,11 @@ index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf
 +	limits[secondIndex] = 1
 +	primeGatewayConcurrencyLimits(t, selector, accounts)
 +
-+	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), first)
++	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), first, cliproxyexecutor.Options{})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), second)
++	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), second, cliproxyexecutor.Options{})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -10302,7 +11199,7 @@ index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf
 +	if got := gatewayConcurrencySnapshotCount(t, manager, secondIndex); got != 1 {
 +		t.Fatalf("second account count = %d, want 1", got)
 +	}
-+	if _, err := manager.tryBeginGatewayExecution(context.Background(), first); err == nil {
++	if _, err := manager.tryBeginGatewayExecution(context.Background(), first, cliproxyexecutor.Options{}); err == nil {
 +		t.Fatal("bound account admitted a second request")
 +	} else {
 +		assertGatewayConcurrency429(t, err)
@@ -10375,11 +11272,11 @@ index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf
 +
 +func TestGatewayConcurrencyLimitAllAccountsFullReturns429FromAllocator(t *testing.T) {
 +	manager, selector, accounts, limits := newGatewayConcurrencyLimitFixture(t)
-+	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[0])
++	firstRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[0], cliproxyexecutor.Options{})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
-+	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[1])
++	secondRelease, err := manager.tryBeginGatewayExecution(context.Background(), accounts[1], cliproxyexecutor.Options{})
 +	if err != nil {
 +		t.Fatal(err)
 +	}
@@ -10411,9 +11308,265 @@ index 0000000000000000000000000000000000000000..53c67a00a33e7ef67b4db5591a2d3edf
 +	_, err = selector.Pick(context.Background(), "codex", "gateway-model", allocationOptions("all-full"), accounts)
 +	assertGatewayConcurrency429(t, err)
 +}
+diff --git a/sdk/cliproxy/auth/gateway_concurrency_root_test.go b/sdk/cliproxy/auth/gateway_concurrency_root_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c63488a7444e446c14a99557b56331e97100eee
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_concurrency_root_test.go
+@@ -0,0 +1,250 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"testing"
++	"time"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++func gatewayRootOptions(hash string) cliproxyexecutor.Options {
++	return cliproxyexecutor.Options{Metadata: map[string]any{
++		cliproxyexecutor.ConversationHashMetadataKey: hash,
++	}}
++}
++
++func TestGatewayConcurrencyDeduplicatesRootExecutions(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	accountID := gatewayAccountResultIndex(account)
++	first, err := manager.tryBeginGatewayExecution(context.Background(), account, gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
++	if err != nil {
++		t.Fatalf("first root execution: %v", err)
++	}
++	second, err := manager.tryBeginGatewayExecution(context.Background(), account, gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
++	if err != nil {
++		t.Fatalf("second execution of same root: %v", err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, accountID); got != 1 {
++		t.Fatalf("same-root active count = %d, want 1", got)
++	}
++	first()
++	if got := gatewayConcurrencySnapshotCount(t, manager, accountID); got != 1 {
++		t.Fatalf("count after first reference release = %d, want 1", got)
++	}
++	first() // release is idempotent and must not consume the second reference.
++	second()
++	if got := gatewayConcurrencySnapshotCount(t, manager, accountID); got != 0 {
++		t.Fatalf("count after final root release = %d, want 0", got)
++	}
++}
++
++func TestGatewayConcurrencyRejectsDifferentRootAtLimit(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	accountID := gatewayAccountResultIndex(account)
++	release, err := manager.tryBeginGatewayExecution(context.Background(), account, gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"))
++	if err != nil {
++		t.Fatalf("first root execution: %v", err)
++	}
++	defer release()
++	if _, err := manager.tryBeginGatewayExecution(context.Background(), account, gatewayRootOptions("conv-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")); err == nil {
++		t.Fatal("different root bypassed account limit")
++	} else {
++		assertGatewayConcurrency429(t, err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, accountID); got != 1 {
++		t.Fatalf("different-root rejection changed count = %d, want 1", got)
++	}
++}
++
++func TestGatewayConcurrencySameRootCountsPerAccount(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	root := gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
++	first, err := manager.tryBeginGatewayExecution(context.Background(), accounts[0], root)
++	if err != nil {
++		t.Fatalf("first account execution: %v", err)
++	}
++	second, err := manager.tryBeginGatewayExecution(context.Background(), accounts[1], root)
++	if err != nil {
++		t.Fatalf("second account execution: %v", err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(accounts[0])); got != 1 {
++		t.Fatalf("first account count = %d, want 1", got)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(accounts[1])); got != 1 {
++		t.Fatalf("second account count = %d, want 1", got)
++	}
++	first()
++	second()
++}
++
++func TestGatewayConcurrencyParallelJSONSameRootSharesOneSlot(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	executor := &gatewayConcurrencyExecutor{
++		gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"},
++		started:               make(chan string, 2),
++		release:               make(chan struct{}),
++	}
++	root := gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
++	results := make(chan error, 2)
++	for range 2 {
++		go func() {
++			_, err := manager.executeGatewayAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, root, false)
++			results <- err
++		}()
++	}
++	for range 2 {
++		select {
++		case <-executor.started:
++		case <-time.After(2 * time.Second):
++			t.Fatal("same-root JSON execution did not start")
++		}
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("same-root JSON active count = %d, want 1", got)
++	}
++	close(executor.release)
++	for range 2 {
++		if err := <-results; err != nil {
++			t.Fatalf("same-root JSON execution: %v", err)
++		}
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("same-root JSON final count = %d, want 0", got)
++	}
++}
++
++type heldRootStreamExecutor struct {
++	gatewayPolicyExecutor
++	started   chan struct{}
++	bootstrap chan struct{}
++	sources   chan chan cliproxyexecutor.StreamChunk
++}
++
++func (e *heldRootStreamExecutor) ExecuteStream(ctx context.Context, _ *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	e.started <- struct{}{}
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	case <-e.bootstrap:
++	}
++	source := make(chan cliproxyexecutor.StreamChunk)
++	e.sources <- source
++	return &cliproxyexecutor.StreamResult{Chunks: source}, nil
++}
++
++func TestGatewayConcurrencyParallelSSESameRootSharesOneSlot(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	executor := &heldRootStreamExecutor{
++		gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"},
++		started:               make(chan struct{}, 2),
++		bootstrap:             make(chan struct{}),
++		sources:               make(chan chan cliproxyexecutor.StreamChunk, 2),
++	}
++	root := gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
++	results := make(chan *cliproxyexecutor.StreamResult, 2)
++	errorsOut := make(chan error, 2)
++	for range 2 {
++		go func() {
++			result, err := manager.executeGatewayStreamAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, root)
++			results <- result
++			errorsOut <- err
++		}()
++	}
++	for range 2 {
++		select {
++		case <-executor.started:
++		case <-time.After(2 * time.Second):
++			t.Fatal("same-root SSE execution did not start")
++		}
++	}
++	close(executor.bootstrap)
++	sources := []chan cliproxyexecutor.StreamChunk{<-executor.sources, <-executor.sources}
++	streams := []*cliproxyexecutor.StreamResult{<-results, <-results}
++	for i, err := range []error{<-errorsOut, <-errorsOut} {
++		if err != nil || streams[i] == nil || streams[i].Chunks == nil {
++			t.Fatalf("same-root SSE execution %d: result=%v err=%v", i, streams[i], err)
++		}
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("same-root SSE active count = %d, want 1", got)
++	}
++	for _, source := range sources {
++		close(source)
++	}
++	for _, stream := range streams {
++		for range stream.Chunks {
++		}
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("same-root SSE final count = %d, want 0", got)
++	}
++}
++
++func TestGatewayConcurrencyRootFailureCancelAndRetryReleaseReferences(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	root := gatewayRootOptions("conv-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
++	executor := &gatewayPolicyExecutor{id: "codex", err: errors.New("upstream failed")}
++	if _, err := manager.executeGatewayAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, root, false); err == nil {
++		t.Fatal("failed root execution returned nil error")
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("failed root leaked count = %d", got)
++	}
++	executor.err = nil
++	if _, err := manager.executeGatewayAttempt(context.Background(), executor, account, cliproxyexecutor.Request{}, root, false); err != nil {
++		t.Fatalf("retry root execution: %v", err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("retried root leaked count = %d", got)
++	}
++
++	blocking := &gatewayConcurrencyExecutor{
++		gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"},
++		started:               make(chan string, 1),
++		release:               make(chan struct{}),
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	result := make(chan error, 1)
++	go func() {
++		_, err := manager.executeGatewayAttempt(ctx, blocking, account, cliproxyexecutor.Request{}, root, false)
++		result <- err
++	}()
++	select {
++	case <-blocking.started:
++	case <-time.After(2 * time.Second):
++		t.Fatal("cancel test execution did not start")
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 1 {
++		t.Fatalf("cancel test active count = %d, want 1", got)
++	}
++	cancel()
++	if err := <-result; !errors.Is(err, context.Canceled) {
++		t.Fatalf("cancel test error = %v, want context canceled", err)
++	}
++	if got := gatewayConcurrencySnapshotCount(t, manager, gatewayAccountResultIndex(account)); got != 0 {
++		t.Fatalf("cancelled root leaked count = %d", got)
++	}
++}
++
++func TestGatewayConcurrencyMalformedConversationHashFallsBackToExecution(t *testing.T) {
++	manager, _, accounts, _ := newGatewayConcurrencyLimitFixture(t)
++	account := accounts[0]
++	malformed := gatewayRootOptions("conv-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
++	first, err := manager.tryBeginGatewayExecution(context.Background(), account, malformed)
++	if err != nil {
++		t.Fatalf("first malformed-hash execution: %v", err)
++	}
++	defer first()
++	if _, err := manager.tryBeginGatewayExecution(context.Background(), account, malformed); err == nil {
++		t.Fatal("malformed hashes were incorrectly deduplicated")
++	} else {
++		assertGatewayConcurrency429(t, err)
++	}
++}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency_test.go b/sdk/cliproxy/auth/gateway_concurrency_test.go
 new file mode 100644
-index 0000000000000000000000000000000000000000..c225e7036985f970371642763d178b51feefa8e0
+index 0000000000000000000000000000000000000000..121d1e14bac72e8275d6e16decf9bd63082fa130
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency_test.go
 @@ -0,0 +1,255 @@
@@ -10572,7 +11725,7 @@ index 0000000000000000000000000000000000000000..c225e7036985f970371642763d178b51
 +func TestGatewayConcurrencyRepeatedReleaseAndRaces(t *testing.T) {
 +	m, a, _ := newGatewayAccountTestManager(t)
 +	ctx, cancel := context.WithCancel(context.Background())
-+	release := m.beginGatewayExecution(ctx, a)
++	release := m.beginGatewayExecution(ctx, a, cliproxyexecutor.Options{})
 +	var wg sync.WaitGroup
 +	for range 64 {
 +		wg.Add(1)
@@ -10586,7 +11739,7 @@ index 0000000000000000000000000000000000000000..c225e7036985f970371642763d178b51
 +		calls.Add(1)
 +		go func() {
 +			defer calls.Done()
-+			end := m.beginGatewayExecution(context.Background(), a)
++			end := m.beginGatewayExecution(context.Background(), a, cliproxyexecutor.Options{})
 +			_ = m.GatewayConcurrency()
 +			end()
 +			end()
@@ -10611,7 +11764,7 @@ index 0000000000000000000000000000000000000000..c225e7036985f970371642763d178b51
 +		if got := concurrencyCount(t, m, a.Index); got != 0 {
 +			t.Fatalf("failed attempt remained active: %d", got)
 +		}
-+		release := m.beginGatewayExecution(context.Background(), b)
++		release := m.beginGatewayExecution(context.Background(), b, cliproxyexecutor.Options{})
 +		if concurrencyCount(t, m, a.Index) != 0 || concurrencyCount(t, m, b.Index) != 1 {
 +			t.Fatal("retry counted under previous account")
 +		}
@@ -11030,10 +12183,10 @@ index 7791230e042c2861f25db72278ecfba83a84232d..4f1bccf7128b8ea6d0d0f4d7990fd5a2
  	}
  	return &copyState
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index 2d1f765809d8b287a0dd46aa8c5dffecd985ddfe..34842192d3771954c8b247e09fe04f57e5f327c6 100644
+index 2d1f765809d8b287a0dd46aa8c5dffecd985ddfe..705beed20eea220ae8194462102d635cec131eea 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
-@@ -39,9 +39,20 @@ const (
+@@ -39,9 +39,23 @@ const (
  	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
  	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
  	// SelectedAuthIndexMetadataKey stores the stable index of the auth selected by the scheduler.
@@ -11051,6 +12204,9 @@ index 2d1f765809d8b287a0dd46aa8c5dffecd985ddfe..34842192d3771954c8b247e09fe04f57
 +	// ConversationHashCallbackMetadataKey carries an optional callback invoked with the validated hash.
 +	// An empty value clears attribution when no canonical session identity is available.
 +	ConversationHashCallbackMetadataKey = "conversation_hash_callback"
++	// ConversationRootSessionIDMetadataKey stores the caller-scoped root session identity.
++	// It is internal sidecar metadata and is never forwarded to a provider.
++	ConversationRootSessionIDMetadataKey = "conversation_root_session_id"
  	// ExecutionSessionMetadataKey identifies a long-lived downstream execution session.
  	ExecutionSessionMetadataKey = "execution_session_id"
  	// DerivedSessionIDMetadataKey stores a stable session identity inferred from request context.
@@ -11143,3 +12299,295 @@ index 9195a30baf67b2583d61145869b069a4829bf646..b04f38d86e12e514e96d8fa6a71a64e8
  		if errLoad := s.coreManager.Load(ctx); errLoad != nil {
  			log.Warnf("failed to load auth store: %v", errLoad)
  		}
+diff --git a/sdk/cliproxy/session/conversation_relations_test.go b/sdk/cliproxy/session/conversation_relations_test.go
+new file mode 100644
+index 0000000000000000000000000000000000000000..d3c6444f9a373f5de9ada1b60574e318f2a98ec9
+--- /dev/null
++++ b/sdk/cliproxy/session/conversation_relations_test.go
+@@ -0,0 +1,70 @@
++package session
++
++import (
++	"net/http"
++	"testing"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++)
++
++func TestExtractSessionInfoParentRelationHeaders(t *testing.T) {
++	for _, header := range []string{
++		"X-Parent-Session-Id", "X-Parent-Session_id", "X-Parent-Session",
++		"X-Parent-Thread-Id", "X-Parent-Thread_id", "X-Parent-Task-Id", "X-Parent-Task_id",
++		"X-Parent-Id", "X-Parent-Conversation-Id", "X-Parent-Session-Affinity",
++		"X-Parent-Slot-Session-Id", "X-Parent-Side-Session-Id", "X-Parent-Side-Thread-Id",
++		"X-Claude-Code-Parent-Session-Id", "X-Claude-Parent-Session-Id",
++	} {
++		t.Run(header, func(t *testing.T) {
++			headers := http.Header{"Session-Id": {"child"}, header: {"root"}}
++			info, ok := ExtractSessionInfo(headers, nil, nil)
++			if !ok || info.SessionID != "codex:child" || info.ParentSessionID != "codex:root" {
++				t.Fatalf("header hierarchy: %#v, found=%t", info, ok)
++			}
++			info, ok = ExtractSessionInfo(headers, []byte(`{"parent_session_id":"body-root"}`), nil)
++			if !ok || info.ParentSessionID != "codex:body-root" {
++				t.Fatalf("body parent precedence: %#v, found=%t", info, ok)
++			}
++		})
++	}
++}
++
++func TestExtractSideConversationKeepsClientNamespace(t *testing.T) {
++	for _, test := range []struct {
++		name, session, parent string
++		headers               http.Header
++		body                  string
++	}{
++		{name: "codex session", headers: http.Header{"Session-Id": {"root"}, "X-Side-Session-Id": {"side"}}, session: "codex:side", parent: "codex:root"},
++		{name: "codex thread alias", headers: http.Header{"Thread_id": {"root"}, "X-Side-Thread-Id": {"side"}}, session: "codex:side", parent: "codex:root"},
++		{name: "explicit side parent", headers: http.Header{"Session-Id": {"root"}, "X-Side-Session-Id": {"nested"}, "X-Parent-Side-Session-Id": {"side"}}, session: "codex:nested", parent: "codex:side"},
++		{name: "codex parent without main session", headers: http.Header{"X-Side-Session-Id": {"side"}, "X-Codex-Parent-Thread-Id": {"root"}}, session: "codex:side", parent: "codex:root"},
++		{name: "claude", headers: http.Header{"X-Claude-Code-Session-Id": {"root"}, "X-Claude-Code-Side-Session-Id": {"side"}}, session: "claude:side", parent: "claude:root"},
++		{name: "generic", headers: http.Header{"X-Session-Id": {"root"}, "X-Side-Session-Id": {"side"}}, session: "header:side", parent: "header:root"},
++		{name: "slot", headers: http.Header{"X-Slot-Session-Id": {"root"}, "X-Side-Session-Id": {"side"}}, session: "slot:side", parent: "slot:root"},
++		{name: "body", body: `{"session_id":"root","side_session_id":"side"}`, session: "session:side", parent: "session:root"},
++		{name: "nested body", body: `{"request":{"session_id":"root","metadata":{"side_session_id":"side"}}}`, session: "session:side", parent: "session:root"},
++		{name: "without parent", headers: http.Header{"X-Side-Session-Id": {"side"}}, session: "session:side"},
++		{name: "self parent", headers: http.Header{"Session-Id": {"side"}, "X-Side-Session-Id": {"side"}}, session: "codex:side"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			info, ok := ExtractSessionInfo(test.headers, []byte(test.body), nil)
++			if !ok || info.SessionID != test.session || info.ParentSessionID != test.parent {
++				t.Fatalf("side hierarchy: %#v, found=%t", info, ok)
++			}
++			_, options := Enrich(cliproxyexecutor.Request{Payload: []byte(test.body)}, cliproxyexecutor.Options{Headers: test.headers})
++			if got := options.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey]; got != test.session {
++				t.Fatalf("side execution canonical=%v want=%s", got, test.session)
++			}
++		})
++	}
++}
++
++func TestInvalidParentHeaderDoesNotCreateRelationship(t *testing.T) {
++	for _, parent := range []string{"bad\r\nparent", "bad\x00parent", "\tparent"} {
++		info, ok := ExtractSessionInfo(http.Header{"Session-Id": {"leaf"}, "X-Parent-Session-Id": {parent}}, nil, nil)
++		if !ok || info.SessionID != "codex:leaf" || info.ParentSessionID != "" {
++			t.Fatalf("invalid parent was retained: %#v, found=%t", info, ok)
++		}
++	}
++}
+diff --git a/sdk/cliproxy/session/identity.go b/sdk/cliproxy/session/identity.go
+index ed35c2613e1c6c0ec3e6f361666e03a47dca92be..478678b5a8d6af3430363068ea216c3f6f2e043e 100644
+--- a/sdk/cliproxy/session/identity.go
++++ b/sdk/cliproxy/session/identity.go
+@@ -345,6 +345,9 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
+ 		"X-Claude-Code-Session-Id",
+ 		"X-Claude-Code-Agent-Id",
+ 		"X-Claude-Code-Parent-Agent-Id",
++		"X-Side-Session-Id",
++		"X-Side-Thread-Id",
++		"X-Claude-Code-Side-Session-Id",
+ 		"Session-Id",
+ 		"Session_id",
+ 		"x-codex-parent-thread-id",
+@@ -374,6 +377,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
+ 		"X-Parent-Thread-Id",
+ 		"X-Parent-Thread-ID",
+ 		"Thread-Id",
++		"Thread_id",
+ 		"X-Client-Request-Id",
+ 	} {
+ 		if NormalizeExplicitID(headerValue(headers, header)) != "" {
+@@ -413,6 +417,9 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
+ 		"chatId",
+ 		"prompt_cache_key",
+ 		"promptCacheKey",
++		"side_session_id", "sideSessionId", "side_thread_id", "sideThreadId",
++		"metadata.side_session_id", "metadata.side_thread_id",
++		"extra_body.side_session_id", "extra_body.side_thread_id",
+ 		"parent_session_id",
+ 		"parentSessionId",
+ 		"parent_thread_id",
+@@ -474,7 +481,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
+ 
+ func headerValue(headers map[string][]string, name string) string {
+ 	for key, values := range headers {
+-		if !strings.EqualFold(key, name) {
++		if !strings.EqualFold(strings.ReplaceAll(key, "_", "-"), strings.ReplaceAll(name, "_", "-")) {
+ 			continue
+ 		}
+ 		for _, value := range values {
+diff --git a/sdk/cliproxy/session/info.go b/sdk/cliproxy/session/info.go
+index c65437cf7599ebb100853e55839c8d014d599ba8..a0cdf92fbd7204dab32ac2a593be8cda5aed8983 100644
+--- a/sdk/cliproxy/session/info.go
++++ b/sdk/cliproxy/session/info.go
+@@ -15,19 +15,23 @@ import (
+ 
+ // SessionInfo encapsulates incoming request details needed for session affinity and upstream reporting.
+ type SessionInfo struct {
+-	SessionID       string         `json:"session_id"`
+-	ParentSessionID string         `json:"parent_session_id,omitempty"`
+-	AgentName       string         `json:"agent_name,omitempty"`
+-	ClientType      string         `json:"client_type,omitempty"`
+-	CallerScope     string         `json:"caller_scope,omitempty"`
+-	AuthID          string         `json:"auth_id,omitempty"`
+-	Provider        string         `json:"provider,omitempty"`
+-	Model           string         `json:"model,omitempty"`
+-	NodeKind        string         `json:"node_kind,omitempty"`
+-	IsFork          bool           `json:"is_fork,omitempty"`
+-	IsCompaction    bool           `json:"is_compaction,omitempty"`
+-	IsSubagent      bool           `json:"is_subagent,omitempty"`
+-	Metadata        map[string]any `json:"metadata,omitempty"`
++	// Unbounded identities preserve hierarchy for root resolution before affinity
++	// compresses long composite IDs. They never enter serialized session reports.
++	UnboundedSessionID       string         `json:"-"`
++	UnboundedParentSessionID string         `json:"-"`
++	SessionID                string         `json:"session_id"`
++	ParentSessionID          string         `json:"parent_session_id,omitempty"`
++	AgentName                string         `json:"agent_name,omitempty"`
++	ClientType               string         `json:"client_type,omitempty"`
++	CallerScope              string         `json:"caller_scope,omitempty"`
++	AuthID                   string         `json:"auth_id,omitempty"`
++	Provider                 string         `json:"provider,omitempty"`
++	Model                    string         `json:"model,omitempty"`
++	NodeKind                 string         `json:"node_kind,omitempty"`
++	IsFork                   bool           `json:"is_fork,omitempty"`
++	IsCompaction             bool           `json:"is_compaction,omitempty"`
++	IsSubagent               bool           `json:"is_subagent,omitempty"`
++	Metadata                 map[string]any `json:"metadata,omitempty"`
+ }
+ 
+ // SessionTreeInfo is an alias for SessionInfo for backward compatibility.
+@@ -124,6 +128,24 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
+ 		}
+ 	}
+ 
++	if parentCandidate == "" {
++		for _, name := range []string{
++			"X-Parent-Session-Id", "X-Parent-Session", "X-Parent-Thread-Id",
++			"X-Parent-Task-Id", "X-Parent-Id", "X-Parent-Conversation-Id",
++			"X-Parent-Session-Affinity", "X-Parent-Slot-Session-Id",
++			"X-Parent-Side-Session-Id", "X-Parent-Side-Thread-Id",
++			"X-Claude-Code-Parent-Session-Id", "X-Claude-Parent-Session-Id",
++			"X-Codex-Parent-Thread-Id",
++		} {
++			if parentCandidate = sessionHeaderValue(headers, name); parentCandidate != "" {
++				break
++			}
++		}
++	}
++	if sideInfo, ok := extractSideSessionInfo(headers, root, reqRoot, hasNestedReq, parentCandidate, info); ok {
++		return finalizeSessionInfo(sideInfo)
++	}
++
+ 	// 1. Anthropic / Claude Code Headers
+ 	if sid := sessionHeaderValue(headers, "X-Claude-Code-Session-Id"); sid != "" {
+ 		info.ClientType = "claude"
+@@ -901,6 +923,8 @@ func finalizeSessionInfo(info SessionInfo) (SessionInfo, bool) {
+ 	if info.SessionID == "" {
+ 		return SessionInfo{}, false
+ 	}
++	info.UnboundedSessionID = info.SessionID
++	info.UnboundedParentSessionID = info.ParentSessionID
+ 	info.SessionID = BoundSessionIdentity(info.SessionID)
+ 	if info.ParentSessionID != "" {
+ 		info.ParentSessionID = BoundSessionIdentity(info.ParentSessionID)
+@@ -931,7 +955,7 @@ func sessionHeaderValue(headers http.Header, name string) string {
+ 		return value
+ 	}
+ 	for key, values := range headers {
+-		if !strings.EqualFold(key, name) {
++		if !strings.EqualFold(strings.ReplaceAll(key, "_", "-"), strings.ReplaceAll(name, "_", "-")) {
+ 			continue
+ 		}
+ 		for _, value := range values {
+@@ -943,6 +967,90 @@ func sessionHeaderValue(headers http.Header, name string) string {
+ 	return ""
+ }
+ 
++// Side conversations carry their own leaf identity while retaining the main
++// client's namespace, so an explicit parent can join the same root registry.
++func extractSideSessionInfo(headers http.Header, root, reqRoot gjson.Result, nested bool, parent string, info SessionInfo) (SessionInfo, bool) {
++	sideID := ""
++	for _, name := range []string{"X-Side-Session-Id", "X-Side-Thread-Id", "X-Claude-Code-Side-Session-Id"} {
++		if sideID = sessionHeaderValue(headers, name); sideID != "" {
++			break
++		}
++	}
++	if sideID == "" {
++		for _, path := range []string{"side_session_id", "sideSessionId", "side_thread_id", "sideThreadId", "metadata.side_session_id", "metadata.side_thread_id", "extra_body.side_session_id", "extra_body.side_thread_id"} {
++			sideID = normalizedSessionCandidate(root.Get(path).String())
++			if sideID == "" && nested {
++				sideID = normalizedSessionCandidate(reqRoot.Get(path).String())
++			}
++			if sideID != "" {
++				break
++			}
++		}
++	}
++	if sideID == "" {
++		return SessionInfo{}, false
++	}
++	prefix, mainID := "session:", ""
++	info.ClientType = "generic"
++	if sessionHeaderValue(headers, "X-Claude-Code-Side-Session-Id") != "" || sessionHeaderValue(headers, "X-Claude-Code-Parent-Session-Id") != "" || sessionHeaderValue(headers, "X-Claude-Parent-Session-Id") != "" {
++		prefix, info.ClientType = "claude:", "claude"
++	} else if sessionHeaderValue(headers, "X-Codex-Parent-Thread-Id") != "" {
++		prefix, info.ClientType = "codex:", "codex"
++	}
++	for _, source := range []struct{ header, prefix, client string }{
++		{"X-Claude-Code-Session-Id", "claude:", "claude"},
++		{"Session-Id", "codex:", "codex"}, {"Thread-Id", "codex:", "codex"},
++		{"X-Http-Session-Id", "agy:", "agy"}, {"X-Session-Id", "header:", "generic"},
++		{"X-Session-Affinity", "affinity:", "opencode"}, {"X-Slot-Session-Id", "slot:", "pi"},
++		{"X-Task-Id", "task:", "task"}, {"X-Conversation-Id", "conv:", "generic"},
++		{"X-Thread-Id", "thread:", "generic"}, {"X-Client-Request-Id", "clientreq:", "generic"},
++	} {
++		if mainID = sessionHeaderValue(headers, source.header); mainID != "" {
++			prefix, info.ClientType = source.prefix, source.client
++			break
++		}
++	}
++	if mainID == "" {
++		var turn gjson.Result
++		for name, values := range headers {
++			if strings.EqualFold(strings.ReplaceAll(name, "_", "-"), "X-Codex-Turn-Metadata") && len(values) > 0 {
++				turn = gjson.Parse(values[0])
++				break
++			}
++		}
++		if mainID = normalizedSessionCandidate(turn.Get("session_id").String()); mainID != "" {
++			prefix, info.ClientType = "codex:", "codex"
++		}
++	}
++	if mainID == "" {
++		if claudeID, _, _ := ClaudeMetadataIdentities([]byte(root.Raw)); claudeID != "" {
++			mainID, prefix, info.ClientType = claudeID, "claude:", "claude"
++		}
++	}
++	if mainID == "" {
++		for _, path := range []string{"session_id", "sessionId", "thread_id", "threadId"} {
++			mainID = normalizedSessionCandidate(root.Get(path).String())
++			if mainID == "" && nested {
++				mainID = normalizedSessionCandidate(reqRoot.Get(path).String())
++			}
++			if mainID != "" {
++				if strings.HasPrefix(path, "thread") {
++					prefix = "thread:"
++				}
++				break
++			}
++		}
++	}
++	if parent == "" {
++		parent = mainID
++	}
++	info.SessionID, info.AgentName, info.IsSubagent = prefix+sideID, "side", true
++	if parent != "" && parent != sideID {
++		info.ParentSessionID = prefix + parent
++	}
++	return info, true
++}
++
+ func normalizedSessionCandidate(raw string) string {
+ 	return NormalizeExplicitID(raw)
+ }

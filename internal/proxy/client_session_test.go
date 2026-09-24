@@ -96,8 +96,12 @@ func TestForwardSessionHeaders(t *testing.T) {
 								t.Errorf("%s = %q, want %q", header, got, want)
 							}
 						}
-						if got := r.Header.Get("X-Codex-Turn-Metadata"); got != metadata {
-							t.Errorf("turn metadata = %q, want %q", got, metadata)
+						wantMetadata := metadata
+						if test.antigravity {
+							wantMetadata = ""
+						}
+						if got := r.Header.Get("X-Codex-Turn-Metadata"); got != wantMetadata {
+							t.Errorf("turn metadata = %q, want %q", got, wantMetadata)
 						}
 						var wantScopes []string
 						if test.scope != "" {
@@ -109,7 +113,7 @@ func TestForwardSessionHeaders(t *testing.T) {
 						if got := r.Header.Get("Authorization"); got != "Bearer internal-secret" {
 							t.Errorf("authorization = %q", got)
 						}
-						for _, header := range []string{upstreamAccountHeader, "Cookie", "X-Parent-Session-Id", "X-Injected"} {
+						for _, header := range []string{upstreamAccountHeader, "Cookie", "X-Injected"} {
 							if values := r.Header.Values(header); len(values) != 0 {
 								t.Errorf("forbidden header %s leaked upstream: %q", header, values)
 							}
@@ -162,5 +166,69 @@ func TestForwardSessionHeaders(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestCopyAllowedHeadersSidecarRelations(t *testing.T) {
+	source := http.Header{
+		"Thread-Id":                 {"thread-1", "bad\rvalue", "bad\x00value", "", "thread-2"},
+		"Thread_id":                 {"thread-underscore"},
+		"X-Codex-Parent-Thread-Id":  {"codex-parent"},
+		"X-Openai-Subagent":         {"true"},
+		"X-Parent-Session-Id":       {"parent-session"},
+		"X-Parent-Thread-Id":        {"parent-thread"},
+		"X-Parent-Task-Id":          {"parent-task"},
+		"X-Claude-Code-Session-Id":  {"claude-session"},
+		"X-Claude-Code-Agent-Id":    {"claude-agent"},
+		"X-Slot-Session-Id":         {"slot"},
+		"X-Parent-Slot-Session-Id":  {"parent-slot"},
+		"X-Codex-Turn-Metadata":     {`{"session_id":"root","thread_id":"child"}`},
+		"X-Parent-Session-Unknown":  {"must-not-pass"},
+		"X-Side-Session-Id":         {"side-session"},
+		"X-Parent-Side-Session-Id":  {"parent-side"},
+		"X-Injected":                {"must-not-pass"},
+		"Cookie":                    {"session=secret"},
+		"X-Codex-Conversation-Hash": {"conv-forged-by-client"},
+		"X-Codex-Gateway-Affinity":  {"forged-affinity"},
+		"X-Codex-Upstream-Account":  {"forged-account"},
+	}
+	want := http.Header{
+		"Thread-Id":                {"thread-1", "thread-2"},
+		"Thread_id":                {"thread-underscore"},
+		"X-Codex-Parent-Thread-Id": {"codex-parent"},
+		"X-Openai-Subagent":        {"true"},
+		"X-Parent-Session-Id":      {"parent-session"},
+		"X-Parent-Thread-Id":       {"parent-thread"},
+		"X-Parent-Task-Id":         {"parent-task"},
+		"X-Claude-Code-Session-Id": {"claude-session"},
+		"X-Claude-Code-Agent-Id":   {"claude-agent"},
+		"X-Slot-Session-Id":        {"slot"},
+		"X-Parent-Slot-Session-Id": {"parent-slot"},
+		"X-Codex-Turn-Metadata":    {`{"session_id":"root","thread_id":"child"}`},
+		"X-Side-Session-Id":        {"side-session"},
+		"X-Parent-Side-Session-Id": {"parent-side"},
+	}
+
+	client := &Client{}
+	got := make(http.Header)
+	client.copyAllowedHeaders(got, source)
+	for key, wantValues := range want {
+		if values := got.Values(key); !slices.Equal(values, wantValues) {
+			t.Errorf("%s = %q, want %q", key, values, wantValues)
+		}
+	}
+	for _, key := range []string{"X-Injected", "Cookie", "X-Codex-Conversation-Hash", "X-Codex-Gateway-Affinity", "X-Codex-Upstream-Account", "X-Parent-Session-Unknown"} {
+		if values := got.Values(key); len(values) != 0 {
+			t.Errorf("forbidden header %s leaked to sidecar: %q", key, values)
+		}
+	}
+
+	client.antigravity = true
+	bridge := make(http.Header)
+	client.copyAllowedHeaders(bridge, source)
+	for key := range want {
+		if values := bridge.Values(key); len(values) != 0 {
+			t.Errorf("relation header %s leaked to Antigravity: %q", key, values)
+		}
 	}
 }

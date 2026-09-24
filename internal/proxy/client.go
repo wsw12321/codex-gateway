@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -47,7 +49,6 @@ var allowedRequestHeaders = map[string]struct{}{
 	"Tracestate":                  {},
 	"User-Agent":                  {},
 	"X-Codex-Beta-Features":       {},
-	"X-Codex-Turn-Metadata":       {},
 	"X-Stainless-Arch":            {},
 	"X-Stainless-Lang":            {},
 	"X-Stainless-Os":              {},
@@ -55,6 +56,45 @@ var allowedRequestHeaders = map[string]struct{}{
 	"X-Stainless-Retry-Count":     {},
 	"X-Stainless-Runtime":         {},
 	"X-Stainless-Runtime-Version": {},
+}
+
+// sidecarRelationHeaders are request identity hints consumed by the Codex
+// compatibility sidecar. They intentionally cross the Gateway/sidecar
+// boundary so the sidecar can derive a caller-scoped root session. The sidecar
+// strips hierarchy hints at the provider boundary while preserving native
+// session/cache protocol headers. None go to the independent Antigravity bridge.
+var sidecarRelationHeaders = map[string]struct{}{
+	"session-id":                      {},
+	"thread-id":                       {},
+	"x-codex-parent-thread-id":        {},
+	"x-codex-turn-metadata":           {},
+	"x-openai-subagent":               {},
+	"x-claude-code-session-id":        {},
+	"x-claude-code-agent-id":          {},
+	"x-claude-code-parent-agent-id":   {},
+	"x-claude-code-parent-session-id": {},
+	"x-claude-parent-session-id":      {},
+	"x-claude-code-side-session-id":   {},
+	"x-http-session-id":               {},
+	"x-session-id":                    {},
+	"x-session-affinity":              {},
+	"x-slot-session-id":               {},
+	"x-task-id":                       {},
+	"x-conversation-id":               {},
+	"x-thread-id":                     {},
+	"x-client-request-id":             {},
+	"x-side-session-id":               {},
+	"x-side-thread-id":                {},
+	"x-parent-id":                     {},
+	"x-parent-session":                {},
+	"x-parent-session-id":             {},
+	"x-parent-thread-id":              {},
+	"x-parent-task-id":                {},
+	"x-parent-conversation-id":        {},
+	"x-parent-session-affinity":       {},
+	"x-parent-slot-session-id":        {},
+	"x-parent-side-session-id":        {},
+	"x-parent-side-thread-id":         {},
 }
 
 type Usage struct {
@@ -490,19 +530,24 @@ func allowedPath(method, path string) bool {
 func (c *Client) copyAllowedHeaders(dst, src http.Header) {
 	for key, values := range src {
 		canonical := http.CanonicalHeaderKey(key)
-		if _, ok := allowedRequestHeaders[canonical]; !ok {
-			// Keep both Codex session spellings distinct for the sidecar's
-			// affinity handling; they are not part of the bridge protocol.
-			if c.antigravity || (canonical != "Session-Id" && canonical != "Session_id") {
-				continue
-			}
+		relation := isSidecarRelationHeader(canonical)
+		if _, ok := allowedRequestHeaders[canonical]; !ok && (c.antigravity || !relation) {
+			continue
 		}
 		for _, value := range values {
+			if relation && (strings.TrimSpace(value) == "" || !utf8.ValidString(value) || strings.IndexFunc(value, unicode.IsControl) >= 0) {
+				continue
+			}
 			if !strings.ContainsAny(value, "\r\n") {
 				dst.Add(canonical, value)
 			}
 		}
 	}
+}
+
+func isSidecarRelationHeader(name string) bool {
+	_, ok := sidecarRelationHeaders[strings.ToLower(strings.ReplaceAll(name, "_", "-"))]
+	return ok
 }
 
 func firstHeader(header http.Header, names ...string) string {
