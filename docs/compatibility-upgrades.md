@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
 重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
 上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
-`649273bb97bef57458e6940278324f3238ceca388e6900da4fd3ea86deddae24`。
+`f986e6cb7064d97511c2b3af4b468a6cf401d4f33bc3c89910cf00edc784105b`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.15-673131f5-649273bb97bef574-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.15-673131f5-f986e6cb7064d975-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -81,8 +81,15 @@ Astra 冒烟和生产切换按下文规程执行。
 - 只开放 Bearer 认证的 `GET /internal/upstream-accounts`、
   `GET /internal/upstream-accounts/capabilities`、
   `GET /internal/upstream-accounts/concurrency`、
-  `PUT /internal/upstream-accounts/{id}/status` 和固定 URL 的
-  `POST /internal/upstream-accounts/{id}/quota`。额度接口只接受精确的
+  `PUT /internal/upstream-accounts/{id}/status`、固定 URL 的
+  `POST /internal/upstream-accounts/{id}/quota`，以及模型鉴别专用的
+  `GET /internal/upstream-accounts/{id}/models` 和
+  `POST /internal/upstream-accounts/{id}/probe`。模型列表仅含指定可用账号已注册的模型。
+  探针仅接受模型、单道纯文本题和 `max_output_tokens`；执行前后核对稳定账号 ID，
+  不跨账号重试，使用全新会话，不启用工具，也不保存回答。每题超时 180 秒，只接受
+  上游报告 `output_tokens` 不超过 16,384 且文本不超过 16 KiB 的完整回答。
+  Codex 上游的 Responses 翻译器会移除 `max_output_tokens`，因此这些是结果验收限制，
+  无法保证上游生成或计费不超过 16,384 token。额度接口只接受精确的
   `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
   并且只能请求 `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的
   URL、方法或上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格

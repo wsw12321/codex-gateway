@@ -110,6 +110,7 @@
           <a href="#usage" data-view="usage">使用统计</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
+          <a href="#model-identification" data-view="model-identification" class="owner-only hidden">模型鉴别</a>
           <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
           <a href="#information" data-view="information" class="owner-only hidden">信息管理</a>
@@ -794,6 +795,32 @@
               </div>
               <div class="information-users-actions"><div class="button-group"><button id="information-users-prev" type="button" class="secondary" disabled>上一页</button><span id="information-users-page" class="muted">—</span><button id="information-users-next" type="button" class="secondary" disabled>下一页</button></div><button id="information-delete-users" type="button" class="danger" disabled>永久删除所选用户</button></div>
             </article>
+          </section>
+
+          <section class="view owner-only hidden" data-section="model-identification" aria-labelledby="model-identification-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="model-identification-title">模型鉴别</h2><p>用 WhatsMyLLM 的三道固定英文纯文本题，对指定上游账号和模型做本地统计匹配。</p></div>
+            </div>
+            <p class="callout" role="note">结果只是最接近参考库的统计匹配，不能证明实际模型身份；参考库未收录的模型也可能显示相近型号。每次运行会消耗所选上游账号的额度，三题各用全新会话。探针回答不会保存，也不计入网关用量统计。</p>
+            <p class="muted model-identification-source">测试题、指纹库和评分方法来自 WhatsMyLLM 方法说明及 MIT 许可的 ModelTrace。参考库随网关版本更新；当前版本 <strong id="model-identification-version">—</strong>。</p>
+            <form id="model-identification-form" class="panel model-identification-form">
+              <div class="model-identification-selectors">
+                <label>上游账号
+                  <select id="model-identification-account" name="account_id" required><option value="">正在加载…</option></select>
+                </label>
+                <label>该账号可用模型
+                  <select id="model-identification-model" name="model" required disabled><option value="">先选择账号</option></select>
+                </label>
+              </div>
+              <div class="actions"><button id="model-identification-run" type="submit">开始鉴别</button><button id="model-identification-refresh" class="secondary" type="button">刷新状态</button></div>
+              <p id="model-identification-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            </form>
+            <div class="panel model-identification-progress" aria-live="polite">
+              <h3>最近一次运行</h3>
+              <p id="model-identification-run-status">尚无运行记录</p>
+              <progress id="model-identification-progress" max="3" value="0" class="hidden">0 / 3</progress>
+            </div>
+            <div id="model-identification-results" class="model-identification-results" aria-live="polite"><div class="empty">尚无鉴别记录。</div></div>
           </section>
 
           <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">

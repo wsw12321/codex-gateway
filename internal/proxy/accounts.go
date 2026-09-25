@@ -39,6 +39,7 @@ var internalErrorCodes = map[int]map[string]string{
 	http.StatusBadRequest: {
 		"quota_request_invalid":          "sidecar_quota_protocol_error",
 		"account_status_request_invalid": "sidecar_account_status_protocol_error",
+		"probe_request_invalid":          "sidecar_probe_protocol_error",
 	},
 	http.StatusUnauthorized: {
 		"unauthorized":                    "sidecar_auth_failed",
@@ -53,15 +54,21 @@ var internalErrorCodes = map[int]map[string]string{
 	http.StatusConflict: {
 		"upstream_account_disabled":       "upstream_account_disabled",
 		"account_status_identity_invalid": "upstream_account_identity_invalid",
+		"upstream_account_unavailable":    "upstream_account_unavailable",
+		"probe_model_unavailable":         "model_unavailable",
 	},
 	http.StatusRequestEntityTooLarge: {
 		"quota_request_too_large":          "sidecar_quota_protocol_error",
 		"account_status_request_too_large": "sidecar_account_status_protocol_error",
+		"probe_request_too_large":          "sidecar_probe_protocol_error",
 	},
 	http.StatusTooManyRequests: {
 		"quota_upstream_rate_limited": "upstream_quota_rate_limited",
 	},
 	http.StatusBadGateway: {
+		"probe_account_mismatch":             "probe_account_mismatch",
+		"probe_execution_failed":             "probe_execution_failed",
+		"probe_invalid_response":             "probe_invalid_response",
 		"quota_account_identity_unavailable": "upstream_quota_account_identity_unavailable",
 		"quota_credential_unavailable":       "upstream_quota_credential_unavailable",
 		"quota_request_failed":               "upstream_quota_request_failed",
@@ -83,6 +90,7 @@ var internalErrorCodes = map[int]map[string]string{
 		"quota_limits_excessive":             "upstream_quota_limits_excessive",
 	},
 	http.StatusServiceUnavailable: {
+		"probe_unavailable":                 "probe_unavailable",
 		"unauthorized":                      "sidecar_auth_unavailable",
 		"internal_auth_unavailable":         "sidecar_auth_unavailable",
 		"account_registry_unavailable":      "sidecar_account_registry_unavailable",
@@ -90,6 +98,7 @@ var internalErrorCodes = map[int]map[string]string{
 	},
 	http.StatusGatewayTimeout: {
 		"quota_upstream_timeout": "upstream_quota_timeout",
+		"probe_timeout":          "sidecar_timeout",
 	},
 }
 

@@ -94,6 +94,13 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 	}
 	cancelModelAccess()
 
+	identificationContext, cancelIdentification := context.WithTimeout(ctx, 10*time.Second)
+	if _, err := repository.RecoverInterruptedModelIdentificationRuns(identificationContext); err != nil {
+		cancelIdentification()
+		return fmt.Errorf("recover interrupted model identifications: %w", err)
+	}
+	cancelIdentification()
+
 	handler, err := server.New(cfg, repository, logger)
 	if err != nil {
 		return err
@@ -117,7 +124,11 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := httpServer.Shutdown(shutdownContext); err != nil {
+			_ = handler.StopModelIdentifications(shutdownContext)
 			return fmt.Errorf("graceful HTTP shutdown: %w", err)
+		}
+		if err := handler.StopModelIdentifications(shutdownContext); err != nil {
+			return fmt.Errorf("stop model identifications: %w", err)
 		}
 		err := <-serveErrors
 		if errors.Is(err, http.ErrServerClosed) {
@@ -125,6 +136,11 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 		}
 		return err
 	case err := <-serveErrors:
+		stopContext, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stopCancel()
+		if stopErr := handler.StopModelIdentifications(stopContext); stopErr != nil {
+			return fmt.Errorf("stop model identifications: %w", stopErr)
+		}
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}

@@ -54,6 +54,12 @@ func (r Runner) runOnce(ctx context.Context) {
 		r.Logger.Warn("information cleanup recovery failed")
 	}
 	now := r.Now().UTC()
+	if _, err := r.Store.RecoverInterruptedModelIdentificationRuns(ctx); err != nil {
+		r.Logger.Warn("interrupted model identification recovery failed")
+	}
+	if _, err := r.Store.PurgeExpiredModelIdentifications(ctx); err != nil {
+		r.Logger.Warn("model identification expiry cleanup failed")
+	}
 	location, err := time.LoadLocation(r.Timezone)
 	if err != nil {
 		r.Logger.Error("invalid aggregation timezone")

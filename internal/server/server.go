@@ -36,14 +36,18 @@ type Server struct {
 	// durable usage row is updated only after completion; keeping this separate
 	// allows the owner monitor to show the account immediately without changing
 	// the historical single-account contract.
-	activeAttributionsMu  sync.Mutex
-	activeAttributions    map[string]activeRequestAttribution
-	activeConversationsMu sync.Mutex
-	activeConversations   map[string]activeRequestConversation
-	monitoringRepo        monitoringRepository
-	modelAccessRepo       modelAccessRepository
-	groupRepo             groupRepository
-	informationRepo       informationRepository
+	activeAttributionsMu    sync.Mutex
+	activeAttributions      map[string]activeRequestAttribution
+	activeConversationsMu   sync.Mutex
+	activeConversations     map[string]activeRequestConversation
+	monitoringRepo          monitoringRepository
+	modelAccessRepo         modelAccessRepository
+	modelIdentificationRepo modelIdentificationRepository
+	identificationContext   context.Context
+	identificationCancel    context.CancelFunc
+	identificationWG        sync.WaitGroup
+	groupRepo               groupRepository
+	informationRepo         informationRepository
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -69,12 +73,14 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		config: cfg, store: repository, identity: identityService,
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
-		monitoringRepo:      repository,
-		modelAccessRepo:     repository,
-		spoolSlots:          make(chan struct{}, maxConcurrentRequestSpools),
-		activeAttributions:  make(map[string]activeRequestAttribution),
-		activeConversations: make(map[string]activeRequestConversation),
+		monitoringRepo:          repository,
+		modelAccessRepo:         repository,
+		modelIdentificationRepo: repository,
+		spoolSlots:              make(chan struct{}, maxConcurrentRequestSpools),
+		activeAttributions:      make(map[string]activeRequestAttribution),
+		activeConversations:     make(map[string]activeRequestConversation),
 	}
+	s.identificationContext, s.identificationCancel = context.WithCancel(context.Background())
 	if cfg.AntigravityBridgeURL != nil {
 		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
 	}
@@ -159,6 +165,9 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/groups/{id}/members", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupMembers)))))
 	s.mux.Handle("DELETE /admin/groups/{id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.archiveGroup)))))
 	s.mux.Handle("GET /admin/model-access/models", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessModels))))
+	s.mux.Handle("GET /admin/model-identifications", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelIdentificationsJSON))))
+	s.mux.Handle("GET /admin/model-identifications/options", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelIdentificationOptions))))
+	s.mux.Handle("POST /admin/model-identifications/runs", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createModelIdentificationRun)))))
 	s.mux.Handle("GET /admin/model-access/models/{model}/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsers))))
 	s.mux.Handle("GET /admin/model-access/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsersBatch))))
 	s.mux.Handle("PUT /admin/model-access/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateUserModelAccessBatch)))))

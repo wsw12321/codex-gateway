@@ -13,11 +13,13 @@ const sectionTitles = {
   usage: "使用统计",
   monitoring: "请求监控",
   "model-access": "模型权限",
+  "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
   information: "信息管理",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("model-access");
+ownerOnlySections.add("model-identification");
 ownerOnlySections.add("groups");
 ownerOnlySections.add("information");
 ownerOnlySections.add("monitoring");
@@ -68,6 +70,12 @@ let modelAccessSelectedUsers = new Set();
 let modelAccessSelectionInitialized = false;
 let modelAccessModelsRequestSequence = 0;
 let modelAccessUsersRequestSequence = 0;
+let modelIdentificationOptionsSequence = 0;
+let modelIdentificationRecordsSequence = 0;
+let modelIdentificationTimer = 0;
+let modelIdentificationPolling = false;
+let modelIdentificationOptionsReady = false;
+let modelIdentificationRunning = false;
 let upstreamAccountRequestSequence = 0;
 let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
@@ -312,6 +320,7 @@ function setBusy(host, busy, label = "处理中…") {
   if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
   if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh") syncGroupControls();
   if (host.closest?.('[data-section="information"]')) syncInformationControls();
+  if (host.id === "model-identification-form") syncModelIdentificationControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…", requestCurrent = null) {
@@ -399,6 +408,8 @@ function handleUnauthorized() {
   upstreamAccountSyncHealthy = false;
   upstreamAccountListLoading = false;
   upstreamAccountOperation = null;
+  stopModelIdentification();
+  resetModelIdentification();
   setUpstreamAccountMessage("upstream-account-action-message");
   setUpstreamAccountMessage("upstream-account-refresh-message");
   clearUpstreamQuotaTimers();
@@ -1040,6 +1051,8 @@ function renderState(value) {
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
     stopUpstreamConcurrency();
     stopMonitoring();
+    stopModelIdentification();
+    resetModelIdentification();
     resetMonitoring();
     resetInformation();
     identityGeneration++;
@@ -4656,11 +4669,216 @@ function bindInformation() {
   });
 }
 
+function resetModelIdentification() {
+  modelIdentificationOptionsReady = false;
+  modelIdentificationRunning = false;
+  modelIdentificationOptionsSequence++;
+  modelIdentificationRecordsSequence++;
+  const account = byId("model-identification-account");
+  const model = byId("model-identification-model");
+  if (!account || !model) return;
+  account.replaceChildren(element("option", {text: "登录后加载账号", attributes: {value: ""}}));
+  model.replaceChildren(element("option", {text: "先选择账号", attributes: {value: ""}}));
+  model.disabled = true;
+  byId("model-identification-version").textContent = "—";
+  byId("model-identification-run-status").textContent = "尚无运行记录";
+  byId("model-identification-progress").value = 0;
+  hide("model-identification-progress");
+  byId("model-identification-results").replaceChildren(emptyState("尚无鉴别记录。"));
+  setLocalMessage(byId("model-identification-form"));
+  syncModelIdentificationControls();
+}
+
+function modelIdentificationVisible() {
+  return ownerSectionVisible("model-identification") && !loggingOut;
+}
+
+function syncModelIdentificationControls() {
+  const form = byId("model-identification-form");
+  if (!form) return;
+  const account = byId("model-identification-account");
+  const model = byId("model-identification-model");
+  const disabled = !state || state.user.role !== "owner" || loggingOut;
+  account.disabled = disabled || !modelIdentificationOptionsReady;
+  model.disabled = disabled || !account.value || model.options.length <= 1;
+  byId("model-identification-run").disabled = disabled || modelIdentificationRunning || !account.value || !model.value || form.dataset.busy === "true";
+  byId("model-identification-refresh").disabled = disabled;
+}
+
+async function loadModelIdentificationOptions() {
+  const request = ++modelIdentificationOptionsSequence;
+  const generation = identityGeneration;
+  const current = () => request === modelIdentificationOptionsSequence && generation === identityGeneration && modelIdentificationVisible();
+  const selected = byId("model-identification-account").value;
+  const response = await api("/admin/model-identifications/options", {}, current);
+  if (!current()) return;
+  const accounts = Array.isArray(response.accounts) ? response.accounts : [];
+  const select = byId("model-identification-account");
+  select.replaceChildren(element("option", {text: "请选择上游账号", attributes: {value: ""}}),
+    ...accounts.map((account) => element("option", {
+      text: `${account.masked_email || account.id} · ${account.status === "available" ? "可用" : "不可用"}`,
+      attributes: {value: account.id, disabled: account.status !== "available"},
+    })));
+  select.value = accounts.some((account) => account.id === selected && account.status === "available") ? selected : "";
+  byId("model-identification-version").textContent = response.reference_version || "—";
+  modelIdentificationOptionsReady = true;
+  if (select.value) await loadModelIdentificationModels();
+  else {
+    byId("model-identification-model").replaceChildren(element("option", {text: "先选择账号", attributes: {value: ""}}));
+    syncModelIdentificationControls();
+  }
+}
+
+async function loadModelIdentificationModels() {
+  const request = ++modelIdentificationOptionsSequence;
+  const generation = identityGeneration;
+  const accountID = byId("model-identification-account").value;
+  const select = byId("model-identification-model");
+  const selected = select.value;
+  select.disabled = true;
+  select.replaceChildren(element("option", {text: accountID ? "正在查询该账号模型…" : "先选择账号", attributes: {value: ""}}));
+  syncModelIdentificationControls();
+  if (!accountID) return;
+  const current = () => request === modelIdentificationOptionsSequence && generation === identityGeneration &&
+    modelIdentificationVisible() && byId("model-identification-account").value === accountID;
+  try {
+    const response = await api(`/admin/model-identifications/options?account_id=${encodeURIComponent(accountID)}`, {}, current);
+    if (!current()) return;
+    const models = Array.isArray(response.models) ? response.models : [];
+    select.replaceChildren(element("option", {text: models.length ? "请选择模型" : "该账号没有可鉴别的已配置模型", attributes: {value: ""}}),
+      ...models.map((model) => element("option", {text: model, attributes: {value: model}})));
+    select.value = models.includes(selected) ? selected : "";
+    byId("model-identification-version").textContent = response.reference_version || "—";
+  } catch (error) {
+    if (!current()) return;
+    select.replaceChildren(element("option", {text: "模型查询失败", attributes: {value: ""}}));
+    setLocalMessage(byId("model-identification-form"), friendlyError(error));
+  }
+  syncModelIdentificationControls();
+}
+
+const modelIdentificationFailureLabels = {
+  model_identification_account_unavailable: "所选账号已不可用",
+  model_identification_model_unavailable: "所选模型已不可用",
+  model_identification_account_mismatch: "上游返回了不同的账号",
+  model_identification_invalid_answer: "探针回答未通过官方输入校验",
+  model_identification_timeout: "探针或整项运行超时",
+  model_identification_interrupted: "运行已中断",
+  interrupted: "进程中断，运行未完成",
+  model_identification_probe_failed: "探针执行失败",
+  model_identification_storage_failed: "保存运行结果失败",
+  model_identification_reference_unavailable: "参考库暂不可用",
+};
+
+function renderModelIdentifications(items) {
+  const records = Array.isArray(items) ? items : [];
+  const latest = [...records].sort((a, b) => Date.parse(b.run_started_at || 0) - Date.parse(a.run_started_at || 0))[0];
+  modelIdentificationRunning = records.some((item) => item.run_status === "running");
+  const progress = byId("model-identification-progress");
+  progress.value = Math.max(0, Math.min(3, Number(latest?.run_progress) || 0));
+  progress.classList.toggle("hidden", latest?.run_status !== "running");
+  const status = byId("model-identification-run-status");
+  if (!latest) status.textContent = "尚无运行记录";
+  else if (latest.run_status === "running") status.textContent = `${latest.requested_model} · 已完成 ${progress.value} / 3 题 · 开始于 ${formatDateTime(latest.run_started_at)}`;
+  else if (latest.run_status === "succeeded") status.textContent = `${latest.requested_model} · 已完成 · ${formatDateTime(latest.run_finished_at)}`;
+  else status.textContent = `${latest.requested_model} · 本次失败：${modelIdentificationFailureLabels[latest.run_error_code] || "运行失败"} · ${formatDateTime(latest.run_finished_at)}`;
+  const container = byId("model-identification-results");
+  if (!records.length) {
+    container.replaceChildren(emptyState("尚无鉴别记录。"));
+    syncModelIdentificationControls();
+    return;
+  }
+  container.replaceChildren(...records.map((item) => {
+    const account = all("option", byId("model-identification-account")).find((option) => option.value === item.account_id);
+    const label = account?.textContent?.split(" · ")[0] || item.account_id;
+    const card = element("article", {className: "panel model-identification-result"},
+      element("h3", {text: `${label} · ${item.requested_model}`}));
+    if (item.run_status === "failed") card.append(element("p", {className: "model-identification-failure", text: `本次失败：${modelIdentificationFailureLabels[item.run_error_code] || "运行失败"}。${item.conclusion ? "下方保留仍在有效期内的上次结论。" : "未产生新结论。"}`}));
+    if (item.conclusion) {
+      const level = {match: "明确匹配", family_only: "同家族接近", insufficient: "匹配较弱"}[item.match_level] || "无法可靠判定";
+      const fields = [
+        ["统计结论", item.conclusion], ["最接近的参考模型", item.closest_model || "—"],
+        ["匹配强度", level], ["拟合度 / 领先差距", `${formatPercent(item.fit, "—")} / ${formatPercent(item.margin, "—")}`],
+        ["参考库版本", item.reference_version || "—"], ["完成 / 到期", `${formatDateTime(item.completed_at, "—")} / ${formatDateTime(item.expires_at, "—")}`],
+      ];
+      card.append(element("dl", {}, ...fields.map(([name, value]) => element("div", {}, element("dt", {text: name}), element("dd", {text: value})))));
+    } else card.append(element("p", {className: "muted", text: "暂无有效统计结论。"}));
+    return card;
+  }));
+  syncModelIdentificationControls();
+}
+
+async function loadModelIdentifications() {
+  const request = ++modelIdentificationRecordsSequence;
+  const generation = identityGeneration;
+  const current = () => request === modelIdentificationRecordsSequence && generation === identityGeneration && modelIdentificationVisible();
+  const response = await api("/admin/model-identifications", {}, current);
+  if (!current()) return;
+  byId("model-identification-version").textContent = response.reference_version || "—";
+  renderModelIdentifications(response.identifications);
+}
+
+function stopModelIdentification() {
+  modelIdentificationPolling = false;
+  modelIdentificationOptionsSequence++;
+  modelIdentificationRecordsSequence++;
+  if (modelIdentificationTimer) window.clearTimeout(modelIdentificationTimer);
+  modelIdentificationTimer = 0;
+}
+
+function startModelIdentification() {
+  if (!modelIdentificationVisible() || modelIdentificationPolling) return;
+  modelIdentificationPolling = true;
+  const generation = identityGeneration;
+  const tick = async () => {
+    if (!modelIdentificationPolling || !modelIdentificationVisible() || generation !== identityGeneration) return;
+    try {
+      if (!modelIdentificationOptionsReady) await loadModelIdentificationOptions();
+      await loadModelIdentifications();
+    } catch (error) {
+      if (modelIdentificationVisible() && error.code !== "stale_request") setLocalMessage(byId("model-identification-form"), friendlyError(error));
+    } finally {
+      if (modelIdentificationPolling && modelIdentificationVisible() && generation === identityGeneration) {
+        modelIdentificationTimer = window.setTimeout(tick, 3000);
+      }
+    }
+  };
+  tick();
+}
+
+function bindModelIdentification() {
+  byId("model-identification-account").addEventListener("change", () => {
+    setLocalMessage(byId("model-identification-form"));
+    loadModelIdentificationModels();
+  });
+  byId("model-identification-model").addEventListener("change", syncModelIdentificationControls);
+  bindAsync("model-identification-refresh", "click", async () => {
+    modelIdentificationOptionsReady = false;
+    await loadModelIdentificationOptions();
+    await loadModelIdentifications();
+  }, "刷新中…", modelIdentificationVisible);
+  bindAsync("model-identification-form", "submit", async (event) => {
+    const form = event.currentTarget;
+    const accountID = form.elements.account_id.value;
+    const model = form.elements.model.value;
+    if (!accountID || !model || modelIdentificationRunning) return;
+    const actorID = state?.user?.id;
+    const generation = identityGeneration;
+    const current = () => modelIdentificationVisible() && generation === identityGeneration && state?.user?.id === actorID;
+    await sensitiveAction(() => api("/admin/model-identifications/runs", {method: "POST", body: JSON.stringify({account_id: accountID, model})}, current), current);
+    if (!current()) return;
+    setLocalMessage(form, "鉴别已开始，正在运行三道测试题。", "ok");
+    await loadModelIdentifications();
+  }, "启动中…", modelIdentificationVisible);
+}
+
 function syncVisiblePolling() {
   if (ownerSectionVisible("upstream-accounts")) startUpstreamConcurrency();
   else if (upstreamConcurrencyPolling) stopUpstreamConcurrency();
   if (ownerSectionVisible("monitoring")) startMonitoring();
   else if (monitoringPolling) stopMonitoring();
+  if (modelIdentificationVisible()) startModelIdentification();
+  else if (modelIdentificationPolling) stopModelIdentification();
   window.clearTimeout(informationJobTimer);
   if (ownerSectionVisible("information")) scheduleInformationJob();
 }
@@ -4894,6 +5112,7 @@ function applyWebAuthnSupport() {
 
 function bindUI() {
   bindInformation();
+  bindModelIdentification();
   document.addEventListener("visibilitychange", syncVisiblePolling);
   bindAsync("monitoring-refresh", "click", async () => {
     await loadMonitoring({manual: true});
@@ -4924,6 +5143,8 @@ function bindUI() {
     loggingOut = true;
     stopUpstreamConcurrency();
     stopMonitoring();
+    stopModelIdentification();
+    resetModelIdentification();
     resetMonitoring();
     resetInformation();
     identityGeneration++;

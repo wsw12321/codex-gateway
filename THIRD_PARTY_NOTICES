@@ -48,3 +48,44 @@ remains subject to its upstream terms. Documentation and product information:
   https://antigravity.google/
 
 The retired third-party Gemini CLI plugin is no longer included in this build.
+
+WhatsMyLLM and ModelTrace fingerprint data
+==========================================
+
+The model identification feature bundles WhatsMyLLM's versioned v2026.09.5
+fingerprint bank, challenge prompts, input gates, and verdict thresholds. The
+source URLs and SHA-256 checksums are recorded in internal/modelid/README.md.
+The scoring implementation in internal/modelid/modelid.go is a Go port of the
+public WhatsMyLLM browser implementation and credits WhatsMyLLM's own input
+gates, verdict and collected fingerprints:
+
+  https://whatsmyllm.com/
+  https://whatsmyllm.com/methodology/
+
+WhatsMyLLM credits the fingerprint method, scoring core, challenge templates
+and 16 inherited bank entries to ModelTrace by xqy2006. ModelTrace is
+licensed under the MIT License:
+
+  https://github.com/xqy2006/ModelTrace
+
+MIT License
+
+Copyright (c) 2026 xqy2006
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,0 +1,90 @@
+{
+  "$comment": "Input gates. This is the only definition of the rules: public/js/gates.js (browser and node) and tools/gates.py (pipeline) both read this file and contain no thresholds of their own. Rules run in order; the first one that fires decides the level. Only level 'ok' may enter scoring. A rule with 'applies_from' is skipped while the sequence is shorter than that. A threshold may be a number or {absolute, fraction_of_requested}, which resolves to max(absolute, ceil(fraction * requested)) when the requested count is known and to 'absolute' otherwise. 'observed' records the extreme value of the statistic across every real sample the gates were set against (tools/samples plus the 468 upstream ModelTrace rows), so the margin between real data and the threshold is visible here and re-checked by tools/tests/test_gates.py.",
+  "version": "2026.09.1",
+  "value_min": 1,
+  "value_max": 355,
+  "levels": [
+    "invalid",
+    "insufficient",
+    "ok"
+  ],
+  "rules": [
+    {
+      "id": "empty",
+      "level": "invalid",
+      "stat": "length",
+      "op": "lt",
+      "threshold": 1,
+      "message": "No numbers between 1 and 355 were found in the answer."
+    },
+    {
+      "id": "constant",
+      "level": "invalid",
+      "stat": "unique_count",
+      "op": "lte",
+      "threshold": 1,
+      "applies_from": 2,
+      "message": "Every number is the same. A model asked for random numbers never does this."
+    },
+    {
+      "id": "monotonic",
+      "level": "invalid",
+      "stat": "monotone_fraction",
+      "op": "gte",
+      "threshold": 0.9,
+      "applies_from": 3,
+      "observed": {
+        "max": 0.6811,
+        "note": "set by tools/tests/test_gates.py --write-observed",
+        "row": "claude-sonnet-5__query-16"
+      },
+      "message": "The numbers are sorted. A counted or sorted list is not a model's answer."
+    },
+    {
+      "id": "arithmetic",
+      "level": "invalid",
+      "stat": "arithmetic_fraction",
+      "op": "gte",
+      "threshold": 0.5,
+      "applies_from": 3,
+      "observed": {
+        "max": 0.2247,
+        "note": "set by tools/tests/test_gates.py --write-observed",
+        "row": "claude-sonnet-4-6__query-07"
+      },
+      "message": "The numbers move in a fixed step. That is a pattern, not a sample."
+    },
+    {
+      "id": "low_unique",
+      "level": "invalid",
+      "stat": "unique_ratio",
+      "op": "lt",
+      "threshold": 0.05,
+      "observed": {
+        "min": 0.0883,
+        "note": "set by tools/tests/test_gates.py --write-observed. The threshold cannot be higher: upstream claude-sonnet-5 query-17 (in the bank) has 28 distinct values in 317 numbers and repeats the same twelve-number runs for 64% of its length, so neither a stricter unique-ratio rule nor a repeated-block rule survives the real data.",
+        "row": "claude-sonnet-5__query-17"
+      },
+      "message": "Fewer than one number in twenty is distinct. That is a handful of values cycled, not a sample."
+    },
+    {
+      "id": "too_short",
+      "level": "insufficient",
+      "stat": "length",
+      "op": "lt",
+      "threshold": {
+        "absolute": 80,
+        "fraction_of_requested": 0.55
+      },
+      "observed": {
+        "min_length": 198,
+        "note": "ModelTrace's own acceptance rule (analyzeGlobalOutputs in fingerprint-core.js): max(80, ceil(0.55 * expected)). Kept identical so the gate and the core never disagree about what is long enough.",
+        "row": "claude-haiku-4-5-20251001__query-08"
+      },
+      "message": "The answer is too short to score. Paste the complete reply, or run the challenge again."
+    }
+  ],
+  "stats": {
+    "$comment": "Definitions the two evaluators implement. length: count of parsed numbers. unique_count: distinct values. unique_ratio: unique_count / min(length, value_max - value_min + 1), so an answer longer than the value range is not penalised for the repeats it cannot avoid. monotone_fraction: over consecutive pairs, the larger of the non-decreasing share and the non-increasing share (a sorted list scores 1). arithmetic_fraction: share of consecutive pairs whose absolute difference equals the most common absolute difference (a fixed-step list scores 1, a zigzag of one step size too). min_length: the resolved too_short threshold for this input. All fractions are 0 when there are fewer than two numbers."
+  }
+}

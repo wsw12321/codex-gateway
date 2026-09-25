@@ -2546,6 +2546,23 @@ dialog form {
   .information-users-actions > button { width: 100%; }
 }
 
+.model-identification-source { margin: 1rem 0; }
+.model-identification-form, .model-identification-progress { margin-bottom: 1rem; }
+.model-identification-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.model-identification-form .actions { margin-top: 1rem; }
+.model-identification-progress h3 { margin-top: 0; }
+.model-identification-progress progress { width: 100%; height: .7rem; accent-color: var(--accent); }
+.model-identification-results { display: grid; gap: .8rem; }
+.model-identification-result { overflow-wrap: anywhere; }
+.model-identification-result h3 { margin: 0 0 .7rem; }
+.model-identification-result dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem 1rem; margin: 0; }
+.model-identification-result dt { color: var(--muted); font-size: .85rem; }
+.model-identification-result dd { margin: .15rem 0 0; font-weight: 600; }
+.model-identification-result .model-identification-failure { color: var(--danger); font-weight: 600; }
+@media (max-width: 600px) {
+  .model-identification-selectors, .model-identification-result dl { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

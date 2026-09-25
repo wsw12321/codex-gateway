@@ -396,6 +396,47 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 	}
 }
 
+func TestModelIdentificationDashboardIsOwnerOnlyAndShowsEvidenceLimits(t *testing.T) {
+	t.Parallel()
+	html := string(indexHTML)
+	js := string(appJS)
+	for _, required := range []string{
+		`href="#model-identification" data-view="model-identification" class="owner-only hidden"`,
+		`class="view owner-only hidden" data-section="model-identification"`,
+		`id="model-identification-account"`, `id="model-identification-model"`,
+		`id="model-identification-progress"`, `id="model-identification-results"`,
+		`统计匹配`, `不能证明实际模型身份`, `消耗所选上游账号的额度`,
+		`探针回答不会保存`, `MIT 许可的 ModelTrace`,
+	} {
+		if !strings.Contains(html, required) {
+			t.Fatalf("model identification HTML missing %q", required)
+		}
+	}
+	for _, required := range []string{
+		`ownerOnlySections.add("model-identification")`,
+		`/admin/model-identifications/options`, `/admin/model-identifications/runs`,
+		`function startModelIdentification()`, `function stopModelIdentification()`,
+		`modelIdentificationTimer = window.setTimeout(tick, 3000)`,
+	} {
+		if !strings.Contains(js, required) {
+			t.Fatalf("model identification script missing %q", required)
+		}
+	}
+}
+
+func TestModelIdentificationDashboardPolling(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/model_identification_browser.cjs")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("model identification dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
 func TestUpstreamAccountDashboardBehavior(t *testing.T) {
 	t.Parallel()
 	node, err := exec.LookPath("node")

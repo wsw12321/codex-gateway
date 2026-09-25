@@ -1,0 +1,153 @@
+{
+  "$comment": "Open-set verdict. This is the only definition of the rule: public/js/verdict.js (browser) and tools/verdict.py (pipeline) read it and hold no thresholds of their own. Signals: fit = mean over the scored answers of the cosine between each answer's standardized, nuisance-projected Hellinger feature and the winning model's centroid (bank.robust.hellinger), i.e. the absolute agreement the core discards when it standardizes across models; margin = that fit minus the best fit of any other model; p_family = summed probability of the winning model's family. Bank entries are grouped by bare model id first, so two channels of one model are one candidate. Rule, in order: fit < fit_min -> insufficient; margin >= margin_min -> match; p_family >= family_min -> family_only; else insufficient. 'observed' is the outcome table on the evidence in tools/reports/2026-09-13-open-set-verdict/records.jsonl, written by tools/verdict_fit.py --write-outcomes and re-checked by tools/tests/test_verdict.py.",
+  "version": "2026.09.1",
+  "levels": [
+    "match",
+    "family_only",
+    "insufficient"
+  ],
+  "thresholds": {
+    "fit_min": 0.25,
+    "margin_min": 0.08,
+    "family_min": 0.9
+  },
+  "messages": {
+    "match": "The answers fit one model in the bank clearly better than any other.",
+    "family_only": "The answers fit this family, but the models inside it are too close to name one.",
+    "insufficient": "The answers do not fit any model in the bank well enough to say. Run the challenge again, or the model may not be in the bank yet."
+  },
+  "channel_note": "The fingerprint tracks the model, not the channel it was collected through; the channel of the pasted answer is not determined.",
+  "observed": {
+    "records": "records.jsonl",
+    "outcomes": {
+      "heldout": {
+        "1": {
+          "n": 504,
+          "match": 385,
+          "family_only": 71,
+          "insufficient": 48,
+          "match_right": 383,
+          "match_wrong": 2,
+          "family_right": 71,
+          "family_wrong": 0
+        },
+        "2": {
+          "n": 504,
+          "match": 429,
+          "family_only": 44,
+          "insufficient": 31,
+          "match_right": 429,
+          "match_wrong": 0,
+          "family_right": 44,
+          "family_wrong": 0
+        },
+        "3": {
+          "n": 168,
+          "match": 147,
+          "family_only": 12,
+          "insufficient": 9,
+          "match_right": 147,
+          "match_wrong": 0,
+          "family_right": 12,
+          "family_wrong": 0
+        }
+      },
+      "lomo": {
+        "1": {
+          "n": 504,
+          "match": 68,
+          "family_only": 171,
+          "insufficient": 265,
+          "match_right": 0,
+          "match_wrong": 68,
+          "family_right": 167,
+          "family_wrong": 4
+        },
+        "2": {
+          "n": 504,
+          "match": 55,
+          "family_only": 176,
+          "insufficient": 273,
+          "match_right": 0,
+          "match_wrong": 55,
+          "family_right": 176,
+          "family_wrong": 0
+        },
+        "3": {
+          "n": 168,
+          "match": 16,
+          "family_only": 61,
+          "insufficient": 91,
+          "match_right": 0,
+          "match_wrong": 16,
+          "family_right": 61,
+          "family_wrong": 0
+        }
+      },
+      "random": {
+        "1": {
+          "n": 200,
+          "match": 0,
+          "family_only": 0,
+          "insufficient": 200,
+          "match_right": 0,
+          "match_wrong": 0,
+          "family_right": 0,
+          "family_wrong": 0
+        },
+        "2": {
+          "n": 200,
+          "match": 0,
+          "family_only": 0,
+          "insufficient": 200,
+          "match_right": 0,
+          "match_wrong": 0,
+          "family_right": 0,
+          "family_wrong": 0
+        },
+        "3": {
+          "n": 200,
+          "match": 0,
+          "family_only": 0,
+          "insufficient": 200,
+          "match_right": 0,
+          "match_wrong": 0,
+          "family_right": 0,
+          "family_wrong": 0
+        }
+      },
+      "crosschannel": {
+        "1": {
+          "n": 72,
+          "match": 46,
+          "family_only": 2,
+          "insufficient": 24,
+          "match_right": 46,
+          "match_wrong": 0,
+          "family_right": 2,
+          "family_wrong": 0
+        },
+        "2": {
+          "n": 72,
+          "match": 48,
+          "family_only": 1,
+          "insufficient": 23,
+          "match_right": 48,
+          "match_wrong": 0,
+          "family_right": 1,
+          "family_wrong": 0
+        },
+        "3": {
+          "n": 24,
+          "match": 18,
+          "family_only": 0,
+          "insufficient": 6,
+          "match_right": 18,
+          "match_wrong": 0,
+          "family_right": 0,
+          "family_wrong": 0
+        }
+      }
+    }
+  }
+}
