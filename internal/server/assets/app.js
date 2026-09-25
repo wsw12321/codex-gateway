@@ -4715,10 +4715,16 @@ async function loadModelIdentificationOptions() {
   const accounts = Array.isArray(response.accounts) ? response.accounts : [];
   const select = byId("model-identification-account");
   select.replaceChildren(element("option", {text: "请选择上游账号", attributes: {value: ""}}),
-    ...accounts.map((account) => element("option", {
-      text: `${account.masked_email || account.id} · ${account.status === "available" ? "可用" : "不可用"}`,
-      attributes: {value: account.id, disabled: account.status !== "available"},
-    })));
+    ...accounts.map((account) => {
+      const option = element("option", {
+        text: `${account.masked_email || account.id} · ${account.status === "available" ? "可用" : "不可用"}`,
+        attributes: {value: account.id},
+      });
+      // `disabled` is a boolean DOM property. Writing disabled="false" still
+      // disables an option, so set the property after creating the element.
+      option.disabled = account.status !== "available";
+      return option;
+    }));
   select.value = accounts.some((account) => account.id === selected && account.status === "available") ? selected : "";
   byId("model-identification-version").textContent = response.reference_version || "—";
   modelIdentificationOptionsReady = true;

@@ -409,9 +409,24 @@ p {
 }
 
 nav {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
   gap: .28rem;
   margin-top: 2.2rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+nav::-webkit-scrollbar {
+  width: .45rem;
+}
+
+nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line-strong);
 }
 
 nav a {
@@ -433,6 +448,7 @@ nav a.active {
 }
 
 .profile {
+  flex: 0 0 auto;
   display: grid;
   gap: .8rem;
   margin-top: auto;

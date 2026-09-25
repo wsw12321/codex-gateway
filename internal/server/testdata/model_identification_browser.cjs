@@ -15,7 +15,6 @@ class Element {
     this.className = "";
     this.value = "";
     this.disabled = false;
-    this.options = this.children;
     this._text = "";
     this.classList = {
       contains: (name) => this.className.split(/\s+/).includes(name),
@@ -31,9 +30,15 @@ class Element {
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map((child) => child.textContent).join(""); }
+  get disabled() { return Object.hasOwn(this.attributes, "disabled"); }
+  set disabled(value) { if (value) this.attributes.disabled = ""; else delete this.attributes.disabled; }
+  get options() { return this.children.filter((child) => child.tagName === "option"); }
   setAttribute(name, value) { this.attributes[name] = String(value); if (name === "value") this.value = String(value); }
   append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this._text = ""; this.children = []; this.append(...children); }
+  replaceChildren(...children) {
+    this._text = ""; this.children = []; this.append(...children);
+    if (this.tagName === "select") this.value = this.options[0]?.value || "";
+  }
   querySelectorAll(selector) {
     return this.children.flatMap((child) => [...(selector === "option" && child.tagName === "option" ? [child] : []), ...child.querySelectorAll(selector)]);
   }
@@ -62,6 +67,65 @@ function dashboard() {
   run('state = {user: {id: "owner", role: "owner"}}; modelIdentificationOptionsReady = true;');
   return {nodes, context, run, timeouts};
 }
+
+test("available accounts can be selected to load models and enable identification", async () => {
+  const ui = dashboard();
+  const calls = [];
+  ui.context.api = async (url) => {
+    calls.push(url);
+    return {reference_version: "2026.09.5", accounts: [
+      {id: "available-account", masked_email: "a***@example.com", status: "available"},
+      {id: "unavailable-account", masked_email: "b***@example.com", status: "unavailable"},
+      {id: "unknown-account"},
+    ], models: ["gpt-6-sol"]};
+  };
+  await ui.run("loadModelIdentificationOptions()");
+  const account = ui.nodes.get("model-identification-account");
+  const model = ui.nodes.get("model-identification-model");
+  const run = ui.nodes.get("model-identification-run");
+  assert.equal(account.disabled, false);
+  assert.equal(account.options[1].disabled, false, "available account must not have a disabled attribute, including disabled=\"false\"");
+  assert.equal(account.options[2].disabled, true, "unavailable accounts must stay disabled");
+  assert.equal(account.options[3].disabled, true, "unknown availability must fail closed");
+  assert.equal(model.disabled, true);
+  assert.equal(run.disabled, true);
+
+  account.value = "available-account";
+  await ui.run("loadModelIdentificationModels()");
+  assert.deepEqual(calls, ["/admin/model-identifications/options", "/admin/model-identifications/options?account_id=available-account"]);
+  assert.equal(model.disabled, false);
+  assert.equal(model.options[1].value, "gpt-6-sol");
+  assert.equal(run.disabled, true, "a model must be selected before running");
+  model.value = "gpt-6-sol";
+  ui.run("syncModelIdentificationControls()");
+  assert.equal(run.disabled, false);
+});
+
+test("refresh preserves usable selections and clears an account that becomes unavailable", async () => {
+  const ui = dashboard();
+  let status = "available";
+  ui.context.api = async () => ({accounts: [{id: "account", status}], models: ["gpt-6-sol"]});
+  await ui.run("loadModelIdentificationOptions()");
+  const account = ui.nodes.get("model-identification-account");
+  const model = ui.nodes.get("model-identification-model");
+  account.value = "account";
+  await ui.run("loadModelIdentificationModels()");
+  model.value = "gpt-6-sol";
+
+  await ui.run("loadModelIdentificationOptions()");
+  assert.equal(account.value, "account");
+  assert.equal(account.options[1].disabled, false);
+  assert.equal(model.value, "gpt-6-sol");
+  assert.equal(ui.nodes.get("model-identification-run").disabled, false);
+
+  status = "unavailable";
+  await ui.run("loadModelIdentificationOptions()");
+  assert.equal(account.value, "");
+  assert.equal(account.options[1].disabled, true);
+  assert.equal(model.value, "");
+  assert.equal(model.disabled, true);
+  assert.equal(ui.nodes.get("model-identification-run").disabled, true);
+});
 
 test("owner page polls while visible and stops after leaving", async () => {
   const ui = dashboard();

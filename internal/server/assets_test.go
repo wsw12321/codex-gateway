@@ -135,6 +135,25 @@ func TestGuideEndpointDoesNotInheritDashboardSidebarLayout(t *testing.T) {
 	}
 }
 
+func TestDesktopSidebarKeepsProfileFixedAndScrollsNavigation(t *testing.T) {
+	t.Parallel()
+
+	stylesheet := string(styleCSS)
+	for _, required := range []string{
+		"nav {\n  flex: 1 1 auto;\n  min-height: 0;",
+		"overflow-y: auto;",
+		"scrollbar-width: thin;",
+		".profile {\n  flex: 0 0 auto;",
+		"nav::-webkit-scrollbar",
+		"nav {\n    display: flex;",
+		"overflow-x: auto;",
+	} {
+		if !strings.Contains(stylesheet, required) {
+			t.Fatalf("sidebar stylesheet is missing %s", required)
+		}
+	}
+}
+
 func TestCodexShellSetupAddsOrReplacesOpenAIBaseURL(t *testing.T) {
 	t.Parallel()
 
