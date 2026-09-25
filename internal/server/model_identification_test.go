@@ -21,6 +21,7 @@ import (
 )
 
 const identificationTestAccount = "0123456789abcdef"
+const identificationTestUser = "00000000-0000-0000-0000-000000000001"
 
 func TestModelIdentificationRoutesRequireOwnerOriginAndRecentVerification(t *testing.T) {
 	tests := []struct {
@@ -168,6 +169,9 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 					}
 					return identificationResponse(200, `{"account_id":"`+identificationTestAccount+`","models":`+models+`}`), nil
 				case "/internal/upstream-accounts/" + identificationTestAccount + "/probe":
+					if got := request.Header.Get("X-Codex-Gateway-User"); got != identificationTestUser {
+						t.Errorf("probe user identity = %q, want %q", got, identificationTestUser)
+					}
 					var body struct {
 						Model           string `json:"model"`
 						Input           string `json:"input"`
@@ -210,7 +214,7 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 			if err != nil || len(options.Models) != 1 || options.Models[0] != "gpt-6-sol" {
 				t.Fatalf("options=%+v err=%v", options, err)
 			}
-			s.runModelIdentification("run-1", identificationTestAccount, "gpt-6-sol")
+			s.runModelIdentification("run-1", identificationTestAccount, "gpt-6-sol", identificationTestUser)
 			if test.wantFailure == "" {
 				if !repository.completed || repository.failed != "" || repository.progress != 3 ||
 					repository.item.ClosestModel != "claude-fable-5-1" || repository.item.ReferenceVersion != modelid.ReferenceVersion {

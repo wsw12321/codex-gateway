@@ -55,8 +55,17 @@ func validSidecarModelID(model string) bool {
 // sidecar endpoint that pins every selection and retry to accountID. The
 // response is kept in memory for scoring and must never be logged or stored.
 func (c *Client) ProbeUpstreamAccount(ctx context.Context, accountID, model, prompt string) (string, error) {
+	return c.ProbeUpstreamAccountAsUser(ctx, "", accountID, model, prompt)
+}
+
+// ProbeUpstreamAccountAsUser sends a pinned probe while preserving the
+// authenticated Gateway user identity needed by the sidecar's account-access
+// selector. The identity is a trusted value from the Gateway session, never a
+// client-supplied header.
+func (c *Client) ProbeUpstreamAccountAsUser(ctx context.Context, userID, accountID, model, prompt string) (string, error) {
 	if !upstreamAccountPattern.MatchString(accountID) || !validCatalogModelID(model) ||
-		prompt == "" || len(prompt) > 8<<10 || !utf8.ValidString(prompt) {
+		prompt == "" || len(prompt) > 8<<10 || !utf8.ValidString(prompt) ||
+		(userID != "" && !gatewayUserPattern.MatchString(userID)) {
 		return "", &InternalAPIError{StatusCode: http.StatusBadRequest, Code: "invalid_model_probe"}
 	}
 	body, err := json.Marshal(struct {
@@ -71,7 +80,11 @@ func (c *Client) ProbeUpstreamAccount(ctx context.Context, accountID, model, pro
 		AccountID  string `json:"account_id"`
 		OutputText string `json:"output_text"`
 	}
-	if err := c.internalJSONBody(ctx, http.MethodPost, "/internal/upstream-accounts/"+accountID+"/probe", string(body), &response); err != nil {
+	var headers http.Header
+	if userID != "" {
+		headers = http.Header{gatewayUserHeader: {userID}}
+	}
+	if err := c.internalJSONBodyWithHeaders(ctx, http.MethodPost, "/internal/upstream-accounts/"+accountID+"/probe", string(body), headers, &response); err != nil {
 		return "", err
 	}
 	if response.AccountID != accountID {

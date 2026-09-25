@@ -23,6 +23,7 @@ func identificationInternalResponse(status int, body string) *http.Response {
 
 func TestIdentificationSidecarClientChecksAccountAndProbeEnvelope(t *testing.T) {
 	accountID := "0123456789abcdef"
+	userID := "00000000-0000-0000-0000-000000000001"
 	base, _ := url.Parse("http://sidecar.test")
 	var responseAccount = accountID
 	client := NewWithHTTPClient(base, "secret", &http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
@@ -33,6 +34,9 @@ func TestIdentificationSidecarClientChecksAccountAndProbeEnvelope(t *testing.T) 
 		case "/internal/upstream-accounts/" + accountID + "/models":
 			return identificationInternalResponse(200, `{"account_id":"`+responseAccount+`","models":["gpt-6-sol","codex/special"]}`), nil
 		case "/internal/upstream-accounts/" + accountID + "/probe":
+			if got := r.Header.Get(gatewayUserHeader); got != userID {
+				t.Errorf("probe omitted authenticated gateway user: %q", got)
+			}
 			var body struct {
 				Model, Input    string
 				MaxOutputTokens int `json:"max_output_tokens"`
@@ -52,12 +56,12 @@ func TestIdentificationSidecarClientChecksAccountAndProbeEnvelope(t *testing.T) 
 	if err != nil || len(models) != 2 || models[1] != "codex/special" {
 		t.Fatalf("models=%v err=%v", models, err)
 	}
-	text, err := client.ProbeUpstreamAccount(context.Background(), accountID, "gpt-6-sol", "Prompt")
+	text, err := client.ProbeUpstreamAccountAsUser(context.Background(), userID, accountID, "gpt-6-sol", "Prompt")
 	if err != nil || text != " 17, 82 \n" {
 		t.Fatalf("reply=%q err=%v", text, err)
 	}
 	responseAccount = "ffffffffffffffff"
-	_, err = client.ProbeUpstreamAccount(context.Background(), accountID, "gpt-6-sol", "Prompt")
+	_, err = client.ProbeUpstreamAccountAsUser(context.Background(), userID, accountID, "gpt-6-sol", "Prompt")
 	var internal *InternalAPIError
 	if !errors.As(err, &internal) || internal.SafeCode() != "probe_account_mismatch" {
 		t.Fatalf("mismatched account error=%v", err)

@@ -213,10 +213,11 @@ func (s *Server) createModelIdentificationRun(w http.ResponseWriter, r *http.Req
 		internalError(s, w, r, "begin model identification", err)
 		return
 	}
+	userID := userFrom(r.Context()).ID
 	s.identificationWG.Add(1)
 	go func() {
 		defer s.identificationWG.Done()
-		s.runModelIdentification(run.RunID, input.AccountID, input.Model)
+		s.runModelIdentification(run.RunID, input.AccountID, input.Model, userID)
 	}()
 	writeJSON(w, http.StatusAccepted, map[string]any{"run_id": run.RunID})
 }
@@ -256,7 +257,11 @@ func modelIdentificationHasModel(models []string, model string) bool {
 	return false
 }
 
-func (s *Server) runModelIdentification(runID, accountID, model string) {
+func (s *Server) runModelIdentification(runID, accountID, model string, userIDs ...string) {
+	userID := ""
+	if len(userIDs) > 0 {
+		userID = userIDs[0]
+	}
 	parent := s.identificationContext
 	if parent == nil {
 		parent = context.Background()
@@ -305,7 +310,7 @@ func (s *Server) runModelIdentification(runID, accountID, model string) {
 			return
 		}
 		probeCtx, probeCancel := context.WithTimeout(ctx, modelIdentificationProbeTimeout)
-		reply, err := s.upstream.ProbeUpstreamAccount(probeCtx, accountID, model, challenge.Prompt)
+		reply, err := s.upstream.ProbeUpstreamAccountAsUser(probeCtx, userID, accountID, model, challenge.Prompt)
 		probeCancel()
 		if err != nil {
 			code = modelIdentificationFailureCode(err)

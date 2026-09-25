@@ -341,6 +341,10 @@ func (c *Client) internalJSON(ctx context.Context, method, path string, destinat
 }
 
 func (c *Client) internalJSONBody(ctx context.Context, method, path, body string, destination any) error {
+	return c.internalJSONBodyWithHeaders(ctx, method, path, body, nil, destination)
+}
+
+func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, body string, headers http.Header, destination any) error {
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + path
 	target.RawQuery = ""
@@ -356,6 +360,11 @@ func (c *Client) internalJSONBody(ctx context.Context, method, path, body string
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
+	for key, values := range headers {
+		for _, value := range values {
+			request.Header.Add(key, value)
+		}
+	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}
