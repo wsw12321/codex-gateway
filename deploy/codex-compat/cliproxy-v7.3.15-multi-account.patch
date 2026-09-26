@@ -3381,10 +3381,10 @@ index 0000000..df4b3fb
 +}
 diff --git a/internal/runtime/executor/codex_diagnostic_probe.go b/internal/runtime/executor/codex_diagnostic_probe.go
 new file mode 100644
-index 0000000..648613a
+index 0000000..3119649
 --- /dev/null
 +++ b/internal/runtime/executor/codex_diagnostic_probe.go
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,388 @@
 +package executor
 +
 +import (
@@ -3489,11 +3489,15 @@ index 0000000..648613a
 +	snapshot.Runtime = nil
 +	// Codex rejects max_output_tokens. Enforce the requested ceiling against
 +	// completed usage locally; it is not an upstream billing guarantee.
++	// Responses Lite requires reasoning.context=all_turns and disables parallel
++	// tool calls. The latter also matches normalizeCodexParallelToolCalls in the
++	// ordinary executor; this isolated path must supply both fields itself.
 +	body, _ := json.Marshal(map[string]any{
 +		"model": input.Model, "stream": true, "store": false, "instructions": "",
-+		"tools": []any{}, "tool_choice": "none", "parallel_tool_calls": true,
-+		"include": []string{"reasoning.encrypted_content"},
-+		"input":   []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]string{"type": "input_text", "text": input.Input}}}},
++		"tools": []any{}, "tool_choice": "none", "parallel_tool_calls": false,
++		"reasoning": map[string]string{"context": "all_turns"},
++		"include":   []string{"reasoning.encrypted_content"},
++		"input":     []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]string{"type": "input_text", "text": input.Input}}}},
 +	})
 +	req, err := http.NewRequestWithContext(ctx, http.MethodPost, diagnosticProbeURL, bytes.NewReader(body))
 +	if err != nil {
@@ -3521,9 +3525,17 @@ index 0000000..648613a
 +		}
 +		return "", failure
 +	}
-+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
-+	if mediaErr != nil || mediaType != "text/event-stream" {
-+		return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++	// The fixed Codex endpoint can omit Content-Type on successful SSE replies.
++	// Reject an explicitly invalid type; when absent, the bounded SSE parser and
++	// completed-response validation below still determine whether it is usable.
++	if values := response.Header.Values("Content-Type"); values != nil {
++		if len(values) != 1 {
++			return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++		}
++		mediaType, _, mediaErr := mime.ParseMediaType(values[0])
++		if mediaErr != nil || mediaType != "text/event-stream" {
++			return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++		}
 +	}
 +	text, failure := readDiagnosticProbeSSE(response.Body, input.MaxOutputTokens)
 +	if ctx.Err() != nil {
@@ -3763,10 +3775,10 @@ index 0000000..648613a
 +}
 diff --git a/internal/runtime/executor/codex_diagnostic_probe_test.go b/internal/runtime/executor/codex_diagnostic_probe_test.go
 new file mode 100644
-index 0000000..3f727e0
+index 0000000..9471a46
 --- /dev/null
 +++ b/internal/runtime/executor/codex_diagnostic_probe_test.go
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,446 @@
 +package executor
 +
 +import (
@@ -3860,7 +3872,7 @@ index 0000000..3f727e0
 +			}
 +		}
 +		data, _ := io.ReadAll(r.Body)
-+		for path, want := range map[string]string{"model": request.Model, "instructions": "", "tools": "[]", "tool_choice": "none", "input.0.content.0.text": request.Input} {
++		for path, want := range map[string]string{"model": request.Model, "instructions": "", "tools": "[]", "tool_choice": "none", "reasoning.context": "all_turns", "input.0.content.0.text": request.Input} {
 +			got := gjson.GetBytes(data, path)
 +			value := got.String()
 +			if path == "tools" {
@@ -3870,7 +3882,7 @@ index 0000000..3f727e0
 +				t.Fatalf("changed %s", path)
 +			}
 +		}
-+		if !gjson.GetBytes(data, "stream").Bool() || gjson.GetBytes(data, "store").Bool() || !gjson.GetBytes(data, "parallel_tool_calls").Bool() || gjson.GetBytes(data, "max_output_tokens").Exists() {
++		if !gjson.GetBytes(data, "stream").Bool() || gjson.GetBytes(data, "store").Bool() || gjson.GetBytes(data, "parallel_tool_calls").Type != gjson.False || gjson.GetBytes(data, "max_output_tokens").Exists() {
 +			t.Fatal("unsafe protocol fields")
 +		}
 +		return diagnosticHTTPResponse(200, diagnosticCompleted("private answer", 2)), nil
@@ -3899,6 +3911,81 @@ index 0000000..3f727e0
 +	}
 +	if strings.Contains(logs.String(), request.Input) || strings.Contains(logs.String(), "private answer") || strings.Contains(logs.String(), "diagnostic-token") {
 +		t.Fatal("private body/token logged")
++	}
++}
++
++func TestCodexDiagnosticProbeResponsesLiteContract(t *testing.T) {
++	a, request := diagnosticFixture()
++	calls := 0
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(r *http.Request) (*http.Response, error) {
++		calls++
++		if r.Header.Get(codexResponsesLiteHeader) != "true" {
++			t.Fatal("diagnostic lost the Responses Lite contract")
++		}
++		data, err := io.ReadAll(r.Body)
++		if err != nil {
++			t.Fatal(err)
++		}
++		// This is the rejection observed from the live Responses Lite endpoint.
++		if gjson.GetBytes(data, "reasoning.context").String() != "all_turns" {
++			return diagnosticHTTPResponse(http.StatusBadRequest, "{\"error\":{\"message\":\"X-OpenAI-Internal-Codex-Responses-Lite requires `reasoning.context` to be `all_turns`.\",\"type\":\"invalid_request_error\",\"param\":\"reasoning.context\",\"code\":\"unsupported_value\"}}"), nil
++		}
++		// Independently enforce the second upstream constraint; do not merely
++		// trust the same normalizer used by the ordinary executor.
++		if gjson.GetBytes(data, "parallel_tool_calls").Type != gjson.False {
++			return diagnosticHTTPResponse(http.StatusBadRequest, `{"error":{"type":"invalid_request_error","param":"parallel_tool_calls","code":"unsupported_value"}}`), nil
++		}
++		return diagnosticHTTPResponse(http.StatusOK, diagnosticCompleted("private answer", 2)), nil
++	}))
++	text, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, request)
++	if failure != nil || text != "private answer" || calls != 1 {
++		t.Fatalf("Responses Lite probe failed: failure=%+v calls=%d", failure, calls)
++	}
++}
++
++func TestCodexDiagnosticProbeMissingContentType(t *testing.T) {
++	for _, test := range []struct {
++		name, body, code string
++		contentTypes     []string
++	}{
++		{name: "missing with completed SSE", body: diagnosticCompleted("private answer", 2)},
++		{name: "valid with completed SSE", body: diagnosticCompleted("private answer", 2), contentTypes: []string{"text/event-stream; charset=utf-8"}},
++		{name: "missing with HTML", body: "<html>upstream error</html>", code: "probe_response_incomplete"},
++		{name: "missing with JSON", body: `{"output_text":"private answer"}`, code: "probe_response_incomplete"},
++		{name: "missing with malformed SSE", body: "data: invalid\n\n", code: "probe_invalid_response"},
++		{name: "missing with nonterminal SSE", body: "data: {\"type\":\"response.created\"}\n\n", code: "probe_response_incomplete"},
++		{name: "missing with invalid completed SSE", body: "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n", code: "probe_invalid_response"},
++		{name: "missing with tool SSE", body: "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\"}}\n\n", code: "probe_unexpected_tool"},
++		{name: "explicit JSON", body: diagnosticCompleted("private answer", 2), contentTypes: []string{"application/json"}, code: "probe_invalid_response"},
++		{name: "explicit HTML", body: diagnosticCompleted("private answer", 2), contentTypes: []string{"text/html"}, code: "probe_invalid_response"},
++		{name: "explicit empty", body: diagnosticCompleted("private answer", 2), contentTypes: []string{""}, code: "probe_invalid_response"},
++		{name: "explicit malformed", body: diagnosticCompleted("private answer", 2), contentTypes: []string{"text/event-stream; charset"}, code: "probe_invalid_response"},
++		{name: "explicit repeated", body: diagnosticCompleted("private answer", 2), contentTypes: []string{"text/event-stream", "text/event-stream"}, code: "probe_invalid_response"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			a, request := diagnosticFixture()
++			calls := 0
++			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(*http.Request) (*http.Response, error) {
++				calls++
++				response := diagnosticHTTPResponse(http.StatusOK, test.body)
++				response.Header = make(http.Header)
++				if test.contentTypes != nil {
++					response.Header["Content-Type"] = test.contentTypes
++				}
++				return response, nil
++			}))
++			text, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, request)
++			if test.code == "" {
++				if failure != nil || text != "private answer" {
++					t.Fatalf("valid SSE was rejected: %v", failure)
++				}
++			} else if failure == nil || failure.Code != test.code || text != "" {
++				t.Fatalf("failure=%v, want %s and no answer", failure, test.code)
++			}
++			if calls != 1 {
++				t.Fatal("diagnostic retried the upstream response")
++			}
++		})
 +	}
 +}
 +

@@ -194,7 +194,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.3.15` 的 peeled commit 正是
 `673131f57484517c3a1eae7e36c4cfa7b9bb4efc`，不匹配就会失败。兼容层镜像标签为
-`v7.3.15-673131f5-0b91ec60874b6b1f-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.3.15-673131f5-2dc404c8b22496a6-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -725,6 +725,14 @@ sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致。套餐兼容�
 不自动刷新凭证、重试或切换账号；仍会消耗该账号的真实上游额度。模型候选来自原生目录，
 实际支持情况由上游决定。侧车每题最多 180 秒，Gateway 留出 5 秒返回时间，总任务上限
 10 分钟；诊断使用独立 HTTP 超时，不受普通请求的 90 秒响应头超时影响。
+
+若鉴定在第一题立即失败，错误码为 `model_identification_upstream_rejected`、
+`upstream_status=400`，而普通请求正常，应核对兼容层是否包含 Responses Lite
+请求修复：诊断必须同时发送 `reasoning.context=all_turns` 和
+`parallel_tool_calls=false`。缺少前者或将后者设为 `true` 都会被上游拒绝。
+上游成功 SSE 响应可能不带 `Content-Type`；侧车在该头缺失时仍执行完整的
+SSE 事件、完成状态、输出格式和大小校验，显式返回非 SSE 类型时继续拒绝。
+本修复只需更新 `codex-compat` 镜像；已部署上述诊断版本的 Gateway 无需新增迁移。
 
 创建接口返回 `run_id` 和 `run` 快照，页面通过
 `GET /admin/model-identifications/runs/{run_id}` 查询本次任务，显示阶段、题号、通过题数

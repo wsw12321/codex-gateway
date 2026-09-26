@@ -67,6 +67,8 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
         TestCodexAstraUpgradeHTTPTransports \
         TestCodexDiagnosticProbeIsolatedRequestAndNoUsage \
+        TestCodexDiagnosticProbeResponsesLiteContract \
+        TestCodexDiagnosticProbeMissingContentType \
         TestCodexDiagnosticProbeUpstreamErrorsAndNoRetry \
         TestCodexDiagnosticProbeSSEValidation \
         TestCodexDiagnosticProbeIdentityNetworkAndCancellation \

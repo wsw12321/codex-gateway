@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
 重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
 上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
-`0b91ec60874b6b1f9681742d4f4e7462626d69a0dd699af7c73ebd630e7c0357`。
+`2dc404c8b22496a6de935a8fd07ca6006d3681bcf503ea33f2cd529610f3096b`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.15-673131f5-0b91ec60874b6b1f-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.15-673131f5-2dc404c8b22496a6-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -33,6 +33,12 @@ SSH 死锁及压缩库越界读取问题。Debian 运行时显式安装 `libpcre
 请求契约保持兼容，保留现有价格目录。配套的模型鉴定流程需要 Gateway 应用
 `0019_model_identification_diagnostics.sql`，新增任务阶段、发起人和安全错误元数据；
 Owner 账号状态管理接口仍只管理 Codex。
+
+模型鉴定的直连请求显式遵守 Responses Lite 约束：设置
+`reasoning.context=all_turns`、`parallel_tool_calls=false`，避免首题被上游以
+HTTP 400 拒绝。上游成功 SSE 可以省略 `Content-Type`，此时仍须通过原有事件、
+完成状态、文本和大小校验；显式空值、重复或非 SSE 类型继续拒绝。补丁携带这两项
+回归，镜像构建检查测试存在并执行。该修复无需新的 Gateway 或数据库迁移。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
 Astra 冒烟和生产切换按下文规程执行。
