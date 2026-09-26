@@ -41,6 +41,7 @@ COPY deploy/codex-compat/legacy-credentials.test.txt /src/internal/watcher/synth
 # or semantic regression therefore fails the immutable image build closed.
 RUN go test -count=1 \
     ./internal/api \
+    ./internal/api/middleware \
     ./internal/auth/codex \
     ./internal/logging \
     ./internal/util \
@@ -65,6 +66,14 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexImageHTTPClientDoesNotFollowRedirect \
         TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
         TestCodexAstraUpgradeHTTPTransports \
+        TestCodexDiagnosticProbeIsolatedRequestAndNoUsage \
+        TestCodexDiagnosticProbeUpstreamErrorsAndNoRetry \
+        TestCodexDiagnosticProbeSSEValidation \
+        TestCodexDiagnosticProbeIdentityNetworkAndCancellation \
+        TestCodexDiagnosticProbePreservesEgressProxy \
+        TestCodexDiagnosticProbeRejectsInvalidProxy \
+        TestCodexDiagnosticProbeCancelsStalledBody \
+        TestCodexDiagnosticProbeDoesNotDuplicateStreamingText \
         TestCodexGatewayQuotaSignal \
         TestCodexGatewayQuotaHTTPTransports \
         TestCodexGatewayQuotaWebsocketSignal \
@@ -76,7 +85,7 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         grep -Fxq "$test_name" /tmp/codex-regression-tests; \
     done \
     && go test -count=1 \
-        -run '^(TestCodex(RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        -run '^(TestCodex(DiagnosticProbe.*|RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
 WORKDIR /src

@@ -58,6 +58,20 @@ docker run --rm --network none --read-only --cap-drop ALL \
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities
         grep -Fq "upstream_account_access_v1" /run/cliproxy/capabilities
         {
+            printf "GET /internal/model-identification/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/diagnostic-capabilities
+        grep -Fq "200 OK" /run/cliproxy/diagnostic-capabilities
+        grep -Fq "model_identification_direct_v1" /run/cliproxy/diagnostic-capabilities
+        {
+            printf "POST /internal/model-identification/accounts/0123456789abcdef/probe HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/diagnostic-actor-required
+        grep -Fq "400 Bad Request" /run/cliproxy/diagnostic-actor-required
+        grep -Fq "probe_actor_invalid" /run/cliproxy/diagnostic-actor-required
+        {
+            printf "GET /internal/model-identification/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/diagnostic-unauthorized
+        grep -Fq "401 Unauthorized" /run/cliproxy/diagnostic-unauthorized
+        {
             printf "GET /internal/upstream-accounts/concurrency HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/concurrency
         grep -Fq "200 OK" /run/cliproxy/concurrency
@@ -67,5 +81,5 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "GET /internal/upstream-accounts/concurrency HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/concurrency-unauthorized
         grep -Fq "401 Unauthorized" /run/cliproxy/concurrency-unauthorized
-        printf "%s\n" "Sidecar OAuth inventory, permission rejection, account access capability, authenticated concurrency and Gateway-independent startup checks passed"
+        printf "%s\n" "Sidecar OAuth inventory, permission rejection, account access and diagnostic capabilities, diagnostic actor validation, authenticated concurrency and Gateway-independent startup checks passed"
     '

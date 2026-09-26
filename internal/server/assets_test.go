@@ -425,7 +425,8 @@ func TestModelIdentificationDashboardIsOwnerOnlyAndShowsEvidenceLimits(t *testin
 		`id="model-identification-account"`, `id="model-identification-model"`,
 		`id="model-identification-progress"`, `id="model-identification-results"`,
 		`统计匹配`, `不能证明实际模型身份`, `消耗所选上游账号的额度`,
-		`探针回答不会保存`, `MIT 许可的 ModelTrace`,
+		`探针回答不会保存`, `MIT 许可的 ModelTrace`, `可尝试模型`,
+		`Owner 可直连指定账号`, `跳过日常分流限制`, `原有账号状态与配置保持不变`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("model identification HTML missing %q", required)

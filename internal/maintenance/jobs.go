@@ -31,6 +31,8 @@ func (r Runner) Run(ctx context.Context) {
 	r.runOnce(ctx)
 	ticker := time.NewTicker(time.Hour)
 	defer ticker.Stop()
+	diagnosticTicker := time.NewTicker(30 * time.Second)
+	defer diagnosticTicker.Stop()
 	cleanupTicker := time.NewTicker(time.Second)
 	defer cleanupTicker.Stop()
 	for {
@@ -39,6 +41,8 @@ func (r Runner) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			r.runOnce(ctx)
+		case <-diagnosticTicker.C:
+			r.cleanModelIdentifications(ctx)
 		case <-cleanupTicker.C:
 			if _, err := r.Store.RunInformationCleanupBatch(ctx, 500); err != nil {
 				r.Logger.Warn("information cleanup batch failed; task remains resumable")
@@ -54,12 +58,7 @@ func (r Runner) runOnce(ctx context.Context) {
 		r.Logger.Warn("information cleanup recovery failed")
 	}
 	now := r.Now().UTC()
-	if _, err := r.Store.RecoverInterruptedModelIdentificationRuns(ctx); err != nil {
-		r.Logger.Warn("interrupted model identification recovery failed")
-	}
-	if _, err := r.Store.PurgeExpiredModelIdentifications(ctx); err != nil {
-		r.Logger.Warn("model identification expiry cleanup failed")
-	}
+	r.cleanModelIdentifications(ctx)
 	location, err := time.LoadLocation(r.Timezone)
 	if err != nil {
 		r.Logger.Error("invalid aggregation timezone")
@@ -105,4 +104,13 @@ func (r Runner) runOnce(ctx context.Context) {
 	_, _ = r.Store.DB().ExecContext(ctx, `
 		DELETE FROM invitations WHERE expires_at < $1
 		`, now.Add(-30*24*time.Hour))
+}
+
+func (r Runner) cleanModelIdentifications(ctx context.Context) {
+	if _, err := r.Store.RecoverInterruptedModelIdentificationRuns(ctx); err != nil {
+		r.Logger.Warn("interrupted model identification recovery failed")
+	}
+	if _, err := r.Store.PurgeExpiredModelIdentifications(ctx); err != nil {
+		r.Logger.Warn("model identification expiry cleanup failed")
+	}
 }

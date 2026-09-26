@@ -2567,6 +2567,7 @@ dialog form {
 .model-identification-selectors { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .model-identification-form .actions { margin-top: 1rem; }
 .model-identification-progress h3 { margin-top: 0; }
+.model-identification-progress p { overflow-wrap: anywhere; }
 .model-identification-progress progress { width: 100%; height: .7rem; accent-color: var(--accent); }
 .model-identification-results { display: grid; gap: .8rem; }
 .model-identification-result { overflow-wrap: anywhere; }

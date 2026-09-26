@@ -167,6 +167,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/model-access/models", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessModels))))
 	s.mux.Handle("GET /admin/model-identifications", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelIdentificationsJSON))))
 	s.mux.Handle("GET /admin/model-identifications/options", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelIdentificationOptions))))
+	s.mux.Handle("GET /admin/model-identifications/runs/{run_id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelIdentificationRunJSON))))
 	s.mux.Handle("POST /admin/model-identifications/runs", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createModelIdentificationRun)))))
 	s.mux.Handle("GET /admin/model-access/models/{model}/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsers))))
 	s.mux.Handle("GET /admin/model-access/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessUsersBatch))))

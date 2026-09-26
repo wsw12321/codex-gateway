@@ -249,27 +249,46 @@ func Score(replies []string) (Result, error) {
 	if len(replies) != len(challenges) {
 		return Result{}, fmt.Errorf("modelid: need exactly %d replies", len(challenges))
 	}
+	parsed, err := parseReplies(replies)
+	if err != nil {
+		return Result{}, err
+	}
+	return scoreParsed(parsed), nil
+}
+
+// ValidateRepliesPrefix applies the same gates as Score to the answers obtained
+// so far, including duplicate answers across questions. It lets a caller stop
+// before spending quota on another challenge after an unusable answer.
+func ValidateRepliesPrefix(replies []string) error {
+	if len(replies) < 1 || len(replies) > len(challenges) {
+		return fmt.Errorf("modelid: need between 1 and %d replies", len(challenges))
+	}
+	_, err := parseReplies(replies)
+	return err
+}
+
+func parseReplies(replies []string) ([3][]int, error) {
 	var parsed [3][]int
 	seen := make(map[string]bool, 3)
 	for i, reply := range replies {
 		if len(utf16.Encode([]rune(reply))) > inputLimit {
-			return Result{}, &ReplyError{Index: i, Rule: "limit"}
+			return parsed, &ReplyError{Index: i, Rule: "limit"}
 		}
 		text, transportRule := plainReply(reply)
 		if transportRule != "" {
-			return Result{}, &ReplyError{Index: i, Rule: transportRule}
+			return parsed, &ReplyError{Index: i, Rule: transportRule}
 		}
 		parsed[i] = parseNumbers(text)
 		if ruleID := gate(parsed[i], challenges[i].RequestedCount); ruleID != "" {
-			return Result{}, &ReplyError{Index: i, Rule: ruleID}
+			return parsed, &ReplyError{Index: i, Rule: ruleID}
 		}
 		key := numberKey(parsed[i])
 		if seen[key] {
-			return Result{}, &ReplyError{Index: i, Rule: "duplicate"}
+			return parsed, &ReplyError{Index: i, Rule: "duplicate"}
 		}
 		seen[key] = true
 	}
-	return scoreParsed(parsed), nil
+	return parsed, nil
 }
 
 func parseNumbers(text string) []int {

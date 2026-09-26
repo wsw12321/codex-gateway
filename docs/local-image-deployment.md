@@ -25,7 +25,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 \
 gateway_tag=<完整Git-SHA或正式版本>
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
-  "codex-gateway-compat:v7.3.15-673131f5-f986e6cb7064d975-codex-only" \
+  "codex-gateway-compat:v7.3.15-673131f5-0b91ec60874b6b1f-codex-only" \
   "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
@@ -53,6 +53,10 @@ git checkout --detach <与本地相同的完整Git-SHA>
 `0009_upstream_allocation.sql`。兼容层启动不等待 Gateway；等 Gateway
 `/readyz` 返回 200 后再运行 `./scripts/smoke-sidecar.sh`。回调失败或全部候选
 系数为 0 时，新分配返回 503。上线前按升级规程完成备份与真实 OAuth 冒烟。
+
+模型鉴定流程还需同时升级 Gateway 与兼容层，并应用
+`0019_model_identification_diagnostics.sql`。旧兼容层不支持独立诊断协议时，页面会明确
+报告版本不兼容；鉴定的真实上游冒烟需由 Owner 单独发起，并会消耗所选账号额度。
 
 完成本次配套升级后，后续仅更新 Gateway 时执行：
 

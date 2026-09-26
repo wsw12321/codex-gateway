@@ -156,6 +156,32 @@ func TestCompletedResponseEnvelope(t *testing.T) {
 	}
 }
 
+func TestValidateRepliesPrefixSharesScoringGates(t *testing.T) {
+	replies := exampleReplies(t)
+	for n := 1; n <= len(replies); n++ {
+		if err := ValidateRepliesPrefix(replies[:n]); err != nil {
+			t.Fatalf("valid prefix of %d: %v", n, err)
+		}
+	}
+	for _, prefix := range [][]string{nil, append(append([]string(nil), replies...), replies[0])} {
+		if err := ValidateRepliesPrefix(prefix); err == nil {
+			t.Fatal("accepted invalid prefix length")
+		}
+	}
+	for _, prefix := range [][]string{{"17, 312, 51"}, {replies[0], replies[0]}} {
+		err := ValidateRepliesPrefix(prefix)
+		var replyError *ReplyError
+		if !errors.As(err, &replyError) || replyError.Index != len(prefix)-1 {
+			t.Fatalf("bad answer did not fail immediately: %v", err)
+		}
+		full := append(append([]string(nil), prefix...), replies[len(prefix):]...)
+		_, scoreErr := Score(full)
+		if scoreErr == nil || scoreErr.Error() != err.Error() {
+			t.Fatalf("prefix and final scoring diverged: %v / %v", err, scoreErr)
+		}
+	}
+}
+
 func sequence(start, count int) []int {
 	values := make([]int, count)
 	for i := range values {

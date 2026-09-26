@@ -11,7 +11,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 `deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
 重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
 上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
-`f986e6cb7064d97511c2b3af4b468a6cf401d4f33bc3c89910cf00edc784105b`。
+`0b91ec60874b6b1f9681742d4f4e7462626d69a0dd699af7c73ebd630e7c0357`。
 构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
 再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
 失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
@@ -22,7 +22,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
 继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
 
-兼容层镜像标签固定为 `v7.3.15-673131f5-f986e6cb7064d975-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
+兼容层镜像标签固定为 `v7.3.15-673131f5-0b91ec60874b6b1f-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
 兼容层构建镜像继续使用 Go 1.26.8；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
@@ -30,7 +30,8 @@ go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
 SSH 死锁及压缩库越界读取问题。Debian 运行时显式安装 `libpcre2-8-0`，
 确保继承的基础包获得已发布的安全更新。`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
 `bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
-请求契约保持兼容，保留现有价格目录。此次兼容层版本升级没有新增数据库迁移，
+请求契约保持兼容，保留现有价格目录。配套的模型鉴定流程需要 Gateway 应用
+`0019_model_identification_diagnostics.sql`，新增任务阶段、发起人和安全错误元数据；
 Owner 账号状态管理接口仍只管理 Codex。
 
 本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
@@ -82,14 +83,29 @@ Astra 冒烟和生产切换按下文规程执行。
   `GET /internal/upstream-accounts/capabilities`、
   `GET /internal/upstream-accounts/concurrency`、
   `PUT /internal/upstream-accounts/{id}/status`、固定 URL 的
-  `POST /internal/upstream-accounts/{id}/quota`，以及模型鉴别专用的
-  `GET /internal/upstream-accounts/{id}/models` 和
-  `POST /internal/upstream-accounts/{id}/probe`。模型列表仅含指定可用账号已注册的模型。
-  探针仅接受模型、单道纯文本题和 `max_output_tokens`；执行前后核对稳定账号 ID，
-  不跨账号重试，使用全新会话，不启用工具，也不保存回答。每题超时 180 秒，只接受
-  上游报告 `output_tokens` 不超过 16,384 且文本不超过 16 KiB 的完整回答。
-  Codex 上游的 Responses 翻译器会移除 `max_output_tokens`，因此这些是结果验收限制，
-  无法保证上游生成或计费不超过 16,384 token。额度接口只接受精确的
+  `POST /internal/upstream-accounts/{id}/quota`。模型鉴定使用独立的
+  `GET /internal/model-identification/capabilities`，协议为 `model_identification_direct_v1`，
+  以及 `GET /internal/model-identification/accounts/{id}/models`、
+  `POST /internal/model-identification/accounts/{id}/probe`；旧账号权限 capability 的严格
+  JSON 保持不变。模型选项是本地 Codex Free/Plus/Team/Pro 原生目录的去重并集，表示
+  “可尝试模型”，不依赖套餐元数据、禁用状态、已注册模型、业务别名或价格配置；实际
+  支持情况由上游答复确定。Gateway 必须先完成 Owner、来源和近期验证校验，再调用
+  内部 Bearer 认证的诊断接口。POST 还必须携带合法 `X-Codex-Gateway-User`、UUID
+  `X-Codex-Diagnostic-Run` 和 `X-Codex-Diagnostic-Probe`（1 至 3）；只用于审计，
+  不发送给上游。普通 `/v1` 请求不能通过请求头或执行 metadata 获得诊断权限。
+  探针仅接受模型、单道纯文本题和 `max_output_tokens`，每题重新取得相同稳定账号的
+  最新凭证快照，直接访问固定 Codex Responses URL，保留出口代理并禁止重定向。
+  Owner 诊断跳过普通用户账号授权、分配权重、禁用/额度/冷却及并发策略，但绝不临时
+  启用账号或修改这些控制。诊断不刷新凭证、不自动重放，也不跨账号；真实凭证缺失、
+  上游认证/权限/限流/模型拒绝仍明确失败。请求使用全新会话、空工具和禁止工具选择，
+  不进入普通业务提示注入、模型路由、usage 发布、回答缓存或账号结果写回链路。
+  每题超时 180 秒；SSE 单事件最多 512 KiB、整流最多 8 MiB，只接受完整 completed，
+  `output_tokens` 不超过请求上限（最大 16,384）、文本不超过 16 KiB，且无工具调用。
+  错误仅输出固定 code、preflight/probing/validating 阶段以及可选上游状态和重试等待秒数，
+  不输出原始上游错误文本。诊断路径无条件排除请求/响应正文及错误日志，审计只含
+  actor、run、题号、稳定账号、固定结果码、阶段和耗时；不保存回答。
+  Codex 上游不支持 `max_output_tokens`，因此 token/文本上限属于结果验收限制，无法
+  保证上游生成或计费不超过该额度。额度接口只接受精确的
   `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
   并且只能请求 `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的
   URL、方法或上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
@@ -159,8 +175,9 @@ Astra 冒烟和生产切换按下文规程执行。
 完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
 compact 人工冒烟后才能恢复 Gateway 流量。
 
-Gateway 必须支持现有用户账号权限、加权分配、账号控制及并发接口；从本次升级前的
-仓库版本部署时，无需额外数据库迁移。兼容层
+Gateway 必须支持现有用户账号权限、加权分配、账号控制及并发接口。模型鉴定需配套
+升级 Gateway 和兼容层，并应用上述 `0019` 迁移；旧兼容层缺少诊断能力时，新 Gateway
+会明确返回 `model_identification_protocol_unsupported`。兼容层
 启动与健康检查不等待 Gateway，保持 `Gateway -> healthy sidecar` 的启动顺序；
 首次部署和登录后的生成冒烟必须等 Gateway `/readyz` 返回 200。
 登录脚本在 sidecar 健康后启动 Gateway 并等待就绪；独立

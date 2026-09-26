@@ -329,10 +329,10 @@ index 0000000..be65d6d
 +}
 diff --git a/internal/api/codex_gateway_internal.go b/internal/api/codex_gateway_internal.go
 new file mode 100644
-index 0000000..1ba091e
+index 0000000..e7ad33b
 --- /dev/null
 +++ b/internal/api/codex_gateway_internal.go
-@@ -0,0 +1,720 @@
+@@ -0,0 +1,728 @@
 +package api
 +
 +import (
@@ -455,20 +455,28 @@ index 0000000..1ba091e
 +	ResetAt            *int64   `json:"reset_at"`
 +}
 +
++func abortInternalAccountAuth(c *gin.Context, status int, code string) {
++	if c.Request != nil && strings.HasPrefix(c.Request.URL.Path, "/internal/model-identification/") {
++		c.AbortWithStatusJSON(status, gin.H{"error": gin.H{"code": "probe_unavailable", "stage": "preflight"}})
++		return
++	}
++	c.AbortWithStatusJSON(status, gin.H{"error": code})
++}
++
 +func internalAccountAuthMiddleware(manager *access.Manager) gin.HandlerFunc {
 +	return func(c *gin.Context) {
 +		if manager == nil || len(manager.Providers()) == 0 {
-+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "internal_auth_unavailable"})
++			abortInternalAccountAuth(c, http.StatusServiceUnavailable, "internal_auth_unavailable")
 +			return
 +		}
 +		values := c.Request.Header.Values("Authorization")
 +		if len(values) != 1 {
-+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
++			abortInternalAccountAuth(c, http.StatusUnauthorized, "unauthorized")
 +			return
 +		}
 +		parts := strings.Fields(values[0])
 +		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || strings.TrimSpace(parts[1]) == "" {
-+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
++			abortInternalAccountAuth(c, http.StatusUnauthorized, "unauthorized")
 +			return
 +		}
 +		result, authErr := manager.Authenticate(c.Request.Context(), c.Request)
@@ -477,11 +485,11 @@ index 0000000..1ba091e
 +			if authErr.HTTPStatusCode() >= http.StatusInternalServerError {
 +				status = http.StatusServiceUnavailable
 +			}
-+			c.AbortWithStatusJSON(status, gin.H{"error": "unauthorized"})
++			abortInternalAccountAuth(c, status, "unauthorized")
 +			return
 +		}
 +		if result == nil || result.Principal != parts[1] || result.Metadata["source"] != "authorization" {
-+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
++			abortInternalAccountAuth(c, http.StatusUnauthorized, "unauthorized")
 +			return
 +		}
 +		c.Set("userApiKey", result.Principal)
@@ -1695,10 +1703,10 @@ index 0000000..7d4cbbe
 +}
 diff --git a/internal/api/codex_gateway_probe.go b/internal/api/codex_gateway_probe.go
 new file mode 100644
-index 0000000..eed6e7e
+index 0000000..ac13875
 --- /dev/null
 +++ b/internal/api/codex_gateway_probe.go
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,252 @@
 +package api
 +
 +import (
@@ -1709,6 +1717,7 @@ index 0000000..eed6e7e
 +	"io"
 +	"net/http"
 +	"sort"
++	"strconv"
 +	"strings"
 +	"time"
 +	"unicode/utf8"
@@ -1716,20 +1725,18 @@ index 0000000..eed6e7e
 +	"github.com/gin-gonic/gin"
 +	"github.com/google/uuid"
 +	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
++	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor"
 +	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 +	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	log "github.com/sirupsen/logrus"
 +)
 +
 +const (
 +	probeRequestMaxBytes  = 36 << 10
 +	probeInputMaxBytes    = 32 << 10
-+	probeResponseMaxBytes = 512 << 10
-+	// A UTF-8 output cannot contain more tokens than bytes. Codex removes
-+	// max_output_tokens before sending to its upstream, so reject oversized
-+	// completed answers locally as a fail-closed bound.
-+	probeOutputMaxBytes  = 16 << 10
-+	probeTimeout         = 180 * time.Second
-+	probeMaxOutputTokens = 16384
++	probeMaxOutputTokens  = 16384
++	diagnosticRunHeader   = "X-Codex-Diagnostic-Run"
++	diagnosticProbeHeader = "X-Codex-Diagnostic-Probe"
 +)
 +
 +type accountProbeRequest struct {
@@ -1738,77 +1745,73 @@ index 0000000..eed6e7e
 +	MaxOutputTokens int
 +}
 +
-+type probeContentPart struct {
-+	Type string `json:"type"`
-+	Text string `json:"text"`
++func writeDiagnosticProbeError(c *gin.Context, status int, code, stage string) {
++	c.Set("diagnostic_error_code", code)
++	c.JSON(status, gin.H{"error": &runtimeexecutor.DiagnosticProbeError{Code: code, Stage: stage}})
 +}
 +
-+type probeInputMessage struct {
-+	Role    string             `json:"role"`
-+	Content []probeContentPart `json:"content"`
++func (s *Server) diagnosticCapabilities(c *gin.Context) {
++	c.Header("Cache-Control", "no-store")
++	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil {
++		writeDiagnosticProbeError(c, http.StatusServiceUnavailable, "probe_unavailable", "preflight")
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"protocol": "model_identification_direct_v1"})
 +}
 +
-+type probeResponsesRequest struct {
-+	Model           string              `json:"model"`
-+	Input           []probeInputMessage `json:"input"`
-+	Stream          bool                `json:"stream"`
-+	Tools           []any               `json:"tools"`
-+	ToolChoice      string              `json:"tool_choice"`
-+	MaxOutputTokens int                 `json:"max_output_tokens"`
-+}
-+
++// This lookup intentionally checks identity, not ordinary routing eligibility.
++// A diagnostic never enables an account or changes the shared manager snapshot.
 +func (s *Server) probeAccount(c *gin.Context) (*auth.Auth, string, bool) {
 +	c.Header("Cache-Control", "no-store")
 +	if s == nil || s.handlers == nil || s.handlers.AuthManager == nil {
-+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "account_registry_unavailable"})
++		writeDiagnosticProbeError(c, http.StatusServiceUnavailable, "probe_unavailable", "preflight")
 +		return nil, "", false
 +	}
 +	id := c.Param("id")
 +	if !validGatewayAccountIndex(id) {
-+		c.JSON(http.StatusNotFound, gin.H{"error": "upstream_account_not_found"})
++		writeDiagnosticProbeError(c, http.StatusNotFound, "probe_account_not_found", "preflight")
 +		return nil, "", false
 +	}
 +	if c.Request.URL.RawQuery != "" {
-+		c.JSON(http.StatusBadRequest, gin.H{"error": "probe_request_invalid"})
++		writeDiagnosticProbeError(c, http.StatusBadRequest, "probe_request_invalid", "preflight")
 +		return nil, "", false
 +	}
 +	account := findCodexOAuthAccount(s.handlers.AuthManager.List(), id)
 +	if account == nil {
-+		c.JSON(http.StatusNotFound, gin.H{"error": "upstream_account_not_found"})
-+		return nil, "", false
-+	}
-+	_, _, _, status := upstreamAccountStatuses(s.handlers.AuthManager, account)
-+	if status != "available" {
-+		c.JSON(http.StatusConflict, gin.H{"error": "upstream_account_unavailable"})
++		writeDiagnosticProbeError(c, http.StatusNotFound, "probe_account_not_found", "preflight")
 +		return nil, "", false
 +	}
 +	return account, id, true
 +}
 +
 +func (s *Server) getUpstreamAccountModels(c *gin.Context) {
-+	account, id, ok := s.probeAccount(c)
++	_, id, ok := s.probeAccount(c)
 +	if !ok {
 +		return
 +	}
-+	models := accountProbeModels(account)
++	models := diagnosticCodexModels()
++	if len(models) == 0 || len(models) > 256 {
++		writeDiagnosticProbeError(c, http.StatusServiceUnavailable, "probe_unavailable", "preflight")
++		return
++	}
 +	c.JSON(http.StatusOK, gin.H{"account_id": id, "models": models})
 +}
 +
-+func accountProbeModels(account *auth.Auth) []string {
-+	models := make([]string, 0)
-+	if account == nil {
-+		return models
++// The local Codex catalogue is a set of models an Owner may try, not a claim
++// that the upstream account's current plan grants access. Never apply aliases,
++// pricing filters, excluded_models, account status or live registry membership.
++func diagnosticCodexModels() []string {
++	seen := make(map[string]bool)
++	for _, catalogue := range [][]*registry.ModelInfo{registry.GetCodexFreeModels(), registry.GetCodexPlusModels(), registry.GetCodexTeamModels(), registry.GetCodexProModels()} {
++		for _, model := range catalogue {
++			if model != nil && validProbeModel(model.ID) {
++				seen[model.ID] = true
++			}
++		}
 +	}
-+	seen := make(map[string]struct{})
-+	for _, info := range registry.GetGlobalRegistry().GetModelsForClient(account.ID) {
-+		if info == nil || !validProbeModel(info.ID) {
-+			continue
-+		}
-+		if _, exists := seen[info.ID]; exists {
-+			continue
-+		}
-+		seen[info.ID] = struct{}{}
-+		models = append(models, info.ID)
++	models := make([]string, 0, len(seen))
++	for model := range seen {
++		models = append(models, model)
 +	}
 +	sort.Strings(models)
 +	return models
@@ -1819,8 +1822,7 @@ index 0000000..eed6e7e
 +		return false
 +	}
 +	for _, ch := range model {
-+		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' ||
-+			ch == '-' || ch == '_' || ch == '.' || ch == '/' || ch == ':' {
++		if ch >= 'a' && ch <= 'z' || ch >= 'A' && ch <= 'Z' || ch >= '0' && ch <= '9' || ch == '-' || ch == '_' || ch == '.' || ch == '/' || ch == ':' {
 +			continue
 +		}
 +		return false
@@ -1828,74 +1830,77 @@ index 0000000..eed6e7e
 +	return true
 +}
 +
++func diagnosticRequestIdentity(c *gin.Context) (string, string, int, bool) {
++	actor, ok := handlers.GatewayUserFromContext(c)
++	if !ok {
++		writeDiagnosticProbeError(c, http.StatusBadRequest, "probe_actor_invalid", "preflight")
++		return "", "", 0, false
++	}
++	runs, probes := c.Request.Header.Values(diagnosticRunHeader), c.Request.Header.Values(diagnosticProbeHeader)
++	c.Request.Header.Del(diagnosticRunHeader)
++	c.Request.Header.Del(diagnosticProbeHeader)
++	if len(runs) != 1 || len(probes) != 1 {
++		writeDiagnosticProbeError(c, http.StatusBadRequest, "probe_context_invalid", "preflight")
++		return "", "", 0, false
++	}
++	run, err := uuid.Parse(runs[0])
++	probe, probeErr := strconv.Atoi(probes[0])
++	if err != nil || run.String() != runs[0] || probeErr != nil || probe < 1 || probe > 3 || strconv.Itoa(probe) != probes[0] {
++		writeDiagnosticProbeError(c, http.StatusBadRequest, "probe_context_invalid", "preflight")
++		return "", "", 0, false
++	}
++	return actor, run.String(), probe, true
++}
++
 +func (s *Server) probeUpstreamAccount(c *gin.Context) {
++	c.Header("Cache-Control", "no-store")
++	actor, run, probe, ok := diagnosticRequestIdentity(c)
++	if !ok {
++		return
++	}
++	started := time.Now()
++	result, stage := "probe_request_invalid", "preflight"
++	defer func() {
++		if code, exists := c.Get("diagnostic_error_code"); exists {
++			result, _ = code.(string)
++		}
++		accountID := c.Param("id")
++		if !validGatewayAccountIndex(accountID) {
++			accountID = ""
++		}
++		log.WithFields(log.Fields{"actor_id": actor, "run_id": run, "probe": probe, "account_id": accountID, "code": result, "stage": stage, "duration_ms": time.Since(started).Milliseconds()}).Info("model identification probe")
++	}()
 +	account, id, ok := s.probeAccount(c)
 +	if !ok {
 +		return
 +	}
 +	request, err := decodeAccountProbeRequest(c.Request.Body)
 +	if err != nil {
++		status := http.StatusBadRequest
 +		if errors.Is(err, errQuotaRPCRequestTooLarge) {
-+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "probe_request_too_large"})
-+		} else {
-+			c.JSON(http.StatusBadRequest, gin.H{"error": "probe_request_invalid"})
++			status = http.StatusRequestEntityTooLarge
 +		}
++		writeDiagnosticProbeError(c, status, "probe_request_invalid", "preflight")
 +		return
 +	}
-+	available := false
-+	for _, model := range accountProbeModels(account) {
-+		if model == request.Model {
-+			available = true
-+			break
-+		}
-+	}
-+	if !available {
-+		c.JSON(http.StatusConflict, gin.H{"error": "probe_model_unavailable"})
++	models := diagnosticCodexModels()
++	index := sort.SearchStrings(models, request.Model)
++	if index == len(models) || models[index] != request.Model {
++		result = "probe_model_unavailable"
++		writeDiagnosticProbeError(c, http.StatusConflict, result, stage)
 +		return
 +	}
-+	payload, err := json.Marshal(probeResponsesRequest{
-+		Model:  request.Model,
-+		Input:  []probeInputMessage{{Role: "user", Content: []probeContentPart{{Type: "input_text", Text: request.Input}}}},
-+		Stream: false, Tools: []any{}, ToolChoice: "none", MaxOutputTokens: request.MaxOutputTokens,
-+	})
-+	if err != nil {
-+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "probe_unavailable"})
-+		return
-+	}
-+	ctx, cancel := context.WithTimeout(c.Request.Context(), probeTimeout)
++	ctx, cancel := context.WithTimeout(c.Request.Context(), runtimeexecutor.DiagnosticProbeTimeout)
 +	defer cancel()
-+	selectedAuthID := ""
-+	ctx = handlers.WithSelectedAuthIDCallback(ctx, func(authID string) { selectedAuthID = authID })
-+	headers := make(http.Header)
-+	headers.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
-+	headers.Set("Session-Id", uuid.NewString())
-+	response, executeErr := s.handlers.ExecuteModel(ctx, handlers.ModelExecutionRequest{
-+		EntryProtocol: "openai-response", ExitProtocol: "openai-response",
-+		Model: request.Model, Body: payload, Headers: headers,
-+		ForcedProvider: "codex", AuthID: account.ID,
-+		PinnedGatewayAccountIndex: id, FirstAttemptOnly: true,
-+	})
-+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-+		c.JSON(http.StatusGatewayTimeout, gin.H{"error": "probe_timeout"})
++	// Actor/run/probe stay in this audit boundary. No Gin context or user-supplied
++	// headers are attached to the executor; this is not an ordinary user request.
++	text, failure := runtimeexecutor.NewCodexExecutor(s.cfg).ExecuteDiagnosticProbe(ctx, account, runtimeexecutor.DiagnosticProbeRequest{AccountID: id, Model: request.Model, Input: request.Input, MaxOutputTokens: request.MaxOutputTokens})
++	if failure != nil {
++		result, stage = failure.Code, failure.Stage
++		c.JSON(failure.HTTPStatus, gin.H{"error": failure})
 +		return
 +	}
-+	if selectedAuthID != "" && selectedAuthID != account.ID {
-+		c.JSON(http.StatusBadGateway, gin.H{"error": "probe_account_mismatch"})
-+		return
-+	}
-+	if executeErr != nil {
-+		c.JSON(http.StatusBadGateway, gin.H{"error": "probe_execution_failed"})
-+		return
-+	}
-+	if selectedAuthID == "" {
-+		c.JSON(http.StatusBadGateway, gin.H{"error": "probe_account_mismatch"})
-+		return
-+	}
-+	text, err := extractProbeOutputText(response.Body)
-+	if err != nil {
-+		c.JSON(http.StatusBadGateway, gin.H{"error": "probe_invalid_response"})
-+		return
-+	}
++	result, stage = "completed", "validating"
 +	c.JSON(http.StatusOK, gin.H{"account_id": id, "output_text": text})
 +}
 +
@@ -1954,260 +1959,249 @@ index 0000000..eed6e7e
 +	}
 +	return request, nil
 +}
-+
-+func extractProbeOutputText(body []byte) (string, error) {
-+	if len(body) == 0 || len(body) > probeResponseMaxBytes {
-+		return "", errors.New("invalid probe response size")
-+	}
-+	var response struct {
-+		Status string `json:"status"`
-+		Usage  struct {
-+			OutputTokens *int64 `json:"output_tokens"`
-+		} `json:"usage"`
-+		Output []struct {
-+			Type    string `json:"type"`
-+			Role    string `json:"role"`
-+			Content []struct {
-+				Type string `json:"type"`
-+				Text string `json:"text"`
-+			} `json:"content"`
-+		} `json:"output"`
-+	}
-+	if err := json.Unmarshal(body, &response); err != nil || response.Status != "completed" ||
-+		response.Usage.OutputTokens == nil || *response.Usage.OutputTokens < 0 || *response.Usage.OutputTokens > probeMaxOutputTokens {
-+		return "", errors.New("probe did not complete")
-+	}
-+	var result strings.Builder
-+	for _, item := range response.Output {
-+		if item.Type == "reasoning" {
-+			continue
-+		}
-+		if item.Type != "message" || item.Role != "assistant" {
-+			return "", errors.New("unexpected probe output item")
-+		}
-+		for _, part := range item.Content {
-+			if part.Type != "output_text" || !utf8.ValidString(part.Text) {
-+				return "", errors.New("unexpected probe output part")
-+			}
-+			result.WriteString(part.Text)
-+		}
-+	}
-+	if result.Len() == 0 || result.Len() > probeOutputMaxBytes || strings.TrimSpace(result.String()) == "" {
-+		return "", errors.New("empty probe output")
-+	}
-+	return result.String(), nil
-+}
 diff --git a/internal/api/codex_gateway_probe_test.go b/internal/api/codex_gateway_probe_test.go
 new file mode 100644
-index 0000000..659ba9e
+index 0000000..a87d69c
 --- /dev/null
 +++ b/internal/api/codex_gateway_probe_test.go
-@@ -0,0 +1,207 @@
+@@ -0,0 +1,239 @@
 +package api
 +
 +import (
 +	"context"
 +	"encoding/json"
++	"io"
 +	"net/http"
 +	"net/http/httptest"
++	"os"
++	"reflect"
++	"strconv"
 +	"strings"
 +	"testing"
++	"time"
 +
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
 +	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
-+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/api/handlers"
 +	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
-+	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
 +	"github.com/tidwall/gjson"
 +)
 +
-+type probeCaptureExecutor struct {
-+	quotaCaptureExecutor
-+	calls    int
-+	selected []string
-+	body     []byte
-+	opts     coreexecutor.Options
-+	fail     bool
-+}
++const diagnosticTestActor = "00000000-0000-0000-0000-000000000001"
++const diagnosticTestRun = "00000000-0000-0000-0000-000000000002"
++const diagnosticTestCompletion = `data: {"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":1},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}}` + "\n\n"
 +
-+func (e *probeCaptureExecutor) Execute(_ context.Context, account *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
-+	e.calls++
-+	e.selected = append(e.selected, account.ID)
-+	e.body = append([]byte(nil), req.Payload...)
-+	e.opts = opts
-+	if e.fail {
-+		return coreexecutor.Response{}, &auth.Error{HTTPStatus: http.StatusBadGateway, Message: "upstream echoed fixed question"}
-+	}
-+	return coreexecutor.Response{Payload: []byte(`{"status":"completed","usage":{"output_tokens":1},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}]}`)}, nil
-+}
++type diagnosticTestTransport func(*http.Request) (*http.Response, error)
 +
-+func probeRequest(t *testing.T, server *Server, method, path, body string) *httptest.ResponseRecorder {
++func (f diagnosticTestTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func diagnosticTestRequest(t *testing.T, server *Server, method, path, body string, transport http.RoundTripper, headers http.Header) *httptest.ResponseRecorder {
 +	t.Helper()
 +	request := httptest.NewRequest(method, path, strings.NewReader(body))
 +	request.Header.Set("Authorization", "Bearer test-key")
 +	request.Header.Set("Content-Type", "application/json")
++	request.Header.Set("X-Codex-Gateway-User", diagnosticTestActor)
++	request.Header.Set(diagnosticRunHeader, diagnosticTestRun)
++	request.Header.Set(diagnosticProbeHeader, "1")
++	for key, values := range headers {
++		request.Header[http.CanonicalHeaderKey(key)] = values
++	}
++	if transport != nil {
++		request = request.WithContext(context.WithValue(request.Context(), "cliproxy.roundtripper", transport))
++	}
 +	recorder := httptest.NewRecorder()
 +	server.engine.ServeHTTP(recorder, request)
 +	return recorder
 +}
 +
-+func newProbeTestServer(t *testing.T, fail bool) (*Server, *auth.Auth, *probeCaptureExecutor) {
++func newDiagnosticTestServer(t *testing.T) (*Server, *auth.Auth) {
 +	t.Helper()
 +	server := newTestServer(t)
-+	executor := &probeCaptureExecutor{fail: fail}
-+	account := registerQuotaTestAccount(t, server, &executor.quotaCaptureExecutor)
-+	server.handlers.AuthManager.RegisterExecutor(executor)
-+	server.handlers.AuthManager.SetRetryConfig(0, 0, 2)
-+	registry.GetGlobalRegistry().RegisterClient(account.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
-+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(account.ID) })
-+	return server, account, executor
++	account := registerQuotaTestAccount(t, server, &quotaCaptureExecutor{})
++	server.handlers.AuthManager.SetSelector(auth.NewGatewayAllocationSelector(time.Hour, true))
++	return server, account
 +}
 +
-+func TestAccountProbeModelsAndExecution(t *testing.T) {
-+	server, account, executor := newProbeTestServer(t, false)
-+	id := account.EnsureIndex()
-+	models := probeRequest(t, server, http.MethodGet, "/internal/upstream-accounts/"+id+"/models", "")
-+	if models.Code != http.StatusOK || gjson.GetBytes(models.Body.Bytes(), "account_id").String() != id ||
-+		gjson.GetBytes(models.Body.Bytes(), "models.0").String() != "gpt-5.6-sol" {
-+		t.Fatalf("models status=%d body=%s", models.Code, models.Body.String())
-+	}
-+	body, _ := json.Marshal(map[string]any{"model": "gpt-5.6-sol", "input": "fixed question", "max_output_tokens": 16384})
-+	result := probeRequest(t, server, http.MethodPost, "/internal/upstream-accounts/"+id+"/probe", string(body))
-+	if result.Code != http.StatusOK || gjson.GetBytes(result.Body.Bytes(), "account_id").String() != id ||
-+		gjson.GetBytes(result.Body.Bytes(), "output_text").String() != "answer" {
-+		t.Fatalf("probe status=%d body=%s", result.Code, result.Body.String())
-+	}
-+	if executor.calls != 1 || len(executor.selected) != 1 || executor.selected[0] != account.ID {
-+		t.Fatalf("selected=%v calls=%d", executor.selected, executor.calls)
-+	}
-+	if gjson.GetBytes(executor.body, "input.0.content.0.text").String() != "fixed question" ||
-+		gjson.GetBytes(executor.body, "tools").Raw != "[]" ||
-+		gjson.GetBytes(executor.body, "tool_choice").String() != "none" ||
-+		gjson.GetBytes(executor.body, "max_output_tokens").Int() != 16384 ||
-+		executor.opts.Headers.Get("X-OpenAI-Internal-Codex-Responses-Lite") != "true" {
-+		t.Fatalf("unexpected probe payload=%s headers=%v", executor.body, executor.opts.Headers)
-+	}
-+	if executor.opts.Headers.Get("Session-Id") == "" {
-+		t.Fatal("probe did not create a fresh session")
-+	}
-+	firstSession := executor.opts.Headers.Get("Session-Id")
-+	second := probeRequest(t, server, http.MethodPost, "/internal/upstream-accounts/"+id+"/probe", string(body))
-+	if second.Code != http.StatusOK || executor.opts.Headers.Get("Session-Id") == firstSession {
-+		t.Fatalf("probe reused session: status=%d session=%q", second.Code, executor.opts.Headers.Get("Session-Id"))
-+	}
-+	if result.Header().Get("Cache-Control") != "no-store" {
-+		t.Fatal("probe response was cacheable")
-+	}
++func diagnosticBody(model string) string {
++	data, _ := json.Marshal(map[string]any{"model": model, "input": "fixed question", "max_output_tokens": 16384})
++	return string(data)
 +}
 +
-+func TestAccountProbeRejectsUnavailableModelAndInvalidInput(t *testing.T) {
-+	server, account, executor := newProbeTestServer(t, false)
-+	path := "/internal/upstream-accounts/" + account.EnsureIndex() + "/probe"
-+	for _, body := range []string{
-+		`{"model":"other","input":"hello","max_output_tokens":16384}`,
-+		`{"model":"gpt-5.6-sol","input":"hello","max_output_tokens":16384,"tools":[]}`,
-+		`{"model":"gpt-5.6-sol","model":"gpt-5.6-sol","input":"hello","max_output_tokens":16384}`,
-+		`{"model":"gpt-5.6-sol","input":"hello","max_output_tokens":16385}`,
-+	} {
-+		result := probeRequest(t, server, http.MethodPost, path, body)
-+		if result.Code != http.StatusBadRequest && result.Code != http.StatusConflict {
-+			t.Fatalf("body=%s status=%d response=%s", body, result.Code, result.Body.String())
-+		}
-+	}
-+	if executor.calls != 0 {
-+		t.Fatalf("invalid probes executed %d times", executor.calls)
-+	}
-+	unauthorized := httptest.NewRecorder()
-+	server.engine.ServeHTTP(unauthorized, httptest.NewRequest(http.MethodGet, "/internal/upstream-accounts/"+account.EnsureIndex()+"/models", nil))
-+	if unauthorized.Code != http.StatusUnauthorized {
-+		t.Fatalf("unauthorized model list status=%d", unauthorized.Code)
-+	}
-+}
-+
-+func TestAccountProbeRejectsDisabledAccount(t *testing.T) {
-+	server, account, executor := newProbeTestServer(t, false)
-+	id := account.EnsureIndex()
-+	disabled := account.Clone()
-+	disabled.Disabled = true
-+	disabled.Status = auth.StatusDisabled
-+	if _, err := server.handlers.AuthManager.Register(context.Background(), disabled); err != nil {
++func TestAccountProbeDirectPathBypassesRoutingWithoutStateChanges(t *testing.T) {
++	server, account := newDiagnosticTestServer(t)
++	dir := t.TempDir()
++	if err := server.handlers.AuthManager.LoadGatewayAccountState(dir); err != nil {
 +		t.Fatal(err)
 +	}
-+	models := probeRequest(t, server, http.MethodGet, "/internal/upstream-accounts/"+id+"/models", "")
-+	probe := probeRequest(t, server, http.MethodPost, "/internal/upstream-accounts/"+id+"/probe",
-+		`{"model":"gpt-5.6-sol","input":"fixed question","max_output_tokens":16384}`)
-+	for _, result := range []*httptest.ResponseRecorder{models, probe} {
-+		if result.Code != http.StatusConflict || gjson.GetBytes(result.Body.Bytes(), "error").String() != "upstream_account_unavailable" {
-+			t.Fatalf("disabled status=%d body=%s", result.Code, result.Body.String())
-+		}
-+	}
-+	if executor.calls != 0 {
-+		t.Fatalf("disabled account executed %d times", executor.calls)
-+	}
-+}
-+
-+func TestAccountProbeFailureStopsBeforeRetryOrAnotherAccount(t *testing.T) {
-+	server, account, executor := newProbeTestServer(t, true)
-+	other := account.Clone()
-+	other.ID = "other-probe-account"
-+	other.FileName = "other-probe-account"
-+	other.Metadata["account_id"] = "other-upstream-account"
-+	other.Attributes[auth.AttributeAuthIndexSeed] = "codex-account:" + strings.Repeat("b", 64)
-+	registered, err := server.handlers.AuthManager.Register(context.Background(), other)
-+	if err != nil {
++	if _, err := server.handlers.AuthManager.SetGatewayAccountEnabled(account.EnsureIndex(), false); err != nil {
 +		t.Fatal(err)
 +	}
-+	registry.GetGlobalRegistry().RegisterClient(registered.ID, "codex", []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
-+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(registered.ID) })
-+	result := probeRequest(t, server, http.MethodPost, "/internal/upstream-accounts/"+account.EnsureIndex()+"/probe",
-+		`{"model":"gpt-5.6-sol","input":"fixed question","max_output_tokens":16384}`)
-+	if result.Code != http.StatusBadGateway || gjson.GetBytes(result.Body.Bytes(), "error").String() != "probe_execution_failed" {
-+		t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
++	blocked, _ := server.handlers.AuthManager.GetByID(account.ID)
++	blocked.Disabled = true
++	blocked.Status = auth.StatusDisabled
++	blocked.Unavailable = true
++	blocked.NextRetryAfter = time.Now().Add(time.Hour)
++	blocked.Attributes["plan_type"] = "free"
++	blocked.Attributes["excluded_models"] = "*"
++	blocked.Attributes["header:Authorization"] = "Bearer forged"
++	blocked.Attributes["header:X-Codex-Diagnostic-Run"] = "forged"
++	blocked.Attributes["base_url"] = "https://evil.example"
++	if _, err := server.handlers.AuthManager.Register(context.Background(), blocked); err != nil {
++		t.Fatal(err)
 +	}
-+	if executor.calls != 1 || executor.selected[0] != account.ID {
-+		t.Fatalf("probe replayed across accounts: calls=%d selected=%v", executor.calls, executor.selected)
++	registry.GetGlobalRegistry().UnregisterClient(account.ID)
++	before, _ := server.handlers.AuthManager.GetByID(account.ID)
++	beforeConcurrency := server.handlers.AuthManager.GatewayConcurrency()
++	id := account.EnsureIndex()
++	models := diagnosticTestRequest(t, server, http.MethodGet, "/internal/model-identification/accounts/"+id+"/models", "", nil, nil)
++	if models.Code != 200 {
++		t.Fatalf("models=%d %s", models.Code, models.Body.String())
 +	}
-+	for _, candidate := range server.handlers.AuthManager.List() {
-+		if candidate.ID != account.ID {
-+			continue
++	if got := gjson.GetBytes(models.Body.Bytes(), "models").Array(); len(got) == 0 || len(got) != len(diagnosticCodexModels()) {
++		t.Fatal("disabled account lost catalogue")
++	}
++	model := diagnosticCodexModels()[0]
++	calls := 0
++	sessions := map[string]bool{}
++	transport := diagnosticTestTransport(func(r *http.Request) (*http.Response, error) {
++		calls++
++		if r.URL.String() != "https://chatgpt.com/backend-api/codex/responses" || r.Header.Get("Authorization") != "Bearer upstream-secret-token" || r.Header.Get("Chatgpt-Account-Id") != "account-123" {
++			t.Error("target or credential changed")
 +		}
-+		if strings.Contains(candidate.StatusMessage, "fixed question") ||
-+			(candidate.LastError != nil && strings.Contains(candidate.LastError.Message, "fixed question")) {
-+			t.Fatal("probe prompt was retained in sidecar failure state")
++		for _, key := range []string{"X-Codex-Gateway-User", diagnosticRunHeader, diagnosticProbeHeader} {
++			if r.Header.Get(key) != "" {
++				t.Errorf("leaked %s", key)
++			}
 +		}
-+	}
-+}
-+
-+func TestAccountProbeStableIndexFenceAndOutputValidation(t *testing.T) {
-+	server, account, executor := newProbeTestServer(t, false)
-+	_, executeErr := server.handlers.ExecuteModel(context.Background(), handlers.ModelExecutionRequest{
-+		EntryProtocol: "openai-response", ExitProtocol: "openai-response",
-+		Model: "gpt-5.6-sol", Body: []byte(`{"model":"gpt-5.6-sol","input":"hello"}`),
-+		ForcedProvider: "codex", AuthID: account.ID,
-+		PinnedGatewayAccountIndex: strings.Repeat("f", 16), FirstAttemptOnly: true,
++		session := r.Header.Get("Session-Id")
++		if session == "" || sessions[session] {
++			t.Error("session reused")
++		}
++		sessions[session] = true
++		data, _ := io.ReadAll(r.Body)
++		if gjson.GetBytes(data, "input.0.content.0.text").String() != "fixed question" || gjson.GetBytes(data, "tools").Raw != "[]" || gjson.GetBytes(data, "tool_choice").String() != "none" {
++			t.Error("probe request mutated")
++		}
++		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(diagnosticTestCompletion))}, nil
 +	})
-+	if executeErr == nil || executor.calls != 0 {
-+		t.Fatalf("stable account pin failed: error=%v calls=%d", executeErr, executor.calls)
-+	}
-+	if text, err := extractProbeOutputText([]byte(`{"status":"completed","usage":{"output_tokens":2},"output":[{"type":"reasoning"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)); err != nil || text != "ok" {
-+		t.Fatalf("valid output text=%q err=%v", text, err)
-+	}
-+	for _, body := range []string{
-+		`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"unmetered"}]}]}`,
-+		`{"status":"completed","usage":{"output_tokens":16385},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"too many tokens"}]}]}`,
-+		`{"status":"incomplete","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}`,
-+		`{"status":"completed","usage":{"output_tokens":1},"output":[{"type":"function_call","name":"danger"}]}`,
-+		`{"status":"completed","usage":{"output_tokens":0},"output":[]}`,
-+	} {
-+		if _, err := extractProbeOutputText([]byte(body)); err == nil {
-+			t.Fatalf("accepted invalid response: %s", body)
++	for i := 0; i < 2; i++ {
++		result := diagnosticTestRequest(t, server, http.MethodPost, "/internal/model-identification/accounts/"+id+"/probe", diagnosticBody(model), transport, nil)
++		if result.Code != 200 || gjson.GetBytes(result.Body.Bytes(), "output_text").String() != "answer" {
++			t.Fatalf("probe=%d %s", result.Code, result.Body.String())
++		}
++		if result.Header().Get("Cache-Control") != "no-store" {
++			t.Fatal("cacheable probe")
 +		}
 +	}
-+	large, _ := json.Marshal(map[string]any{"status": "completed", "usage": map[string]any{"output_tokens": 2},
-+		"output": []any{map[string]any{"type": "message", "role": "assistant", "content": []any{
-+			map[string]any{"type": "output_text", "text": strings.Repeat("x", probeOutputMaxBytes+1)},
-+		}}}})
-+	if _, err := extractProbeOutputText(large); err == nil {
-+		t.Fatal("accepted output beyond local byte ceiling")
++	after, _ := server.handlers.AuthManager.GetByID(account.ID)
++	if calls != 2 || !reflect.DeepEqual(before, after) {
++		t.Fatalf("diagnostic changed credential/control state; calls=%d", calls)
++	}
++	afterConcurrency := server.handlers.AuthManager.GatewayConcurrency()
++	if !reflect.DeepEqual(beforeConcurrency.Accounts, afterConcurrency.Accounts) {
++		t.Fatal("diagnostic changed ordinary concurrency")
++	}
++	ordinary := diagnosticTestRequest(t, server, http.MethodPost, "/v1/responses", `{"model":"`+model+`","input":"ordinary","stream":false}`, transport, nil)
++	if ordinary.Code < 400 || calls != 2 {
++		t.Fatalf("ordinary request acquired diagnostic bypass: status=%d calls=%d", ordinary.Code, calls)
++	}
++}
++
++func TestAccountProbeDiagnosticIdentityAndProtocolValidation(t *testing.T) {
++	server, account := newDiagnosticTestServer(t)
++	calls := 0
++	transport := diagnosticTestTransport(func(*http.Request) (*http.Response, error) {
++		calls++
++		t.Fatal("invalid request reached upstream")
++		return nil, nil
++	})
++	path := "/internal/model-identification/accounts/" + account.EnsureIndex() + "/probe"
++	for _, test := range []struct {
++		name       string
++		headers    http.Header
++		body, code string
++	}{
++		{"missing actor", http.Header{"X-Codex-Gateway-User": {}}, "", "probe_actor_invalid"},
++		{"bad actor", http.Header{"X-Codex-Gateway-User": {"invalid"}}, "", "probe_actor_invalid"},
++		{"duplicate actor", http.Header{"X-Codex-Gateway-User": {diagnosticTestActor, diagnosticTestActor}}, "", "probe_actor_invalid"},
++		{"missing run", http.Header{diagnosticRunHeader: {}}, "", "probe_context_invalid"},
++		{"bad run", http.Header{diagnosticRunHeader: {"invalid"}}, "", "probe_context_invalid"},
++		{"bad probe", http.Header{diagnosticProbeHeader: {"04"}}, "", "probe_context_invalid"},
++		{"extra field", nil, `{"model":"gpt-6-sol","input":"hello","max_output_tokens":16384,"tools":[]}`, "probe_request_invalid"},
++		{"duplicate model", nil, `{"model":"gpt-6-sol","model":"gpt-6-sol","input":"hello","max_output_tokens":16384}`, "probe_request_invalid"},
++		{"unknown model", nil, diagnosticBody("business-alias"), "probe_model_unavailable"},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			body := test.body
++			if body == "" {
++				body = diagnosticBody(diagnosticCodexModels()[0])
++			}
++			result := diagnosticTestRequest(t, server, http.MethodPost, path, body, transport, test.headers)
++			if result.Code < 400 || gjson.GetBytes(result.Body.Bytes(), "error.code").String() != test.code {
++				t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
++			}
++		})
++	}
++	if calls != 0 {
++		t.Fatal("invalid probes executed")
++	}
++	for _, path := range []string{"/internal/model-identification/capabilities", "/internal/model-identification/accounts/" + account.EnsureIndex() + "/models"} {
++		result := diagnosticTestRequest(t, server, http.MethodGet, path, "", nil, http.Header{"Authorization": {}})
++		if result.Code != 401 {
++			t.Fatalf("unauthenticated %s status=%d", path, result.Code)
++		}
++	}
++	capabilities := diagnosticTestRequest(t, server, http.MethodGet, "/internal/model-identification/capabilities", "", nil, nil)
++	if capabilities.Code != 200 || gjson.GetBytes(capabilities.Body.Bytes(), "protocol").String() != "model_identification_direct_v1" {
++		t.Fatal("diagnostic capability absent")
++	}
++	legacy := diagnosticTestRequest(t, server, http.MethodGet, "/internal/upstream-accounts/capabilities", "", nil, nil)
++	if legacy.Code != 200 || strings.TrimSpace(legacy.Body.String()) != `{"protocol":"upstream_account_access_v1"}` {
++		t.Fatalf("legacy capability changed: %s", legacy.Body.String())
++	}
++}
++
++func TestAccountProbeDiagnosticFailureDoesNotRetryOrLockQuota(t *testing.T) {
++	server, account := newDiagnosticTestServer(t)
++	before, _ := server.handlers.AuthManager.GetByID(account.ID)
++	calls := 0
++	transport := diagnosticTestTransport(func(r *http.Request) (*http.Response, error) {
++		calls++
++		return &http.Response{StatusCode: 429, Header: http.Header{"Content-Type": {"application/json"}, "Retry-After": {"12"}}, Body: io.NopCloser(strings.NewReader(`{"error":{"type":"usage_limit_reached","message":"fixed question private response"}}`))}, nil
++	})
++	result := diagnosticTestRequest(t, server, http.MethodPost, "/internal/model-identification/accounts/"+account.EnsureIndex()+"/probe", diagnosticBody(diagnosticCodexModels()[0]), transport, nil)
++	if result.Code != 429 || gjson.GetBytes(result.Body.Bytes(), "error.code").String() != "probe_rate_limited" || gjson.GetBytes(result.Body.Bytes(), "error.upstream_status").Int() != 429 || gjson.GetBytes(result.Body.Bytes(), "error.retry_after").Int() != 12 {
++		t.Fatalf("failure=%d %s", result.Code, result.Body.String())
++	}
++	after, _ := server.handlers.AuthManager.GetByID(account.ID)
++	if calls != 1 || !reflect.DeepEqual(before, after) || strings.Contains(result.Body.String(), "private response") {
++		t.Fatal("failure retried, leaked a body, or altered account state")
++	}
++}
++
++func TestAccountProbeDiagnosticNeverCreatesBodyLogs(t *testing.T) {
++	for _, enabled := range []bool{true, false} {
++		t.Run(strconv.FormatBool(enabled), func(t *testing.T) {
++			logDir := t.TempDir()
++			logger := logging.NewFileRequestLogger(enabled, logDir, "", 10)
++			server := newTestServerWithOptions(t, WithRequestLoggerFactory(func(*config.Config, string) logging.RequestLogger { return logger }))
++			account := registerQuotaTestAccount(t, server, &quotaCaptureExecutor{})
++			transport := diagnosticTestTransport(func(*http.Request) (*http.Response, error) {
++				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(diagnosticTestCompletion))}, nil
++			})
++			result := diagnosticTestRequest(t, server, http.MethodPost, "/internal/model-identification/accounts/"+account.EnsureIndex()+"/probe", diagnosticBody(diagnosticCodexModels()[0]), transport, nil)
++			if result.Code != 200 {
++				t.Fatalf("status=%d body=%s", result.Code, result.Body.String())
++			}
++			result = diagnosticTestRequest(t, server, http.MethodPost, "/internal/model-identification/accounts/"+account.EnsureIndex()+"/probe", "invalid private request", transport, nil)
++			if result.Code != 400 {
++				t.Fatal("invalid request unexpectedly succeeded")
++			}
++			entries, err := os.ReadDir(logDir)
++			if err != nil || len(entries) != 0 {
++				t.Fatalf("diagnostic created body/error logs: entries=%v err=%v", entries, err)
++			}
++		})
 +	}
 +}
 diff --git a/internal/api/codex_gateway_status.go b/internal/api/codex_gateway_status.go
@@ -2459,6 +2453,19 @@ index 0000000..08220bb
 +		t.Fatal("replacement unblocked account")
 +	}
 +}
+diff --git a/internal/api/middleware/request_logging.go b/internal/api/middleware/request_logging.go
+index bf7eb1a..af791d0 100644
+--- a/internal/api/middleware/request_logging.go
++++ b/internal/api/middleware/request_logging.go
+@@ -459,7 +459,7 @@ func decodeCapturedZstdRequestBodyWithLimit(raw []byte, limit int64) ([]byte, bo
+ // It skips management endpoints to avoid leaking secrets but allows
+ // all other routes, including module-provided ones, to honor request-log.
+ func shouldLogRequest(path string) bool {
+-	if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/management") {
++	if strings.HasPrefix(path, "/v0/management") || strings.HasPrefix(path, "/management") || strings.HasPrefix(path, "/internal/model-identification/") {
+ 		return false
+ 	}
+ 
 diff --git a/internal/api/server.go b/internal/api/server.go
 index ec04949..ef77b36 100644
 --- a/internal/api/server.go
@@ -2478,10 +2485,10 @@ index ec04949..ef77b36 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index a605948..f4cf78d 100644
+index a605948..f81c522 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -117,6 +117,31 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,37 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -2505,10 +2512,16 @@ index a605948..f4cf78d 100644
 +			c.JSON(http.StatusOK, gin.H{"protocol": "upstream_account_access_v1"})
 +		})
 +		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
-+		internalAccounts.GET("/:id/models", s.getUpstreamAccountModels)
-+		internalAccounts.POST("/:id/probe", s.probeUpstreamAccount)
 +		internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
 +	}
++
++	// Dedicated management-only diagnostics. Ordinary /v1 metadata cannot select
++	// this execution path, and the existing account capability stays unchanged.
++	diagnostics := s.engine.Group("/internal/model-identification")
++	diagnostics.Use(internalAccountAuthMiddleware(s.accessManager))
++	diagnostics.GET("/capabilities", s.diagnosticCapabilities)
++	diagnostics.GET("/accounts/:id/models", s.getUpstreamAccountModels)
++	diagnostics.POST("/accounts/:id/probe", s.probeUpstreamAccount)
 +
  	// Gemini compatible API routes
  	v1beta := s.engine.Group("/v1beta")
@@ -3364,6 +3377,765 @@ index 0000000..df4b3fb
 +				t.Fatalf("compact response=%s", response)
 +			}
 +		})
++	}
++}
+diff --git a/internal/runtime/executor/codex_diagnostic_probe.go b/internal/runtime/executor/codex_diagnostic_probe.go
+new file mode 100644
+index 0000000..648613a
+--- /dev/null
++++ b/internal/runtime/executor/codex_diagnostic_probe.go
+@@ -0,0 +1,376 @@
++package executor
++
++import (
++	"bufio"
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"mime"
++	"net/http"
++	"strconv"
++	"strings"
++	"time"
++	"unicode/utf8"
++
++	"github.com/google/uuid"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/proxyutil"
++)
++
++const (
++	diagnosticProbeURL        = "https://chatgpt.com/backend-api/codex/responses"
++	DiagnosticProbeTimeout    = 180 * time.Second
++	diagnosticEventMaxBytes   = 512 << 10
++	diagnosticStreamMaxBytes  = 8 << 20
++	diagnosticOutputMaxBytes  = 16 << 10
++	diagnosticMaxOutputTokens = 16384
++)
++
++// DiagnosticProbeError contains only local codes. Never retain a provider error
++// body or wrap an error which could include credentials or a probe answer.
++type DiagnosticProbeError struct {
++	HTTPStatus     int    `json:"-"`
++	Code           string `json:"code"`
++	Stage          string `json:"stage"`
++	UpstreamStatus int    `json:"upstream_status,omitempty"`
++	RetryAfter     int    `json:"retry_after,omitempty"`
++}
++
++func (e *DiagnosticProbeError) Error() string { return e.Code }
++
++func diagnosticError(status int, code, stage string) *DiagnosticProbeError {
++	return &DiagnosticProbeError{HTTPStatus: status, Code: code, Stage: stage}
++}
++
++// DiagnosticProbeRequest is constructed only by the authenticated management
++// route. It is deliberately separate from ordinary execution options/metadata.
++type DiagnosticProbeRequest struct {
++	AccountID       string
++	Model           string
++	Input           string
++	MaxOutputTokens int
++}
++
++// ExecuteDiagnosticProbe uses a snapshot of exactly one existing OAuth account.
++// It never enters routing, admission, plugins, refresh, retries, result updates,
++// payload configuration, usage publication, reasoning replay or body logging.
++// Account control state is neither consulted nor changed by this operation.
++func (e *CodexExecutor) ExecuteDiagnosticProbe(ctx context.Context, account *cliproxyauth.Auth, input DiagnosticProbeRequest) (string, *DiagnosticProbeError) {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	ctx = coreexecutor.WithoutRequestProxyURL(ctx)
++	ctx, cancel := context.WithTimeout(ctx, DiagnosticProbeTimeout)
++	defer cancel()
++	if input.Model == "" || len(input.Model) > 128 || input.Input == "" || len(input.Input) > 32<<10 || !utf8.ValidString(input.Input) || strings.ContainsRune(input.Input, 0) || input.MaxOutputTokens < 1 || input.MaxOutputTokens > diagnosticMaxOutputTokens {
++		return "", diagnosticError(http.StatusBadRequest, "probe_request_invalid", "preflight")
++	}
++	if account == nil || account.Provider != "codex" || account.AuthKind() != cliproxyauth.AuthKindOAuth {
++		return "", diagnosticError(http.StatusNotFound, "probe_account_not_found", "preflight")
++	}
++	account = account.Clone()
++	index, attributable := cliproxyauth.CodexOAuthAccountIndex(account)
++	if !attributable || index != input.AccountID {
++		return "", diagnosticError(http.StatusBadGateway, "probe_account_mismatch", "preflight")
++	}
++	accountID, _ := account.Metadata["account_id"].(string)
++	token, _ := account.Metadata["access_token"].(string)
++	if !cliproxyauth.ValidCodexOAuthAccountID(accountID) || !diagnosticBearerToken(token) {
++		return "", diagnosticError(http.StatusBadGateway, "probe_credential_unavailable", "preflight")
++	}
++	// The ordinary transport helper falls back to direct routing for malformed
++	// proxy configuration. A diagnostic must fail closed instead, before dialing.
++	proxyURL := strings.TrimSpace(account.ProxyURL)
++	if proxyURL == "" && e != nil && e.cfg != nil {
++		proxyURL = strings.TrimSpace(e.cfg.ProxyURL)
++	}
++	_, proxyMode, proxyErr := proxyutil.BuildDialer(proxyURL)
++	if proxyErr != nil || proxyMode == proxyutil.ModeProxy && !proxyutil.ValidRequestProxy(proxyURL) {
++		return "", diagnosticError(http.StatusBadGateway, "probe_network_failed", "probing")
++	}
++	// Retain the configured egress proxy, but no credential-file payload, URL or
++	// custom-header overrides. The original snapshot and manager remain untouched.
++	snapshot := account.Clone()
++	snapshot.Attributes = map[string]string{
++		cliproxyauth.AttributeAuthKind:      cliproxyauth.AuthKindOAuth,
++		cliproxyauth.AttributeAuthIndexSeed: account.Attributes[cliproxyauth.AttributeAuthIndexSeed],
++	}
++	snapshot.Metadata = map[string]any{"account_id": accountID, "access_token": token}
++	snapshot.Runtime = nil
++	// Codex rejects max_output_tokens. Enforce the requested ceiling against
++	// completed usage locally; it is not an upstream billing guarantee.
++	body, _ := json.Marshal(map[string]any{
++		"model": input.Model, "stream": true, "store": false, "instructions": "",
++		"tools": []any{}, "tool_choice": "none", "parallel_tool_calls": true,
++		"include": []string{"reasoning.encrypted_content"},
++		"input":   []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]string{"type": "input_text", "text": input.Input}}}},
++	})
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, diagnosticProbeURL, bytes.NewReader(body))
++	if err != nil {
++		return "", diagnosticError(http.StatusServiceUnavailable, "probe_unavailable", "preflight")
++	}
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Accept", "text/event-stream")
++	req.Header.Set("User-Agent", codexUserAgent)
++	req.Header.Set("Originator", codexOriginator)
++	req.Header.Set("Session-Id", uuid.NewString())
++	req.Header.Set(codexResponsesLiteHeader, "true")
++	response, err := e.HttpRequest(ctx, snapshot, req)
++	if err != nil {
++		return "", diagnosticContextOrNetworkError(ctx)
++	}
++	defer response.Body.Close()
++	if response.StatusCode < 200 || response.StatusCode >= 300 {
++		data, _ := io.ReadAll(io.LimitReader(response.Body, 64<<10))
++		if ctx.Err() != nil {
++			return "", diagnosticContextOrNetworkError(ctx)
++		}
++		failure := diagnosticUpstreamError(response.StatusCode, data)
++		if retry, parseErr := strconv.Atoi(response.Header.Get("Retry-After")); parseErr == nil && retry > 0 && retry <= 3600 {
++			failure.RetryAfter = retry
++		}
++		return "", failure
++	}
++	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
++	if mediaErr != nil || mediaType != "text/event-stream" {
++		return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++	}
++	text, failure := readDiagnosticProbeSSE(response.Body, input.MaxOutputTokens)
++	if ctx.Err() != nil {
++		return "", diagnosticContextOrNetworkError(ctx)
++	}
++	return text, failure
++}
++
++func diagnosticBearerToken(token string) bool {
++	if token == "" {
++		return false
++	}
++	for _, b := range []byte(token) {
++		if b <= 32 || b >= 127 {
++			return false
++		}
++	}
++	return true
++}
++
++func diagnosticContextOrNetworkError(ctx context.Context) *DiagnosticProbeError {
++	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
++		return diagnosticError(http.StatusGatewayTimeout, "probe_timeout", "probing")
++	}
++	if ctx.Err() != nil {
++		return diagnosticError(http.StatusRequestTimeout, "probe_canceled", "probing")
++	}
++	return diagnosticError(http.StatusBadGateway, "probe_network_failed", "probing")
++}
++
++func diagnosticUpstreamError(status int, data []byte) *DiagnosticProbeError {
++	code, httpStatus := "probe_upstream_rejected", http.StatusBadGateway
++	switch {
++	case status == http.StatusUnauthorized:
++		code = "probe_authentication_failed"
++	case status == http.StatusTooManyRequests:
++		code, httpStatus = "probe_rate_limited", http.StatusTooManyRequests
++	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
++		code, httpStatus = "probe_timeout", http.StatusGatewayTimeout
++	case status >= 500:
++		code = "probe_upstream_unavailable"
++	}
++	var envelope struct {
++		Code  string `json:"code"`
++		Type  string `json:"type"`
++		Error *struct {
++			Code string `json:"code"`
++			Type string `json:"type"`
++		} `json:"error"`
++	}
++	if json.Unmarshal(data, &envelope) == nil {
++		values := []string{envelope.Code, envelope.Type}
++		if envelope.Error != nil {
++			values = append(values, envelope.Error.Code, envelope.Error.Type)
++		}
++		for _, value := range values {
++			switch value {
++			case "model_not_found", "model_not_available", "unsupported_model", "invalid_model":
++				if status == 0 || status == http.StatusBadRequest || status == http.StatusNotFound {
++					code = "probe_model_unsupported"
++				}
++			case "usage_limit_reached", "rate_limit_exceeded":
++				if status == 0 || status == http.StatusBadRequest || status == http.StatusTooManyRequests {
++					code, httpStatus = "probe_rate_limited", http.StatusTooManyRequests
++				}
++			}
++		}
++	}
++	failure := diagnosticError(httpStatus, code, "probing")
++	if status >= 300 && status <= 599 {
++		failure.UpstreamStatus = status
++	}
++	return failure
++}
++
++func readDiagnosticProbeSSE(reader io.Reader, maxTokens int) (string, *DiagnosticProbeError) {
++	limited := &io.LimitedReader{R: reader, N: diagnosticStreamMaxBytes + 1}
++	scanner := bufio.NewScanner(limited)
++	scanner.Buffer(make([]byte, 4096), diagnosticEventMaxBytes+2)
++	var data []byte
++	eventBytes, outputBytes := 0, 0
++	items := make(map[int]json.RawMessage)
++	process := func() (string, *DiagnosticProbeError, bool) {
++		if len(data) == 0 {
++			return "", nil, false
++		}
++		if bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
++			return "", diagnosticError(http.StatusBadGateway, "probe_response_incomplete", "validating"), true
++		}
++		var event struct {
++			Type        string          `json:"type"`
++			Delta       string          `json:"delta"`
++			OutputIndex *int            `json:"output_index"`
++			Item        json.RawMessage `json:"item"`
++			Response    json.RawMessage `json:"response"`
++			Error       json.RawMessage `json:"error"`
++		}
++		if !utf8.Valid(data) || json.Unmarshal(data, &event) != nil || event.Type == "" {
++			return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating"), true
++		}
++		switch event.Type {
++		case "response.output_text.delta":
++			outputBytes += len(event.Delta)
++			if outputBytes > diagnosticOutputMaxBytes {
++				return "", diagnosticError(http.StatusBadGateway, "probe_output_too_large", "validating"), true
++			}
++		case "response.output_item.added", "response.output_item.done":
++			var item struct {
++				Type string `json:"type"`
++			}
++			if json.Unmarshal(event.Item, &item) != nil || item.Type == "" {
++				return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating"), true
++			}
++			if item.Type != "reasoning" && item.Type != "message" {
++				return "", diagnosticError(http.StatusBadGateway, "probe_unexpected_tool", "validating"), true
++			}
++			if event.Type == "response.output_item.done" {
++				if event.OutputIndex == nil || *event.OutputIndex < 0 || *event.OutputIndex > 1024 {
++					return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating"), true
++				}
++				items[*event.OutputIndex] = append(json.RawMessage(nil), event.Item...)
++			}
++		case "response.completed":
++			text, failure := extractDiagnosticProbeOutput(event.Response, maxTokens, items)
++			return text, failure, true
++		case "response.incomplete":
++			return "", diagnosticError(http.StatusBadGateway, "probe_response_incomplete", "validating"), true
++		case "response.failed":
++			return "", diagnosticUpstreamError(0, event.Response), true
++		case "error":
++			return "", diagnosticUpstreamError(0, data), true
++		default:
++			if strings.Contains(event.Type, "_call") || strings.Contains(event.Type, ".tool") {
++				return "", diagnosticError(http.StatusBadGateway, "probe_unexpected_tool", "validating"), true
++			}
++		}
++		return "", nil, false
++	}
++	for scanner.Scan() {
++		if limited.N <= 0 {
++			return "", diagnosticError(http.StatusBadGateway, "probe_response_too_large", "validating")
++		}
++		line := scanner.Bytes()
++		eventBytes += len(line) + 1
++		if eventBytes > diagnosticEventMaxBytes {
++			return "", diagnosticError(http.StatusBadGateway, "probe_response_too_large", "validating")
++		}
++		if len(line) == 0 {
++			if text, failure, terminal := process(); terminal {
++				return text, failure
++			}
++			data, eventBytes = data[:0], 0
++			continue
++		}
++		if bytes.HasPrefix(line, []byte("data:")) {
++			value := line[5:]
++			if len(value) > 0 && value[0] == ' ' {
++				value = value[1:]
++			}
++			if len(data) > 0 {
++				data = append(data, '\n')
++			}
++			data = append(data, value...)
++		}
++	}
++	if limited.N <= 0 || errors.Is(scanner.Err(), bufio.ErrTooLong) {
++		return "", diagnosticError(http.StatusBadGateway, "probe_response_too_large", "validating")
++	}
++	if scanner.Err() != nil {
++		return "", diagnosticError(http.StatusBadGateway, "probe_response_incomplete", "validating")
++	}
++	if text, failure, terminal := process(); terminal {
++		return text, failure
++	}
++	return "", diagnosticError(http.StatusBadGateway, "probe_response_incomplete", "validating")
++}
++
++func extractDiagnosticProbeOutput(body []byte, maxTokens int, completedItems map[int]json.RawMessage) (string, *DiagnosticProbeError) {
++	var response struct {
++		Status string `json:"status"`
++		Usage  struct {
++			OutputTokens *int64 `json:"output_tokens"`
++		} `json:"usage"`
++		Output []json.RawMessage `json:"output"`
++	}
++	if json.Unmarshal(body, &response) != nil || response.Status != "completed" || response.Usage.OutputTokens == nil || *response.Usage.OutputTokens < 0 {
++		return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++	}
++	if *response.Usage.OutputTokens > int64(maxTokens) {
++		return "", diagnosticError(http.StatusBadGateway, "probe_output_tokens_exceeded", "validating")
++	}
++	if len(response.Output) == 0 && len(completedItems) > 0 {
++		for index := 0; index < len(completedItems); index++ {
++			item, exists := completedItems[index]
++			if !exists {
++				return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++			}
++			response.Output = append(response.Output, item)
++		}
++	}
++	var text strings.Builder
++	for _, raw := range response.Output {
++		var item struct {
++			Type    string `json:"type"`
++			Role    string `json:"role"`
++			Content []struct {
++				Type string `json:"type"`
++				Text string `json:"text"`
++			} `json:"content"`
++		}
++		if json.Unmarshal(raw, &item) != nil {
++			return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++		}
++		if item.Type == "reasoning" {
++			continue
++		}
++		if item.Type != "message" {
++			return "", diagnosticError(http.StatusBadGateway, "probe_unexpected_tool", "validating")
++		}
++		if item.Role != "assistant" {
++			return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++		}
++		for _, part := range item.Content {
++			if part.Type != "output_text" || !utf8.ValidString(part.Text) {
++				return "", diagnosticError(http.StatusBadGateway, "probe_invalid_response", "validating")
++			}
++			if text.Len()+len(part.Text) > diagnosticOutputMaxBytes {
++				return "", diagnosticError(http.StatusBadGateway, "probe_output_too_large", "validating")
++			}
++			text.WriteString(part.Text)
++		}
++	}
++	if strings.TrimSpace(text.String()) == "" {
++		return "", diagnosticError(http.StatusBadGateway, "probe_empty_output", "validating")
++	}
++	return text.String(), nil
++}
+diff --git a/internal/runtime/executor/codex_diagnostic_probe_test.go b/internal/runtime/executor/codex_diagnostic_probe_test.go
+new file mode 100644
+index 0000000..3f727e0
+--- /dev/null
++++ b/internal/runtime/executor/codex_diagnostic_probe_test.go
+@@ -0,0 +1,371 @@
++package executor
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"reflect"
++	"strings"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
++	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
++	log "github.com/sirupsen/logrus"
++	"github.com/tidwall/gjson"
++)
++
++type diagnosticRoundTrip func(*http.Request) (*http.Response, error)
++
++func (f diagnosticRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++type diagnosticUsageObserver struct {
++	count   atomic.Int64
++	barrier chan struct{}
++}
++
++func (p *diagnosticUsageObserver) HandleUsage(_ context.Context, r usage.Record) {
++	if r.AuthID == "diagnostic-fixture" {
++		p.count.Add(1)
++	}
++	if r.AuthID == "diagnostic-barrier" {
++		select {
++		case p.barrier <- struct{}{}:
++		default:
++		}
++	}
++}
++
++func diagnosticFixture() (*cliproxyauth.Auth, DiagnosticProbeRequest) {
++	a := &cliproxyauth.Auth{ID: "diagnostic-fixture", Provider: "codex", Disabled: true, Status: cliproxyauth.StatusDisabled, GatewayAccountBlocked: true,
++		Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth, "base_url": "https://evil.example", "header:Authorization": "Bearer forged", "header:Session-Id": "reused", "header:X-Codex-Diagnostic-Run": "private-audit"},
++		Metadata:   map[string]any{"account_id": "diagnostic-account", "access_token": "diagnostic-token"}}
++	cliproxyauth.SetCodexOAuthAccountIndexSeed(a, "diagnostic-account")
++	id, _ := cliproxyauth.CodexOAuthAccountIndex(a)
++	return a, DiagnosticProbeRequest{AccountID: id, Model: "gpt-6-sol", Input: "private fixed question", MaxOutputTokens: 16384}
++}
++func diagnosticCompleted(text string, tokens int) string {
++	response := map[string]any{"status": "completed", "usage": map[string]int{"output_tokens": tokens}, "output": []any{map[string]any{"type": "message", "role": "assistant", "content": []map[string]string{{"type": "output_text", "text": text}}}}}
++	data, _ := json.Marshal(map[string]any{"type": "response.completed", "response": response})
++	return "data: " + string(data) + "\n\n"
++}
++func diagnosticHTTPResponse(status int, body string) *http.Response {
++	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader(body))}
++}
++
++func TestCodexDiagnosticProbeIsolatedRequestAndNoUsage(t *testing.T) {
++	a, request := diagnosticFixture()
++	before := a.Clone()
++	cfg := &config.Config{SDKConfig: config.SDKConfig{RequestLog: true}, Payload: config.PayloadConfig{Override: []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "*"}}, Params: map[string]any{"model": "business-alias", "instructions": "injected business prompt", "tools": []any{map[string]string{"type": "image_generation"}}}}}}}
++	executor := NewCodexExecutor(cfg)
++	cfgBefore, _ := json.Marshal(cfg)
++	var logs bytes.Buffer
++	oldOutput, oldLevel := log.StandardLogger().Out, log.GetLevel()
++	log.SetOutput(&logs)
++	log.SetLevel(log.DebugLevel)
++	defer func() { log.SetOutput(oldOutput); log.SetLevel(oldLevel) }()
++	observer := &diagnosticUsageObserver{barrier: make(chan struct{}, 1)}
++	usage.RegisterNamedPlugin("diagnostic-test-observer", observer)
++	usage.StartDefault(context.Background())
++	calls := 0
++	sessions := map[string]bool{}
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(r *http.Request) (*http.Response, error) {
++		calls++
++		if r.URL.String() != diagnosticProbeURL || r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer diagnostic-token" || r.Header.Get("Chatgpt-Account-Id") != "diagnostic-account" {
++			t.Fatal("wrong target/credentials")
++		}
++		if got := r.Header.Get("Session-Id"); got == "" || sessions[got] {
++			t.Fatal("session not fresh")
++		} else {
++			sessions[got] = true
++		}
++		for _, name := range []string{"X-Codex-Gateway-User", "X-Codex-Diagnostic-Run", "X-Codex-Diagnostic-Probe", "X-Codex-Gateway-Affinity", "X-Codex-Upstream-Account"} {
++			if r.Header.Get(name) != "" {
++				t.Fatalf("internal header leaked: %s", name)
++			}
++		}
++		data, _ := io.ReadAll(r.Body)
++		for path, want := range map[string]string{"model": request.Model, "instructions": "", "tools": "[]", "tool_choice": "none", "input.0.content.0.text": request.Input} {
++			got := gjson.GetBytes(data, path)
++			value := got.String()
++			if path == "tools" {
++				value = got.Raw
++			}
++			if !got.Exists() || value != want {
++				t.Fatalf("changed %s", path)
++			}
++		}
++		if !gjson.GetBytes(data, "stream").Bool() || gjson.GetBytes(data, "store").Bool() || !gjson.GetBytes(data, "parallel_tool_calls").Bool() || gjson.GetBytes(data, "max_output_tokens").Exists() {
++			t.Fatal("unsafe protocol fields")
++		}
++		return diagnosticHTTPResponse(200, diagnosticCompleted("private answer", 2)), nil
++	}))
++	for i := 0; i < 2; i++ {
++		text, failure := executor.ExecuteDiagnosticProbe(ctx, a, request)
++		if failure != nil || text != "private answer" {
++			t.Fatalf("text=%q failure=%v", text, failure)
++		}
++	}
++	usage.PublishRecord(context.Background(), usage.Record{AuthID: "diagnostic-barrier"})
++	select {
++	case <-observer.barrier:
++	case <-time.After(time.Second):
++		t.Fatal("usage barrier timed out")
++	}
++	if observer.count.Load() != 0 {
++		t.Fatal("diagnostic published ordinary usage")
++	}
++	if calls != 2 || !reflect.DeepEqual(a, before) {
++		t.Fatal("account mutated or generation replayed")
++	}
++	cfgAfter, _ := json.Marshal(cfg)
++	if !bytes.Equal(cfgBefore, cfgAfter) {
++		t.Fatal("global config mutated")
++	}
++	if strings.Contains(logs.String(), request.Input) || strings.Contains(logs.String(), "private answer") || strings.Contains(logs.String(), "diagnostic-token") {
++		t.Fatal("private body/token logged")
++	}
++}
++
++func TestCodexDiagnosticProbeUpstreamErrorsAndNoRetry(t *testing.T) {
++	for _, test := range []struct {
++		status     int
++		body, code string
++	}{
++		{401, `{"error":{"message":"private fixed question"}}`, "probe_authentication_failed"},
++		{403, `{"error":{"message":"private fixed question"}}`, "probe_upstream_rejected"},
++		{302, "", "probe_upstream_rejected"},
++		{429, `{"error":{"type":"usage_limit_reached"}}`, "probe_rate_limited"},
++		{400, `{"error":{"code":"model_not_found"}}`, "probe_model_unsupported"},
++		{503, "private fixed question", "probe_upstream_unavailable"},
++		{504, "", "probe_timeout"},
++	} {
++		t.Run(test.code+http.StatusText(test.status), func(t *testing.T) {
++			a, request := diagnosticFixture()
++			calls := 0
++			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(r *http.Request) (*http.Response, error) {
++				calls++
++				response := diagnosticHTTPResponse(test.status, test.body)
++				response.Header.Set("Location", "https://evil.example")
++				response.Header.Set("Retry-After", "11")
++				return response, nil
++			}))
++			_, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, request)
++			if failure == nil || failure.Code != test.code || failure.UpstreamStatus != test.status || failure.RetryAfter != 11 || calls != 1 {
++				t.Fatalf("failure=%+v calls=%d", failure, calls)
++			}
++			data, _ := json.Marshal(failure)
++			if strings.Contains(string(data), "private") {
++				t.Fatal("error body leaked")
++			}
++		})
++	}
++}
++
++func TestCodexDiagnosticProbeSSEValidation(t *testing.T) {
++	cases := []struct{ name, body, code string }{
++		{"empty", "", "probe_response_incomplete"},
++		{"done", "data: [DONE]\n\n", "probe_response_incomplete"},
++		{"invalid json", "data: broken\n\n", "probe_invalid_response"},
++		{"incomplete", "data: {\"type\":\"response.incomplete\"}\n\n", "probe_response_incomplete"},
++		{"tool before completed", `data: {"type":"response.output_item.added","item":{"type":"function_call"}}` + "\n\n" + diagnosticCompleted("ok", 1), "probe_unexpected_tool"},
++		{"missing usage", `data: {"type":"response.completed","response":{"status":"completed","output":[]}}` + "\n\n", "probe_invalid_response"},
++		{"too many tokens", diagnosticCompleted("ok", 16385), "probe_output_tokens_exceeded"},
++		{"too much output", diagnosticCompleted(strings.Repeat("x", diagnosticOutputMaxBytes+1), 1), "probe_output_too_large"},
++		{"empty output", diagnosticCompleted(" \t", 1), "probe_empty_output"},
++		{"large event", "data: " + strings.Repeat("x", diagnosticEventMaxBytes) + "\n\n", "probe_response_too_large"},
++		{"large stream", strings.Repeat(": keepalive\n\n", diagnosticStreamMaxBytes/12+1), "probe_response_too_large"},
++		{"failed quota", `data: {"type":"response.failed","response":{"error":{"type":"usage_limit_reached"}}}` + "\n\n", "probe_rate_limited"},
++		{"completed tool", `data: {"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":1},"output":[{"type":"function_call"}]}}` + "\n\n", "probe_unexpected_tool"},
++		{"invalid UTF8", "data: {\"type\":\"x\",\"delta\":\"\xff\"}\n\n", "probe_invalid_response"},
++	}
++	for _, test := range cases {
++		t.Run(test.name, func(t *testing.T) {
++			_, failure := readDiagnosticProbeSSE(strings.NewReader(test.body), 16384)
++			if failure == nil || failure.Code != test.code {
++				t.Fatalf("failure=%+v want=%s", failure, test.code)
++			}
++		})
++	}
++	for _, body := range []string{diagnosticCompleted("ok", 1), strings.ReplaceAll(diagnosticCompleted("ok", 1), "\n", "\r\n"), strings.TrimSpace(diagnosticCompleted("ok", 1)), ": heartbeat\n\nevent: response.completed\n" + diagnosticCompleted("ok", 1)} {
++		text, failure := readDiagnosticProbeSSE(strings.NewReader(body), 16384)
++		if failure != nil || text != "ok" {
++			t.Fatalf("valid SSE failed: %s %v", text, failure)
++		}
++	}
++	// A terminal envelope may omit output after the output_item.done events.
++	body := `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}` + "\n\n" + `data: {"type":"response.completed","response":{"status":"completed","usage":{"output_tokens":1},"output":[]}}` + "\n\n"
++	if text, failure := readDiagnosticProbeSSE(strings.NewReader(body), 16384); failure != nil || text != "ok" {
++		t.Fatalf("output reconstruction failed: %q %v", text, failure)
++	}
++}
++
++func TestCodexDiagnosticProbeIdentityNetworkAndCancellation(t *testing.T) {
++	for _, test := range []struct {
++		name, code string
++		mutate     func(*cliproxyauth.Auth, *DiagnosticProbeRequest)
++	}{
++		{"index", "probe_account_mismatch", func(_ *cliproxyauth.Auth, r *DiagnosticProbeRequest) { r.AccountID = "ffffffffffffffff" }},
++		{"missing token", "probe_credential_unavailable", func(a *cliproxyauth.Auth, _ *DiagnosticProbeRequest) { delete(a.Metadata, "access_token") }},
++		{"invalid token", "probe_credential_unavailable", func(a *cliproxyauth.Auth, _ *DiagnosticProbeRequest) { a.Metadata["access_token"] = "token\nsecret" }},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			a, r := diagnosticFixture()
++			test.mutate(a, &r)
++			ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(*http.Request) (*http.Response, error) {
++				t.Fatal("invalid credential reached network")
++				return nil, nil
++			}))
++			_, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, r)
++			if failure == nil || failure.Code != test.code {
++				t.Fatalf("failure=%+v", failure)
++			}
++		})
++	}
++	for _, mode := range []string{"network", "cancel", "timeout"} {
++		t.Run(mode, func(t *testing.T) {
++			a, r := diagnosticFixture()
++			ctx := context.Background()
++			var cancel context.CancelFunc
++			if mode == "cancel" {
++				ctx, cancel = context.WithCancel(ctx)
++				cancel()
++			}
++			if mode == "timeout" {
++				ctx, cancel = context.WithDeadline(ctx, time.Now().Add(-time.Second))
++				defer cancel()
++			}
++			ctx = context.WithValue(ctx, "cliproxy.roundtripper", diagnosticRoundTrip(func(request *http.Request) (*http.Response, error) {
++				if request.Context().Err() != nil {
++					return nil, request.Context().Err()
++				}
++				return nil, errors.New("private network failure")
++			}))
++			_, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, r)
++			want := map[string]string{"network": "probe_network_failed", "cancel": "probe_canceled", "timeout": "probe_timeout"}[mode]
++			if failure == nil || failure.Code != want {
++				t.Fatalf("failure=%+v", failure)
++			}
++		})
++	}
++}
++
++func TestCodexDiagnosticProbePreservesEgressProxy(t *testing.T) {
++	var calls atomic.Int64
++	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		calls.Add(1)
++		if r.Method != http.MethodConnect || r.Host != "chatgpt.com:443" {
++			t.Errorf("unexpected proxy target %s %s", r.Method, r.Host)
++		}
++		w.WriteHeader(http.StatusBadGateway)
++	}))
++	defer proxy.Close()
++	a, r := diagnosticFixture()
++	a.ProxyURL = proxy.URL
++	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(*http.Request) (*http.Response, error) { t.Fatal("configured proxy bypassed"); return nil, nil }))
++	_, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, a, r)
++	if failure == nil || failure.Code != "probe_network_failed" || calls.Load() != 1 || a.ProxyURL != proxy.URL {
++		t.Fatalf("proxy calls=%d failure=%+v", calls.Load(), failure)
++	}
++}
++
++func TestCodexDiagnosticProbeRejectsInvalidProxy(t *testing.T) {
++	for _, scope := range []string{"account", "global"} {
++		for _, proxy := range []string{"ftp://localhost:80", "http://%zz", "http://localhost:99999", "http://:8080"} {
++			t.Run(scope+proxy, func(t *testing.T) {
++				account, request := diagnosticFixture()
++				cfg := &config.Config{}
++				if scope == "account" {
++					account.ProxyURL = proxy
++				} else {
++					cfg.ProxyURL = proxy
++				}
++				ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", diagnosticRoundTrip(func(*http.Request) (*http.Response, error) {
++					t.Fatal("invalid proxy fell back to direct traffic")
++					return nil, nil
++				}))
++				_, failure := NewCodexExecutor(cfg).ExecuteDiagnosticProbe(ctx, account, request)
++				if failure == nil || failure.Code != "probe_network_failed" {
++					t.Fatalf("failure=%+v", failure)
++				}
++			})
++		}
++	}
++}
++
++type diagnosticStalledBody struct {
++	ctx     context.Context
++	reading chan struct{}
++	closed  atomic.Bool
++}
++
++func (b *diagnosticStalledBody) Read([]byte) (int, error) {
++	select {
++	case b.reading <- struct{}{}:
++	default:
++	}
++	<-b.ctx.Done()
++	return 0, b.ctx.Err()
++}
++func (b *diagnosticStalledBody) Close() error { b.closed.Store(true); return nil }
++
++func TestCodexDiagnosticProbeCancelsStalledBody(t *testing.T) {
++	for _, mode := range []string{"cancel", "timeout"} {
++		t.Run(mode, func(t *testing.T) {
++			account, request := diagnosticFixture()
++			var ctx context.Context
++			var cancel context.CancelFunc
++			if mode == "timeout" {
++				ctx, cancel = context.WithTimeout(context.Background(), 500*time.Millisecond)
++			} else {
++				ctx, cancel = context.WithCancel(context.Background())
++			}
++			defer cancel()
++			body := &diagnosticStalledBody{ctx: ctx, reading: make(chan struct{}, 1)}
++			ctx = context.WithValue(ctx, "cliproxy.roundtripper", diagnosticRoundTrip(func(*http.Request) (*http.Response, error) {
++				response := diagnosticHTTPResponse(200, "")
++				response.Body = body
++				return response, nil
++			}))
++			finished := make(chan *DiagnosticProbeError, 1)
++			go func() {
++				_, failure := NewCodexExecutor(&config.Config{}).ExecuteDiagnosticProbe(ctx, account, request)
++				finished <- failure
++			}()
++			select {
++			case <-body.reading:
++			case <-time.After(2 * time.Second):
++				t.Fatal("body reader did not start")
++			}
++			if mode == "cancel" {
++				cancel()
++			}
++			select {
++			case failure := <-finished:
++				want := "probe_canceled"
++				if mode == "timeout" {
++					want = "probe_timeout"
++				}
++				if failure == nil || failure.Code != want || !body.closed.Load() {
++					t.Fatalf("failure=%+v closed=%t", failure, body.closed.Load())
++				}
++			case <-time.After(2 * time.Second):
++				t.Fatal("cancellation did not close probe")
++			}
++		})
++	}
++}
++
++func TestCodexDiagnosticProbeDoesNotDuplicateStreamingText(t *testing.T) {
++	body := `data: {"type":"response.output_text.delta","delta":"answer"}` + "\n\n" + `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"answer"}]}}` + "\n\n" + diagnosticCompleted("answer", 1)
++	text, failure := readDiagnosticProbeSSE(strings.NewReader(body), 16384)
++	if failure != nil || text != "answer" {
++		t.Fatalf("stream output duplicated: text=%q failure=%+v", text, failure)
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_executor_auth.go b/internal/runtime/executor/codex_executor_auth.go
@@ -4681,7 +5453,7 @@ index 7dc4a02..8716cd3 100644
  const openAICompatTPMFallbackRetryAfter = time.Minute
  
 diff --git a/internal/util/header_helpers.go b/internal/util/header_helpers.go
-index a169783..6828aea 100644
+index a169783..0b75657 100644
 --- a/internal/util/header_helpers.go
 +++ b/internal/util/header_helpers.go
 @@ -43,6 +43,12 @@ func HasExplicitSessionID(ctx context.Context) bool {
@@ -4727,7 +5499,7 @@ index a169783..6828aea 100644
 +}
 +
 +func isCodexInternalHeader(name string) bool {
-+	return strings.EqualFold(strings.TrimSpace(name), CodexGatewayUserHeader) || strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
++	return strings.EqualFold(strings.TrimSpace(name), "X-Codex-Diagnostic-Run") || strings.EqualFold(strings.TrimSpace(name), "X-Codex-Diagnostic-Probe") || strings.EqualFold(strings.TrimSpace(name), CodexGatewayUserHeader) || strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
 +		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader) || strings.EqualFold(strings.TrimSpace(name), "X-Codex-Conversation-Hash")
 +}
 +
@@ -4747,10 +5519,10 @@ index a169783..6828aea 100644
 +}
 diff --git a/internal/util/header_helpers_conversation_test.go b/internal/util/header_helpers_conversation_test.go
 new file mode 100644
-index 0000000..7d011ac
+index 0000000..9a222f7
 --- /dev/null
 +++ b/internal/util/header_helpers_conversation_test.go
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,32 @@
 +package util
 +
 +import (
@@ -4770,6 +5542,7 @@ index 0000000..7d011ac
 +		"X-Parent-Conversation-Id", "X-Parent-Session-Affinity", "X-Parent-Slot-Session-Id",
 +		"X-Parent-Side-Session-Id", "X-Parent-Side-Thread-Id",
 +		CodexGatewayUserHeader, CodexGatewayAffinityHeader, CodexUpstreamAccountHeader, "x-codex-conversation-hash",
++		"X-Codex-Diagnostic-Run", "X-Codex-Diagnostic-Probe",
 +	} {
 +		headers[name] = []string{"internal"}
 +	}
@@ -5487,7 +6260,7 @@ index 1ef2ba8..b816756 100644
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index b912697..c1ba25f 100644
+index b912697..d7b26f2 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
 @@ -5,6 +5,7 @@ package handlers
@@ -5557,7 +6330,7 @@ index b912697..c1ba25f 100644
  	value, exists := ginCtx.Get("userApiKey")
  	if !exists || value == nil {
  		return ""
-@@ -304,6 +332,47 @@ func requestCallerScope(ginCtx *gin.Context) string {
+@@ -304,6 +332,68 @@ func requestCallerScope(ginCtx *gin.Context) string {
  	return coresession.CallerScope(fmt.Sprint(value))
  }
  
@@ -5572,12 +6345,12 @@ index b912697..c1ba25f 100644
 +	c.Request.Header.Del(GatewayUserHeader)
 +	if len(userValues) > 0 {
 +		if len(userValues) != 1 {
-+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_user"})
++			abortInvalidGatewayUser(c)
 +			return
 +		}
 +		parsed, err := uuid.Parse(userValues[0])
 +		if err != nil || parsed.String() != userValues[0] {
-+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_user"})
++			abortInvalidGatewayUser(c)
 +			return
 +		}
 +		c.Set(gatewayUserKey, userValues[0])
@@ -5592,6 +6365,27 @@ index b912697..c1ba25f 100644
 +		return
 +	}
 +	c.Set(gatewayAffinityKey, values[0])
++}
++
++// GatewayUserFromContext returns only the identity validated and consumed by
++// CaptureGatewayAffinityScope. Internal diagnostics use it for audit attribution
++// without embedding Gin state or authorization headers into an execution context.
++func GatewayUserFromContext(c *gin.Context) (string, bool) {
++	if c == nil {
++		return "", false
++	}
++	value, exists := c.Get(gatewayUserKey)
++	userID, ok := value.(string)
++	parsed, err := uuid.Parse(userID)
++	return userID, exists && ok && err == nil && parsed.String() == userID
++}
++
++func abortInvalidGatewayUser(c *gin.Context) {
++	if c.Request != nil && strings.HasPrefix(c.Request.URL.Path, "/internal/model-identification/") {
++		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"code": "probe_actor_invalid", "stage": "preflight"}})
++		return
++	}
++	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid_gateway_user"})
 +}
 +
 +func validGatewayAffinityScope(value string) bool {

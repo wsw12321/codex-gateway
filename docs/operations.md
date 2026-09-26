@@ -194,7 +194,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建还会证明 `v7.3.15` 的 peeled commit 正是
 `673131f57484517c3a1eae7e36c4cfa7b9bb4efc`，不匹配就会失败。兼容层镜像标签为
-`v7.3.15-673131f5-f986e6cb7064d975-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
+`v7.3.15-673131f5-0b91ec60874b6b1f-codex-only`；标签记录主程序、多账号补丁和仅 Codex 的构建，校验脚本会检查它，CI 使用实际构建的完整标签执行扫描。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -716,7 +716,25 @@ Gateway 只识别固定 HTTP 状态与错误码组合，错误 JSON 最多读取
 仍运行旧 sidecar 时，套餐检查仍可能返回 `upstream_quota_plan_unsupported`，
 更早的 sidecar 则可能返回汇总错误 `upstream_quota_schema_changed`。
 部署顺序宜先更新 Gateway，使其接受新错误码，再更新 sidecar。Compose 中的
-sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致，无需额外数据库迁移。
+sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致。套餐兼容修复自身无需额外数据库
+迁移；当前模型鉴定流程还需应用 `0019_model_identification_diagnostics.sql`。
+
+模型鉴定需同时升级 Gateway 与 `codex-compat`。Owner 通过近期验证后，选择指定账号
+和可尝试模型，任务依次执行准备、逐题探针、答案校验、评分和保存。诊断直接使用所选
+账号，跳过日常分流的授权、权重、禁用、额度、冷却和并发限制，不改变账号控制状态，
+不自动刷新凭证、重试或切换账号；仍会消耗该账号的真实上游额度。模型候选来自原生目录，
+实际支持情况由上游决定。侧车每题最多 180 秒，Gateway 留出 5 秒返回时间，总任务上限
+10 分钟；诊断使用独立 HTTP 超时，不受普通请求的 90 秒响应头超时影响。
+
+创建接口返回 `run_id` 和 `run` 快照，页面通过
+`GET /admin/model-identifications/runs/{run_id}` 查询本次任务，显示阶段、题号、通过题数
+及错误来源；任务已被新任务替代时返回 404，页面不会改为跟踪新任务。准备失败可检查
+`model_identification_protocol_unsupported`、`credential_missing` 或 `account_not_found`；
+执行失败区分认证、限流、模型不支持、网络、超时和响应不完整。错误码均以
+`model_identification_` 开头，日志只含固定错误码及安全任务元数据，不保存原始回答或
+上游错误正文。三题任一答案校验失败即停止，原评分算法保持不变，失败保留仍有效的旧结果。
+结果保存 30 天；维护任务每 30 秒清理到期数据，并将超过 10 分 30 秒的未结束任务
+标记为中断。重启不会重新执行探针，也不会将其他实例仍在运行的任务立即标记失败。
 
 新 Codex 会话可能先记录一次 `GET /v1/responses` 的
 `426 responses_websocket_unsupported`，紧接着以 `POST /v1/responses` 的

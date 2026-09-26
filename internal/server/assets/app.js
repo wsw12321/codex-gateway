@@ -76,6 +76,13 @@ let modelIdentificationTimer = 0;
 let modelIdentificationPolling = false;
 let modelIdentificationOptionsReady = false;
 let modelIdentificationRunning = false;
+let modelIdentificationSubmitting = false;
+let modelIdentificationProtocolSupported = true;
+let modelIdentificationRunSequence = 0;
+let modelIdentificationActiveRunID = "";
+let modelIdentificationActiveRun = null;
+let modelIdentificationRunReplaced = false;
+let modelIdentificationRecords = [];
 let upstreamAccountRequestSequence = 0;
 let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
@@ -4672,6 +4679,13 @@ function bindInformation() {
 function resetModelIdentification() {
   modelIdentificationOptionsReady = false;
   modelIdentificationRunning = false;
+  modelIdentificationSubmitting = false;
+  modelIdentificationProtocolSupported = true;
+  modelIdentificationActiveRunID = "";
+  modelIdentificationActiveRun = null;
+  modelIdentificationRunReplaced = false;
+  modelIdentificationRecords = [];
+  modelIdentificationRunSequence++;
   modelIdentificationOptionsSequence++;
   modelIdentificationRecordsSequence++;
   const account = byId("model-identification-account");
@@ -4686,11 +4700,18 @@ function resetModelIdentification() {
   hide("model-identification-progress");
   byId("model-identification-results").replaceChildren(emptyState("尚无鉴别记录。"));
   setLocalMessage(byId("model-identification-form"));
+  setBusy(byId("model-identification-form"), false);
   syncModelIdentificationControls();
 }
 
 function modelIdentificationVisible() {
   return ownerSectionVisible("model-identification") && !loggingOut;
+}
+
+function modelIdentificationRequestCurrent() {
+  const generation = identityGeneration;
+  const actorID = state?.user?.id;
+  return () => !loggingOut && state?.user?.role === "owner" && generation === identityGeneration && state.user.id === actorID;
 }
 
 function syncModelIdentificationControls() {
@@ -4701,7 +4722,8 @@ function syncModelIdentificationControls() {
   const disabled = !state || state.user.role !== "owner" || loggingOut;
   account.disabled = disabled || !modelIdentificationOptionsReady;
   model.disabled = disabled || !account.value || model.options.length <= 1;
-  byId("model-identification-run").disabled = disabled || modelIdentificationRunning || !account.value || !model.value || form.dataset.busy === "true";
+  byId("model-identification-run").disabled = disabled || !modelIdentificationOptionsReady || !modelIdentificationProtocolSupported ||
+    modelIdentificationRunning || modelIdentificationSubmitting || !account.value || !model.value || form.dataset.busy === "true";
   byId("model-identification-refresh").disabled = disabled;
 }
 
@@ -4710,24 +4732,32 @@ async function loadModelIdentificationOptions() {
   const generation = identityGeneration;
   const current = () => request === modelIdentificationOptionsSequence && generation === identityGeneration && modelIdentificationVisible();
   const selected = byId("model-identification-account").value;
-  const response = await api("/admin/model-identifications/options", {}, current);
+  let response;
+  try {
+    response = await api("/admin/model-identifications/options", {}, current);
+  } catch (error) {
+    if (current()) {
+      modelIdentificationOptionsReady = false;
+      if (error.code === "model_identification_protocol_unsupported") modelIdentificationProtocolSupported = false;
+      syncModelIdentificationControls();
+    }
+    throw error;
+  }
   if (!current()) return;
   const accounts = Array.isArray(response.accounts) ? response.accounts : [];
   const select = byId("model-identification-account");
   select.replaceChildren(element("option", {text: "请选择上游账号", attributes: {value: ""}}),
     ...accounts.map((account) => {
       const option = element("option", {
-        text: `${account.masked_email || account.id} · ${account.status === "available" ? "可用" : "不可用"}`,
+        text: `${account.masked_email || account.id} · 日常分流：${upstreamFinalStatusLabels[account.status] || "状态未知"}`,
         attributes: {value: account.id},
       });
-      // `disabled` is a boolean DOM property. Writing disabled="false" still
-      // disables an option, so set the property after creating the element.
-      option.disabled = account.status !== "available";
       return option;
     }));
-  select.value = accounts.some((account) => account.id === selected && account.status === "available") ? selected : "";
+  select.value = accounts.some((account) => account.id === selected) ? selected : "";
   byId("model-identification-version").textContent = response.reference_version || "—";
   modelIdentificationOptionsReady = true;
+  modelIdentificationProtocolSupported = true;
   if (select.value) await loadModelIdentificationModels();
   else {
     byId("model-identification-model").replaceChildren(element("option", {text: "先选择账号", attributes: {value: ""}}));
@@ -4742,7 +4772,7 @@ async function loadModelIdentificationModels() {
   const select = byId("model-identification-model");
   const selected = select.value;
   select.disabled = true;
-  select.replaceChildren(element("option", {text: accountID ? "正在查询该账号模型…" : "先选择账号", attributes: {value: ""}}));
+  select.replaceChildren(element("option", {text: accountID ? "正在查询可尝试模型…" : "先选择账号", attributes: {value: ""}}));
   syncModelIdentificationControls();
   if (!accountID) return;
   const current = () => request === modelIdentificationOptionsSequence && generation === identityGeneration &&
@@ -4751,43 +4781,116 @@ async function loadModelIdentificationModels() {
     const response = await api(`/admin/model-identifications/options?account_id=${encodeURIComponent(accountID)}`, {}, current);
     if (!current()) return;
     const models = Array.isArray(response.models) ? response.models : [];
-    select.replaceChildren(element("option", {text: models.length ? "请选择模型" : "该账号没有可鉴别的已配置模型", attributes: {value: ""}}),
+    select.replaceChildren(element("option", {text: models.length ? "请选择可尝试模型" : "该账号没有可尝试的已配置模型", attributes: {value: ""}}),
       ...models.map((model) => element("option", {text: model, attributes: {value: model}})));
     select.value = models.includes(selected) ? selected : "";
     byId("model-identification-version").textContent = response.reference_version || "—";
   } catch (error) {
     if (!current()) return;
+    if (error.code === "model_identification_protocol_unsupported") modelIdentificationProtocolSupported = false;
     select.replaceChildren(element("option", {text: "模型查询失败", attributes: {value: ""}}));
-    setLocalMessage(byId("model-identification-form"), friendlyError(error));
+    setLocalMessage(byId("model-identification-form"), modelIdentificationFailureLabels[error.code] || friendlyError(error));
   }
   syncModelIdentificationControls();
 }
 
 const modelIdentificationFailureLabels = {
-  model_identification_account_unavailable: "所选账号已不可用",
+  model_identification_protocol_unsupported: "鉴别服务版本不兼容，请更新网关与兼容服务后刷新",
+  model_identification_credential_missing: "账号缺少有效凭据，请刷新账号凭据",
+  model_identification_auth_failed: "上游认证失败，请刷新账号凭据",
+  model_identification_forbidden: "上游拒绝访问该账号或模型",
+  model_identification_rate_limited: "上游限流或额度不足，请稍后重试",
+  model_identification_identity_invalid: "Owner 身份校验失败，请重新登录",
+  model_identification_request_invalid: "鉴别请求或身份信息无效，请重新登录后刷新",
+  model_identification_account_unavailable: "所选账号不存在或无法读取",
+  model_identification_account_not_found: "所选账号已不存在，请刷新账号列表",
+  model_identification_unavailable: "鉴别服务暂不可用，请检查兼容服务状态",
   model_identification_model_unavailable: "所选模型已不可用",
+  model_identification_network_failed: "无法连接上游，请检查网络后重试",
+  model_identification_upstream_failed: "上游服务执行失败，请稍后重试",
+  model_identification_upstream_rejected: "上游拒绝了鉴别请求，请检查所选模型与账号",
+  model_identification_redirect: "上游返回了不支持的重定向",
+  model_identification_incomplete: "上游回答未完整生成，请重新鉴别",
+  model_identification_invalid_response: "上游响应格式不符合鉴别协议",
+  model_identification_unexpected_tool: "上游返回了工具调用，本次鉴别只接受文本回答",
+  model_identification_empty_output: "上游未返回可用于鉴别的文本回答",
+  model_identification_response_too_large: "上游响应超过大小限制",
   model_identification_account_mismatch: "上游返回了不同的账号",
-  model_identification_invalid_answer: "探针回答未通过官方输入校验",
+  model_identification_invalid_answer: "本题回答未通过输入校验",
   model_identification_timeout: "探针或整项运行超时",
   model_identification_interrupted: "运行已中断",
   interrupted: "进程中断，运行未完成",
-  model_identification_probe_failed: "探针执行失败",
+  model_identification_probe_failed: "探针执行失败，请根据运行 ID 查询诊断日志",
   model_identification_storage_failed: "保存运行结果失败",
   model_identification_reference_unavailable: "参考库暂不可用",
 };
 
-function renderModelIdentifications(items) {
-  const records = Array.isArray(items) ? items : [];
-  const latest = [...records].sort((a, b) => Date.parse(b.run_started_at || 0) - Date.parse(a.run_started_at || 0))[0];
-  modelIdentificationRunning = records.some((item) => item.run_status === "running");
+function modelIdentificationProgress(item) {
+  return Math.max(0, Math.min(3, Number(item?.run_progress) || 0));
+}
+
+function modelIdentificationRunDetails(item) {
+  const stages = {preflight: "检查账号与协议", probing: "生成回答", validating: "校验回答", scoring: "统计匹配", saving: "保存结论"};
+  const probe = Math.max(0, Math.min(3, Number(item.run_probe_index) || 0));
+  const stage = stages[item.run_stage] || "准备鉴别";
+  const details = [`${probe ? `第 ${probe} 题 · ` : ""}${stage}`, `已通过 ${modelIdentificationProgress(item)} / 3 题`];
+  const started = Date.parse(item.run_started_at || "");
+  const finished = item.run_status === "running" ? Date.now() : Date.parse(item.run_finished_at || item.run_updated_at || "");
+  if (Number.isFinite(started) && Number.isFinite(finished)) details.push(`耗时 ${Math.max(0, Math.round((finished - started) / 1000))} 秒`);
+  if (item.run_error_source) details.push(`错误来源：${item.run_error_source}`);
+  if (item.run_upstream_status) details.push(`上游 HTTP ${item.run_upstream_status}`);
+  if (item.run_retry_after > 0) details.push(`建议 ${item.run_retry_after} 秒后重试`);
+  if (item.run_error_code) details.push(`错误码：${item.run_error_code}`);
+  details.push(`运行 ID：${item.run_id}`);
+  return details.join(" · ");
+}
+
+function acceptModelIdentificationRun(item) {
+  if (!item || item.run_id !== modelIdentificationActiveRunID) return;
+  const previous = modelIdentificationActiveRun;
+  if (previous?.run_id === item.run_id) {
+    if (previous.run_status !== "running" && item.run_status === "running") return;
+    const phaseOrder = (run) => ({preflight: 0, probing: Number(run.run_probe_index) * 2 - 1,
+      validating: Number(run.run_probe_index) * 2, scoring: 7, saving: 8})[run.run_stage] ?? -1;
+    // JSON timestamps can differ by less than Date.parse's millisecond
+    // resolution, so compare monotonic task progress as well as wall time.
+    if (modelIdentificationProgress(item) < modelIdentificationProgress(previous) || phaseOrder(item) < phaseOrder(previous)) return;
+    const before = Date.parse(previous.run_updated_at || previous.run_finished_at || previous.run_started_at || "");
+    const after = Date.parse(item.run_updated_at || item.run_finished_at || item.run_started_at || "");
+    if (Number.isFinite(before) && Number.isFinite(after) && after < before) return;
+  }
+  modelIdentificationActiveRun = item;
+}
+
+function renderModelIdentificationRun() {
+  const item = modelIdentificationActiveRun;
   const progress = byId("model-identification-progress");
-  progress.value = Math.max(0, Math.min(3, Number(latest?.run_progress) || 0));
-  progress.classList.toggle("hidden", latest?.run_status !== "running");
+  progress.value = modelIdentificationProgress(item);
+  progress.textContent = `${progress.value} / 3`;
+  progress.classList.toggle("hidden", !item);
   const status = byId("model-identification-run-status");
-  if (!latest) status.textContent = "尚无运行记录";
-  else if (latest.run_status === "running") status.textContent = `${latest.requested_model} · 已完成 ${progress.value} / 3 题 · 开始于 ${formatDateTime(latest.run_started_at)}`;
-  else if (latest.run_status === "succeeded") status.textContent = `${latest.requested_model} · 已完成 · ${formatDateTime(latest.run_finished_at)}`;
-  else status.textContent = `${latest.requested_model} · 本次失败：${modelIdentificationFailureLabels[latest.run_error_code] || "运行失败"} · ${formatDateTime(latest.run_finished_at)}`;
+  if (!item) {
+    status.textContent = modelIdentificationRunReplaced ? "本次运行已被新的鉴别替代，请查看下方记录。" : "尚无本人的运行记录";
+    return;
+  }
+  let outcome = "鉴别中";
+  if (item.run_status === "succeeded") outcome = "已完成";
+  if (item.run_status === "failed") outcome = `本次失败：${modelIdentificationFailureLabels[item.run_error_code] || "运行失败"}`;
+  status.textContent = `${item.requested_model} · ${outcome} · ${modelIdentificationRunDetails(item)}`;
+}
+
+function renderModelIdentifications(items) {
+  let records = Array.isArray(items) ? items : [];
+  if (!modelIdentificationActiveRunID && !modelIdentificationRunReplaced) {
+    const ownRun = [...records].filter((item) => item.run_actor_id === state?.user?.id)
+      .sort((a, b) => Date.parse(b.run_started_at || 0) - Date.parse(a.run_started_at || 0))[0];
+    if (ownRun) modelIdentificationActiveRunID = ownRun.run_id;
+  }
+  acceptModelIdentificationRun(records.find((item) => item.run_id === modelIdentificationActiveRunID));
+  records = records.map((item) => item.run_id === modelIdentificationActiveRunID && modelIdentificationActiveRun ? modelIdentificationActiveRun : item);
+  modelIdentificationRecords = records;
+  modelIdentificationRunning = records.some((item) => item.run_status === "running") || modelIdentificationActiveRun?.run_status === "running";
+  renderModelIdentificationRun();
   const container = byId("model-identification-results");
   if (!records.length) {
     container.replaceChildren(emptyState("尚无鉴别记录。"));
@@ -4800,6 +4903,7 @@ function renderModelIdentifications(items) {
     const card = element("article", {className: "panel model-identification-result"},
       element("h3", {text: `${label} · ${item.requested_model}`}));
     if (item.run_status === "failed") card.append(element("p", {className: "model-identification-failure", text: `本次失败：${modelIdentificationFailureLabels[item.run_error_code] || "运行失败"}。${item.conclusion ? "下方保留仍在有效期内的上次结论。" : "未产生新结论。"}`}));
+    card.append(element("p", {className: "muted", text: modelIdentificationRunDetails(item)}));
     if (item.conclusion) {
       const level = {match: "明确匹配", family_only: "同家族接近", insufficient: "匹配较弱"}[item.match_level] || "无法可靠判定";
       const fields = [
@@ -4822,12 +4926,38 @@ async function loadModelIdentifications() {
   if (!current()) return;
   byId("model-identification-version").textContent = response.reference_version || "—";
   renderModelIdentifications(response.identifications);
+  await loadModelIdentificationRun();
+}
+
+async function loadModelIdentificationRun() {
+  const runID = modelIdentificationActiveRunID;
+  if (!runID) return;
+  const request = ++modelIdentificationRunSequence;
+  const identityCurrent = modelIdentificationRequestCurrent();
+  const current = () => identityCurrent() && modelIdentificationVisible() && request === modelIdentificationRunSequence && runID === modelIdentificationActiveRunID;
+  try {
+    const response = await api(`/admin/model-identifications/runs/${encodeURIComponent(runID)}`, {}, current);
+    if (!current()) return;
+    if (response.run?.run_id !== runID) throw new Error("鉴别服务返回了不匹配的运行记录，请刷新状态。");
+    acceptModelIdentificationRun(response.run);
+    const records = modelIdentificationRecords.map((item) => item.run_id === runID ? modelIdentificationActiveRun || item : item);
+    renderModelIdentifications(records);
+  } catch (error) {
+    if (!current()) return;
+    if (error.status !== 404) throw error;
+    modelIdentificationActiveRunID = "";
+    modelIdentificationActiveRun = null;
+    modelIdentificationRunReplaced = true;
+    renderModelIdentificationRun();
+    await loadModelIdentifications();
+  }
 }
 
 function stopModelIdentification() {
   modelIdentificationPolling = false;
   modelIdentificationOptionsSequence++;
   modelIdentificationRecordsSequence++;
+  modelIdentificationRunSequence++;
   if (modelIdentificationTimer) window.clearTimeout(modelIdentificationTimer);
   modelIdentificationTimer = 0;
 }
@@ -4842,7 +4972,9 @@ function startModelIdentification() {
       if (!modelIdentificationOptionsReady) await loadModelIdentificationOptions();
       await loadModelIdentifications();
     } catch (error) {
-      if (modelIdentificationVisible() && error.code !== "stale_request") setLocalMessage(byId("model-identification-form"), friendlyError(error));
+      if (modelIdentificationVisible() && error.code !== "stale_request") {
+        setLocalMessage(byId("model-identification-form"), modelIdentificationFailureLabels[error.code] || friendlyError(error));
+      }
     } finally {
       if (modelIdentificationPolling && modelIdentificationVisible() && generation === identityGeneration) {
         modelIdentificationTimer = window.setTimeout(tick, 3000);
@@ -4850,6 +4982,43 @@ function startModelIdentification() {
     }
   };
   tick();
+}
+
+async function submitModelIdentification(event) {
+  const form = event.currentTarget;
+  const accountID = form.elements.account_id.value;
+  const model = form.elements.model.value;
+  if (!modelIdentificationVisible() || !accountID || !model || modelIdentificationRunning || modelIdentificationSubmitting ||
+      !modelIdentificationOptionsReady || !modelIdentificationProtocolSupported) return;
+  const current = modelIdentificationRequestCurrent();
+  modelIdentificationSubmitting = true;
+  // Invalidate status reads started before this submission so they cannot bind
+  // an older run while the POST or identity verification is in flight.
+  modelIdentificationRecordsSequence++;
+  modelIdentificationRunSequence++;
+  syncModelIdentificationControls();
+  try {
+    const response = await sensitiveAction(() => api("/admin/model-identifications/runs", {
+      method: "POST", body: JSON.stringify({account_id: accountID, model}),
+    }, current), current);
+    if (!current()) return;
+    if (!response.run_id || response.run?.run_id !== response.run_id) throw new Error("鉴别服务返回了无效的运行记录，请刷新状态。");
+    modelIdentificationRecordsSequence++;
+    modelIdentificationRunSequence++;
+    modelIdentificationActiveRunID = response.run_id;
+    modelIdentificationActiveRun = null;
+    modelIdentificationRunReplaced = false;
+    acceptModelIdentificationRun(response.run);
+    renderModelIdentifications([response.run, ...modelIdentificationRecords.filter((item) =>
+      item.account_id !== accountID || item.requested_model !== model)]);
+    setLocalMessage(form, "运行已提交，进度与诊断见下方。", "ok");
+    if (modelIdentificationVisible()) await loadModelIdentifications();
+  } finally {
+    if (current()) {
+      modelIdentificationSubmitting = false;
+      syncModelIdentificationControls();
+    }
+  }
 }
 
 function bindModelIdentification() {
@@ -4862,20 +5031,8 @@ function bindModelIdentification() {
     modelIdentificationOptionsReady = false;
     await loadModelIdentificationOptions();
     await loadModelIdentifications();
-  }, "刷新中…", modelIdentificationVisible);
-  bindAsync("model-identification-form", "submit", async (event) => {
-    const form = event.currentTarget;
-    const accountID = form.elements.account_id.value;
-    const model = form.elements.model.value;
-    if (!accountID || !model || modelIdentificationRunning) return;
-    const actorID = state?.user?.id;
-    const generation = identityGeneration;
-    const current = () => modelIdentificationVisible() && generation === identityGeneration && state?.user?.id === actorID;
-    await sensitiveAction(() => api("/admin/model-identifications/runs", {method: "POST", body: JSON.stringify({account_id: accountID, model})}, current), current);
-    if (!current()) return;
-    setLocalMessage(form, "鉴别已开始，正在运行三道测试题。", "ok");
-    await loadModelIdentifications();
-  }, "启动中…", modelIdentificationVisible);
+  }, "刷新中…", modelIdentificationRequestCurrent);
+  bindAsync("model-identification-form", "submit", submitModelIdentification, "启动中…", modelIdentificationRequestCurrent);
 }
 
 function syncVisiblePolling() {

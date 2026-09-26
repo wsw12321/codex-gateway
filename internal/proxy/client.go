@@ -142,10 +142,11 @@ func (f *Failure) Error() string {
 func (f *Failure) Unwrap() error { return f.Cause }
 
 type Client struct {
-	baseURL     *url.URL
-	token       string
-	http        *http.Client
-	antigravity bool
+	baseURL        *url.URL
+	token          string
+	http           *http.Client
+	diagnosticHTTP *http.Client
+	antigravity    bool
 }
 
 type ForwardOptions struct {
@@ -186,7 +187,7 @@ func New(baseURL *url.URL, token string) *Client {
 func NewWithHTTPClient(baseURL *url.URL, token string, client *http.Client) *Client {
 	copyURL := *baseURL
 	copyURL.Path = strings.TrimRight(copyURL.Path, "/")
-	return &Client{baseURL: &copyURL, token: token, http: client}
+	return &Client{baseURL: &copyURL, token: token, http: client, diagnosticHTTP: newDiagnosticHTTPClient(client)}
 }
 
 func (c *Client) Forward(ctx context.Context, w http.ResponseWriter, incoming *http.Request, upstreamPath string) (Result, *Failure) {
