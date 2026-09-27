@@ -33,24 +33,34 @@ Internet
         -> Gateway (edge_internal + data_internal + 两个上游内部网络)
           -> PostgreSQL (data_internal only)
           -> CLIProxyAPI (compat_internal only)
-            -> Squid allowlist (固定 Sidecar /32)
+            -> A Squid allowlist (固定 Sidecar /32)
+              -> [启用中转时：WireGuard -> B Squid]
               -> auth.openai.com:443 / chatgpt.com:443
           -> Antigravity Bridge (antigravity_internal only)
-            -> Squid allowlist (固定 Bridge /32)
+            -> A Squid allowlist (固定 Bridge /32)
+              -> [启用中转时：WireGuard -> B Squid]
               -> 精确审核的 Google OAuth / Cloud Code 域名:443
 ```
 
-没有容器发布宿主机端口。`cloudflared` 只连接 Tunnel 出站网络和边缘内部网络，
+A 的网关容器不发布宿主机端口。`cloudflared` 只连接 Tunnel 出站网络和边缘内部网络，
 并把 Dashboard 中的 hostname 转给 `http://caddy:80`。其余带 `internal: true`
 的网络没有默认互联网路由。Sidecar 和 Bridge 即使尝试绕过 `HTTP(S)_PROXY` 也没有
 直接出口；Squid 只接受两个固定容器地址，并拒绝非 CONNECT、非 443 和不在对应
 精确域名列表中的目的地。Gateway 虽加入两个上游网络，但没有 Squid 出站权限。
+A/B 的 `dstdomain -n` 规则禁止字面 IP 请求通过反向 DNS 获得域名白名单权限。
+
+配置非空 `CODEX_RELAY_IP` 时，A 为两个上游同时设置强制父代理和禁止直连规则；
+B 故障时两者均失败。B 仅在 `10.77.0.2:3128` 监听，只接受
+`10.77.0.1/32` 发来的 CONNECT/443，目的地限于同一套经审查的精确域名。
+A 保留两类容器的目标隔离；B 看到的是 A 的隧道地址，不再区分原容器。
+两个 Squid 均不解密 TLS，日志只记录目标、状态及转发元数据。未启用中转时，
+两个上游经 A Squid 直连。部署与升级流程见[双服务器中转](openai-relay.md)。
 
 ## 主要威胁与控制
 
 | 威胁 | 控制 | 验证方式 |
 | --- | --- | --- |
-| 扫描服务器公网 IP 绕过 Cloudflare | 所有服务零宿主端口；安全组只允许固定管理 IP 的 SSH | `validate-compose.sh`、外部端口扫描 |
+| 扫描服务器公网 IP 绕过 Cloudflare | A 的网关服务零宿主端口，入站仅管理 SSH；B 另允许来自 A 的 WireGuard UDP，3128 仅在隧道内可达 | `validate-compose.sh`、外部端口扫描 |
 | Tunnel token 泄漏 | Dashboard token 仅存 `0640` secret，以 `--token-file` 挂载给非 root、只读的 connector | 文件/mount/进程参数和日志检查 |
 | API Key 数据库泄漏 | HMAC 用于认证；新 Key 的版本化 AES-256-GCM 密文使用仅挂载给 Gateway 的独立密钥，AAD 绑定用户和 Public ID，查看要求近期二次验证 | 加密篡改/AAD 测试、管理响应和数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
@@ -63,6 +73,8 @@ Internet
 | Sidecar 任意出网/SSRF | internal 网络加 Squid 精确域名和 443 allowlist | 代理 ACL 测试、网络 namespace 测试 |
 | Bridge Agent 读取文件或执行工具 | 每请求空目录；strict 权限显式拒绝文件、命令、URL、MCP；工具事件使请求失败并终止进程组 | 假 CLI 协议、取消、子进程与残留测试 |
 | Gateway 借上游网络直接出网 | Squid 来源 ACL 只放行 Sidecar `172.28.30.3/32` 和 Bridge `172.28.40.3/32` | Compose/Squid 固定地址校验 |
+| B 故障导致出口静默切回 A | 启用中转时两个上游都必须使用同一父代理，禁止直接回退 | 固定 Squid 镜像下双来源断链/恢复测试、生产维护窗口故障验收 |
+| B 成为公网或任意目标代理 | 仅监听 WireGuard 地址、仅允许 A 的隧道 /32、CONNECT/443 和精确域名；不对公网开放 3128 | B ACL 负例、Squid 配置校验、公网端口检查 |
 | 请求头走私凭证 | Gateway 只接受已知路径/头，替换 Authorization，移除 Cookie、转发头及 hop-by-hop 头 | 代理和 fuzz 测试 |
 | 超大正文/资源耗尽 | Caddy 与 Gateway 双重 64 MiB 上限；RPM、并发、日配额和全局流限制 | 限额与并发测试 |
 | 邀请/恢复 token 泄漏 | URL fragment、单次/短期 token、HMAC 存储；不启用访问日志 | 邀请复用测试、日志扫描 |
@@ -119,6 +131,9 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
 - 单服务器是可用性单点。本地 age 密文、解密 identity 和其他恢复 secret 会随
   服务器或云盘整体丢失，因而只能处理数据库逻辑损坏和计划迁机，既不能提供
   无中断故障转移，也不构成整机灾备。
+- 启用双机中转后，B 与 WireGuard 也是 Codex 和 Gemini 的共同可用性依赖；
+  重建任一 Squid 会中断活动 CONNECT/SSE。B 管理员可见目的地主机和连接元数据，
+  正常 CONNECT 转发不会获得上游 TLS 明文或账号凭据。
 - 本版本不支持 API Key 加密密钥轮换。数据库备份不包含该部署 secret；密钥丢失或
   被替换后，HMAC 认证资料仍无法用于还原明文，新 Key 的查看操作会失败。
 - 各 Plus/Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。

@@ -35,7 +35,7 @@ class CodexRelayTests(unittest.TestCase):
                               if line.strip() and not line.lstrip().startswith("#")]
                 self.assertEqual(directives, [])
 
-    def test_enabled_relay_is_the_only_parent_and_required_for_codex(self):
+    def test_enabled_relay_is_the_only_parent_and_required_for_both_clients(self):
         for ip in ("10.77.0.2", "127.0.0.1", "255.255.255.255", "0.0.0.0"):
             for port, expected in ((None, "3128"), ("", "3128"), ("1", "1"),
                                    ("3128", "3128"), ("65535", "65535")):
@@ -47,8 +47,10 @@ class CodexRelayTests(unittest.TestCase):
                     self.assertEqual(directives, [
                         f"cache_peer {ip} parent {expected} 0 no-query default name=codex_relay",
                         "cache_peer_access codex_relay allow codex_clients",
+                        "cache_peer_access codex_relay allow antigravity_clients",
                         "cache_peer_access codex_relay deny all",
                         "never_direct allow codex_clients",
+                        "never_direct allow antigravity_clients",
                         "never_direct deny all",
                     ])
 

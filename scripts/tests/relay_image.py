@@ -12,6 +12,17 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = "/tmp/relay_fixture.pl"
+CODEX_HOSTS = ("auth.openai.com", "chatgpt.com")
+# The static policy tests pin A's reviewed list. Exercise every one of those
+# destinations against both A and B, including OAuth and model endpoints.
+ANTIGRAVITY_HOSTS = tuple(host for host in next(
+    line for line in (ROOT / "deploy/egress/squid.conf").read_text().splitlines()
+    if line.startswith("acl antigravity_upstreams dstdomain ")
+).split()[3:] if host != "-n")
+CLIENTS = (
+    ("Codex", "127.0.0.2", "chatgpt.com"),
+    ("Antigravity", "127.0.0.3", "cloudcode-pa.googleapis.com"),
+)
 
 
 def command(*args, check=True, timeout=45):
@@ -67,8 +78,8 @@ class Sandbox:
                 "--mount", f"type=bind,source={self.config},target=/etc/squid/squid.conf,readonly",
                 "--mount", f"type=bind,source={ROOT / 'deploy/egress/entrypoint.sh'},target=/usr/local/bin/codex-egress-entrypoint.sh,readonly",
                 "--mount", f"type=bind,source={ROOT / 'scripts/tests/relay_fixture.pl'},target={FIXTURE},readonly",
-                "--add-host", "auth.openai.com:127.0.0.6", "--add-host", "chatgpt.com:127.0.0.6",
-                "--add-host", "accounts.google.com:127.0.0.6",
+                *(argument for host in (*CODEX_HOSTS, *ANTIGRAVITY_HOSTS)
+                  for argument in ("--add-host", f"{host}:127.0.0.6")),
                 "--entrypoint", "/bin/sh", self.image, "-c", "exec sleep 300",
             )
             self.serve("target")
@@ -97,9 +108,10 @@ class Sandbox:
 
     def expect(self, status, **kwargs):
         output = self.probe(**kwargs).stdout
-        assert output.splitlines()[0] == str(status), output
+        context = f"relay={self.relay} enabled={self.enabled} expected={status} request={kwargs}: {output}"
+        assert output.splitlines()[0] == str(status), context
         if status == 200:
-            assert "ECHO_OK" in output, output
+            assert "ECHO_OK" in output, context
 
     def no_active_targets(self):
         records = self.contents("/run/fixture-target.log").splitlines()
@@ -107,14 +119,25 @@ class Sandbox:
             line.startswith("close ") for line in records)
 
     def acl_checks(self):
-        self.expect(403, source="127.0.0.4")
-        self.expect(403, method="GET")
-        self.expect(403, port="8443")
-        for host in ("example.com", "api.openai.com", "sub.chatgpt.com", "127.0.0.6"):
-            self.expect(403, host=host)
+        for _, source, allowed_host in CLIENTS:
+            source = "127.0.0.1" if self.relay else source
+            self.expect(403, source="127.0.0.4", host=allowed_host)
+            self.expect(403, source=source, host=allowed_host, method="GET")
+            self.expect(403, source=source, host=allowed_host, port="8443")
+            for host in ("example.com", "api.openai.com", "sub.chatgpt.com", "127.0.0.6",
+                         "google.com", "googleapis.com", "sub.accounts.google.com",
+                         "sub.cloudcode-pa.googleapis.com", "storage.googleapis.com"):
+                self.expect(403, source=source, host=host)
         if not self.relay:
-            self.expect(403, host="accounts.google.com")
-            self.expect(403, source="127.0.0.3", host="chatgpt.com")
+            for host in ANTIGRAVITY_HOSTS:
+                self.expect(403, source="127.0.0.2", host=host)
+            for host in CODEX_HOSTS:
+                self.expect(403, source="127.0.0.3", host=host)
+
+    def allowed_destinations(self):
+        for hosts, source in ((CODEX_HOSTS, "127.0.0.2"), (ANTIGRAVITY_HOSTS, "127.0.0.3")):
+            for host in hosts:
+                self.expect(200, source="127.0.0.1" if self.relay else source, host=host)
 
 
 def run(image):
@@ -135,58 +158,68 @@ def run(image):
             paths[label].chmod(0o644)
 
         with Sandbox(image, paths["a"]) as sandbox:
-            sandbox.expect(200, host="auth.openai.com")
-            sandbox.expect(200, source="127.0.0.3", host="accounts.google.com")
+            sandbox.allowed_destinations()
             sandbox.acl_checks()
-            print("A without relay: direct tunnels and access restrictions passed", flush=True)
+            print("A without relay: both providers' direct tunnels and access restrictions passed", flush=True)
 
         with Sandbox(image, paths["a"], enabled=True) as sandbox:
-            sandbox.expect(200, host="auth.openai.com")
-            sandbox.expect(200, operation="stream")
+            sandbox.allowed_destinations()
+            for _, source, host in CLIENTS:
+                sandbox.expect(200, source=source, host=host, operation="stream")
             sandbox.acl_checks()
-            # A successful tunnel can only have used the mock parent if it
-            # recorded the CONNECT; prove the target itself is reachable too.
-            assert "CONNECT auth.openai.com:443" in sandbox.contents("/run/fixture-parent.log")
-            assert "ECHO_OK" in sandbox.fixture("probe", "127.0.0.6", "127.0.0.2", "DIRECT", "", "443").stdout
-            before = sandbox.contents("/run/fixture-parent.log").count("CONNECT ")
-            sandbox.expect(200, source="127.0.0.3", host="accounts.google.com")
-            assert sandbox.contents("/run/fixture-parent.log").count("CONNECT ") == before
-            eventually(sandbox.no_active_targets, "client cancellation closes upstream tunnels")
+            parent_records = sandbox.contents("/run/fixture-parent.log").splitlines()
+            for host in (*CODEX_HOSTS, *ANTIGRAVITY_HOSTS):
+                assert f"CONNECT {host}:443" in parent_records, host
+            eventually(sandbox.no_active_targets, "both clients' cancellation closes upstream tunnels")
 
-            stream = subprocess.Popen(
-                ["docker", "exec", sandbox.name, "perl", FIXTURE, "probe", "127.0.0.1", "127.0.0.2",
-                 "CONNECT", "chatgpt.com", "443", "disconnect"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
+            streams = []
             try:
-                eventually(lambda: sandbox.exists("/run/fixture-stream-ready"), "active tunnel before outage")
+                for label, source, host in CLIENTS:
+                    stream = subprocess.Popen(
+                        ["docker", "exec", sandbox.name, "perl", FIXTURE, "probe", "127.0.0.1", source,
+                         "CONNECT", host, "443", "disconnect"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    )
+                    streams.append((label, stream))
+                eventually(lambda: all(sandbox.exists(f"/run/fixture-stream-ready-{source}")
+                                       for _, source, _ in CLIENTS), "both active tunnels before outage")
                 sandbox.fixture("stop", "parent")
-                stdout, stderr = stream.communicate(timeout=20)
-                assert stream.returncode == 0 and "DISCONNECTED" in stdout, stdout + stderr
+                for label, stream in streams:
+                    stdout, stderr = stream.communicate(timeout=20)
+                    assert stream.returncode == 0 and "DISCONNECTED" in stdout, label + stdout + stderr
             finally:
-                if stream.poll() is None:
-                    stream.kill()
-                    stream.wait()
-            output = sandbox.probe().stdout
-            assert output.splitlines()[0] in ("502", "503", "504"), output
-            assert "ECHO_OK" not in output, output
-            assert "ECHO_OK" in sandbox.fixture("probe", "127.0.0.6", "127.0.0.2", "DIRECT", "", "443").stdout
-            sandbox.expect(200, source="127.0.0.3", host="accounts.google.com")
+                for _, stream in streams:
+                    if stream.poll() is None:
+                        stream.kill()
+                        stream.wait()
+            eventually(sandbox.no_active_targets, "relay outage closes both upstream tunnels")
+            target_connections = sandbox.contents("/run/fixture-target.log").count("open ")
+            for label, source, host in CLIENTS:
+                output = sandbox.probe(source=source, host=host).stdout
+                assert output.splitlines()[0] in ("502", "503", "504"), label + output
+                assert "ECHO_OK" not in output, label + output
+            assert sandbox.contents("/run/fixture-target.log").count("open ") == target_connections
+            # Direct reachability from both sources survives the outage. This
+            # proves the failures above are policy, not network isolation.
+            for _, source, _ in CLIENTS:
+                assert "ECHO_OK" in sandbox.fixture("probe", "127.0.0.6", source, "DIRECT", "", "443").stdout
             sandbox.serve("parent")
             time.sleep(1.1)
-            sandbox.expect(200)
-            eventually(lambda: re.search(r"chatgpt\.com:443 200 \S*PARENT/127\.0\.0\.5",
-                                         sandbox.contents("/var/log/squid/access.log")),
-                       "Codex log identifies the actual parent")
-            print("A with relay: required parent, fail-closed outage, Antigravity direct, streaming, cancellation and recovery passed", flush=True)
+            for label, source, host in CLIENTS:
+                sandbox.expect(200, source=source, host=host)
+                eventually(lambda: re.search(rf"{re.escape(host)}:443 200 \S*PARENT/127\.0\.0\.5",
+                                             sandbox.contents("/var/log/squid/access.log")),
+                           f"{label} log identifies the actual parent")
+            eventually(sandbox.no_active_targets, "recovered tunnels close after cancellation")
+            print("A with relay: both providers require the parent; fail-closed outage, streaming, cancellation and recovery passed", flush=True)
 
         with Sandbox(image, paths["b"], relay=True) as sandbox:
-            sandbox.expect(200, host="auth.openai.com")
-            sandbox.expect(200, operation="stream")
+            sandbox.allowed_destinations()
+            for _, _, host in CLIENTS:
+                sandbox.expect(200, host=host, operation="stream")
             sandbox.acl_checks()
-            sandbox.expect(403, host="accounts.google.com")
             eventually(sandbox.no_active_targets, "B releases cancelled tunnels")
-            print("B: allowed tunnels, streaming, cancellation and all access restrictions passed", flush=True)
+            print("B: both exact domain lists, streaming, cancellation and all access restrictions passed", flush=True)
 
 
 if __name__ == "__main__":

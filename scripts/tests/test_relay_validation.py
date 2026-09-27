@@ -77,6 +77,8 @@ class RelayValidationTests(unittest.TestCase):
         cls.run_log = cls.root / "docker-runs.jsonl"
         cls.egress_config = cls.root / "deploy/egress/squid.conf"
         cls.egress_baseline = cls.egress_config.read_text()
+        cls.entrypoint = cls.root / "deploy/egress/entrypoint.sh"
+        cls.entrypoint_baseline = cls.entrypoint.read_text()
         cls.b_config = cls.root / "deploy/relay/squid.conf"
         cls.b_baseline = cls.b_config.read_text()
         compose_stub = cls.root / "scripts/compose.sh"
@@ -116,6 +118,7 @@ else:
         self.gateway = copy.deepcopy(self.gateway_baseline)
         self.relay = copy.deepcopy(self.relay_baseline)
         self.egress_config.write_text(self.egress_baseline)
+        self.entrypoint.write_text(self.entrypoint_baseline)
         self.b_config.write_text(self.b_baseline)
         self.run_log.write_text("")
 
@@ -203,19 +206,77 @@ else:
                 self.assertIn("A/B Squid entrypoint, mounts", result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
-    def test_static_config_cannot_bypass_parent_or_widen_b_destinations(self):
-        self.egress_config.write_text(self.egress_baseline + "\nalways_direct allow all\n")
-        result = self.validate()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("generated relay routing fragment", result.stderr)
-        self.assertEqual(self.run_log.read_text(), "")
-        self.egress_config.write_text(self.egress_baseline)
-        self.b_config.write_text(self.b_baseline.replace(
-            "auth.openai.com chatgpt.com", ".openai.com .chatgpt.com"))
-        result = self.validate()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("B must accept only A", result.stderr)
-        self.assertEqual(self.run_log.read_text(), "")
+    def test_static_config_cannot_bypass_parent(self):
+        for directive in ("always_direct allow all", "never_direct deny antigravity_clients",
+                          "cache_peer_access codex_relay deny antigravity_clients"):
+            with self.subTest(directive=directive):
+                self.egress_config.write_text(self.egress_baseline + f"\n{directive}\n")
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("generated relay routing fragment", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_both_client_groups_require_parent_access_and_no_direct_fallback(self):
+        for client in ("codex_clients", "antigravity_clients"):
+            for directive in (f"cache_peer_access codex_relay allow {client}",
+                              f"never_direct allow {client}"):
+                with self.subTest(directive=directive):
+                    self.entrypoint.write_text(self.entrypoint_baseline.replace(
+                        f"'{directive}'", f"'# removed {directive}'"))
+                    result = self.validate()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("unique mandatory parent without direct fallback", result.stderr)
+                    self.assertEqual(self.run_log.read_text(), "")
+
+    def test_a_keeps_provider_destination_rules_separate(self):
+        for client, destinations in (("codex_clients", "codex_upstreams"),
+                                     ("antigravity_clients", "antigravity_upstreams")):
+            with self.subTest(client=client):
+                self.egress_config.write_text(self.egress_baseline.replace(
+                    f"http_access allow CONNECT {client} {destinations}",
+                    f"http_access allow CONNECT {client}"))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("separate Codex and Antigravity destination rules", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_a_must_not_authorize_literal_ips_via_reverse_dns(self):
+        for destinations in ("codex_upstreams", "antigravity_upstreams"):
+            with self.subTest(destinations=destinations):
+                self.egress_config.write_text(self.egress_baseline.replace(
+                    f"acl {destinations} dstdomain -n ",
+                    f"acl {destinations} dstdomain "))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("source and destination ACLs must equal the reviewed exact lists", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_b_must_match_both_exact_destination_lists_without_reverse_dns(self):
+        for original, replacement in (
+            ("auth.openai.com chatgpt.com", ".openai.com .chatgpt.com"),
+            ("accounts.google.com", ".google.com"),
+            ("cloudcode-pa.googleapis.com ", ".googleapis.com "),
+            ("oauth2.googleapis.com ", ""),
+            ("playwright-verizon.azureedge.net", "playwright-verizon.azureedge.net example.com"),
+            ("antigravity_upstreams dstdomain -n", "antigravity_upstreams dstdomain"),
+        ):
+            with self.subTest(original=original, replacement=replacement):
+                self.b_config.write_text(self.b_baseline.replace(original, replacement))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("B must accept only A", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_both_client_logs_must_identify_the_forwarding_path(self):
+        for name in ("codex_destinations", "bridge_destinations"):
+            with self.subTest(name=name):
+                self.egress_config.write_text(self.egress_baseline.replace(
+                    f"logformat {name} %ts.%03tu %ru %>Hs %Sh/%<a",
+                    f"logformat {name} %ts.%03tu %ru %>Hs"))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("CONNECT logs must include destination, status", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
 
     def test_image_parse_failure_stops_validation(self):
         result = self.validate(RELAY_TEST_FAIL_PARSE="CODEX_RELAY_IP=10.77.0.2")

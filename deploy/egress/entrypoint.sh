@@ -42,14 +42,16 @@ fi
 
 render_config() {
     if test -z "$relay_ip"; then
-        printf '%s\n' '# Codex relay disabled; preserve direct egress.'
+        printf '%s\n' '# Shared Codex/Antigravity relay disabled; preserve direct egress.'
         return
     fi
     printf 'cache_peer %s parent %s 0 no-query default name=codex_relay\n' "$relay_ip" "$relay_port"
     printf '%s\n' \
         'cache_peer_access codex_relay allow codex_clients' \
+        'cache_peer_access codex_relay allow antigravity_clients' \
         'cache_peer_access codex_relay deny all' \
         'never_direct allow codex_clients' \
+        'never_direct allow antigravity_clients' \
         'never_direct deny all'
 }
 

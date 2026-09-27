@@ -203,15 +203,24 @@ ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}
 `aicode.googleapis.com`、`businessaicode.googleapis.com`、`generativelanguage.googleapis.com`
 等模型交互与订阅鉴权必需域名。
 
-Squid 为 Antigravity 网络记录 CONNECT 目标、时间和状态，不记录 TLS 内容或认证头。
-验收登录、刷新、模型检查、`/usage` 和生成请求时检查：
+配置非空 `CODEX_RELAY_IP` 后，Codex 与整个 Antigravity Bridge 共用同一 B 服务器
+出口，包括 Bridge 的登录、刷新、模型检查和生成请求；B 故障时请求失败，不回退 A。
+变量名为兼容旧部署而保留。未启用中转时两者均从 A 直连。首次配置见
+[双服务器中转](openai-relay.md)，旧版仅 Codex 经 B 的站点见
+[升级指南](relay-upgrade.md)。用户本地浏览器的授权流量不随服务器代理改变。
+
+Squid 为 Antigravity 网络记录 CONNECT 目标、时间、状态及实际转发路径，不记录
+TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生成请求时检查：
 
 ```sh
-./scripts/compose.sh logs --since 10m egress-allowlist
+./scripts/compose.sh exec -T egress-allowlist tail -n 100 /var/log/squid/access.log
 ```
 
-对被拒绝目标核对实际 DNS/CONNECT/SNI 和官方用途，再将必要的精确主机名加入
-`deploy/egress/squid.conf`，同步 `scripts/validate-compose.sh` 的固定清单并审核差异。
+启用中转时，成功 CONNECT 应显示 `PARENT/10.77.0.2`，并可在 B 对照同一目标和时间；
+不能仅凭 Bridge 健康状态断言流量已经经 B。按升级指南执行 JSON/SSE 冒烟和故障验收。
+对被拒绝目标核对实际 DNS/CONNECT/SNI 和官方用途，再将必要的精确主机名同步加入
+`deploy/egress/squid.conf` 与 `deploy/relay/squid.conf`，更新
+`scripts/validate-compose.sh` 的固定清单及 relay 回归测试并审核差异。
 不要开放 `*.googleapis.com` 或通用 Google 子域；安装包和自动更新域名不需要运行时出口。
 在真实流量完成前不能宣称出口清单已经充分或生产验收通过。
 

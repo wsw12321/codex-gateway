@@ -71,8 +71,8 @@ test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients
     "$(printf '%s\n' \
         'acl codex_clients src 172.28.30.3/32' \
         'acl antigravity_clients src 172.28.40.3/32' \
-        'acl codex_upstreams dstdomain auth.openai.com chatgpt.com' \
-        'acl antigravity_upstreams dstdomain accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
+        'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
+        'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
@@ -93,13 +93,17 @@ relay_rules=$(CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypo
 test "$relay_rules" = "$(printf '%s\n' \
     'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
     'cache_peer_access codex_relay allow codex_clients' \
+    'cache_peer_access codex_relay allow antigravity_clients' \
     'cache_peer_access codex_relay deny all' \
     'never_direct allow codex_clients' \
-    'never_direct deny all')" || fail 'Codex must use a unique mandatory parent while Antigravity stays direct'
+    'never_direct allow antigravity_clients' \
+    'never_direct deny all')" || fail 'Codex and Antigravity must share a unique mandatory parent without direct fallback'
 unset relay_rules
 grep -Fxq 'logformat codex_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
-    grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" || \
-    fail 'Codex CONNECT logs must include destination, status and the selected forwarding path'
+    grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" && \
+    grep -Fxq 'logformat bridge_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
+    grep -Fxq 'access_log stdio:/var/log/squid/access.log bridge_destinations CONNECT antigravity_clients' "$egress_config" || \
+    fail 'Codex and Antigravity CONNECT logs must include destination, status and the selected forwarding path'
 test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cache_peer_access|always_direct|never_direct|ssl_bump)$/ { print }' "$relay_config")" = \
     "$(printf '%s\n' \
         'http_port 10.77.0.2:3128' \
@@ -107,10 +111,12 @@ test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cac
         'acl TLS_port port 443' \
         'acl relay_clients src 10.77.0.1/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
+        'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net' \
         'http_access deny !CONNECT' \
         'http_access deny !TLS_port' \
         'http_access allow CONNECT relay_clients codex_upstreams' \
-        'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex HTTPS destinations'
+        'http_access allow CONNECT relay_clients antigravity_upstreams' \
+        'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex and Antigravity HTTPS destinations'
 test "$(awk '$1 == "cache_mem" { print }' "$relay_config")" = 'cache_mem 0 MB' || \
     fail 'B CONNECT-only relay must disable the object memory cache'
 grep -Fxq '    need net' "$relay_service" && \
@@ -806,4 +812,4 @@ docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SER
 printf '%s\n' \
     'Compose ingress, network isolation, secrets, and immutable revisions validated' \
     'Pricing v2, request tmpfs, Caddy policy, PostgreSQL SCRAM auth, and image locks validated' \
-    'A/B Squid image parsing, Codex mandatory relay routing and direct Antigravity egress validated'
+    'A/B Squid image parsing and shared mandatory Codex/Antigravity relay routing validated'

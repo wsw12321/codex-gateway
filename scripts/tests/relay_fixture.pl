@@ -71,7 +71,7 @@ if ($mode eq 'serve') {
             } else {
                 my $request = header($client);
                 die "unexpected parent request: $request"
-                    unless $request =~ m{\ACONNECT (auth\.openai\.com|chatgpt\.com):443 HTTP/1\.[01]\r\n};
+                    unless $request =~ m{\ACONNECT ([a-z0-9.-]+):443 HTTP/1\.[01]\r\n};
                 event($name, "CONNECT $1:443");
                 my $upstream = IO::Socket::INET->new(
                     PeerAddr => '127.0.0.6', PeerPort => 443, Proto => 'tcp',
@@ -118,7 +118,7 @@ if ($mode eq 'serve') {
     my $payload = join('', map { chr($_ % 251) } 0..65535);
     my $deadline = time + ($operation eq 'stream' ? 3 : $operation eq 'disconnect' ? 15 : 0);
     if ($operation eq 'disconnect') {
-        open my $ready, '>', '/run/fixture-stream-ready' or die $!;
+        open my $ready, '>', "/run/fixture-stream-ready-$source" or die $!;
         close $ready;
     }
     my $completed = eval {

@@ -336,11 +336,15 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 
 默认路由为 `{}`，Antigravity Bridge 由后续登录脚本验收成功后启动。
 
-Codex 需要经第二台服务器出网时，按 [OpenAI 双服务器中转](docs/openai-relay.md)
-配置 WireGuard 和 B 端 Squid；启用后 B 故障会阻断 Codex 请求。
+Codex 与 Gemini 需要经第二台服务器出网时，按
+[双服务器中转首次部署](docs/openai-relay.md) 配置 WireGuard 和 B 端 Squid。
+两者共用 `CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；启用后整个 Antigravity Bridge
+与 Codex 都强制经 B，B 故障时均失败、不回退 A。旧版仅 Codex 经 B 的站点按
+[现有部署升级指南](docs/relay-upgrade.md) 先更新 B，再重建 A 出口代理。
 
-最终不应有任何 Compose 服务发布宿主机端口。Cloudflare 负责公网 TLS 和
-HTTP→HTTPS 跳转；服务器安全组/防火墙只保留固定管理 IP 的 SSH 入站。
+A 的网关 Compose 服务均不发布宿主机端口。Cloudflare 负责公网 TLS 和
+HTTP→HTTPS 跳转；A 的安全组/防火墙只保留固定管理 IP 的 SSH 入站。
+B 的 WireGuard UDP 与私网 Squid 防火墙按中转教程配置。
 `GET /healthz` 是进程存活探针，
 `GET /readyz` 当前只检查 PostgreSQL 连接；它不验证 sidecar 或真实上游。
 
