@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 var upstreamAccountIDPattern = regexp.MustCompile(`^[a-f0-9]{16}$`)
 var upstreamMaskedEmailPattern = regexp.MustCompile(`^[A-Za-z0-9]\*{3}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
+var upstreamDisplayNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
 func normalizeUpstreamAccountID(value string) (string, error) {
 	value = strings.TrimSpace(value)
@@ -29,8 +31,12 @@ func normalizeUpstreamAccountSnapshot(value UpstreamAccountSnapshot) (UpstreamAc
 	if err != nil || value.ID == "" {
 		return UpstreamAccountSnapshot{}, fmt.Errorf("%w: invalid upstream account snapshot id", ErrInvalid)
 	}
+	value.DisplayName = strings.TrimSpace(value.DisplayName)
+	if value.DisplayName != "" && !upstreamDisplayNamePattern.MatchString(value.DisplayName) {
+		return UpstreamAccountSnapshot{}, fmt.Errorf("%w: invalid upstream account display name", ErrInvalid)
+	}
 	value.MaskedEmail = strings.TrimSpace(value.MaskedEmail)
-	if !validMaskedEmail(value.MaskedEmail) {
+	if !validMaskedEmail(value.MaskedEmail) && !(value.MaskedEmail == "" && value.DisplayName != "") {
 		return UpstreamAccountSnapshot{}, fmt.Errorf("%w: upstream email is not masked", ErrInvalid)
 	}
 	value.Plan = strings.ToLower(strings.TrimSpace(value.Plan))
@@ -62,7 +68,7 @@ func validMaskedEmail(value string) bool {
 func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	var value UpstreamAccount
 	var lastSynced sql.NullTime
-	err := row.Scan(&value.ID, &value.MaskedEmail, &value.Plan, &value.Status,
+	err := row.Scan(&value.ID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 		&lastSynced, &value.CreatedAt, &value.UpdatedAt, &value.AllocationWeight,
 		&value.ConcurrentLimit)
 	if lastSynced.Valid {
@@ -71,7 +77,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	return value, err
 }
 
-const upstreamAccountColumns = `id, masked_email, plan, status,
+const upstreamAccountColumns = `id, display_name, masked_email, plan, status,
 	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit`
 
 // EnsureUpstreamAccount creates a metadata-free placeholder for a recognized,
@@ -88,18 +94,39 @@ func (s *Store) EnsureUpstreamAccount(ctx context.Context, id string, at time.Ti
 	} else {
 		at = at.UTC()
 	}
-	_, err = s.db.ExecContext(ctx, `
+	err = s.db.QueryRowContext(ctx, `
 		INSERT INTO upstream_accounts
-			(id, masked_email, plan, status, created_at, updated_at)
-		VALUES ($1,'','unknown','unavailable',$2,$2)
-		ON CONFLICT (id) DO NOTHING`, id, at)
+			(id, masked_email, plan, status, created_at, updated_at, provider)
+		VALUES ($1,'','unknown','unavailable',$2,$2,$3)
+		ON CONFLICT (id) DO UPDATE SET id = upstream_accounts.id
+		WHERE upstream_accounts.provider = EXCLUDED.provider
+		RETURNING id`, id, at, s.upstreamProviderName()).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: upstream account belongs to another provider", ErrConflict)
+	}
 	return mapDBError("ensure upstream account", err)
+}
+
+// Usage attribution is shared across providers. Existing opaque IDs already
+// have an owner; only new placeholders inherit the completion store's scope.
+func (s *Store) ensureUsageUpstreamAccount(ctx context.Context, id string, at time.Time) error {
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1)`, id).Scan(&exists); err != nil {
+		return mapDBError("find usage upstream account", err)
+	}
+	if exists {
+		return nil
+	}
+	return s.EnsureUpstreamAccount(ctx, id, at)
 }
 
 // SyncUpstreamAccounts applies one authoritative, non-secret sidecar snapshot.
 // Accounts absent from the snapshot are retained and marked unavailable so
 // historical attribution and immutable ledger references remain valid.
 func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAccountSnapshot, at time.Time) error {
+	if !s.validUpstreamProvider() {
+		return fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
 	if at.IsZero() {
 		at = s.now().UTC()
 	} else {
@@ -130,19 +157,28 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 			return mapDBError("lock upstream account synchronization", err)
 		}
 		for _, account := range normalized {
+			var otherProvider bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1 AND provider<>$2)`, account.ID, s.upstreamProviderName()).Scan(&otherProvider); err != nil {
+				return mapDBError("check upstream account provider", err)
+			}
+			if otherProvider {
+				return fmt.Errorf("%w: upstream account belongs to another provider", ErrConflict)
+			}
 			if _, err := tx.ExecContext(ctx, `
 				INSERT INTO upstream_accounts
-					(id, masked_email, plan, status, last_synced_at, created_at, updated_at)
-				VALUES ($1,$2,$3,$4,$5,$6,$6)
+					(id, masked_email, plan, status, last_synced_at, created_at, updated_at, provider, display_name)
+				VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8)
 				ON CONFLICT (id) DO UPDATE SET
 					masked_email = EXCLUDED.masked_email,
+					display_name = EXCLUDED.display_name,
 					plan = EXCLUDED.plan,
 					status = EXCLUDED.status,
 					last_synced_at = EXCLUDED.last_synced_at,
 					updated_at = EXCLUDED.updated_at
-				WHERE upstream_accounts.updated_at <= EXCLUDED.updated_at`,
+				WHERE upstream_accounts.provider = EXCLUDED.provider
+				  AND upstream_accounts.updated_at <= EXCLUDED.updated_at`,
 				account.ID, account.MaskedEmail, account.Plan, account.Status,
-				account.LastSyncedAt, at,
+				account.LastSyncedAt, at, s.upstreamProviderName(), account.DisplayName,
 			); err != nil {
 				return mapDBError("synchronize upstream account", err)
 			}
@@ -151,13 +187,13 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 			UPDATE upstream_accounts
 			SET status = 'unavailable',
 				updated_at = $1
-			WHERE updated_at <= $1`
-		missingArgs := []any{at}
+			WHERE updated_at <= $1 AND provider = $2`
+		missingArgs := []any{at, s.upstreamProviderName()}
 		if len(normalized) > 0 {
 			placeholders := make([]string, len(normalized))
 			for index, account := range normalized {
 				missingArgs = append(missingArgs, account.ID)
-				placeholders[index] = fmt.Sprintf("$%d", index+2)
+				placeholders[index] = fmt.Sprintf("$%d", index+3)
 			}
 			missingQuery += ` AND id NOT IN (` + strings.Join(placeholders, ",") + `)`
 		}
@@ -170,9 +206,9 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 
 func (s *Store) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+upstreamAccountColumns+`
-		FROM upstream_accounts
+		FROM upstream_accounts WHERE provider = $1
 		ORDER BY CASE status WHEN 'available' THEN 0 ELSE 1 END,
-			lower(masked_email), id`)
+			lower(masked_email), id`, s.upstreamProviderName())
 	if err != nil {
 		return nil, mapDBError("list upstream accounts", err)
 	}
@@ -280,7 +316,12 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		ledgerTimeClause = `COALESCE(usage_requested_at, created_at) >= $1
 			AND COALESCE(usage_requested_at, created_at) < $2`
 	}
-	// #nosec G202 -- Both branches select fixed SQL fragments; all interval values are bound parameters.
+	args = append(args, s.upstreamProviderName())
+	providerArg := fmt.Sprintf("$%d", len(args))
+	// Unattributed historical usage has no provider dimension. Preserve its
+	// legacy Codex bucket; do not present those global totals as AGY usage.
+	providerClause := `a.provider = ` + providerArg + ` OR (d.upstream_account_id IS NULL AND ` + providerArg + ` = 'codex')`
+	// #nosec G202 -- SQL fragments are fixed; interval and provider values are bound parameters.
 	query := `WITH usage_source AS (` + usageSource + `), usage_totals AS (
 		SELECT upstream_account_id, sum(request_count)::bigint request_count,
 			sum(error_count)::bigint error_count, sum(input_tokens)::bigint input_tokens,
@@ -300,7 +341,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		UNION SELECT upstream_account_id FROM usage_totals
 		UNION SELECT upstream_account_id FROM ledger_totals
 	)
-	SELECT d.upstream_account_id, COALESCE(a.masked_email, ''),
+	SELECT d.upstream_account_id, COALESCE(a.display_name, ''), COALESCE(a.masked_email, ''),
 		COALESCE(a.plan, 'unknown'), COALESCE(a.status, 'unattributed'),
 		COALESCE(a.concurrent_limit, 1), a.last_synced_at, COALESCE(u.request_count, 0), COALESCE(u.error_count, 0),
 		COALESCE(u.input_tokens, 0), COALESCE(u.cached_input_tokens, 0),
@@ -310,6 +351,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 	LEFT JOIN upstream_accounts a ON a.id = d.upstream_account_id
 	LEFT JOIN usage_totals u ON u.upstream_account_id IS NOT DISTINCT FROM d.upstream_account_id
 	LEFT JOIN ledger_totals l ON l.upstream_account_id IS NOT DISTINCT FROM d.upstream_account_id
+	WHERE ` + providerClause + `
 	ORDER BY d.upstream_account_id IS NULL,
 		CASE COALESCE(a.status, 'unattributed') WHEN 'available' THEN 0 ELSE 1 END,
 		lower(COALESCE(a.masked_email, '')), d.upstream_account_id`
@@ -323,7 +365,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		var value UpstreamAccountSummary
 		var accountID sql.NullString
 		var lastSynced sql.NullTime
-		if err := rows.Scan(&accountID, &value.MaskedEmail, &value.Plan, &value.Status,
+		if err := rows.Scan(&accountID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 			&value.ConcurrentLimit, &lastSynced, &value.RequestCount, &value.ErrorCount, &value.InputTokens,
 			&value.CachedInputTokens, &value.CacheWriteTokens, &value.OutputTokens,
 			&value.ReasoningTokens, &value.EquivalentCostUSD); err != nil {

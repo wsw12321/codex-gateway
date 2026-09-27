@@ -16,7 +16,8 @@ type UpstreamConcurrency struct {
 
 type UpstreamAccountConcurrency struct {
 	ID string `json:"id"`
-	// ActiveRequests retains the wire name but counts active root conversations.
+	// ActiveRequests counts active root conversations for Codex and active
+	// requests for Antigravity, whose CLI sessions are independent per request.
 	ActiveRequests int64 `json:"active_requests"`
 }
 

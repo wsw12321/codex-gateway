@@ -681,6 +681,7 @@ jq -e '
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge", "gateway"] and
   $bridge.environment.AGY_CLI_DISABLE_AUTO_UPDATE == "true" and
   $bridge.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
+  $bridge.environment.ANTIGRAVITY_GATEWAY_URL == "http://gateway:8080" and
   .services.gateway.environment.ANTIGRAVITY_BRIDGE_URL == "http://antigravity-bridge:8318" and
   .services.gateway.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
   .services.gateway.depends_on["antigravity-bridge"] == null and

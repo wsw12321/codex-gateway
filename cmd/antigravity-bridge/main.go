@@ -37,13 +37,35 @@ func run(logger *slog.Logger) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
 	defer cancel()
 	runner := antigravity.Runner{Binary: binary, Timeout: 5 * time.Minute, Logger: logger}
+	registryPath := os.Getenv("ANTIGRAVITY_ACCOUNT_REGISTRY_PATH")
+	if registryPath == "" {
+		registryPath = antigravity.DefaultAccountRegistryPath
+	}
 	if len(os.Args) > 1 {
-		if len(os.Args) != 2 {
+		if len(os.Args) > 3 {
 			return &antigravity.AuthError{Stage: "authorization", Category: "configuration", ExitCode: 2}
 		}
+		name := "default"
+		if len(os.Args) == 3 {
+			name = os.Args[2]
+		}
+		if !antigravity.ValidAccountName(name) || (os.Args[1] != "auth-login" && os.Args[1] != "auth-verify") {
+			return &antigravity.AuthError{Stage: "authorization", Category: "configuration", ExitCode: 2}
+		}
+		registry, err := antigravity.OpenAccountRegistry(ctx, registryPath, runner)
+		if err != nil {
+			return &antigravity.AuthError{Stage: "credential_restore", Category: antigravity.CredentialCategory(err), ExitCode: 1}
+		}
+		runner.Credentials = antigravity.AccountCredentials(name)
 		switch os.Args[1] {
 		case "auth-login":
-			return runner.AuthLogin(ctx, os.Stdin, os.Stdout)
+			if err := runner.AuthLogin(ctx, os.Stdin, os.Stdout); err != nil {
+				return err
+			}
+			if err := registry.RegisterLogin(ctx, name, runner); err != nil {
+				return &antigravity.AuthError{Stage: "credential_save", Category: antigravity.CredentialCategory(err), ExitCode: 1}
+			}
+			return nil
 		case "auth-verify":
 			return runner.AuthVerify(ctx)
 		default:
@@ -76,7 +98,14 @@ func run(logger *slog.Logger) error {
 	if address == "" {
 		address = ":8318"
 	}
-	handler := antigravity.NewServer(runner, token)
+	registry, err := antigravity.OpenAccountRegistry(ctx, registryPath, runner)
+	if err != nil {
+		return &antigravity.AuthError{Stage: "credential_restore", Category: antigravity.CredentialCategory(err), ExitCode: 1}
+	}
+	handler, err := antigravity.NewAccountServer(runner, registry, token, os.Getenv("ANTIGRAVITY_GATEWAY_URL"))
+	if err != nil {
+		return err
+	}
 	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 6 * time.Minute, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10, BaseContext: nil}
 	// Bind request lifetimes to shutdown as well as client cancellation.
 	server.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

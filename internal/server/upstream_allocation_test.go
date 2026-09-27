@@ -108,7 +108,7 @@ func TestUpstreamAllocationUsesOnlyDatabaseAndFailsClosed(t *testing.T) {
 			calls := 0
 			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 				calls++
-				if !strings.Contains(query, "WITH candidates(id)") || len(args) != 4 || args[3].Value != "0123456789abcdef" || args[2].Value != "00000000-0000-0000-0000-000000000001" {
+				if !strings.Contains(query, "WITH candidates(id)") || len(args) != 5 || args[3].Value != "0123456789abcdef" || args[2].Value != "00000000-0000-0000-0000-000000000001" || args[4].Value != store.UpstreamProviderCodex {
 					t.Fatalf("unexpected allocation query: %s %+v", query, args)
 				}
 				if args[1].Value.(time.Time).Sub(args[0].Value.(time.Time)) != 24*time.Hour {
@@ -245,7 +245,7 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 					if !strings.Contains(query, "UPDATE upstream_accounts") || args[1].Value != weight {
 						t.Fatalf("unexpected write query %s %+v", query, args)
 					}
-					return &upstreamAuditRows{columns: make([]string, 9), values: []driver.Value{"0123456789abcdef", "u***@example.com", "plus", "available", now, now, now, weight, int64(1)}}, nil
+					return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, weight, int64(1)}}, nil
 				}}})
 				defer db.Close()
 				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -293,7 +293,7 @@ func TestUpstreamEligibilityRequiresAuthenticatedCanonicalUser(t *testing.T) {
 
 func TestUpstreamEligibilityReturnsPerAccountConcurrentLimits(t *testing.T) {
 	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-		if !strings.Contains(query, "COALESCE(a.concurrent_limit, 1)") || len(args) != 2 {
+		if !strings.Contains(query, "COALESCE(a.concurrent_limit, 1)") || len(args) != 3 || args[2].Value != store.UpstreamProviderCodex {
 			return nil, fmt.Errorf("unexpected eligibility query: %s %+v", query, args)
 		}
 		return &upstreamAuditRows{columns: []string{"id", "concurrent_limit"}, values: []driver.Value{"0123456789abcdef", int64(3)}}, nil

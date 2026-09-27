@@ -34,6 +34,12 @@ probe() {
 probe import synthetic-keyring-test-password
 probe refresh synthetic-keyring-test-password
 probe restored synthetic-keyring-test-password
+probe named-import synthetic-keyring-test-password
+probe named-refresh synthetic-keyring-test-password
+probe named-restored synthetic-keyring-test-password
+# Both accounts must still work after a different account refreshed its token.
+probe restored synthetic-keyring-test-password
+probe serving synthetic-keyring-test-password
 probe wrong-password incorrect-synthetic-password
 probe ciphertext synthetic-keyring-test-password
-printf '%s\n' 'Antigravity synthetic credential import, refresh, fresh-container restore, encrypted persistence and incorrect-password rejection passed'
+printf '%s\n' 'Antigravity multi-account import, isolated refresh, fresh-container restore, production HTTP smoke, encrypted persistence and incorrect-password rejection passed'

@@ -73,7 +73,11 @@ func (m *memoryKeyring) run(ctx context.Context, binary string, args []string, s
 		}
 	}
 	key := strings.Join(attrs, " ")
-	if len(attrs) < 4 || !reflect.DeepEqual(attrs[:4], credentialAttributes()) {
+	expected := credentialAttributes()
+	if len(attrs) >= 2 && strings.HasPrefix(attrs[1], credentialApp+"-") {
+		expected[1] = attrs[1]
+	}
+	if len(attrs) < 4 || !reflect.DeepEqual(attrs[:4], expected) {
 		panic("missing fixed application/version attributes")
 	}
 	if args[0] == m.failAction && (m.failPart == "" || strings.HasSuffix(key, "part "+m.failPart)) {
@@ -208,6 +212,9 @@ func TestCredentialsLargeFileAndAtomicManifest(t *testing.T) {
 	manifestKey := strings.Join(credentialAttributes("record", "manifest"), " ")
 	before := slices.Clone(memory.values[manifestKey])
 	memory.failAction, memory.failPart = "store", "1"
+	if err := os.WriteFile(credentialPath(home), []byte(strings.Replace(fixture, "large-synthetic", "newer-synthetic", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	assertCredentialCategory(t, manager.Save(context.Background(), home), "keyring_failed")
 	if !bytes.Equal(before, memory.values[manifestKey]) {
 		t.Fatal("incomplete generation replaced the committed manifest")
@@ -397,6 +404,9 @@ func TestCredentialsKeyringCorruptionAndFailures(t *testing.T) {
 			var err error
 			dest := privateCredentialHome(t)
 			if failure == "store" {
+				if err := os.WriteFile(credentialPath(home), []byte(strings.Replace(syntheticCredential, "synthetic-private-access", "newer-private-access", 1)), 0600); err != nil {
+					t.Fatal(err)
+				}
 				err = manager.Save(context.Background(), home)
 			} else {
 				err = manager.Restore(context.Background(), dest)

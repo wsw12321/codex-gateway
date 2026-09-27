@@ -46,6 +46,12 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 				}
 				path := "/v1beta/models/" + nativeGeminiModel + operation
 				router := nativeGeminiRouter(t, func(r *http.Request) (*http.Response, error) {
+					if r.URL.Path == "/internal/upstream-accounts/capabilities" {
+						return routerTestResponse(http.StatusOK, `{"protocol":"upstream_account_access_v1"}`), nil
+					}
+					if r.Header.Get(gatewayUserHeader) != "00000000-0000-0000-0000-000000000001" {
+						t.Error("trusted user identity missing or spoofed")
+					}
 					body, err := io.ReadAll(r.Body)
 					if err != nil || string(body) != nativeGeminiRequest || r.Method != http.MethodPost || r.URL.Path != path {
 						t.Errorf("forwarded request changed: %s %s %s, %v", r.Method, r.URL, body, err)
@@ -58,7 +64,7 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 						t.Error("wrong internal query or credential")
 					}
 					for key := range r.Header {
-						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" {
+						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader {
 							t.Errorf("caller header crossed bridge boundary: %s", key)
 						}
 					}
@@ -76,7 +82,7 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 				recorder := httptest.NewRecorder()
 				attributed := ""
 				result, failure := router.ForwardGemini(context.Background(), recorder, request, nativeGeminiModel, path,
-					ForwardOptions{UserID: "must-not-cross", AffinityScope: "must-not-cross", OnUpstreamAccount: func(id string) { attributed = id }})
+					ForwardOptions{UserID: "00000000-0000-0000-0000-000000000001", AffinityScope: "must-not-cross", OnUpstreamAccount: func(id string) { attributed = id }})
 				if failure != nil || recorder.Body.String() != output || recorder.Header().Get("Set-Cookie") != "" {
 					t.Fatalf("result=%+v failure=%v output=%s", result, failure, recorder.Body)
 				}

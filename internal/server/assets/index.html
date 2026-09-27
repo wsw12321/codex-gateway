@@ -113,6 +113,7 @@
           <a href="#model-identification" data-view="model-identification" class="owner-only hidden">模型鉴别</a>
           <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
+          <a href="#antigravity-accounts" data-view="antigravity-accounts" class="owner-only hidden">Antigravity 账号</a>
           <a href="#information" data-view="information" class="owner-only hidden">信息管理</a>
         </nav>
         <div class="profile">
@@ -857,6 +858,7 @@
             <div class="section-head">
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>管理 ChatGPT OAuth 账号状态及查看本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
             </div>
+            <div id="upstream-account-manager">
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
             <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。</p>
             <p id="upstream-concurrency-limit-help" class="callout" role="note"><strong>并发对话数量：</strong>每个账号默认上限为 1，按活跃 root 对话计数。同一 root 的重叠主请求、subagent、fork 和 side 对话在同一账号只占一个名额；不同 root 分别计数。Gateway 自身的请求级并发仍按每个请求计数。所有账号都无法接收新对话时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新的 root 对话，活跃 root 的后续请求仍可进入。</p>
@@ -883,6 +885,21 @@
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">
               <div class="empty">登录后加载上游账号。</div>
             </div>
+            </div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="antigravity-accounts" aria-labelledby="antigravity-accounts-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="antigravity-accounts-title">Antigravity 账号</h2><p>管理 Antigravity 多账号轮换、使用权限、请求并发及本地归因用量。</p></div>
+            </div>
+            <details class="panel antigravity-login-help">
+              <summary>添加或刷新 Antigravity 账号</summary>
+              <p>在服务器项目目录通过 SSH 执行以下命令，并按照提示完成 Google 授权。每个账号使用不同名称；再次使用同一名称可刷新该账号。完成后点击“应用筛选”同步账号。</p>
+              <pre><code>./scripts/antigravity-login.sh team-alpha
+./scripts/antigravity-login.sh team-beta</code></pre>
+              <p class="muted">不带账号名称运行 <code>./scripts/antigravity-login.sh</code> 仍会更新默认账号。登录凭据仅保存在服务器，网页不会显示。</p>
+            </details>
+            <div id="antigravity-account-manager-host"></div>
           </section>
         </div>
       </div>

@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -24,12 +25,13 @@ import (
 
 const (
 	// #nosec G101 -- This is the CLI's fixed credential filename, not a credential value.
-	credentialFilename = "antigravity-oauth-token"
-	credentialLimit    = 1 << 20
-	credentialPartSize = 6000 // Bookworm secret-tool silently truncates stdin after 8192 bytes.
-	credentialApp      = "codex-gateway-antigravity"
-	credentialVersion  = "1"
-	loginCollection    = "/org/freedesktop/secrets/collection/login"
+	credentialFilename         = "antigravity-oauth-token"
+	credentialLimit            = 1 << 20
+	credentialPartSize         = 6000 // Bookworm secret-tool silently truncates stdin after 8192 bytes.
+	credentialApp              = "codex-gateway-antigravity"
+	credentialVersion          = "1"
+	credentialBaselineFilename = "antigravity-bridge-baseline"
+	loginCollection            = "/org/freedesktop/secrets/collection/login"
 )
 
 var ErrCredentialsMissing = errors.New("Antigravity credentials are missing")
@@ -68,7 +70,12 @@ type Credentials interface {
 // history and caches never cross the isolated HOME boundary. Callers serialize
 // all CLI calls and use an independent bounded context for Save after CLI exit.
 type KeyringCredentials struct {
-	run func(context.Context, string, []string, []byte, int) ([]byte, error)
+	// Account is empty only for the original default account. Distinct
+	// application attributes prevent partial Secret Service searches from
+	// mixing named credentials with the legacy account.
+	Account string
+	mu      sync.Mutex
+	run     func(context.Context, string, []string, []byte, int) ([]byte, error)
 }
 
 type credentialManifest struct {
@@ -80,6 +87,14 @@ type credentialManifest struct {
 
 func credentialAttributes(extra ...string) []string {
 	return append([]string{"application", credentialApp, "version", credentialVersion}, extra...)
+}
+
+func (k *KeyringCredentials) attributes(extra ...string) []string {
+	attrs := credentialAttributes(extra...)
+	if k.Account != "" {
+		attrs[1] += "-" + k.Account
+	}
+	return attrs
 }
 
 func (k *KeyringCredentials) command(ctx context.Context, binary string, args []string, stdin []byte, limit int) ([]byte, error) {
@@ -148,7 +163,7 @@ func (k *KeyringCredentials) checkCollection(ctx context.Context) error {
 }
 
 func (k *KeyringCredentials) searchItems(ctx context.Context, extra ...string) (int, error) {
-	attrs := credentialAttributes(extra...)
+	attrs := k.attributes(extra...)
 	pairs := make([]string, 0, len(attrs)/2)
 	for index := 0; index < len(attrs); index += 2 {
 		pairs = append(pairs, fmt.Sprintf("%q: %q", attrs[index], attrs[index+1]))
@@ -185,7 +200,7 @@ func (k *KeyringCredentials) lookup(ctx context.Context, extra ...string) ([]byt
 	if count != 1 {
 		return nil, credentialError("keyring_failed")
 	}
-	args := append([]string{"lookup"}, credentialAttributes(extra...)...)
+	args := append([]string{"lookup"}, k.attributes(extra...)...)
 	encoded, err := k.command(ctx, "secret-tool", args, nil, 8192)
 	if err != nil {
 		return nil, err
@@ -198,7 +213,7 @@ func (k *KeyringCredentials) lookup(ctx context.Context, extra ...string) ([]byt
 }
 
 func (k *KeyringCredentials) store(ctx context.Context, data []byte, extra ...string) error {
-	args := append([]string{"store", "--label=Antigravity Bridge credentials", "--collection=" + loginCollection}, credentialAttributes(extra...)...)
+	args := append([]string{"store", "--label=Antigravity Bridge credentials", "--collection=" + loginCollection}, k.attributes(extra...)...)
 	_, err := k.command(ctx, "secret-tool", args, []byte(base64.StdEncoding.EncodeToString(data)), 4096)
 	return err
 }
@@ -222,6 +237,8 @@ func (k *KeyringCredentials) manifest(ctx context.Context) (credentialManifest, 
 }
 
 func (k *KeyringCredentials) Restore(ctx context.Context, home string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	if err := k.checkCollection(ctx); err != nil {
 		return err
 	}
@@ -256,10 +273,15 @@ func (k *KeyringCredentials) Restore(ctx context.Context, home string) error {
 		return err
 	}
 	defer dir.Close()
-	return writeCredential(dir, data)
+	if err := writeCredential(dir, data); err != nil {
+		return err
+	}
+	return writeCredentialBaseline(dir, manifest)
 }
 
 func (k *KeyringCredentials) Save(ctx context.Context, home string) error {
+	k.mu.Lock()
+	defer k.mu.Unlock()
 	dir, err := credentialDirectory(home, false)
 	if err != nil {
 		return err
@@ -277,6 +299,10 @@ func (k *KeyringCredentials) Save(ctx context.Context, home string) error {
 	if err := validateCredential(data); err != nil {
 		return err
 	}
+	baseline, err := readCredentialBaseline(dir)
+	if err != nil {
+		return err
+	}
 	if err := k.checkCollection(ctx); err != nil {
 		return err
 	}
@@ -284,11 +310,22 @@ func (k *KeyringCredentials) Save(ctx context.Context, home string) error {
 	if err != nil && !errors.Is(err, ErrCredentialsMissing) {
 		return err
 	}
+	sum := sha256.Sum256(data)
+	if baseline.Generation != "" {
+		if old.Generation == "" {
+			return credentialError("keyring_failed")
+		}
+		// Every request starts from an isolated snapshot. An unchanged snapshot
+		// or a refresh based on an obsolete generation must never replace a
+		// newer credential committed by another in-flight request.
+		if baseline.SHA256 == hex.EncodeToString(sum[:]) || baseline.Generation != old.Generation {
+			return nil
+		}
+	}
 	var generation [16]byte
 	if _, err := rand.Read(generation[:]); err != nil {
 		return credentialError("io_failed")
 	}
-	sum := sha256.Sum256(data)
 	manifest := credentialManifest{Generation: hex.EncodeToString(generation[:]), Size: len(data), Parts: (len(data) + credentialPartSize - 1) / credentialPartSize, SHA256: hex.EncodeToString(sum[:])}
 	commitAttempted := false
 	defer func() {
@@ -316,11 +353,44 @@ func (k *KeyringCredentials) Save(ctx context.Context, home string) error {
 			return err
 		}
 	}
-	return nil
+	return writeCredentialBaseline(dir, manifest)
+}
+
+type credentialBaseline struct {
+	Generation string `json:"generation"`
+	SHA256     string `json:"sha256"`
+}
+
+func writeCredentialBaseline(dir *os.File, manifest credentialManifest) error {
+	data, _ := json.Marshal(credentialBaseline{Generation: manifest.Generation, SHA256: manifest.SHA256})
+	return writePrivateCredentialFile(dir, credentialBaselineFilename, data)
+}
+
+func readCredentialBaseline(dir *os.File) (credentialBaseline, error) {
+	var baseline credentialBaseline
+	file, err := openPrivateCredentialFile(dir, credentialBaselineFilename)
+	if errors.Is(err, ErrCredentialsMissing) {
+		return baseline, nil
+	}
+	if err != nil {
+		return baseline, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 257))
+	if err != nil || len(data) > 256 || uniqueJSON(data) != nil || json.Unmarshal(data, &baseline) != nil || len(baseline.Generation) != 32 || len(baseline.SHA256) != 64 {
+		return baseline, credentialError("credential_invalid")
+	}
+	if _, err := hex.DecodeString(baseline.Generation); err != nil {
+		return baseline, credentialError("credential_invalid")
+	}
+	if _, err := hex.DecodeString(baseline.SHA256); err != nil {
+		return baseline, credentialError("credential_invalid")
+	}
+	return baseline, nil
 }
 
 func (k *KeyringCredentials) clearGeneration(ctx context.Context, generation string) error {
-	args := append([]string{"clear"}, credentialAttributes("record", "part", "generation", generation)...)
+	args := append([]string{"clear"}, k.attributes("record", "part", "generation", generation)...)
 	_, err := k.command(ctx, "secret-tool", args, nil, 4096)
 	return err
 }
@@ -474,7 +544,11 @@ func credentialDirectory(home string, create bool) (*os.File, error) {
 }
 
 func openCredential(dir *os.File) (*os.File, error) {
-	fd, err := syscall.Openat(int(dir.Fd()), credentialFilename, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	return openPrivateCredentialFile(dir, credentialFilename)
+}
+
+func openPrivateCredentialFile(dir *os.File, name string) (*os.File, error) {
+	fd, err := syscall.Openat(int(dir.Fd()), name, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, credentialFileError(err)
 	}
@@ -487,7 +561,11 @@ func openCredential(dir *os.File) (*os.File, error) {
 }
 
 func writeCredential(dir *os.File, data []byte) error {
-	if existing, err := openCredential(dir); err == nil {
+	return writePrivateCredentialFile(dir, credentialFilename, data)
+}
+
+func writePrivateCredentialFile(dir *os.File, destination string, data []byte) error {
+	if existing, err := openPrivateCredentialFile(dir, destination); err == nil {
 		_ = existing.Close()
 	} else if !errors.Is(err, ErrCredentialsMissing) {
 		return err
@@ -509,7 +587,7 @@ func writeCredential(dir *os.File, data []byte) error {
 	if writeErr != nil || syncErr != nil || closeErr != nil {
 		return credentialError("io_failed")
 	}
-	if err := syscall.Renameat(int(dir.Fd()), name, int(dir.Fd()), credentialFilename); err != nil {
+	if err := syscall.Renameat(int(dir.Fd()), name, int(dir.Fd()), destination); err != nil {
 		return credentialFileError(err)
 	}
 	if err := dir.Sync(); err != nil {

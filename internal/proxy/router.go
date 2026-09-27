@@ -42,6 +42,7 @@ func (r *Router) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	}
 	// Codex account affinity is not part of the bridge's protocol.
 	return r.antigravity.ForwardWithOptions(ctx, w, incoming, path, ForwardOptions{
+		UserID:            options.UserID,
 		OnUpstreamAccount: options.OnUpstreamAccount,
 		OnConversation:    options.OnConversation,
 	})

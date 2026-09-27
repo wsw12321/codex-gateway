@@ -56,11 +56,13 @@ case "${1:-serve}" in
         # Force the documented manual remote OAuth flow; no host browser/socket
         # or callback port is exposed to this isolated container.
         export SSH_CONNECTION='127.0.0.1 1 127.0.0.1 22'
-        exec /usr/local/bin/antigravity-bridge auth-login
+        shift
+        exec /usr/local/bin/antigravity-bridge auth-login "$@"
         ;;
     verify-login)
         export TERM=dumb
-        exec /usr/local/bin/antigravity-bridge auth-verify </dev/null
+        shift
+        exec /usr/local/bin/antigravity-bridge auth-verify "$@" </dev/null
         ;;
     *) fail configuration ;;
 esac

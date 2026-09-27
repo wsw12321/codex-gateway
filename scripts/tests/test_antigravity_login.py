@@ -44,7 +44,7 @@ if args == ["ps", "-q", "antigravity-bridge"]:
 elif args == ["inspect", "-f", "{{.State.Running}}", "synthetic-bridge"]:
     step = "inspect"
     print("true" if scenario.get("still_running") else "false")
-elif args[-1:] == ["login"]:
+elif "login" in args:
     step = "login"
     if scenario.get("change_terminal"):
         attrs = termios.tcgetattr(0)
@@ -53,10 +53,10 @@ elif args[-1:] == ["login"]:
         (root / "terminal_changed").touch()
     if scenario.get("wait_signal"):
         time.sleep(10)
-elif args[-1:] == ["verify-login"]:
+elif "verify-login" in args:
     step = "verify"
     print("SENSITIVE_TOKEN_OAUTH_URL_CLI_STDERR_MODEL_REPLY")
-elif args[-1:] == ["/usr/local/bin/antigravity-smoke"]:
+elif "/usr/local/bin/antigravity-smoke" in args:
     step = "smoke"
     print("SENSITIVE_TOKEN_OAUTH_URL_CLI_STDERR_MODEL_REPLY")
 elif args[0:1] == ["exec"]:
@@ -99,8 +99,8 @@ class AntigravityLoginTests(unittest.TestCase):
         (self.root / "commands.jsonl").write_text("")
         (self.root / "terminal_changed").unlink(missing_ok=True)
 
-    def run_login(self):
-        return subprocess.run([str(self.script)], env=self.env, text=True,
+    def run_login(self, *args):
+        return subprocess.run([str(self.script), *args], env=self.env, text=True,
                               capture_output=True, timeout=10)
 
     def records(self):
@@ -120,6 +120,23 @@ class AntigravityLoginTests(unittest.TestCase):
         self.assertEqual(commands.count(STOP), 1)
         self.assertNotIn("codex-compat", json.dumps(commands))
         self.assertEqual((self.root / ".antigravity-login.lock").stat().st_mode & 0o777, 0o600)
+
+    def test_named_account_reaches_login_verification_and_http_smoke(self):
+        result = self.run_login("work-account_2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = self.commands()
+        for base in (LOGIN, VERIFY, SMOKE):
+            self.assertIn(base + ["work-account_2"], commands)
+        self.assertNotIn(PRIVATE, result.stdout + result.stderr)
+
+    def test_invalid_slots_are_rejected_before_stopping_service(self):
+        for slot in ("../secret", "two words", "UpperCase", "-option", "_slot", "", "x" * 33):
+            with self.subTest(slot=slot):
+                self.scenario()
+                result = self.run_login(slot)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("category=configuration", result.stderr)
+                self.assertEqual(self.commands(), [])
 
     def test_every_host_phase_reports_failure_and_never_success(self):
         for failure, stage in [("stop", "stop"), ("ps", "service_state"),

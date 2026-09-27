@@ -60,13 +60,13 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 		}
 		var previousWeight int
 		if err := tx.QueryRowContext(ctx, `SELECT allocation_weight FROM upstream_accounts
-			WHERE id = $1 FOR UPDATE`, params.AccountID).Scan(&previousWeight); err != nil {
+			WHERE id = $1 AND provider = $2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousWeight); err != nil {
 			return mapDBError("lock upstream account allocation weight", err)
 		}
 		var err error
 		result, err = scanUpstreamAccount(tx.QueryRowContext(ctx, `UPDATE upstream_accounts
-			SET allocation_weight = $2 WHERE id = $1 RETURNING `+upstreamAccountColumns,
-			params.AccountID, params.Weight))
+			SET allocation_weight = $2 WHERE id = $1 AND provider = $3 RETURNING `+upstreamAccountColumns,
+			params.AccountID, params.Weight, s.upstreamProviderName()))
 		if err != nil {
 			return mapDBError("set upstream account allocation weight", err)
 		}
@@ -98,6 +98,9 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 // never-synchronized candidate therefore has weight one and no historical cost.
 // Selection does not create placeholders, attribution, or reservations.
 func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candidateIDs []string, at time.Time) (string, error) {
+	if !s.validUpstreamProvider() {
+		return "", fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
 	if _, _, err := upstreamCandidateArguments(userID, candidateIDs); err != nil {
 		return "", err
 	}
@@ -123,6 +126,8 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candid
 		args = append(args, id)
 		values[i] = fmt.Sprintf("($%d::text)", i+4)
 	}
+	args = append(args, s.upstreamProviderName())
+	providerArg := fmt.Sprintf("$%d", len(args))
 	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`)
 		SELECT c.id, COALESCE(a.allocation_weight, 1), COALESCE(l.cost, '0')
 		FROM candidates c
@@ -135,6 +140,7 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candid
 			  AND COALESCE(usage_requested_at, created_at) < $2
 		) l ON true
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$3::uuid AND status='active')
+		  AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))`, args...)
 	if err != nil {
 		return "", mapDBError("read upstream allocation snapshot", err)
@@ -251,6 +257,7 @@ func (s *Store) ListUpstreamAccountAllocations(ctx context.Context, at time.Time
 			AND l.entry_type = 'usage_charge'
 			AND COALESCE(l.usage_requested_at, l.created_at) >= $1
 			AND COALESCE(l.usage_requested_at, l.created_at) < $2
+		WHERE a.provider = $3
 		GROUP BY a.id
 	), totals AS (
 		SELECT COALESCE(sum(cost), 0::numeric) cost,
@@ -261,7 +268,7 @@ func (s *Store) ListUpstreamAccountAllocations(ctx context.Context, at time.Time
 		CASE WHEN t.cost > 0 THEN (a.cost / t.cost)::text ELSE '0' END,
 		CASE WHEN a.status = 'available' AND t.weight > 0
 			THEN (a.allocation_weight::numeric / t.weight)::text ELSE '0' END
-	FROM account_costs a CROSS JOIN totals t ORDER BY a.id`, at.Add(-24*time.Hour), at)
+	FROM account_costs a CROSS JOIN totals t ORDER BY a.id`, at.Add(-24*time.Hour), at, s.upstreamProviderName())
 	if err != nil {
 		return nil, mapDBError("list upstream allocation statistics", err)
 	}

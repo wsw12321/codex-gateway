@@ -31,9 +31,13 @@ func (s *Server) eligibleUpstreamAccounts(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request, eligibility bool) {
+	token := s.config.SidecarToken
+	if isAntigravityAccountRequest(r) {
+		token = s.config.AntigravityBridgeToken
+	}
 	authorization := r.Header.Values("Authorization")
-	if s.config.SidecarToken == "" || len(authorization) != 1 ||
-		!hmac.Equal([]byte(authorization[0]), []byte("Bearer "+s.config.SidecarToken)) {
+	if token == "" || len(authorization) != 1 ||
+		!hmac.Equal([]byte(authorization[0]), []byte("Bearer "+token)) {
 		httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "invalid_sidecar_token", "内部服务认证失败")
 		return
 	}
@@ -61,7 +65,7 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if eligibility {
-		allowed, err := s.store.EligibleUpstreamAccountLimits(r.Context(), userID, ids)
+		allowed, err := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), userID, ids)
 		if err != nil {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
 			return
@@ -73,7 +77,7 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusOK, map[string]any{"accounts": accounts})
 		return
 	}
-	id, err := s.store.SelectUpstreamAccount(r.Context(), userID, ids, time.Now().UTC())
+	id, err := s.accountStore(r).SelectUpstreamAccount(r.Context(), userID, ids, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNoUpstreamAccount) {
 			httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "upstream_concurrency_exceeded", "暂无可用的上游账号，请稍后重试")
@@ -89,13 +93,17 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) setUpstreamAccountConcurrentLimit(w http.ResponseWriter, r *http.Request) {
+	concurrencyName := "并发对话数量"
+	if isAntigravityAccountRequest(r) {
+		concurrencyName = "请求并发数量"
+	}
 	id := r.PathValue("id")
 	if !validUpstreamAccountID(id) {
 		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
 		return
 	}
 	if !strictJSONRequest(r) {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_request", "并发对话数量请求必须为 JSON，且不能包含查询参数")
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_request", concurrencyName+"请求必须为 JSON，且不能包含查询参数")
 		return
 	}
 	var limit *int64
@@ -104,10 +112,10 @@ func (s *Server) setUpstreamAccountConcurrentLimit(w http.ResponseWriter, r *htt
 		return
 	}
 	if limit == nil || *limit < 1 || *limit > store.MaxUpstreamConcurrentLimit {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_limit", "并发对话数量必须是 1 至 2147483647 的整数")
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_concurrency_limit", concurrencyName+"必须是 1 至 2147483647 的整数")
 		return
 	}
-	account, err := s.store.SetUpstreamAccountConcurrentLimit(r.Context(), store.SetUpstreamAccountConcurrentLimitParams{
+	account, err := s.accountStore(r).SetUpstreamAccountConcurrentLimit(r.Context(), store.SetUpstreamAccountConcurrentLimitParams{
 		AccountID: id, Limit: int(*limit), At: time.Now().UTC(),
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
 		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
@@ -135,7 +143,7 @@ func (s *Server) setUpstreamAccountAccess(w http.ResponseWriter, r *http.Request
 		badJSON(w, r, err)
 		return
 	}
-	account, err := s.store.SetUpstreamAccountAccess(r.Context(), store.SetUpstreamAccountAccessParams{
+	account, err := s.accountStore(r).SetUpstreamAccountAccess(r.Context(), store.SetUpstreamAccountAccessParams{
 		AccountID: id, Mode: mode, UserIDs: users, Reason: reason, At: time.Now().UTC(),
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
 		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
@@ -166,7 +174,7 @@ func (s *Server) setUpstreamAccountAllocationWeight(w http.ResponseWriter, r *ht
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_allocation_weight", "分配系数必须是 0 至 2147483647 的整数")
 		return
 	}
-	account, err := s.store.SetUpstreamAccountAllocationWeight(r.Context(), store.SetUpstreamAccountAllocationWeightParams{
+	account, err := s.accountStore(r).SetUpstreamAccountAllocationWeight(r.Context(), store.SetUpstreamAccountAllocationWeightParams{
 		AccountID: id, Weight: int(*weight), At: time.Now().UTC(),
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
 		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),

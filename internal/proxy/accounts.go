@@ -16,9 +16,10 @@ import (
 )
 
 var (
-	safeMetadataValuePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
-	maskedEmailPattern       = regexp.MustCompile(`^[A-Za-z0-9]\*{3}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
-	rateLimitIDPattern       = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+	accountDisplayNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+	safeMetadataValuePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	maskedEmailPattern        = regexp.MustCompile(`^[A-Za-z0-9]\*{3}@[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$`)
+	rateLimitIDPattern        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
 )
 
 const (
@@ -104,6 +105,7 @@ var internalErrorCodes = map[int]map[string]string{
 
 type UpstreamAccount struct {
 	ID                  string    `json:"id"`
+	DisplayName         string    `json:"display_name,omitempty"`
 	MaskedEmail         string    `json:"masked_email"`
 	Plan                string    `json:"plan"`
 	Status              string    `json:"status"`
@@ -123,6 +125,7 @@ type UpstreamAccountStatus struct {
 
 type upstreamAccountWire struct {
 	ID                  *string    `json:"id"`
+	DisplayName         *string    `json:"display_name"`
 	MaskedEmail         *string    `json:"masked_email"`
 	Plan                *string    `json:"plan"`
 	Status              *string    `json:"status"`
@@ -223,6 +226,12 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 			ID: *wire.ID, MaskedEmail: *wire.MaskedEmail, Plan: *wire.Plan,
 			Status: *wire.Status, LastSyncedAt: *wire.LastSyncedAt,
 		}
+		if wire.DisplayName != nil {
+			if *wire.DisplayName != "" && !accountDisplayNamePattern.MatchString(*wire.DisplayName) {
+				return nil, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+			}
+			account.DisplayName = *wire.DisplayName
+		}
 		sourceFields := []*string{wire.CliproxyStatus, wire.GatewayManualStatus, wire.GatewayQuotaStatus}
 		knownSources := sourceFields[0] != nil && sourceFields[1] != nil && sourceFields[2] != nil
 		if !knownSources && (sourceFields[0] != nil || sourceFields[1] != nil || sourceFields[2] != nil) {
@@ -241,7 +250,7 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 			}
 		}
 		if !upstreamAccountPattern.MatchString(account.ID) ||
-			!safeMaskedEmail(account.MaskedEmail) ||
+			(!safeMaskedEmail(account.MaskedEmail) && !(c.antigravity && account.MaskedEmail == "" && account.DisplayName != "")) ||
 			!validUpstreamPlan(account.Plan) ||
 			!validAccountStatus(account.Status) || account.LastSyncedAt.IsZero() {
 			return nil, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}

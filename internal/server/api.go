@@ -233,6 +233,10 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		internalError(s, w, r, "reserve quota", err)
 		return
 	}
+	usageStore := s.store
+	if upstreams.IsAntigravityModel(model) {
+		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
+	}
 	forwardingStarted := false
 	// Upstream account attribution arrives with the response headers, which can
 	// be substantially earlier than the terminal usage write for a streaming
@@ -261,7 +265,14 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	forwardingStarted = true
 	var result gatewayproxy.Result
 	var failure *gatewayproxy.Failure
-	if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
+	if upstreams.IsAntigravityModel(model) && s.antigravity != nil {
+		if err := s.syncAntigravityAccounts(r.Context()); err != nil {
+			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_unavailable", Message: "Antigravity 账号暂不可用"}
+		}
+	}
+	if failure != nil {
+		// Settle the reserved request below using the same failure path as forwarding.
+	} else if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
 		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:            key.UserID,
@@ -269,7 +280,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			OnConversation:    onConversation,
 		})
 	} else if prepared.gemini {
-		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{})
+		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
+			UserID: key.UserID, OnUpstreamAccount: onUpstreamAccount,
+		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
@@ -328,7 +341,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		ActualServiceTier: recordedUpstreamServiceTier(result.ServiceTier),
 	}
 	completeErr := retryUsageCompletion(writeCtx, 3, 50*time.Millisecond, func(ctx context.Context) error {
-		_, err := s.store.CompleteUsageRequest(ctx, completion)
+		_, err := usageStore.CompleteUsageRequest(ctx, completion)
 		return err
 	})
 	if completeErr != nil {

@@ -113,7 +113,7 @@ jobs:
       - name: PostgreSQL integration tests
         env:
           TEST_DATABASE_URL: postgres://gateway:integration-only-password@127.0.0.1:5432/gateway_test?sslmode=disable
-        run: go test -count=1 -tags=integration ./internal/store
+        run: go test -count=1 -tags=integration ./internal/store ./internal/server
 
   go-security:
     runs-on: ubuntu-24.04

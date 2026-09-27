@@ -174,7 +174,7 @@ func (s *Store) CompleteUsageRequest(ctx context.Context, params CompleteUsageRe
 		return UsageRequest{}, fmt.Errorf("%w: invalid actual service tier", ErrInvalid)
 	}
 	if params.UpstreamAccountID != "" {
-		if err := s.EnsureUpstreamAccount(ctx, params.UpstreamAccountID, params.CompletedAt); err != nil {
+		if err := s.ensureUsageUpstreamAccount(ctx, params.UpstreamAccountID, params.CompletedAt); err != nil {
 			return UsageRequest{}, fmt.Errorf("ensure usage upstream account: %w", err)
 		}
 	}

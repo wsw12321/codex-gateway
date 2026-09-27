@@ -1207,6 +1207,19 @@ code {
   grid-template-columns: repeat(3, minmax(9rem, 1fr)) auto;
 }
 
+.antigravity-login-help {
+  margin-bottom: 1rem;
+}
+
+.antigravity-login-help summary {
+  cursor: pointer;
+}
+
+.antigravity-login-help pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .upstream-account-period {
   margin: 0 0 1rem;
   font-size: .86rem;

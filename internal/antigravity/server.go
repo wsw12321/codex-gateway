@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,10 +23,11 @@ type Executor interface {
 }
 
 type Server struct {
-	runner Executor
-	token  [32]byte
-	ready  atomic.Bool
-	gate   chan struct{}
+	runner  Executor
+	manager *AccountManager
+	token   [32]byte
+	ready   atomic.Bool
+	gate    chan struct{}
 }
 
 func NewServer(runner Executor, token string) *Server {
@@ -35,6 +37,10 @@ func NewServer(runner Executor, token string) *Server {
 // Refresh is nonblocking if a request already owns the one process slot.
 // Readiness probes never spawn concurrent agy processes or consume model quota.
 func (s *Server) Refresh(ctx context.Context) {
+	if s.manager != nil {
+		s.manager.Refresh(ctx)
+		return
+	}
 	select {
 	case s.gate <- struct{}{}:
 		defer func() { <-s.gate }()
@@ -44,10 +50,17 @@ func (s *Server) Refresh(ctx context.Context) {
 	s.ready.Store(s.runner.Check(ctx) == nil)
 }
 
+func (s *Server) isReady() bool {
+	if s.manager != nil {
+		return s.manager.Ready()
+	}
+	return s.ready.Load()
+}
+
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	if r.URL.Path == "/readyz" && r.Method == http.MethodGet {
-		if !s.ready.Load() {
+		if !s.isReady() {
 			writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 			return
 		}
@@ -64,8 +77,40 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &Failure{401, "invalid_api_key", "Invalid bridge credentials"})
 		return
 	}
+	if s.manager != nil && s.manager.serveInternal(w, r) {
+		return
+	}
+	selectedAccount := ""
+	var releaseAccount func()
+	defer func() {
+		if releaseAccount != nil {
+			releaseAccount()
+		}
+	}()
+	if s.manager != nil {
+		request := accountRequest{selected: &selectedAccount, release: &releaseAccount}
+		if name, found := strings.CutPrefix(r.URL.Path, "/internal/smoke/responses/"); found {
+			host, _, err := net.SplitHostPort(r.RemoteAddr)
+			ip := net.ParseIP(host)
+			if err != nil || ip == nil || !ip.IsLoopback() || !ValidAccountName(name) || r.Method != http.MethodPost {
+				writeFailure(w, &Failure{404, "unsupported_endpoint", "Unsupported endpoint"})
+				return
+			}
+			request.directName = name
+			copyURL := *r.URL
+			copyURL.Path = "/v1/responses"
+			r = r.Clone(r.Context())
+			r.URL = &copyURL
+		} else {
+			values := r.Header.Values("X-Codex-Gateway-User")
+			if len(values) == 1 {
+				request.userID = values[0]
+			}
+		}
+		r = r.WithContext(context.WithValue(r.Context(), accountRequestKey{}, request))
+	}
 	if r.URL.Path == "/v1/models" && r.Method == http.MethodGet {
-		if !s.ready.Load() {
+		if !s.isReady() {
 			writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 			return
 		}
@@ -119,12 +164,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, failure)
 		return
 	}
-	if !s.ready.Load() {
+	if !s.isReady() {
 		writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 		return
 	}
 	result, failure := s.runner.Run(r.Context(), request.Prompt)
+	if selectedAccount != "" {
+		w.Header().Set("X-Codex-Upstream-Account", selectedAccount)
+	}
 	if failure != nil {
+		if failure.Status == 429 {
+			w.Header().Set("Retry-After", "1")
+		}
 		if failure.Status == 503 {
 			s.ready.Store(false)
 		}

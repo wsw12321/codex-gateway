@@ -65,7 +65,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 			return mapDBError("lock upstream account access edit", err)
 		}
 		var previousMode string
-		if err := tx.QueryRowContext(ctx, `SELECT access_mode FROM upstream_accounts WHERE id=$1 FOR UPDATE`, params.AccountID).Scan(&previousMode); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT access_mode FROM upstream_accounts WHERE id=$1 AND provider=$2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousMode); err != nil {
 			return mapDBError("lock upstream account access", err)
 		}
 		var previousUsers string
@@ -91,7 +91,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 		if count != len(params.UserIDs) {
 			return fmt.Errorf("%w: authorized user does not exist", ErrInvalid)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET access_mode=$2 WHERE id=$1`, params.AccountID, params.Mode); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET access_mode=$2 WHERE id=$1 AND provider=$3`, params.AccountID, params.Mode, s.upstreamProviderName()); err != nil {
 			return mapDBError("set upstream account access", err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM upstream_account_users WHERE upstream_account_id=$1`, params.AccountID); err != nil {
@@ -119,7 +119,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 }
 
 func (s *Store) ListUpstreamAccountAccess(ctx context.Context) ([]UpstreamAccountAccess, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.access_mode,COALESCE(jsonb_agg(u.user_id::text ORDER BY u.user_id) FILTER (WHERE u.user_id IS NOT NULL),'[]'::jsonb)::text FROM upstream_accounts a LEFT JOIN upstream_account_users u ON u.upstream_account_id=a.id GROUP BY a.id ORDER BY a.id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.access_mode,COALESCE(jsonb_agg(u.user_id::text ORDER BY u.user_id) FILTER (WHERE u.user_id IS NOT NULL),'[]'::jsonb)::text FROM upstream_accounts a LEFT JOIN upstream_account_users u ON u.upstream_account_id=a.id WHERE a.provider=$1 GROUP BY a.id ORDER BY a.id`, s.upstreamProviderName())
 	if err != nil {
 		return nil, mapDBError("list upstream account access", err)
 	}
@@ -161,11 +161,16 @@ func upstreamCandidateArguments(userID string, ids []string) ([]any, []string, e
 // Eligibility deliberately ignores allocation weight: a zero-weight account
 // may retain an existing binding, but it must still authorize this user.
 func (s *Store) EligibleUpstreamAccounts(ctx context.Context, userID string, ids []string) ([]string, error) {
+	if !s.validUpstreamProvider() {
+		return nil, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
 	args, values, err := upstreamCandidateArguments(userID, ids)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`) SELECT c.id FROM candidates c LEFT JOIN upstream_accounts a ON a.id=c.id WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active') AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid)) ORDER BY c.id`, args...)
+	args = append(args, s.upstreamProviderName())
+	providerArg := fmt.Sprintf("$%d", len(args))
+	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`) SELECT c.id FROM candidates c LEFT JOIN upstream_accounts a ON a.id=c.id WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active') AND (a.id IS NULL OR a.provider=`+providerArg+`) AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid)) ORDER BY c.id`, args...)
 	if err != nil {
 		return nil, mapDBError("read upstream account eligibility", err)
 	}

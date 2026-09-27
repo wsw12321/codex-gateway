@@ -231,6 +231,7 @@ services:
     pids_limit: 128
     environment:
       ANTIGRAVITY_BRIDGE_LISTEN: ":8318"
+      ANTIGRAVITY_GATEWAY_URL: http://gateway:8080
       ANTIGRAVITY_BRIDGE_API_KEY_FILE: /run/secrets/antigravity_bridge_api_key
       ANTIGRAVITY_MODEL_ROUTES_JSON: '{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}'
       AGY_BINARY: /usr/local/bin/agy

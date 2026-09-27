@@ -111,6 +111,21 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer internal-bridge-token" || r.Header.Get("X-Goog-Api-Key") != "" || r.URL.Query().Has("key") {
 			t.Error("client credentials reached bridge")
 		}
+		if r.URL.Path == "/internal/upstream-accounts" {
+			writeJSON(w, 200, map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{
+				ID: "aabbccddeeff0011", DisplayName: "default", MaskedEmail: "a***@example.com", Plan: "unknown",
+				Status: "available", CliproxyStatus: "active", GatewayManualStatus: "enabled", GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC(),
+			}}})
+			return
+		}
+		if r.URL.Path == "/internal/upstream-accounts/capabilities" {
+			writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1"})
+			return
+		}
+		if r.Header.Get("X-Codex-Gateway-User") != user.ID {
+			t.Error("bridge is missing authenticated user identity")
+		}
+		w.Header().Set("X-Codex-Upstream-Account", "aabbccddeeff0011")
 		if !strings.HasPrefix(r.URL.Path, "/v1beta/models/"+config.AntigravityPublicModel+":") {
 			t.Error("noncanonical bridge path")
 		}
@@ -134,6 +149,18 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	textResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
 	if textResponse.Code != 200 {
 		t.Fatalf("text: %d %s", textResponse.Code, textResponse.Body)
+	}
+	agyAccounts, err := repository.WithUpstreamProvider(store.UpstreamProviderAntigravity).ListUpstreamAccounts(ctx)
+	if err != nil || len(agyAccounts) != 1 || agyAccounts[0].ID != "aabbccddeeff0011" {
+		t.Fatalf("missing automatically synchronized AGY account: %+v %v", agyAccounts, err)
+	}
+	codexAccounts, err := repository.ListUpstreamAccounts(ctx)
+	if err != nil || len(codexAccounts) != 0 {
+		t.Fatalf("AGY account leaked into Codex: %+v %v", codexAccounts, err)
+	}
+	var accountID string
+	if err := repository.DB().QueryRowContext(ctx, "SELECT upstream_account_id FROM usage_requests WHERE api_key_id=$1 AND state='completed'", key.ID).Scan(&accountID); err != nil || accountID != "aabbccddeeff0011" {
+		t.Fatalf("AGY attribution missing: %q %v", accountID, err)
 	}
 	executor.response = `{"type":"function_call","name":"read_file","arguments":{"path":"README.md"}}`
 	toolBody := `{"contents":[{"role":"user","parts":[{"text":"read README"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parametersJsonSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`

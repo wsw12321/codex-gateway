@@ -98,6 +98,7 @@ type upstreamAccountUsageDTO struct {
 
 type upstreamAccountDTO struct {
 	ID                  string     `json:"id"`
+	DisplayName         string     `json:"display_name,omitempty"`
 	EmailMasked         string     `json:"email_masked"`
 	Plan                string     `json:"plan"`
 	Status              string     `json:"status"`
@@ -151,7 +152,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
 	syncCtx, cancelSync := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
-	remoteAccounts, err := s.upstream.ListUpstreamAccounts(syncCtx)
+	remoteAccounts, err := s.accountClient(r).ListUpstreamAccounts(syncCtx)
 	cancelSync()
 	syncWarning := ""
 	manageable := make(map[string]bool, len(remoteAccounts))
@@ -173,11 +174,11 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 				status = store.UpstreamAccountStatusAvailable
 			}
 			snapshots = append(snapshots, store.UpstreamAccountSnapshot{
-				ID: account.ID, MaskedEmail: account.MaskedEmail, Plan: account.Plan, Status: status,
+				ID: account.ID, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail, Plan: account.Plan, Status: status,
 				LastSyncedAt: account.LastSyncedAt,
 			})
 		}
-		if err := s.store.SyncUpstreamAccounts(r.Context(), snapshots, time.Now().UTC()); err != nil {
+		if err := s.accountStore(r).SyncUpstreamAccounts(r.Context(), snapshots, time.Now().UTC()); err != nil {
 			internalError(s, w, r, "sync upstream accounts", err)
 			return
 		}
@@ -190,7 +191,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.store.SummarizeUpstreamAccounts(r.Context(), store.UpstreamAccountSummaryFilter{
+	rows, err := s.accountStore(r).SummarizeUpstreamAccounts(r.Context(), store.UpstreamAccountSummaryFilter{
 		From: query.From, Until: query.Until, All: query.All, LiveFrom: query.LiveFrom,
 	})
 	if err != nil {
@@ -200,7 +201,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	// Allocation always uses the current rolling window, independently of the
 	// historical statistics filter. Weights and costs share one DB snapshot.
 	allocationUntil := time.Now().UTC()
-	allocations, err := s.store.ListUpstreamAccountAllocations(r.Context(), allocationUntil)
+	allocations, err := s.accountStore(r).ListUpstreamAccountAllocations(r.Context(), allocationUntil)
 	if err != nil {
 		internalError(s, w, r, "list upstream allocations", err)
 		return
@@ -209,7 +210,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	for _, allocation := range allocations {
 		allocationByID[allocation.AccountID] = allocation
 	}
-	access, err := s.store.ListUpstreamAccountAccess(r.Context())
+	access, err := s.accountStore(r).ListUpstreamAccountAccess(r.Context())
 	if err != nil {
 		internalError(s, w, r, "list upstream account access", err)
 		return
@@ -249,7 +250,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			AccessMode: accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
 			AllocationWeight: allocation.AllocationWeight, ConcurrentLimit: row.ConcurrentLimit, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
-			ID: *row.AccountID, EmailMasked: row.MaskedEmail, Plan: row.Plan,
+			ID: *row.AccountID, DisplayName: row.DisplayName, EmailMasked: row.MaskedEmail, Plan: row.Plan,
 			Status: finalStatus, CliproxyStatus: cliproxyStatus, GatewayManualStatus: gatewayManualStatus,
 			GatewayQuotaStatus: gatewayQuotaStatus, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,
@@ -322,7 +323,7 @@ func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
 		defer cancel()
-		_, err := s.store.AppendAuditEvent(ctx, store.AppendAuditEventParams{
+		_, err := s.accountStore(r).AppendAuditEvent(ctx, store.AppendAuditEventParams{
 			OccurredAt: time.Now().UTC(), ActorUserID: userFrom(r.Context()).ID,
 			ActorSessionID: sessionFrom(r.Context()).ID, EventType: eventType,
 			Severity: "info", Success: success, SourceIP: safeIP(r.Context()),
@@ -344,7 +345,7 @@ func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
-	result, err := s.upstream.SetUpstreamAccountStatus(ctx, accountID, enabled)
+	result, err := s.accountClient(r).SetUpstreamAccountStatus(ctx, accountID, enabled)
 	cancel()
 	if err != nil {
 		resultCode, resultStatus = upstreamManagementErrorDetails(err)
@@ -426,7 +427,7 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 3*time.Second)
 		defer cancel()
-		_, _ = s.store.AppendAuditEvent(ctx, store.AppendAuditEventParams{
+		_, _ = s.accountStore(r).AppendAuditEvent(ctx, store.AppendAuditEventParams{
 			OccurredAt: time.Now().UTC(), ActorUserID: userFrom(r.Context()).ID,
 			ActorSessionID: sessionFrom(r.Context()).ID, EventType: "upstream_account.quota_queried",
 			Severity: "info", Success: success, SourceIP: safeIP(r.Context()),
@@ -449,7 +450,7 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamQuotaTimeout)
-	quota, err := s.upstream.QueryUpstreamAccountQuota(ctx, accountID)
+	quota, err := s.accountClient(r).QueryUpstreamAccountQuota(ctx, accountID)
 	cancel()
 	if err != nil {
 		resultCode, resultStatus = upstreamManagementErrorDetails(err)

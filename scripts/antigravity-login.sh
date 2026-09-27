@@ -64,7 +64,11 @@ run_quiet() {
     fi
 }
 
-test "$#" -eq 0 || fail setup configuration 1
+test "$#" -le 1 || fail setup configuration 1
+if test "$#" -eq 1; then
+    case "$1" in *[!a-z0-9_-]*|''|[_-]*) fail setup configuration 1 ;; esac
+    test "${#1}" -le 32 || fail setup configuration 1
+fi
 stage=lock
 command -v flock >/dev/null 2>&1 || fail lock configuration 1
 if test -e "$lock_file" || test -L "$lock_file"; then
@@ -88,7 +92,7 @@ run_quiet egress "$compose" up -d egress-allowlist
 printf '%s\n' 'Complete the official agy remote login, then use /exit. Independent credential, model, usage and text checks follow.'
 stage=authorization
 # Only official interactive authorization inherits stdin and terminal output.
-if "$compose" run --rm --no-deps antigravity-bridge login 2>"$work_dir/stderr"; then :; else
+if "$compose" run --rm --no-deps antigravity-bridge login "$@" 2>"$work_dir/stderr"; then :; else
     status=$?
     relay_diagnostics
     fail authorization command_failed "$status"
@@ -97,7 +101,7 @@ restore_terminal || fail terminal cleanup_failed 1
 
 # A second container verifies encrypted credentials using a new D-Bus session
 # and HOME. All checks are deliberately detached from the login terminal.
-run_quiet verification "$compose" run -T --rm --no-deps -e TERM=dumb antigravity-bridge verify-login
+run_quiet verification "$compose" run -T --rm --no-deps -e TERM=dumb antigravity-bridge verify-login "$@"
 bridge_started=1
 run_quiet start "$compose" up -d --no-deps antigravity-bridge
 stage=readiness
@@ -105,7 +109,7 @@ attempt=0
 readiness_status=1
 while test "$attempt" -lt 30; do
     if "$compose" exec -T -e TERM=dumb antigravity-bridge curl -fsS --max-time 4 http://127.0.0.1:8318/readyz </dev/null >/dev/null 2>&1; then
-        run_quiet http_acceptance "$compose" exec -T -e TERM=dumb antigravity-bridge /usr/local/bin/antigravity-smoke
+        run_quiet http_acceptance "$compose" exec -T -e TERM=dumb antigravity-bridge /usr/local/bin/antigravity-smoke "$@"
         restore_terminal || fail terminal cleanup_failed 1
         bridge_started=0
         printf '%s\n' 'Antigravity login persisted; readiness, JSON and SSE passed.'

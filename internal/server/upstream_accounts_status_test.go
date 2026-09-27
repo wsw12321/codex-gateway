@@ -331,6 +331,9 @@ func (*statusTestConn) ExecContext(context.Context, string, []driver.NamedValue)
 	return driver.RowsAffected(1), nil
 }
 func (c *statusTestConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	if strings.Contains(query, "SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1 AND provider<>$2)") {
+		return &upstreamAuditRows{columns: []string{"exists"}, values: []driver.Value{false}}, nil
+	}
 	return c.query(ctx, query, args)
 }
 

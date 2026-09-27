@@ -39,8 +39,40 @@ type Config struct {
 // Store owns a database/sql pool. New may be used when the caller owns the
 // pool (for example in integration tests); Close always closes that pool.
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db               *sql.DB
+	now              func() time.Time
+	upstreamProvider string
+}
+
+const (
+	UpstreamProviderCodex       = "codex"
+	UpstreamProviderAntigravity = "antigravity"
+)
+
+// WithUpstreamProvider shares the database pool while isolating upstream
+// account management and allocation. Other store operations, including usage
+// attribution and billing, continue to use the shared ledger. The original
+// store owns the pool and should be used to close it.
+func (s *Store) WithUpstreamProvider(provider string) *Store {
+	clone := *s
+	clone.upstreamProvider = strings.ToLower(strings.TrimSpace(provider))
+	return &clone
+}
+
+func (s *Store) upstreamProviderName() string {
+	if s.upstreamProvider == "" {
+		return UpstreamProviderCodex
+	}
+	return s.upstreamProvider
+}
+
+func (s *Store) validUpstreamProvider() bool {
+	switch s.upstreamProviderName() {
+	case UpstreamProviderCodex, UpstreamProviderAntigravity:
+		return true
+	default:
+		return false
+	}
 }
 
 func Open(ctx context.Context, cfg Config) (*Store, error) {

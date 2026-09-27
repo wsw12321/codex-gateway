@@ -6,8 +6,13 @@ export TERM=dumb
 # Compatibility for manual CLI checks; the binary owns credential restoration,
 # per-command refresh persistence and safe diagnostics.
 if test "${1:-}" = cli; then
-    exec /usr/local/bin/antigravity-bridge auth-verify </dev/null
+    shift
+    exec /usr/local/bin/antigravity-bridge auth-verify "$@" </dev/null
 fi
+
+account=${1:-default}
+case "$account" in *[!a-z0-9_-]*|'') exit 1 ;; esac
+test "${#account}" -le 32 || exit 1
 
 stage=http_models
 fail() {
@@ -43,7 +48,7 @@ for stream in false true; do
     if test "$stream" = true; then stage=http_sse; else stage=http_json; fi
     printf '{"model":"gemini-3.1-pro-preview","input":"Reply with exactly OK.","store":false,"stream":%s}\n' "$stream" > "$work_dir/request"
     if curl -fsS --max-time 310 --config "$work_dir/curl.conf" -H 'Content-Type: application/json' \
-        --data-binary @"$work_dir/request" "$url/v1/responses" \
+        --data-binary @"$work_dir/request" "$url/internal/smoke/responses/$account" \
         </dev/null > "$work_dir/response" 2>/dev/null; then :; else
         fail command_failed "$?"
     fi

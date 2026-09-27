@@ -238,7 +238,7 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 		}
 		outgoing.Header.Set(affinityHeader, options.AffinityScope)
 	}
-	if options.UserID != "" && !c.antigravity {
+	if options.UserID != "" {
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return nil, Result{}, protocolFailure(errors.New("invalid upstream user identity"))
 		}
@@ -459,7 +459,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		}
 		outgoing.Header.Set(affinityHeader, options.AffinityScope)
 	}
-	if options.UserID != "" && !c.antigravity {
+	if options.UserID != "" {
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))
 		}

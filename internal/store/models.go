@@ -314,6 +314,7 @@ type GlobalPricingBreakdownRow struct {
 // that has not yet appeared in a metadata synchronization snapshot.
 type UpstreamAccount struct {
 	ID               string
+	DisplayName      string
 	MaskedEmail      string
 	Plan             string
 	Status           string
@@ -328,6 +329,7 @@ type UpstreamAccount struct {
 // snapshot. A snapshot never contains OAuth credentials or a full email.
 type UpstreamAccountSnapshot struct {
 	ID           string
+	DisplayName  string
 	MaskedEmail  string
 	Plan         string
 	Status       string
@@ -339,6 +341,7 @@ type UpstreamAccountSnapshot struct {
 // read from immutable usage-charge ledger entries rather than recalculated.
 type UpstreamAccountSummary struct {
 	AccountID         *string
+	DisplayName       string
 	MaskedEmail       string
 	Plan              string
 	Status            string

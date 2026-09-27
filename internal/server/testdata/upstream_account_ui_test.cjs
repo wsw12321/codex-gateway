@@ -66,7 +66,7 @@ function statusResponse(id, status) {
   return {...account(id, status), id, status};
 }
 
-function dashboard(accounts = [account()], extra = {}) {
+function dashboard(accounts = [account()], extra = {}, provider = "codex") {
   const root = new TestElement();
   const nodes = new Map();
   for (const id of ["upstream-account-list", "upstream-account-filter", "upstream-account-period",
@@ -82,12 +82,12 @@ function dashboard(accounts = [account()], extra = {}) {
   filter.append(submit);
   const context = vm.createContext({
     document: {getElementById: (id) => nodes.get(id), createElement: (tag) => new TestElement(tag), querySelectorAll: (selector) => root.querySelectorAll(selector)},
-    window: {clearTimeout, setTimeout}, location: {hash: "#upstream-accounts"}, AbortController, URLSearchParams, DOMException, accounts, extra,
+    window: {clearTimeout, setTimeout}, location: {hash: provider === "antigravity" ? "#antigravity-accounts" : "#upstream-accounts"}, AbortController, URLSearchParams, DOMException, accounts, extra, provider,
   });
   const source = readFileSync(path.join(__dirname, "../assets/app.js"), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstart().catch")), context);
   const run = (source) => vm.runInContext(source, context);
-  run('state = {user: {id: "owner-1", role: "owner"}, recently_verified: true}; renderUpstreamAccounts({accounts, ...extra}, new URLSearchParams("all=true"));');
+  run('upstreamAccountProvider = provider; state = {user: {id: "owner-1", role: "owner"}, recently_verified: true}; renderUpstreamAccounts({accounts, ...extra}, new URLSearchParams("all=true"));');
   return {context, run, node: (id) => nodes.get(id), cards: () => root.querySelectorAll(".upstream-account-card[data-account-id]"),
     button: (index = 0) => root.querySelectorAll(".upstream-account-status-button")[index],
     badge: (index = 0) => root.querySelectorAll(".upstream-account-status")[index],
@@ -542,4 +542,91 @@ test("failed concurrency responses clear counts and an aborted request cannot re
   await new Promise(setImmediate);
   assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "暂不可用");
   ui.run("stopUpstreamConcurrency();");
+});
+
+test("Antigravity cards describe request concurrency, named logins, and omit unsupported quota queries", () => {
+  const ui = dashboard([{...account(), display_name: "team-alpha", allocation_weight: 0}], {}, "antigravity");
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-name").textContent, "账号名称：team-alpha");
+  assert.match(ui.cards()[0].querySelector(".upstream-account-cliproxy-status").textContent, /^Antigravity：/);
+  assert.match(ui.cards()[0].querySelector(".upstream-concurrency").querySelector("span").textContent, /正在执行的请求/);
+  assert.equal(ui.limitForm().querySelector("span").textContent, "请求并发限制");
+  assert.match(ui.allocationState().textContent, /停止接收新请求.*已开始的请求继续执行/);
+  assert.equal(ui.cards()[0].querySelector(".upstream-quota"), null);
+  assert.equal(ui.run('ownerOnlySections.has("antigravity-accounts")'), true);
+});
+
+test("Antigravity writes, refresh, and polling stay in their provider namespace", async () => {
+  const ui = dashboard([account()], {}, "antigravity");
+  const writes = [], reads = [];
+  let value = {...account()};
+  ui.api(async (url, options) => {
+    assert.ok(url.startsWith("/admin/antigravity-accounts"));
+    if (options?.method === "PUT") {
+      const body = JSON.parse(options.body);
+      writes.push({url, body});
+      if (url.endsWith("/allocation-weight")) value.allocation_weight = body.weight;
+      if (url.endsWith("/concurrent-limit")) value.concurrent_limit = body.concurrent_limit;
+      if (url.endsWith("/status")) {
+        value.status = body.enabled ? "available" : "unavailable";
+        value.gateway_manual_status = body.enabled ? "enabled" : "manual_disabled";
+      }
+      return {...value};
+    }
+    reads.push(url);
+    if (url.endsWith("/concurrency")) return {sampled_at: new Date().toISOString(), accounts: [{id: value.id, active_requests: 2}]};
+    return {accounts: [{...value}]};
+  });
+  ui.weightInput().value = "0";
+  await ui.saveWeight();
+  assert.match(ui.node("upstream-account-action-message").textContent, /停止接收新请求/);
+  ui.limitInput().value = "3";
+  await ui.saveLimit();
+  assert.match(ui.node("upstream-account-action-message").textContent, /请求并发上限已保存为 3/);
+  await ui.change();
+  assert.equal(ui.button().textContent, "重新启用");
+  assert.deepEqual(writes.map((write) => write.url), [
+    "/admin/antigravity-accounts/account-1/allocation-weight", "/admin/antigravity-accounts/account-1/concurrent-limit", "/admin/antigravity-accounts/account-1/status",
+  ]);
+  ui.run("startUpstreamConcurrency();");
+  await new Promise(setImmediate);
+  assert.equal(ui.cards()[0].querySelector(".upstream-concurrency-count").textContent, "2");
+  ui.run("stopUpstreamConcurrency();");
+  assert.equal(reads.filter((url) => url.endsWith("?all=true")).length, 3);
+  assert.ok(reads.includes("/admin/antigravity-accounts/concurrency"));
+});
+
+test("an account provider switch invalidates pending authenticated writes", async () => {
+  for (const kind of ["status", "weight", "limit"]) {
+    const ui = dashboard([account()], {}, "antigravity");
+    const verification = deferred();
+    ui.context.verification = verification.promise;
+    ui.run("state.recently_verified = false; reauthenticate = () => verification;");
+    let calls = 0;
+    ui.api(async () => { calls++; });
+    ui.weightInput().value = "4";
+    ui.limitInput().value = "3";
+    const pending = kind === "status" ? ui.change() : kind === "weight" ? ui.saveWeight() : ui.saveLimit();
+    ui.run('upstreamAccountProvider = "codex"; upstreamAccountOperation = null; upstreamAccountRequestSequence++; upstreamAccounts = [];');
+    verification.resolve();
+    await pending;
+    assert.equal(calls, 0, `${kind} must not reach the other provider after verification`);
+  }
+});
+
+test("Antigravity cooldown is automatic and does not masquerade as a manual disable", async () => {
+  const cooled = {...account(), status: "unavailable", gateway_quota_status: "quota_exhausted"};
+  const ui = dashboard([cooled], {}, "antigravity");
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-quota-status").textContent, "限流状态：限流冷却");
+  assert.equal(ui.button().textContent, "禁用");
+  const writes = [];
+  ui.api(async (_, options) => {
+    if (options) {
+      writes.push(JSON.parse(options.body));
+      return {...cooled, gateway_manual_status: "manual_disabled"};
+    }
+    return {accounts: [{...cooled, gateway_manual_status: "manual_disabled"}]};
+  });
+  await ui.change();
+  assert.deepEqual(writes, [{enabled: false}]);
+  assert.equal(ui.button().textContent, "重新启用");
 });

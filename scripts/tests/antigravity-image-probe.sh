@@ -18,6 +18,11 @@ jq '.id_token = ("SYNTHETIC_ID_TOKEN_PERSISTENCE_" * 320)' \
 jq '.token.access_token = "SYNTHETIC_ACCESS_PERSISTENCE_UPDATED" |
     .token.refresh_token = "SYNTHETIC_REFRESH_PERSISTENCE_UPDATED"' \
     "$probe_dir/initial" > "$probe_dir/refreshed"
+for fixture in initial refreshed; do
+    jq '.token.access_token = ("NAMED_" + .token.access_token) |
+        .token.refresh_token = ("NAMED_" + .token.refresh_token)' \
+        "$probe_dir/$fixture" > "$probe_dir/named-$fixture"
+done
 cat > "$probe_dir/markers" <<'MARKERS'
 SYNTHETIC_ACCESS_PERSISTENCE_INITIAL
 SYNTHETIC_REFRESH_PERSISTENCE_INITIAL
@@ -26,7 +31,7 @@ SYNTHETIC_REFRESH_PERSISTENCE_UPDATED
 SYNTHETIC_ID_TOKEN_PERSISTENCE_
 SYNTHETIC_STDERR_NOT_FOR_LOGS
 MARKERS
-for fixture in initial refreshed; do
+for fixture in initial refreshed named-initial named-refreshed; do
     base64 -w0 < "$probe_dir/$fixture" >> "$probe_dir/markers"
     printf '\n' >> "$probe_dir/markers"
     split -b 6000 "$probe_dir/$fixture" "$probe_dir/$fixture-part-"
@@ -74,10 +79,15 @@ test "$(stat -c %a "$auth_dir")" = 700
 test "$(stat -c %a "$auth_file")" = 600
 jq -e '.toolPermission == "strict"' "$auth_dir/settings.json" >/dev/null
 expected=refreshed
-if test "$mode" = refresh; then
+prefix=
+case "$mode" in named-*) prefix=named- ;; esac
+if test "$mode" = serving && jq -e '.token.access_token | startswith("NAMED_")' "$auth_file" >/dev/null; then
+    prefix=named-
+fi
+if test "$mode" = refresh || test "$mode" = named-refresh; then
     case "$1" in --version|models) expected=initial ;; esac
 fi
-cmp -s "$auth_file" "$probe_dir/$expected"
+cmp -s "$auth_file" "$probe_dir/$prefix$expected"
 printf '%s\n' SYNTHETIC_STDERR_NOT_FOR_LOGS >&2
 case "$1" in
     --version)
@@ -86,8 +96,8 @@ case "$1" in
         ;;
     models)
         test -z "$(cat)"
-        if test "$mode" = refresh; then
-            cp "$probe_dir/refreshed" "$auth_file"
+        if test "$mode" = refresh || test "$mode" = named-refresh; then
+            cp "$probe_dir/${prefix}refreshed" "$auth_file"
         fi
         printf '%s\n' gemini-3.1-pro-high
         ;;
@@ -109,8 +119,51 @@ chmod 0700 "$probe_dir/agy"
 printf '%s\n' SYNTHETIC_MODEL_REPLY_NOT_FOR_LOGS >> "$probe_dir/markers"
 export AGY_BINARY="$probe_dir/agy"
 status=0
-if test "$mode" = import; then
+if test "$mode" = serving; then
+    printf '%s' 'synthetic-api-key-at-least-32-bytes-long' > /run/secrets/antigravity_bridge_api_key
+    export ANTIGRAVITY_BRIDGE_API_KEY_FILE=/run/secrets/antigravity_bridge_api_key
+    /usr/local/bin/antigravity-entrypoint serve > "$probe_dir/output" 2>&1 &
+    bridge_pid=$!
+    trap 'kill "$bridge_pid" 2>/dev/null || :; wait "$bridge_pid" 2>/dev/null || :' EXIT
+    attempt=0
+    until curl -fsS --max-time 2 http://127.0.0.1:8318/readyz >/dev/null 2>&1; do
+        attempt=$((attempt + 1))
+        test "$attempt" -lt 30 || exit 1
+        kill -0 "$bridge_pid"
+        sleep 1
+    done
+    printf '%s\n' 'header = "Authorization: Bearer synthetic-api-key-at-least-32-bytes-long"' > "$probe_dir/curl.conf"
+    curl -fsS --config "$probe_dir/curl.conf" http://127.0.0.1:8318/internal/upstream-accounts/capabilities > "$probe_dir/capabilities"
+    jq -e '.protocol == "upstream_account_access_v1"' "$probe_dir/capabilities" >/dev/null
+    attempt=0
+    while :; do
+        curl -fsS --config "$probe_dir/curl.conf" http://127.0.0.1:8318/internal/upstream-accounts > "$probe_dir/accounts"
+        if jq -e '(.accounts | length) == 2 and all(.accounts[]; .status == "available")' "$probe_dir/accounts" >/dev/null; then break; fi
+        attempt=$((attempt + 1))
+        test "$attempt" -lt 30 || exit 1
+        sleep 1
+    done
+    jq -e '(.accounts | length) == 2 and all(.accounts[]; .status == "available") and
+        ([.accounts[].display_name] | sort) == ["default", "work"] and
+        all(.accounts[]; .masked_email == "" and .plan == "unknown")' "$probe_dir/accounts" >/dev/null
+    for account in default work; do
+        /usr/local/bin/antigravity-smoke "$account" >> "$probe_dir/output" 2>&1
+    done
+    # Normal model requests never inherit the local operator smoke exemption.
+    code=$(curl -sS --config "$probe_dir/curl.conf" -H 'Content-Type: application/json' \
+        --data '{"model":"gemini-3.1-pro-preview","input":"hello"}' -o "$probe_dir/rejected" \
+        -w '%{http_code}' http://127.0.0.1:8318/v1/responses)
+    test "$code" = 503
+    jq -e '.error.code == "upstream_allocation_unavailable"' "$probe_dir/rejected" >/dev/null
+    kill "$bridge_pid"
+    wait "$bridge_pid" || :
+    trap - EXIT
+elif test "$mode" = import; then
     /usr/local/bin/antigravity-entrypoint login < "$probe_dir/initial" > "$probe_dir/output" 2>&1 || status=$?
+elif test "$mode" = named-import; then
+    /usr/local/bin/antigravity-entrypoint login work < "$probe_dir/named-initial" > "$probe_dir/output" 2>&1 || status=$?
+elif test "$mode" = named-refresh || test "$mode" = named-restored; then
+    /usr/local/bin/antigravity-entrypoint verify-login work < /dev/null > "$probe_dir/output" 2>&1 || status=$?
 else
     /usr/local/bin/antigravity-entrypoint verify-login < /dev/null > "$probe_dir/output" 2>&1 || status=$?
 fi

@@ -1,8 +1,10 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestNormalizeUpstreamAccountSnapshot(t *testing.T) {
@@ -36,6 +38,48 @@ func TestNormalizeUpstreamAccountSnapshot(t *testing.T) {
 				t.Fatalf("normalize error = %v, want ErrInvalid", err)
 			}
 		})
+	}
+}
+
+func TestUpstreamAccountSlotDisplayName(t *testing.T) {
+	t.Parallel()
+	for _, label := range []string{"primary", "account-2", "slot_3"} {
+		value, err := normalizeUpstreamAccountSnapshot(UpstreamAccountSnapshot{
+			ID: "0123456789abcdef", DisplayName: label, Status: "available",
+		})
+		if err != nil || value.DisplayName != label || value.MaskedEmail != "" || value.Plan != "unknown" {
+			t.Fatalf("slot snapshot = %+v, %v", value, err)
+		}
+	}
+	for _, label := range []string{"alice@example.com", "../auth", "Account", "a b", "123456789012345678901234567890123"} {
+		if _, err := normalizeUpstreamAccountSnapshot(UpstreamAccountSnapshot{
+			ID: "0123456789abcdef", DisplayName: label, MaskedEmail: "a***@example.com",
+		}); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("unsafe display name %q accepted: %v", label, err)
+		}
+	}
+}
+
+func TestWithUpstreamProviderIsolatesStoreClone(t *testing.T) {
+	t.Parallel()
+	base := New(nil)
+	agy := base.WithUpstreamProvider(UpstreamProviderAntigravity)
+	if agy == base || base.upstreamProviderName() != UpstreamProviderCodex || agy.upstreamProviderName() != UpstreamProviderAntigravity {
+		t.Fatal("provider scoping mutated original store")
+	}
+	invalid := base.WithUpstreamProvider("unknown")
+	ctx := context.Background()
+	if err := invalid.SyncUpstreamAccounts(ctx, nil, time.Time{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown provider snapshot error = %v", err)
+	}
+	if _, err := invalid.SelectUpstreamAccount(ctx, "", nil, time.Time{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown provider selection error = %v", err)
+	}
+	if _, err := invalid.EligibleUpstreamAccounts(ctx, "", nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown provider eligibility error = %v", err)
+	}
+	if _, err := invalid.EligibleUpstreamAccountLimits(ctx, "", nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown provider limits error = %v", err)
 	}
 }
 

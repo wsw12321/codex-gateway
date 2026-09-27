@@ -49,13 +49,13 @@ func (s *Store) SetUpstreamAccountConcurrentLimit(ctx context.Context, params Se
 		}
 		var previousLimit int
 		if err := tx.QueryRowContext(ctx, `SELECT concurrent_limit FROM upstream_accounts
-			WHERE id = $1 FOR UPDATE`, params.AccountID).Scan(&previousLimit); err != nil {
+			WHERE id = $1 AND provider = $2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousLimit); err != nil {
 			return mapDBError("lock upstream account concurrent limit", err)
 		}
 		var err error
 		result, err = scanUpstreamAccount(tx.QueryRowContext(ctx, `UPDATE upstream_accounts
-			SET concurrent_limit = $2 WHERE id = $1 RETURNING `+upstreamAccountColumns,
-			params.AccountID, params.Limit))
+			SET concurrent_limit = $2 WHERE id = $1 AND provider = $3 RETURNING `+upstreamAccountColumns,
+			params.AccountID, params.Limit, s.upstreamProviderName()))
 		if err != nil {
 			return mapDBError("set upstream account concurrent limit", err)
 		}
@@ -84,14 +84,20 @@ func (s *Store) SetUpstreamAccountConcurrentLimit(ctx context.Context, params Se
 // their Gateway-owned admission limits. Unknown accounts retain the default
 // limit of one until synchronized metadata is persisted.
 func (s *Store) EligibleUpstreamAccountLimits(ctx context.Context, userID string, ids []string) ([]UpstreamAccountEligibility, error) {
+	if !s.validUpstreamProvider() {
+		return nil, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
 	args, values, err := upstreamCandidateArguments(userID, ids)
 	if err != nil {
 		return nil, err
 	}
+	args = append(args, s.upstreamProviderName())
+	providerArg := fmt.Sprintf("$%d", len(args))
 	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+
 		`) SELECT c.id, COALESCE(a.concurrent_limit, 1) FROM candidates c
 		LEFT JOIN upstream_accounts a ON a.id=c.id
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active')
+		AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(
 			SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
 		ORDER BY c.id`, args...)

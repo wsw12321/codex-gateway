@@ -372,7 +372,9 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 
 Gemini Pro 支持 Responses 和 Gemini 原生生成接口，使用相同的 Gateway key，公开模型名为
 `gemini-3.1-pro-preview`。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
-调用 `./scripts/antigravity-login.sh` 完成登录验收后配置精确模型路由。支持文本 JSON
+调用 `./scripts/antigravity-login.sh [账号名称]` 完成登录验收后配置精确模型路由。
+Owner 可在「Antigravity 账号」页面管理多账号启停、轮换系数、专属权限和请求并发，
+并查看账号用量及费用统计。支持文本 JSON
 和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
 沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
 本机 AGY 的 `GOOGLE_GEMINI_BASE_URL` 使用站点地址（不加 `/v1`），

@@ -15,9 +15,11 @@ const sectionTitles = {
   "model-access": "模型权限",
   "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
+  "antigravity-accounts": "Antigravity 账号",
   information: "信息管理",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
+ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("model-access");
 ownerOnlySections.add("model-identification");
 ownerOnlySections.add("groups");
@@ -88,6 +90,8 @@ let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
 let upstreamAccountListLoading = false;
 let upstreamAccountOperation = null;
+let upstreamAccountProvider = "codex";
+let upstreamAccountHelp = null;
 const upstreamQuotaStaleTimers = new Map();
 let upstreamConcurrencyTimer = 0;
 let upstreamConcurrencyStaleTimer = 0;
@@ -252,6 +256,71 @@ const upstreamFinalStatusLabels = {
   available: "可用", unavailable: "不可用", unknown: "状态未知",
 };
 
+function upstreamAccountAPI(path) {
+  return upstreamAccountProvider === "antigravity" ? path.replace("/admin/upstream-accounts", "/admin/antigravity-accounts") : path;
+}
+
+function upstreamAccountSection() {
+  return upstreamAccountProvider === "antigravity" ? "antigravity-accounts" : "upstream-accounts";
+}
+
+function upstreamAccountLanguage(codex, antigravity) {
+  return upstreamAccountProvider === "antigravity" ? antigravity : codex;
+}
+
+function upstreamQuotaStatusLabels() {
+  return {...upstreamGatewayQuotaStatusLabels, quota_exhausted: upstreamAccountLanguage("已锁定", "限流冷却")};
+}
+
+function upstreamAccountManuallyBlocked(account) {
+  return account.gateway_manual_status === "manual_disabled" ||
+    (upstreamAccountProvider !== "antigravity" && account.gateway_quota_status === "quota_exhausted");
+}
+
+// Both provider pages use the same manager, including guarded writes and reauthentication.
+// Invalidate every pending read/write before moving it to another provider's page.
+function selectUpstreamAccountProvider(section) {
+  if (!["upstream-accounts", "antigravity-accounts"].includes(section)) return false;
+  const provider = section === "antigravity-accounts" ? "antigravity" : "codex";
+  const manager = byId("upstream-account-manager");
+  if (!upstreamAccountHelp) {
+    upstreamAccountHelp = new Map(["upstream-account-control-help", "upstream-allocation-help", "upstream-concurrency-limit-help", "upstream-quota-warning"]
+      .map((id) => [id, Array.from(byId(id).childNodes, (node) => node.cloneNode(true))]));
+  }
+  if (provider === upstreamAccountProvider) return false;
+  stopUpstreamConcurrency();
+  clearUpstreamQuotaTimers();
+  upstreamAccountRequestSequence++;
+  upstreamAccessSequence++;
+  if (upstreamAccountOperation && reauthPromise) cancelReauthentication();
+  upstreamAccountOperation = null;
+  upstreamAccountListLoading = false;
+  upstreamAccountSyncHealthy = false;
+  upstreamAccounts = [];
+  upstreamAccessAccount = null;
+  upstreamAccessSelected.clear();
+  upstreamAccessUsers = [];
+  const accessDialog = byId("upstream-access-dialog");
+  if (accessDialog.open) accessDialog.close();
+  upstreamAccountProvider = provider;
+  const host = provider === "antigravity" ? byId("antigravity-account-manager-host") : document.querySelector('[data-section="upstream-accounts"]');
+  host.append(manager);
+  for (const [id, nodes] of upstreamAccountHelp) byId(id).replaceChildren(...nodes.map((node) => node.cloneNode(true)));
+  if (provider === "antigravity") {
+    byId("upstream-account-control-help").textContent = "账号状态：手动禁用后停止接收新请求，直到 Owner 重新启用；已开始的请求继续执行。上游返回 429 时账号进入约 60 秒的限流冷却，随后自动重试。重新启用只恢复手动开关，不会跳过冷却或修复失效的登录凭据。";
+    byId("upstream-allocation-help").textContent = "请求轮换：按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新请求，已开始的请求继续执行。参考目标按当前启用账号计算；实际分配会根据当前模型、使用权限和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。";
+    byId("upstream-concurrency-limit-help").textContent = "请求并发限制：AGY 请求没有可稳定识别的对话标识，因此每个正在执行的请求单独占用一个名额，每个账号默认上限为 1。所有可用账号都达到上限时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新请求。";
+    byId("upstream-quota-warning").textContent = "额度说明：Antigravity 暂不提供精确的剩余额度百分比或额度重置时间，当前不支持即时额度查询。本地请求、Token、费用统计及限流冷却状态仍可查看；限流冷却结束后自动重试，若上游仍限流则再次冷却。";
+  }
+  setUpstreamAccountMessage("upstream-account-action-message");
+  setUpstreamAccountMessage("upstream-account-refresh-message");
+  setLocalMessage(byId("upstream-account-filter"));
+  byId("upstream-account-period").textContent = "—";
+  byId("upstream-allocation-period").textContent = "近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。";
+  byId("upstream-account-list").replaceChildren(emptyState("正在加载账号和本地统计…"));
+  return true;
+}
+
 function upstreamStatusKnown(account) {
   return ["active", "unavailable", "disabled", "error"].includes(account?.cliproxy_status) &&
     ["enabled", "manual_disabled"].includes(account?.gateway_manual_status) &&
@@ -275,9 +344,9 @@ function upstreamAccountStatusBadges(account) {
   const final = upstreamFinalStatus(account);
   const finalBadge = upstreamStatusBadge("最终分流", final, upstreamFinalStatusLabels, "upstream-account-status");
   return [
-    upstreamStatusBadge("CLIProxyAPI", account?.cliproxy_status, upstreamCliproxyStatusLabels, "upstream-account-cliproxy-status"),
+    upstreamStatusBadge(upstreamAccountLanguage("CLIProxyAPI", "Antigravity"), account?.cliproxy_status, upstreamCliproxyStatusLabels, "upstream-account-cliproxy-status"),
     upstreamStatusBadge("Gateway手动", account?.gateway_manual_status, upstreamGatewayManualStatusLabels, "upstream-account-manual-status"),
-    upstreamStatusBadge("Gateway额度", account?.gateway_quota_status, upstreamGatewayQuotaStatusLabels, "upstream-account-quota-status"),
+    upstreamStatusBadge(upstreamAccountLanguage("Gateway额度", "限流状态"), account?.gateway_quota_status, upstreamQuotaStatusLabels(), "upstream-account-quota-status"),
     finalBadge,
   ];
 }
@@ -3434,7 +3503,7 @@ function upstreamAccessBlock(account) {
 }
 
 async function openUpstreamAccess(account) {
-  if (loggingOut || state?.user?.role !== "owner" || upstreamAccountOperation || !upstreamAccountSyncHealthy) return;
+  if (loggingOut || state?.user?.role !== "owner" || upstreamAccountOperation || !upstreamAccountSyncHealthy || !upstreamAccounts.includes(account)) return;
   const sequence = ++upstreamAccessSequence;
   const generation = identityGeneration;
   const identityCurrent = groupIdentityCurrent();
@@ -3475,21 +3544,21 @@ function renderUpstreamAccessUsers() {
 async function saveUpstreamAccess(event) {
   const form = event.currentTarget;
   const account = upstreamAccessAccount;
-  if (!account || upstreamAccountOperation || loggingOut || state?.user?.role !== "owner") return;
+  if (!account || !upstreamAccounts.includes(account) || upstreamAccountOperation || loggingOut || state?.user?.role !== "owner") return;
   const mode = form.elements.mode.value;
   const ids = mode === "exclusive" ? [...upstreamAccessSelected].sort() : [];
   if (mode === "exclusive" && !ids.length) throw new Error("专属账号至少需要选择一位用户。");
   const payload = {mode, user_ids: ids, reason: billingReason(form)};
   const generation = identityGeneration;
   const operation = {id: account.id, kind: "access"};
-  const current = () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+  const current = () => upstreamAccountOperation === operation && generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
   upstreamAccountOperation = operation;
   syncUpstreamAccountControls();
   let saved = false;
   try {
     await sensitiveAction(() => {
       if (!current()) throw new Error("登录身份已变化，操作已停止。");
-      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/access`, {method: "PUT", body: JSON.stringify(payload)}, current);
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/access`), {method: "PUT", body: JSON.stringify(payload)}, current);
     }, current);
     if (!current()) return;
     saved = true;
@@ -3664,6 +3733,7 @@ function renderUpstreamQuota(account, container, result, receivedAt) {
 }
 
 async function loadUpstreamQuota(account, quotaBlock, container) {
+  if (upstreamAccountProvider === "antigravity") return;
   setLocalMessage(quotaBlock);
   clearUpstreamQuotaTimer(account.id);
   container.dataset.state = "loading";
@@ -3712,7 +3782,7 @@ function syncUpstreamAccountControls() {
     button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
       loggingOut || state?.user?.role !== "owner";
     const pending = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "status";
-    const gatewayBlocked = account.gateway_manual_status === "manual_disabled" || account.gateway_quota_status === "quota_exhausted";
+    const gatewayBlocked = upstreamAccountManuallyBlocked(account);
     button.textContent = pending ? (upstreamAccountOperation.enabled ? "启用中…" : "禁用中…") :
       (gatewayBlocked ? "重新启用" : "禁用");
     button.setAttribute("aria-busy", String(pending));
@@ -3723,7 +3793,7 @@ function syncUpstreamAccountControls() {
     if (cliproxyBadge) {
       const value = upstreamCliproxyStatusLabels[account.cliproxy_status] ? account.cliproxy_status : "unknown";
       cliproxyBadge.dataset.status = value;
-      cliproxyBadge.textContent = `CLIProxyAPI：${upstreamCliproxyStatusLabels[value]}`;
+      cliproxyBadge.textContent = `${upstreamAccountLanguage("CLIProxyAPI", "Antigravity")}：${upstreamCliproxyStatusLabels[value]}`;
     }
     if (manualBadge) {
       const value = upstreamGatewayManualStatusLabels[account.gateway_manual_status] ? account.gateway_manual_status : "unknown";
@@ -3733,7 +3803,7 @@ function syncUpstreamAccountControls() {
     if (quotaBadge) {
       const value = upstreamGatewayQuotaStatusLabels[account.gateway_quota_status] ? account.gateway_quota_status : "unknown";
       quotaBadge.dataset.status = value;
-      quotaBadge.textContent = `Gateway额度：${upstreamGatewayQuotaStatusLabels[value]}`;
+      quotaBadge.textContent = `${upstreamAccountLanguage("Gateway额度", "限流状态")}：${upstreamQuotaStatusLabels()[value]}`;
     }
     note.textContent = canManage ? "" : "账号未在最近一次同步中确认，暂不可操作。";
     note.classList.toggle("hidden", canManage);
@@ -3746,8 +3816,9 @@ function syncUpstreamAccountControls() {
     weightButton.textContent = savingWeight ? "保存中…" : "保存系数";
     weightButton.setAttribute("aria-busy", String(savingWeight));
     allocationState.dataset.draining = String(account.allocation_weight === 0);
-    allocationState.textContent = account.allocation_weight === 0 ? "停止接收新对话 · 已有有效绑定继续使用" :
-      (finalStatus === "available" ? "参与新对话分配" : finalStatus === "unknown" ? "状态未知 · 暂停新对话分配" : "账号不可用 · 暂不参与新对话分配");
+    const allocationUnit = upstreamAccountLanguage("新对话", "新请求");
+    allocationState.textContent = account.allocation_weight === 0 ? upstreamAccountLanguage("停止接收新对话 · 已有有效绑定继续使用", "停止接收新请求 · 已开始的请求继续执行") :
+      (finalStatus === "available" ? `参与${allocationUnit}分配` : finalStatus === "unknown" ? `状态未知 · 暂停${allocationUnit}分配` : `账号不可用 · 暂不参与${allocationUnit}分配`);
     const limitInput = card.querySelector(".upstream-concurrency-limit-input");
     const limitButton = card.querySelector(".upstream-concurrency-limit-save");
     const savingLimit = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "limit";
@@ -3788,7 +3859,7 @@ async function saveUpstreamConcurrentLimit(account, form) {
       if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
         throw new DOMException("操作已取消。", "AbortError");
       }
-      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/concurrent-limit`, {
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/concurrent-limit`), {
         method: "PUT", body: JSON.stringify({concurrent_limit: operation.limit}),
       });
     });
@@ -3796,8 +3867,8 @@ async function saveUpstreamConcurrentLimit(account, form) {
     if (response?.id !== account.id || response.concurrent_limit !== operation.limit) throw new Error("并发上限响应格式异常，请刷新列表确认结果。");
     confirmed = true;
     account.concurrent_limit = response.concurrent_limit;
-    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} 并发对话上限已保存为 ${operation.limit}。`, "ok");
-    announce(`已保存 ${account.email_masked || "该上游账号"} 的并发对话上限。`);
+    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} ${upstreamAccountLanguage("并发对话上限", "请求并发上限")}已保存为 ${operation.limit}。`, "ok");
+    announce(`已保存 ${account.email_masked || "该上游账号"} 的${upstreamAccountLanguage("并发对话上限", "请求并发上限")}。`);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
   } catch (error) {
     if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
@@ -3813,7 +3884,7 @@ async function changeUpstreamAccountStatus(account) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
       !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
       !upstreamAccounts.includes(account) || !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
-  const operation = {id: account.id, kind: "status", enabled: account.gateway_manual_status === "manual_disabled" || account.gateway_quota_status === "quota_exhausted"};
+  const operation = {id: account.id, kind: "status", enabled: upstreamAccountManuallyBlocked(account)};
   upstreamAccountOperation = operation;
   upstreamAccountRequestSequence++;
   setUpstreamAccountMessage("upstream-account-action-message");
@@ -3825,7 +3896,7 @@ async function changeUpstreamAccountStatus(account) {
       if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
         throw new DOMException("操作已取消。", "AbortError");
       }
-      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/status`, {
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/status`), {
         method: "PUT", body: JSON.stringify({enabled: operation.enabled}),
       });
     });
@@ -3840,7 +3911,7 @@ async function changeUpstreamAccountStatus(account) {
     account.gateway_manual_status = response.gateway_manual_status;
     account.gateway_quota_status = response.gateway_quota_status;
     syncUpstreamAccountControls();
-    const enabledMessage = account.allocation_weight === 0 ? "系数仍为 0，停止接收新对话；已有有效绑定继续使用。" : "已恢复参与分流；若额度仍不足，将再次锁定。";
+    const enabledMessage = account.allocation_weight === 0 ? upstreamAccountLanguage("系数仍为 0，停止接收新对话；已有有效绑定继续使用。", "系数仍为 0，停止接收新请求；已开始的请求继续执行。") : upstreamAccountLanguage("已恢复参与分流；若额度仍不足，将再次锁定。", "手动开关已启用；账号就绪且限流冷却结束后参与请求分配。");
     const message = `${account.email_masked || "该上游账号"} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
@@ -3870,7 +3941,7 @@ async function saveUpstreamAllocationWeight(account, form) {
   const weight = Number(raw);
   if (!/^\d+$/.test(raw) || !Number.isInteger(weight) || weight > 2147483647) {
     input.setAttribute("aria-invalid", "true");
-    setLocalMessage(form, "请输入 0 至 2147483647 的整数；0 表示停止接收新对话。");
+    setLocalMessage(form, `请输入 0 至 2147483647 的整数；0 表示停止接收${upstreamAccountLanguage("新对话", "新请求")}。`);
     return;
   }
   input.setAttribute("aria-invalid", "false");
@@ -3887,7 +3958,7 @@ async function saveUpstreamAllocationWeight(account, form) {
       if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
         throw new DOMException("操作已取消。", "AbortError");
       }
-      return api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/allocation-weight`, {
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/allocation-weight`), {
         method: "PUT", body: JSON.stringify({weight: operation.weight}),
       });
     });
@@ -3898,7 +3969,7 @@ async function saveUpstreamAllocationWeight(account, form) {
     confirmed = true;
     account.allocation_weight = response.allocation_weight;
     syncUpstreamAccountControls();
-    const message = `${account.email_masked || "该上游账号"} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? "停止接收新对话，已有有效绑定继续使用。" : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
+    const message = `${account.email_masked || "该上游账号"} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? upstreamAccountLanguage("停止接收新对话，已有有效绑定继续使用。", "停止接收新请求，已开始的请求继续执行。") : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -3939,7 +4010,7 @@ function upstreamAllocationBlock(account) {
   limitInput.value = String(account.concurrent_limit ?? 1);
   const limitButton = element("button", {type: "submit", className: "secondary upstream-concurrency-limit-save", text: "保存并发上限"});
   const limitForm = element("form", {className: "upstream-concurrency-limit-form", attributes: {novalidate: ""}},
-    element("label", {}, element("span", {text: "并发对话数量"}), limitInput), limitButton,
+    element("label", {}, element("span", {text: upstreamAccountLanguage("并发对话数量", "请求并发限制")}), limitInput), limitButton,
     element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
   );
   limitForm.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamConcurrentLimit(account, limitForm); });
@@ -4174,15 +4245,15 @@ function stopUpstreamConcurrency() {
 }
 
 function startUpstreamConcurrency() {
-  if (!ownerSectionVisible("upstream-accounts") || upstreamConcurrencyPolling) return;
+  if (!ownerSectionVisible(upstreamAccountSection()) || upstreamConcurrencyPolling) return;
   upstreamConcurrencyPolling = true;
   const generation = ++upstreamConcurrencyGeneration;
-  const current = () => generation === upstreamConcurrencyGeneration && ownerSectionVisible("upstream-accounts");
+  const current = () => generation === upstreamConcurrencyGeneration && ownerSectionVisible(upstreamAccountSection());
   const sample = async () => {
     if (!current()) return;
     upstreamConcurrencyController = new AbortController();
     try {
-      const result = await api("/admin/upstream-accounts/concurrency", {signal: upstreamConcurrencyController.signal}, current);
+      const result = await api(upstreamAccountAPI("/admin/upstream-accounts/concurrency"), {signal: upstreamConcurrencyController.signal}, current);
       if (!current()) return;
       upstreamConcurrencySnapshot = result;
       window.clearTimeout(upstreamConcurrencyStaleTimer);
@@ -4236,21 +4307,22 @@ function upstreamAccountCard(account) {
     element("div", {className: "panel-heading upstream-account-heading"},
       element("div", {className: "upstream-account-identity"},
         element("h3", {text: account.email_masked || "邮箱不可用"}),
+        ...(account.display_name ? [element("p", {className: "upstream-account-name", text: `账号名称：${account.display_name}`})] : []),
         element("p", {text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
       ),
       element("div", {className: "upstream-account-actions"}, ...badges, statusButton),
     ),
     element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
-      element("span", {text: "活跃 root 对话数"}),
+      element("span", {text: upstreamAccountLanguage("活跃 root 对话数", "正在执行的请求")}),
       element("strong", {className: "upstream-concurrency-count", text: "暂不可用"}),
-      element("small", {text: "同一 root 的重叠请求共享名额"}),
+      element("small", {text: upstreamAccountLanguage("同一 root 的重叠请求共享名额", "每个请求单独占用一个名额")}),
     ),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
     upstreamAccessBlock(account),
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
-    quotaBlock,
+    ...(upstreamAccountProvider === "antigravity" ? [] : [quotaBlock]),
   );
 }
 
@@ -4290,9 +4362,9 @@ function renderUpstreamAccounts(result, query) {
   const container = byId("upstream-account-list");
   container.setAttribute("aria-busy", "false");
   if (cards.length) container.replaceChildren(...cards);
-  else container.replaceChildren(emptyState("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。"));
+  else container.replaceChildren(emptyState(upstreamAccountLanguage("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。", "尚未同步任何 Antigravity 账号。请展开添加账号说明，通过 SSH 登录脚本添加后刷新。")));
   const warning = result?.sync_warning ? " · 上游状态同步失败，当前展示最后已知的本地记录" : "";
-  byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个上游账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
+  byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个${upstreamAccountLanguage("上游", "Antigravity")}账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
   const allocationWindow = result?.allocation_from && result?.allocation_until ?
     `近 24 小时：${formatDateTime(result.allocation_from)} 至 ${formatDateTime(result.allocation_until)} · ` : "";
   byId("upstream-allocation-period").textContent = `${allocationWindow}独立于历史统计筛选；费用占比以所有已归因账号费用为分母。`;
@@ -4323,7 +4395,7 @@ async function loadUpstreamAccounts(query, {afterOperation = false} = {}) {
   container.setAttribute("aria-busy", "true");
   if (!upstreamAccounts.length) container.replaceChildren(emptyState("正在加载上游账号和本地统计…"));
   try {
-    const result = await api(`/admin/upstream-accounts${querySuffix(query)}`);
+    const result = await api(upstreamAccountAPI(`/admin/upstream-accounts${querySuffix(query)}`));
     if (sequence !== upstreamAccountRequestSequence) return;
     if (!result || typeof result !== "object" || !Array.isArray(result.accounts)) throw new Error("上游账号响应格式异常，请稍后重试。");
     renderUpstreamAccounts(result || {}, query);
@@ -5044,7 +5116,7 @@ function bindModelIdentification() {
 }
 
 function syncVisiblePolling() {
-  if (ownerSectionVisible("upstream-accounts")) startUpstreamConcurrency();
+  if (ownerSectionVisible(upstreamAccountSection())) startUpstreamConcurrency();
   else if (upstreamConcurrencyPolling) stopUpstreamConcurrency();
   if (ownerSectionVisible("monitoring")) startMonitoring();
   else if (monitoringPolling) stopMonitoring();
@@ -5192,6 +5264,11 @@ function routeFromHash(focusContent = true) {
   byId("page-title").textContent = sectionTitles[section];
   document.title = `${sectionTitles[section]} · Codex Gateway`;
   if (focusContent) byId("content").focus({preventScroll: true});
+  if (selectUpstreamAccountProvider(section)) {
+    loadUpstreamAccounts(upstreamAccountQueryFromForm()).catch((error) => {
+      setLocalMessage(byId("upstream-account-filter"), friendlyError(error));
+    });
+  }
   syncVisiblePolling();
   if (section === "information" && !informationLoaded) {
     informationLoaded = true;
