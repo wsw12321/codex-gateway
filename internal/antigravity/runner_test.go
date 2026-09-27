@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -19,11 +22,13 @@ import (
 
 type fakeCLIConfig struct {
 	Stream, Stderr, Capture, Models, Version string
+	WantCredential, UpdatedCredential, Usage string
 	ExitCode, FragmentSize                   int
 	Hang, Child                              bool
 }
 
 type processCapture struct {
+	Credential                                                string
 	Args                                                      []string
 	Prompt                                                    string
 	Root                                                      string
@@ -59,6 +64,23 @@ func TestAgyProcess(t *testing.T) {
 		os.Exit(82)
 	}
 	args := os.Args[marker+2:]
+	credentialPath := filepath.Join(os.Getenv("HOME"), ".gemini/antigravity-cli/antigravity-oauth-token")
+	credential, _ := os.ReadFile(credentialPath)
+	if fixture.WantCredential != "" && string(credential) != fixture.WantCredential {
+		os.Exit(87)
+	}
+	if fixture.UpdatedCredential != "" {
+		if os.WriteFile(credentialPath, []byte(fixture.UpdatedCredential), 0600) != nil {
+			os.Exit(88)
+		}
+	}
+	if len(args) == 0 {
+		os.Exit(fixture.ExitCode)
+	}
+	if len(args) > 1 && args[0] == "--print" && args[1] == "/usage" {
+		fmt.Print(fixture.Usage)
+		os.Exit(fixture.ExitCode)
+	}
 	if len(args) == 1 && args[0] == "--version" {
 		fmt.Println(fixture.Version)
 		os.Exit(0)
@@ -85,7 +107,7 @@ func TestAgyProcess(t *testing.T) {
 	settings, _ := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".gemini/antigravity-cli/settings.json"))
 	root := filepath.Dir(cwd)
 	capture := processCapture{
-		Args: args, Prompt: event.Message.Content, Root: root, PID: os.Getpid(),
+		Args: args, Prompt: event.Message.Content, Root: root, PID: os.Getpid(), Credential: string(credential),
 		DBusSessionBusAddress: os.Getenv("DBUS_SESSION_BUS_ADDRESS"),
 		GNOMEKeyringControl:   os.Getenv("GNOME_KEYRING_CONTROL"),
 		XDGRuntimeDir:         os.Getenv("XDG_RUNTIME_DIR"),
@@ -155,7 +177,7 @@ func fakeRunner(t *testing.T, fixture fakeCLIConfig) (Runner, string) {
 	if err := os.Mkdir(workRoot, 0700); err != nil {
 		t.Fatal(err)
 	}
-	return Runner{Binary: binary, TempDir: workRoot, Timeout: 5 * time.Second}, fixture.Capture
+	return Runner{Binary: binary, TempDir: workRoot, Timeout: 5 * time.Second, Credentials: &runnerCredentials{data: testCredential}}, fixture.Capture
 }
 
 func readCapture(t *testing.T, path string) processCapture {
@@ -320,5 +342,143 @@ func TestRunnerReadinessRequiresExactModelAndVersion(t *testing.T) {
 			}
 			assertWorkspacesClean(t, runner)
 		})
+	}
+}
+
+// This fake models only the persistence boundary; credentials_test exercises
+// the production file validation and Secret Service protocol separately.
+const testCredential = `{"token":{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","token_type":"Bearer","expiry":"2099-01-01T00:00:00Z"},"project_id":"synthetic-project","region":"synthetic-region","user_tier":"synthetic-tier"}`
+const refreshedCredential = `{"token":{"access_token":"refreshed-access","refresh_token":"refreshed-refresh","token_type":"Bearer","expiry":"2099-02-01T00:00:00Z"},"project_id":"synthetic-project","region":"synthetic-region","user_tier":"synthetic-tier"}`
+
+type runnerCredentials struct {
+	mu                  sync.Mutex
+	data                string
+	restoreErr, saveErr error
+	restores, saves     int
+	saveContextErr      error
+	saveDeadline        time.Duration
+}
+
+func (c *runnerCredentials) Restore(ctx context.Context, home string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.restores++
+	if c.restoreErr != nil {
+		return c.restoreErr
+	}
+	return os.WriteFile(filepath.Join(home, ".gemini/antigravity-cli/antigravity-oauth-token"), []byte(c.data), 0600)
+}
+func (c *runnerCredentials) Save(ctx context.Context, home string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.saves++
+	c.saveContextErr = ctx.Err()
+	if deadline, ok := ctx.Deadline(); ok {
+		c.saveDeadline = time.Until(deadline)
+	}
+	if c.saveErr != nil {
+		return c.saveErr
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".gemini/antigravity-cli/antigravity-oauth-token"))
+	if err == nil {
+		c.data = string(data)
+	}
+	return err
+}
+
+func TestRunnerCredentialRefreshPersistsForNextInvocation(t *testing.T) {
+	runner, capture := fakeRunner(t, fakeCLIConfig{Stream: initEvent + resultEvent, UpdatedCredential: refreshedCredential})
+	for i, expected := range []string{testCredential, refreshedCredential} {
+		result, failure := runner.Run(context.Background(), "private prompt")
+		if failure != nil || result.Response == "" {
+			t.Fatalf("invocation %d failure=%v", i, failure)
+		}
+		if got := readCapture(t, capture).Credential; got != expected {
+			t.Fatalf("invocation %d did not restore expected credential", i)
+		}
+	}
+	c := runner.Credentials.(*runnerCredentials)
+	if c.data != refreshedCredential || c.restores != 2 || c.saves != 2 {
+		t.Fatal("credential was not refreshed and restored")
+	}
+	assertWorkspacesClean(t, runner)
+}
+
+func TestRunnerSavesRefreshAfterFailureTimeoutAndCancellation(t *testing.T) {
+	for _, scenario := range []string{"failure", "timeout", "cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := fakeCLIConfig{UpdatedCredential: refreshedCredential}
+			if scenario == "failure" {
+				fixture.ExitCode = 7
+				fixture.Stderr = "private failure"
+			} else {
+				fixture.Hang = true
+				fixture.Child = true
+			}
+			runner, capture := fakeRunner(t, fixture)
+			if scenario == "timeout" {
+				runner.Timeout = 500 * time.Millisecond
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan *Failure, 1)
+			go func() { _, failure := runner.Run(ctx, "private prompt"); done <- failure }()
+			if scenario == "cancel" {
+				readCapture(t, capture)
+				cancel()
+			}
+			failure := <-done
+			if failure == nil {
+				t.Fatal("request unexpectedly succeeded")
+			}
+			c := runner.Credentials.(*runnerCredentials)
+			if c.data != refreshedCredential || c.saves != 1 || c.saveContextErr != nil || c.saveDeadline <= 0 || c.saveDeadline > 5*time.Second {
+				t.Fatalf("refresh not saved with independent bounded context: %+v", c)
+			}
+			assertWorkspacesClean(t, runner)
+		})
+	}
+}
+
+func TestRunnerCredentialFailuresCloseReadiness(t *testing.T) {
+	for _, stage := range []string{"restore", "save"} {
+		t.Run(stage, func(t *testing.T) {
+			runner, _ := fakeRunner(t, fakeCLIConfig{Stream: initEvent + resultEvent})
+			var logs bytes.Buffer
+			runner.Logger = slog.New(slog.NewTextHandler(&logs, nil))
+			server := NewServer(runner, "bridge-test-token")
+			server.Refresh(context.Background())
+			if !server.ready.Load() {
+				t.Fatal("initial readiness failed")
+			}
+			c := runner.Credentials.(*runnerCredentials)
+			// Unknown errors cannot leak their text into auth diagnostics or HTTP.
+			if stage == "restore" {
+				c.restoreErr = errors.New("synthetic-sensitive-token")
+			} else {
+				c.saveErr = errors.New("synthetic-sensitive-token")
+			}
+			req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"`+PublicModel+`","input":"hello","stream":true}`))
+			req.Header.Set("Authorization", "Bearer bridge-test-token")
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, req)
+			if response.Code != 503 || server.ready.Load() || strings.Contains(response.Body.String(), "response.completed") {
+				t.Fatalf("save/restore failure accepted: %d %s", response.Code, response.Body)
+			}
+			if strings.Contains(logs.String()+response.Body.String(), "synthetic-sensitive-token") {
+				t.Fatal("credential leaked")
+			}
+		})
+	}
+}
+
+func TestReadinessSavesEveryCLIInvocation(t *testing.T) {
+	runner, _ := fakeRunner(t, fakeCLIConfig{UpdatedCredential: refreshedCredential})
+	if err := runner.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c := runner.Credentials.(*runnerCredentials)
+	if c.restores != 2 || c.saves != 2 || c.data != refreshedCredential {
+		t.Fatal("health checks bypassed credential lifecycle")
 	}
 }

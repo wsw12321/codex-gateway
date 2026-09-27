@@ -54,7 +54,7 @@ Internet
 | Tunnel token 泄漏 | Dashboard token 仅存 `0640` secret，以 `--token-file` 挂载给非 root、只读的 connector | 文件/mount/进程参数和日志检查 |
 | API Key 数据库泄漏 | HMAC 用于认证；新 Key 的版本化 AES-256-GCM 密文使用仅挂载给 Gateway 的独立密钥，AAD 绑定用户和 Public ID，查看要求近期二次验证 | 加密篡改/AAD 测试、管理响应和数据库检查 |
 | OAuth 被主服务或备份读取 | OAuth 只挂载到非 root sidecar；不挂载 Gateway/备份任务 | Compose mount 审计、灾备演练 |
-| Antigravity 登录状态泄漏 | 加密 Keyring 只挂载到 UID 10002 Bridge；独立口令和 Bearer secret；临时 HOME/D-Bus 在 tmpfs | Compose mount/secret 审计、错误口令与重启测试 |
+| Antigravity 登录状态泄漏 | 完整认证文件经 stdin/stdout 编码存入加密 Keyring，调用前恢复到 UID 10002 的私有 tmpfs HOME；独立口令和 Bearer secret；不持久化设置、会话和缓存 | Compose mount/secret 审计、合成凭据跨容器恢复与刷新、错误口令及明文残留测试 |
 | Refresh token 并发复用 | 登录/升级锁；先停唯一实例；禁止共享卷的双实例 | 容器状态检查、运维演练 |
 | OAuth 文件权限放宽或 symlink | 启动时要求目录 UID 10001/精确 `0700`、文件 UID 10001/regular file/精确 `0600` | `verify-oauth-permissions.sh` |
 | 多账号登录覆盖其他 OAuth 文件 | 登录前后只比较内部 Sidecar Key 加域的文件名/内容 SHA-256；要求恰好一个账号新增或刷新且零删除 | 重复登录、同账号刷新和权限测试 |

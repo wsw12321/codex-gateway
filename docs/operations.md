@@ -318,7 +318,12 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 ## 5. 上游设备码登录
 
 Gemini 订阅使用独立的 `./scripts/antigravity-login.sh` 和 Keyring 卷；旧 Gemini
-OAuth 文件留在原卷但不再加载。登录、出口审核及文本 JSON/SSE 验收见
+OAuth 文件留在原卷但不再加载。AGY 的文件凭据由 Bridge 编码存入加密 Keyring，
+每次调用恢复到独立 HOME，刷新后写回；设置和聊天记录不持久化。登录脚本依次
+完成交互授权、保存、独立容器恢复检查和服务 HTTP 验收，只有打印
+`Antigravity login persisted; readiness, JSON and SSE passed.` 才表示全部成功。
+若旧容器退出后登录丢失，重新运行该脚本；错误中的 `stage`、`category` 和
+`exit_code` 用于定位恢复、保存或验收阶段。登录、出口审核及文本 JSON/SSE 验收见
 [Antigravity 接入说明](gemini-pro.md)。Codex 继续使用以下设备码流程。
 
 登录只能通过 SSH 执行：

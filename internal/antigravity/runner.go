@@ -22,10 +22,11 @@ const CLIVersion = "1.2.4"
 const SafeSettings = `{"toolPermission":"strict","allowNonWorkspaceAccess":false,"enableTelemetry":false,"useG1Credits":false,"permissions":{"deny":["read_file(*)","write_file(*)","read_url(*)","execute_url(*)","command(*)","unsandboxed(*)","mcp(*)"],"allow":[],"ask":[]}}`
 
 type Runner struct {
-	Binary  string
-	TempDir string
-	Timeout time.Duration
-	Logger  *slog.Logger
+	Binary      string
+	TempDir     string
+	Timeout     time.Duration
+	Logger      *slog.Logger
+	Credentials Credentials
 }
 
 type cappedBuffer struct {
@@ -43,6 +44,12 @@ func (r *countedReader) Read(p []byte) (int, error) {
 	n, err := r.reader.Read(p)
 	r.count += int64(n)
 	return n, err
+}
+
+// Override bytes.Buffer.ReadFrom: os/exec's io.Copy otherwise bypasses Write,
+// losing both output limits and the redacted diagnostic byte count.
+func (b *cappedBuffer) ReadFrom(reader io.Reader) (int64, error) {
+	return io.Copy(struct{ io.Writer }{b}, reader)
 }
 
 func (b *cappedBuffer) Write(p []byte) (int, error) {
@@ -81,7 +88,8 @@ func (r Runner) command(ctx context.Context, root, cwd string, args ...string) *
 	cmd := exec.CommandContext(ctx, r.Binary, args...)
 	cmd.Dir = cwd
 	// Deliberately exclude gateway/bridge secrets and arbitrary CLI settings
-	// from the child environment. Authentication goes through Secret Service.
+	// from the child environment. Only the validated authentication file is
+	// restored from Secret Service into this private HOME.
 	for _, key := range []string{"PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "SSL_CERT_FILE", "SSL_CERT_DIR", "DBUS_SESSION_BUS_ADDRESS", "GNOME_KEYRING_CONTROL", "XDG_RUNTIME_DIR"} {
 		if value := os.Getenv(key); value != "" {
 			cmd.Env = append(cmd.Env, key+"="+value)
@@ -100,7 +108,46 @@ func (r Runner) command(ctx context.Context, root, cwd string, args ...string) *
 	return cmd
 }
 
+// restore runs before every CLI invocation, including health checks.
+func (r Runner) restore(ctx context.Context, root string) *AuthError {
+	if err := r.credentials().Restore(ctx, filepath.Join(root, "home")); err != nil {
+		return credentialAuthError("credential_restore", err)
+	}
+	return nil
+}
+
+func (r Runner) credentials() Credentials {
+	if r.Credentials != nil {
+		return r.Credentials
+	}
+	return &KeyringCredentials{}
+}
+
+// save is independent of the request context so a completed token refresh
+// survives client cancellation and upstream timeouts. Call only after Wait and
+// process-group cleanup, while the server still owns its serialization slot.
+func (r Runner) save(root string) *AuthError {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := r.credentials().Save(ctx, filepath.Join(root, "home")); err != nil {
+		return credentialAuthError("credential_save", err)
+	}
+	return nil
+}
+
 func (r Runner) Run(ctx context.Context, prompt string) (Result, *Failure) {
+	result, failure, diagnostic := r.run(ctx, prompt)
+	if diagnostic != nil && r.Logger != nil {
+		r.Logger.Warn("agy operation failed", "stage", diagnostic.Stage, "category", diagnostic.Category, "exit_code", diagnostic.ExitCode)
+	}
+	return result, failure
+}
+
+func credentialFailure() *Failure {
+	return &Failure{503, "upstream_unavailable", "Antigravity credentials are unavailable"}
+}
+
+func (r Runner) run(ctx context.Context, prompt string) (Result, *Failure, *AuthError) {
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -109,9 +156,12 @@ func (r Runner) Run(ctx context.Context, prompt string) (Result, *Failure) {
 	defer cancel()
 	root, cwd, err := r.workspace()
 	if err != nil {
-		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity workspace is unavailable"}
+		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity workspace is unavailable"}, &AuthError{"generation", "io_failed", 1}
 	}
 	defer os.RemoveAll(root)
+	if err := r.restore(ctx, root); err != nil {
+		return Result{}, credentialFailure(), err
+	}
 	cmd := r.command(ctx, root, cwd, "--input-format", "stream-json", "--output-format", "stream-json", "--model", CLIModel, "--print-timeout", "5m", "--disable-slash-commands", "--log-file", filepath.Join(root, "cli.log"))
 	payload, _ := json.Marshal(map[string]any{"event": "user", "message": map[string]string{"content": prompt}})
 	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
@@ -119,10 +169,10 @@ func (r Runner) Run(ctx context.Context, prompt string) (Result, *Failure) {
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return Result{}, protocolFailure()
+		return Result{}, protocolFailure(), &AuthError{"generation", "io_failed", 1}
 	}
 	if err := cmd.Start(); err != nil {
-		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity executable is unavailable"}
+		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity executable is unavailable"}, commandAuthError("generation", ctx.Err(), err)
 	}
 	counted := &countedReader{reader: stdout}
 	result, failure := parseStream(counted)
@@ -134,70 +184,87 @@ func (r Runner) Run(ctx context.Context, prompt string) (Result, *Failure) {
 	// Reap even descendants that closed their pipes before the parent exited.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	if stderr.count > 0 && r.Logger != nil {
-		// Raw stderr can contain prompts, auth tokens and URLs. Redact the
-		// entire diagnostic instead of relying on token-pattern heuristics.
+		// Raw stderr can contain prompts, auth tokens and URLs.
 		r.Logger.Warn("agy diagnostic redacted", "bytes", stderr.count)
+	}
+	if err := r.save(root); err != nil {
+		return Result{}, credentialFailure(), err
 	}
 	if contextErr == nil && failure == nil {
 		contextErr = ctx.Err()
 	}
 	if errors.Is(contextErr, context.DeadlineExceeded) {
-		return Result{}, &Failure{504, "upstream_timeout", "Antigravity request timed out"}
+		return Result{}, &Failure{504, "upstream_timeout", "Antigravity request timed out"}, commandAuthError("generation", contextErr, waitErr)
 	}
 	if errors.Is(contextErr, context.Canceled) {
-		return Result{}, &Failure{499, "request_canceled", "Request canceled"}
+		return Result{}, &Failure{499, "request_canceled", "Request canceled"}, commandAuthError("generation", contextErr, waitErr)
 	}
 	if failure != nil {
 		// Authentication can fail before stdout emits even an init event.
 		if counted.count == 0 && stderr.Len() > 0 {
 			classified := classifyFailure(stderr.String())
 			if classified.Status != 502 {
-				return Result{}, classified
+				return Result{}, classified, commandAuthError("generation", nil, waitErr)
 			}
 		}
-		return Result{}, failure
+		return Result{}, failure, &AuthError{"generation", "invalid_response", 1}
 	}
 	if waitErr != nil {
-		return Result{}, classifyFailure(stderr.String())
+		return Result{}, classifyFailure(stderr.String()), commandAuthError("generation", nil, waitErr)
 	}
-	return result, nil
+	return result, nil, nil
+}
+
+// probe uses no input and never exposes CLI output. Each invocation has a new
+// HOME and a credential restore/save cycle, just like a generation request.
+func (r Runner) probe(ctx context.Context, stage string, args ...string) ([]byte, *AuthError) {
+	root, cwd, err := r.workspace()
+	if err != nil {
+		return nil, &AuthError{stage, "io_failed", 1}
+	}
+	defer os.RemoveAll(root)
+	if err := r.restore(ctx, root); err != nil {
+		return nil, err
+	}
+	cmd := r.command(ctx, root, cwd, args...)
+	stdout := &cappedBuffer{limit: 1 << 20}
+	cmd.Stdout, cmd.Stderr = stdout, io.Discard
+	// A nil Stdin connects the child to /dev/null, never the login terminal.
+	runErr := cmd.Run()
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if err := r.save(root); err != nil {
+			return nil, err
+		}
+	}
+	if runErr != nil || ctx.Err() != nil {
+		return nil, commandAuthError(stage, ctx.Err(), runErr)
+	}
+	if stdout.count > 1<<20 {
+		return nil, &AuthError{stage, "invalid_response", 1}
+	}
+	return stdout.Bytes(), nil
 }
 
 func (r Runner) Check(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	root, cwd, err := r.workspace()
+	version, err := r.probe(ctx, "models", "--version")
 	if err != nil {
-		return errors.New("Antigravity check workspace unavailable")
+		return err
 	}
-	defer os.RemoveAll(root)
-	for _, args := range [][]string{{"--version"}, {"models"}} {
-		cmd := r.command(ctx, root, cwd, args...)
-		stdout := &cappedBuffer{limit: 1 << 20}
-		cmd.Stdout = stdout
-		cmd.Stderr = io.Discard
-		runErr := cmd.Run()
-		if cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		}
-		if runErr != nil {
-			return errors.New("Antigravity model check failed")
-		}
-		if stdout.count > 1<<20 {
-			return errors.New("Antigravity model check exceeds limit")
-		}
-		if args[0] == "--version" {
-			if strings.TrimSpace(stdout.String()) != CLIVersion {
-				return errors.New("Antigravity executable version differs from pin")
-			}
-			continue
-		}
-		for _, line := range strings.Split(stdout.String(), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) > 0 && fields[0] == CLIModel {
-				return nil
-			}
+	if strings.TrimSpace(string(version)) != CLIVersion {
+		return &AuthError{"models", "invalid_response", 1}
+	}
+	models, err := r.probe(ctx, "models", "models")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(models), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == CLIModel {
+			return nil
 		}
 	}
-	return errors.New("Antigravity target model unavailable")
+	return &AuthError{"models", "invalid_response", 1}
 }

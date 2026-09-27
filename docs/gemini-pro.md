@@ -104,7 +104,8 @@ Antigravity 模型的 compact 返回 `501 endpoint_not_supported`。
 每个请求创建独立进程和空工作目录，提示词只经 stdin NDJSON 传入；使用
 `--input-format stream-json --output-format stream-json --model gemini-3.1-pro-high
 --print-timeout 5m --disable-slash-commands`。CLI 日志、HOME、会话和缓存留在请求
-临时目录，退出后删除。全局并发为 1，忙时立即返回 `429 upstream_concurrency_exceeded`。
+临时目录，退出后删除。每次调用只从加密 Keyring 恢复完整认证文件；CLI 退出且进程组
+清理后写回合法的凭据更新，随后删除临时目录。全局并发为 1，忙时立即返回 `429 upstream_concurrency_exceeded`。
 文件、命令、URL、非沙箱执行和 MCP 权限全部显式拒绝。内部工具事件导致整个进程组
 终止并返回 `502 upstream_protocol_error`，不会转发工具内容。
 
@@ -130,13 +131,53 @@ JSON 只取最终成功 `result`。首版 SSE 在 CLI 退出并验证完整协�
 认证，`antigravity_keyring_password` 用于解锁加密 Keyring。不得复用 Sidecar Key。
 脚本持有 `.antigravity-login.lock`，停止 Bridge，使用同一镜像和独立 Keyring 卷启动
 一次性登录容器。按官方远程登录流程在浏览器授权并粘贴验证码，成功后输入 `/exit`。
-随后检查 `agy models`、`agy --print /usage` 和最小文本请求，重新启动独立容器重复检查
-以验证持久登录，最后启动服务并验证 JSON、SSE。失败时 Bridge 保持停止，Codex 不受影响。
+内部 `auth-login` 命令随后保存认证文件。脚本再启动独立容器，由 `auth-verify` 恢复
+凭据并检查固定 CLI 版本、`agy models`、`agy --print /usage` 和最小文本生成。
+全部通过后才启动 Bridge，并执行 readiness、模型目录、JSON 和 SSE 验收。
+最终成功标志只有以下一行；浏览器授权成功或 CLI 显示已登录不代表整个验收完成：
+
+```text
+Antigravity login persisted; readiness, JSON and SSE passed.
+```
+
+仅交互授权阶段保留 TTY；后验容器使用 `compose run -T`、`TERM=dumb`，无需输入的
+命令连接 `/dev/null`，生成请求仍使用 stdin 协议管道。脚本退出、失败或收到信号时
+恢复原终端设置。失败时 Bridge 保持停止，Codex 不受影响。
+
+错误输出使用固定阶段、类别和退出码，例如：
+
+```text
+antigravity: stage=credential_restore category=keyring_failed exit_code=1
+```
+
+`credential_restore`、`credential_save` 分别定位恢复、写回；`models`、`usage`、
+`generation` 定位 CLI 检查；`readiness`、`http_models`、`http_json`、`http_sse`
+定位服务验收。诊断不会打印令牌、授权 URL、模型回复或原始 CLI stderr；授权阶段
+所需的交互界面仍由 CLI 显示。保存失败应先检查 Keyring 解锁、卷权限和可写性，再
+重新运行登录脚本，不能把脚本的非零退出当成登录成功。
 
 容器以 UID 10002 运行，根文件系统只读；D-Bus 和 GNOME Secret Service 在容器内启动。
 Keyring 唯一持久挂载为 `antigravity_keyring:/var/lib/antigravity/keyrings`，仅 Bridge
 持有，文件为 `0600`，目录为 `0700`。启动必须确认持久 login collection 已解锁。
 没有宿主目录、Docker Socket、原 OAuth 卷挂载；临时 HOME 和运行目录使用私有 tmpfs。
+
+`agy 1.2.4` 的认证来源是 `$HOME/.gemini/antigravity-cli/antigravity-oauth-token`
+文件，并不会自动把该文件保存到 Keyring。Bridge 将完整文件编码后，通过
+`secret-tool` 的 stdin/stdout 读写已解锁的持久 `login` 集合；固定应用属性和格式
+版本标记用于找到凭据记录。为兼容工具的输入上限，文件分块保存，最后提交完整性
+清单，避免半次写入替换原凭据。编码本身不提供保密性，磁盘保密由带独立口令的加密
+Keyring 提供。文件中的 OAuth 令牌、项目、地区、订阅信息完整保留，兼容当前包装
+结构和旧版直接 OAuth Token 结构；设置、聊天记录、其他文件和缓存不持久化。
+每次 CLI 调用都恢复到新的 HOME，目录为 `0700`、文件为 `0600`，拒绝符号链接、
+超过 1 MiB 或结构无效的认证文件。
+
+刷新完成后即使请求失败、超时或取消，也在清理 CLI 子进程后以独立的最多 5 秒
+收尾时限保存合法更新。文件缺失或损坏不会覆盖 Keyring 中已有的凭据；写回失败
+会关闭 readiness，成功模型结果也不会返回给客户端。请求和健康检查仍串行执行，
+登录由停服及文件锁排他保护。修复前若认证仅留在已退出容器的临时 HOME，现有
+Keyring 卷不会凭空补回它；应重新执行 `./scripts/antigravity-login.sh`，直到看到
+上述最终成功标志。不得通过共享 HOME 或复制 settings/history 来修复登录。
+
 Keyring 不进入数据库备份或计划迁机复制；灾备和迁机后重新运行隔离登录脚本。
 若仅为受控故障排查临时导出 Keyring，必须同时保护对应口令，不能单独重生成密码。
 
@@ -177,7 +218,12 @@ Squid 为 Antigravity 网络记录 CONNECT 目标、时间和状态，不记录 
 ## 验收和回滚
 
 开发验证覆盖假 CLI 的 JSON、SSE、NDJSON 分段、认证、限额、协议错误、工具事件、取消、
-超时、usage、路由和共用权限/结算。部署前运行完整 Go suite、race、vet、Compose 校验与
+超时、usage、路由和共用权限/结算，以及认证恢复、刷新写回和失败后的收尾。
+`./scripts/test-antigravity-image.sh <bridge-image>` 使用无网络容器、全新的 HOME 和
+一次性 Keyring 卷，经真实凭据管理代码导入合成认证文件、刷新后跨容器恢复，并检查
+错误口令拒绝、卷中没有明文或仅编码的凭据，以及输出不泄露凭据或模型内容。
+该脚本用假 CLI 代替 Google，不证明真实账号登录或生产出口可用。
+部署前运行完整 Go suite、race、vet、Compose 校验与
 三个镜像构建。真实账号还需验证重启、续期、重新登录、限额、取消后无残余进程、磁盘残留
 和出口域名。真实 Google 上游验收须独立执行，不应把单元测试或本地 AGY 协议探测视为替代。
 

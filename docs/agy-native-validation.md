@@ -60,6 +60,27 @@ Go Docker 镜像执行；源码和模块缓存只读挂载，容器无外部网�
 ./scripts/test-antigravity-image.sh <built-bridge-image>
 ```
 
+登录持久化修复使用加入 `libsecret-tools` 的 Bridge 镜像另行完成上述镜像测试。
+AGY 版本仍为 `1.2.4`，无数据库迁移或对外 API 变化。测试用一次性 Keyring 卷和
+无网络、只读根文件系统的容器执行真实 `auth-login` / `auth-verify` 凭据管理代码；
+仅以假 CLI 替代 Google。合成认证文件超过 8 KiB，覆盖工具输入上限所需的分块
+保存、项目/地区/订阅等完整字段，以及以下过程：
+
+- 首个容器导入完整文件；第二个容器恢复后模拟刷新，后续用量和生成检查读取更新值。
+- 第三个容器和全新 HOME 再次恢复更新后的完整文件；非认证状态没有跟随持久化。
+- 文件/目录权限为 `0600` / `0700`；后验没有 TTY，`TERM=dumb`，无需输入的命令读到 EOF。
+- 错误密码明确在 `keyring` 阶段拒绝；持久文件不包含令牌明文或编码后的凭据分块。
+- 验证输出不含合成令牌、模型回复或 CLI stderr；测试结束删除一次性卷。
+
+此次修复的完整 Go 单测、race、vet、两个程序构建和 49 项脚本回归均通过；
+最终凭据结构校验补充后另行重跑受影响包的单测、race、vet 和构建。终端测试使用
+真实 PTY，覆盖交互授权读取、前台进程组归还，以及脚本正常、失败和 HUP/INT/TERM
+退出后的终端恢复。Compose 在独立临时副本和测试 secrets 下校验通过，race 仍使用
+固定 Go 镜像在无外部网络的容器内执行。
+
+测试没有进行真实 Google 授权、生产验收或服务器部署。上线时仍需重新登录并检查
+脚本最终的 `Antigravity login persisted; readiness, JSON and SSE passed.` 标志。
+
 脱敏夹具位于 `internal/antigravity/testdata/agy-1.2.4-native.json`，覆盖 AGY 默认
 参数、工具 schema、调用 ID 与结果关联、无签名工具循环及标题模型请求。网关测试
 另覆盖无效/停用 key、多来源凭据、模型权限、未知模型、请求大小限制；代理测试覆盖

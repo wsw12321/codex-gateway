@@ -4,57 +4,116 @@ umask 077
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 compose=$root/scripts/compose.sh
 lock_file=$root/.antigravity-login.lock
-test "$#" -eq 0 || { printf '%s\n' 'usage: antigravity-login.sh' >&2; exit 1; }
-command -v flock >/dev/null 2>&1 || { printf '%s\n' 'antigravity-login: flock is required' >&2; exit 1; }
-if test -e "$lock_file" || test -L "$lock_file"; then
-    test -f "$lock_file" && test ! -L "$lock_file" || { printf '%s\n' 'antigravity-login: unsafe lock file' >&2; exit 1; }
-fi
-exec 9>"$lock_file"
-chmod 0600 "$lock_file"
-flock -n 9 || { printf '%s\n' 'antigravity-login: another login holds the lock' >&2; exit 1; }
 bridge_started=0
+work_dir=
+stage=setup
+failure_reported=0
+# Read the controlling terminal, since stdin may be redirected by the caller.
+terminal_state=$({ stty -g < /dev/tty; } 2>/dev/null) || terminal_state=
+
+diagnostic() {
+    printf 'antigravity: stage=%s category=%s exit_code=%s\n' "$1" "$2" "$3" >&2
+}
+fail() {
+    failure_reported=1
+    diagnostic "$1" "$2" "$3"
+    exit "$3"
+}
+restore_terminal() {
+    if test -n "$terminal_state"; then
+        { stty "$terminal_state" < /dev/tty; } 2>/dev/null || return 1
+    fi
+}
 cleanup() {
     status=$?
     trap - EXIT HUP INT TERM
-    if test "$bridge_started" -eq 1; then
-        "$compose" stop -t 10 antigravity-bridge >/dev/null 2>&1 || status=1
+    if test "$status" -ne 0 && test "$failure_reported" -eq 0; then
+        diagnostic "$stage" command_failed "$status"
     fi
+    if test "$bridge_started" -eq 1; then
+        if "$compose" stop -t 10 antigravity-bridge </dev/null >/dev/null 2>&1; then :; else
+            cleanup_status=$?
+            diagnostic stop command_failed "$cleanup_status"
+            test "$status" -ne 0 || status=$cleanup_status
+        fi
+    fi
+    if restore_terminal; then :; else
+        diagnostic terminal cleanup_failed 1
+        test "$status" -ne 0 || status=1
+    fi
+    test -z "$work_dir" || rm -rf "$work_dir"
     exit "$status"
 }
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'fail "$stage" interrupted 129' HUP
+trap 'fail "$stage" interrupted 130' INT
+trap 'fail "$stage" interrupted 143' TERM
+
+# Only our bounded diagnostic vocabulary may cross the container boundary.
+# Compose/CLI stderr can contain OAuth URLs or credentials and is never echoed.
+relay_diagnostics() {
+    awk '/^antigravity: stage=(keyring|authorization|credential_restore|credential_save|models|usage|generation|http_models|http_json|http_sse) category=(command_failed|invalid_credentials|credential_missing|credential_invalid|credential_too_large|unsafe_path|invalid_permissions|keyring_failed|timeout|canceled|invalid_response|cleanup_failed|configuration|io_failed) exit_code=[0-9]+$/ { print > "/dev/stderr" }' "$work_dir/stderr"
+}
+run_quiet() {
+    stage=$1
+    shift
+    if "$@" </dev/null >"$work_dir/stdout" 2>"$work_dir/stderr"; then return; else
+        status=$?
+        relay_diagnostics
+        fail "$stage" command_failed "$status"
+    fi
+}
+
+test "$#" -eq 0 || fail setup configuration 1
+stage=lock
+command -v flock >/dev/null 2>&1 || fail lock configuration 1
+if test -e "$lock_file" || test -L "$lock_file"; then
+    test -f "$lock_file" && test ! -L "$lock_file" || fail lock unsafe_path 1
+fi
+{ exec 9>"$lock_file"; } 2>/dev/null
+chmod 0600 "$lock_file" 2>/dev/null || fail lock invalid_permissions 1
+flock -n 9 || fail lock busy 1
+work_dir=$(mktemp -d /tmp/antigravity-login.XXXXXX) || fail setup io_failed 1
+
 # A single Secret Service owns the volume. Failed login leaves the bridge
 # stopped; Codex and Gateway continue serving their other models.
-"$compose" stop -t 10 antigravity-bridge
-container_id=$("$compose" ps -q antigravity-bridge)
+run_quiet stop "$compose" stop -t 10 antigravity-bridge
+run_quiet service_state "$compose" ps -q antigravity-bridge
+container_id=$(cat "$work_dir/stdout")
 if test -n "$container_id"; then
-    test "$(docker inspect -f '{{.State.Running}}' "$container_id")" = false || {
-        printf '%s\n' 'antigravity-login: bridge still running; refusing shared keyring access' >&2
-        exit 1
-    }
+    run_quiet service_state docker inspect -f '{{.State.Running}}' "$container_id"
+    test "$(cat "$work_dir/stdout")" = false || fail service_state still_running 1
 fi
-"$compose" up -d egress-allowlist
-printf '%s\n' 'Complete the official agy remote login, then use /exit. Models, /usage and a text request are checked next.'
-"$compose" run --rm --no-deps antigravity-bridge login
-# A second container verifies that encrypted credentials survive a new D-Bus
-# session and a new ephemeral HOME before the serving container is restarted.
-"$compose" run --rm --no-deps antigravity-bridge verify-login
+run_quiet egress "$compose" up -d egress-allowlist
+printf '%s\n' 'Complete the official agy remote login, then use /exit. Independent credential, model, usage and text checks follow.'
+stage=authorization
+# Only official interactive authorization inherits stdin and terminal output.
+if "$compose" run --rm --no-deps antigravity-bridge login 2>"$work_dir/stderr"; then :; else
+    status=$?
+    relay_diagnostics
+    fail authorization command_failed "$status"
+fi
+restore_terminal || fail terminal cleanup_failed 1
+
+# A second container verifies encrypted credentials using a new D-Bus session
+# and HOME. All checks are deliberately detached from the login terminal.
+run_quiet verification "$compose" run -T --rm --no-deps -e TERM=dumb antigravity-bridge verify-login
 bridge_started=1
-"$compose" up -d --no-deps antigravity-bridge
+run_quiet start "$compose" up -d --no-deps antigravity-bridge
+stage=readiness
 attempt=0
+readiness_status=1
 while test "$attempt" -lt 30; do
-    if "$compose" exec -T antigravity-bridge curl -fsS --max-time 4 http://127.0.0.1:8318/readyz >/dev/null 2>&1; then
-        if "$compose" exec -T antigravity-bridge /usr/local/bin/antigravity-smoke; then
-            bridge_started=0
-            printf '%s\n' 'Antigravity login persisted; readiness, JSON and SSE passed.'
-            exit 0
-        fi
-        break
+    if "$compose" exec -T -e TERM=dumb antigravity-bridge curl -fsS --max-time 4 http://127.0.0.1:8318/readyz </dev/null >/dev/null 2>&1; then
+        run_quiet http_acceptance "$compose" exec -T -e TERM=dumb antigravity-bridge /usr/local/bin/antigravity-smoke
+        restore_terminal || fail terminal cleanup_failed 1
+        bridge_started=0
+        printf '%s\n' 'Antigravity login persisted; readiness, JSON and SSE passed.'
+        exit 0
+    else
+        readiness_status=$?
     fi
     attempt=$((attempt + 1))
-    sleep 2
+    test "$attempt" -ge 30 || sleep 2
 done
-printf '%s\n' 'antigravity-login: readiness or HTTP smoke failed; bridge stopped' >&2
-exit 1
+fail readiness command_failed "$readiness_status"
