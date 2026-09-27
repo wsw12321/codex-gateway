@@ -160,7 +160,7 @@ func TestBridgeGeminiJSONAndSSE(t *testing.T) {
 				if json.Unmarshal(data, &result) != nil || len(result.Candidates) != 1 || result.Candidates[0].Content.Role != "model" || result.Candidates[0].Content.Parts[0].Text != "Hello 世界" || result.Candidates[0].FinishReason != "STOP" || result.ModelVersion != PublicModel {
 					t.Fatalf("bad Gemini response: %s", data)
 				}
-				for key, value := range map[string]int64{"promptTokenCount": 10415, "candidatesTokenCount": 41, "thoughtsTokenCount": 616, "cachedContentTokenCount": 8113, "totalTokenCount": 11072} {
+				for key, value := range map[string]int64{"promptTokenCount": 18528, "candidatesTokenCount": 41, "thoughtsTokenCount": 616, "cachedContentTokenCount": 8113, "totalTokenCount": 19185} {
 					if result.UsageMetadata[key] != value {
 						t.Fatalf("usage %s=%d want %d", key, result.UsageMetadata[key], value)
 					}

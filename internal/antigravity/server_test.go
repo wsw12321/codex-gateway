@@ -76,8 +76,8 @@ func TestBridgeJSONAndSSEFromFakeCLI(t *testing.T) {
 				t.Fatalf("response metadata=%+v", completed)
 			}
 			usage := completed["usage"].(map[string]any)
-			if usage["input_tokens"] != float64(10415) || usage["output_tokens"] != float64(657) || usage["total_tokens"] != float64(11072) || usage["output_tokens_details"].(map[string]any)["reasoning_tokens"] != float64(616) || usage["input_tokens_details"].(map[string]any)["cached_tokens"] != float64(8113) {
-				t.Fatalf("usage double-counted thinking or lost cache: %+v", usage)
+			if usage["input_tokens"] != float64(18528) || usage["output_tokens"] != float64(657) || usage["total_tokens"] != float64(19185) || usage["output_tokens_details"].(map[string]any)["reasoning_tokens"] != float64(616) || usage["input_tokens_details"].(map[string]any)["cached_tokens"] != float64(8113) {
+				t.Fatalf("usage did not normalize cache once or double-counted thinking: %+v", usage)
 			}
 			output := completed["output"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)
 			if output["text"] != "Hello 世界" {

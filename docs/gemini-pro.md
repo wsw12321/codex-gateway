@@ -24,9 +24,14 @@ Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安�
 统计价格，不表示 Google 对订阅的实际收费。统计包含 Antigravity Agent 系统提示和
 上下文开销，可能明显高于客户端提供的文本 Token 数量。
 
-`input_tokens` 映射输入量，`cache_read_tokens` 写入缓存明细；`agy 1.2.4` 的
-`output_tokens` 已包含 `thinking_tokens`，因此输出量不再次相加，思考量另写入
-reasoning 明细。总量为输入加输出。历史结算快照保持不变。
+AGY stream-json 的 `input_tokens` 是未缓存输入，`cache_read_tokens` 是单独的
+缓存输入，允许缓存量大于未缓存量；原始 `total_tokens` 为未缓存输入加输出。
+Bridge 在读取 CLI 结果时归一一次：Gateway 输入量为
+`input_tokens + cache_read_tokens`，总量为 `total_tokens + cache_read_tokens`，
+缓存量同时保留为输入明细。`output_tokens` 已包含 `thinking_tokens`，因此输出量
+不再次相加，思考量另写入 reasoning 明细。必填字段、非负数、原始总量关系及
+整数溢出检查均保留；不截断或丢弃缓存量。200,000 Token 的价格阈值按包含缓存的
+输入总量判断。价格和历史结算快照保持不变。
 
 Gemini 原生响应将答案输出映射为 `candidatesTokenCount`，思考量映射为
 `thoughtsTokenCount`。Gateway 按候选输出加思考计入输出 Token；
