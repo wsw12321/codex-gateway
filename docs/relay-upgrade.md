@@ -88,13 +88,16 @@ B：
 cd /opt/codex-relay/deploy/relay
 unset SQUID_IMAGE
 docker compose --env-file ../images.lock.env config -q
-docker compose --env-file ../images.lock.env run --rm --no-deps \
-    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf
+docker compose --env-file ../images.lock.env pull relay
+docker compose --env-file ../images.lock.env run -T --rm --no-deps \
+    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf </dev/null
 docker compose --env-file ../images.lock.env up -d --no-deps --force-recreate relay
 docker compose --env-file ../images.lock.env ps
 ```
 
-`config -q` 检查 Compose，下一条命令才检查 Squid 配置。
+`config -q` 检查 Compose，`pull relay` 先准备固定 digest 镜像，
+`run ... -k parse` 才检查 Squid 配置。`-T` 与 `</dev/null` 隔离交互输入；
+该写法兼容 B 的 Docker Compose v2.23.3，不依赖其 `run` 尚未支持的 `--pull` 选项。
 A、B 都使用单文件 bind mount，更新文件可能替换 inode；必须强制重建以加载新文件，
 不能把普通 `up -d`、`restart` 或 Squid reload 当作同等保证。
 
@@ -130,18 +133,35 @@ A 仓库根目录：
 
 ## 5. 验收与故障恢复
 
-在 A 依次运行真实账号冒烟，执行时避开其他 Gemini 请求占用单并发槽：
+在 A 先运行本地元数据检查及 Gemini 生成检查；执行时避开其他 Gemini 请求占用单并发槽：
 
 ```bash
 ./scripts/smoke-sidecar.sh
 ./scripts/compose.sh exec -T -e TERM=dumb antigravity-bridge \
     /usr/local/bin/antigravity-smoke
+```
+
+第一条只检查 readiness 和 Sidecar 的账号、模型、访问能力元数据，**不发起 Codex 生成**；
+B 停止后它也可能成功。第二条才实际检查 Gemini JSON/SSE 生成，会消耗额度，
+成功以退出码 0 为准，不输出回复内容。
+
+Codex 必须用真实 Gateway 用户 API Key 验证生成。按
+[安全的 Codex JSON/SSE 验收命令](openai-relay.md#codex-真实生成)，填写用户指定的私有
+Key 文件路径、本站 HTTPS origin 和该用户获准的可用 Codex 模型，在同一 Bash 会话定义
+`codex_generation_check`，然后运行：
+
+```bash
+codex_generation_check false
+codex_generation_check true
 ./scripts/compose.sh exec -T egress-allowlist tail -n 100 /var/log/squid/access.log
 ```
 
-Codex 与 Gemini 均应退出码为 0。Gemini 冒烟检查模型目录、JSON 和 SSE，
-会产生真实生成和额度消耗，不输出回复内容。A 的 OpenAI 和 Google 成功 CONNECT
-都应显示 `PARENT/10.77.0.2`，不能出现成功的 `HIER_DIRECT`。
+Key 只经私有 curl 配置文件传入，不放在命令参数或日志中。Codex JSON/SSE 都应完成生成，
+并在 Gateway 用量记录中核对。A 的 OpenAI 和 Google 成功 CONNECT 都应显示
+`PARENT/10.77.0.2`，不能出现成功的 `HIER_DIRECT`。
+
+没有用户提供的 Key 时，应记录“Codex 真实 JSON/SSE 生成尚未验收”；
+现有 CONNECT、配额查询、本地元数据等检查只证明各自覆盖的路径，不能称生成已通过。
 
 B 对照目标与时间：
 
@@ -151,34 +171,51 @@ docker compose --env-file ../images.lock.env exec -T relay \
     tail -n 100 /var/log/squid/access.log
 ```
 
-维护窗口内做故障测试，先在 B 停止 relay：
+维护窗口内做故障测试，前提是 B 正常时已完成上述真实生成成功基线。
+先在 B 停止 relay：
 
 ```sh
 docker compose --env-file ../images.lock.env stop relay
 ```
 
-A 用条件分支分别检查预期失败，避免 `set -e` 跳过第二个模型：
+A 保持已准备生成检查的同一 Bash 会话，用真实请求测试故障：
 
 ```bash
-if ./scripts/smoke-sidecar.sh; then
-    printf '%s\n' '验收失败：B 停止后 Codex 仍成功' >&2
+if declare -F codex_generation_check >/dev/null &&
+    test -n "${GATEWAY_API_KEY_FILE:-}" && test -r "$GATEWAY_API_KEY_FILE"; then
+    if codex_generation_check false; then
+        printf '%s\n' '验收失败：B 停止后 Codex 真实生成仍成功' >&2
+    else
+        result=$?
+        if test "$result" -eq 1; then
+            printf '%s\n' 'Codex 真实生成未完成；结合中转失败日志确认故障原因'
+        else
+            printf '%s\n' 'Codex 本地准备失败，不能判定中转故障验收通过' >&2
+        fi
+    fi
 else
-    printf '%s\n' '符合预期：Codex 请求失败'
+    printf '%s\n' '未提供用户Key或未准备生成检查：Codex真实生成故障验收未完成'
 fi
 if ./scripts/compose.sh exec -T -e TERM=dumb antigravity-bridge \
     /usr/local/bin/antigravity-smoke; then
     printf '%s\n' '验收失败：B 停止后 Gemini 仍成功' >&2
 else
-    printf '%s\n' '符合预期：Gemini 请求失败'
+    printf '%s\n' 'Gemini 生成未完成；结合中转失败日志确认故障原因'
 fi
 ```
 
-任何一条意外成功都算验收失败。无论结果如何，检查后立即在 B 恢复 relay，
-再在 A 验证两类冒烟成功及对应父代理日志：
+`smoke-sidecar.sh` 在 B 停止后仍成功不能说明流量回退到了 A，不能作为故障生成检查。
+任何真实生成意外成功都算验收失败；无 Key、本地准备失败，或鉴权/额度等无关错误
+不能算作中转故障验收通过。对照 A 的失败日志，确认没有成功的 `HIER_DIRECT`。
+无论结果如何，检查后立即在 B 恢复 relay：
 
 ```sh
 docker compose --env-file ../images.lock.env up -d relay
 ```
+
+随后在 A 重跑 `codex_generation_check false`、`codex_generation_check true`
+和 `antigravity-smoke`，核对生成恢复、父代理日志与用量记录。
+没有用户 Key 时，报告已完成的 CONNECT/其他检查范围，保留 Codex 生成与故障验收未完成状态。
 
 `/readyz`、容器 healthy 或成功握手都不能替代生成及父代理日志验收。
 如有新 Google 域名被拒绝，按用途审核后同步更新 A/B 的精确清单及校验/测试；
@@ -205,8 +242,9 @@ tar -xzf "$B_UPGRADE_BACKUP/relay-config.tar.gz" -C /opt/codex-relay
 cd /opt/codex-relay/deploy/relay
 unset SQUID_IMAGE
 docker compose --env-file ../images.lock.env config -q
-docker compose --env-file ../images.lock.env run --rm --no-deps \
-    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf
+docker compose --env-file ../images.lock.env pull relay
+docker compose --env-file ../images.lock.env run -T --rm --no-deps \
+    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf </dev/null
 docker compose --env-file ../images.lock.env up -d --no-deps --force-recreate relay
 ```
 

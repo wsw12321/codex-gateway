@@ -257,11 +257,15 @@ B：
 cd /opt/codex-relay/deploy/relay
 unset SQUID_IMAGE
 docker compose --env-file ../images.lock.env config -q
-docker compose --env-file ../images.lock.env run --rm --no-deps \
-    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf
+docker compose --env-file ../images.lock.env pull relay
+docker compose --env-file ../images.lock.env run -T --rm --no-deps \
+    --entrypoint /usr/sbin/squid relay -k parse -f /etc/squid/squid.conf </dev/null
 docker compose --env-file ../images.lock.env up -d --no-deps --force-recreate relay
 docker compose --env-file ../images.lock.env ps
 ```
+
+先准备镜像锁指定的固定 digest，再用关闭 TTY、stdin 的临时容器解析配置。
+这兼容 B 的 Docker Compose v2.23.3，其 `run` 命令不支持 `--pull` 选项。
 
 A 先直接测试 B 的两类 CONNECT。此时不依赖 A Squid：
 
@@ -306,7 +310,7 @@ Antigravity 必须出现 `Antigravity login persisted; readiness, JSON and SSE p
 
 ## 7. 连通性与真实上游验收
 
-在 A 仓库根目录，顺序执行两类真实请求：
+先区分检查的范围。在 A 仓库根目录执行：
 
 ```bash
 ./scripts/smoke-sidecar.sh
@@ -314,10 +318,86 @@ Antigravity 必须出现 `Antigravity login persisted; readiness, JSON and SSE p
     /usr/local/bin/antigravity-smoke
 ```
 
-第一条要求 Gateway 与 Codex Sidecar 已运行并已登录。第二条校验 Gemini 模型目录、
-JSON 和 SSE，成功以退出码 0 为准，不输出模型内容；它会发起真实生成并消耗账号额度。
-执行时避免其他 Gemini 请求占用 Bridge 的单并发槽。容器 healthy、WireGuard 握手
-或 Gateway `/readyz` 均不能替代这些检查；Gateway `/readyz` 只检查数据库。
+`smoke-sidecar.sh` 只检查 Gateway readiness 和 Sidecar 的账号、模型、访问能力元数据，
+**不发起 Codex 生成**，B 停止后也可能成功；它不能证明 Codex 的生成链路或故障策略。
+第二条 `antigravity-smoke` 才会实际检查 Gemini JSON/SSE 生成，成功以退出码 0
+为准，不输出模型内容。执行时避开其他 Gemini 请求占用 Bridge 的单并发槽。
+
+### Codex 真实生成
+
+Codex 生成必须经 Gateway 的真实用户鉴权、模型权限和计费准入。
+在 A 使用用户明确提供的私有 API Key 文件；它须只含一行 Gateway 用户 Key，
+权限为 `0600` 或 `0400`。不要用 Sidecar 内部 Key，也不要把 Key 写入命令、
+项目 `.env` 或日志。下面只填写文件路径、本站 HTTPS origin 和该用户获准使用的
+可用 Codex 模型名；主机需要 `curl`、`jq` 和 Linux `/dev/shm`：
+
+```bash
+GATEWAY_URL='https://填写本站域名'
+GATEWAY_API_KEY_FILE='/填写用户指定的私有Key文件绝对路径'
+CODEX_CHECK_MODEL='填写该用户已获准使用且上游可用的Codex模型'
+```
+
+在同一 Bash 会话定义函数，后续用于正常、断链与恢复验证：
+
+```bash
+codex_generation_check() (
+    set +x
+    set -uo pipefail
+    umask 077
+    test "$#" -eq 1 && test -n "${GATEWAY_URL:-}" &&
+        test -n "${GATEWAY_API_KEY_FILE:-}" && test -n "${CODEX_CHECK_MODEL:-}" || exit 2
+    case "$1" in false|true) ;; *) exit 2 ;; esac
+    test -f "$GATEWAY_API_KEY_FILE" && test ! -L "$GATEWAY_API_KEY_FILE" || exit 2
+    case "$(stat -c '%a' "$GATEWAY_API_KEY_FILE")" in 400|600) ;; *) exit 2 ;; esac
+    work_dir=$(mktemp -d /dev/shm/codex-relay-check.XXXXXX) || exit 2
+    trap 'rm -rf "$work_dir"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    unset gateway_check_key
+    gateway_check_key=$(tr -d '\r\n' < "$GATEWAY_API_KEY_FILE") || exit 2
+    case "$gateway_check_key" in ''|*[!A-Za-z0-9_-]*) exit 2 ;; esac
+    printf 'header = "Authorization: Bearer %s"\n' "$gateway_check_key" \
+        > "$work_dir/curl.conf" || exit 2
+    unset gateway_check_key
+    jq -n --arg model "$CODEX_CHECK_MODEL" --argjson stream "$1" \
+        '{model:$model,input:"Reply with exactly OK.",store:false,stream:$stream}' \
+        > "$work_dir/request.json" || exit 2
+    curl -q --config "$work_dir/curl.conf" --proto '=https' \
+        --silent --show-error --fail --connect-timeout 10 --max-time 180 \
+        --header 'Content-Type: application/json' \
+        --data-binary @"$work_dir/request.json" \
+        --output "$work_dir/response" "$GATEWAY_URL/v1/responses" || exit 1
+    if test "$1" = false; then
+        jq -e '.status == "completed" and .error == null and
+            any(.output[]?; .type == "message" and
+                any(.content[]?; .type == "output_text" and (.text | length > 0)))' \
+            "$work_dir/response" >/dev/null 2>&1 || exit 1
+    else
+        awk '{ sub(/\r$/, "") }
+            /^data: / && $0 != "data: [DONE]" { sub(/^data: /, ""); print }' \
+            "$work_dir/response" |
+            jq -se 'any(.[]; .type == "response.completed" and
+                .response.status == "completed" and
+                any(.response.output[]?; .type == "message" and
+                    any(.content[]?; .type == "output_text" and (.text | length > 0)))) and
+                all(.[]; .type != "error" and .type != "response.failed")' \
+                >/dev/null 2>&1 || exit 1
+    fi
+    printf 'Codex generation passed (stream=%s)\n' "$1"
+)
+codex_generation_check false
+codex_generation_check true
+```
+
+凭据只经私有 curl 配置文件传入；请求和响应暂存在私有 tmpfs 目录，函数退出即删除，
+不打印 Key 或回复正文。函数返回 0 才代表该模式生成完成；返回 1 表示请求或生成检查失败，
+返回 2 表示参数、凭据文件或本地准备失败。JSON 和 SSE 都应成功，再结合父代理日志及
+Gateway 用量记录验收。这些调用会实际消耗账号额度；不要启用 Shell 跟踪或 curl 调试输出。
+
+未获得用户 Key 时，明确记录“Codex 真实 JSON/SSE 生成尚未验收”。
+成功的 CONNECT、配额查询或本地元数据检查只证明各自覆盖的路径，不能替代生成。
+容器 healthy、WireGuard 握手或 Gateway `/readyz` 同样不能替代；Gateway `/readyz`
+只检查数据库。
 
 A 查看实际转发路径：
 
@@ -350,29 +430,45 @@ docker compose --env-file ../images.lock.env exec -T relay \
 docker compose --env-file ../images.lock.env stop relay
 ```
 
-再在 A 验证两者失败。用条件分支处理预期失败，避免 `set -e` 在第一个非零退出后
-跳过另一个模型：
+故障验收前，必须先在 B 正常时完成上一节的真实生成成功基线。
+在 A 保持已定义 `codex_generation_check` 的同一 Bash 会话，使用相同 Key 和模型：
 
 ```bash
-if ./scripts/smoke-sidecar.sh; then
-    printf '%s\n' '验收失败：B 停止后 Codex 仍成功' >&2
+if declare -F codex_generation_check >/dev/null &&
+    test -n "${GATEWAY_API_KEY_FILE:-}" && test -r "$GATEWAY_API_KEY_FILE"; then
+    if codex_generation_check false; then
+        printf '%s\n' '验收失败：B 停止后 Codex 真实生成仍成功' >&2
+    else
+        result=$?
+        if test "$result" -eq 1; then
+            printf '%s\n' 'Codex 真实生成未完成；结合中转失败日志确认故障原因'
+        else
+            printf '%s\n' 'Codex 本地准备失败，不能判定中转故障验收通过' >&2
+        fi
+    fi
 else
-    printf '%s\n' '符合预期：Codex 请求失败'
+    printf '%s\n' '未提供用户Key或未准备生成检查：Codex真实生成故障验收未完成'
 fi
 if ./scripts/compose.sh exec -T -e TERM=dumb antigravity-bridge \
     /usr/local/bin/antigravity-smoke; then
     printf '%s\n' '验收失败：B 停止后 Gemini 仍成功' >&2
 else
-    printf '%s\n' '符合预期：Gemini 请求失败'
+    printf '%s\n' 'Gemini 生成未完成；结合中转失败日志确认故障原因'
 fi
 ```
 
-任何一条意外成功都算验收失败。无论结果如何，完成检查后立即在 B 恢复 relay，
-再在 A 重跑第 7 节的成功冒烟并检查父代理日志：
+`smoke-sidecar.sh` 不用于此处，它在 B 停止后仍成功不是直连回退的证据。
+任何真实生成意外成功都算故障验收失败；本地准备失败、无 Key，或鉴权/额度等无关错误
+不能算作中转故障验收通过。对照 A 的失败日志，确认没有成功的 `HIER_DIRECT`。
+无论结果如何，检查后立即在 B 恢复 relay：
 
 ```sh
 docker compose --env-file ../images.lock.env up -d relay
 ```
+
+恢复后在 A 重跑 `codex_generation_check false`、`codex_generation_check true`
+和 `antigravity-smoke`，检查生成恢复、父代理日志及用量记录。
+若没有用户 Key，报告已完成的 CONNECT/其他检查范围，保留 Codex 生成与故障验收未完成状态。
 
 B 重启后检查 `rc-service wg-codex status`、`wg show wg-codex` 和 relay 的
 `docker compose ... ps`。A 的 WireGuard 依赖 Docker；重启 A 的 Docker 后执行：
