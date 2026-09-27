@@ -51,6 +51,64 @@ func newBridgeHTTPClient(t *testing.T, executor bridgeHTTPExecutor) (*Client, *a
 	return NewAntigravity(base, "independent-bridge-secret"), bridge
 }
 
+func TestAntigravityHTTPNativeGeminiToolRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			var calls atomic.Int64
+			bridge, _ := newBridgeHTTPClient(t, bridgeHTTPExecutor{run: func(_ context.Context, prompt string) (antigravity.Result, *antigravity.Failure) {
+				index := calls.Add(1)
+				_, raw, ok := strings.Cut(prompt, "\n")
+				var transcript struct {
+					Instructions string `json:"instructions"`
+				}
+				if !ok || json.Unmarshal([]byte(raw), &transcript) != nil || !strings.Contains(transcript.Instructions, `"parametersJsonSchema":`) ||
+					!strings.Contains(transcript.Instructions, `"properties":{"path":{"type":"string"}}`) || !strings.Contains(transcript.Instructions, `"required":["path"]`) {
+					t.Error("complete client tool schema did not reach bridge executor")
+				}
+				result := bridgeHTTPResult()
+				if index == 1 {
+					result.Response = "```json\n" + `{"type":"function_call","name":"read_file","arguments":{"path":"main.go"},"call_id":"read-1"}` + "\n```"
+				} else if index == 2 {
+					if !strings.Contains(raw, `"functionResponse":{"id":"read-1","name":"read_file","response":{"output":"package main"}}`) || strings.Contains(raw, "thoughtSignature") {
+						t.Error("unsigned client tool response did not preserve association")
+					}
+					result.Response = "The file declares package main."
+				} else {
+					t.Error("unexpected additional executor call")
+				}
+				return result, nil
+			}})
+			router := NewRouter(nil, bridge, map[string]string{antigravity.PublicModel: antigravity.CLIModel})
+			operation := ":generateContent"
+			if stream {
+				operation = ":streamGenerateContent"
+			}
+			path := "/v1beta/models/" + antigravity.PublicModel + operation
+			followup := strings.Replace(nativeGeminiRequest, `"contents":[{"role":"user","parts":[{"text":"hello"}]}]`, `"contents":[{"role":"user","parts":[{"text":"hello"}]},{"role":"model","parts":[{"functionCall":{"id":"read-1","name":"read_file","args":{"path":"main.go"}}}]},{"role":"model","parts":[{"functionResponse":{"id":"read-1","name":"read_file","response":{"output":"package main"}}}]}]`, 1)
+			for index, body := range []string{nativeGeminiRequest, followup} {
+				recorder := httptest.NewRecorder()
+				result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)), antigravity.PublicModel, path, ForwardOptions{})
+				if failure != nil || result.Model != antigravity.PublicModel || result.Usage != (Usage{InputTokens: 101, CachedTokens: 31, OutputTokens: 37, ReasoningTokens: 29}) {
+					t.Fatalf("native bridge result=%+v failure=%v body=%s", result, failure, recorder.Body)
+				}
+				if index == 0 && !strings.Contains(recorder.Body.String(), `"functionCall":{"args":{"path":"main.go"},"id":"read-1","name":"read_file"}`) {
+					t.Fatalf("native tool call lost name, args or ID: %s", recorder.Body)
+				}
+				if index == 1 && !strings.Contains(recorder.Body.String(), "The file declares package main.") {
+					t.Fatalf("native tool follow-up did not return text: %s", recorder.Body)
+				}
+				if stream && (!strings.HasPrefix(recorder.Body.String(), "data: {") || strings.Contains(recorder.Body.String(), "[DONE]")) {
+					t.Fatalf("invalid Gemini SSE: %s", recorder.Body)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("executor calls=%d", calls.Load())
+			}
+		})
+	}
+}
+
 func TestAntigravityHTTPResponsesJSONAndSSE(t *testing.T) {
 	t.Parallel()
 	for _, stream := range []bool{false, true} {

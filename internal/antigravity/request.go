@@ -1,5 +1,5 @@
 // Package antigravity adapts the official agy headless process to the narrow
-// text-only Responses API. It never implements the provider's private protocol.
+// text-only Responses and Gemini APIs. It never implements the provider's private protocol.
 package antigravity
 
 import (
@@ -33,9 +33,10 @@ func protocolFailure() *Failure {
 }
 
 type Request struct {
-	Model  string
-	Stream bool
-	Prompt string
+	Model     string
+	Stream    bool
+	Prompt    string
+	toolNames map[string]struct{}
 }
 
 type textMessage struct {
@@ -82,47 +83,22 @@ func DecodeRequest(body []byte) (Request, *Failure) {
 			_ = json.Unmarshal(raw, &instructions)
 		}
 	}
-	var toolPrompt strings.Builder
-	if rawTools, ok := fields["tools"]; ok && len(rawTools) > 0 && string(bytes.TrimSpace(rawTools)) != "null" {
-		var toolList []map[string]json.RawMessage
-		if json.Unmarshal(rawTools, &toolList) == nil && len(toolList) > 0 {
-			toolPrompt.WriteString("\nAvailable client tools for this session:")
-			for _, t := range toolList {
-				var name, desc string
-				if rawName, ok := t["name"]; ok {
-					_ = json.Unmarshal(rawName, &name)
-				}
-				if rawDesc, ok := t["description"]; ok {
-					_ = json.Unmarshal(rawDesc, &desc)
-				}
-				if rawFn, ok := t["function"]; ok {
-					var fnObj map[string]json.RawMessage
-					if json.Unmarshal(rawFn, &fnObj) == nil {
-						if n, ok := fnObj["name"]; ok {
-							_ = json.Unmarshal(n, &name)
-						}
-						if d, ok := fnObj["description"]; ok {
-							_ = json.Unmarshal(d, &desc)
-						}
-					}
-				}
-				if name != "" {
-					toolPrompt.WriteString(fmt.Sprintf("\n- %s: %s", name, desc))
-				}
-			}
-			toolPrompt.WriteString("\nIf you want to invoke a tool, respond with ONLY a JSON code block in the format:\n```json\n{\"type\":\"function_call\",\"name\":\"<tool_name>\",\"arguments\":{...}}\n```\nOtherwise, provide your answer directly in markdown.")
-		}
+	declarations, names, failure := decodeResponseTools(fields["tools"])
+	if failure != nil {
+		return out, failure
 	}
+	out.toolNames = names
+	toolPrompt := clientToolPrompt(declarations)
 	messages, failure := decodeInput(fields["input"])
 	if failure != nil {
 		return out, failure
 	}
 	fullInstructions := instructions
-	if toolPrompt.Len() > 0 {
+	if toolPrompt != "" {
 		if fullInstructions != "" {
 			fullInstructions += "\n"
 		}
-		fullInstructions += toolPrompt.String()
+		fullInstructions += toolPrompt
 	}
 	transcript := struct {
 		Instructions string        `json:"instructions,omitempty"`
@@ -164,7 +140,8 @@ func decodeInput(raw json.RawMessage) ([]textMessage, *Failure) {
 		}
 		switch itemType {
 		case "function_call":
-			var name, args string
+			var name, args, callID string
+			_ = json.Unmarshal(item["call_id"], &callID)
 			if rawName, ok := item["name"]; ok {
 				_ = json.Unmarshal(rawName, &name)
 			}
@@ -178,7 +155,7 @@ func decodeInput(raw json.RawMessage) ([]textMessage, *Failure) {
 			}
 			messages = append(messages, textMessage{
 				Role:    "assistant",
-				Content: fmt.Sprintf("[Assistant called tool %s with arguments: %s]", name, args),
+				Content: fmt.Sprintf("[Assistant called tool %s with call ID %s and arguments: %s]", name, callID, args),
 			})
 		case "function_call_output":
 			var callID, output string

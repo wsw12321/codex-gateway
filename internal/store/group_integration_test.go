@@ -217,7 +217,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		if err := s.ReleaseRequest(ctx, models.Quota.RequestID, now); err != nil {
 			t.Fatal(err)
 		}
-		for _, endpoint := range []string{"responses", "responses.compact"} {
+		for _, endpoint := range []string{"responses", "responses.compact", "gemini.generateContent", "gemini.streamGenerateContent"} {
 			request := billingIntegrationAdmission(u, d, k, "group-cap-"+endpoint+suffix, now)
 			request.Usage.Endpoint = endpoint
 			request.Quota.Limits.KeyRequestsPerMinute = 1

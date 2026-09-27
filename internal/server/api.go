@@ -40,26 +40,19 @@ func (s *Server) proxyCompact(w http.ResponseWriter, r *http.Request) {
 	s.proxyCodex(w, r, "/v1/responses/compact", "responses.compact", "")
 }
 
+// preparedAPIRequest carries protocol-specific parsing into the shared admission,
+// forwarding and settlement lifecycle. All generation protocols use this path.
+type preparedAPIRequest struct {
+	upstreamPath string
+	endpoint     string
+	model        string
+	serviceTier  string
+	body         *countingBody
+	gemini       bool
+}
+
 func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath, endpoint, fixedModel string) {
-	upstreams := gatewayproxy.NewRouter(s.upstream, s.antigravity, s.config.AntigravityModelRoutes)
-	key := apiKeyFrom(r.Context())
-	requestedAt := time.Now().UTC()
-	model := fixedModel
-	var allowedModels map[string]struct{}
-	requestedServiceTier := ""
-	var body *countingBody
-	var modelPricingInput, modelPricingCached, modelPricingOutput string
-	var pricingSnapshot []byte
-	var cacheWriteMode, billingMode string
-	pricingRuleVersion := s.config.UsagePricing.SchemaVersion
-	if r.Method == http.MethodGet {
-		var err error
-		allowedModels, err = s.allowedModelsForAPIKey(r.Context(), key)
-		if err != nil {
-			internalError(s, w, r, "resolve effective model catalog", err)
-			return
-		}
-	}
+	prepared := preparedAPIRequest{upstreamPath: upstreamPath, endpoint: endpoint, model: fixedModel}
 	if r.Method == http.MethodPost {
 		routing, parsedBody, err := s.prepareModelBody(w, r, s.config.BodyLimit)
 		if err != nil {
@@ -77,8 +70,34 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			}
 			return
 		}
-		model, requestedServiceTier, body = routing.Model, routing.ServiceTier, parsedBody
+		prepared.model, prepared.serviceTier, prepared.body = routing.Model, routing.ServiceTier, parsedBody
+	}
+	s.executeAPIRequest(w, r, prepared)
+}
+
+func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepared preparedAPIRequest) {
+	upstreamPath, endpoint := prepared.upstreamPath, prepared.endpoint
+	model, requestedServiceTier, body := prepared.model, prepared.serviceTier, prepared.body
+	if body != nil {
 		defer func() { _ = body.Close() }()
+	}
+	upstreams := gatewayproxy.NewRouter(s.upstream, s.antigravity, s.config.AntigravityModelRoutes)
+	key := apiKeyFrom(r.Context())
+	requestedAt := time.Now().UTC()
+	var allowedModels map[string]struct{}
+	var modelPricingInput, modelPricingCached, modelPricingOutput string
+	var pricingSnapshot []byte
+	var cacheWriteMode, billingMode string
+	pricingRuleVersion := s.config.UsagePricing.SchemaVersion
+	if r.Method == http.MethodGet {
+		var err error
+		allowedModels, err = s.allowedModelsForAPIKey(r.Context(), key)
+		if err != nil {
+			internalError(s, w, r, "resolve effective model catalog", err)
+			return
+		}
+	}
+	if r.Method == http.MethodPost {
 		if !modelAllowed(model, key.ModelAllowlist) {
 			writeModelNotAllowed(w, r)
 			return
@@ -249,6 +268,8 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			OnUpstreamAccount: onUpstreamAccount,
 			OnConversation:    onConversation,
 		})
+	} else if prepared.gemini {
+		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -75,7 +76,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &Failure{501, "antigravity_compact_unsupported", "Antigravity does not support compact"})
 		return
 	}
-	if r.URL.Path != "/v1/responses" || r.Method != http.MethodPost {
+	native, nativeStream := false, false
+	if strings.HasPrefix(r.URL.Path, "/v1beta/models/") {
+		model, method, found := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), ":")
+		native = found && (model == PublicModel || model == "gemini-3.1-pro-preview-customtools") && (method == "generateContent" || method == "streamGenerateContent")
+		nativeStream = method == "streamGenerateContent"
+		query, queryErr := url.ParseQuery(r.URL.RawQuery)
+		if native && (queryErr != nil || r.URL.RawPath != "" || len(query) > 1 || len(query["alt"]) > 1 || (len(query) != 0 && (query.Get("alt") != "sse" || !nativeStream))) {
+			writeFailure(w, unsupported("query"))
+			return
+		}
+	}
+	if (r.URL.Path != "/v1/responses" && !native) || r.Method != http.MethodPost {
 		writeFailure(w, &Failure{404, "unsupported_endpoint", "Unsupported endpoint"})
 		return
 	}
@@ -95,7 +107,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &Failure{413, "antigravity_request_too_large", "Antigravity request exceeds 1 MiB"})
 		return
 	}
-	request, failure := DecodeRequest(body)
+	var request Request
+	var failure *Failure
+	if native {
+		request, failure = DecodeGeminiRequest(body)
+		request.Stream = nativeStream
+	} else {
+		request, failure = DecodeRequest(body)
+	}
 	if failure != nil {
 		writeFailure(w, failure)
 		return
@@ -117,7 +136,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Context().Err() != nil {
 		return
 	}
-	response := responseObject(result)
+	call, failure := decodeClientFunctionCall(result.Response, request.toolNames)
+	if failure != nil {
+		writeFailure(w, failure)
+		return
+	}
+	if native {
+		response := geminiResponseObject(result, call)
+		if request.Stream {
+			writeGeminiSSE(w, response)
+		} else {
+			writeJSON(w, 200, response)
+		}
+		return
+	}
+	response := responseObject(result, call)
 	if request.Stream {
 		writeSSE(w, response)
 		return
@@ -150,41 +183,66 @@ func newID(prefix string) string {
 	return prefix + hex.EncodeToString(raw[:])
 }
 
-func parseFunctionCall(text string) (name, args string, ok bool) {
+type clientFunctionCall struct {
+	Name      string
+	Arguments json.RawMessage
+	ID        string
+}
+
+func decodeClientFunctionCall(text string, names map[string]struct{}) (*clientFunctionCall, *Failure) {
 	trimmed := strings.TrimSpace(text)
 	if strings.HasPrefix(trimmed, "```") {
 		lines := strings.Split(trimmed, "\n")
-		if len(lines) >= 3 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+		if len(lines) >= 3 && (lines[0] == "```json" || lines[0] == "```") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
 			trimmed = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
 		}
 	}
-	if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
-		var call struct {
-			Type      string          `json:"type"`
-			Name      string          `json:"name"`
-			Arguments json.RawMessage `json:"arguments"`
-		}
-		if json.Unmarshal([]byte(trimmed), &call) == nil && (call.Type == "function_call" || call.Type == "function") && call.Name != "" {
-			argStr := strings.TrimSpace(string(call.Arguments))
-			if argStr == "" {
-				argStr = "{}"
+	fields, ok := object([]byte(trimmed))
+	if !ok || (!jsonEqual(fields["type"], `"function_call"`) && !jsonEqual(fields["type"], `"function"`)) {
+		return nil, nil
+	}
+	name, ok := stringValue(fields["name"])
+	if !ok || !validToolName(name) || uniqueJSON([]byte(trimmed)) != nil || !onlyKeys(fields, "type", "name", "arguments", "id", "call_id") {
+		return nil, protocolFailure()
+	}
+	if _, declared := names[name]; !declared {
+		return nil, protocolFailure()
+	}
+	args := fields["arguments"]
+	if len(args) == 0 {
+		args = json.RawMessage(`{}`)
+	}
+	if _, ok := object(args); !ok {
+		return nil, protocolFailure()
+	}
+	id := ""
+	for _, key := range []string{"id", "call_id"} {
+		if raw, exists := fields[key]; exists {
+			if id != "" {
+				return nil, protocolFailure()
 			}
-			return call.Name, argStr, true
+			id, ok = stringValue(raw)
+			if !ok || !validCallID(id) {
+				return nil, protocolFailure()
+			}
 		}
 	}
-	return "", "", false
+	if id == "" {
+		id = newID("call_")
+	}
+	return &clientFunctionCall{Name: name, Arguments: args, ID: id}, nil
 }
 
-func responseObject(result Result) map[string]any {
+func responseObject(result Result, call *clientFunctionCall) map[string]any {
 	var item map[string]any
-	if name, args, ok := parseFunctionCall(result.Response); ok {
+	if call != nil {
 		item = map[string]any{
 			"id":        newID("fc_"),
 			"type":      "function_call",
 			"status":    "completed",
-			"call_id":   newID("call_"),
-			"name":      name,
-			"arguments": args,
+			"call_id":   call.ID,
+			"name":      call.Name,
+			"arguments": string(call.Arguments),
 		}
 	} else {
 		item = map[string]any{

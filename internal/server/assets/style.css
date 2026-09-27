@@ -824,6 +824,10 @@ code {
   margin-bottom: 1rem;
 }
 
+.guide-client {
+  margin-top: 1.5rem;
+}
+
 .guide-endpoint {
   display: flex;
   align-items: center;

@@ -10,7 +10,8 @@ Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安�
 [Headless 协议](https://antigravity.google/docs/cli/headless/)、
 [权限配置](https://antigravity.google/docs/cli/permissions/)及
 [禁用自动更新](https://antigravity.google/docs/cli/troubleshooting/)说明。
-不实现或模拟 Antigravity 私有网络协议，不使用 Gemini API Key。
+不实现或模拟 Antigravity 私有网络协议。Google 上游使用服务器的订阅登录；客户端配置中的
+`GEMINI_API_KEY` 是 Gateway 签发的 key。
 
 ## 模型权限和结算
 
@@ -26,6 +27,71 @@ Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安�
 `input_tokens` 映射输入量，`cache_read_tokens` 写入缓存明细；`agy 1.2.4` 的
 `output_tokens` 已包含 `thinking_tokens`，因此输出量不再次相加，思考量另写入
 reasoning 明细。总量为输入加输出。历史结算快照保持不变。
+
+Gemini 原生响应将答案输出映射为 `candidatesTokenCount`，思考量映射为
+`thoughtsTokenCount`。Gateway 按候选输出加思考计入输出 Token；
+`cachedContentTokenCount` 是输入的子集，不再加到输入总量。两种协议共用原有账单，
+同一请求只结算一次。
+
+## 本机 AGY 配置
+
+链路为 `本机 AGY → Gateway 地址与 key → Antigravity Bridge → 服务器订阅账号 → Google`。
+管理员须已启用下文的 Bridge 路由，并给用户及 API Key 授予公开模型
+`gemini-3.1-pro-preview` 的权限。客户端兼容范围以 AGY `1.2.4` 的文本和本地编程工具为准。
+
+在现有 `~/.gemini/antigravity-cli/settings.json` 中合并下列顶层字段，保留其他设置：
+
+```json
+{
+  "modelProvider": "gemini"
+}
+```
+
+在 Bash 中设置当前终端会话的地址和 key，然后启动。地址使用 Gateway 站点 origin，
+**不加 `/v1`**；将示例域名换成自己的站点。Key 在提示后输入，避免写入命令历史：
+
+```bash
+export GOOGLE_GEMINI_BASE_URL='https://gateway.example.com'
+read -r -s -p 'Gateway API Key: ' GEMINI_API_KEY
+printf '\n'
+export GEMINI_API_KEY
+agy --model gemini-3.1-pro-high
+```
+
+`GEMINI_API_KEY` 必须是本 Gateway 签发的 key。它只用于 Gateway 鉴权，不发送给
+Bridge 或 Google；Gateway→Bridge 使用独立凭据。
+
+AGY 在同一会话中会使用 `gemini-3.1-pro-preview` 和
+`gemini-3.1-pro-preview-customtools`。Gateway 仅将这两个精确名称归一为公开模型
+`gemini-3.1-pro-preview`，再执行模型权限、价格和额度检查。不会通过模糊前缀匹配
+开放其他模型。自动标题使用的 Flash Lite 返回 404；已完成的本地客户端探测中，
+此错误不影响主对话或本地工具循环。其他未配置模型同样返回 Gemini 格式的 404。
+
+## Gemini 原生 API
+
+支持以下接口，仅转发给 Antigravity Bridge：
+
+```text
+POST /v1beta/models/{model}:generateContent
+POST /v1beta/models/{model}:streamGenerateContent?alt=sse
+```
+
+使用 `x-goog-api-key: <Gateway key>` 或 `Authorization: Bearer <Gateway key>`，
+只能选一种；重复凭据或同时从多个来源提供凭据会被拒绝。错误使用 Gemini JSON
+格式，保留 HTTP 状态及适用的 `Retry-After`。鉴权、模型授权、并发租约、配额准入、
+用量记录和结算与 Responses 共用，统计分别记录 `gemini.generateContent` 和
+`gemini.streamGenerateContent`。
+
+支持文本、系统提示、完整客户端工具参数 schema（`parametersJsonSchema` 或
+`parameters`）、`functionCall` 和 `functionResponse`，保留工具名称、参数、调用 ID
+与结果关联。兼容 AGY 将工具结果放在 `role=model` 的格式。返回调用必须来自客户端
+声明的工具；工具在用户本机执行，不需要伪造思考签名。服务器隔离进程仍禁止执行工具。
+
+原生请求沿用 1 MiB 上限及全局单进程并发。接受实测 AGY `1.2.4` 主会话默认生成参数，
+推理行为由服务器固定模型决定；无法兑现的自定义生成控制会返回明确错误。首版不支持
+图片附件、精确 `countTokens` 或云端内置工具。Gemini SSE 在完整生成并验证上游结果后
+发送 `data` JSON 对象，并以 EOF 结束，没有 Responses 的 `[DONE]` 标记。因此首个事件
+仍需等待完整生成。请求取消或超时会结束隔离进程并清理请求数据。
 
 ## API 范围
 
@@ -113,7 +179,12 @@ Squid 为 Antigravity 网络记录 CONNECT 目标、时间和状态，不记录 
 开发验证覆盖假 CLI 的 JSON、SSE、NDJSON 分段、认证、限额、协议错误、工具事件、取消、
 超时、usage、路由和共用权限/结算。部署前运行完整 Go suite、race、vet、Compose 校验与
 三个镜像构建。真实账号还需验证重启、续期、重新登录、限额、取消后无残余进程、磁盘残留
-和出口域名。当前环境未登录真实账号，不应把单元测试视为这些验收的替代。
+和出口域名。真实 Google 上游验收须独立执行，不应把单元测试或本地 AGY 协议探测视为替代。
+
+增加 Gemini 原生协议时，先部署新版 `antigravity-bridge`，再部署执行 `0020` 迁移的
+Gateway。上线验收须使用真实订阅账号，从本机按上述配置完成一次文本对话和一次本地
+工具任务，检查两种模型别名切换、标题 404 不阻断主任务及实际账单。该验收尚未由本次
+实现验证；在完成前不能宣称 Google 上游已通过。
 
 旧第三方 Gemini 插件、补丁和登录脚本已移除，Codex Sidecar 禁用插件，历史 Gemini OAuth
 文件不再加载且不会自动删除。`codex_oauth` 卷继续保留原内容。

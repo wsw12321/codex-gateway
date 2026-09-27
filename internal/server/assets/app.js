@@ -1027,6 +1027,14 @@ function renderGuide() {
   byId("guide-base-url").textContent = baseURL;
   byId("guide-install-code").textContent = `curl -fsSL '${location.origin}/setup/configure-codex.sh' | sh`;
   byId("guide-config-code").textContent = `openai_base_url = "${baseURL}"`;
+  byId("guide-agy-base-url").textContent = location.origin;
+  byId("guide-agy-shell-code").textContent = [
+    `export GOOGLE_GEMINI_BASE_URL='${location.origin}'`,
+    "read -r -s -p 'Gateway API Key: ' GEMINI_API_KEY",
+    "printf '\\n'",
+    "export GEMINI_API_KEY",
+    "agy --model gemini-3.1-pro-high",
+  ].join("\n");
 
   if (!state) return;
   const activeDevices = state.devices.filter((item) => item.status === "active").length;

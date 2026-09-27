@@ -4,6 +4,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strconv"
 	"sync"
@@ -46,15 +47,20 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {
 		name        string
+		endpoint    string
 		inputTokens int64
 		actualTier  string
 		context     string
 		cost        string
 	}{
-		{"short", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"long", 200_001, "default", config.ContextClassLong, "0.945804000000"},
-		{"short-missing-tier", 200_000, "", config.ContextClassShort, "0.503200000000"},
-		{"long-missing-tier", 200_001, "", config.ContextClassLong, "0.945804000000"},
+		{"short", "responses", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"long", "responses", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"short-missing-tier", "responses", 200_000, "", config.ContextClassShort, "0.503200000000"},
+		{"long-missing-tier", "responses", 200_001, "", config.ContextClassLong, "0.945804000000"},
+		{"native-short", "gemini.generateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"native-long", "gemini.generateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"native-stream-short", "gemini.streamGenerateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"native-stream-long", "gemini.streamGenerateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			user, device, key := billingIntegrationPrincipal(t, ctx, repository, "gemini-"+tc.name+"-"+suffix)
@@ -67,6 +73,7 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 			requestID := billingIntegrationRequestID(suffix, "gemini-"+tc.name, 1)
 			params := billingIntegrationAdmission(user, device, key, requestID, now.Add(time.Second))
 			params.Usage.Model = model
+			params.Usage.Endpoint = tc.endpoint
 			params.Usage.RequestedServiceTier = "default"
 			params.Usage.PricingRuleVersion = config.PricingSchemaV2
 			params.Billing = &BillingReservationParams{
@@ -141,6 +148,41 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 				t.Fatalf("Gemini settlement: ledger=%d amount=%s charged=%s uncovered=%s context=%s tier=%s fallback=%s cache=%s/%d output=%d reasoning=%d quota=%d requests=%d used=%d",
 					ledgerCount, amount, charged, uncovered, contextClass, pricingTier, fallback,
 					cacheWriteMode, cacheWrites, outputTokens, reasoningTokens, quotaTokens, completedRequests, usedTokens)
+			}
+			if err := repository.AggregateUsageDay(ctx, now, "UTC"); err != nil {
+				t.Fatalf("aggregate Gemini day: %v", err)
+			}
+			if err := repository.AggregateUsageMonth(ctx, now, "UTC"); err != nil {
+				t.Fatalf("aggregate Gemini month: %v", err)
+			}
+			for _, table := range []string{"usage_daily", "usage_monthly"} {
+				var endpoint string
+				var requests, input, cached, output, reasoning int64
+				if err := repository.db.QueryRowContext(ctx, `SELECT endpoint,request_count,
+					input_tokens,cached_input_tokens,output_tokens,reasoning_tokens FROM `+table+`
+					WHERE user_id=$1`, user.ID).Scan(&endpoint, &requests, &input, &cached, &output, &reasoning); err != nil {
+					t.Fatalf("read %s: %v", table, err)
+				}
+				if endpoint != tc.endpoint || requests != 1 || input != tc.inputTokens || cached != 10_000 || output != 10_100 || reasoning != 100 {
+					t.Fatalf("%s rollup: endpoint=%s requests=%d input=%d cached=%d output=%d reasoning=%d", table, endpoint, requests, input, cached, output, reasoning)
+				}
+			}
+
+			// A funded generation request that fails traffic quota must roll back
+			// the billing reservation created earlier in the admission transaction.
+			rejectedID := requestID + "-quota-rejected"
+			params.Quota.RequestID, params.Usage.RequestID, params.Billing.RequestID = rejectedID, rejectedID, rejectedID
+			params.Quota.Limits.KeyDailyRequests = 1
+			if _, err := repository.AdmitRequest(ctx, params); !errors.Is(err, ErrQuotaExceeded) {
+				t.Fatalf("Gemini quota rejection: %v", err)
+			}
+			var artifacts int
+			if err := repository.db.QueryRowContext(ctx, `SELECT
+				(SELECT count(*) FROM quota_reservations WHERE request_id=$1) +
+				(SELECT count(*) FROM usage_requests WHERE request_id=$1) +
+				(SELECT count(*) FROM billing_reservations WHERE request_id=$1) +
+				(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1)`, rejectedID).Scan(&artifacts); err != nil || artifacts != 0 {
+				t.Fatalf("rejected Gemini request artifacts=%d err=%v", artifacts, err)
 			}
 		})
 	}

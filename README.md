@@ -52,9 +52,10 @@ Compose 中的服务职责如下：
 | --- | --- | --- |
 | `cloudflared` | 唯一公网入口的出站 Tunnel connector | 无 |
 | `caddy` | 内部反向代理、安全头、64 MiB 请求上限和 SSE 刷新 | 无 |
-| `gateway` | 身份、Key、配额、统计、管理界面和固定 Responses 代理 | 无 |
+| `gateway` | 身份、Key、配额、统计、管理界面及固定 Responses / Gemini 代理 | 无 |
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
 | `codex-compat` | 在唯一隔离实例中持有多个 Plus/Pro OAuth 状态并适配 Codex 协议 | 无 |
+| `antigravity-bridge` | 通过隔离的官方 AGY 进程使用服务器 Antigravity 订阅 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
 
 所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
@@ -80,12 +81,14 @@ sidecar，不进入数据库或备份。
 
 ### 代理接口
 
-首版只开放 Codex 所需的数据接口和 WebSocket 协商入口：
+开放 Codex、AGY 所需的数据接口和 WebSocket 协商入口：
 
 - `GET /v1/responses`（仅协商；认证后固定返回 `426`）
 - `POST /v1/responses`
 - `POST /v1/responses/compact`
 - `GET /v1/models`
+- `POST /v1beta/models/{model}:generateContent`
+- `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`
 
 Responses 支持普通 JSON 和 SSE。Gateway 会丢弃客户端的 `Authorization`、
 Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调用 sidecar。
@@ -94,7 +97,11 @@ Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 `426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
 不进入上游转发、配额、计费、并发租约或 usage 统计。
 
-每个响应都带 `X-Gateway-Request-ID`。错误采用 OpenAI 风格 JSON，并返回稳定的
+Gemini 原生接口只转发到 Antigravity Bridge，接受 `x-goog-api-key` 或 Bearer 中的
+Gateway key，重复或多来源凭据拒绝。它们共用现有权限、配额和结算，使用 Gemini
+格式错误；首版请求限制为 1 MiB，SSE 在完整生成并校验后输出，以 EOF 结束。
+
+每个响应都带 `X-Gateway-Request-ID`。Responses 错误采用 OpenAI 风格 JSON，并返回稳定的
 `type`、`code`、安全消息和 `request_id`。常见映射包括：
 
 | 状态 | 场景 |
@@ -128,7 +135,7 @@ Token 总量按 input + output 结算；cached input、cache write 和 reasoning
 
 ### 额度与订阅计费
 
-一般 Responses 和 compact 请求都需要可用的 USD 额度；`GET /v1/models` 不计费。
+一般 Responses、compact 和 Gemini 原生生成请求都需要可用的 USD 额度；`GET /v1/models` 不计费。
 `codex-auto-review` 是显式的内部零价治理流量，可以在没有资金来源时创建零价
 reservation，照常记录 Token 和零金额 ledger；它不扣日、周、月或现金额度，但
 仍计入普通请求和 Token 配额。现金余额和日、周、月三档订阅分别记录，固定滚动
@@ -359,12 +366,14 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-Gemini Pro 使用相同的地址、Key 和 Responses 接口，公开模型名为
+Gemini Pro 支持 Responses 和 Gemini 原生生成接口，使用相同的 Gateway key，公开模型名为
 `gemini-3.1-pro-preview`。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
 调用 `./scripts/antigravity-login.sh` 完成登录验收后配置精确模型路由。支持文本 JSON
-和完成后发送的 SSE；函数工具、多模态和会话续接返回 400，compact 返回 501。
+和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
 沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
-部署、隔离、定价及出口域名验收见 [Antigravity 接入说明](docs/gemini-pro.md)。
+本机 AGY 的 `GOOGLE_GEMINI_BASE_URL` 使用站点地址（不加 `/v1`），
+`GEMINI_API_KEY` 使用 Gateway key。完整客户端配置、部署、隔离、定价及出口域名验收
+见 [Antigravity 接入说明](docs/gemini-pro.md)。
 
 ### 5. 初始化 Owner
 

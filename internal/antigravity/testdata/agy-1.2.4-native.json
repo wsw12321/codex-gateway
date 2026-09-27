@@ -1,0 +1,618 @@
+[
+  {
+    "name": "title",
+    "path": "/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "List the background tasks, then report the result."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "candidateCount": 1,
+        "maxOutputTokens": 1024,
+        "stopSequences": [
+          "<|user|>",
+          "<|bot|>",
+          "<|context_request|>",
+          "<|endoftext|>",
+          "<|end_of_turn|>"
+        ],
+        "temperature": 0.4,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        },
+        "topK": 50,
+        "topP": 1
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Help with local programming tasks."
+          }
+        ],
+        "role": "user"
+      }
+    }
+  },
+  {
+    "name": "tool_call_customtools",
+    "path": "/v1beta/models/gemini-3.1-pro-preview-customtools:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "List the background tasks, then report the result."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "candidateCount": 1,
+        "maxOutputTokens": 65535,
+        "stopSequences": [
+          "<|user|>",
+          "<|bot|>",
+          "<|context_request|>",
+          "<|endoftext|>",
+          "<|end_of_turn|>"
+        ],
+        "temperature": 1,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        },
+        "topK": 50,
+        "topP": 1
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Help with local programming tasks."
+          }
+        ],
+        "role": "user"
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Manage background tasks. Use this tool to list running tasks or interact with tasks that were sent to the background.\n\nActions:\n- 'list': List all currently running background tasks\n- 'kill': Cancel the task's execution\n- 'status': Check the task's current status and log file location\n- 'send_input': Send input to a running task\n\nWhen mentioning tasks to the user, avoid using full task IDs and start timestamps; keep them human-readable.",
+              "name": "manage_task",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "Action": {
+                    "description": "The action to perform: 'list' (list all running tasks), 'kill' (cancel the task), 'status' (check the task status and log URI), 'send_input' (send input to a running task).",
+                    "enum": [
+                      "list",
+                      "kill",
+                      "status",
+                      "send_input"
+                    ],
+                    "type": "string"
+                  },
+                  "Input": {
+                    "description": "The input to send to the task. Required when Action is 'send_input'.",
+                    "type": "string"
+                  },
+                  "TaskId": {
+                    "description": "The task ID to manage. Required when Action is 'kill', 'status', or 'send_input'.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Action",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "description": "Use this tool to create new files. The file and any parent directories will be created for you if they do not already exist.\n\t\tFollow these instructions:\n\t\t1. By default this tool will error if TargetFile already exists. To overwrite an existing file, set Overwrite to true.\n\t\t2. When creating an artifact, always provide ArtifactMetadata. When creating non-artifact files, do not provide it.",
+              "name": "write_to_file",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "ArtifactMetadata": {
+                    "additionalProperties": false,
+                    "description": "Metadata that defines artifact properties. ONLY provide when creating an artifact file in the artifact directory. Omit this field when creating non-artifact files.",
+                    "properties": {
+                      "RequestFeedback": {
+                        "description": "Set to true if you'd like to request user feedback on this artifact and if the contents of this artifact are executable (e.g., a plan). The user will be provided with a 'Proceed' button to execute it.",
+                        "type": "boolean"
+                      },
+                      "Summary": {
+                        "description": "Detailed multi-line summary of the artifact file, after edits have been made. Summary does not need to mention the artifact name and should focus on the contents and purpose of the artifact.",
+                        "type": "string"
+                      },
+                      "UserFacing": {
+                        "description": "Set to true if this artifact should be presented to the user. Set to false for scratch scripts, temporary data files, or files that the user does not need to see",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "Summary",
+                      "UserFacing",
+                      "RequestFeedback"
+                    ],
+                    "type": "object"
+                  },
+                  "CodeContent": {
+                    "description": "The code contents to write to the file.",
+                    "type": "string"
+                  },
+                  "Description": {
+                    "description": "Brief, user-facing explanation of what this change did. Focus on non-obvious rationale, design decisions, or important context. Don't just restate what the code does.",
+                    "type": "string"
+                  },
+                  "Overwrite": {
+                    "description": "Set this to true to overwrite an existing file. WARNING: This will replace the entire file contents. Only use when you explicitly intend to overwrite. Otherwise, use a code edit tool to modify existing files.",
+                    "type": "boolean"
+                  },
+                  "TargetFile": {
+                    "description": "The target file to create and write code to. Must be an absolute path.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "TargetFile",
+                  "Overwrite",
+                  "CodeContent",
+                  "Description",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "tool_result_no_signature",
+    "path": "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "List the background tasks, then report the result."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "Action": "list",
+                  "toolAction": "Listing tasks",
+                  "toolSummary": "Task list"
+                },
+                "id": "probe_call_1",
+                "name": "manage_task"
+              }
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "probe_call_1",
+                "name": "manage_task",
+                "response": {
+                  "output": "No background tasks are currently running."
+                }
+              }
+            }
+          ],
+          "role": "model"
+        }
+      ],
+      "generationConfig": {
+        "candidateCount": 1,
+        "maxOutputTokens": 65535,
+        "stopSequences": [
+          "<|user|>",
+          "<|bot|>",
+          "<|context_request|>",
+          "<|endoftext|>",
+          "<|end_of_turn|>"
+        ],
+        "temperature": 1,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        },
+        "topK": 50,
+        "topP": 1
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Help with local programming tasks."
+          }
+        ],
+        "role": "user"
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Manage background tasks. Use this tool to list running tasks or interact with tasks that were sent to the background.\n\nActions:\n- 'list': List all currently running background tasks\n- 'kill': Cancel the task's execution\n- 'status': Check the task's current status and log file location\n- 'send_input': Send input to a running task\n\nWhen mentioning tasks to the user, avoid using full task IDs and start timestamps; keep them human-readable.",
+              "name": "manage_task",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "Action": {
+                    "description": "The action to perform: 'list' (list all running tasks), 'kill' (cancel the task), 'status' (check the task status and log URI), 'send_input' (send input to a running task).",
+                    "enum": [
+                      "list",
+                      "kill",
+                      "status",
+                      "send_input"
+                    ],
+                    "type": "string"
+                  },
+                  "Input": {
+                    "description": "The input to send to the task. Required when Action is 'send_input'.",
+                    "type": "string"
+                  },
+                  "TaskId": {
+                    "description": "The task ID to manage. Required when Action is 'kill', 'status', or 'send_input'.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Action",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "description": "Use this tool to create new files. The file and any parent directories will be created for you if they do not already exist.\n\t\tFollow these instructions:\n\t\t1. By default this tool will error if TargetFile already exists. To overwrite an existing file, set Overwrite to true.\n\t\t2. When creating an artifact, always provide ArtifactMetadata. When creating non-artifact files, do not provide it.",
+              "name": "write_to_file",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "ArtifactMetadata": {
+                    "additionalProperties": false,
+                    "description": "Metadata that defines artifact properties. ONLY provide when creating an artifact file in the artifact directory. Omit this field when creating non-artifact files.",
+                    "properties": {
+                      "RequestFeedback": {
+                        "description": "Set to true if you'd like to request user feedback on this artifact and if the contents of this artifact are executable (e.g., a plan). The user will be provided with a 'Proceed' button to execute it.",
+                        "type": "boolean"
+                      },
+                      "Summary": {
+                        "description": "Detailed multi-line summary of the artifact file, after edits have been made. Summary does not need to mention the artifact name and should focus on the contents and purpose of the artifact.",
+                        "type": "string"
+                      },
+                      "UserFacing": {
+                        "description": "Set to true if this artifact should be presented to the user. Set to false for scratch scripts, temporary data files, or files that the user does not need to see",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "Summary",
+                      "UserFacing",
+                      "RequestFeedback"
+                    ],
+                    "type": "object"
+                  },
+                  "CodeContent": {
+                    "description": "The code contents to write to the file.",
+                    "type": "string"
+                  },
+                  "Description": {
+                    "description": "Brief, user-facing explanation of what this change did. Focus on non-obvious rationale, design decisions, or important context. Don't just restate what the code does.",
+                    "type": "string"
+                  },
+                  "Overwrite": {
+                    "description": "Set this to true to overwrite an existing file. WARNING: This will replace the entire file contents. Only use when you explicitly intend to overwrite. Otherwise, use a code edit tool to modify existing files.",
+                    "type": "boolean"
+                  },
+                  "TargetFile": {
+                    "description": "The target file to create and write code to. Must be an absolute path.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "TargetFile",
+                  "Overwrite",
+                  "CodeContent",
+                  "Description",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "tool_result_external_signature",
+    "path": "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "List the background tasks, then report the result."
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "parts": [
+            {
+              "functionCall": {
+                "args": {
+                  "Action": "list",
+                  "toolAction": "Listing tasks",
+                  "toolSummary": "Task list"
+                },
+                "id": "probe_call_1",
+                "name": "manage_task"
+              },
+              "thoughtSignature": "external-session-signature"
+            }
+          ],
+          "role": "model"
+        },
+        {
+          "parts": [
+            {
+              "functionResponse": {
+                "id": "probe_call_1",
+                "name": "manage_task",
+                "response": {
+                  "output": "No background tasks are currently running."
+                }
+              }
+            }
+          ],
+          "role": "model"
+        }
+      ],
+      "generationConfig": {
+        "candidateCount": 1,
+        "maxOutputTokens": 65535,
+        "stopSequences": [
+          "<|user|>",
+          "<|bot|>",
+          "<|context_request|>",
+          "<|endoftext|>",
+          "<|end_of_turn|>"
+        ],
+        "temperature": 1,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        },
+        "topK": 50,
+        "topP": 1
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Help with local programming tasks."
+          }
+        ],
+        "role": "user"
+      },
+      "tools": [
+        {
+          "functionDeclarations": [
+            {
+              "description": "Manage background tasks. Use this tool to list running tasks or interact with tasks that were sent to the background.\n\nActions:\n- 'list': List all currently running background tasks\n- 'kill': Cancel the task's execution\n- 'status': Check the task's current status and log file location\n- 'send_input': Send input to a running task\n\nWhen mentioning tasks to the user, avoid using full task IDs and start timestamps; keep them human-readable.",
+              "name": "manage_task",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "Action": {
+                    "description": "The action to perform: 'list' (list all running tasks), 'kill' (cancel the task), 'status' (check the task status and log URI), 'send_input' (send input to a running task).",
+                    "enum": [
+                      "list",
+                      "kill",
+                      "status",
+                      "send_input"
+                    ],
+                    "type": "string"
+                  },
+                  "Input": {
+                    "description": "The input to send to the task. Required when Action is 'send_input'.",
+                    "type": "string"
+                  },
+                  "TaskId": {
+                    "description": "The task ID to manage. Required when Action is 'kill', 'status', or 'send_input'.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "Action",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            },
+            {
+              "description": "Use this tool to create new files. The file and any parent directories will be created for you if they do not already exist.\n\t\tFollow these instructions:\n\t\t1. By default this tool will error if TargetFile already exists. To overwrite an existing file, set Overwrite to true.\n\t\t2. When creating an artifact, always provide ArtifactMetadata. When creating non-artifact files, do not provide it.",
+              "name": "write_to_file",
+              "parametersJsonSchema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "additionalProperties": false,
+                "properties": {
+                  "ArtifactMetadata": {
+                    "additionalProperties": false,
+                    "description": "Metadata that defines artifact properties. ONLY provide when creating an artifact file in the artifact directory. Omit this field when creating non-artifact files.",
+                    "properties": {
+                      "RequestFeedback": {
+                        "description": "Set to true if you'd like to request user feedback on this artifact and if the contents of this artifact are executable (e.g., a plan). The user will be provided with a 'Proceed' button to execute it.",
+                        "type": "boolean"
+                      },
+                      "Summary": {
+                        "description": "Detailed multi-line summary of the artifact file, after edits have been made. Summary does not need to mention the artifact name and should focus on the contents and purpose of the artifact.",
+                        "type": "string"
+                      },
+                      "UserFacing": {
+                        "description": "Set to true if this artifact should be presented to the user. Set to false for scratch scripts, temporary data files, or files that the user does not need to see",
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "Summary",
+                      "UserFacing",
+                      "RequestFeedback"
+                    ],
+                    "type": "object"
+                  },
+                  "CodeContent": {
+                    "description": "The code contents to write to the file.",
+                    "type": "string"
+                  },
+                  "Description": {
+                    "description": "Brief, user-facing explanation of what this change did. Focus on non-obvious rationale, design decisions, or important context. Don't just restate what the code does.",
+                    "type": "string"
+                  },
+                  "Overwrite": {
+                    "description": "Set this to true to overwrite an existing file. WARNING: This will replace the entire file contents. Only use when you explicitly intend to overwrite. Otherwise, use a code edit tool to modify existing files.",
+                    "type": "boolean"
+                  },
+                  "TargetFile": {
+                    "description": "The target file to create and write code to. Must be an absolute path.",
+                    "type": "string"
+                  },
+                  "toolAction": {
+                    "description": "Brief 2-5 word phrase in -ing form describing the specific action. Capitalize like a sentence. Some examples: 'Analyzing directory', 'Searching the web', 'Checking git status', 'Running tests', 'Searching code'.",
+                    "type": "string"
+                  },
+                  "toolSummary": {
+                    "description": "Brief 2-5 word noun phrase describing the specific task. Capitalize like a sentence. Some examples: 'Directory analysis', 'Web search', 'Git status check', 'Test execution', 'Code search'.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "TargetFile",
+                  "Overwrite",
+                  "CodeContent",
+                  "Description",
+                  "toolSummary",
+                  "toolAction"
+                ],
+                "type": "object"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "text",
+    "path": "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse",
+    "body": {
+      "contents": [
+        {
+          "parts": [
+            {
+              "text": "Say hello."
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "generationConfig": {
+        "candidateCount": 1,
+        "maxOutputTokens": 65535,
+        "stopSequences": [
+          "<|user|>",
+          "<|bot|>",
+          "<|context_request|>",
+          "<|endoftext|>",
+          "<|end_of_turn|>"
+        ],
+        "temperature": 1,
+        "thinkingConfig": {
+          "includeThoughts": true,
+          "thinkingBudget": -1
+        },
+        "topK": 50,
+        "topP": 1
+      },
+      "systemInstruction": {
+        "parts": [
+          {
+            "text": "Help with local programming tasks."
+          }
+        ],
+        "role": "user"
+      }
+    }
+  }
+]

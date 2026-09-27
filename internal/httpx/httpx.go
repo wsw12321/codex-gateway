@@ -19,6 +19,7 @@ type contextKey uint8
 const (
 	requestIDKey contextKey = iota
 	clientIPKey
+	geminiErrorsKey
 )
 
 type ErrorBody struct {
@@ -36,9 +37,44 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, typ, code, m
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
+	if enabled, _ := r.Context().Value(geminiErrorsKey).(bool); enabled {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"code": status, "message": message, "status": geminiErrorStatus(status),
+		}})
+		return
+	}
 	_ = json.NewEncoder(w).Encode(ErrorBody{Error: ErrorDetail{
 		Message: message, Type: typ, Code: code, RequestID: RequestID(r.Context()),
 	}})
+}
+
+// GeminiErrors selects Google's public error envelope while keeping shared
+// authentication, admission and upstream errors on the same HTTP status path.
+func GeminiErrors(ctx context.Context) context.Context {
+	return context.WithValue(ctx, geminiErrorsKey, true)
+}
+
+func geminiErrorStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest, http.StatusRequestEntityTooLarge:
+		return "INVALID_ARGUMENT"
+	case http.StatusUnauthorized:
+		return "UNAUTHENTICATED"
+	case http.StatusForbidden:
+		return "PERMISSION_DENIED"
+	case http.StatusNotFound:
+		return "NOT_FOUND"
+	case http.StatusTooManyRequests:
+		return "RESOURCE_EXHAUSTED"
+	case http.StatusNotImplemented:
+		return "UNIMPLEMENTED"
+	case http.StatusServiceUnavailable:
+		return "UNAVAILABLE"
+	case http.StatusGatewayTimeout:
+		return "DEADLINE_EXCEEDED"
+	default:
+		return "INTERNAL"
+	}
 }
 
 func RequestID(ctx context.Context) string {

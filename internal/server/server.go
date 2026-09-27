@@ -186,6 +186,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /v1/responses", s.requireAPIKey(http.HandlerFunc(s.responsesWebSocketUnsupported)))
 	s.mux.Handle("POST /v1/responses", s.requireAPIKey(http.HandlerFunc(s.proxyResponses)))
 	s.mux.Handle("POST /v1/responses/compact", s.requireAPIKey(http.HandlerFunc(s.proxyCompact)))
+	s.mux.Handle("POST /v1beta/", s.geminiAPI(http.HandlerFunc(s.proxyGemini)))
 }
 
 func (s *Server) publicPOST(path string, handler http.HandlerFunc) {

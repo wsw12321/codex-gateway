@@ -92,9 +92,9 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 		if params.Billing != nil {
 			return RequestAdmission{}, fmt.Errorf("%w: models endpoint cannot be billed", ErrInvalid)
 		}
-	case "responses", "responses.compact":
+	case "responses", "responses.compact", "gemini.generateContent", "gemini.streamGenerateContent":
 		if params.Billing == nil {
-			return RequestAdmission{}, fmt.Errorf("%w: response endpoint requires billing", ErrInvalid)
+			return RequestAdmission{}, fmt.Errorf("%w: generation endpoint requires billing", ErrInvalid)
 		}
 	default:
 		return RequestAdmission{}, fmt.Errorf("%w: unsupported usage endpoint", ErrInvalid)
