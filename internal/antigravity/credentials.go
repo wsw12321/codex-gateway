@@ -23,6 +23,7 @@ import (
 )
 
 const (
+	// #nosec G101 -- This is the CLI's fixed credential filename, not a credential value.
 	credentialFilename = "antigravity-oauth-token"
 	credentialLimit    = 1 << 20
 	credentialPartSize = 6000 // Bookworm secret-tool silently truncates stdin after 8192 bytes.
@@ -410,7 +411,7 @@ func checkCredentialFile(file *os.File, directory bool) error {
 		return credentialError("unsafe_path")
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || stat.Uid != uint32(os.Geteuid()) || info.Mode().Perm() != mode || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+	if !ok || int64(stat.Uid) != int64(os.Geteuid()) || info.Mode().Perm() != mode || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
 		return credentialError("invalid_permissions")
 	}
 	if !directory && stat.Nlink != 1 {

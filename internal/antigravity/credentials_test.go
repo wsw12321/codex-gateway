@@ -265,7 +265,7 @@ func TestCredentialsRejectInvalidWithoutOverwritingKeyring(t *testing.T) {
 }
 
 func TestCredentialsRejectUnsafePathsAndPermissions(t *testing.T) {
-	for _, mode := range []string{"file_symlink", "dir_symlink", "home_symlink", "ancestor_symlink", "hardlink", "fifo", "directory_file", "file_mode", "dir_mode", "home_mode", "missing"} {
+	for _, mode := range []string{"file_symlink", "dir_symlink", "home_symlink", "ancestor_symlink", "hardlink", "fifo", "directory_file", "file_mode", "dir_mode", "home_mode", "file_owner", "dir_owner", "home_owner", "missing"} {
 		t.Run(mode, func(t *testing.T) {
 			home := credentialHome(t, syntheticCredential)
 			path := credentialPath(home)
@@ -302,6 +302,20 @@ func TestCredentialsRejectUnsafePathsAndPermissions(t *testing.T) {
 				category = "invalid_permissions"
 			case "home_mode":
 				_ = os.Chmod(home, 0755)
+				category = "invalid_permissions"
+			case "file_owner", "dir_owner", "home_owner":
+				if os.Geteuid() != 0 {
+					t.Skip("changing credential ownership requires root")
+				}
+				target := path
+				if mode == "dir_owner" {
+					target = filepath.Dir(path)
+				} else if mode == "home_owner" {
+					target = home
+				}
+				if err := os.Chown(target, 1, -1); err != nil {
+					t.Fatal(err)
+				}
 				category = "invalid_permissions"
 			case "missing":
 				_ = os.Remove(path)
