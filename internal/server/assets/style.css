@@ -1504,6 +1504,82 @@ code {
   color: var(--muted);
 }
 
+.model-multiplier-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.model-multiplier-help {
+  margin: 1rem 0 1.4rem;
+}
+
+.model-multiplier-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.2rem;
+}
+
+.model-multiplier-heading h3 {
+  margin: 0 0 .3rem;
+}
+
+.model-multiplier-heading > div {
+  min-width: 0;
+}
+
+.model-multiplier-heading small {
+  color: var(--muted);
+}
+
+.model-multiplier-current {
+  display: grid;
+  justify-items: end;
+  max-width: 60%;
+  text-align: right;
+}
+
+.model-multiplier-current strong {
+  color: var(--accent);
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-multiplier-form {
+  display: grid;
+  grid-template-columns: minmax(9rem, 1fr) minmax(12rem, 2fr) auto;
+  align-items: end;
+  gap: 1rem;
+}
+
+.model-multiplier-form .form-message {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+#model-multipliers-message[data-kind="ok"] {
+  color: var(--success);
+}
+
+@media (max-width: 760px) {
+  .model-multiplier-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .model-multiplier-heading {
+    align-items: start;
+  }
+
+  .model-multiplier-heading h3 {
+    font-size: 1rem;
+  }
+
+  .model-multiplier-current strong {
+    font-size: 1.25rem;
+  }
+}
+
 .billing-period-panel,
 .billing-ledger-panel {
   margin-bottom: 1rem;

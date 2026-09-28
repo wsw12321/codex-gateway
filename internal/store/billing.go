@@ -93,6 +93,7 @@ type BillingLedgerEntry struct {
 	PricingServiceTier              *string    `json:"pricing_service_tier,omitempty"`
 	ContextClass                    *string    `json:"context_class,omitempty"`
 	PricingRuleVersion              int        `json:"pricing_rule_version"`
+	PricingMultiplier               string     `json:"pricing_multiplier"`
 	PricingCatalogAsOf              *string    `json:"pricing_catalog_as_of,omitempty"`
 	AppliedInputUSDPerMillion       *string    `json:"applied_input_usd_per_million,omitempty"`
 	AppliedCachedInputUSDPerMillion *string    `json:"applied_cached_input_usd_per_million,omitempty"`
@@ -161,6 +162,7 @@ type BillingReservation struct {
 	CachedInputUSDPerMillion        string          `json:"cached_input_usd_per_million"`
 	OutputUSDPerMillion             string          `json:"output_usd_per_million"`
 	PricingRuleVersion              int             `json:"pricing_rule_version"`
+	PricingMultiplier               string          `json:"pricing_multiplier"`
 	BillingMode                     string          `json:"billing_mode"`
 	PricingCatalogAsOf              *string         `json:"pricing_catalog_as_of,omitempty"`
 	PricingModel                    *string         `json:"pricing_model,omitempty"`
@@ -319,7 +321,7 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 		&cacheWriteTokens, &appliedInput, &appliedCached, &appliedCacheWrite,
 		&appliedOutput, &fallbackReason, &day, &week, &month, &cutoff,
 		&value.State, &inputTokens, &cachedTokens,
-		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt, &groupID, &groupPeriodID)
+		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt, &groupID, &groupPeriodID, &value.PricingMultiplier)
 	value.InputUSDPerMillion, value.CachedInputUSDPerMillion = inputPrice.String, cachedPrice.String
 	value.OutputUSDPerMillion = outputPrice.String
 	value.PricingCatalogAsOf, value.PricingModel = nullableString(catalog), nullableString(pricingModel)
@@ -355,7 +357,7 @@ const billingReservationColumns = `request_id, user_id, api_key_id, requested_mo
 	day_period_id, week_period_id, month_period_id, cash_lot_cutoff, state,
 	actual_input_tokens, actual_cached_input_tokens,
 	actual_output_tokens, actual_cost_usd::text, charged_usd::text,
-	uncovered_usd::text, created_at, settled_at, group_id, group_period_id`
+	uncovered_usd::text, created_at, settled_at, group_id, group_period_id, pricing_multiplier::text`
 
 func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationParams) (BillingReservation, error) {
 	if params.Now.IsZero() {
@@ -528,15 +530,19 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		}
 		return BillingReservation{}, &InsufficientFundsError{RetryAfter: retry}
 	}
+	pricingMultiplier, err := snapshotModelMultiplierTx(ctx, tx, params.Model)
+	if err != nil {
+		return BillingReservation{}, err
+	}
 	reservation, err := scanBillingReservation(tx.QueryRowContext(ctx, `
 		INSERT INTO billing_reservations
 			(request_id, user_id, api_key_id, requested_model,
 			 input_usd_per_million, cached_input_usd_per_million, output_usd_per_million,
 			 pricing_rule_version, billing_mode, pricing_catalog_as_of, pricing_model,
 			 pricing_snapshot, cache_write_mode, requested_service_tier,
-			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id)
+			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id, pricing_multiplier)
 		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
-			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
 		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
@@ -544,7 +550,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		valueOrNil(params.PricingCatalogAsOf), valueOrNil(params.PricingModel),
 		valueOrNil(string(params.PricingSnapshot)), valueOrNil(params.CacheWriteMode),
 		valueOrNil(params.RequestedServiceTier), periods[BillingTierDay], periods[BillingTierWeek],
-		periods[BillingTierMonth], cashCutoff, params.Now, groupID, groupPeriodID))
+		periods[BillingTierMonth], cashCutoff, params.Now, groupID, groupPeriodID, pricingMultiplier))
 	return reservation, mapDBError("insert billing reservation", err)
 }
 
@@ -811,7 +817,7 @@ const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 	context_class, pricing_rule_version, pricing_catalog_as_of::text,
 	applied_input_usd_per_million::text, applied_cached_input_usd_per_million::text,
 	applied_cache_write_usd_per_million::text, applied_output_usd_per_million::text,
-	pricing_fallback_reason, group_id, group_period_id`
+	pricing_fallback_reason, group_id, group_period_id, pricing_multiplier::text`
 
 func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var value BillingLedgerEntry
@@ -829,7 +835,7 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 		&usageRequestedAt, &actualModel, &cacheWrite, &cacheWriteMode,
 		&requestedTier, &actualTier, &pricingTier, &contextClass,
 		&value.PricingRuleVersion, &pricingCatalog, &appliedInput, &appliedCached,
-		&appliedCacheWrite, &appliedOutput, &fallbackReason, &groupID, &groupPeriodID)
+		&appliedCacheWrite, &appliedOutput, &fallbackReason, &groupID, &groupPeriodID, &value.PricingMultiplier)
 	value.GroupID, value.GroupPeriodID = nullableString(groupID), nullableString(groupPeriodID)
 	value.UserID, value.OperationID = nullableString(userID), nullableString(operationID)
 	value.BalanceAfterUSD, value.CNYAmount = nullableString(balance), nullableString(cny)
@@ -1857,9 +1863,9 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	pricingFallbackReason := ""
 	var cost string
 	if reservation.PricingRuleVersion == config.PricingSchemaV1 {
-		cost, err = decimal.CalculateCost(inputTokens, cachedTokens, outputTokens,
+		cost, err = decimal.CalculateCostWithMultiplier(inputTokens, cachedTokens, outputTokens,
 			reservation.InputUSDPerMillion, reservation.CachedInputUSDPerMillion,
-			reservation.OutputUSDPerMillion)
+			reservation.OutputUSDPerMillion, reservation.PricingMultiplier)
 	} else {
 		snapshot, snapshotErr := config.ParsePricingSnapshot(reservation.PricingSnapshot)
 		if snapshotErr != nil {
@@ -1877,11 +1883,11 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			)
 		}
 		if err == nil {
-			cost, err = decimal.CalculateCostV2(
+			cost, err = decimal.CalculateCostV2WithMultiplier(
 				inputTokens, cachedTokens, cacheWriteTokens, outputTokens,
 				snapshot.Rule.CacheWriteMode, decision.InputUSDPerMillion,
 				decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion,
-				decision.OutputUSDPerMillion,
+				decision.OutputUSDPerMillion, reservation.PricingMultiplier,
 			)
 			pricingFallbackReason = decision.FallbackReason
 		}
@@ -2052,18 +2058,18 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			 context_class, pricing_rule_version, pricing_catalog_as_of,
 			 applied_input_usd_per_million, applied_cached_input_usd_per_million,
 			 applied_cache_write_usd_per_million, applied_output_usd_per_million,
-			 pricing_fallback_reason, upstream_account_id, group_id, group_period_id)
+			 pricing_fallback_reason, upstream_account_id, group_id, group_period_id, pricing_multiplier)
 		VALUES ($1,'usage_charge',$2::numeric,-$3::numeric,$4::numeric,$5,$6,$7,$8,$9,
 			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12,
 			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::date,$23::numeric,$24::numeric,
-			$25::numeric,$26::numeric,$27,$28,$29,$30)`,
+			$25::numeric,$26::numeric,$27,$28,$29,$30,$31::numeric)`,
 		reservation.UserID, cost, cashCharged, balanceAfter, requestID, reservation.Model,
 		inputTokens, cachedTokens, outputTokens, charged, remaining, at,
 		ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens, ledgerCacheWriteMode,
 		ledgerRequestedTier, ledgerActualTier, ledgerPricingTier, ledgerContextClass,
 		reservation.PricingRuleVersion, ledgerCatalog, ledgerAppliedInput, ledgerAppliedCached,
 		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback,
-		valueOrNil(upstreamAccountID.String), reservation.GroupID, reservation.GroupPeriodID); err != nil {
+		valueOrNil(upstreamAccountID.String), reservation.GroupID, reservation.GroupPeriodID, reservation.PricingMultiplier); err != nil {
 		return BillingReservation{}, mapDBError("record usage billing ledger", err)
 	}
 	if reservation.GroupPeriodID != nil {

@@ -165,7 +165,10 @@ cost = (ordinary * input_price
 若 GPT-6 或 GPT-5.6 响应没有给出 cache-write 字段，结算会把全部非缓存输入视为
 缓存写入，
 记录 `missing_cache_write_tokens`。`reasoning_tokens` 已包含在 output 中，不能再次
-计费。最终金额沿用系统规则保留 12 位小数。
+计费。以上 `cost` 是尚未舍入的基础费用，最终金额为
+`round_half_away_from_zero(cost × pricing_multiplier, 12)`。
+基础费用和各 Token 类别不得提前舍入；v1 三价和 v2 所有服务层、上下文及兜底价格
+遵循同一规则。倍率默认 `1`，最终金额保留 12 位小数。
 
 准入时会把请求模型的完整 v2 规则和目录日期保存在 reservation；结算后把实际
 模型、请求/实际/最终计价服务层、上下文档位、cache-write 模式和 Token、最终应用
@@ -1058,6 +1061,45 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
    失败时保持新 connector 停止；如需返回旧服务器，应先停止新机 Sidecar/Bridge，
    再在旧机重新完成两个登录流程，不能同时启动两端的上游容器。只有确认新机稳定
    且无需回退后，才按云厂商流程安全销毁旧数据库卷和 secret。
+
+## 模型倍率迁移与升级
+
+`0022_model_multipliers.sql` 是 forward-only 迁移：增加倍率设置表，以及
+reservation、ledger 的 `pricing_multiplier NUMERIC(30,12) NOT NULL DEFAULT 1`。
+现有金额和基础价格快照不变，旧的进行中请求恢复时仍使用倍率 `1`。
+
+1. 备份 PostgreSQL，记录当前镜像和 `schema_migrations`，在恢复副本先跑迁移及
+   计费回归。确认所有 Gateway 实例将使用同一版定价配置。
+2. 暂停对 `PUT /admin/billing/model-multipliers/*` 的管理入口访问，并停止旧
+   Gateway 实例的请求准入，排空正在处理的请求。暂停或排空须覆盖全部副本。
+   旧版本不会使用新倍率，不能在新旧实例混跑时开放修改。
+3. 部署包含 `0022` 的 Gateway 镜像，由启动迁移流程应用迁移。确认
+   `schema_migrations` 包含 `0022_model_multipliers.sql`，所有旧副本已退出，全部
+   活跃副本均运行新版本，再恢复业务入口并开放倍率修改页面/API。
+   单实例部署也应先停旧实例再启动新镜像。未知迁移保护仅阻止旧程序重新启动，
+   不能替代对已经运行的旧实例的排空和升级。
+4. 以 Owner 完成近期身份验证，在测试模型保存一个倍率。检查
+   `billing.model_multiplier_updated` 审计记录中的模型、旧/新倍率、操作者、原因
+   和 operation ID。在不同实例请求该模型，确认新 reservation 和 usage ledger
+   的倍率一致，个人扣费、群组额度、费用报表及上游账号近 24 小时分配金额包含
+   倍率。旧请求和历史报表不应被重算。
+5. 倍率恢复为 `1` 是一次新的、有原因和 operation ID 的管理操作，只影响后续
+   准入请求。如需回滚程序，必须使用升级前备份和对应镜像；不能直接在已迁移数据库
+   上重新运行旧程序。备份恢复会丢弃备份之后的业务数据，应按既有恢复流程处理。
+
+倍率修改和请求准入直接访问数据库，不使用进程缓存。未设置时默认 `1`，数据库
+错误不会降级到默认值。`codex-auto-review` 固定 `1.0`，Gemini 已归一化别名共用
+其定价目录模型；移出配置的模型无法修改，但数据库中的设置保留供重新加入。
+历史信息清理会按既有规则删除倍率操作账本和对应成功审计、保留 operation ID
+tombstone；当前倍率设置不清理。保留的设置更新者属于管理历史，不能通过用户清理
+删除而破坏审计归属。
+
+复核账单时使用请求快照的基础价格和倍率，先求精确基础费用、乘倍率，再统一
+舍入到 12 位小数。例：基础费用 `0.0000000000004`、倍率 `2`，最终费用是
+`0.000000000001`；先舍入基础费用会得到错误结果。现有 `amount_usd`、
+`actual_cost_usd`、`charged_usd`、`uncovered_usd`、`estimated_usd` 字段保持兼容，
+含义对应包含倍率后的金额；CNY 展示继续按现有汇率折算。
+验证范围及截图见[模型倍率验证记录](model-multipliers-validation.md)。
 
 ## 12. 上线验收清单
 

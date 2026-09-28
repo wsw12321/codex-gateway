@@ -1389,7 +1389,8 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 		byName["0004_subscription_period_limits.sql"] == "" ||
 		byName["0005_official_token_pricing.sql"] == "" ||
 		byName["0006_api_key_lifecycle.sql"] == "" ||
-		byName["0007_upstream_accounts.sql"] == "" {
+		byName["0007_upstream_accounts.sql"] == "" ||
+		byName["0022_model_multipliers.sql"] == "" {
 		t.Fatalf("billing migration set is incomplete: %v", byName)
 	}
 	if _, err := connection.ExecContext(ctx, byName["0001_initial.sql"]); err != nil {
@@ -1609,6 +1610,21 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	// ungrouped after the forward-only migration, including in-flight requests.
 	if _, err := connection.ExecContext(ctx, byName["0012_user_groups.sql"]); err != nil {
 		t.Fatalf("apply isolated 0012: %v", err)
+	}
+	if _, err := connection.ExecContext(ctx, byName["0022_model_multipliers.sql"]); err != nil {
+		t.Fatalf("apply isolated 0022: %v", err)
+	}
+	var migratedReservationMultiplier, migratedLedgerMultiplier string
+	if err := connection.QueryRowContext(ctx, `SELECT
+		(SELECT pricing_multiplier::text FROM billing_reservations WHERE request_id = $1),
+		(SELECT pricing_multiplier::text FROM billing_ledger_entries WHERE request_id = $2)`,
+		legacyRequestID, historicalRequestID,
+	).Scan(&migratedReservationMultiplier, &migratedLedgerMultiplier); err != nil {
+		t.Fatalf("read migrated multiplier snapshots: %v", err)
+	}
+	if migratedReservationMultiplier != "1.000000000000" || migratedLedgerMultiplier != "1.000000000000" {
+		t.Fatalf("legacy multiplier snapshots changed: reservation=%s ledger=%s",
+			migratedReservationMultiplier, migratedLedgerMultiplier)
 	}
 	var migratedGroupReservations, migratedGroupLedger int
 	if err := connection.QueryRowContext(ctx, `SELECT

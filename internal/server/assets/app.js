@@ -8,6 +8,7 @@ const sectionTitles = {
   keys: "API Keys",
   guide: "使用指导",
   billing: "额度与订阅",
+  "model-multipliers": "模型倍率",
   groups: "群组额度",
   security: "账号安全",
   usage: "使用统计",
@@ -21,6 +22,7 @@ const sectionTitles = {
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("model-access");
+ownerOnlySections.add("model-multipliers");
 ownerOnlySections.add("model-identification");
 ownerOnlySections.add("groups");
 ownerOnlySections.add("information");
@@ -48,6 +50,11 @@ let identityGeneration = 0;
 let billingDetail = null;
 let billingUsers = [];
 let billingSettings = null;
+let modelMultiplierModels = [];
+let modelMultiplierDrafts = new Map();
+let modelMultiplierSequence = 0;
+let modelMultiplierOperation = null;
+let modelMultiplierLoading = false;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
@@ -308,7 +315,7 @@ function selectUpstreamAccountProvider(section) {
   for (const [id, nodes] of upstreamAccountHelp) byId(id).replaceChildren(...nodes.map((node) => node.cloneNode(true)));
   if (provider === "antigravity") {
     byId("upstream-account-control-help").textContent = "账号状态：手动禁用后停止接收新请求，直到 Owner 重新启用；已开始的请求继续执行。上游返回 429 时账号进入约 60 秒的限流冷却，随后自动重试。重新启用只恢复手动开关，不会跳过冷却或修复失效的登录凭据。";
-    byId("upstream-allocation-help").textContent = "请求轮换：按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新请求，已开始的请求继续执行。参考目标按当前启用账号计算；实际分配会根据当前模型、使用权限和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。";
+    byId("upstream-allocation-help").textContent = "请求轮换：按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新请求，已开始的请求继续执行。参考目标按当前启用账号计算；实际分配会根据当前模型、使用权限和实时可用账号重算。费用包含请求模型倍率，跨用户、跨模型汇总，不计进行中请求。";
     byId("upstream-concurrency-limit-help").textContent = "请求并发限制：AGY 请求没有可稳定识别的对话标识，因此每个正在执行的请求单独占用一个名额，每个账号默认上限为 1。所有可用账号都达到上限时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新请求。";
     byId("upstream-quota-warning").textContent = "额度说明：Antigravity 暂不提供精确的剩余额度百分比或额度重置时间，当前不支持即时额度查询。本地请求、Token、费用统计及限流冷却状态仍可查看；限流冷却结束后自动重试，若上游仍限流则再次冷却。";
   }
@@ -527,6 +534,7 @@ function handleUnauthorized() {
   byId("billing-ledger-rows").replaceChildren(tableMessage(5, "登录后加载账务流水。"));
   byId("billing-current-rate").textContent = "—";
   resetBillingUserSearch();
+  resetModelMultipliers();
   globalUserSearch?.reset();
   recoveryUserSearch?.reset();
   byId("billing-ledger-page").textContent = "—";
@@ -1145,6 +1153,7 @@ function renderState(value) {
     billingUsersRequestSequence++;
     globalRequestSequence++;
     resetBillingUserSearch();
+    resetModelMultipliers();
     globalUserSearch?.reset();
   }
   all(".owner-only").forEach((node) => node.classList.toggle("hidden", !owner));
@@ -1529,6 +1538,7 @@ function billingTypeLabel(type) {
     usage: "用量扣费",
     usage_charge: "用量扣费",
     recharge_rate: "充值汇率调整",
+    model_multiplier: "模型倍率调整",
     subscription_set: "订阅重开",
     subscription_disable: "订阅停用",
     subscription_renewal: "订阅续期",
@@ -1612,6 +1622,7 @@ function renderBillingLedger(detail) {
       const model = field(entry, "model");
       request.append(requestID ? element("code", {text: requestID}) : element("span", {text: "—"}));
       if (model) request.append(element("small", {text: String(model)}));
+      if (requestID) request.append(element("small", {text: `请求倍率：${displayModelMultiplier(field(entry, "pricing_multiplier") || "1")}`}));
       const tokenParts = [];
       for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存读取"], ["cache_write_tokens", "缓存写入"], ["output_tokens", "输出"]]) {
         const value = field(entry, name);
@@ -2186,6 +2197,173 @@ async function loadBillingUsers() {
     billingBatchUsersReady = false;
     renderBillingBatchUsers("用户列表加载失败，请点击“刷新账务数据”；已有批次仍可重试未成功项。");
     throw error;
+  }
+}
+
+function displayModelMultiplier(value) {
+  const text = String(value).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+  return text.includes(".") ? text : `${text}.0`;
+}
+
+function modelMultiplierIdentityCurrent() {
+  const actor = state?.user?.id;
+  const generation = identityGeneration;
+  return () => Boolean(actor) && generation === identityGeneration && !loggingOut &&
+    state?.user?.id === actor && state.user.role === "owner";
+}
+
+function modelMultiplierMessage(message = "", kind = "error") {
+  const node = byId("model-multipliers-message");
+  node.textContent = message;
+  node.dataset.kind = kind;
+  node.classList.toggle("hidden", !message);
+}
+
+function resetModelMultipliers() {
+  modelMultiplierSequence++;
+  modelMultiplierModels = [];
+  modelMultiplierDrafts.clear();
+  modelMultiplierOperation = null;
+  modelMultiplierLoading = false;
+  byId("model-multiplier-list")?.replaceChildren(emptyState("登录后加载模型倍率。"));
+  hide("model-multipliers-loading");
+  if (byId("model-multipliers-message")) modelMultiplierMessage();
+}
+
+function syncModelMultiplierControls() {
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const busy = Boolean(modelMultiplierOperation);
+  byId("model-multipliers-refresh").disabled = !owner || busy || modelMultiplierLoading;
+  for (const form of all(".model-multiplier-form")) {
+    const saving = modelMultiplierOperation?.model === form.dataset.model;
+    for (const input of all("input", form)) input.disabled = !owner || saving;
+    const button = form.querySelector("button");
+    button.disabled = !owner || busy;
+    button.textContent = saving ? "保存中…" : "保存倍率";
+    form.setAttribute("aria-busy", saving ? "true" : "false");
+  }
+}
+
+function renderModelMultipliers() {
+  const list = byId("model-multiplier-list");
+  if (!modelMultiplierModels.length) {
+    list.replaceChildren(emptyState("当前没有已配置的计价模型。"));
+    return;
+  }
+  list.replaceChildren(...modelMultiplierModels.map((row) => {
+    const editable = row.editable && row.model !== "codex-auto-review";
+    const current = editable ? displayModelMultiplier(row.multiplier) : "1.0";
+    const heading = element("header", {className: "model-multiplier-heading"},
+      element("div", {}, element("h3", {text: row.model}),
+        element("small", {text: row.updated_at ? `更新于 ${formatDateTime(row.updated_at)}` : "尚未修改 · 默认倍率"})),
+      element("div", {className: "model-multiplier-current"}, element("small", {text: "当前倍率"}),
+        element("strong", {text: `${current} ×`})),
+    );
+    const card = element("article", {className: "panel model-multiplier-card", dataset: {model: row.model}}, heading);
+    if (!editable) {
+      card.append(element("p", {className: "muted", text: "内部零价模型 · 固定 1.0，不可编辑"}));
+      return card;
+    }
+    const draft = modelMultiplierDrafts.get(row.model) || {multiplier: current, reason: "", pending: null, dirty: false};
+    if (!draft.dirty) draft.multiplier = current;
+    modelMultiplierDrafts.set(row.model, draft);
+    const multiplier = element("input", {type: "text", attributes: {name: "multiplier", inputmode: "decimal", required: "",
+      autocomplete: "off", maxlength: "31", "aria-label": `${row.model} 新倍率`}});
+    multiplier.value = draft.multiplier;
+    const reason = element("input", {type: "text", attributes: {name: "reason", required: "", maxlength: "500",
+      placeholder: "例如：调整团队计费折扣", "aria-label": `${row.model} 操作原因`}});
+    reason.value = draft.reason;
+    multiplier.addEventListener("input", () => { draft.multiplier = multiplier.value; draft.dirty = true; });
+    reason.addEventListener("input", () => { draft.reason = reason.value; draft.dirty = true; });
+    const form = element("form", {className: "model-multiplier-form", dataset: {model: row.model}},
+      element("label", {}, "新倍率", multiplier), element("label", {}, "操作原因", reason),
+      element("button", {type: "submit", text: "保存倍率", attributes: {"aria-label": `保存 ${row.model} 倍率`}}),
+      element("p", {className: "form-message hidden", attributes: {role: "status", "aria-live": "polite"}}),
+    );
+    form.addEventListener("submit", (event) => { event.preventDefault(); return saveModelMultiplier(row.model, form); });
+    card.append(form);
+    return card;
+  }));
+  syncModelMultiplierControls();
+}
+
+async function loadModelMultipliers(operation = null) {
+  const identityCurrent = modelMultiplierIdentityCurrent();
+  if (!identityCurrent() || (modelMultiplierOperation && operation !== modelMultiplierOperation)) return false;
+  const sequence = ++modelMultiplierSequence;
+  const current = () => identityCurrent() && sequence === modelMultiplierSequence;
+  modelMultiplierLoading = true;
+  byId("model-multiplier-list").setAttribute("aria-busy", "true");
+  show("model-multipliers-loading");
+  syncModelMultiplierControls();
+  try {
+    const result = await api("/admin/billing/model-multipliers", undefined, current);
+    if (!current()) return false;
+    modelMultiplierModels = Array.isArray(result.models) ? result.models : [];
+    for (const model of modelMultiplierDrafts.keys()) {
+      if (!modelMultiplierModels.some((row) => row.model === model && row.editable)) modelMultiplierDrafts.delete(model);
+    }
+    renderModelMultipliers();
+    modelMultiplierMessage();
+    return true;
+  } catch (error) {
+    if (current()) modelMultiplierMessage(`倍率加载失败：${friendlyError(error)}`);
+    return false;
+  } finally {
+    if (current()) {
+      modelMultiplierLoading = false;
+      byId("model-multiplier-list").setAttribute("aria-busy", "false");
+      hide("model-multipliers-loading");
+      syncModelMultiplierControls();
+    }
+  }
+}
+
+async function saveModelMultiplier(model, form) {
+  const identityCurrent = modelMultiplierIdentityCurrent();
+  if (!identityCurrent() || modelMultiplierOperation || model === "codex-auto-review" ||
+      !modelMultiplierModels.some((row) => row.model === model && row.editable)) return;
+  const draft = modelMultiplierDrafts.get(model);
+  const multiplier = draft.multiplier.trim();
+  const reason = draft.reason.trim();
+  setLocalMessage(form);
+  if (!/^(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$/.test(multiplier) || !/[1-9]/.test(multiplier)) {
+    setLocalMessage(form, "倍率必须是大于 0 的十进制数，最多 18 位整数、12 位小数。");
+    return;
+  }
+  if (!reason) { setLocalMessage(form, "必须填写操作原因。"); return; }
+  if (!crypto?.randomUUID) { setLocalMessage(form, "当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。"); return; }
+  const fingerprint = JSON.stringify({multiplier, reason});
+  if (draft.pending?.fingerprint !== fingerprint) {
+    draft.pending = {fingerprint, payload: {multiplier, reason, operation_id: crypto.randomUUID()}};
+  }
+  const operation = {model, pending: draft.pending};
+  modelMultiplierOperation = operation;
+  modelMultiplierSequence++; // Invalidate reads started before this write.
+  modelMultiplierLoading = false;
+  hide("model-multipliers-loading");
+  byId("model-multiplier-list").setAttribute("aria-busy", "false");
+  const current = () => identityCurrent() && modelMultiplierOperation === operation;
+  syncModelMultiplierControls();
+  try {
+    const result = await sensitiveAction(() => api(`/admin/billing/model-multipliers/${encodeURIComponent(model)}`, {
+      method: "PUT", body: JSON.stringify(operation.pending.payload),
+    }, current), current);
+    if (!current()) return;
+    const row = modelMultiplierModels.find((item) => item.model === model);
+    Object.assign(row, result);
+    modelMultiplierDrafts.delete(model);
+    renderModelMultipliers();
+    const refreshed = await loadModelMultipliers(operation);
+    if (current()) modelMultiplierMessage(refreshed ? `${model} 倍率已保存，仅影响新请求。` :
+      `${model} 倍率已保存，仅影响新请求；列表刷新失败，请点击“刷新倍率”核对。`, refreshed ? "ok" : "error");
+  } catch (error) {
+    if (current()) setLocalMessage(form, `保存失败：${friendlyError(error)}。输入已保留，可重试。`);
+  } finally {
+    if (current()) {
+      modelMultiplierOperation = null;
+      syncModelMultiplierControls();
+    }
   }
 }
 
@@ -3099,6 +3277,7 @@ function renderGlobalUsage(result) {
   const models = Array.isArray(pricing.unpriced_models) ? pricing.unpriced_models : [];
   note.replaceChildren(
     element("p", {text: pricing.disclaimer || "OpenAI API Token 等价成本，不代表 OpenAI 实际账单。"}),
+    element("p", {text: "费用包含请求准入时保存的模型倍率；历史费用不会随当前倍率调整。"}),
     element("p", {text: rateLine}),
     element("p", {text: models.length ? `缺少 ledger 覆盖的模型：${models.join(", ")}` : "当前区间内所有 Token 均可与不可变 ledger 对账。"}),
   );
@@ -3282,7 +3461,7 @@ function renderBillingGroup(group) {
   if (!group) return;
   host.append(element("h3", {text: `群组额度 · ${group.name}`}),
     element("div", {className: "metrics compact"}, ...groupMetrics(group)),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组额度与个人可用资金必须同时有剩余。`}),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。已用费用包含请求模型倍率；群组额度与个人可用资金必须同时有剩余。`}),
   );
 }
 
@@ -3625,7 +3804,7 @@ function upstreamAccountStats(account) {
     upstreamAccountStat("缓存写入", formatInteger(account?.cache_write_tokens)),
     upstreamAccountStat("输出 Token", formatInteger(account?.output_tokens)),
     upstreamAccountStat("推理 Token", formatInteger(account?.reasoning_tokens), "输出 Token 的子集"),
-    upstreamAccountStat("API 等价成本", formatMoney(account?.equivalent_cost_usd, "USD"), "本地不可变 Ledger"),
+    upstreamAccountStat("计费成本", formatMoney(account?.equivalent_cost_usd, "USD"), "已结算 · 包含模型倍率"),
   );
 }
 
@@ -4019,7 +4198,7 @@ function upstreamAllocationBlock(account) {
     limitForm,
     element("p", {className: "upstream-allocation-state", attributes: {"aria-live": "polite"}}),
     element("div", {className: "upstream-allocation-stats"},
-      upstreamAccountStat("近 24 小时费用", formatUSD(account.rolling_cost_usd), "已结算 · 跨用户与模型"),
+      upstreamAccountStat("近 24 小时费用", formatUSD(account.rolling_cost_usd), "已结算 · 包含模型倍率"),
       upstreamAccountStat("近 24 小时费用占比", account.rolling_cost_share == null ? "—" : formatPercent(account.rolling_cost_share), "所有已归因账号"),
       upstreamAccountStat("参考目标占比", account.target_share == null ? "—" : formatPercent(account.target_share), "按当前启用账号系数"),
     ),
@@ -5270,6 +5449,7 @@ function routeFromHash(focusContent = true) {
     });
   }
   syncVisiblePolling();
+  if (section === "model-multipliers") loadModelMultipliers();
   if (section === "information" && !informationLoaded) {
     informationLoaded = true;
     const current = informationIdentityCurrent();
@@ -5411,6 +5591,7 @@ function bindUI() {
     hide("personal-loading");
     clearSensitiveDOM();
     resetBillingUserSearch();
+    resetModelMultipliers();
     globalUserSearch.reset();
     recoveryUserSearch?.reset();
     try {
@@ -5428,6 +5609,7 @@ function bindUI() {
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
   bindAsync("password-form", "submit", setPassword, "保存中…");
   bindAsync("reauth-form", "submit", submitReauthentication, "验证中…", () => reauthRequestCurrent);
+  byId("model-multipliers-refresh").addEventListener("click", () => loadModelMultipliers());
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");

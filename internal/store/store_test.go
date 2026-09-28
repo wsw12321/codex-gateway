@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 21 {
-		t.Fatalf("migration count = %d, want 21", len(migrations))
+	if len(migrations) != 22 {
+		t.Fatalf("migration count = %d, want 22", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -38,7 +38,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		"usage_monthly", "upstream_accounts", "model_identifications",
 		"quota_counters", "quota_rate_windows", "quota_reservations",
 		"concurrency_leases",
-		"billing_settings", "billing_accounts", "billing_operations",
+		"billing_settings", "billing_accounts", "billing_operations", "billing_model_multipliers",
 		"billing_subscriptions", "billing_subscription_periods",
 		"billing_ledger_entries", "billing_cash_credit_lots",
 		"billing_reservations", "billing_charge_allocations",

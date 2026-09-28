@@ -35,6 +35,11 @@ func ParseRate(value string) (string, error) {
 	return parseBounded(value, RateScale, false, false)
 }
 
+// ParseMultiplier validates a positive model multiplier without rounding.
+func ParseMultiplier(value string) (string, error) {
+	return parseBounded(value, AmountScale, false, false)
+}
+
 // ParsePrice validates a non-negative per-million-token price that can be
 // stored exactly in a NUMERIC(30,12) snapshot column.
 func ParsePrice(value string) (string, error) {
@@ -103,6 +108,12 @@ func MultiplyToAmount(left, right string) (string, error) {
 // CalculateCost applies the requested-model price snapshot. Cached input is a
 // subset of input, and reasoning tokens are already included in output.
 func CalculateCost(inputTokens, cachedInputTokens, outputTokens int64, inputPrice, cachedPrice, outputPrice string) (string, error) {
+	return CalculateCostWithMultiplier(inputTokens, cachedInputTokens, outputTokens, inputPrice, cachedPrice, outputPrice, "1")
+}
+
+// CalculateCostWithMultiplier multiplies the exact base cost before the sole
+// rounding step. The input prices remain the configured base-price snapshot.
+func CalculateCostWithMultiplier(inputTokens, cachedInputTokens, outputTokens int64, inputPrice, cachedPrice, outputPrice, multiplier string) (string, error) {
 	if inputTokens < 0 || cachedInputTokens < 0 || outputTokens < 0 || cachedInputTokens > inputTokens {
 		return "", fmt.Errorf("invalid token counts: %w", ErrInvalidDecimal)
 	}
@@ -120,7 +131,7 @@ func CalculateCost(inputTokens, cachedInputTokens, outputTokens int64, inputPric
 	total.Add(total, new(big.Rat).Mul(big.NewRat(cachedInputTokens, 1), prices[1]))
 	total.Add(total, new(big.Rat).Mul(big.NewRat(outputTokens, 1), prices[2]))
 	total.Quo(total, big.NewRat(1_000_000, 1))
-	return roundAmount(total)
+	return multiplyCostAndRound(total, multiplier)
 }
 
 // CalculateCostV2 applies the four-price official-token-equivalent snapshot.
@@ -130,6 +141,16 @@ func CalculateCost(inputTokens, cachedInputTokens, outputTokens int64, inputPric
 func CalculateCostV2(
 	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int64,
 	cacheWriteMode, inputPrice, cachedPrice, cacheWritePrice, outputPrice string,
+) (string, error) {
+	return CalculateCostV2WithMultiplier(inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens,
+		cacheWriteMode, inputPrice, cachedPrice, cacheWritePrice, outputPrice, "1")
+}
+
+// CalculateCostV2WithMultiplier applies the request multiplier to all token
+// categories together, then rounds once to the ledger's twelve decimal places.
+func CalculateCostV2WithMultiplier(
+	inputTokens, cachedInputTokens, cacheWriteTokens, outputTokens int64,
+	cacheWriteMode, inputPrice, cachedPrice, cacheWritePrice, outputPrice, multiplier string,
 ) (string, error) {
 	if inputTokens < 0 || cachedInputTokens < 0 || cacheWriteTokens < 0 || outputTokens < 0 ||
 		cachedInputTokens > inputTokens {
@@ -162,7 +183,16 @@ func CalculateCostV2(
 	}
 	total.Add(total, new(big.Rat).Mul(big.NewRat(outputTokens, 1), prices[3]))
 	total.Quo(total, big.NewRat(1_000_000, 1))
-	return roundAmount(total)
+	return multiplyCostAndRound(total, multiplier)
+}
+
+func multiplyCostAndRound(total *big.Rat, multiplier string) (string, error) {
+	canonical, err := ParseMultiplier(multiplier)
+	if err != nil {
+		return "", fmt.Errorf("invalid pricing multiplier: %w", err)
+	}
+	factor, _ := new(big.Rat).SetString(canonical)
+	return roundAmount(new(big.Rat).Mul(total, factor))
 }
 
 func roundAmount(value *big.Rat) (string, error) {

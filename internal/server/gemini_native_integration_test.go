@@ -101,6 +101,12 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.server.store = repository
+	if _, err := repository.SetModelMultiplier(ctx, store.SetModelMultiplierParams{
+		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "shared Gemini alias discount"},
+		Model:              config.AntigravityPublicModel, Multiplier: "0.5",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	h.server.config.UsagePricing = nativeGeminiPricing(t)
 	h.server.config.AntigravityModelRoutes = map[string]string{config.AntigravityPublicModel: config.AntigravityCLIModel}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 3}
@@ -205,10 +211,10 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		if err := repository.SettleRequest(ctx, requestID, time.Now().UTC()); err != nil {
 			t.Fatal(err)
 		}
-		var endpoint, model, state, cost string
+		var endpoint, model, state, cost, multiplier string
 		var input, cached, output, reasoning, count int
 		err := repository.DB().QueryRowContext(ctx, `SELECT u.endpoint,u.model,u.state,u.input_tokens,u.cached_input_tokens,u.output_tokens,u.reasoning_tokens,l.amount_usd::text,
-		(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1) FROM usage_requests u JOIN billing_ledger_entries l USING(request_id) WHERE u.request_id=$1`, requestID).Scan(&endpoint, &model, &state, &input, &cached, &output, &reasoning, &cost, &count)
+		(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1),l.pricing_multiplier::text FROM usage_requests u JOIN billing_ledger_entries l USING(request_id) WHERE u.request_id=$1`, requestID).Scan(&endpoint, &model, &state, &input, &cached, &output, &reasoning, &cost, &count, &multiplier)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -216,8 +222,8 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		if i == 1 {
 			wantEndpoint = "gemini.streamGenerateContent"
 		}
-		if endpoint != wantEndpoint || model != config.AntigravityPublicModel || state != "completed" || input != 100 || cached != 20 || output != 30 || reasoning != 7 || cost != "0.000524000000" || count != 1 {
-			t.Fatalf("settlement %s %s %s %d %d %d %d %s count=%d", endpoint, model, state, input, cached, output, reasoning, cost, count)
+		if endpoint != wantEndpoint || model != config.AntigravityPublicModel || state != "completed" || input != 100 || cached != 20 || output != 30 || reasoning != 7 || cost != "0.000262000000" || count != 1 || multiplier != "0.500000000000" {
+			t.Fatalf("settlement %s %s %s %d %d %d %d %s count=%d multiplier=%s", endpoint, model, state, input, cached, output, reasoning, cost, count, multiplier)
 		}
 	}
 	quotaResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)

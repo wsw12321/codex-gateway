@@ -42,6 +42,7 @@ type Server struct {
 	activeConversations     map[string]activeRequestConversation
 	monitoringRepo          monitoringRepository
 	modelAccessRepo         modelAccessRepository
+	modelMultiplierRepo     modelMultiplierRepository
 	modelIdentificationRepo modelIdentificationRepository
 	identificationContext   context.Context
 	identificationCancel    context.CancelFunc
@@ -159,6 +160,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("PUT /admin/billing/me/sources/{source}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSourceStatus))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
+	s.mux.Handle("GET /admin/billing/model-multipliers", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelMultipliers))))
 	s.mux.Handle("GET /admin/billing/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUsers))))
 	s.mux.Handle("GET /admin/billing/users/{user_id}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUser))))
 	s.mux.Handle("GET /admin/groups", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupsJSON))))
@@ -177,6 +179,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/model-access/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateUserModelAccessBatch)))))
 	s.mux.Handle("PUT /admin/model-access/defaults", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelAccessDefaultsBatch)))))
 	s.mux.Handle("PUT /admin/billing/settings/recharge-rate", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateRechargeRate)))))
+	s.mux.Handle("PUT /admin/billing/model-multipliers/{model}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelMultiplier)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/recharges", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.rechargeBillingUser)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/adjustments", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.adjustBillingUser)))))
 	s.mux.Handle("PUT /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))

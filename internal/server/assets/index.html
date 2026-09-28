@@ -106,6 +106,7 @@
           <a href="#keys" data-view="keys">API Keys</a>
           <a href="#guide" data-view="guide">使用指导</a>
           <a href="#billing" data-view="billing">额度与订阅</a>
+          <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden">模型倍率</a>
           <a href="#security" data-view="security">账号安全</a>
           <a href="#usage" data-view="usage">使用统计</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
@@ -141,7 +142,7 @@
               <article><span>错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small></article>
               <article><span>活跃 API Keys</span><strong id="metric-active-keys">—</strong><small>当前可使用</small></article>
               <article class="owner-only hidden"><span>本月全员 Token</span><strong id="metric-global-tokens">—</strong><small>所有用户聚合</small></article>
-              <article class="owner-only hidden"><span>本月 API 等价估算</span><strong id="metric-global-cost">—</strong><small id="metric-global-coverage">仅已定价部分</small></article>
+              <article class="owner-only hidden"><span>本月计费成本（含倍率）</span><strong id="metric-global-cost">—</strong><small id="metric-global-coverage">仅已定价部分</small></article>
             </div>
 
             <div class="overview-grid">
@@ -309,7 +310,7 @@
 
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">
             <div class="section-head">
-              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、有限或无限周期额度与实际结算流水；使用统计中的价格估算不等同于账单。</p></div>
+              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、有限或无限周期额度与实际结算流水；请求费用包含模型倍率。</p></div>
             </div>
             <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
             <div id="billing-owner-scope" class="scope-banner owner-only hidden">
@@ -507,13 +508,25 @@
               <div class="panel-heading"><div><p class="eyebrow">AUDITABLE LEDGER</p><h3>账务流水</h3></div><span id="billing-ledger-page" class="badge">—</span></div>
               <div class="table-wrap">
                 <table>
-                  <caption>仅包含金额、模型、Token、请求 ID 与操作原因等账务元数据，不包含请求或响应内容。</caption>
+                  <caption>仅包含金额、模型、请求倍率、Token、请求 ID 与操作原因等账务元数据，不包含请求或响应内容。</caption>
                   <thead><tr><th>时间</th><th>类型</th><th>金额</th><th>说明</th><th>请求 / 模型</th></tr></thead>
                   <tbody id="billing-ledger-rows"><tr><td colspan="5" class="table-message">正在加载账务流水…</td></tr></tbody>
                 </table>
               </div>
               <div class="billing-pagination"><button id="billing-ledger-prev" type="button" class="secondary" disabled>上一页</button><button id="billing-ledger-next" type="button" class="secondary" disabled>下一页</button></div>
             </article>
+          </section>
+
+          <section class="view owner-only hidden" data-section="model-multipliers" aria-labelledby="model-multipliers-title">
+            <div class="section-head">
+              <div><p class="eyebrow">OWNER · MODEL PRICING</p><h2 id="model-multipliers-title">模型倍率</h2><p>按模型调整计费倍率，支持折扣和加价。个人扣费、群组额度、费用报表与上游账号分配均使用倍率后的金额。</p></div>
+              <button id="model-multipliers-refresh" type="button" class="secondary">刷新倍率</button>
+            </div>
+            <p class="callout" role="note"><strong>仅影响新请求。</strong>保存成功后进入准入的新请求使用新倍率；已准入的请求继续按原倍率结算。默认倍率为 1.0，未舍入的配置费用乘以请求倍率后，统一舍入至 12 位小数。</p>
+            <p class="muted model-multiplier-help">倍率必须大于 0，最多 18 位整数、12 位小数。Gemini 已归一化别名共用倍率；内部零价模型 codex-auto-review 固定为 1.0。</p>
+            <p id="model-multipliers-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div id="model-multipliers-loading" class="inline-loading hidden" role="status">正在加载模型倍率…</div>
+            <div id="model-multiplier-list" class="model-multiplier-list" aria-busy="false"><p class="empty">打开页面后加载模型倍率。</p></div>
           </section>
 
           <section class="view hidden" data-section="security" aria-labelledby="security-title">
@@ -606,7 +619,7 @@
               <div id="personal-usage-metrics" class="metrics compact" aria-live="polite" aria-busy="true">
                 <article><span>请求</span><strong id="usage-requests">—</strong></article>
                 <article><span>Token</span><strong id="usage-tokens">—</strong><small>输入 + 输出</small></article>
-                <article><span>实际扣款</span><strong id="usage-charged-usd">—</strong><small>已结算 usage ledger</small></article>
+                <article><span>实际扣款</span><strong id="usage-charged-usd">—</strong><small>已结算费用，包含模型倍率</small></article>
                 <article><span>缓存率</span><strong id="metric-cache">—</strong></article>
                 <article><span>缓存写入 Token</span><strong id="metric-cache-write">—</strong></article>
                 <article><span>p95 TTFT</span><strong id="metric-ttft">—</strong></article>
@@ -650,8 +663,8 @@
               </form>
               <div id="global-loading" class="inline-loading hidden" role="status">正在聚合全员用量…</div>
               <div class="metrics compact global-metrics">
-                <article><span>Token 等价成本 USD</span><strong id="global-usd">—</strong><small id="global-charge-detail">不可变 ledger</small></article>
-                <article><span>等价成本 CNY</span><strong id="global-cny">—</strong><small>当前固定汇率换算</small></article>
+                <article><span>计费成本 USD（含倍率）</span><strong id="global-usd">—</strong><small id="global-charge-detail">不可变 ledger</small></article>
+                <article><span>计费成本 CNY（含倍率）</span><strong id="global-cny">—</strong><small>当前固定汇率换算</small></article>
                 <article><span>Token</span><strong id="global-total-tokens">—</strong><small id="global-coverage">—</small></article>
                 <article><span>请求 / 用户</span><strong id="global-request-users">—</strong><small id="global-period">—</small></article>
               </div>
@@ -659,8 +672,8 @@
               <div id="pricing-breakdown" class="pricing-note muted" role="note"></div>
               <div class="table-wrap panel">
                 <table>
-                  <caption>按不可变 ledger 的 Token 等价成本降序；兼容字段 estimated_usd 与 actual_cost_usd 相同。</caption>
-                  <thead><tr><th>用户</th><th>请求</th><th>Token</th><th>USD / CNY 等价成本</th><th>使用占比</th><th>计价覆盖</th></tr></thead>
+                  <caption>按已结算费用降序，包含各请求保存的模型倍率。</caption>
+                  <thead><tr><th>用户</th><th>请求</th><th>Token</th><th>USD / CNY 计费成本</th><th>使用占比</th><th>计价覆盖</th></tr></thead>
                   <tbody id="global-rows"><tr><td colspan="6" class="table-message">选择“全员汇总”后加载。</td></tr></tbody>
                 </table>
               </div>
@@ -691,7 +704,7 @@
               <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为一组用户设置共同的美元用量上限；每人仍需有可用的个人订阅或余额。</p></div>
               <div class="button-group"><button id="group-create" type="button">创建群组</button><button id="groups-refresh" type="button" class="secondary">刷新</button></div>
             </div>
-            <p class="callout">群组额度优先于个人额度。达到上限后停止接受新请求，已接收的请求正常完成并计费，实际用量可能超过上限。固定周期自动重置，剩余额度不结转。</p>
+            <p class="callout">群组已用费用包含请求模型倍率，额度优先于个人额度。达到上限后停止接受新请求，已接收的请求正常完成并计费，实际用量可能超过上限。固定周期自动重置，剩余额度不结转。</p>
             <p id="groups-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <div class="groups-layout">
               <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
@@ -860,7 +873,7 @@
             </div>
             <div id="upstream-account-manager">
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
-            <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用跨用户、跨模型汇总，不计进行中请求。</p>
+            <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用包含请求模型倍率，跨用户、跨模型汇总，不计进行中请求。</p>
             <p id="upstream-concurrency-limit-help" class="callout" role="note"><strong>并发对话数量：</strong>每个账号默认上限为 1，按活跃 root 对话计数。同一 root 的重叠主请求、subagent、fork 和 side 对话在同一账号只占一个名额；不同 root 分别计数。Gateway 自身的请求级并发仍按每个请求计数。所有账号都无法接收新对话时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新的 root 对话，活跃 root 的后续请求仍可进入。</p>
             <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
             <form id="upstream-account-filter" class="filters upstream-account-filters">
