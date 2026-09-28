@@ -1,6 +1,8 @@
 # AGY 原生 Gemini 接入验证
 
-日期：2026-09-27。客户端配置和能力边界见 [Antigravity 接入说明](gemini-pro.md)。
+日期：2026-09-27。本页保留旧 preview/customtools 接入的历史验证记录，
+不代表当前同名模型方案的验收。当前请求示例、模型权限和 `0023` 升级要求以
+[Antigravity 接入说明](gemini-pro.md) 为准；历史抓包夹具保持原始内容。
 本记录区分本地协议、数据库和界面验证；真实订阅账号到 Google 的验收仍待执行。
 
 ## 数据库与请求生命周期
@@ -86,18 +88,17 @@ AGY 版本仍为 `1.2.4`，无数据库迁移或对外 API 变化。测试用一
 另覆盖无效/停用 key、多来源凭据、模型权限、未知模型、请求大小限制；代理测试覆盖
 尾部错误、不完整 SSE、非法用量、超时和取消，确认无效结果不会先输出成功响应。
 
-## 管理界面
+## 管理界面回归
 
-使用 Playwright `1.63.0`、Chromium `153.0.8010.12` 及合成用户状态验证使用指导：
+当前 `internal/server/testdata/agy_guide_browser.cjs` 使用合成用户状态验证更新后的指南：
 
-- Codex 地址保留 `/v1`，AGY 地址精确等于站点 origin。
-- `modelProvider` 配置为 `gemini`；说明要求合并现有配置。
-- 启动命令读取 Gateway key 到当前终端环境，模型为 `gemini-3.1-pro-high`。
-- 地址和启动命令复制内容正确；浏览器没有脚本错误。
-- 1440×1080 桌面和 390×844 移动端无页面横向溢出。
+2026-09-28 已以 Playwright `1.63.0`、Chromium `153.0.8010.12` 完成下列回归，
+浏览器无脚本错误，桌面 1440×1080 与移动端 390×844 均通过并更新截图。
 
-截图为 AGY 指导面板，截取时隐藏粘滞导航以避免遮挡：
-[桌面截图](screenshots/agy-guide-desktop.png)、[移动端截图](screenshots/agy-guide-mobile.png)。
+- Codex 地址保留 `/v1`，Gemini 示例采用当前站点 origin 和 `/v1/responses`。
+- JSON 正文与 Bash/curl 请求均使用 `gemini-3.1-pro-high`，Key 经 stdin 传入 curl。
+- 展示七个精确模型 ID、升级后默认禁用和旧 AGY Gemini 提供方无法直接连接的说明。
+- 地址和请求命令复制内容正确；检查浏览器脚本错误与移动端横向溢出。
 
 复现命令（Playwright 及浏览器安装在仓库外）：
 
@@ -106,9 +107,13 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
   node internal/server/testdata/agy_guide_browser.cjs
 ```
 
-## 上线验收
+脚本生成 [桌面截图](screenshots/agy-guide-desktop.png) 和
+[移动端截图](screenshots/agy-guide-mobile.png)。截图只记录指南内容，不表示真实订阅生成成功。
 
-先部署新版 Bridge，再部署执行迁移的 Gateway。使用真实订阅账号从本机 AGY
-完成文本和本地工具任务，确认两种模型别名切换、Flash Lite 标题 404 不阻断任务、
-真实 Token 与账单对应，以及取消后的进程和租约清理。本次验证没有部署服务或修改
-登录凭证；Google 上游验收仍待完成。
+## 当前上线验收
+
+在维护窗口协调切换新 Bridge 与执行 `0023` 的 Gateway。逐账号按实际可用模型进行
+JSON/SSE 冒烟，管理员重新授权并重新签发受限 Key 后，用精确同名模型调用 Responses
+与原生 API，核对 Standard 账单、Token、旧路径拒绝和取消后的清理。
+完整备份和回滚限制见 [验收和回滚](gemini-pro.md#验收和回滚)。真实 Google 上游验收
+与生产部署应在站点环境单独完成。

@@ -53,11 +53,14 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-09-16" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-09-28" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
-		"codex-auto-review", "gemini-3.1-pro-preview", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+		"codex-auto-review", "gemini-3.1-pro-high",
+		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+		"gemini-3.7-flash-high", "gemini-3.7-flash-medium",
+		"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
 		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
@@ -160,7 +163,7 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const model = "gemini-3.1-pro-preview"
+	const model = "gemini-3.1-pro-high"
 	snapshotRaw, rule, ok, err := pricing.ModelSnapshot(model)
 	if err != nil || !ok {
 		t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
@@ -224,6 +227,73 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 						decision.CacheWriteUSDPerMillion, decision.OutputUSDPerMillion)
 					if err != nil || cost != tc.cost {
 						t.Fatalf("Gemini cost with %d cache writes = %s, %v; want %s", cacheWrites, cost, err, tc.cost)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := ParseUsagePricing(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, err := pricing.ModelSnapshot("gemini-3.1-pro-preview"); err != nil || ok {
+		t.Fatalf("retired Gemini alias remains priced: ok=%t err=%v", ok, err)
+	}
+	for _, model := range []string{
+		"gemini-3.8-flash-high", "gemini-3.8-flash-medium",
+		"gemini-3.7-flash-high", "gemini-3.7-flash-medium",
+		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+	} {
+		t.Run(model, func(t *testing.T) {
+			raw, rule, ok, err := pricing.ModelSnapshot(model)
+			if err != nil || !ok {
+				t.Fatalf("Flash snapshot: ok=%t err=%v", ok, err)
+			}
+			if rule.CacheWriteMode != CacheWriteIncludedInInput || rule.MaxInputTokens != 1_048_576 || rule.LongContextThresholdTokens != 1_048_576 || len(rule.ServiceTiers) != 1 || rule.ServiceTiers[PricingTierStandard].Long != nil {
+				t.Fatalf("Flash pricing rule = %+v", rule)
+			}
+			for _, tier := range []string{"", "default", "standard"} {
+				if err := pricing.ValidateRequestedServiceTier(model, tier); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, tier := range []string{"flex", "priority", "fast", "ultrafast"} {
+				if err := pricing.ValidateRequestedServiceTier(model, tier); err == nil {
+					t.Fatalf("accepted Flash tier %q", tier)
+				}
+			}
+			snapshot, err := ParsePricingSnapshot(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tc := range []struct {
+				input int64
+				cost  string
+			}{
+				{200_000, "0.181125000000"},
+				{200_001, "0.181125750000"},
+				{1_048_576, "0.817557000000"},
+			} {
+				decision, err := snapshot.Select("standard", tc.input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if decision.ContextClass != ContextClassShort || decision.PricingServiceTier != PricingTierStandard || decision.FallbackReason != "" ||
+					[4]string{decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion, decision.OutputUSDPerMillion} != [4]string{"0.75", "0.075", "0", "3.75"} {
+					t.Fatalf("Flash pricing at %d = %+v", tc.input, decision)
+				}
+				for _, writes := range []int64{0, 20_000} {
+					cost, err := billing.CalculateCostV2(tc.input, 10_000, writes, 10_100, rule.CacheWriteMode,
+						decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion, decision.OutputUSDPerMillion)
+					if err != nil || cost != tc.cost {
+						t.Fatalf("Flash cost at %d with %d writes = %q, %v; want %s", tc.input, writes, cost, err, tc.cost)
 					}
 				}
 			}

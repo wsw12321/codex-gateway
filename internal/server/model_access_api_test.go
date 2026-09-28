@@ -116,6 +116,33 @@ func TestAllowedModelsForAPIKeyUsesUserAndKeyIntersection(t *testing.T) {
 	}
 }
 
+func TestAllowedModelsForAPIKeyHidesUnroutedGemini(t *testing.T) {
+	const routedModel, unroutedModel = "gemini-3.8-flash-high", "gemini-3.1-pro-high"
+	repository := &fakeModelAccessRepository{
+		models:        []store.ModelAccessModel{{Model: "gpt-6-astra"}, {Model: routedModel}, {Model: unroutedModel}},
+		enabledModels: []string{"gpt-6-astra", routedModel, unroutedModel},
+	}
+	server := newModelAccessHandlerServer(repository)
+	server.config.UsagePricing.Models[routedModel] = config.ModelPricing{}
+	server.config.UsagePricing.Models[unroutedModel] = config.ModelPricing{}
+	for _, routes := range []map[string]string{nil, {routedModel: routedModel}} {
+		server.config.AntigravityModelRoutes = routes
+		allowed, err := server.allowedModelsForAPIKey(context.Background(), store.APIKey{UserID: "user-1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := allowed["gpt-6-astra"]; !ok {
+			t.Fatal("Codex model was hidden")
+		}
+		if _, ok := allowed[unroutedModel]; ok {
+			t.Fatal("unrouted Gemini model was advertised")
+		}
+		if _, ok := allowed[routedModel]; ok != (len(routes) > 0) {
+			t.Fatalf("routed model visibility: %v, routes: %v", allowed, routes)
+		}
+	}
+}
+
 func TestWriteModelNotAllowedUsesStablePermissionError(t *testing.T) {
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)

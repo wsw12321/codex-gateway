@@ -196,7 +196,7 @@
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
-              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">在 Codex 或 AGY 中使用本 Gateway</h2><p>Codex 按照下面四步配置；AGY 使用下方的 Gemini 配置。示例地址已自动使用当前站点域名。</p></div>
+              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">配置 Codex 或调用 Gemini API</h2><p>Codex 按照下面四步配置；Gemini 使用下方的 API 请求示例。示例地址已自动使用当前站点域名。</p></div>
               <span class="badge">约 3 分钟</span>
             </div>
 
@@ -266,7 +266,7 @@
                       <div><dt><code>401 invalid_api_key</code></dt><dd>重新执行 Codex 登录，并确认 Key 尚未过期或被删除。</dd></div>
                       <div><dt><code>403 key_disabled</code></dt><dd>在 API Keys 页面重新启用该 Key，或改用其他活跃 Key。</dd></div>
                       <div><dt><code>400 invalid_project</code></dt><dd>确认 API Key 的默认项目仍为活跃状态，且属于当前账号。</dd></div>
-                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单及管理员为当前用户配置的模型权限；Codex 使用 Responses 协议，AGY 使用 Gemini 协议。</dd></div>
+                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单及管理员为当前用户配置的模型权限。Gemini 支持 Responses 和原生 Gemini 协议；请求必须使用模型目录中的精确名称。</dd></div>
                     </dl>
                   </div>
                   <div class="button-group guide-actions">
@@ -279,31 +279,33 @@
 
             <div id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
               <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">ANTIGRAVITY CLI</p><h3 id="guide-agy-title">通过 Gateway key 使用 AGY</h3></div><span class="badge">文本与本地工具</span></div>
-                <p>本机 AGY 通过 Gateway 调用服务器已登录的 Antigravity 订阅账号。管理员需先启用 Gemini 路由，并授予你的账号与 API Key 相应模型权限；请求沿用当前额度与结算。</p>
-                <aside class="guide-endpoint" aria-label="AGY Gateway 地址">
-                  <div><span>AGY 地址 · 不加 /v1</span><code id="guide-agy-base-url">正在生成…</code></div>
+                <div class="guide-step-title"><div><p class="eyebrow">GEMINI API</p><h3 id="guide-agy-title">通过 Gateway key 调用 Gemini</h3></div><span class="badge">文本与客户端工具</span></div>
+                <p>Gateway 通过服务器的 Antigravity 订阅账号调用 Gemini。管理员需先启用路由，并授予你的账号与 API Key 相应模型权限；请求沿用当前额度与结算。</p>
+                <aside class="guide-endpoint" aria-label="Gemini Gateway 地址">
+                  <div><span>Gateway 站点地址</span><code id="guide-agy-base-url">正在生成…</code></div>
                   <button type="button" class="secondary copy-button" data-copy-target="guide-agy-base-url">复制地址</button>
                 </aside>
-                <h4>1. 合并模型提供方配置</h4>
-                <p>在现有 <code>~/.gemini/antigravity-cli/settings.json</code> 中添加或更新顶层字段，保留其他设置。下面仅展示需要合并的内容。</p>
+                <h4>1. 选择已获授权的模型</h4>
+                <p>使用 Gateway key 查询 <code>GET /v1/models</code>，选择其中的精确模型名称。下方以 <code>gemini-3.1-pro-high</code> 为例，需先获得该模型权限。</p>
                 <div class="code-card compact-code">
-                  <div class="code-toolbar"><span>settings.json · 合并到现有文件</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-config-code">复制配置</button></div>
+                  <div class="code-toolbar"><span>POST /v1/responses · 请求正文</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-config-code">复制正文</button></div>
                   <pre><code id="guide-agy-config-code">{
-  "modelProvider": "gemini"
+  "model": "gemini-3.1-pro-high",
+  "input": "Reply with exactly OK.",
+  "store": false
 }</code></pre>
                 </div>
-                <h4>2. 设置地址与 Gateway key，然后启动</h4>
-                <p><code>GOOGLE_GEMINI_BASE_URL</code> 使用站点地址，末尾不加 <code>/v1</code>。<code>GEMINI_API_KEY</code> 使用本 Gateway 签发的 key；在提示出现后粘贴，输入不会显示。</p>
+                <h4>2. 发送文本请求</h4>
+                <p>在 Bash 中运行下列命令，并在提示出现后粘贴本 Gateway 签发的 key，输入不会显示。Key 仅用于 Gateway 鉴权。</p>
                 <div class="code-card">
-                  <div class="code-toolbar"><span>Bash · 当前终端会话</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-shell-code">复制启动命令</button></div>
+                  <div class="code-toolbar"><span>Bash · 当前终端会话</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-shell-code">复制请求命令</button></div>
                   <pre><code id="guide-agy-shell-code">正在生成…</code></pre>
                 </div>
-                <p class="guide-note">Key 只用于 Gateway 鉴权。AGY 会在同一会话中使用 <code>gemini-3.1-pro-preview</code> 和 <code>gemini-3.1-pro-preview-customtools</code>，两者共享同一个公开模型的权限、价格和额度。</p>
-                <h4>3. 发起文本或本地编程任务</h4>
-                <p>工具在你的本机执行，结果回传后继续对话。可在“使用统计”查看 <code>gemini.generateContent</code> 和 <code>gemini.streamGenerateContent</code> 请求。</p>
-                <p class="guide-note">首版仅支持文本与本地工具，请求上限为 1 MiB。服务器一次处理一个 AGY 请求，繁忙时返回 429；流式响应在完整生成并校验后输出。推理行为由服务器固定模型决定，无法兑现的自定义生成控制会返回明确错误。图片、精确 countTokens 和云端内置工具暂不支持。</p>
-                <p class="guide-note">自动标题使用的 Flash Lite 模型返回 404，不影响主对话和本地工具循环。其他未配置模型同样返回 404；请检查管理员路由和模型权限。</p>
+                <p class="guide-note">支持 <code>gemini-3.8-flash-high</code>、<code>gemini-3.8-flash-medium</code>、<code>gemini-3.7-flash-high</code>、<code>gemini-3.7-flash-medium</code>、<code>gemini-3.6-flash-high</code>、<code>gemini-3.6-flash-medium</code> 和 <code>gemini-3.1-pro-high</code>。实际列表取决于管理员授权及可用订阅账号。</p>
+                <h4>3. 原生 Gemini API 与用量</h4>
+                <p>也可调用 <code>POST /v1beta/models/{model}:generateContent</code> 或 <code>:streamGenerateContent?alt=sse</code>，路径使用同一精确模型名。原生请求正文使用 <code>contents</code>，鉴权可使用单一 Bearer 头或 <code>x-goog-api-key</code>。可在“使用统计”查看请求和 API Token 等价费用。</p>
+                <p class="guide-note">请求上限为 1 MiB，支持文本和客户端执行的函数工具。并发上限按账号设置，繁忙时返回 429；流式响应在完整生成并校验后输出。图片、精确 countTokens 和云端内置工具暂不支持。</p>
+                <p class="guide-note">旧 <code>gemini-3.1-pro-preview</code> 与 <code>gemini-3.1-pro-preview-customtools</code> 已停止接受。当前本机 AGY 的 Gemini 提供方会发送这些旧路径，因此不能直接采用该配置连接 Gateway。升级后的七个模型默认禁用，需管理员重新授权；受限 Key 需重新签发包含新名称的白名单。</p>
               </div>
             </div>
           </section>

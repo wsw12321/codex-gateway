@@ -35,7 +35,7 @@ func (r fragmentReader) Read(p []byte) (int, error) {
 
 func TestParseStreamFragmentedNDJSONUsesFinalResult(t *testing.T) {
 	for _, size := range []int{1, 2, 7, 1024} {
-		result, failure := parseStream(fragmentReader{strings.NewReader(initEvent + textStep + resultEvent), size})
+		result, failure := parseStream(CLIModel, fragmentReader{strings.NewReader(initEvent + textStep + resultEvent), size})
 		if failure != nil || result.Response != "Hello 世界" || result.Usage.InputTokens != 18528 || result.Usage.OutputTokens != 657 || result.Usage.ThinkingTokens != 616 || result.Usage.CacheReadTokens != 8113 || result.Usage.TotalTokens != 19185 {
 			t.Fatalf("fragment size%d: result=%+v failure=%+v", size, result, failure)
 		}
@@ -55,7 +55,7 @@ func TestParseStreamNormalizesCLIUsageOnce(t *testing.T) {
 		{"maximum normalized total", resultWithUsage(`{"input_tokens":9223372036854775707,"output_tokens":1,"thinking_tokens":1,"cache_read_tokens":99,"total_tokens":9223372036854775708}`), Usage{math.MaxInt64 - 1, 1, 1, 99, math.MaxInt64}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result, failure := parseStream(strings.NewReader(initEvent + test.event))
+			result, failure := parseStream(CLIModel, strings.NewReader(initEvent+test.event))
 			if failure != nil || result.Usage == nil || *result.Usage != test.want {
 				t.Fatalf("usage=%+v want=%+v failure=%+v", result.Usage, test.want, failure)
 			}
@@ -77,7 +77,7 @@ func TestParseStreamRequiresEveryCLIUsageField(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_, failure := parseStream(strings.NewReader(initEvent + resultWithUsage(string(usage))))
+				_, failure := parseStream(CLIModel, strings.NewReader(initEvent+resultWithUsage(string(usage))))
 				if failure == nil || failure.Code != "upstream_protocol_error" {
 					t.Fatalf("failure=%+v", failure)
 				}
@@ -125,7 +125,7 @@ func TestParseStreamRejectsUnsafeOrAmbiguousProtocol(t *testing.T) {
 		{"unknown terminal status", `{"event":"result","result":{"status":"FUTURE","error":"quota exceeded"}}` + "\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, failure := parseStream(strings.NewReader(test.stream))
+			_, failure := parseStream(CLIModel, strings.NewReader(test.stream))
 			if failure == nil || failure.Status != 502 || failure.Code != "upstream_protocol_error" {
 				t.Fatalf("failure=%+v", failure)
 			}

@@ -54,12 +54,9 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "unsupported_endpoint", "不支持的 Gemini 接口")
 		return
 	}
-	// AGY switches these two precise names during a tool conversation. Both
-	// authorize and bill against the existing public model, never a new alias.
-	switch model {
-	case config.AntigravityPublicModel, "gemini-3.1-pro-preview-customtools":
-		model = config.AntigravityPublicModel
-	default:
+	// Public names are the exact CLI IDs. API-family and customtools aliases
+	// cannot select a different model or share another model's authorization.
+	if !config.IsAntigravityModel(model) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 		return
 	}
@@ -106,7 +103,7 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 	}
 	// Apply the bridge's complete schema/control validation before any quota
 	// or billing reservation. The isolated bridge validates independently too.
-	_, failure := antigravity.DecodeGeminiRequest(data)
+	_, failure := antigravity.DecodeGeminiRequest(model, data)
 	if failure != nil {
 		httpx.WriteError(w, r, failure.Status, "invalid_request_error", failure.Code, failure.Message)
 		return

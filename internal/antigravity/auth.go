@@ -96,19 +96,20 @@ func (r Runner) AuthLogin(ctx context.Context, stdin *os.File, stdout io.Writer)
 // AuthVerify restores into fresh HOME directories before every stage. Its
 // success is only one prerequisite for the later serving-container HTTP smoke.
 func (r Runner) AuthVerify(ctx context.Context) error {
-	if err := r.Check(ctx); err != nil {
+	models, err := r.Check(ctx)
+	if err != nil {
 		return err
 	}
 	usageCtx, cancel := context.WithTimeout(ctx, 40*time.Second)
-	usage, err := r.probe(usageCtx, "usage", "--print", "/usage", "--print-timeout", "30s")
+	usage, probeErr := r.probe(usageCtx, "usage", "--print", "/usage", "--print-timeout", "30s")
 	cancel()
-	if err != nil {
-		return err
+	if probeErr != nil {
+		return probeErr
 	}
 	if strings.TrimSpace(string(usage)) == "" {
 		return &AuthError{"usage", "invalid_response", 1}
 	}
-	result, failure, diagnostic := r.run(ctx, "Reply with exactly OK.")
+	result, failure, diagnostic := r.run(ctx, models[0], "Reply with exactly OK.")
 	if diagnostic != nil {
 		return diagnostic
 	}

@@ -90,7 +90,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	for public, cli := range routes {
-		if public != antigravity.PublicModel || cli != antigravity.CLIModel {
+		if !config.IsAntigravityModel(public) || cli != public {
 			return errors.New("unsupported Antigravity model mapping")
 		}
 	}

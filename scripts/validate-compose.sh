@@ -336,6 +336,19 @@ pricing_validator='
     (.service_tiers |
       exact_keys(["fast", "flex", "standard"]) and
       all(.[]; included_short_tier));
+  def gemini_flash_model:
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "included_in_input" and
+    .max_input_tokens == 1048576 and
+    .long_context_threshold_tokens == 1048576 and
+    (.service_tiers |
+      exact_keys(["standard"]) and
+      (.standard | included_short_tier));
   def gemini_pro_model:
     exact_keys([
       "cache_write_mode",
@@ -386,7 +399,13 @@ pricing_validator='
   (.models |
     exact_keys([
       "codex-auto-review",
-      "gemini-3.1-pro-preview",
+      "gemini-3.1-pro-high",
+      "gemini-3.6-flash-high",
+      "gemini-3.6-flash-medium",
+      "gemini-3.7-flash-high",
+      "gemini-3.7-flash-medium",
+      "gemini-3.8-flash-high",
+      "gemini-3.8-flash-medium",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.5",
@@ -406,7 +425,13 @@ pricing_validator='
     (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and
-    (.["gemini-3.1-pro-preview"] | gemini_pro_model) and
+    (.["gemini-3.1-pro-high"] | gemini_pro_model) and
+    (.["gemini-3.6-flash-high"] | gemini_flash_model) and
+    (.["gemini-3.6-flash-medium"] | gemini_flash_model) and
+    (.["gemini-3.7-flash-high"] | gemini_flash_model) and
+    (.["gemini-3.7-flash-medium"] | gemini_flash_model) and
+    (.["gemini-3.8-flash-high"] | gemini_flash_model) and
+    (.["gemini-3.8-flash-medium"] | gemini_flash_model) and
     (.["codex-auto-review"] | internal_zero_model))
 '
 printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
@@ -441,20 +466,29 @@ reject_pricing_mutation \
     '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
     'an unpublished service tier'
 reject_pricing_mutation \
-    'del(.models["gemini-3.1-pro-preview"])' \
+    'del(.models["gemini-3.1-pro-high"])' \
     'a missing Gemini model'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"].service_tiers.flex = .models["gemini-3.1-pro-preview"].service_tiers.standard' \
+    '.models["gemini-3.1-pro-high"].service_tiers.flex = .models["gemini-3.1-pro-high"].service_tiers.standard' \
     'an unconfigured Gemini service tier'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"].long_context_threshold_tokens = 272000' \
+    '.models["gemini-3.1-pro-high"].long_context_threshold_tokens = 272000' \
     'an incorrect Gemini long-context boundary'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"].max_input_tokens = 1050000' \
+    '.models["gemini-3.1-pro-high"].max_input_tokens = 1050000' \
     'an incorrect Gemini input limit'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
+    '.models["gemini-3.1-pro-high"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
     'a separate Gemini cache-write price'
+reject_pricing_mutation \
+    '.models["gemini-3.8-flash-high"].service_tiers.standard.long = .models["gemini-3.8-flash-high"].service_tiers.standard.short' \
+    'an unpublished Flash long-context price'
+reject_pricing_mutation \
+    '.models["gemini-3.8-flash-medium"].long_context_threshold_tokens = 200000' \
+    'an incorrect Flash context boundary'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-preview"] = .models["gemini-3.1-pro-high"]' \
+    'a retired Gemini alias'
 unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
@@ -679,6 +713,15 @@ jq -e '
   ($bridge.secrets | map(.source) | sort) == ["antigravity_bridge_api_key", "antigravity_keyring_password"] and
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_keyring_password")) | .key]) == ["antigravity-bridge"] and
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge", "gateway"] and
+  ($bridge.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | fromjson) == {
+    "gemini-3.8-flash-high": "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
+    "gemini-3.7-flash-high": "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
+    "gemini-3.6-flash-high": "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
+    "gemini-3.1-pro-high": "gemini-3.1-pro-high"
+  } and
   $bridge.environment.AGY_CLI_DISABLE_AUTO_UPDATE == "true" and
   $bridge.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
   $bridge.environment.ANTIGRAVITY_GATEWAY_URL == "http://gateway:8080" and
@@ -690,7 +733,12 @@ jq -e '
     "/tmp:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10002,gid=10002"
   ] and
   (.services.gateway.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | if . == "" then {} else fromjson end |
-    . == {} or . == {"gemini-3.1-pro-preview":"gemini-3.1-pro-high"})
+    type == "object" and all(to_entries[];
+      .key == .value and (.key | IN(
+        "gemini-3.8-flash-high", "gemini-3.8-flash-medium",
+        "gemini-3.7-flash-high", "gemini-3.7-flash-medium",
+        "gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+        "gemini-3.1-pro-high"))))
 ' "$tmp" >/dev/null || fail 'Antigravity process, network, route, keyring or secret isolation failed'
 if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/antigravity_bridge_api_key"; then
     fail 'Codex and Antigravity must use distinct internal Bearer secrets'

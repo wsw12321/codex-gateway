@@ -16,7 +16,7 @@
 安全审计。提示词、源代码和
 模型回复属于高敏感瞬时数据：可以在转发内存或受限 tmpfs 中短暂存在，但不得
 进入数据库、日志、备份或管理界面。按用户聚合的用量和
-“OpenAI API Token 等价成本”也属于受限管理元数据，Member 只能查看自己的
+“API Token 等价成本”也属于受限管理元数据，Member 只能查看自己的
 请求明细，只有 Owner 能查看全员汇总。
 
 部署假设所有上游账号和所有受邀设备都由同一订阅者控制。若让其他真实用户共用
@@ -83,7 +83,7 @@ A 保留两类容器的目标隔离；B 看到的是 A 的隧道地址，不再�
 | 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；`agy` 固定版本化 URL、SHA512 和运行时版本；固定 CI 工具版本 | CI、lock diff 与镜像构建审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
 | Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
-| 把 OpenAI API Token 等价成本误当 OpenAI 实际账单 | 准入固化 v2 规则，ledger 不可变；界面/API 明示 Pro OAuth、内部零价和兜底边界 | v2 计价、ledger 和文案测试 |
+| 把 API Token 等价成本误当供应商实际账单 | 准入固化规则，ledger 不可变；界面/API 明示 ChatGPT/Antigravity 订阅、内部零价和兜底边界 | 计价、ledger 和文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
 
 ## 容器权限

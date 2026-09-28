@@ -29,7 +29,7 @@ func TestAntigravityDispatchRequiresAccountAccessAndTrustedUser(t *testing.T) {
 				return response, nil
 			})
 			router := NewRouter(nil, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
-			path, body := "/v1/responses", `{"model":"gemini-3.1-pro-preview","input":"hello"}`
+			path, body := "/v1/responses", `{"model":"gemini-3.1-pro-high","input":"hello"}`
 			if native {
 				path, body = "/v1beta/models/"+antigravityPublicModel+":generateContent", nativeGeminiRequest
 			}

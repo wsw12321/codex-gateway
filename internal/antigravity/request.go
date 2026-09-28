@@ -69,7 +69,7 @@ func DecodeRequest(body []byte) (Request, *Failure) {
 			return out, unsupported("parameter")
 		}
 	}
-	if json.Unmarshal(fields["model"], &out.Model) != nil || out.Model != PublicModel {
+	if json.Unmarshal(fields["model"], &out.Model) != nil || !config.IsAntigravityModel(out.Model) {
 		return out, unsupported("model")
 	}
 	if raw, ok := fields["stream"]; ok {

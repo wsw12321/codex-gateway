@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// Router selects an upstream using exact configured public model IDs. The
-// bridge owns the public-to-CLI translation; request bodies remain unchanged.
+// Router selects an upstream using exact configured public model IDs. AGY
+// public IDs are also its CLI IDs; request bodies remain unchanged.
 type Router struct {
 	primary     *Client
 	antigravity *Client
@@ -68,7 +68,7 @@ func (r *Router) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 	bridgeResult := make(chan catalogFetch, 1)
 	if r.antigravity != nil {
 		go func() {
-			body, result, failure := r.antigravity.fetchModelCatalog(bridgeCtx, incoming, ForwardOptions{})
+			body, result, failure := r.antigravity.fetchModelCatalog(bridgeCtx, incoming, ForwardOptions{UserID: options.UserID})
 			bridgeResult <- catalogFetch{body: body, result: result, failure: failure}
 		}()
 	} else {

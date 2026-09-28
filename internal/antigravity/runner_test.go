@@ -213,7 +213,7 @@ func TestRunnerStdinIsolationAndCleanup(t *testing.T) {
 	var logs bytes.Buffer
 	runner, capturePath := fakeRunner(t, fakeCLIConfig{Stream: initEvent + textStep + resultEvent, Stderr: prompt + " sensitive-token", FragmentSize: 1})
 	runner.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	result, failure := runner.Run(context.Background(), prompt)
+	result, failure := runner.Run(context.Background(), CLIModel, prompt)
 	if failure != nil || result.Response != "Hello 世界" {
 		t.Fatalf("result=%+v failure=%+v", result, failure)
 	}
@@ -255,7 +255,7 @@ func TestRunnerFailureClassification(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner, _ := fakeRunner(t, test.fixture)
-			_, failure := runner.Run(context.Background(), "private prompt")
+			_, failure := runner.Run(context.Background(), CLIModel, "private prompt")
 			if failure == nil || failure.Status != test.status || failure.Code != test.code {
 				t.Fatalf("failure=%+v, want%d %s", failure, test.status, test.code)
 			}
@@ -277,7 +277,7 @@ func TestRunnerTimeoutAndCancellationKillProcessGroup(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan *Failure, 1)
-			go func() { _, failure := runner.Run(ctx, "private prompt"); done <- failure }()
+			go func() { _, failure := runner.Run(ctx, CLIModel, "private prompt"); done <- failure }()
 			capture := readCapture(t, path)
 			if capture.ChildPID <= 0 {
 				t.Fatal("no child process spawned")
@@ -336,7 +336,7 @@ func TestRunnerReadinessRequiresExactModelAndVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner, _ := fakeRunner(t, fakeCLIConfig{Models: test.models, Version: test.version})
-			err := runner.Check(context.Background())
+			_, err := runner.Check(context.Background())
 			if (err == nil) != test.wantOK {
 				t.Fatalf("Check error=%v wantOK%v", err, test.wantOK)
 			}
@@ -389,7 +389,7 @@ func (c *runnerCredentials) Save(ctx context.Context, home string) error {
 func TestRunnerCredentialRefreshPersistsForNextInvocation(t *testing.T) {
 	runner, capture := fakeRunner(t, fakeCLIConfig{Stream: initEvent + resultEvent, UpdatedCredential: refreshedCredential})
 	for i, expected := range []string{testCredential, refreshedCredential} {
-		result, failure := runner.Run(context.Background(), "private prompt")
+		result, failure := runner.Run(context.Background(), CLIModel, "private prompt")
 		if failure != nil || result.Response == "" {
 			t.Fatalf("invocation %d failure=%v", i, failure)
 		}
@@ -422,7 +422,7 @@ func TestRunnerSavesRefreshAfterFailureTimeoutAndCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			done := make(chan *Failure, 1)
-			go func() { _, failure := runner.Run(ctx, "private prompt"); done <- failure }()
+			go func() { _, failure := runner.Run(ctx, CLIModel, "private prompt"); done <- failure }()
 			if scenario == "cancel" {
 				readCapture(t, capture)
 				cancel()
@@ -474,7 +474,7 @@ func TestRunnerCredentialFailuresCloseReadiness(t *testing.T) {
 
 func TestReadinessSavesEveryCLIInvocation(t *testing.T) {
 	runner, _ := fakeRunner(t, fakeCLIConfig{UpdatedCredential: refreshedCredential})
-	if err := runner.Check(context.Background()); err != nil {
+	if _, err := runner.Check(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	c := runner.Credentials.(*runnerCredentials)

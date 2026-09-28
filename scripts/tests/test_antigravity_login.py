@@ -287,13 +287,16 @@ import sys
 root = Path(os.environ["BRIDGE_TEST_ROOT"])
 scenario = json.loads((root / "scenario.json").read_text())
 args = sys.argv[1:]
-if args[-1].endswith("/v1/models"):
+if "/internal/smoke/models/" in args[-1]:
     stage = "http_models"
+    request_model = None
 else:
     request = Path(args[args.index("--data-binary") + 1].removeprefix("@"))
-    stage = "http_sse" if json.loads(request.read_text())["stream"] else "http_json"
+    body = json.loads(request.read_text())
+    stage = "http_sse" if body["stream"] else "http_json"
+    request_model = body["model"]
 with (root / "commands.jsonl").open("a") as output:
-    output.write(json.dumps({"args": args, "stage": stage,
+    output.write(json.dumps({"args": args, "stage": stage, "model": request_model,
         "stdin_null": os.fstat(0).st_rdev == os.stat("/dev/null").st_rdev,
         "term": os.environ.get("TERM")}) + "\n")
 print("SENSITIVE_TOKEN_OAUTH_URL_CLI_STDERR_MODEL_REPLY", file=sys.stderr)
@@ -301,11 +304,13 @@ if scenario.get("failure") == stage:
     sys.exit(28)
 invalid = scenario.get("invalid") == stage
 response = {"status": "failed" if invalid else "completed",
+    "model": "gemini-3.1-pro-preview" if scenario.get("wrong_model") == stage else request_model,
     "usage": {"input_tokens": 1, "output_tokens": 1},
     "output": [{"type": "message", "content": [{"type": "output_text",
         "text": "SENSITIVE_TOKEN_OAUTH_URL_CLI_STDERR_MODEL_REPLY"}]}]}
 if stage == "http_models":
-    print(json.dumps({"data": [] if invalid else [{"id": "gemini-3.1-pro-preview"}]}))
+    models = scenario.get("models", ["gemini-3.1-pro-high"])
+    print(json.dumps({"data": [] if invalid else [{"id": model} for model in models]}))
 elif stage == "http_json":
     print(json.dumps(response))
 else:
@@ -379,6 +384,35 @@ class AntigravitySmokeTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1)
                 self.assertEqual(result.stderr,
                                  "antigravity: stage=http_sse category=invalid_response exit_code=1\n")
+
+    def test_checks_each_model_available_to_this_account(self):
+        models = ["gemini-3.8-flash-medium", "gemini-3.1-pro-high"]
+        self.scenario(models=models)
+        result = self.run_smoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        records = [json.loads(line) for line in (self.root / "commands.jsonl").read_text().splitlines()]
+        self.assertTrue(records[0]["args"][-1].endswith("/internal/smoke/models/default"))
+        self.assertEqual([(record["stage"], record["model"]) for record in records[1:]],
+                         [(stage, model) for model in models for stage in ("http_json", "http_sse")])
+
+    def test_rejects_legacy_unknown_and_duplicate_models(self):
+        for models in (["gemini-3.1-pro-preview"], ["unconfigured-model"],
+                       ["gemini-3.1-pro-high", "gemini-3.1-pro-high"]):
+            with self.subTest(models=models):
+                self.scenario(models=models)
+                result = self.run_smoke()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr,
+                                 "antigravity: stage=http_models category=invalid_response exit_code=1\n")
+
+    def test_rejects_response_model_mismatch(self):
+        for stage in ("http_json", "http_sse"):
+            with self.subTest(stage=stage):
+                self.scenario(wrong_model=stage)
+                result = self.run_smoke()
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr,
+                                 f"antigravity: stage={stage} category=invalid_response exit_code=1\n")
 
     def test_missing_or_invalid_key_has_safe_configuration_failure(self):
         for missing in (False, True):

@@ -16,17 +16,28 @@ import (
 )
 
 const accountUserID = "11111111-1111-4111-8111-111111111111"
-const accountRequestBody = `{"model":"gemini-3.1-pro-preview","input":"hello"}`
+const accountRequestBody = `{"model":"` + PublicModel + `","input":"hello"}`
 
 type accountExecutor struct {
-	failure *Failure
-	runs    atomic.Int64
-	entered chan struct{}
-	release chan struct{}
+	models   []string
+	checkErr error
+	failure  *Failure
+	runs     atomic.Int64
+	entered  chan struct{}
+	release  chan struct{}
 }
 
-func (*accountExecutor) Check(context.Context) error { return nil }
-func (e *accountExecutor) Run(ctx context.Context, _ string) (Result, *Failure) {
+func (e *accountExecutor) Check(context.Context) ([]string, error) {
+	if e.models != nil {
+		return e.models, e.checkErr
+	}
+	return []string{PublicModel}, e.checkErr
+}
+func (e *accountExecutor) Run(ctx context.Context, model, _ string) (Result, *Failure) {
+	models, _ := e.Check(ctx)
+	if !modelSet(models)[model] {
+		return Result{}, unsupported("model")
+	}
 	e.runs.Add(1)
 	if e.entered != nil {
 		e.entered <- struct{}{}
@@ -452,8 +463,10 @@ type concurrentFailureExecutor struct {
 	release chan struct{}
 }
 
-func (*concurrentFailureExecutor) Check(context.Context) error { return nil }
-func (e *concurrentFailureExecutor) Run(ctx context.Context, _ string) (Result, *Failure) {
+func (*concurrentFailureExecutor) Check(context.Context) ([]string, error) {
+	return []string{PublicModel}, nil
+}
+func (e *concurrentFailureExecutor) Run(ctx context.Context, model, _ string) (Result, *Failure) {
 	if e.calls.Add(1) == 1 {
 		close(e.entered)
 		select {

@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-09-16",
+  "catalog_as_of": "2026-09-28",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -169,7 +169,67 @@
         "fast": {"short": {"input_usd_per_million": "1.5", "cached_input_usd_per_million": "0.15", "output_usd_per_million": "9"}}
       }
     },
-    "gemini-3.1-pro-preview": {
+    "gemini-3.8-flash-high": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.8-flash-medium": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.7-flash-high": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.7-flash-medium": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.6-flash-high": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.6-flash-medium": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 1048576,
+      "long_context_threshold_tokens": 1048576,
+      "service_tiers": {
+        "standard": {
+          "short": {"input_usd_per_million": "0.75", "cached_input_usd_per_million": "0.075", "output_usd_per_million": "3.75"}
+        }
+      }
+    },
+    "gemini-3.1-pro-high": {
       "cache_write_mode": "included_in_input",
       "max_input_tokens": 1048576,
       "long_context_threshold_tokens": 200000,

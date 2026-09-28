@@ -26,16 +26,16 @@ func TestGeminiResponsesPreservesFunctionRoundTrip(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			requests := []string{
-				`{"model":"gemini-3.1-pro-preview","stream":` + streamJSON + `,"input":"Weather in Shanghai?","tools":[{"type":"function","name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}`,
-				`{"model":"gemini-3.1-pro-preview","stream":` + streamJSON + `,"input":[{"type":"function_call","call_id":"call_weather_1","name":"weather","arguments":"{\"city\":\"Shanghai\"}"},{"type":"function_call_output","call_id":"call_weather_1","output":"Sunny, 25 C"}]}`,
+				`{"model":"gemini-3.1-pro-high","stream":` + streamJSON + `,"input":"Weather in Shanghai?","tools":[{"type":"function","name":"weather","parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}}]}`,
+				`{"model":"gemini-3.1-pro-high","stream":` + streamJSON + `,"input":[{"type":"function_call","call_id":"call_weather_1","name":"weather","arguments":"{\"city\":\"Shanghai\"}"},{"type":"function_call_output","call_id":"call_weather_1","output":"Sunny, 25 C"}]}`,
 			}
 			responses := []string{
-				`{"id":"resp-1","object":"response","model":"gemini-3.1-pro-preview","output":[{"type":"function_call","id":"fc_weather_1","call_id":"call_weather_1","name":"weather","arguments":"{\"city\":\"Shanghai\"}","status":"completed"}],` + geminiUsageJSON + `}`,
-				`{"id":"resp-2","object":"response","model":"gemini-3.1-pro-preview","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sunny, 25 C"}]}],` + geminiUsageJSON + `}`,
+				`{"id":"resp-1","object":"response","model":"gemini-3.1-pro-high","output":[{"type":"function_call","id":"fc_weather_1","call_id":"call_weather_1","name":"weather","arguments":"{\"city\":\"Shanghai\"}","status":"completed"}],` + geminiUsageJSON + `}`,
+				`{"id":"resp-2","object":"response","model":"gemini-3.1-pro-high","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sunny, 25 C"}]}],` + geminiUsageJSON + `}`,
 			}
 			if stream {
 				for index, response := range responses {
-					responses[index] = "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"model\":\"gemini-3.1-pro-preview\"}}\n\n" +
+					responses[index] = "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"model\":\"gemini-3.1-pro-high\"}}\n\n" +
 						"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + response + "}\n\n" +
 						"data: [DONE]\n\n"
 				}
@@ -76,7 +76,7 @@ func TestGeminiResponsesPreservesFunctionRoundTrip(t *testing.T) {
 				if response.Body.String() != responses[index] {
 					t.Fatalf("response changed: %s", response.Body)
 				}
-				if result.Model != "gemini-3.1-pro-preview" || result.Usage.InputTokens != 10 || result.Usage.CachedTokens != 3 ||
+				if result.Model != "gemini-3.1-pro-high" || result.Usage.InputTokens != 10 || result.Usage.CachedTokens != 3 ||
 					result.Usage.OutputTokens != 12 || result.Usage.ReasoningTokens != 7 || result.Usage.Total() != 22 {
 					t.Fatalf("unexpected usage: %+v", result)
 				}
@@ -90,7 +90,7 @@ func TestGeminiResponsesPreservesFunctionRoundTrip(t *testing.T) {
 
 func TestGeminiSSEFragmentationPreservesReasoningSubset(t *testing.T) {
 	t.Parallel()
-	completed := "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gemini-3.1-pro-preview\",\r\ndata: " + geminiUsageJSON + "}}\r\n\r\n"
+	completed := "event: response.completed\r\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gemini-3.1-pro-high\",\r\ndata: " + geminiUsageJSON + "}}\r\n\r\n"
 	payload := ": heartbeat\r\n\r\nevent: response.reasoning_text.delta\r\ndata: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking\"}\r\n\r\n" +
 		completed + completed + "data: [DONE]\r\n\r\n"
 	for _, test := range []struct {
@@ -106,7 +106,7 @@ func TestGeminiSSEFragmentationPreservesReasoningSubset(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if forwarded.String() != payload || model != "gemini-3.1-pro-preview" || firstToken.IsZero() {
+			if forwarded.String() != payload || model != "gemini-3.1-pro-high" || firstToken.IsZero() {
 				t.Fatalf("stream metadata: model=%q firstToken=%v forwarded=%q", model, firstToken, forwarded.String())
 			}
 			if usage.OutputTokens != 12 || usage.ReasoningTokens != 7 || usage.CachedTokens != 3 || usage.Total() != 22 {
@@ -126,7 +126,7 @@ func TestGeminiUpstreamRateLimitDoesNotReportUsage(t *testing.T) {
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
 	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
-	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-preview","input":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":[]}`))
 	response := httptest.NewRecorder()
 	result, failure := client.Forward(context.Background(), response, request, "/v1/responses")
 	if failure == nil || failure.Status != http.StatusTooManyRequests || failure.Code != "upstream_rate_limited" || failure.RetryAfter != 120 {
@@ -142,7 +142,7 @@ func TestGeminiSSEClientCancellationStopsUpstream(t *testing.T) {
 	started, stopped := make(chan struct{}), make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gemini-3.1-pro-preview\"}}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"model\":\"gemini-3.1-pro-high\"}}\n\n")
 		w.(http.Flusher).Flush()
 		close(started)
 		<-r.Context().Done()
@@ -153,7 +153,7 @@ func TestGeminiSSEClientCancellationStopsUpstream(t *testing.T) {
 	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-preview","stream":true,"input":[]}`))
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","stream":true,"input":[]}`))
 	done := make(chan *Failure, 1)
 	go func() {
 		_, failure := client.Forward(ctx, httptest.NewRecorder(), request, "/v1/responses")

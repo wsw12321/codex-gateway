@@ -14,12 +14,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 type managedAccount struct {
 	record     AccountRecord
 	runner     Executor
 	ready      bool
+	models     map[string]bool
 	refreshing bool
 	active     int64
 	cooldown   time.Time
@@ -80,12 +82,16 @@ func NewAccountServer(runner Runner, registry *AccountRegistry, token, gatewayUR
 	return server, nil
 }
 
-func (m *AccountManager) Check(ctx context.Context) error {
+func (m *AccountManager) Check(ctx context.Context) ([]string, error) {
 	m.Refresh(ctx)
 	if !m.Ready() {
-		return errors.New("Antigravity accounts unavailable")
+		return nil, errors.New("Antigravity accounts unavailable")
 	}
-	return nil
+	models, failure := m.Models(ctx)
+	if failure != nil {
+		return nil, errors.New("Antigravity accounts unavailable")
+	}
+	return models, nil
 }
 
 func (m *AccountManager) Ready() bool {
@@ -111,12 +117,88 @@ func (m *AccountManager) Refresh(ctx context.Context) {
 		}
 		account.refreshing = true
 		m.mu.Unlock()
-		err := account.runner.Check(ctx)
+		models, err := account.runner.Check(ctx)
 		m.mu.Lock()
-		account.ready = err == nil
+		account.models = modelSet(models)
+		account.ready = err == nil && len(account.models) > 0
+		if !account.ready {
+			account.models = nil
+		}
 		account.refreshing = false
 		m.mu.Unlock()
 	}
+}
+
+// Models advertises the union of ready accounts the authenticated user may
+// access. Discovery does not reserve concurrency slots or update account LRU.
+// Internal requests without a user identity can inspect the ready account pool.
+func (m *AccountManager) Models(ctx context.Context) ([]string, *Failure) {
+	request, _ := ctx.Value(accountRequestKey{}).(accountRequest)
+	if request.userID != "" {
+		id, err := uuid.Parse(request.userID)
+		if err != nil || id.String() != request.userID {
+			return nil, allocationFailure()
+		}
+	}
+	m.mu.Lock()
+	ids := []string{}
+	for _, account := range m.accounts {
+		if account.record.Enabled && account.ready && !time.Now().Before(account.cooldown) &&
+			(request.directName == "" || account.record.Name == request.directName) {
+			ids = append(ids, account.record.ID)
+		}
+	}
+	m.mu.Unlock()
+	if len(ids) == 0 {
+		return nil, credentialFailure()
+	}
+	allowed := map[string]int64{}
+	if request.userID != "" {
+		var failure *Failure
+		allowed, failure = m.eligibleLimits(ctx, request.userID, ids)
+		if failure != nil {
+			return nil, failure
+		}
+	} else {
+		for _, id := range ids {
+			allowed[id] = 1
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	available := map[string]bool{}
+	for _, account := range m.accounts {
+		if allowed[account.record.ID] > 0 && account.record.Enabled && account.ready && !time.Now().Before(account.cooldown) {
+			for model := range account.models {
+				available[model] = true
+			}
+		}
+	}
+	return orderedModels(available), nil
+}
+
+func (m *AccountManager) eligibleLimits(ctx context.Context, userID string, ids []string) (map[string]int64, *Failure) {
+	var eligible struct {
+		Accounts *[]struct {
+			ID    string `json:"id"`
+			Limit int64  `json:"concurrent_limit"`
+		} `json:"accounts"`
+	}
+	if err := m.callback(ctx, "eligible", userID, ids, &eligible); err != nil || eligible.Accounts == nil {
+		return nil, allocationFailure()
+	}
+	candidates := map[string]bool{}
+	for _, id := range ids {
+		candidates[id] = true
+	}
+	limits := map[string]int64{}
+	for _, account := range *eligible.Accounts {
+		if !candidates[account.ID] || limits[account.ID] != 0 || account.Limit < 1 || account.Limit > 2147483647 {
+			return nil, allocationFailure()
+		}
+		limits[account.ID] = account.Limit
+	}
+	return limits, nil
 }
 
 func allocationFailure() *Failure {
@@ -127,7 +209,10 @@ func accountBusyFailure() *Failure {
 	return &Failure{429, "upstream_concurrency_exceeded", "No Antigravity account is currently available"}
 }
 
-func (m *AccountManager) Run(ctx context.Context, prompt string) (Result, *Failure) {
+func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result, *Failure) {
+	if !config.IsAntigravityModel(model) {
+		return Result{}, unsupported("model")
+	}
 	request, ok := ctx.Value(accountRequestKey{}).(accountRequest)
 	if !ok {
 		return Result{}, allocationFailure()
@@ -141,7 +226,7 @@ func (m *AccountManager) Run(ctx context.Context, prompt string) (Result, *Failu
 	tried := map[string]bool{}
 	var last *Failure
 	for {
-		account, failure := m.acquire(ctx, request, tried)
+		account, failure := m.acquire(ctx, request, model, tried)
 		if failure != nil {
 			// A selector outage always fails closed, even after a provider failure.
 			if last != nil && failure.Code == "upstream_concurrency_exceeded" {
@@ -165,7 +250,7 @@ func (m *AccountManager) Run(ctx context.Context, prompt string) (Result, *Failu
 		} else {
 			defer release()
 		}
-		result, failure := account.runner.Run(ctx, prompt)
+		result, failure := account.runner.Run(ctx, model, prompt)
 		m.mu.Lock()
 		if failure == nil {
 			// A sibling request may have observed quota/auth failure after this
@@ -196,7 +281,7 @@ func (m *AccountManager) Run(ctx context.Context, prompt string) (Result, *Failu
 	}
 }
 
-func (m *AccountManager) acquire(ctx context.Context, request accountRequest, tried map[string]bool) (*managedAccount, *Failure) {
+func (m *AccountManager) acquire(ctx context.Context, request accountRequest, model string, tried map[string]bool) (*managedAccount, *Failure) {
 	select {
 	case m.selectGate <- struct{}{}:
 		defer func() { <-m.selectGate }()
@@ -209,7 +294,7 @@ func (m *AccountManager) acquire(ctx context.Context, request accountRequest, tr
 		if request.directName != "" && account.record.Name != request.directName {
 			continue
 		}
-		if account.record.Enabled && account.ready && !account.refreshing && !tried[account.record.ID] && !time.Now().Before(account.cooldown) {
+		if account.record.Enabled && account.ready && account.models[model] && !account.refreshing && !tried[account.record.ID] && !time.Now().Before(account.cooldown) {
 			ids = append(ids, account.record.ID)
 		}
 	}
@@ -222,29 +307,15 @@ func (m *AccountManager) acquire(ctx context.Context, request accountRequest, tr
 	if request.directName != "" {
 		selected, limits[ids[0]] = ids[0], 1
 	} else {
-		var eligible struct {
-			Accounts *[]struct {
-				ID    string `json:"id"`
-				Limit int64  `json:"concurrent_limit"`
-			} `json:"accounts"`
-		}
-		if err := m.callback(ctx, "eligible", request.userID, ids, &eligible); err != nil || eligible.Accounts == nil {
-			return nil, allocationFailure()
-		}
-		candidates := map[string]bool{}
-		for _, id := range ids {
-			candidates[id] = true
-		}
-		for _, account := range *eligible.Accounts {
-			if !candidates[account.ID] || limits[account.ID] != 0 || account.Limit < 1 || account.Limit > 2147483647 {
-				return nil, allocationFailure()
-			}
-			limits[account.ID] = account.Limit
+		var failure *Failure
+		limits, failure = m.eligibleLimits(ctx, request.userID, ids)
+		if failure != nil {
+			return nil, failure
 		}
 		ids = ids[:0]
 		m.mu.Lock()
 		for _, account := range m.accounts {
-			if limit := limits[account.record.ID]; limit > 0 && account.active < limit && account.record.Enabled && account.ready && !account.refreshing && !time.Now().Before(account.cooldown) {
+			if limit := limits[account.record.ID]; limit > 0 && account.active < limit && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && !time.Now().Before(account.cooldown) {
 				ids = append(ids, account.record.ID)
 			}
 		}
@@ -273,7 +344,7 @@ func (m *AccountManager) acquire(ctx context.Context, request accountRequest, tr
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, account := range m.accounts {
-		if account.record.ID == selected && account.record.Enabled && account.ready && !account.refreshing && account.active < limits[selected] && !time.Now().Before(account.cooldown) {
+		if account.record.ID == selected && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && account.active < limits[selected] && !time.Now().Before(account.cooldown) {
 			account.active++
 			return account, nil
 		}

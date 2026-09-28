@@ -123,7 +123,7 @@ func TestCancellationDuringSaveDoesNotReportSuccess(t *testing.T) {
 			defer cancel()
 			runner.Credentials = cancelDuringSave{Credentials: c, cancel: cancel}
 			if mode == "request" {
-				_, failure := runner.Run(ctx, "private prompt")
+				_, failure := runner.Run(ctx, CLIModel, "private prompt")
 				if failure == nil || failure.Status != 499 {
 					t.Fatalf("canceled request returned success: %v", failure)
 				}

@@ -151,7 +151,7 @@ if test "$mode" = serving; then
     done
     # Normal model requests never inherit the local operator smoke exemption.
     code=$(curl -sS --config "$probe_dir/curl.conf" -H 'Content-Type: application/json' \
-        --data '{"model":"gemini-3.1-pro-preview","input":"hello"}' -o "$probe_dir/rejected" \
+        --data '{"model":"gemini-3.1-pro-high","input":"hello"}' -o "$probe_dir/rejected" \
         -w '%{http_code}' http://127.0.0.1:8318/v1/responses)
     test "$code" = 503
     jq -e '.error.code == "upstream_allocation_unavailable"' "$probe_dir/rejected" >/dev/null

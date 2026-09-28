@@ -86,7 +86,7 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 				if failure != nil || recorder.Body.String() != output || recorder.Header().Get("Set-Cookie") != "" {
 					t.Fatalf("result=%+v failure=%v output=%s", result, failure, recorder.Body)
 				}
-				if result.Model != nativeGeminiModel || result.Usage != (Usage{InputTokens: 10, CachedTokens: 3, OutputTokens: 12, ReasoningTokens: 7}) || result.Usage.Total() != 22 {
+				if result.Model != nativeGeminiModel || result.ServiceTier != "default" || result.Usage != (Usage{InputTokens: 10, CachedTokens: 3, OutputTokens: 12, ReasoningTokens: 7}) || result.Usage.Total() != 22 {
 					t.Fatalf("incorrect Gemini accounting: %+v", result)
 				}
 				if result.BytesOut != int64(len(output)) || result.FirstByteAt.IsZero() || result.FirstTokenAt.IsZero() || result.CompletedAt.IsZero() || attributed != "0123456789abcdef" {

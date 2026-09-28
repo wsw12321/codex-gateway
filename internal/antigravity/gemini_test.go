@@ -38,7 +38,7 @@ func TestDecodeGeminiCapturedRequests(t *testing.T) {
 			if fixture.Name == "title" {
 				return
 			}
-			request, failure := DecodeGeminiRequest(fixture.Body)
+			request, failure := DecodeGeminiRequest(PublicModel, fixture.Body)
 			if failure != nil || request.Model != PublicModel || request.Stream {
 				t.Fatalf("request=%+v failure=%+v", request, failure)
 			}
@@ -74,7 +74,7 @@ func TestDecodeGeminiCapturedRequests(t *testing.T) {
 func TestDecodeGeminiSupportsBothSchemaFormats(t *testing.T) {
 	for _, field := range []string{"parameters", "parametersJsonSchema"} {
 		body := strings.ReplaceAll(nativeTools, "parametersJsonSchema", field)
-		request, failure := DecodeGeminiRequest([]byte(body))
+		request, failure := DecodeGeminiRequest(PublicModel, []byte(body))
 		if failure != nil || !strings.Contains(request.Prompt, "additionalProperties") {
 			t.Fatalf("%s: failure=%+v prompt=%s", field, failure, request.Prompt)
 		}
@@ -110,7 +110,7 @@ func TestDecodeGeminiRejectsUnsupportedAndAmbiguousInput(t *testing.T) {
 		cases = append(cases, strings.TrimSuffix(nativeText, "}")+","+fields+"}")
 	}
 	for _, body := range cases {
-		if _, failure := DecodeGeminiRequest([]byte(body)); failure == nil || failure.Status != 400 {
+		if _, failure := DecodeGeminiRequest(PublicModel, []byte(body)); failure == nil || failure.Status != 400 {
 			t.Fatalf("accepted invalid request: %s; failure=%+v", body, failure)
 		}
 	}
@@ -118,18 +118,18 @@ func TestDecodeGeminiRejectsUnsupportedAndAmbiguousInput(t *testing.T) {
 
 func TestDecodeGeminiMultipleToolResults(t *testing.T) {
 	body := `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"tool","args":{"n":1},"id":"one"}},{"functionCall":{"name":"tool","args":{"n":2},"id":"two"}}]},{"role":"model","parts":[{"functionResponse":{"name":"tool","response":{"n":2},"id":"two"}},{"functionResponse":{"name":"tool","response":{"n":1},"id":"one"}}]}]}`
-	if _, failure := DecodeGeminiRequest([]byte(body)); failure != nil {
+	if _, failure := DecodeGeminiRequest(PublicModel, []byte(body)); failure != nil {
 		t.Fatalf("out-of-order matching IDs rejected: %+v", failure)
 	}
 	noID := `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"tool","args":{}}}]},{"role":"user","parts":[{"functionResponse":{"name":"tool","response":{}}}]}]}`
-	if _, failure := DecodeGeminiRequest([]byte(noID)); failure != nil {
+	if _, failure := DecodeGeminiRequest(PublicModel, []byte(noID)); failure != nil {
 		t.Fatalf("name-matched history rejected: %+v", failure)
 	}
 }
 
 func TestBridgeGeminiJSONAndSSE(t *testing.T) {
 	for _, method := range []string{"generateContent", "streamGenerateContent?alt=sse"} {
-		for _, model := range []string{PublicModel, "gemini-3.1-pro-preview-customtools"} {
+		for _, model := range []string{PublicModel} {
 			t.Run(model+"/"+method, func(t *testing.T) {
 				runner, _ := fakeRunner(t, fakeCLIConfig{Stream: initEvent + textStep + resultEvent, FragmentSize: 3})
 				server := NewServer(runner, testBridgeToken)
@@ -182,7 +182,13 @@ func TestBridgeGeminiCapturedToolLoop(t *testing.T) {
 		if fixture.Name == "text" {
 			continue
 		}
-		response := bridgeRequest(server, "POST", fixture.Path, string(fixture.Body))
+		path := fixture.Path
+		if fixture.Name != "title" {
+			// Captured client payloads remain useful, but their legacy aliases
+			// must be replaced with the exact public model before forwarding.
+			path = "/v1beta/models/" + PublicModel + ":streamGenerateContent?alt=sse"
+		}
+		response := bridgeRequest(server, "POST", path, string(fixture.Body))
 		if fixture.Name == "title" {
 			if response.Code != 404 {
 				t.Fatalf("title=%d %s", response.Code, response.Body)

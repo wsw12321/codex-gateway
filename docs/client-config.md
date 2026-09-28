@@ -1,4 +1,4 @@
-# Codex CLI 与 AGY 客户端配置
+# Codex CLI 与 Gemini API 客户端配置
 
 每台设备在管理界面创建独立 API Key，需要区分项目时为 Key 设置默认项目。
 
@@ -53,21 +53,25 @@ WebSocket；Gateway 会返回一次 `426 responses_websocket_unsupported`，客�
 Gateway 不实现真正的 WebSocket、Chat Completions 或任意 URL 代理。Codex 的
 文件读取、命令执行和代码修改仍发生在本地设备。
 
-## AGY 使用 Antigravity 订阅
+## Gemini API 使用 Antigravity 订阅
 
-在现有 `~/.gemini/antigravity-cli/settings.json` 中合并顶层
-`"modelProvider": "gemini"`，保留其他设置。将 `GOOGLE_GEMINI_BASE_URL` 设为
-Gateway 站点地址（例如 `https://codex.example.com`，**不加 `/v1`**），
-`GEMINI_API_KEY` 使用 Gateway 签发的 key，然后运行：
+Gateway 支持 `POST /v1/responses` 及原生 Gemini 的
+`POST /v1beta/models/{model}:generateContent` 和
+`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`。
+通过服务器内部的官方 AGY 调用订阅账号，客户端使用 Gateway 签发的 key。
 
-```sh
-agy --model gemini-3.1-pro-high
-```
+管理员配置同名路由并授权后，以该 Key 查询 `GET /v1/models`，选择返回的精确 ID。
+目录支持 `gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.7-flash-high`、
+`gemini-3.7-flash-medium`、`gemini-3.6-flash-high`、`gemini-3.6-flash-medium` 和
+`gemini-3.1-pro-high`；请求、响应与账单使用相同名称。实际可用模型取决于用户权限、
+Key 白名单及订阅账号，升级后的新模型默认禁用，管理员需重新授权并重新签发受限 Key。
 
-AGY 使用 `POST /v1beta/models/{model}:generateContent` 和
-`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`，通过 Bridge 使用服务器
-订阅账号。管理员需配置路由并授予 `gemini-3.1-pro-preview` 模型权限；同一会话中的
-`gemini-3.1-pro-preview-customtools` 归一为该公开模型，共用价格与额度。
-首版支持文本和本地编程工具，请求上限 1 MiB，流式响应在完整生成后发送。自动标题
-的 Flash Lite 返回 404，不阻断主对话。完整配置、能力边界及验收步骤见
-[AGY 接入说明](gemini-pro.md#本机-agy-配置)。
+管理界面“使用指导”提供可直接运行的 Bash/curl 请求。完整 Responses 与原生 Gemini
+示例见 [精确模型名请求](gemini-pro.md#使用精确模型名请求-gateway)。Key 只用于 Gateway
+鉴权，请勿写入命令历史、项目配置或 Git。
+
+旧 `gemini-3.1-pro-preview` 和 `gemini-3.1-pro-preview-customtools` 已停止接受。
+当前本机 AGY 的 `modelProvider=gemini` 会发送这些旧路径，不能直接连接 Gateway。
+需使用能够保留上述精确模型名的 API 客户端。支持文本和客户端函数工具，请求上限
+1 MiB；流式响应在完整生成并校验后发送。计费使用 Gemini API Standard 家族价格
+对应的 Token 等价费用，不代表 Antigravity 订阅实际账单。

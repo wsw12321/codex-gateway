@@ -14,7 +14,7 @@ const initialState = {
   user: {id: "member", username: "lin", display_name: "林同学", role: "member", status: "active"},
   recently_verified: true, login_methods: {password: true},
   devices: [{id: "device", name: "工作电脑", status: "active"}], projects: [],
-  api_keys: [{id: "key", name: "AGY", key_prefix: "cgk_v1_example", status: "active", model_allowlist: ["gemini-3.1-pro-preview"]}],
+  api_keys: [{id: "key", name: "Gemini", key_prefix: "cgk_v1_example", status: "active", model_allowlist: ["gemini-3.1-pro-high"]}],
   passkeys: [],
 };
 
@@ -42,12 +42,22 @@ async function main() {
     await guide.waitFor({state: "visible"});
     assert.equal(await page.locator("#guide-base-url").textContent(), `${origin}/v1`);
     assert.equal(await page.locator("#guide-agy-base-url").textContent(), origin);
-    assert.deepEqual(JSON.parse(await page.locator("#guide-agy-config-code").textContent()), {modelProvider: "gemini"});
+    assert.deepEqual(JSON.parse(await page.locator("#guide-agy-config-code").textContent()), {
+      model: "gemini-3.1-pro-high", input: "Reply with exactly OK.", store: false,
+    });
     const shell = await page.locator("#guide-agy-shell-code").textContent();
-    assert.ok(shell.includes(`export GOOGLE_GEMINI_BASE_URL='${origin}'`));
-    assert.ok(!shell.includes(`${origin}/v1`));
-    assert.ok(shell.includes("read -r -s -p 'Gateway API Key: ' GEMINI_API_KEY"));
-    assert.ok(shell.endsWith("agy --model gemini-3.1-pro-high"));
+    assert.ok(shell.includes(`export GATEWAY_BASE_URL='${origin}'`));
+    assert.ok(shell.includes("read -r -s -p 'Gateway API Key: ' GATEWAY_API_KEY"));
+    assert.ok(shell.includes("--config -"), "read the key through stdin, not process arguments");
+    assert.ok(shell.includes('"model":"gemini-3.1-pro-high"'));
+    assert.ok(shell.endsWith('"$GATEWAY_BASE_URL/v1/responses"'));
+    assert.ok(!shell.includes("agy --model"));
+    const guideText = await guide.textContent();
+    for (const family of ["3.8", "3.7", "3.6"]) {
+      for (const level of ["high", "medium"]) assert.ok(guideText.includes(`gemini-${family}-flash-${level}`));
+    }
+    assert.ok(guideText.includes("默认禁用"));
+    assert.ok(guideText.includes("不能直接采用该配置连接 Gateway"));
     await page.evaluate(() => { window.guideCopied = ""; navigator.clipboard.writeText = async (value) => { window.guideCopied = value; }; });
     await page.locator('[data-copy-target="guide-agy-shell-code"]').click();
     assert.equal(await page.evaluate(() => window.guideCopied), shell);

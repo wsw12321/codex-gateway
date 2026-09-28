@@ -37,33 +37,50 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const model = "gemini-3.1-pro-preview"
-	snapshot, rule, ok, err := pricing.ModelSnapshot(model)
-	if err != nil || !ok {
-		t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
-	}
+	const model = "gemini-3.1-pro-high"
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	actor := globalUsageIntegrationUser(t, ctx, repository, "gemini-actor-"+suffix, UserRoleMember)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {
 		name        string
+		model       string
 		endpoint    string
 		inputTokens int64
 		actualTier  string
 		context     string
 		cost        string
 	}{
-		{"short", "responses", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"long", "responses", 200_001, "default", config.ContextClassLong, "0.945804000000"},
-		{"short-missing-tier", "responses", 200_000, "", config.ContextClassShort, "0.503200000000"},
-		{"long-missing-tier", "responses", 200_001, "", config.ContextClassLong, "0.945804000000"},
-		{"native-short", "gemini.generateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"native-long", "gemini.generateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
-		{"native-stream-short", "gemini.streamGenerateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"native-stream-long", "gemini.streamGenerateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"short", model, "responses", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"long", model, "responses", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"short-missing-tier", model, "responses", 200_000, "", config.ContextClassShort, "0.503200000000"},
+		{"long-missing-tier", model, "responses", 200_001, "", config.ContextClassLong, "0.945804000000"},
+		{"native-short", model, "gemini.generateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"native-long", model, "gemini.generateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"native-stream-short", model, "gemini.streamGenerateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
+		{"native-stream-long", model, "gemini.streamGenerateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"flash-38-high", "gemini-3.8-flash-high", "responses", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
+		{"flash-38-medium", "gemini-3.8-flash-medium", "responses", 200_001, "standard", config.ContextClassShort, "0.181125750000"},
+		{"flash-37-high", "gemini-3.7-flash-high", "gemini.generateContent", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
+		{"flash-37-medium", "gemini-3.7-flash-medium", "gemini.generateContent", 200_001, "standard", config.ContextClassShort, "0.181125750000"},
+		{"flash-36-high", "gemini-3.6-flash-high", "gemini.streamGenerateContent", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
+		{"flash-36-medium", "gemini-3.6-flash-medium", "gemini.streamGenerateContent", 1_048_576, "standard", config.ContextClassShort, "0.817557000000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			model := tc.model
+			snapshot, rule, ok, err := pricing.ModelSnapshot(model)
+			if err != nil || !ok {
+				t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
+			}
+			if err := repository.SyncModelAccessCatalog(ctx, []string{model}); err != nil {
+				t.Fatal(err)
+			}
 			user, device, key := billingIntegrationPrincipal(t, ctx, repository, "gemini-"+tc.name+"-"+suffix)
+			if _, err := repository.SetUserModelAccess(ctx, SetUserModelAccessParams{
+				ModelAccessWriteParams: ModelAccessWriteParams{ActorUserID: actor.ID, Reason: "authorize Gemini billing regression", At: time.Now().UTC()},
+				Model:                  model, Enabled: true, Scope: ModelAccessScopeSelected, UserIDs: []string{user.ID},
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
 				BillingWriteParams: billingIntegrationWrite(t, actor.ID, "fund Gemini billing regression", now),
 				UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5",
@@ -78,7 +95,7 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 			params.Usage.PricingRuleVersion = config.PricingSchemaV2
 			params.Billing = &BillingReservationParams{
 				RequestID: requestID, UserID: user.ID, APIKeyID: key.ID, Model: model,
-				PricingRuleVersion: config.PricingSchemaV2, BillingMode: BillingModeOpenAIAPIEquivalent,
+				PricingRuleVersion: config.PricingSchemaV2, BillingMode: BillingModeGeminiAPIEquivalent,
 				PricingCatalogAsOf: pricing.CatalogAsOf, PricingModel: model,
 				PricingSnapshot: snapshot, CacheWriteMode: rule.CacheWriteMode,
 				RequestedServiceTier: "default", Now: now.Add(time.Second),
@@ -118,29 +135,30 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 				t.Fatalf("repeat Gemini settlement: %v", err)
 			}
 			var ledgerCount int
-			var amount, charged, uncovered, contextClass, pricingTier, fallback, cacheWriteMode string
+			var amount, charged, uncovered, contextClass, pricingTier, fallback, cacheWriteMode, mode string
 			var outputTokens, reasoningTokens, quotaTokens, cacheWrites, completedRequests, usedTokens int64
 			if err := repository.db.QueryRowContext(ctx, `SELECT
 				(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1),
 				l.amount_usd::text,l.charged_usd::text,l.uncovered_usd::text,
 				l.context_class,l.pricing_service_tier,COALESCE(l.pricing_fallback_reason,''),
 				l.cache_write_mode,l.output_tokens,u.reasoning_tokens,q.actual_tokens,l.cache_write_tokens,
-				c.requests_completed,c.tokens_used
+				c.requests_completed,c.tokens_used,r.billing_mode
 				FROM billing_ledger_entries l
 				JOIN usage_requests u USING (request_id)
+				JOIN billing_reservations r USING (request_id)
 				JOIN quota_reservations q USING (request_id)
 				JOIN quota_counters c ON c.scope_type='user' AND c.scope_id=$2 AND c.quota_day=$3::date
 				WHERE l.request_id=$1`, requestID, user.ID, now,
 			).Scan(&ledgerCount, &amount, &charged, &uncovered, &contextClass, &pricingTier, &fallback,
 				&cacheWriteMode, &outputTokens, &reasoningTokens, &quotaTokens, &cacheWrites,
-				&completedRequests, &usedTokens); err != nil {
+				&completedRequests, &usedTokens, &mode); err != nil {
 				t.Fatalf("read Gemini settlement: %v", err)
 			}
 			wantTier, wantFallback := config.PricingTierStandard, ""
 			if tc.actualTier == "" {
 				wantTier, wantFallback = config.PricingTierMaxPublished, config.FallbackMissingServiceTier
 			}
-			if ledgerCount != 1 || amount != tc.cost || charged != tc.cost || uncovered != "0.000000000000" ||
+			if mode != BillingModeGeminiAPIEquivalent || ledgerCount != 1 || amount != tc.cost || charged != tc.cost || uncovered != "0.000000000000" ||
 				contextClass != tc.context || pricingTier != wantTier || fallback != wantFallback ||
 				cacheWriteMode != config.CacheWriteIncludedInInput || cacheWrites != 0 ||
 				outputTokens != 10_100 || reasoningTokens != 100 || quotaTokens != tc.inputTokens+10_100 ||

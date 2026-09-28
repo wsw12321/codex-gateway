@@ -15,17 +15,24 @@ import (
 	"time"
 
 	"github.com/wsw/codex-gateway/internal/antigravity"
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 type bridgeHTTPExecutor struct {
-	run func(context.Context, string) (antigravity.Result, *antigravity.Failure)
+	run      func(context.Context, string) (antigravity.Result, *antigravity.Failure)
+	runModel func(context.Context, string, string) (antigravity.Result, *antigravity.Failure)
 }
 
-func (e bridgeHTTPExecutor) Run(ctx context.Context, prompt string) (antigravity.Result, *antigravity.Failure) {
+func (e bridgeHTTPExecutor) Run(ctx context.Context, model, prompt string) (antigravity.Result, *antigravity.Failure) {
+	if e.runModel != nil {
+		return e.runModel(ctx, model, prompt)
+	}
 	return e.run(ctx, prompt)
 }
 
-func (bridgeHTTPExecutor) Check(context.Context) error { return nil }
+func (bridgeHTTPExecutor) Check(context.Context) ([]string, error) {
+	return config.AntigravityModels(), nil
+}
 
 func bridgeHTTPResult() antigravity.Result {
 	return antigravity.Result{Status: "SUCCESS", Response: "Hello from Antigravity", NumTurns: 1, Usage: &antigravity.Usage{
@@ -49,6 +56,47 @@ func newBridgeHTTPClient(t *testing.T, executor bridgeHTTPExecutor) (*Client, *a
 	t.Cleanup(upstream.Close)
 	base, _ := url.Parse(upstream.URL)
 	return NewAntigravity(base, "independent-bridge-secret"), bridge
+}
+
+func TestAntigravityHTTPPreservesEveryAGYModelAcrossProtocols(t *testing.T) {
+	for _, model := range config.AntigravityModels() {
+		for _, native := range []bool{false, true} {
+			for _, stream := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/native=%t/stream=%t", model, native, stream), func(t *testing.T) {
+					calls := 0
+					bridge, _ := newBridgeHTTPClient(t, bridgeHTTPExecutor{runModel: func(_ context.Context, got, prompt string) (antigravity.Result, *antigravity.Failure) {
+						calls++
+						if got != model || !strings.Contains(prompt, "hello") {
+							t.Fatalf("executed model=%q prompt=%q", got, prompt)
+						}
+						return bridgeHTTPResult(), nil
+					}})
+					router := NewRouter(nil, bridge, map[string]string{model: model})
+					path := "/v1/responses"
+					body := fmt.Sprintf(`{"model":%q,"input":"hello","stream":%t}`, model, stream)
+					if native {
+						operation := "generateContent"
+						if stream {
+							operation = "streamGenerateContent"
+						}
+						path, body = "/v1beta/models/"+model+":"+operation, nativeGeminiRequest
+					}
+					r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+					w := httptest.NewRecorder()
+					var result Result
+					var failure *Failure
+					if native {
+						result, failure = router.ForwardGemini(context.Background(), w, r, model, path, ForwardOptions{})
+					} else {
+						result, failure = router.ForwardWithOptions(context.Background(), w, r, model, path, ForwardOptions{})
+					}
+					if failure != nil || calls != 1 || result.Model != model || result.ServiceTier != "default" || result.Usage.InputTokens != 101 || result.Usage.OutputTokens != 37 || !strings.Contains(w.Body.String(), model) {
+						t.Fatalf("calls=%d result=%+v failure=%v body=%s", calls, result, failure, w.Body)
+					}
+				})
+			}
+		}
+	}
 }
 
 func TestAntigravityHTTPNativeGeminiToolRoundTrip(t *testing.T) {
@@ -180,10 +228,10 @@ func TestAntigravityHTTPErrorsRemainTypedAndPrivate(t *testing.T) {
 		code      string
 		wantCalls int64
 	}{
-		{name: "parameter", body: `{"model":"gemini-3.1-pro-preview","input":"hello","attacker_supplied_secret":true}`, status: 400, code: "antigravity_parameter_unsupported"},
-		{name: "image", body: `{"model":"gemini-3.1-pro-preview","input":[{"role":"user","content":[{"type":"input_image","image_url":"https://private.invalid/image"}]}]}`, status: 400, code: "antigravity_input_unsupported"},
-		{name: "duplicate", body: `{"model":"gemini-3.1-pro-preview","input":"hello","input":"private"}`, status: 400, code: "antigravity_invalid_request"},
-		{name: "large", body: `{"model":"gemini-3.1-pro-preview","input":"` + strings.Repeat("x", 1<<20) + `"}`, status: 413, code: "antigravity_request_too_large"},
+		{name: "parameter", body: `{"model":"gemini-3.1-pro-high","input":"hello","attacker_supplied_secret":true}`, status: 400, code: "antigravity_parameter_unsupported"},
+		{name: "image", body: `{"model":"gemini-3.1-pro-high","input":[{"role":"user","content":[{"type":"input_image","image_url":"https://private.invalid/image"}]}]}`, status: 400, code: "antigravity_input_unsupported"},
+		{name: "duplicate", body: `{"model":"gemini-3.1-pro-high","input":"hello","input":"private"}`, status: 400, code: "antigravity_invalid_request"},
+		{name: "large", body: `{"model":"gemini-3.1-pro-high","input":"` + strings.Repeat("x", 1<<20) + `"}`, status: 413, code: "antigravity_request_too_large"},
 		{name: "authentication", failure: &antigravity.Failure{Status: 503, Code: "upstream_unavailable", Message: "private provider token"}, status: 503, code: "upstream_unavailable", wantCalls: 1},
 		{name: "subscription limit", failure: &antigravity.Failure{Status: 429, Code: "upstream_rate_limited", Message: "private provider token"}, status: 429, code: "upstream_rate_limited", wantCalls: 1},
 		{name: "timeout", failure: &antigravity.Failure{Status: 504, Code: "upstream_timeout", Message: "private provider token"}, status: 504, code: "upstream_timeout", wantCalls: 1},
@@ -198,7 +246,7 @@ func TestAntigravityHTTPErrorsRemainTypedAndPrivate(t *testing.T) {
 			}})
 			body := test.body
 			if body == "" {
-				body = `{"model":"gemini-3.1-pro-preview","input":"hello"}`
+				body = `{"model":"gemini-3.1-pro-high","input":"hello"}`
 			}
 			recorder := httptest.NewRecorder()
 			result, failure := client.Forward(context.Background(), recorder, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body)), "/v1/responses")
@@ -227,7 +275,7 @@ func TestAntigravityHTTPReadinessRemovesAndRestoresModel(t *testing.T) {
 		}
 	}
 	catalog(true)
-	_, failure := router.ForwardWithOptions(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-preview","input":"hello"}`)), antigravity.PublicModel, "/v1/responses", ForwardOptions{})
+	_, failure := router.ForwardWithOptions(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":"hello"}`)), antigravity.PublicModel, "/v1/responses", ForwardOptions{})
 	if failure == nil || failure.Status != 503 {
 		t.Fatalf("failure=%v", failure)
 	}
@@ -246,7 +294,7 @@ func TestAntigravityHTTPBusyAndCancellation(t *testing.T) {
 		return antigravity.Result{}, &antigravity.Failure{Status: 499, Code: "request_canceled", Message: "cancelled"}
 	}})
 	request := func() *http.Request {
-		return httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-preview","input":"hello"}`))
+		return httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":"hello"}`))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -292,7 +340,7 @@ func TestAntigravityHTTPRejectsCodexCredential(t *testing.T) {
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
 	client := NewAntigravity(base, "codex-secret")
-	result, failure := client.Forward(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", io.NopCloser(strings.NewReader(`{"model":"gemini-3.1-pro-preview","input":"hello"}`))), "/v1/responses")
+	result, failure := client.Forward(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", io.NopCloser(strings.NewReader(`{"model":"gemini-3.1-pro-high","input":"hello"}`))), "/v1/responses")
 	if failure == nil || failure.Status != 503 || failure.Code != "upstream_reauthentication_required" || result.BytesOut != 0 || calls.Load() != 0 {
 		t.Fatalf("wrong-token request: result=%+v failure=%+v calls=%d", result, failure, calls.Load())
 	}

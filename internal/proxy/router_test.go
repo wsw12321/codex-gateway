@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const antigravityPublicModel = "gemini-3.1-pro-preview"
+const antigravityPublicModel = "gemini-3.1-pro-high"
 
 func testRouterClient(bridge bool, fn roundTripFunc) *Client {
 	base, _ := url.Parse("http://internal.test")
@@ -38,8 +38,8 @@ func TestRouterUsesExactModelsAndIndependentCredentials(t *testing.T) {
 		bridge bool
 	}{
 		{antigravityPublicModel, true},
-		{"gemini-3.1-pro-preview-other", false},
-		{"gemini-3.1-pro-high", false},
+		{"gemini-3.1-pro-high-other", false},
+		{"gemini-3.1-pro-preview", false},
 		{"gemini-other", false},
 		{"gpt-6-astra", false},
 	} {
@@ -97,7 +97,7 @@ func TestRouterUnavailableBridgeNeverFallsBack(t *testing.T) {
 	})
 	for _, bridge := range []*Client{nil, broken} {
 		router := NewRouter(primary, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
-		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-preview","input":"hello"}`))
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":"hello"}`))
 		recorder := httptest.NewRecorder()
 		_, failure := router.ForwardWithOptions(context.Background(), recorder, request, antigravityPublicModel, "/v1/responses", ForwardOptions{})
 		if failure == nil || failure.Status != http.StatusServiceUnavailable || failure.Code != "upstream_unavailable" || recorder.Body.Len() != 0 {
@@ -120,15 +120,15 @@ func TestRouterModelCatalogMergeAndOutage(t *testing.T) {
 		want         []string
 		wantFailure  bool
 	}{
-		{name: "merge", primary: `{"object":"list","data":[{"id":"gpt-6-astra","owned_by":"codex"}]}`, bridge: `{"object":"list","data":[{"id":"gemini-3.1-pro-preview","owned_by":"antigravity"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
-		{name: "same effective permission filter", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-preview"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}}, want: []string{"gpt-6-astra"}},
+		{name: "merge", primary: `{"object":"list","data":[{"id":"gpt-6-astra","owned_by":"codex"}]}`, bridge: `{"object":"list","data":[{"id":"gemini-3.1-pro-high","owned_by":"antigravity"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
+		{name: "same effective permission filter", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}}, want: []string{"gpt-6-astra"}},
 		{name: "bridge unavailable", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridgeStatus: http.StatusServiceUnavailable, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra"}},
-		{name: "routed models hidden even if primary advertises during outage", primary: `{"data":[{"id":"gpt-6-astra"},{"id":"gemini-3.1-pro-preview"}]}`, bridgeStatus: http.StatusServiceUnavailable, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra"}},
-		{name: "unrouted bridge models excluded", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-unconfigured"},{"id":"gemini-3.1-pro-preview"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}, "gemini-unconfigured": {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
-		{name: "duplicate across upstreams", primary: `{"data":[{"id":"gemini-3.1-pro-preview"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-preview"}]}`, wantFailure: true},
+		{name: "routed models hidden even if primary advertises during outage", primary: `{"data":[{"id":"gpt-6-astra"},{"id":"gemini-3.1-pro-high"}]}`, bridgeStatus: http.StatusServiceUnavailable, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra"}},
+		{name: "unrouted bridge models excluded", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-unconfigured"},{"id":"gemini-3.1-pro-high"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}, "gemini-unconfigured": {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
+		{name: "duplicate across upstreams", primary: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, wantFailure: true},
 		{name: "duplicate hidden models across upstreams", primary: `{"data":[{"id":"gpt-hidden"}]}`, bridge: `{"data":[{"id":"gpt-hidden"}]}`, allowed: map[string]struct{}{antigravityPublicModel: {}}, wantFailure: true},
 		{name: "duplicate in primary", primary: `{"data":[{"id":"gpt-6-astra"},{"id":"gpt-6-astra"}]}`, bridge: `{"data":[]}`, wantFailure: true},
-		{name: "duplicate in bridge", primary: `{"data":[]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-preview"},{"id":"gemini-3.1-pro-preview"}]}`, wantFailure: true},
+		{name: "duplicate in bridge", primary: `{"data":[]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"},{"id":"gemini-3.1-pro-high"}]}`, wantFailure: true},
 		{name: "malformed bridge", primary: `{"data":[]}`, bridge: `{"data":[{"id":42}]}`, wantFailure: true},
 		{name: "malformed primary", primary: `{"data":[`, bridge: `{"data":[]}`, wantFailure: true},
 	} {
@@ -140,7 +140,7 @@ func TestRouterModelCatalogMergeAndOutage(t *testing.T) {
 				return routerTestResponse(http.StatusOK, test.primary), nil
 			})
 			bridge := testRouterClient(true, func(request *http.Request) (*http.Response, error) {
-				if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer bridge-secret" || request.Header.Get(affinityHeader) != "" {
+				if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer bridge-secret" || request.Header.Get(affinityHeader) != "" || request.Header.Get(gatewayUserHeader) != "00000000-0000-0000-0000-000000000001" {
 					t.Error("invalid bridge catalog request")
 				}
 				status := test.bridgeStatus
@@ -151,7 +151,7 @@ func TestRouterModelCatalogMergeAndOutage(t *testing.T) {
 			})
 			router := NewRouter(primary, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
 			recorder := httptest.NewRecorder()
-			result, failure := router.ForwardModelsWithOptions(context.Background(), recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil), test.allowed, ForwardOptions{AffinityScope: strings.Repeat("a", 43)})
+			result, failure := router.ForwardModelsWithOptions(context.Background(), recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil), test.allowed, ForwardOptions{AffinityScope: strings.Repeat("a", 43), UserID: "00000000-0000-0000-0000-000000000001"})
 			if test.wantFailure {
 				if failure == nil || failure.Status != http.StatusBadGateway || failure.Code != "upstream_invalid_model_catalog" || recorder.Body.Len() != 0 {
 					t.Fatalf("invalid catalog result=%+v failure=%v body=%s", result, failure, recorder.Body)

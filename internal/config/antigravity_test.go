@@ -10,20 +10,20 @@ import (
 func TestParseAntigravityModelRoutes(t *testing.T) {
 	t.Parallel()
 	for _, raw := range []string{
-		`null`, `[]`, `{"gemini-3.1-pro-preview":null}`, `{"gemini-3.1-pro-preview":123}`,
-		`{"gemini-3.1-pro-preview":""}`, `{"gemini-3.1-pro-preview":"has spaces"}`,
-		`{"":"gemini-3.1-pro-high"}`, `{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"} {}`,
-		`{"gemini-3.1-pro-preview":"first","gemini-3.1-pro-preview":"second"}`,
-		`{"gemini-3.1-pro-preview":"first","gemini-3.1-pro-previe\u0077":"second"}`,
+		`null`, `[]`, `{"gemini-3.1-pro-high":null}`, `{"gemini-3.1-pro-high":123}`,
+		`{"gemini-3.1-pro-high":""}`, `{"gemini-3.1-pro-high":"has spaces"}`,
+		`{"":"gemini-3.1-pro-high"}`, `{"gemini-3.1-pro-high":"gemini-3.1-pro-high"} {}`,
+		`{"gemini-3.1-pro-high":"first","gemini-3.1-pro-high":"second"}`,
+		`{"gemini-3.1-pro-high":"first","gemini-3.1-pro-hig\u0068":"second"}`,
 		`{"codex-auto-review":"gemini-3.1-pro-high"}`,
-		`{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"`,
+		`{"gemini-3.1-pro-high":"gemini-3.1-pro-high"`,
 	} {
 		if _, err := ParseAntigravityModelRoutes(raw); err == nil {
 			t.Errorf("accepted invalid routes: %s", raw)
 		}
 	}
-	routes, err := ParseAntigravityModelRoutes(`{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}`)
-	if err != nil || len(routes) != 1 || routes["gemini-3.1-pro-preview"] != "gemini-3.1-pro-high" {
+	routes, err := ParseAntigravityModelRoutes(`{"gemini-3.1-pro-high":"gemini-3.1-pro-high"}`)
+	if err != nil || len(routes) != 1 || routes["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
 		t.Fatalf("routes = %#v, err = %v", routes, err)
 	}
 	for _, raw := range []string{"", "  ", "{}"} {
@@ -42,14 +42,14 @@ func TestLoadAntigravityBridgeSecretFileAndRoutes(t *testing.T) {
 	t.Setenv("ANTIGRAVITY_BRIDGE_URL", "http://antigravity-bridge:8318/")
 	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "")
 	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY_FILE", path)
-	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", `{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}`)
+	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", `{"gemini-3.1-pro-high":"gemini-3.1-pro-high"}`)
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.AntigravityBridgeURL.String() != "http://antigravity-bridge:8318" ||
 		cfg.AntigravityBridgeToken != "independent-antigravity-bridge-secret" ||
-		cfg.AntigravityModelRoutes["gemini-3.1-pro-preview"] != "gemini-3.1-pro-high" {
+		cfg.AntigravityModelRoutes["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
 		t.Fatal("bridge URL, secret, or model routes were not loaded")
 	}
 }
@@ -67,7 +67,7 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 		{name: "disabled"},
 		{name: "unrouted bridge for rollback", url: "http://antigravity-bridge:8318", token: bridgeToken},
 		{name: "supported mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{AntigravityPublicModel: AntigravityCLIModel}},
-		{name: "missing URL", routes: map[string]string{"gemini-3.1-pro-preview": "gemini-3.1-pro-high"}, wantError: true},
+		{name: "missing URL", routes: map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}, wantError: true},
 		{name: "missing secret", url: "http://antigravity-bridge:8318", wantError: true},
 		{name: "short secret", url: "http://antigravity-bridge:8318", token: strings.Repeat("x", 31), wantError: true},
 		{name: "reused secret", url: "http://antigravity-bridge:8318", token: strings.Repeat("s", 32), wantError: true},
@@ -78,6 +78,8 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 		{name: "invalid model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"a b": "model"}, wantError: true},
 		{name: "unsupported public model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-other": AntigravityCLIModel}, wantError: true},
 		{name: "unsupported CLI model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{AntigravityPublicModel: "gemini-3.1-pro-low"}, wantError: true},
+		{name: "retired API alias", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-3.1-pro-preview": AntigravityCLIModel}, wantError: true},
+		{name: "cross-model mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-3.8-flash-high": "gemini-3.8-flash-medium"}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := validConfigForValidation(t)
@@ -92,5 +94,49 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 				t.Fatalf("Validate() = %v, want error %v", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestAntigravityCatalogUsesExactCLIIDs(t *testing.T) {
+	models := AntigravityModels()
+	if len(models) != 7 {
+		t.Fatalf("catalog contains %d models", len(models))
+	}
+	seen := map[string]bool{}
+	cfg := validConfigForValidation(t)
+	cfg.AntigravityBridgeURL, _ = url.Parse("http://antigravity-bridge:8318")
+	cfg.AntigravityBridgeToken = "independent-antigravity-bridge-secret"
+	cfg.AntigravityModelRoutes = map[string]string{}
+	for _, model := range models {
+		family, ok := AntigravityPricingModel(model)
+		if seen[model] || !ok || !IsAntigravityModel(model) || family == model {
+			t.Fatalf("invalid catalog entry %q -> %q", model, family)
+		}
+		seen[model] = true
+		cfg.AntigravityModelRoutes[model] = model
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	models[0] = "changed"
+	if AntigravityModels()[0] == "changed" {
+		t.Fatal("caller mutated shared catalog")
+	}
+	for _, model := range []string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-high-extra"} {
+		if IsAntigravityModel(model) {
+			t.Fatalf("accepted non-catalog model %q", model)
+		}
+	}
+}
+
+func TestRetiredGeminiPricingCannotReactivateModelAccess(t *testing.T) {
+	for _, model := range []string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash"} {
+		cfg := validConfigForValidation(t)
+		cfg.UsagePricing.Models = map[string]ModelPricing{
+			model: {InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.2", OutputUSDPerMillion: "12"},
+		}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "ANTIGRAVITY pricing catalog") {
+			t.Fatalf("retired catalog %q: %v", model, err)
+		}
 	}
 }

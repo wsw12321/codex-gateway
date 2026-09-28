@@ -1,7 +1,7 @@
-# 通过 Antigravity 订阅接入 Gemini Pro
+# 通过 Antigravity 订阅接入 Gemini
 
-Gateway 对外模型仍为 `gemini-3.1-pro-preview`，独立 `antigravity-bridge` 使用
-Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安装包 URL
+Gateway 使用 Google 官方 AGY 的精确模型名，独立 `antigravity-bridge` 将请求模型
+原样传给 `agy --model`，并校验 CLI 返回的模型名。CLI 固定为 `1.2.4`；安装包 URL
 和官方 SHA512 位于 [agy.lock.json](../deploy/antigravity-bridge/agy.lock.json)，构建验证
 校验值和 `agy --version`。运行时 `AGY_CLI_DISABLE_AUTO_UPDATE=true`，二进制位于
 只读文件系统。当前镜像仅支持 `linux/amd64`。
@@ -11,7 +11,7 @@ Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安�
 [权限配置](https://antigravity.google/docs/cli/permissions/)及
 [禁用自动更新](https://antigravity.google/docs/cli/troubleshooting/)说明。
 不实现或模拟 Antigravity 私有网络协议。Google 上游使用服务器的订阅登录；客户端配置中的
-`GEMINI_API_KEY` 是 Gateway 签发的 key。
+Gateway API key 只用于本服务鉴权。
 
 ## 模型权限和结算
 
@@ -20,10 +20,31 @@ Google 官方 `agy` 调用 `gemini-3.1-pro-high`。CLI 固定为 `1.2.4`；安�
 账号启停、共享或专属用户、分配系数和请求并发上限；普通用户仍可使用获得授权的模型与
 账号。正常的请求次数、并发、Token 配额、余额、结算和审计流程继续生效。
 
-沿用当前 Gemini API 等价价格：输入不超过 200,000 Token 时，每百万输入/缓存输入/
-输出 Token 为 `$2 / $0.20 / $12`，超过时为 `$4 / $0.40 / $18`。这些是本地成本
-统计价格，不表示 Google 对订阅的实际收费。统计包含 Antigravity Agent 系统提示和
-上下文开销，可能明显高于客户端提供的文本 Token 数量。
+固定模型目录如下；同一 ID 用于 `/v1/models`、Responses 请求、Gemini 原生路径、
+响应和账单。Bridge 按每个账号的 `agy models` 结果公布可用集合，请求只分配给支持
+该模型且通过用户权限检查的账号，不要求每个账号支持全部七个模型。
+
+| AGY 模型 ID | Gemini API 家族 | 每百万未缓存输入 / 缓存读取 / 输出 Token（USD） |
+| --- | --- | --- |
+| `gemini-3.8-flash-high` | Gemini 3.8 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.8-flash-medium` | Gemini 3.8 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.7-flash-high` | Gemini 3.7 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.7-flash-medium` | Gemini 3.7 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.6-flash-high` | Gemini 3.6 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.6-flash-medium` | Gemini 3.6 Flash | $0.75 / $0.075 / $3.75 |
+| `gemini-3.1-pro-high` | Gemini 3.1 Pro | 输入 ≤200K：$2 / $0.20 / $12；输入 >200K：$4 / $0.40 / $18 |
+
+价格依据 [Gemini API Standard 付费价格](https://ai.google.dev/gemini-api/docs/pricing)，
+账单模式为 `gemini_api_token_equivalent`。每个 ID 有独立价格快照，输出包括思考 Token；
+这些是按对应 API 家族价格计算的本地等价费用，不表示 Antigravity 订阅实际收费。
+统计包含 Agent 系统提示和上下文开销，可能明显高于客户端提供的文本 Token 数量。
+六个 Flash 模型的上述价格有效至 **2026-12-31**；运维须提前安排，在 **2027-01-01** 新价格生效时手动将
+价格目录更新为每百万输入 / 缓存读取 / 输出 **$1.50 / $0.15 / $7.50** 并更新目录日期。
+现有配置不会自动按日切价；改价只作用于新准入请求，已固化快照和历史账单不重算。
+
+迁移 `0023` 将七个模型的默认权限及现有用户权限设为禁用，管理员须重新授权。
+旧 `gemini-3.1-pro-preview` 权限、受限 API Key 白名单与倍率均不继承；新模型倍率默认
+为 `1`。受限 Key 需要重新签发包含新 ID 的白名单，旧模型退出可管理目录。
 
 AGY stream-json 的 `input_tokens` 是未缓存输入，`cache_read_tokens` 是单独的
 缓存输入，允许缓存量大于未缓存量；原始 `total_tokens` 为未缓存输入加输出。
@@ -32,46 +53,48 @@ Bridge 在读取 CLI 结果时归一一次：Gateway 输入量为
 缓存量同时保留为输入明细。`output_tokens` 已包含 `thinking_tokens`，因此输出量
 不再次相加，思考量另写入 reasoning 明细。必填字段、非负数、原始总量关系及
 整数溢出检查均保留；不截断或丢弃缓存量。200,000 Token 的价格阈值按包含缓存的
-输入总量判断。价格和历史结算快照保持不变。
+输入总量判断。历史结算和在途请求的价格快照保留原值。
 
 Gemini 原生响应将答案输出映射为 `candidatesTokenCount`，思考量映射为
 `thoughtsTokenCount`。Gateway 按候选输出加思考计入输出 Token；
 `cachedContentTokenCount` 是输入的子集，不再加到输入总量。两种协议共用原有账单，
 同一请求只结算一次。
 
-## 本机 AGY 配置
+## 使用精确模型名请求 Gateway
 
-链路为 `本机 AGY → Gateway 地址与 key → Antigravity Bridge → 服务器订阅账号 → Google`。
-管理员须已启用下文的 Bridge 路由，并给用户及 API Key 授予公开模型
-`gemini-3.1-pro-preview` 的权限。客户端兼容范围以 AGY `1.2.4` 的文本和本地编程工具为准。
+链路为 `API 客户端 → Gateway → Antigravity Bridge → 服务器订阅账号 → Google`。
+先由管理员配置同名路由并重新授予用户模型权限，再以 Gateway key 查询 `GET /v1/models`，
+选择已获授权且有可用账号的精确 ID。以下示例使用 `gemini-3.1-pro-high`，可替换为
+目录中的任一已授权模型。
 
-在现有 `~/.gemini/antigravity-cli/settings.json` 中合并下列顶层字段，保留其他设置：
-
-```json
-{
-  "modelProvider": "gemini"
-}
-```
-
-在 Bash 中设置当前终端会话的地址和 key，然后启动。地址使用 Gateway 站点 origin，
-**不加 `/v1`**；将示例域名换成自己的站点。Key 在提示后输入，避免写入命令历史：
+在 Bash 中运行；Key 在提示后输入，避免写入命令历史或 curl 进程参数：
 
 ```bash
-export GOOGLE_GEMINI_BASE_URL='https://gateway.example.com'
-read -r -s -p 'Gateway API Key: ' GEMINI_API_KEY
+export GATEWAY_BASE_URL='https://gateway.example.com'
+read -r -s -p 'Gateway API Key: ' GATEWAY_API_KEY
 printf '\n'
-export GEMINI_API_KEY
-agy --model gemini-3.1-pro-high
+printf 'header = "Authorization: Bearer %s"\n' "$GATEWAY_API_KEY" |
+  curl --fail-with-body --silent --show-error --config - \
+    -H 'Content-Type: application/json' \
+    --data '{"model":"gemini-3.1-pro-high","input":"Reply with exactly OK.","store":false}' \
+    "$GATEWAY_BASE_URL/v1/responses"
 ```
 
-`GEMINI_API_KEY` 必须是本 Gateway 签发的 key。它只用于 Gateway 鉴权，不发送给
-Bridge 或 Google；Gateway→Bridge 使用独立凭据。
+原生 Gemini 请求示例（沿用上述终端变量）：
 
-AGY 在同一会话中会使用 `gemini-3.1-pro-preview` 和
-`gemini-3.1-pro-preview-customtools`。Gateway 仅将这两个精确名称归一为公开模型
-`gemini-3.1-pro-preview`，再执行模型权限、价格和额度检查。不会通过模糊前缀匹配
-开放其他模型。自动标题使用的 Flash Lite 返回 404；已完成的本地客户端探测中，
-此错误不影响主对话或本地工具循环。其他未配置模型同样返回 Gemini 格式的 404。
+```bash
+printf 'header = "Authorization: Bearer %s"\n' "$GATEWAY_API_KEY" |
+  curl --fail-with-body --silent --show-error --config - \
+    -H 'Content-Type: application/json' \
+    --data '{"contents":[{"role":"user","parts":[{"text":"Reply with exactly OK."}]}]}' \
+    "$GATEWAY_BASE_URL/v1beta/models/gemini-3.1-pro-high:generateContent"
+```
+
+`gemini-3.1-pro-preview` 与 `gemini-3.1-pro-preview-customtools` 均返回模型不存在，
+不再归一到新 ID。当前本机 AGY 在 `modelProvider=gemini` 下会发送这些旧路径，
+因此该配置不能直接连接 Gateway；请使用能够发送精确模型名的 API 客户端。
+服务器内部仍使用官方 AGY 调用订阅。Gateway key 不发送给 Bridge 或 Google，
+Gateway→Bridge 使用独立凭据。
 
 ## Gemini 原生 API
 
@@ -94,7 +117,7 @@ POST /v1beta/models/{model}:streamGenerateContent?alt=sse
 声明的工具；工具在用户本机执行，不需要伪造思考签名。服务器隔离进程仍禁止执行工具。
 
 原生请求沿用 1 MiB 上限，按账号执行请求并发限制（默认每账号 1 个）。接受实测 AGY `1.2.4` 主会话默认生成参数，
-推理行为由服务器固定模型决定；无法兑现的自定义生成控制会返回明确错误。首版不支持
+推理行为由所请求的 AGY 模型决定；无法兑现的自定义生成控制会返回明确错误。首版不支持
 图片附件、精确 `countTokens` 或云端内置工具。Gemini SSE 在完整生成并验证上游结果后
 发送 `data` JSON 对象，并以 EOF 结束，没有 Responses 的 `[DONE]` 标记。因此首个事件
 仍需等待完整生成。请求取消或超时会结束隔离进程并清理请求数据。
@@ -108,7 +131,7 @@ API `function_call` 事件；非文本内容（文件、图片）仍拒绝并返
 Antigravity 模型的 compact 返回 `501 endpoint_not_supported`。
 
 每个请求创建独立进程和空工作目录，提示词只经 stdin NDJSON 传入；使用
-`--input-format stream-json --output-format stream-json --model gemini-3.1-pro-high
+`--input-format stream-json --output-format stream-json --model <请求中的精确模型 ID>
 --print-timeout 5m --disable-slash-commands`。CLI 日志、HOME、会话和缓存留在请求
 临时目录，退出后删除。每次调用只从加密 Keyring 恢复完整认证文件；CLI 退出且进程组
 清理后写回合法的凭据更新，随后删除临时目录。同账号的凭据恢复和写回分别串行，
@@ -141,7 +164,7 @@ JSON 只取最终成功 `result`。首版 SSE 在 CLI 退出并验证完整协�
 一次性登录容器。按官方远程登录流程在浏览器授权并粘贴验证码，成功后输入 `/exit`。
 内部 `auth-login` 命令随后保存认证文件。脚本再启动独立容器，由 `auth-verify` 恢复
 凭据并检查固定 CLI 版本、`agy models`、`agy --print /usage` 和最小文本生成。
-全部通过后才启动 Bridge，并执行 readiness、模型目录、JSON 和 SSE 验收。
+全部通过后才启动 Bridge，并执行 readiness、账号模型目录及每个实际可用模型的 JSON 和 SSE 验收。
 最终成功标志只有以下一行；浏览器授权成功或 CLI 显示已登录不代表整个验收完成：
 
 ```text
@@ -192,7 +215,7 @@ Keyring 不进入数据库备份或计划迁机复制；灾备和迁机后重新
 登录及健康检查通过后，在 `.env` 中配置精确路由并重建 Gateway 容器：
 
 ```dotenv
-ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}
+ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.8-flash-high":"gemini-3.8-flash-high","gemini-3.8-flash-medium":"gemini-3.8-flash-medium","gemini-3.7-flash-high":"gemini-3.7-flash-high","gemini-3.7-flash-medium":"gemini-3.7-flash-medium","gemini-3.6-flash-high":"gemini-3.6-flash-high","gemini-3.6-flash-medium":"gemini-3.6-flash-medium","gemini-3.1-pro-high":"gemini-3.1-pro-high"}
 ```
 
 ```sh
@@ -200,8 +223,10 @@ ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}
 ```
 
 `/v1/models` 合并健康上游目录；重复模型 ID 拒绝处理。Bridge 不可用时其模型临时隐藏，
-已有直接请求返回 `503 upstream_unavailable`，其他模型继续使用 Codex。目标 CLI 模型
-缺失或认证不可用时 readiness 失败。Gateway 启动不依赖 Bridge 健康状态。
+已有直接请求返回 `503 upstream_unavailable`，其他模型继续使用 Codex。账号只公布
+实际可用模型，所有账号都没有可用目标模型或认证不可用时 readiness 失败。Gateway
+启动不依赖 Bridge 健康状态。Gateway 可只启用上述同名路由的子集，默认保持空目录；
+Bridge 的 Compose 配置固定完整七个同名路由。
 
 ## 多账号管理和轮换
 
@@ -224,7 +249,7 @@ Owner 控制台新增「Antigravity 账号」页面，支持历史区间／全�
 名称和可取得的脱敏邮箱，OAuth 凭据仍只保存在服务器加密 Keyring 中。
 
 新账号会在下一次推理请求或页面刷新时自动同步。每次分配先验证 API Key 所属用户的
-账号权限与当前并发上限，再按近 24 小时已结算费用趋近分配系数比例；无历史或差额相同
+账号权限、请求模型可用性与当前并发上限，再按近 24 小时已结算费用趋近分配系数比例；无历史或差额相同
 时按系数随机分配。系数为 0 的账号不再接收新请求。请求遇到认证失败、额度／速率限制
 或暂时不可用时，在输出前尝试其他符合权限的账号；限流账号冷却 60 秒后可再次尝试。
 网关回调失败或旧版 Bridge 缺少账号权限协议时拒绝请求。返回的最终／最后尝试账号
@@ -285,15 +310,33 @@ TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生�
 三个镜像构建。真实账号还需验证重启、续期、重新登录、限额、取消后无残余进程、磁盘残留
 和出口域名。真实 Google 上游验收须独立执行，不应把单元测试或本地 AGY 协议探测视为替代。
 
-增加 Gemini 原生协议时，先部署新版 `antigravity-bridge`，再部署执行 `0020` 迁移的
-Gateway。上线验收须使用真实订阅账号，从本机按上述配置完成一次文本对话和一次本地
-工具任务，检查两种模型别名切换、标题 404 不阻断主任务及实际账单。该验收尚未由本次
-实现验证；在完成前不能宣称 Google 上游已通过。
+本次模型与计费升级须在维护窗口协调切换新 Bridge 与执行 `0023` 迁移的 Gateway，
+避免旧 Gateway 的 preview 路由请求新 Bridge，或新 Gateway 向旧 Bridge 发送新模型名。
+按下列步骤执行：
+
+1. 停止新增 Gemini 请求，等待在途请求完成；完成 PostgreSQL 加密备份和恢复演练，
+   保存旧 revision、镜像和配置。不得把登录凭据纳入仓库或普通备份。
+2. 更新价格 JSON 与同名路由，构建配套镜像；先保持 Gateway Gemini 路由为空，
+   在停服窗口切换 Bridge 和 Gateway，确认 `0023` 迁移成功。
+3. 逐账号查询实际模型目录并运行 `antigravity-smoke <账号名>`。脚本只遍历该账号
+   实际可用的受支持模型，对每个模型验证 JSON、SSE 和同名回显，不要求每账号全部七个。
+4. 管理员重新授权新模型，按需设置倍率并重新签发受限 API Key，启用已验收的同名路由。
+   使用新 Key 对实际可用模型完成 Responses 和原生 API 冒烟，核对 Standard 计费、
+   Token 与账单；检查旧路径被拒绝、取消后无残余进程或租约。
+5. 对照前后历史账单和已固化 reservation，确认没有用新价格重算旧费用。
+   建立 2027-01-01 前的 Flash 手动改价提醒。
+
+迁移是 forward-only。只关闭 Gemini 时可清空路由并停止 Bridge；这不会撤销 `0023`。
+若需恢复旧二进制，须停止全部数据库写入，把升级前备份恢复到新的隔离数据库卷，
+再切回匹配的 Gateway、Bridge、配置与 revision；不能只切旧镜像，也不能保留升级后的
+写入同时恢复旧权限。升级后的新增账务写入必须先完成核账和保全。
+真实订阅生成、Google 出口及生产部署需在站点环境独立验收。
 
 旧第三方 Gemini 插件、补丁和登录脚本已移除，Codex Sidecar 禁用插件，历史 Gemini OAuth
 文件不再加载且不会自动删除。`codex_oauth` 卷继续保留原内容。
 
-回滚时把路由恢复为 `{}`，重建 Gateway 并停止 Bridge；Codex 路由不受影响：
+紧急关闭 Gemini 时把路由恢复为 `{}`，重建 Gateway 并停止 Bridge；Codex 路由不受影响，
+数据库仍保留 `0023`，旧版本恢复遵循上述备份步骤：
 
 ```sh
 ./scripts/compose.sh up -d --no-deps gateway

@@ -94,8 +94,11 @@ type blockingExecutor struct {
 	checks  atomic.Int64
 }
 
-func (b *blockingExecutor) Check(context.Context) error { b.checks.Add(1); return nil }
-func (b *blockingExecutor) Run(ctx context.Context, _ string) (Result, *Failure) {
+func (b *blockingExecutor) Check(context.Context) ([]string, error) {
+	b.checks.Add(1)
+	return []string{PublicModel}, nil
+}
+func (b *blockingExecutor) Run(ctx context.Context, model, _ string) (Result, *Failure) {
 	close(b.entered)
 	select {
 	case <-ctx.Done():

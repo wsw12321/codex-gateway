@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 const CLIVersion = "1.2.4"
@@ -135,8 +137,8 @@ func (r Runner) save(root string) *AuthError {
 	return nil
 }
 
-func (r Runner) Run(ctx context.Context, prompt string) (Result, *Failure) {
-	result, failure, diagnostic := r.run(ctx, prompt)
+func (r Runner) Run(ctx context.Context, model, prompt string) (Result, *Failure) {
+	result, failure, diagnostic := r.run(ctx, model, prompt)
 	if diagnostic != nil && r.Logger != nil {
 		r.Logger.Warn("agy operation failed", "stage", diagnostic.Stage, "category", diagnostic.Category, "exit_code", diagnostic.ExitCode)
 	}
@@ -147,7 +149,10 @@ func credentialFailure() *Failure {
 	return &Failure{503, "upstream_unavailable", "Antigravity credentials are unavailable"}
 }
 
-func (r Runner) run(ctx context.Context, prompt string) (Result, *Failure, *AuthError) {
+func (r Runner) run(ctx context.Context, model, prompt string) (Result, *Failure, *AuthError) {
+	if !config.IsAntigravityModel(model) {
+		return Result{}, unsupported("model"), nil
+	}
 	timeout := r.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Minute
@@ -162,7 +167,7 @@ func (r Runner) run(ctx context.Context, prompt string) (Result, *Failure, *Auth
 	if err := r.restore(ctx, root); err != nil {
 		return Result{}, credentialFailure(), err
 	}
-	cmd := r.command(ctx, root, cwd, "--input-format", "stream-json", "--output-format", "stream-json", "--model", CLIModel, "--print-timeout", "5m", "--disable-slash-commands", "--log-file", filepath.Join(root, "cli.log"))
+	cmd := r.command(ctx, root, cwd, "--input-format", "stream-json", "--output-format", "stream-json", "--model", model, "--print-timeout", "5m", "--disable-slash-commands", "--log-file", filepath.Join(root, "cli.log"))
 	payload, _ := json.Marshal(map[string]any{"event": "user", "message": map[string]string{"content": prompt}})
 	cmd.Stdin = bytes.NewReader(append(payload, '\n'))
 	stderr := &cappedBuffer{limit: 64 << 10}
@@ -175,7 +180,7 @@ func (r Runner) run(ctx context.Context, prompt string) (Result, *Failure, *Auth
 		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity executable is unavailable"}, commandAuthError("generation", ctx.Err(), err)
 	}
 	counted := &countedReader{reader: stdout}
-	result, failure := parseStream(counted)
+	result, failure := parseStream(model, counted)
 	contextErr := ctx.Err()
 	if failure != nil {
 		cancel()
@@ -246,25 +251,52 @@ func (r Runner) probe(ctx context.Context, stage string, args ...string) ([]byte
 	return stdout.Bytes(), nil
 }
 
-func (r Runner) Check(ctx context.Context) error {
+func (r Runner) Check(ctx context.Context) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	version, err := r.probe(ctx, "models", "--version")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if strings.TrimSpace(string(version)) != CLIVersion {
-		return &AuthError{"models", "invalid_response", 1}
+		return nil, &AuthError{"models", "invalid_response", 1}
 	}
 	models, err := r.probe(ctx, "models", "models")
 	if err != nil {
-		return err
+		return nil, err
 	}
+	available := map[string]bool{}
 	for _, line := range strings.Split(string(models), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) > 0 && fields[0] == CLIModel {
-			return nil
+		if len(fields) > 0 && config.IsAntigravityModel(fields[0]) {
+			available[fields[0]] = true
 		}
 	}
-	return &AuthError{"models", "invalid_response", 1}
+	ordered := orderedModels(available)
+	if len(ordered) == 0 {
+		return nil, &AuthError{"models", "invalid_response", 1}
+	}
+	return ordered, nil
+}
+
+// Keep discovery and selection deterministic, and never expose unrecognized
+// provider IDs or let CLI display ordering choose the verification model.
+func orderedModels(available map[string]bool) []string {
+	models := []string{}
+	for _, model := range config.AntigravityModels() {
+		if available[model] {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func modelSet(models []string) map[string]bool {
+	available := map[string]bool{}
+	for _, model := range models {
+		if config.IsAntigravityModel(model) {
+			available[model] = true
+		}
+	}
+	return available
 }

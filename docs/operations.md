@@ -177,11 +177,13 @@ ledger，修改当前价格 JSON 不会改变历史 USD；Token 数量继续来�
 日/月聚合。接口中的 `estimated_usd` 是 `actual_cost_usd` 的兼容别名，另有
 `charged_usd` 和 `uncovered_usd`。CNY 只按当前配置的固定汇率换算 ledger USD。
 
-界面和接口中的金额只能称为“OpenAI API Token 等价成本”，不能称为 OpenAI
-实际账单：当前上游是 ChatGPT Plus/Pro OAuth，而且 `codex-auto-review` 零价与上述
-保守兜底都是本地策略；Pro 订阅费、工具、区域、Batch、Ultrafast、税费和基础
-设施成本均不在范围内。完整价格表和缓存语义见
-[GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+界面和接口中的金额称为“API Token 等价成本”，按对应供应商 API 价格计算。
+上游使用 ChatGPT Plus/Pro OAuth 或 Antigravity 订阅，等价成本不代表实际订阅账单；
+`codex-auto-review` 零价与保守兜底属于本地策略。订阅费、工具、区域、Batch、
+Ultrafast、税费和基础设施成本均不在范围内。Codex 价格及缓存语义见
+[GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)，Gemini 使用
+`gemini_api_token_equivalent` 模式，价格与 `0023` 协调升级步骤见
+[Antigravity 接入说明](gemini-pro.md#验收和回滚)。
 
 ## 2. 供应链锁定
 
@@ -1124,7 +1126,7 @@ tombstone；当前倍率设置不清理。保留的设置更新者属于管理�
    `actual_cost_usd` 相同。分别核对服务层、短/长上下文、cache-write Token 和
    兜底原因；修改测试环境当前价格 JSON 后，历史 ledger USD 必须不变。未配置
    模型必须在转发前返回 `model_pricing_not_found`。确认所有金额均标为
-   “OpenAI API Token 等价成本”，没有呈现为 OpenAI 实际账单。
+   “API Token 等价成本”，没有呈现为上游实际订阅账单。
 7. 在“模型权限”中验证新用户默认值与已有用户批量操作互不追溯；禁用一个测试用户
    后，其下一次请求必须在 usage、配额、账务预留和 sidecar 调用前返回
    `model_not_allowed`。`/v1/models` 必须同时受用户权限和 Key 白名单过滤。

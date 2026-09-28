@@ -8,6 +8,8 @@ import (
 	"io"
 	"math"
 	"strings"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 const maxOutputBytes = 4 << 20
@@ -75,7 +77,10 @@ func (u cliUsage) normalize() (*Usage, bool) {
 
 // Consume the complete stream before exposing it. In particular a valid result
 // followed by a tool event, a second result, or a process failure is not success.
-func parseStream(reader io.Reader) (Result, *Failure) {
+func parseStream(model string, reader io.Reader) (Result, *Failure) {
+	if !config.IsAntigravityModel(model) {
+		return Result{}, protocolFailure()
+	}
 	scanner := bufio.NewScanner(io.LimitReader(reader, maxProtocolBytes+1))
 	scanner.Buffer(make([]byte, 64<<10), maxOutputBytes+64<<10)
 	initialized, finished, total := false, false, 0
@@ -108,7 +113,7 @@ func parseStream(reader io.Reader) (Result, *Failure) {
 		switch event.Event {
 		case "init":
 			if initialized || event.Init == nil || event.Step != nil || event.Result != nil ||
-				event.Init.Model != CLIModel || event.Init.PermissionMode != "strict" {
+				event.Init.Model != model || event.Init.PermissionMode != "strict" {
 				return result, protocolFailure()
 			}
 			initialized = true

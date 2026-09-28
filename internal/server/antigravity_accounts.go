@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -61,6 +62,21 @@ func (s *Server) requireAntigravityAccounts(next http.Handler) http.Handler {
 func (s *Server) syncAntigravityAccounts(ctx context.Context) error {
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
+	return s.syncAntigravityAccountsLocked(ctx)
+}
+
+// Catalog requests may omit Gemini while another request refreshes accounts.
+// Never wait for that refresh: a context deadline cannot cancel Mutex.Lock.
+func (s *Server) trySyncAntigravityAccounts(ctx context.Context) error {
+	if !s.upstreamAccountSyncMu.TryLock() {
+		return errors.New("Antigravity account synchronization is busy")
+	}
+	defer s.upstreamAccountSyncMu.Unlock()
+	return s.syncAntigravityAccountsLocked(ctx)
+}
+
+// syncAntigravityAccountsLocked requires upstreamAccountSyncMu to be held.
+func (s *Server) syncAntigravityAccountsLocked(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, upstreamAccountSyncTimeout)
 	defer cancel()
 	accounts, err := s.antigravity.ListUpstreamAccounts(ctx)

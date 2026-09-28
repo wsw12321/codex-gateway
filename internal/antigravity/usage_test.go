@@ -16,10 +16,10 @@ func TestBridgeCachedCLIUsageAcrossProtocols(t *testing.T) {
 		name, path, body string
 		native, stream   bool
 	}{
-		{"Responses JSON", "/v1/responses", `{"model":"gemini-3.1-pro-preview","input":"hello"}`, false, false},
-		{"Responses SSE", "/v1/responses", `{"model":"gemini-3.1-pro-preview","input":"hello","stream":true}`, false, true},
-		{"Gemini JSON", "/v1beta/models/gemini-3.1-pro-preview:generateContent", nativeText, true, false},
-		{"Gemini SSE", "/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse", nativeText, true, true},
+		{"Responses JSON", "/v1/responses", `{"model":"gemini-3.1-pro-high","input":"hello"}`, false, false},
+		{"Responses SSE", "/v1/responses", `{"model":"gemini-3.1-pro-high","input":"hello","stream":true}`, false, true},
+		{"Gemini JSON", "/v1beta/models/gemini-3.1-pro-high:generateContent", nativeText, true, false},
+		{"Gemini SSE", "/v1beta/models/gemini-3.1-pro-high:streamGenerateContent?alt=sse", nativeText, true, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner, _ := fakeRunner(t, fakeCLIConfig{Stream: initEvent + cachedResultEvent})
@@ -114,7 +114,7 @@ func TestCLIUsageAccountingIncludesCacheInContextThreshold(t *testing.T) {
 		{"cache crosses threshold", resultWithUsage(`{"input_tokens":190001,"output_tokens":10100,"thinking_tokens":100,"cache_read_tokens":10000,"total_tokens":200101}`), config.ContextClassLong, "0.945804000000", 200001, 10000, 210101},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result, failure := parseStream(strings.NewReader(initEvent + test.event))
+			result, failure := parseStream(CLIModel, strings.NewReader(initEvent+test.event))
 			if failure != nil {
 				t.Fatal(failure)
 			}

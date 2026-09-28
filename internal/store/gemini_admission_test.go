@@ -17,7 +17,7 @@ func TestGeminiAdmissionRequiresBillingBeforeDatabaseWrites(t *testing.T) {
 			_, err := repository.AdmitRequest(context.Background(), AdmitRequestParams{
 				Quota: ReserveQuotaParams{RequestID: "request", UserID: "user", APIKeyID: "key", Now: at},
 				Usage: BeginUsageRequestParams{RequestID: "request", UserID: "user", APIKeyID: "key",
-					DeviceID: "device", Model: "gemini-3.1-pro-preview", Endpoint: endpoint, RequestedAt: at},
+					DeviceID: "device", Model: "gemini-3.1-pro-high", Endpoint: endpoint, RequestedAt: at},
 			})
 			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "requires billing") {
 				t.Fatalf("unbilled %s admission error = %v", endpoint, err)

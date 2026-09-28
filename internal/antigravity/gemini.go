@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 // DecodeGeminiRequest validates the native body before quota admission and
 // builds a transcript for the same isolated, single-turn process as Responses.
 // The HTTP handler supplies the model and streaming mode from the URL.
-func DecodeGeminiRequest(body []byte) (Request, *Failure) {
-	out := Request{Model: PublicModel}
+func DecodeGeminiRequest(model string, body []byte) (Request, *Failure) {
+	out := Request{Model: model}
+	if !config.IsAntigravityModel(model) {
+		return out, unsupported("model")
+	}
 	if uniqueJSON(body) != nil {
 		return out, &Failure{400, "antigravity_invalid_request", "Request must be one JSON object without duplicate keys"}
 	}
@@ -379,14 +384,14 @@ func decodeGeminiContents(raw []byte) ([]json.RawMessage, *Failure) {
 	return transcript, nil
 }
 
-func geminiResponseObject(result Result, call *clientFunctionCall) map[string]any {
+func geminiResponseObject(model string, result Result, call *clientFunctionCall) map[string]any {
 	part := map[string]any{"text": result.Response}
 	if call != nil {
 		part = map[string]any{"functionCall": map[string]any{"name": call.Name, "args": call.Arguments, "id": call.ID}}
 	}
 	return map[string]any{
 		"candidates":   []any{map[string]any{"content": map[string]any{"role": "model", "parts": []any{part}}, "finishReason": "STOP", "index": 0}},
-		"modelVersion": PublicModel, "responseId": newID("resp_"),
+		"modelVersion": model, "responseId": newID("resp_"),
 		"usageMetadata": map[string]int64{
 			"promptTokenCount":        result.Usage.InputTokens,
 			"candidatesTokenCount":    result.Usage.OutputTokens - result.Usage.ThinkingTokens,

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/httpx"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 	"github.com/wsw/codex-gateway/internal/store"
@@ -98,6 +99,10 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		}
 	}
 	if r.Method == http.MethodPost {
+		if strings.HasPrefix(model, "gemini-") && (!config.IsAntigravityModel(model) || !upstreams.IsAntigravityModel(model)) {
+			httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
+			return
+		}
 		if !modelAllowed(model, key.ModelAllowlist) {
 			writeModelNotAllowed(w, r)
 			return
@@ -138,7 +143,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			pricingSnapshot = priceSnapshot
 			cacheWriteMode = price.CacheWriteMode
 			billingMode = store.BillingModeOpenAIAPIEquivalent
-			if model == "codex-auto-review" {
+			if config.IsAntigravityModel(model) {
+				billingMode = store.BillingModeGeminiAPIEquivalent
+			} else if model == "codex-auto-review" {
 				billingMode = store.BillingModeInternalZero
 			}
 		}
@@ -273,6 +280,16 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if failure != nil {
 		// Settle the reserved request below using the same failure path as forwarding.
 	} else if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
+		// Account-scoped catalogs need registered account metadata before the
+		// bridge's eligibility callback. An unavailable bridge only hides Gemini.
+		if s.antigravity != nil && len(s.config.AntigravityModelRoutes) > 0 {
+			catalogCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			err := s.trySyncAntigravityAccounts(catalogCtx)
+			cancel()
+			if err != nil {
+				upstreams = gatewayproxy.NewRouter(s.upstream, nil, s.config.AntigravityModelRoutes)
+			}
+		}
 		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:            key.UserID,

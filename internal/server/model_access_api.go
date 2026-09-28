@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/store"
@@ -28,7 +29,15 @@ func (s *Server) allowedModelsForAPIKey(ctx context.Context, key store.APIKey) (
 	if err != nil {
 		return nil, err
 	}
-	return intersectAllowedModels(s.config.UsagePricing, enabled, key.ModelAllowlist), nil
+	allowed := intersectAllowedModels(s.config.UsagePricing, enabled, key.ModelAllowlist)
+	for model := range allowed {
+		if strings.HasPrefix(model, "gemini-") {
+			if cli, routed := s.config.AntigravityModelRoutes[model]; !config.IsAntigravityModel(model) || !routed || cli != model {
+				delete(allowed, model)
+			}
+		}
+	}
+	return allowed, nil
 }
 
 func intersectAllowedModels(pricing config.UsagePricing, userEnabled, keyAllowlist []string) map[string]struct{} {

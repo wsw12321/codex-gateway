@@ -9,3 +9,7 @@ All headers were discarded. System instructions, user text, timestamps,
 tool output, and the external signature were replaced with fixed test data.
 Unrelated tool declarations were removed. These fixtures verify the local
 wire protocol; they are not evidence of a successful Google upstream run.
+
+The captured preview/customtools paths are historical client aliases and are
+now rejected. Payload replay tests explicitly substitute the supported exact
+AGY model ID; the stored captures retain their original paths.

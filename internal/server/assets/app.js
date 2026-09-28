@@ -1106,11 +1106,14 @@ function renderGuide() {
   byId("guide-config-code").textContent = `openai_base_url = "${baseURL}"`;
   byId("guide-agy-base-url").textContent = location.origin;
   byId("guide-agy-shell-code").textContent = [
-    `export GOOGLE_GEMINI_BASE_URL='${location.origin}'`,
-    "read -r -s -p 'Gateway API Key: ' GEMINI_API_KEY",
+    `export GATEWAY_BASE_URL='${location.origin}'`,
+    "read -r -s -p 'Gateway API Key: ' GATEWAY_API_KEY",
     "printf '\\n'",
-    "export GEMINI_API_KEY",
-    "agy --model gemini-3.1-pro-high",
+    "printf 'header = \"Authorization: Bearer %s\"\\n' \"$GATEWAY_API_KEY\" |",
+    "  curl --fail-with-body --silent --show-error --config - \\",
+    "    -H 'Content-Type: application/json' \\",
+    "    --data '{\"model\":\"gemini-3.1-pro-high\",\"input\":\"Reply with exactly OK.\",\"store\":false}' \\",
+    "    \"$GATEWAY_BASE_URL/v1/responses\"",
   ].join("\n");
 
   if (!state) return;
@@ -3276,7 +3279,7 @@ function renderGlobalUsage(result) {
   const rateLine = `价格目录：${pricing.catalog_as_of || "未标注"} · USD/CNY 固定汇率 ${pricing.usd_cny_rate || "—"}（${pricing.fx_as_of || "未标注"}）`;
   const models = Array.isArray(pricing.unpriced_models) ? pricing.unpriced_models : [];
   note.replaceChildren(
-    element("p", {text: pricing.disclaimer || "OpenAI API Token 等价成本，不代表 OpenAI 实际账单。"}),
+    element("p", {text: pricing.disclaimer || "API Token 等价成本，按相应供应商 API 价格计算，不代表上游订阅的实际账单。"}),
     element("p", {text: "费用包含请求准入时保存的模型倍率；历史费用不会随当前倍率调整。"}),
     element("p", {text: rateLine}),
     element("p", {text: models.length ? `缺少 ledger 覆盖的模型：${models.join(", ")}` : "当前区间内所有 Token 均可与不可变 ledger 对账。"}),

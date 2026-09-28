@@ -20,7 +20,7 @@ import (
 
 func TestGeminiModelAccessUsesExistingCatalogIntersection(t *testing.T) {
 	t.Parallel()
-	const model = "gemini-3.1-pro-preview"
+	const model = "gemini-3.1-pro-high"
 	pricing := config.UsagePricing{Models: map[string]config.ModelPricing{model: {}, "gpt-6-astra": {}}}
 	if !requiresUserModelAccess(http.MethodPost, model, pricing) {
 		t.Fatal("Gemini generation did not require user model access")
@@ -50,7 +50,7 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 	pricing, err := config.ParseUsagePricing(`{
 		"schema_version":2,"catalog_as_of":"2026-09-15","fx_as_of":"2026-09-15","usd_cny_rate":"7.2",
 		"fallback_policy":{"unknown_service_tier":"max_published","missing_price_combination":"max_published","missing_cache_write_tokens":"all_uncached_as_write"},
-		"models":{"gemini-3.1-pro-preview":{
+		"models":{"gemini-3.1-pro-high":{
 			"cache_write_mode":"included_in_input","max_input_tokens":1048576,"long_context_threshold_tokens":200000,
 			"service_tiers":{"standard":{
 				"short":{"input_usd_per_million":"2","cached_input_usd_per_million":"0.2","output_usd_per_million":"12"},
@@ -80,7 +80,7 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 		},
 		{
 			name: "streaming compact is also unsupported", path: "/v1/responses/compact", modelEnabled: true,
-			body:       `{"model":"gemini-3.1-pro-preview","stream":true,"input":[]}`,
+			body:       `{"model":"gemini-3.1-pro-high","stream":true,"input":[]}`,
 			wantStatus: http.StatusNotImplemented, wantCode: "endpoint_not_supported", wantAccessReads: 1,
 		},
 		{
@@ -110,11 +110,21 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 		{
 			name: "compact still requires a configured model", path: "/v1/responses/compact",
 			body:       `{"model":"gemini-unpriced","input":[]}`,
-			wantStatus: http.StatusBadRequest, wantCode: "model_pricing_not_found",
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
+		},
+		{
+			name: "retired preview alias", path: "/v1/responses",
+			body:       `{"model":"gemini-3.1-pro-preview","input":[]}`,
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
+		},
+		{
+			name: "unconfigured Flash", path: "/v1/responses",
+			body:       `{"model":"gemini-3.8-flash-high","input":[]}`,
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
 		},
 		{
 			name: "compact cannot hide a duplicate model", path: "/v1/responses/compact",
-			body:       `{"model":"gemini-3.1-pro-preview","model":"gpt-6-astra","input":[]}`,
+			body:       `{"model":"gemini-3.1-pro-high","model":"gpt-6-astra","input":[]}`,
 			wantStatus: http.StatusBadRequest, wantCode: "model_required",
 		},
 	} {
@@ -123,7 +133,7 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			harness := newResponsesWebSocketTestHarness(t)
 			harness.server.config.BodyLimit = 64 << 20
 			harness.server.config.UsagePricing = pricing
-			harness.server.config.AntigravityModelRoutes = map[string]string{"gemini-3.1-pro-preview": "gemini-3.1-pro-high"}
+			harness.server.config.AntigravityModelRoutes = map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}
 			database := &geminiAdmissionTestConnector{
 				auth: harness.database, keyAllowlist: test.keyAllowlist,
 				modelEnabled: test.modelEnabled, missingAccess: test.missingAccess,
@@ -133,7 +143,7 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			harness.server.store = store.New(db)
 			body := test.body
 			if body == "" {
-				body = `{"model":"gemini-3.1-pro-preview","input":[]}`
+				body = `{"model":"gemini-3.1-pro-high","input":[]}`
 			}
 			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(body))
 			request.Header.Set("Authorization", "Bearer "+harness.apiKey)
@@ -203,7 +213,7 @@ func (c geminiAdmissionTestConn) Begin() (driver.Tx, error) {
 func (c geminiAdmissionTestConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if strings.Contains(query, "SELECT a.enabled") {
 		c.database.recordQuery(query)
-		if len(args) != 2 || args[0].Value != c.database.userID || args[1].Value != "gemini-3.1-pro-preview" {
+		if len(args) != 2 || args[0].Value != c.database.userID || args[1].Value != "gemini-3.1-pro-high" {
 			return nil, errors.New("unexpected model permission lookup")
 		}
 		rows := &responsesWebSocketTestRows{columns: []string{"enabled"}}

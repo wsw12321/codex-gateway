@@ -188,16 +188,17 @@ Owner 在近期身份验证后可按当时充值汇率进行 CNY 充值、执行
 周期额度并从第 1 个周期重开。成员和 Owner 都能看到当前周期序号、总周期数、
 本周期结束时间及有限订阅的最终失效时间。金额在 JSON 中始终使用十进制字符串。
 
-Owner 的全员统计展示“OpenAI API Token 等价成本”。USD 金额汇总长期保留且
+Owner 的全员统计展示“API Token 等价成本”，按对应供应商 API 价格计算。USD 金额汇总长期保留且
 不可变的 `usage_charge` ledger，不再用当前 `.env` 价格重算历史；Token 数量仍
 来自 usage 明细或日/月聚合。接口保留 `estimated_usd` 作为兼容别名，并同时返回
 `actual_cost_usd`、`charged_usd` 和 `uncovered_usd`；管理台还按最终计价服务层、
 短/长上下文、cache-write Token 和保守兜底原因单独统计。CNY 仅按当前配置中
 带日期的固定汇率换算不可变 USD 成本。
 
-这些数值不能称为 OpenAI 实际账单：当前上游是 ChatGPT Plus/Pro OAuth，内部零价和
-保守兜底也属于本地策略；报表不包含 Pro 订阅费、工具、区域、Batch、Ultrafast、
-税费或基础设施成本。修改当前价格 JSON 不会改变已经写入 ledger 的 USD 金额。
+这些数值不代表供应商实际账单：上游使用 ChatGPT Plus/Pro OAuth 或 Antigravity
+订阅，内部零价和保守兜底属于本地策略；报表不包含订阅费、工具、区域、Batch、
+Ultrafast、税费或基础设施成本。Gemini 使用对应 API 家族的 Standard 等价价格，
+账单模式为 `gemini_api_token_equivalent`。修改价格 JSON 不会改变历史 ledger 金额。
 
 只保存以下调用元数据：身份与项目引用、Key 前缀、请求/实际模型、请求/实际及
 最终计价服务层、上下文档位、计价规则版本和兜底原因、端点、状态/错误码、
@@ -380,16 +381,20 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-Gemini Pro 支持 Responses 和 Gemini 原生生成接口，使用相同的 Gateway key，公开模型名为
-`gemini-3.1-pro-preview`。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
+Gemini 支持 Responses 和原生生成接口，使用相同的 Gateway key，模型目录采用七个 AGY 官方 ID：
+`gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.7-flash-high`、
+`gemini-3.7-flash-medium`、`gemini-3.6-flash-high`、`gemini-3.6-flash-medium` 及
+`gemini-3.1-pro-high`，
+请求、响应和账单名称完全一致。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
 调用 `./scripts/antigravity-login.sh [账号名称]` 完成登录验收后配置精确模型路由。
 Owner 可在「Antigravity 账号」页面管理多账号启停、轮换系数、专属权限和请求并发，
 并查看账号用量及费用统计。支持文本 JSON
 和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
 沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
-本机 AGY 的 `GOOGLE_GEMINI_BASE_URL` 使用站点地址（不加 `/v1`），
-`GEMINI_API_KEY` 使用 Gateway key。完整客户端配置、部署、隔离、定价及出口域名验收
-见 [Antigravity 接入说明](docs/gemini-pro.md)。
+新模型默认禁用，管理员需重新授权；旧权限、受限 Key 白名单和倍率不继承，新倍率
+默认为 `1`。当前本机 AGY Gemini 提供方发送的旧 preview/customtools 路径将被拒绝，
+请使用精确模型名的 Responses 或原生 API 请求。完整请求示例、维护窗口协调升级
+`0023`、API 家族等价定价及出口域名验收见 [Antigravity 接入说明](docs/gemini-pro.md)。
 
 ### 5. 初始化 Owner
 

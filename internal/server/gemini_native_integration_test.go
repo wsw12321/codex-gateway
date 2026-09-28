@@ -31,8 +31,10 @@ type nativeLifecycleExecutor struct {
 	started  chan struct{}
 }
 
-func (e *nativeLifecycleExecutor) Check(context.Context) error { return nil }
-func (e *nativeLifecycleExecutor) Run(ctx context.Context, _ string) (antigravity.Result, *antigravity.Failure) {
+func (e *nativeLifecycleExecutor) Check(context.Context) ([]string, error) {
+	return config.AntigravityModels(), nil
+}
+func (e *nativeLifecycleExecutor) Run(ctx context.Context, _, _ string) (antigravity.Result, *antigravity.Failure) {
 	e.calls++
 	if e.started != nil {
 		close(e.started)
@@ -81,6 +83,12 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
+		ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "authorize native lifecycle test"},
+		Model:                  config.AntigravityPublicModel, Enabled: true, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	device, err := repository.CreateDevice(ctx, store.CreateDeviceParams{UserID: user.ID, Name: "native-cli"})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +110,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	h.server.store = repository
 	if _, err := repository.SetModelMultiplier(ctx, store.SetModelMultiplierParams{
-		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "shared Gemini alias discount"},
+		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "Pro model discount"},
 		Model:              config.AntigravityPublicModel, Multiplier: "0.5",
 	}); err != nil {
 		t.Fatal(err)
@@ -170,7 +178,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	executor.response = `{"type":"function_call","name":"read_file","arguments":{"path":"README.md"}}`
 	toolBody := `{"contents":[{"role":"user","parts":[{"text":"read README"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parametersJsonSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
-	toolResponse := send("gemini-3.1-pro-preview-customtools", "streamGenerateContent", toolBody)
+	toolResponse := send(config.AntigravityPublicModel, "streamGenerateContent", toolBody)
 	if toolResponse.Code != 200 {
 		t.Fatalf("tool: %d %s", toolResponse.Code, toolResponse.Body)
 	}
@@ -224,6 +232,13 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}
 		if endpoint != wantEndpoint || model != config.AntigravityPublicModel || state != "completed" || input != 100 || cached != 20 || output != 30 || reasoning != 7 || cost != "0.000262000000" || count != 1 || multiplier != "0.500000000000" {
 			t.Fatalf("settlement %s %s %s %d %d %d %d %s count=%d multiplier=%s", endpoint, model, state, input, cached, output, reasoning, cost, count, multiplier)
+		}
+		var mode, tier, fallback string
+		if err := repository.DB().QueryRowContext(ctx, `SELECT billing_mode,pricing_service_tier,COALESCE(pricing_fallback_reason,'') FROM billing_reservations WHERE request_id=$1`, requestID).Scan(&mode, &tier, &fallback); err != nil {
+			t.Fatal(err)
+		}
+		if mode != store.BillingModeGeminiAPIEquivalent || tier != config.PricingTierStandard || fallback != "" {
+			t.Fatalf("billing metadata mode=%q tier=%q fallback=%q", mode, tier, fallback)
 		}
 	}
 	quotaResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)

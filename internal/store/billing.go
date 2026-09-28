@@ -23,6 +23,7 @@ const (
 
 	BillingModeLegacy              = "legacy"
 	BillingModeOpenAIAPIEquivalent = "openai_api_token_equivalent"
+	BillingModeGeminiAPIEquivalent = "gemini_api_token_equivalent"
 	BillingModeInternalZero        = "internal_zero"
 )
 
@@ -409,7 +410,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			*price = value
 		}
 	case config.PricingSchemaV2:
-		if params.BillingMode != BillingModeOpenAIAPIEquivalent && params.BillingMode != BillingModeInternalZero {
+		if params.BillingMode != BillingModeOpenAIAPIEquivalent && params.BillingMode != BillingModeGeminiAPIEquivalent && params.BillingMode != BillingModeInternalZero {
 			return BillingReservation{}, fmt.Errorf("%w: invalid v2 billing mode", ErrInvalid)
 		}
 		if params.InputUSDPerMillion != "" || params.CachedInputUSDPerMillion != "" || params.OutputUSDPerMillion != "" ||

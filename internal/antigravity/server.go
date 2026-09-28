@@ -15,11 +15,13 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 type Executor interface {
-	Run(context.Context, string) (Result, *Failure)
-	Check(context.Context) error
+	Run(context.Context, string, string) (Result, *Failure)
+	Check(context.Context) ([]string, error)
 }
 
 type Server struct {
@@ -27,6 +29,7 @@ type Server struct {
 	manager *AccountManager
 	token   [32]byte
 	ready   atomic.Bool
+	models  atomic.Pointer[[]string]
 	gate    chan struct{}
 }
 
@@ -47,7 +50,15 @@ func (s *Server) Refresh(ctx context.Context) {
 	default:
 		return
 	}
-	s.ready.Store(s.runner.Check(ctx) == nil)
+	models, err := s.runner.Check(ctx)
+	models = orderedModels(modelSet(models))
+	if err != nil || len(models) == 0 {
+		s.ready.Store(false)
+		s.models.Store(nil)
+		return
+	}
+	s.models.Store(&models)
+	s.ready.Store(true)
 }
 
 func (s *Server) isReady() bool {
@@ -89,20 +100,36 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	if s.manager != nil {
 		request := accountRequest{selected: &selectedAccount, release: &releaseAccount}
-		if name, found := strings.CutPrefix(r.URL.Path, "/internal/smoke/responses/"); found {
+		name, smokeResponse := strings.CutPrefix(r.URL.Path, "/internal/smoke/responses/")
+		modelName, smokeModels := strings.CutPrefix(r.URL.Path, "/internal/smoke/models/")
+		if smokeModels {
+			name = modelName
+		}
+		if smokeResponse || smokeModels {
 			host, _, err := net.SplitHostPort(r.RemoteAddr)
 			ip := net.ParseIP(host)
-			if err != nil || ip == nil || !ip.IsLoopback() || !ValidAccountName(name) || r.Method != http.MethodPost {
+			method := http.MethodPost
+			if smokeModels {
+				method = http.MethodGet
+			}
+			if err != nil || ip == nil || !ip.IsLoopback() || !ValidAccountName(name) || r.Method != method || r.URL.RawQuery != "" || r.URL.RawPath != "" {
 				writeFailure(w, &Failure{404, "unsupported_endpoint", "Unsupported endpoint"})
 				return
 			}
 			request.directName = name
 			copyURL := *r.URL
 			copyURL.Path = "/v1/responses"
+			if smokeModels {
+				copyURL.Path = "/v1/models"
+			}
 			r = r.Clone(r.Context())
 			r.URL = &copyURL
 		} else {
 			values := r.Header.Values("X-Codex-Gateway-User")
+			if len(values) > 1 || (len(values) == 1 && values[0] == "") {
+				writeFailure(w, allocationFailure())
+				return
+			}
 			if len(values) == 1 {
 				request.userID = values[0]
 			}
@@ -114,7 +141,22 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"object": "list", "data": []any{map[string]any{"id": PublicModel, "object": "model", "created": 0, "owned_by": "antigravity"}}})
+		var models []string
+		if s.manager != nil {
+			var failure *Failure
+			models, failure = s.manager.Models(r.Context())
+			if failure != nil {
+				writeFailure(w, failure)
+				return
+			}
+		} else if available := s.models.Load(); available != nil {
+			models = *available
+		}
+		data := make([]any, 0, len(models))
+		for _, model := range models {
+			data = append(data, map[string]any{"id": model, "object": "model", "created": 0, "owned_by": "antigravity"})
+		}
+		writeJSON(w, 200, map[string]any{"object": "list", "data": data})
 		return
 	}
 	if r.URL.Path == "/v1/responses/compact" && r.Method == http.MethodPost {
@@ -122,9 +164,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	native, nativeStream := false, false
+	nativeModel := ""
 	if strings.HasPrefix(r.URL.Path, "/v1beta/models/") {
 		model, method, found := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), ":")
-		native = found && (model == PublicModel || model == "gemini-3.1-pro-preview-customtools") && (method == "generateContent" || method == "streamGenerateContent")
+		native = found && config.IsAntigravityModel(model) && (method == "generateContent" || method == "streamGenerateContent")
+		nativeModel = model
 		nativeStream = method == "streamGenerateContent"
 		query, queryErr := url.ParseQuery(r.URL.RawQuery)
 		if native && (queryErr != nil || r.URL.RawPath != "" || len(query) > 1 || len(query["alt"]) > 1 || (len(query) != 0 && (query.Get("alt") != "sse" || !nativeStream))) {
@@ -155,7 +199,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var request Request
 	var failure *Failure
 	if native {
-		request, failure = DecodeGeminiRequest(body)
+		request, failure = DecodeGeminiRequest(nativeModel, body)
 		request.Stream = nativeStream
 	} else {
 		request, failure = DecodeRequest(body)
@@ -168,7 +212,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 		return
 	}
-	result, failure := s.runner.Run(r.Context(), request.Prompt)
+	if s.manager == nil {
+		available := s.models.Load()
+		if available == nil || !modelSet(*available)[request.Model] {
+			writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity model is unavailable"})
+			return
+		}
+	}
+	result, failure := s.runner.Run(r.Context(), request.Model, request.Prompt)
 	if selectedAccount != "" {
 		w.Header().Set("X-Codex-Upstream-Account", selectedAccount)
 	}
@@ -193,7 +244,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if native {
-		response := geminiResponseObject(result, call)
+		response := geminiResponseObject(request.Model, result, call)
 		if request.Stream {
 			writeGeminiSSE(w, response)
 		} else {
@@ -201,7 +252,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	response := responseObject(result, call)
+	response := responseObject(request.Model, result, call)
 	if request.Stream {
 		writeSSE(w, response)
 		return
@@ -284,7 +335,7 @@ func decodeClientFunctionCall(text string, names map[string]struct{}) (*clientFu
 	return &clientFunctionCall{Name: name, Arguments: args, ID: id}, nil
 }
 
-func responseObject(result Result, call *clientFunctionCall) map[string]any {
+func responseObject(model string, result Result, call *clientFunctionCall) map[string]any {
 	var item map[string]any
 	if call != nil {
 		item = map[string]any{
@@ -306,7 +357,7 @@ func responseObject(result Result, call *clientFunctionCall) map[string]any {
 	}
 	return map[string]any{
 		"id": newID("resp_"), "object": "response", "created_at": time.Now().Unix(), "status": "completed",
-		"model": PublicModel, "service_tier": "default", "store": false, "error": nil, "incomplete_details": nil,
+		"model": model, "service_tier": "default", "store": false, "error": nil, "incomplete_details": nil,
 		"output": []any{item},
 		"usage": map[string]any{
 			"input_tokens": result.Usage.InputTokens, "output_tokens": result.Usage.OutputTokens, "total_tokens": result.Usage.TotalTokens,

@@ -38,15 +38,22 @@ case "$key" in *[!A-Za-z0-9_-]*|'') fail configuration 1 ;; esac
 printf 'header = "Authorization: Bearer %s"\n' "$key" > "$work_dir/curl.conf"
 unset key
 url=http://127.0.0.1:8318
-if curl -fsS --max-time 30 --config "$work_dir/curl.conf" "$url/v1/models" \
+if curl -fsS --max-time 30 --config "$work_dir/curl.conf" "$url/internal/smoke/models/$account" \
     </dev/null > "$work_dir/models" 2>/dev/null; then :; else
     fail command_failed "$?"
 fi
-jq -e 'any(.data[]; .id == "gemini-3.1-pro-preview")' "$work_dir/models" \
+jq -e '.data | type == "array" and length > 0 and
+    all(.[]; .id == "gemini-3.8-flash-high" or .id == "gemini-3.8-flash-medium" or
+        .id == "gemini-3.7-flash-high" or .id == "gemini-3.7-flash-medium" or
+        .id == "gemini-3.6-flash-high" or .id == "gemini-3.6-flash-medium" or
+        .id == "gemini-3.1-pro-high") and
+    (map(.id) | length == (unique | length))' "$work_dir/models" \
     </dev/null >/dev/null 2>&1 || fail invalid_response 1
-for stream in false true; do
+jq -r '.data[].id' "$work_dir/models" > "$work_dir/model-ids" || fail invalid_response 1
+while IFS= read -r model; do
+  for stream in false true; do
     if test "$stream" = true; then stage=http_sse; else stage=http_json; fi
-    printf '{"model":"gemini-3.1-pro-preview","input":"Reply with exactly OK.","store":false,"stream":%s}\n' "$stream" > "$work_dir/request"
+    printf '{"model":"%s","input":"Reply with exactly OK.","store":false,"stream":%s}\n' "$model" "$stream" > "$work_dir/request"
     if curl -fsS --max-time 310 --config "$work_dir/curl.conf" -H 'Content-Type: application/json' \
         --data-binary @"$work_dir/request" "$url/internal/smoke/responses/$account" \
         </dev/null > "$work_dir/response" 2>/dev/null; then :; else
@@ -56,9 +63,9 @@ for stream in false true; do
         grep -Fxq 'data: [DONE]' "$work_dir/response" || fail invalid_response 1
         # Keep the protocol data pipe; only commands needing no input use null.
         if awk '/^data: / && $0 != "data: [DONE]" { sub(/^data: /, ""); print }' "$work_dir/response" |
-            jq -se '([.[] | select(.type == "response.completed")] | length) == 1 and
+            jq -se --arg model "$model" '([.[] | select(.type == "response.completed")] | length) == 1 and
                 all(.[]; .type != "error" and .type != "response.failed") and
-                any(.[]; .type == "response.completed" and .response.status == "completed" and
+                any(.[]; .type == "response.completed" and .response.status == "completed" and .response.model == $model and
                     .response.usage.input_tokens >= 0 and .response.usage.output_tokens >= 0 and
                     any(.response.output[]?; .type == "message" and
                         any(.content[]?; .type == "output_text" and (.text | length > 0))))' \
@@ -66,9 +73,10 @@ for stream in false true; do
             fail invalid_response 1
         fi
     else
-        jq -e '.status == "completed" and .usage.input_tokens >= 0 and .usage.output_tokens >= 0 and
+        jq -e --arg model "$model" '.status == "completed" and .model == $model and .usage.input_tokens >= 0 and .usage.output_tokens >= 0 and
             any(.output[]?; .type == "message" and
                 any(.content[]?; .type == "output_text" and (.text | length > 0)))' \
             "$work_dir/response" </dev/null >/dev/null 2>&1 || fail invalid_response 1
     fi
-done
+  done
+done < "$work_dir/model-ids"

@@ -138,6 +138,9 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 		return result, c.transportFailure(ctx, ctx.Err())
 	}
 	result.Model, result.Usage = model, usage
+	// The bridge serves only Standard. Native Gemini has no Responses-style
+	// service_tier field, so record the known tier instead of a missing-tier fallback.
+	result.ServiceTier = "default"
 	w.Header().Set("Content-Type", wantMediaType+"; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	if stream {

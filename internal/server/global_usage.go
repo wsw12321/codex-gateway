@@ -392,7 +392,7 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 			FXAsOf:         pricing.FXAsOf,
 			USDCNYRate:     pricing.USDCNYRate,
 			UnpricedModels: models,
-			Disclaimer:     "OpenAI API Token 等价成本，不代表 OpenAI 实际账单；USD 金额来自不可变用量 ledger，包含已应用的服务层、上下文档位、缓存读取与缓存写入规则。ChatGPT Pro 订阅、工具、区域、税费和基础设施不在本报表范围内。",
+			Disclaimer:     "模型 API Token 等价费用，不代表上游订阅的实际账单；AGY 模型按对应 Gemini API 家族的 Standard 付费价结算。USD 金额来自请求价格快照，包含服务层、上下文档位及缓存规则。订阅月费、缓存存储、云端工具、税费和基础设施费用不在本报表范围内。",
 		},
 	}, nil
 }

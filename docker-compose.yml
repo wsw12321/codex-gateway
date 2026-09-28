@@ -233,7 +233,7 @@ services:
       ANTIGRAVITY_BRIDGE_LISTEN: ":8318"
       ANTIGRAVITY_GATEWAY_URL: http://gateway:8080
       ANTIGRAVITY_BRIDGE_API_KEY_FILE: /run/secrets/antigravity_bridge_api_key
-      ANTIGRAVITY_MODEL_ROUTES_JSON: '{"gemini-3.1-pro-preview":"gemini-3.1-pro-high"}'
+      ANTIGRAVITY_MODEL_ROUTES_JSON: '{"gemini-3.8-flash-high":"gemini-3.8-flash-high","gemini-3.8-flash-medium":"gemini-3.8-flash-medium","gemini-3.7-flash-high":"gemini-3.7-flash-high","gemini-3.7-flash-medium":"gemini-3.7-flash-medium","gemini-3.6-flash-high":"gemini-3.6-flash-high","gemini-3.6-flash-medium":"gemini-3.6-flash-medium","gemini-3.1-pro-high":"gemini-3.1-pro-high"}'
       AGY_BINARY: /usr/local/bin/agy
       AGY_CLI_DISABLE_AUTO_UPDATE: "true"
       HTTP_PROXY: http://egress-allowlist:3128
