@@ -23,9 +23,44 @@ type managedAccount struct {
 	ready      bool
 	models     map[string]bool
 	refreshing bool
-	active     int64
-	cooldown   time.Time
-	quota      bool
+	// active tracks executions for readiness; slots count distinct conversations
+	// plus requests without a trusted conversation identity. All use manager.mu.
+	active        int64
+	conversations map[string]int64
+	unattributed  int64
+	cooldown      time.Time
+	quota         bool
+}
+
+func (a *managedAccount) activeSlots() int64 {
+	return int64(len(a.conversations)) + a.unattributed
+}
+
+func (a *managedAccount) canAcquire(conversation string, limit int64) bool {
+	return limit > 0 && (a.conversations[conversation] > 0 || a.activeSlots() < limit)
+}
+
+func (a *managedAccount) reserve(conversation string) {
+	a.active++
+	if conversation == "" {
+		a.unattributed++
+		return
+	}
+	if a.conversations == nil {
+		a.conversations = make(map[string]int64)
+	}
+	a.conversations[conversation]++
+}
+
+func (a *managedAccount) release(conversation string) {
+	a.active--
+	if conversation == "" {
+		a.unattributed--
+	} else if a.conversations[conversation] > 1 {
+		a.conversations[conversation]--
+	} else {
+		delete(a.conversations, conversation)
+	}
 }
 
 type AccountManager struct {
@@ -43,10 +78,11 @@ type accountRequestKey struct{}
 var errAccountSelectionBusy = errors.New("account selection busy")
 
 type accountRequest struct {
-	userID     string
-	directName string
-	selected   *string
-	release    *func()
+	userID           string
+	conversationHash string
+	directName       string
+	selected         *string
+	release          *func()
 }
 
 func NewAccountServer(runner Runner, registry *AccountRegistry, token, gatewayURL string) (*Server, error) {
@@ -240,7 +276,7 @@ func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result,
 		}
 		release := sync.OnceFunc(func() {
 			m.mu.Lock()
-			account.active--
+			account.release(request.conversationHash)
 			m.mu.Unlock()
 		})
 		if request.release != nil {
@@ -312,44 +348,66 @@ func (m *AccountManager) acquire(ctx context.Context, request accountRequest, mo
 		if failure != nil {
 			return nil, failure
 		}
-		ids = ids[:0]
+		// Only live references create affinity. Recheck eligibility on every
+		// request and keep using the selector so zero weights still drain accounts.
+		preferred, remaining := []string{}, []string{}
 		m.mu.Lock()
 		for _, account := range m.accounts {
-			if limit := limits[account.record.ID]; limit > 0 && account.active < limit && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && !time.Now().Before(account.cooldown) {
-				ids = append(ids, account.record.ID)
+			if account.canAcquire(request.conversationHash, limits[account.record.ID]) && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && !tried[account.record.ID] && !time.Now().Before(account.cooldown) {
+				if account.conversations[request.conversationHash] > 0 {
+					preferred = append(preferred, account.record.ID)
+				} else {
+					remaining = append(remaining, account.record.ID)
+				}
 			}
 		}
 		m.mu.Unlock()
-		if len(ids) == 0 {
-			return nil, accountBusyFailure()
-		}
-		var selection struct {
-			ID string `json:"account_id"`
-		}
-		if err := m.callback(ctx, "select", request.userID, ids, &selection); err != nil {
-			if errors.Is(err, errAccountSelectionBusy) {
-				return nil, accountBusyFailure()
+		for _, candidates := range [][]string{preferred, remaining} {
+			if len(candidates) == 0 {
+				continue
 			}
-			return nil, allocationFailure()
-		}
-		for _, id := range ids {
-			if id == selection.ID {
-				selected = id
+			selected, failure = m.selectAccount(ctx, request.userID, candidates)
+			if failure != nil {
+				if failure.Code == "upstream_concurrency_exceeded" {
+					continue
+				}
+				return nil, failure
 			}
+			break
 		}
 		if selected == "" {
-			return nil, allocationFailure()
+			return nil, accountBusyFailure()
 		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, account := range m.accounts {
-		if account.record.ID == selected && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && account.active < limits[selected] && !time.Now().Before(account.cooldown) {
-			account.active++
+		// A previous request may have released the last reference during the
+		// callback. In that case this request must acquire a fresh slot.
+		if account.record.ID == selected && account.record.Enabled && account.ready && account.models[model] && !account.refreshing && !tried[selected] && account.canAcquire(request.conversationHash, limits[selected]) && !time.Now().Before(account.cooldown) {
+			account.reserve(request.conversationHash)
 			return account, nil
 		}
 	}
 	return nil, accountBusyFailure()
+}
+
+func (m *AccountManager) selectAccount(ctx context.Context, userID string, ids []string) (string, *Failure) {
+	var selection struct {
+		ID string `json:"account_id"`
+	}
+	if err := m.callback(ctx, "select", userID, ids, &selection); err != nil {
+		if errors.Is(err, errAccountSelectionBusy) {
+			return "", accountBusyFailure()
+		}
+		return "", allocationFailure()
+	}
+	for _, id := range ids {
+		if id == selection.ID {
+			return id, nil
+		}
+	}
+	return "", allocationFailure()
 }
 
 func (m *AccountManager) callback(ctx context.Context, action, user string, ids []string, destination any) error {
@@ -452,7 +510,7 @@ func (m *AccountManager) serveInternal(w http.ResponseWriter, r *http.Request) b
 	case r.URL.Path == "/internal/upstream-accounts/concurrency" && r.Method == http.MethodGet:
 		accounts := []map[string]any{}
 		for _, account := range m.accounts {
-			accounts = append(accounts, map[string]any{"id": account.record.ID, "active_requests": account.active})
+			accounts = append(accounts, map[string]any{"id": account.record.ID, "active_requests": account.activeSlots()})
 		}
 		writeJSON(w, 200, map[string]any{"sampled_at": time.Now().UTC(), "accounts": accounts})
 	default:

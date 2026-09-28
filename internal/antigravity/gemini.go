@@ -69,6 +69,7 @@ func DecodeGeminiRequest(model string, body []byte) (Request, *Failure) {
 			system = append(system, text)
 		}
 	}
+	out.conversationID = extractConversationID(system)
 	contents, failure := decodeGeminiContents(fields["contents"])
 	if failure != nil {
 		return out, failure

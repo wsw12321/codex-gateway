@@ -21,6 +21,7 @@ import (
 	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/httpx"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
+	"github.com/wsw/codex-gateway/internal/security"
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
@@ -148,19 +149,41 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	defer bridgeServer.Close()
 	bridgeURL, _ := url.Parse(bridgeServer.URL)
 	h.server.antigravity = gatewayproxy.NewAntigravity(bridgeURL, "internal-bridge-token")
-	send := func(model, action, body string) *httptest.ResponseRecorder {
+	sendWithKey := func(apiKey, model, action, body string) *httptest.ResponseRecorder {
 		t.Helper()
 		path := "/v1beta/models/" + model + ":" + action
 		if action == "streamGenerateContent" {
 			path += "?alt=sse"
 		}
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
-		r.Header.Set("X-Goog-Api-Key", h.apiKey)
+		r.Header.Set("X-Goog-Api-Key", apiKey)
+		r.Header.Set("X-Codex-Gateway-Affinity", strings.Repeat("x", 43))
+		r.Header.Set("X-Codex-Conversation-Hash", "conv-0123456789abcdef0123456789abcdef")
 		w := httptest.NewRecorder()
 		h.handler.ServeHTTP(w, r)
+		for _, header := range []string{"X-Codex-Gateway-Affinity", "X-Codex-Conversation-Hash", "X-Codex-Upstream-Account"} {
+			if w.Header().Get(header) != "" {
+				t.Errorf("internal header leaked to client: %s", header)
+			}
+		}
 		return w
 	}
-	textResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
+	send := func(model, action, body string) *httptest.ResponseRecorder {
+		return sendWithKey(h.apiKey, model, action, body)
+	}
+	withConversation := func(body, conversationID string) string {
+		return `{"systemInstruction":{"parts":[{"text":"Conversation ID: ` + conversationID + `"}]},` + strings.TrimPrefix(body, "{")
+	}
+	const conversationID = "12345678-1234-5678-9012-123456789abc"
+	conversationHash := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		var hash string
+		if err := repository.DB().QueryRowContext(ctx, `SELECT COALESCE(conversation_hash,'') FROM usage_requests WHERE request_id=$1`, w.Header().Get(httpx.RequestIDHeader)).Scan(&hash); err != nil {
+			t.Fatal(err)
+		}
+		return hash
+	}
+	textResponse := send(config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, conversationID))
 	if textResponse.Code != 200 {
 		t.Fatalf("text: %d %s", textResponse.Code, textResponse.Body)
 	}
@@ -178,7 +201,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	executor.response = `{"type":"function_call","name":"read_file","arguments":{"path":"README.md"}}`
 	toolBody := `{"contents":[{"role":"user","parts":[{"text":"read README"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parametersJsonSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
-	toolResponse := send(config.AntigravityPublicModel, "streamGenerateContent", toolBody)
+	toolResponse := send(config.AntigravityPublicModel, "streamGenerateContent", withConversation(toolBody, conversationID))
 	if toolResponse.Code != 200 {
 		t.Fatalf("tool: %d %s", toolResponse.Code, toolResponse.Body)
 	}
@@ -210,9 +233,13 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	executor.response = "The README describes the gateway."
 	loopBody := fmt.Sprintf(`{"contents":[{"role":"user","parts":[{"text":"read README"}]},{"role":"model","parts":[{"functionCall":{"id":%q,"name":"read_file","args":{"path":"README.md"}}}]},{"role":"model","parts":[{"functionResponse":{"id":%q,"name":"read_file","response":{"output":"Gateway documentation"}}}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parameters":{"type":"OBJECT","properties":{"path":{"type":"STRING"}},"required":["path"]}}]}]}`, call.ID, call.ID)
-	loopResponse := send(config.AntigravityPublicModel, "generateContent", loopBody)
+	loopResponse := send(config.AntigravityPublicModel, "generateContent", withConversation(loopBody, strings.ToUpper(conversationID)))
 	if loopResponse.Code != 200 {
 		t.Fatalf("loop: %d %s", loopResponse.Code, loopResponse.Body)
+	}
+	mainConversationHash := conversationHash(textResponse)
+	if !store.ValidConversationHash(mainConversationHash) || conversationHash(toolResponse) != mainConversationHash || conversationHash(loopResponse) != mainConversationHash {
+		t.Fatalf("main and tool rounds were not grouped: main=%q tool=%q loop=%q", mainConversationHash, conversationHash(toolResponse), conversationHash(loopResponse))
 	}
 	for i, w := range []*httptest.ResponseRecorder{textResponse, toolResponse, loopResponse} {
 		requestID := w.Header().Get(httpx.RequestIDHeader)
@@ -256,6 +283,40 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatalf("admitted=%d executor=%d primary=%d", admitted, executor.calls, h.upstreamCalls.Load())
 	}
 	h.server.config.Limits.KeyRequestsPerDay = 0
+	otherConversation := send(config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, "87654321-4321-8765-2109-cba987654321"))
+	if otherConversation.Code != 200 || !store.ValidConversationHash(conversationHash(otherConversation)) || conversationHash(otherConversation) == mainConversationHash {
+		t.Fatalf("new conversation was not isolated: %d %s", otherConversation.Code, otherConversation.Body)
+	}
+	generated, err := security.GenerateAPIKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := security.HashAPIKey(h.server.config.KeyPepper, generated.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := security.EncryptAPIKeySecret(h.server.config.APIKeyEncryptionKey, user.ID, generated.PublicID, generated.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKey, err := repository.CreateAPIKey(ctx, store.CreateAPIKeyParams{
+		UserID: user.ID, DeviceID: device.ID, Name: "AGY second key", PublicID: generated.PublicID,
+		KeyPrefix: generated.Prefix, KeyHash: digest[:], SecretCiphertext: ciphertext,
+		ModelAllowlist: []string{config.AntigravityPublicModel}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKeyResponse := sendWithKey(generated.Token, config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, conversationID))
+	if otherKey.ID == key.ID || otherKeyResponse.Code != 200 || !store.ValidConversationHash(conversationHash(otherKeyResponse)) || conversationHash(otherKeyResponse) == mainConversationHash {
+		t.Fatalf("API key conversation scope was not isolated: %d %s", otherKeyResponse.Code, otherKeyResponse.Body)
+	}
+	for range 2 {
+		title := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
+		if title.Code != 200 || conversationHash(title) != "" {
+			t.Fatalf("unmarked title request was grouped: %d %s", title.Code, title.Body)
+		}
+	}
 	executor.failure = &antigravity.Failure{Status: 504, Code: "upstream_timeout", Message: "private provider detail"}
 	timeoutResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
 	checkNativeGeminiError(t, timeoutResponse, 504, "DEADLINE_EXCEEDED")
@@ -305,7 +366,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if err := repository.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE api_key_id=$1`, key.ID).Scan(&admitted); err != nil {
 		t.Fatal(err)
 	}
-	if admitted != 5 || executor.calls != 5 {
+	if admitted != 8 || executor.calls != 9 {
 		t.Fatalf("funding rejection reserved a request: admitted=%d calls=%d", admitted, executor.calls)
 	}
 }

@@ -67,6 +67,12 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	outgoing.Header.Set("Authorization", "Bearer "+c.token)
 	outgoing.Header.Set("Content-Type", "application/json")
 	outgoing.Header.Set("Cache-Control", "no-store")
+	if options.AffinityScope != "" {
+		if !affinityScopePattern.MatchString(options.AffinityScope) {
+			return Result{}, protocolFailure(errors.New("invalid upstream affinity scope"))
+		}
+		outgoing.Header.Set(affinityHeader, options.AffinityScope)
+	}
 	if options.UserID != "" {
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))

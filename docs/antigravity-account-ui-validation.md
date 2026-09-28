@@ -10,20 +10,23 @@
 | 账号身份 | 脱敏邮箱、登录名称、套餐与最近同步时间；不显示凭据 |
 | 状态控制 | 启用、禁用、上游就绪状态、手动状态、限流冷却与最终分流状态 |
 | 轮换分配 | 分配系数、近 24 小时已结算费用、费用占比与参考目标；系数 0 停止接收新请求 |
-| 并发 | 每账号请求并发上限，当前执行请求数每 5 秒采样；过期或失败样本显示暂不可用 |
+| 并发 | 每账号并发对话上限，活跃对话名额每 5 秒采样；同一 API Key 的同对话重叠请求共享，无法识别对话的请求独占；过期或失败样本显示暂不可用 |
 | 使用权限 | 共享、指定授权用户、搜索和批量选择；写操作要求近期身份验证 |
 | 历史用量 | 本月、7 天、30 天、自定义、全部历史；请求、错误、各类 Token 与 API 等价成本 |
 | 官方额度 | 不显示查询按钮；说明没有精确额度百分比或重置时间 |
 
-AGY 请求没有稳定的对话标识，因此界面明确采用请求并发。429 导致约 60 秒自动冷却；重新启用只恢复手动开关，不会绕过冷却或修复失效凭据。Codex 页面继续使用 root 对话并发及原有额度查询。
+AGY 1.2.12 Gemini 模式通过系统提示中的 `Conversation ID: <UUID>` 标记识别对话，这是实测兼容规则，并非官方稳定协议字段。同一 API Key 的同对话重叠请求在同一账号共享一个名额，最后一个请求结束后立即释放；标题等无有效标记的请求各占一个名额。页面明确说明不同 API Key 分别计数，降低上限时活跃对话可追加请求，停用或系数归零后停止后续请求，Gateway 请求级并发保持原有语义。实时接口继续使用 `active_requests` 字段返回名额占用数。
+
+429 导致约 60 秒自动冷却；重新启用只恢复手动开关，不会绕过冷却或修复失效凭据。Codex 页面继续使用 root 对话并发及原有额度查询。
 
 ## 已执行验证
 
 2026-09-28，Node 24.16.0、Chromium 153.0.8010.12，所有浏览器请求均使用合成数据和本地拦截，没有访问真实上游账号。
 
-- `node --test internal/server/testdata/upstream_account_ui_test.cjs`：原有 Codex 控制与新增 Antigravity API 命名空间、请求并发文案、额度操作隐藏、登录名称、冷却与手动开关区别，以及验证期间失效操作的回归覆盖。
-- `node internal/server/testdata/antigravity_accounts_browser.cjs`：7 次成功写操作，覆盖系数、并发上限、启停、专属授权用户与密码二次验证；全部历史筛选；同步故障下禁止操作；写入成功但刷新失败的独立提示；页面切换时旧列表响应丢弃；权限验证中切换提供方取消写入；Member 无权进入页面。
+- `node --test internal/server/testdata/upstream_account_ui_test.cjs`：原有 Codex 控制与 Antigravity API 命名空间、并发对话文案、无法识别对话时的请求独占提示、额度操作隐藏、登录名称、冷却与手动开关区别，以及验证期间失效操作的回归覆盖。
+- `node internal/server/testdata/antigravity_accounts_browser.cjs`：7 次成功写操作，覆盖系数、并发对话上限、启停、专属授权用户与密码二次验证；验证同一 API Key 的对话共享、最终请求结束释放及标题请求独占说明；全部历史筛选；同步故障下禁止操作；写入成功但刷新失败的独立提示；页面切换时旧列表响应丢弃；权限验证中切换提供方取消写入；Member 无权进入页面。
 - `node internal/server/testdata/upstream_allocation_browser.cjs`：原有 Codex 分配系数、验证、失败恢复与响应式布局回归通过。
+- `node internal/server/testdata/agy_guide_browser.cjs`：包含并发对话说明的 Gemini 接入指南在桌面和移动端回归通过。
 - `node internal/server/testdata/groups_access_browser.cjs`：原有群组和账号使用权限回归通过。
 
 浏览器检查无 JavaScript 错误。桌面 1440×1080、移动端 390×844 均无横向溢出。截图：[桌面](screenshots/antigravity-accounts-desktop.png)、[移动端](screenshots/antigravity-accounts-mobile.png)。

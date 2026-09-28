@@ -304,7 +304,7 @@
                 <p class="guide-note">支持 <code>gemini-3.8-flash-high</code>、<code>gemini-3.8-flash-medium</code>、<code>gemini-3.7-flash-high</code>、<code>gemini-3.7-flash-medium</code>、<code>gemini-3.6-flash-high</code>、<code>gemini-3.6-flash-medium</code> 和 <code>gemini-3.1-pro-high</code>。实际列表取决于管理员授权及可用订阅账号。</p>
                 <h4>3. 原生 Gemini API 与用量</h4>
                 <p>也可调用 <code>POST /v1beta/models/{model}:generateContent</code> 或 <code>:streamGenerateContent?alt=sse</code>，路径使用同一精确模型名。原生请求正文使用 <code>contents</code>，鉴权可使用单一 Bearer 头或 <code>x-goog-api-key</code>。可在“使用统计”查看请求和 API Token 等价费用。</p>
-                <p class="guide-note">请求上限为 1 MiB，支持文本和客户端执行的函数工具。并发上限按账号设置，繁忙时返回 429；流式响应在完整生成并校验后输出。图片、精确 countTokens 和云端内置工具暂不支持。</p>
+                <p class="guide-note">请求上限为 1 MiB，支持文本和客户端执行的函数工具。并发对话上限按账号设置：同一 API Key 的同对话重叠请求共享名额，最后一个请求结束后释放；标题等无法识别对话的请求各占一个名额。繁忙时返回 429；流式响应在完整生成并校验后输出。图片、精确 countTokens 和云端内置工具暂不支持。</p>
                 <p class="guide-note">旧 <code>gemini-3.1-pro-preview</code> 与 <code>gemini-3.1-pro-preview-customtools</code> 已停止接受。当前本机 AGY 的 Gemini 提供方会发送这些旧路径，因此不能直接采用该配置连接 Gateway。升级后的七个模型默认禁用，需管理员重新授权；受限 Key 需重新签发包含新名称的白名单。</p>
               </div>
             </div>
@@ -905,7 +905,7 @@
 
           <section class="view owner-only hidden" data-section="antigravity-accounts" aria-labelledby="antigravity-accounts-title">
             <div class="section-head">
-              <div><p class="eyebrow">OWNER ONLY</p><h2 id="antigravity-accounts-title">Antigravity 账号</h2><p>管理 Antigravity 多账号轮换、使用权限、请求并发及本地归因用量。</p></div>
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="antigravity-accounts-title">Antigravity 账号</h2><p>管理 Antigravity 多账号轮换、使用权限、并发对话及本地归因用量。</p></div>
             </div>
             <details class="panel antigravity-login-help">
               <summary>添加或刷新 Antigravity 账号</summary>

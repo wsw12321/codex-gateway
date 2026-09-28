@@ -33,10 +33,11 @@ func protocolFailure() *Failure {
 }
 
 type Request struct {
-	Model     string
-	Stream    bool
-	Prompt    string
-	toolNames map[string]struct{}
+	Model          string
+	Stream         bool
+	Prompt         string
+	toolNames      map[string]struct{}
+	conversationID string
 }
 
 type textMessage struct {

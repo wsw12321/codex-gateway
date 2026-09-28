@@ -298,7 +298,10 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		})
 	} else if prepared.gemini {
 		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
-			UserID: key.UserID, OnUpstreamAccount: onUpstreamAccount,
+			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
+			UserID:            key.UserID,
+			OnUpstreamAccount: onUpstreamAccount,
+			OnConversation:    onConversation,
 		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{

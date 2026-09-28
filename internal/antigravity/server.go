@@ -208,6 +208,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, failure)
 		return
 	}
+	if hash := conversationHash(r.Header, request.conversationID); hash != "" {
+		w.Header().Set(conversationHashHeader, hash)
+		if account, ok := r.Context().Value(accountRequestKey{}).(accountRequest); ok {
+			account.conversationHash = hash
+			r = r.WithContext(context.WithValue(r.Context(), accountRequestKey{}, account))
+		}
+	}
 	if !s.isReady() {
 		writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity is not ready"})
 		return

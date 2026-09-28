@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,9 @@ func nativeGeminiRouter(t *testing.T, fn roundTripFunc) *Router {
 
 func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 	t.Parallel()
+	const scope = "0123456789012345678901234567890123456789012"
+	const conversationHash = "conv-0123456789abcdef0123456789abcdef"
+	requestBody := `{"systemInstruction":{"parts":[{"text":"Conversation ID: 12345678-1234-5678-9012-123456789abc"}]},` + nativeGeminiRequest[1:]
 	for _, stream := range []bool{false, true} {
 		name, operation, mediaType := "JSON", ":generateContent", "application/json"
 		if stream {
@@ -52,8 +56,11 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 					if r.Header.Get(gatewayUserHeader) != "00000000-0000-0000-0000-000000000001" {
 						t.Error("trusted user identity missing or spoofed")
 					}
+					if r.Header.Get(affinityHeader) != scope {
+						t.Error("trusted affinity scope missing or spoofed")
+					}
 					body, err := io.ReadAll(r.Body)
-					if err != nil || string(body) != nativeGeminiRequest || r.Method != http.MethodPost || r.URL.Path != path {
+					if err != nil || string(body) != requestBody || r.Method != http.MethodPost || r.URL.Path != path {
 						t.Errorf("forwarded request changed: %s %s %s, %v", r.Method, r.URL, body, err)
 					}
 					query := ""
@@ -64,25 +71,30 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 						t.Error("wrong internal query or credential")
 					}
 					for key := range r.Header {
-						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader {
+						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader && key != affinityHeader {
 							t.Errorf("caller header crossed bridge boundary: %s", key)
 						}
 					}
 					response := routerTestResponse(http.StatusOK, output)
 					response.Header.Set("Content-Type", mediaType)
 					response.Header.Set(upstreamAccountHeader, "0123456789abcdef")
+					response.Header.Set(conversationHashHeader, conversationHash)
 					response.Header.Set("Set-Cookie", "provider=secret")
 					response.Body = io.NopCloser(iotest.OneByteReader(strings.NewReader(output)))
 					return response, nil
 				})
-				request := httptest.NewRequest(http.MethodPost, path+"?key=public-key&token=public-secret&alt=sse", strings.NewReader(nativeGeminiRequest))
-				for _, key := range []string{"Authorization", "X-Goog-Api-Key", "Cookie", affinityHeader, gatewayUserHeader, "X-Api-Key", "User-Agent", "Session-Id", "X-Goog-User-Project"} {
+				request := httptest.NewRequest(http.MethodPost, path+"?key=public-key&token=public-secret&alt=sse", strings.NewReader(requestBody))
+				for _, key := range []string{"Authorization", "X-Goog-Api-Key", "Cookie", affinityHeader, conversationHashHeader, gatewayUserHeader, "X-Api-Key", "User-Agent", "Session-Id", "X-Goog-User-Project"} {
 					request.Header.Set(key, "caller-secret")
 				}
 				recorder := httptest.NewRecorder()
-				attributed := ""
+				attributed, conversation := "", ""
 				result, failure := router.ForwardGemini(context.Background(), recorder, request, nativeGeminiModel, path,
-					ForwardOptions{UserID: "00000000-0000-0000-0000-000000000001", AffinityScope: "must-not-cross", OnUpstreamAccount: func(id string) { attributed = id }})
+					ForwardOptions{
+						UserID: "00000000-0000-0000-0000-000000000001", AffinityScope: scope,
+						OnUpstreamAccount: func(id string) { attributed = id },
+						OnConversation:    func(hash string) { conversation = hash },
+					})
 				if failure != nil || recorder.Body.String() != output || recorder.Header().Get("Set-Cookie") != "" {
 					t.Fatalf("result=%+v failure=%v output=%s", result, failure, recorder.Body)
 				}
@@ -92,6 +104,70 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 				if result.BytesOut != int64(len(output)) || result.FirstByteAt.IsZero() || result.FirstTokenAt.IsZero() || result.CompletedAt.IsZero() || attributed != "0123456789abcdef" {
 					t.Fatalf("missing result metadata: %+v, attribution=%q", result, attributed)
 				}
+				if result.ConversationHash != conversationHash || conversation != conversationHash {
+					t.Fatalf("missing conversation attribution: result=%q callback=%q", result.ConversationHash, conversation)
+				}
+				for _, key := range []string{affinityHeader, conversationHashHeader, upstreamAccountHeader} {
+					if recorder.Header().Get(key) != "" {
+						t.Errorf("internal header leaked to caller: %s", key)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestNativeGeminiAffinityRequiresTrustedValidScope(t *testing.T) {
+	t.Parallel()
+	for _, scope := range []string{"", "invalid scope", strings.Repeat("a", 42), strings.Repeat("a", 44), strings.Repeat("a", 42) + "\n"} {
+		t.Run(fmt.Sprintf("scope=%q", scope), func(t *testing.T) {
+			t.Parallel()
+			calls := 0
+			router := nativeGeminiRouter(t, func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Header.Get(affinityHeader) != "" || r.Header.Get(conversationHashHeader) != "" {
+					t.Error("caller supplied conversation identity crossed bridge boundary")
+				}
+				return routerTestResponse(http.StatusOK, nativeGeminiResponse), nil
+			})
+			path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest))
+			request.Header.Set(affinityHeader, strings.Repeat("a", 43))
+			request.Header.Set(conversationHashHeader, "conv-0123456789abcdef0123456789abcdef")
+			recorder := httptest.NewRecorder()
+			result, failure := router.ForwardGemini(context.Background(), recorder, request, nativeGeminiModel, path, ForwardOptions{AffinityScope: scope})
+			if scope != "" {
+				if failure == nil || failure.Code != "upstream_unavailable" || calls != 0 || recorder.Body.Len() != 0 {
+					t.Fatalf("invalid scope reached transport: failure=%v calls=%d body=%s", failure, calls, recorder.Body)
+				}
+			} else if failure != nil || calls != 1 || result.ConversationHash != "" {
+				t.Fatalf("untrusted identity changed result: result=%+v failure=%v calls=%d", result, failure, calls)
+			}
+		})
+	}
+}
+
+func TestNativeGeminiRejectsAmbiguousOrMalformedConversationHash(t *testing.T) {
+	t.Parallel()
+	for _, values := range [][]string{
+		{"conv-0123456789abcdef0123456789abcde"},
+		{"conv-0123456789abcdef0123456789abcdef", "conv-0123456789abcdef0123456789abcdef"},
+		{"conv-0123456789abcdef0123456789abcdef,conv-0123456789abcdef0123456789abcdef"},
+	} {
+		t.Run(strings.Join(values, ","), func(t *testing.T) {
+			router := nativeGeminiRouter(t, func(*http.Request) (*http.Response, error) {
+				response := routerTestResponse(http.StatusOK, nativeGeminiResponse)
+				response.Header[conversationHashHeader] = values
+				return response, nil
+			})
+			path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
+			conversation := ""
+			recorder := httptest.NewRecorder()
+			result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{
+				OnConversation: func(hash string) { conversation = hash },
+			})
+			if failure != nil || result.ConversationHash != "" || conversation != "" || recorder.Header().Get(conversationHashHeader) != "" {
+				t.Fatalf("invalid conversation attributed: result=%+v callback=%q failure=%v", result, conversation, failure)
 			}
 		})
 	}

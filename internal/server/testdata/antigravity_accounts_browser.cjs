@@ -78,8 +78,9 @@ async function main() {
     assert.equal(await manager.isVisible(), true);
     assert.equal(await manager.locator(".upstream-quota").count(), 0);
     assert.match(await card().textContent(), /账号名称：team-alpha/);
-    assert.match(await card().locator(".upstream-concurrency").textContent(), /正在执行的请求1每个请求/);
-    assert.match(await page.locator("#upstream-concurrency-limit-help").textContent(), /每个正在执行的请求单独占用/);
+    assert.match(await card().locator(".upstream-concurrency").textContent(), /活跃对话名额1同一 API Key.*同对话重叠请求共享名额.*未识别的请求独占/);
+    assert.match(await page.locator("#upstream-concurrency-limit-help").textContent(), /同一 API Key、同一对话的重叠请求.*共享一个名额.*最后一个请求结束后立即释放/);
+    assert.match(await page.locator("#upstream-concurrency-limit-help").textContent(), /标题等无法识别对话的请求各占一个名额.*不同 API Key 分别计数/);
     assert.match(await page.locator("#upstream-quota-warning").textContent(), /不提供精确的剩余额度百分比/);
 
     await card().locator(".upstream-concurrency-limit-input").fill("0");
@@ -88,7 +89,7 @@ async function main() {
     assert.equal(await card().locator(".upstream-concurrency-limit-input").getAttribute("aria-invalid"), "true");
     await card().locator(".upstream-concurrency-limit-input").fill("4");
     await card().locator(".upstream-concurrency-limit-save").click(); await settled();
-    assert.match(await page.locator("#upstream-account-action-message").textContent(), /请求并发上限已保存为 4/);
+    assert.match(await page.locator("#upstream-account-action-message").textContent(), /并发对话上限已保存为 4/);
 
     await page.evaluate(() => { state.recently_verified = false; });
     const eventOffset = events.length;
@@ -160,6 +161,7 @@ async function main() {
     await page.locator(".antigravity-login-help summary").click();
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.evaluate(() => { hide("notice"); });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "desktop must not overflow horizontally");
     await page.screenshot({path: path.join(screenshots, "antigravity-accounts-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile must not overflow horizontally");

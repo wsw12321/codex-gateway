@@ -316,7 +316,7 @@ function selectUpstreamAccountProvider(section) {
   if (provider === "antigravity") {
     byId("upstream-account-control-help").textContent = "账号状态：手动禁用后停止接收新请求，直到 Owner 重新启用；已开始的请求继续执行。上游返回 429 时账号进入约 60 秒的限流冷却，随后自动重试。重新启用只恢复手动开关，不会跳过冷却或修复失效的登录凭据。";
     byId("upstream-allocation-help").textContent = "请求轮换：按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新请求，已开始的请求继续执行。参考目标按当前启用账号计算；实际分配会根据当前模型、使用权限和实时可用账号重算。费用包含请求模型倍率，跨用户、跨模型汇总，不计进行中请求。";
-    byId("upstream-concurrency-limit-help").textContent = "请求并发限制：AGY 请求没有可稳定识别的对话标识，因此每个正在执行的请求单独占用一个名额，每个账号默认上限为 1。所有可用账号都达到上限时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新请求。";
+    byId("upstream-concurrency-limit-help").textContent = "并发对话数量：每个账号默认上限为 1。同一 API Key、同一对话的重叠请求在同一账号共享一个名额，最后一个请求结束后立即释放。根据 AGY Gemini 请求中的对话标记识别；标题等无法识别对话的请求各占一个名额。不同 API Key 分别计数。所有可用账号都无法接收新对话时返回 429。降低上限不会中断已开始的请求，活跃对话仍可追加请求；停用账号或将系数设为 0 后停止接收后续请求。Gateway 自身的请求级并发仍按每个请求计数。";
     byId("upstream-quota-warning").textContent = "额度说明：Antigravity 暂不提供精确的剩余额度百分比或额度重置时间，当前不支持即时额度查询。本地请求、Token、费用统计及限流冷却状态仍可查看；限流冷却结束后自动重试，若上游仍限流则再次冷却。";
   }
   setUpstreamAccountMessage("upstream-account-action-message");
@@ -4049,8 +4049,8 @@ async function saveUpstreamConcurrentLimit(account, form) {
     if (response?.id !== account.id || response.concurrent_limit !== operation.limit) throw new Error("并发上限响应格式异常，请刷新列表确认结果。");
     confirmed = true;
     account.concurrent_limit = response.concurrent_limit;
-    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} ${upstreamAccountLanguage("并发对话上限", "请求并发上限")}已保存为 ${operation.limit}。`, "ok");
-    announce(`已保存 ${account.email_masked || "该上游账号"} 的${upstreamAccountLanguage("并发对话上限", "请求并发上限")}。`);
+    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} 并发对话上限已保存为 ${operation.limit}。`, "ok");
+    announce(`已保存 ${account.email_masked || "该上游账号"} 的并发对话上限。`);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
   } catch (error) {
     if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
@@ -4192,7 +4192,7 @@ function upstreamAllocationBlock(account) {
   limitInput.value = String(account.concurrent_limit ?? 1);
   const limitButton = element("button", {type: "submit", className: "secondary upstream-concurrency-limit-save", text: "保存并发上限"});
   const limitForm = element("form", {className: "upstream-concurrency-limit-form", attributes: {novalidate: ""}},
-    element("label", {}, element("span", {text: upstreamAccountLanguage("并发对话数量", "请求并发限制")}), limitInput), limitButton,
+    element("label", {}, element("span", {text: "并发对话数量"}), limitInput), limitButton,
     element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
   );
   limitForm.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamConcurrentLimit(account, limitForm); });
@@ -4495,9 +4495,9 @@ function upstreamAccountCard(account) {
       element("div", {className: "upstream-account-actions"}, ...badges, statusButton),
     ),
     element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
-      element("span", {text: upstreamAccountLanguage("活跃 root 对话数", "正在执行的请求")}),
+      element("span", {text: upstreamAccountLanguage("活跃 root 对话数", "活跃对话名额")}),
       element("strong", {className: "upstream-concurrency-count", text: "暂不可用"}),
-      element("small", {text: upstreamAccountLanguage("同一 root 的重叠请求共享名额", "每个请求单独占用一个名额")}),
+      element("small", {text: upstreamAccountLanguage("同一 root 的重叠请求共享名额", "同一 API Key 的同对话重叠请求共享名额；未识别的请求独占")}),
     ),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
     upstreamAccessBlock(account),

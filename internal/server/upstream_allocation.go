@@ -94,9 +94,6 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 
 func (s *Server) setUpstreamAccountConcurrentLimit(w http.ResponseWriter, r *http.Request) {
 	concurrencyName := "并发对话数量"
-	if isAntigravityAccountRequest(r) {
-		concurrencyName = "请求并发数量"
-	}
 	id := r.PathValue("id")
 	if !validUpstreamAccountID(id) {
 		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")

@@ -21,7 +21,11 @@ func TestAntigravityDispatchRequiresAccountAccessAndTrustedUser(t *testing.T) {
 					return routerTestResponse(404, `{}`), nil
 				}
 				calls++
-				if r.Header.Get(gatewayUserHeader) != userID || r.Header.Get(affinityHeader) != "" || r.Header.Get("Authorization") != "Bearer bridge-secret" {
+				wantAffinity := ""
+				if native {
+					wantAffinity = strings.Repeat("a", 43)
+				}
+				if r.Header.Get(gatewayUserHeader) != userID || r.Header.Get(affinityHeader) != wantAffinity || r.Header.Get("Authorization") != "Bearer bridge-secret" {
 					t.Fatalf("incorrect bridge headers: %v", r.Header)
 				}
 				response := routerTestResponse(http.StatusTooManyRequests, `{"error":{"code":"upstream_concurrency_exceeded"}}`)

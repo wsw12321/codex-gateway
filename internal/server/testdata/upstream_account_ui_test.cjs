@@ -544,12 +544,13 @@ test("failed concurrency responses clear counts and an aborted request cannot re
   ui.run("stopUpstreamConcurrency();");
 });
 
-test("Antigravity cards describe request concurrency, named logins, and omit unsupported quota queries", () => {
+test("Antigravity cards describe conversation concurrency and request fallback, named logins, and omit unsupported quota queries", () => {
   const ui = dashboard([{...account(), display_name: "team-alpha", allocation_weight: 0}], {}, "antigravity");
   assert.equal(ui.cards()[0].querySelector(".upstream-account-name").textContent, "账号名称：team-alpha");
   assert.match(ui.cards()[0].querySelector(".upstream-account-cliproxy-status").textContent, /^Antigravity：/);
-  assert.match(ui.cards()[0].querySelector(".upstream-concurrency").querySelector("span").textContent, /正在执行的请求/);
-  assert.equal(ui.limitForm().querySelector("span").textContent, "请求并发限制");
+  assert.match(ui.cards()[0].querySelector(".upstream-concurrency").querySelector("span").textContent, /活跃对话名额/);
+  assert.match(ui.cards()[0].querySelector(".upstream-concurrency").querySelector("small").textContent, /同一 API Key.*同对话重叠请求共享名额.*未识别的请求独占/);
+  assert.equal(ui.limitForm().querySelector("span").textContent, "并发对话数量");
   assert.match(ui.allocationState().textContent, /停止接收新请求.*已开始的请求继续执行/);
   assert.equal(ui.cards()[0].querySelector(".upstream-quota"), null);
   assert.equal(ui.run('ownerOnlySections.has("antigravity-accounts")'), true);
@@ -581,7 +582,7 @@ test("Antigravity writes, refresh, and polling stay in their provider namespace"
   assert.match(ui.node("upstream-account-action-message").textContent, /停止接收新请求/);
   ui.limitInput().value = "3";
   await ui.saveLimit();
-  assert.match(ui.node("upstream-account-action-message").textContent, /请求并发上限已保存为 3/);
+  assert.match(ui.node("upstream-account-action-message").textContent, /并发对话上限已保存为 3/);
   await ui.change();
   assert.equal(ui.button().textContent, "重新启用");
   assert.deepEqual(writes.map((write) => write.url), [

@@ -387,8 +387,11 @@ Gemini 支持 Responses 和原生生成接口，使用相同的 Gateway key，�
 `gemini-3.1-pro-high`，
 请求、响应和账单名称完全一致。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
 调用 `./scripts/antigravity-login.sh [账号名称]` 完成登录验收后配置精确模型路由。
-Owner 可在「Antigravity 账号」页面管理多账号启停、轮换系数、专属权限和请求并发，
-并查看账号用量及费用统计。支持文本 JSON
+Owner 可在「Antigravity 账号」页面管理多账号启停、轮换系数、专属权限和并发对话上限，
+并查看账号用量及费用统计。AGY 1.2.12 Gemini 模式按系统提示中的 `Conversation ID` 标记
+识别对话：同一 API Key 的同对话重叠请求在同一账号共用一个名额，最后一个请求结束后释放；
+标题等无法识别对话的请求各占一个名额。此标记是实测兼容规则，并非官方稳定协议字段。
+Gateway 的请求级并发与 Bridge 的 64 请求保护上限仍按实际请求计数。支持文本 JSON
 和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
 沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
 新模型默认禁用，管理员需重新授权；旧权限、受限 Key 白名单和倍率不继承，新倍率
