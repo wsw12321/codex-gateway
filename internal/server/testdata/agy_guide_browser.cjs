@@ -4,6 +4,7 @@
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const assets = path.join(__dirname, "../assets");
 const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../../docs/screenshots");
@@ -17,6 +18,53 @@ const initialState = {
   api_keys: [{id: "key", name: "Gemini", key_prefix: "cgk_v1_example", status: "active", model_allowlist: ["gemini-3.1-pro-high"]}],
   passkeys: [],
 };
+
+async function verifyLauncher(command, client, expectedOrigin) {
+  assert.ok(command.startsWith('node -e "') && command.endsWith('"'));
+  const script = command.slice(9, -1);
+  assert.ok(!/["\\$`!%\r\n]/.test(script), "launcher must be safe inside CMD and POSIX double quotes");
+  assert.ok(!script.includes("cgk_"), "copied launcher must not contain a key");
+  for (const outcome of ["success", "http-failure", "download-failure", "spawn-failure", "login-failure", "cancel"]) {
+    const temporary = "/tmp/中文 用户/gateway-setup-example";
+    const target = `${temporary}/configure-client.cjs`;
+    const calls = [];
+    const fakeProcess = {execPath: "/usr/bin/node", exitCode: 0};
+    const fsMock = {
+      mkdtempSync(prefix) { assert.equal(prefix, "/tmp/中文 用户/gateway-setup-"); calls.push("create"); return temporary; },
+      writeFileSync(file, body, options) {
+        assert.equal(file, target); assert.equal(body, "/* configurator */");
+        assert.deepEqual(JSON.parse(JSON.stringify(options)), {mode: 384, flag: "wx"}); calls.push("write");
+      },
+      rmSync(directory, options) {
+        assert.equal(directory, temporary);
+        assert.deepEqual(JSON.parse(JSON.stringify(options)), {recursive: true, force: true}); calls.push("cleanup");
+      },
+    };
+    const cpMock = {spawnSync(executable, args, options) {
+      assert.equal(executable, fakeProcess.execPath);
+      assert.deepEqual(Array.from(args), [target, client, expectedOrigin]);
+      assert.equal(options.stdio, "inherit", "interactive key input must keep the terminal");
+      calls.push("spawn");
+      return outcome === "spawn-failure" ? {error: new Error("spawn failed")} :
+        {status: outcome === "cancel" ? null : outcome === "login-failure" ? 7 : 0};
+    }};
+    await vm.runInNewContext(script, {
+      Buffer, AbortSignal, process: fakeProcess,
+      require(name) { return {"node:fs": fsMock, "node:os": {tmpdir: () => "/tmp/中文 用户"}, "node:path": path.posix, "node:child_process": cpMock}[name]; },
+      async fetch(url, options) {
+        assert.equal(url, `${expectedOrigin}/setup/configure-client.cjs`);
+        assert.equal(options.redirect, "error"); assert.ok(options.signal);
+        calls.push("download");
+        if (outcome === "download-failure") throw new Error("download failed");
+        return {ok: outcome !== "http-failure", status: 503, text: async () => "/* configurator */"};
+      },
+      console: {error() { calls.push("error"); }},
+    });
+    assert.ok(calls.includes("cleanup"), `${outcome} must clean temporary files`);
+    assert.equal(fakeProcess.exitCode, outcome === "success" ? 0 : outcome === "login-failure" ? 7 : 1);
+    if (outcome === "http-failure" || outcome === "download-failure") assert.ok(!calls.includes("spawn"));
+  }
+}
 
 async function main() {
   const browser = await chromium.launch({headless: true});
@@ -38,40 +86,47 @@ async function main() {
     await page.evaluate((value) => {
       bindUI(); initializeDateFilters(); renderState(value); setConnection("已连接", "ok");
     }, initialState);
-    const guide = page.locator("#guide-agy");
+    const guide = page.locator('[data-section="guide"]');
+    const agyGuide = page.locator("#guide-agy");
     await guide.waitFor({state: "visible"});
-    assert.equal(await page.locator("#guide-base-url").textContent(), `${origin}/v1`);
-    assert.equal(await page.locator("#guide-agy-base-url").textContent(), origin);
-    assert.deepEqual(JSON.parse(await page.locator("#guide-agy-config-code").textContent()), {
-      model: "gemini-3.1-pro-high", input: "Reply with exactly OK.", store: false,
-    });
-    const shell = await page.locator("#guide-agy-shell-code").textContent();
-    assert.ok(shell.includes(`export GATEWAY_BASE_URL='${origin}'`));
-    assert.ok(shell.includes("read -r -s -p 'Gateway API Key: ' GATEWAY_API_KEY"));
-    assert.ok(shell.includes("--config -"), "read the key through stdin, not process arguments");
-    assert.ok(shell.includes('"model":"gemini-3.1-pro-high"'));
-    assert.ok(shell.endsWith('"$GATEWAY_BASE_URL/v1/responses"'));
-    assert.ok(!shell.includes("agy --model"));
-    const guideText = await guide.textContent();
-    for (const family of ["3.8", "3.7", "3.6"]) {
-      for (const level of ["high", "medium"]) assert.ok(guideText.includes(`gemini-${family}-flash-${level}`));
+    assert.equal(await page.locator("#guide-base-url").textContent(), origin);
+    assert.equal(await page.locator("#guide-codex-install-code").textContent(), "npm install -g @openai/codex");
+    assert.equal(await page.locator("#guide-agy-install-windows-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd");
+    assert.equal(await page.locator("#guide-agy-install-unix-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.sh | bash");
+    assert.equal(await page.locator("#guide-codex-start-code").textContent(), "codex");
+    assert.equal(await page.locator("#guide-agy-start-code").textContent(), "agy --model gemini-3.1-pro-high");
+    for (const client of ["codex", "agy"]) {
+      const command = await page.locator(`#guide-${client}-configure-code`).textContent();
+      await verifyLauncher(command, client, origin);
     }
-    assert.ok(guideText.includes("默认禁用"));
-    assert.ok(guideText.includes("不能直接采用该配置连接 Gateway"));
+    const guideText = await guide.textContent();
+    for (const text of ["公共准备", "Codex CLI", "agy CLI", "Win+R", "cmd", "Node.js LTS", "CODEX_HOME", "0600", "1.2.12", "重新打开终端", "标题等辅助请求同样计入用量"]) {
+      assert.ok(guideText.includes(text), `guide missing ${text}`);
+    }
+    for (const model of ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview"]) {
+      assert.ok(guideText.includes(model));
+    }
+    assert.equal(await guide.locator('a[download]').count(), 0);
+    assert.ok(!guideText.includes("本机 AGY"));
+    assert.ok(!guideText.includes("configure-codex.bat"));
     await page.evaluate(() => { window.guideCopied = ""; navigator.clipboard.writeText = async (value) => { window.guideCopied = value; }; });
-    await page.locator('[data-copy-target="guide-agy-shell-code"]').click();
-    assert.equal(await page.evaluate(() => window.guideCopied), shell);
-    await page.locator('[data-copy-target="guide-agy-base-url"]').click();
-    assert.equal(await page.evaluate(() => window.guideCopied), origin);
+    for (const button of await guide.locator("[data-copy-target]").all()) {
+      const target = await button.getAttribute("data-copy-target");
+      await button.click();
+      assert.equal(await page.evaluate(() => window.guideCopied), await page.locator(`#${target}`).textContent());
+    }
+    assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
     // Let the copy button's transient feedback settle before documenting the UI.
     await page.waitForTimeout(1600);
     fs.mkdirSync(screenshots, {recursive: true});
     // Capture the guide panel without sticky navigation overlapping a tall crop.
     const screenshotStyle = ".app > aside, .skip-link { visibility: hidden !important; }";
-    await guide.screenshot({path: path.join(screenshots, "agy-guide-desktop.png"), style: screenshotStyle});
+    await guide.screenshot({path: path.join(screenshots, "usage-guide-desktop.png"), style: screenshotStyle});
+    await agyGuide.screenshot({path: path.join(screenshots, "agy-guide-desktop.png"), style: screenshotStyle});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile guide must not overflow horizontally");
-    await guide.screenshot({path: path.join(screenshots, "agy-guide-mobile.png"), style: screenshotStyle});
+    await guide.screenshot({path: path.join(screenshots, "usage-guide-mobile.png"), style: screenshotStyle});
+    await agyGuide.screenshot({path: path.join(screenshots, "agy-guide-mobile.png"), style: screenshotStyle});
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), errors, desktop: "1440x1080", mobile: "390x844", screenshots}));
   } finally {

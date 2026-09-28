@@ -1,29 +1,17 @@
 package server
 
-import (
-	"net/http"
-	"strings"
-)
+import "net/http"
 
-const codexGatewayBaseURLPlaceholder = "__CODEX_GATEWAY_BASE_URL__"
-
-func (s *Server) codexShellSetup(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+// The launcher supplies the origin visible in the browser, which can differ
+// from PublicURL when the same deployment has multiple entry points.
+func (s *Server) clientSetup(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(renderCodexSetupScript(codexShellSetupScript, s.codexGatewayBaseURL()))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(clientSetupScript)
 }
 
-func (s *Server) codexWindowsSetup(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/x-msdos-program")
-	w.Header().Set("Content-Disposition", `attachment; filename="configure-codex.bat"`)
+func (s *Server) retiredClientSetup(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	_, _ = w.Write(renderCodexSetupScript(codexWindowsSetupScript, s.codexGatewayBaseURL()))
-}
-
-func (s *Server) codexGatewayBaseURL() string {
-	return s.config.PublicURL.Scheme + "://" + s.config.PublicURL.Host + "/v1"
-}
-
-func renderCodexSetupScript(template []byte, baseURL string) []byte {
-	return []byte(strings.ReplaceAll(string(template), codexGatewayBaseURLPlaceholder, baseURL))
+	http.Error(w, "This setup script has been retired. Open the gateway usage guide for the current client configuration command.", http.StatusGone)
 }

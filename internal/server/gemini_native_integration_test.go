@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,23 +27,30 @@ import (
 )
 
 type nativeLifecycleExecutor struct {
-	response string
-	failure  *antigravity.Failure
-	calls    int
-	started  chan struct{}
+	response          string
+	responseForPrompt func(string) string
+	failure           *antigravity.Failure
+	calls             atomic.Int64
+	model             atomic.Value
+	started           chan struct{}
 }
 
 func (e *nativeLifecycleExecutor) Check(context.Context) ([]string, error) {
 	return config.AntigravityModels(), nil
 }
-func (e *nativeLifecycleExecutor) Run(ctx context.Context, _, _ string) (antigravity.Result, *antigravity.Failure) {
-	e.calls++
+func (e *nativeLifecycleExecutor) Run(ctx context.Context, model, prompt string) (antigravity.Result, *antigravity.Failure) {
+	e.calls.Add(1)
+	e.model.Store(model)
 	if e.started != nil {
 		close(e.started)
 		<-ctx.Done()
 		return antigravity.Result{}, &antigravity.Failure{Code: "client_disconnected"}
 	}
-	return antigravity.Result{Status: "success", Response: e.response, NumTurns: 1, Usage: &antigravity.Usage{
+	response := e.response
+	if e.responseForPrompt != nil {
+		response = e.responseForPrompt(prompt)
+	}
+	return antigravity.Result{Status: "success", Response: response, NumTurns: 1, Usage: &antigravity.Usage{
 		InputTokens: 100, CacheReadTokens: 20, OutputTokens: 30, ThinkingTokens: 7, TotalTokens: 130,
 	}}, e.failure
 }
@@ -118,7 +126,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	h.server.config.UsagePricing = nativeGeminiPricing(t)
 	h.server.config.AntigravityModelRoutes = map[string]string{config.AntigravityPublicModel: config.AntigravityCLIModel}
-	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 3}
+	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 4}
 	executor := &nativeLifecycleExecutor{response: "Hello"}
 	bridge := antigravity.NewServer(executor, "internal-bridge-token")
 	bridge.Refresh(ctx)
@@ -171,8 +179,44 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	send := func(model, action, body string) *httptest.ResponseRecorder {
 		return sendWithKey(h.apiKey, model, action, body)
 	}
+	// Only the actual model can grant access. Neither a client alias in the
+	// key allowlist nor an enabled API key can bypass the user's model grant.
+	aliases := []string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview"}
+	if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=$2 WHERE id=$1`, key.ID, aliases); err != nil {
+		t.Fatal(err)
+	}
+	for _, alias := range aliases {
+		checkNativeGeminiError(t, send(alias, "generateContent", nativeGeminiText), 403, "PERMISSION_DENIED")
+		if config.IsAntigravityModel(alias) {
+			t.Fatalf("native alias leaked into model catalog: %s", alias)
+		}
+	}
+	if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=ARRAY[$2] WHERE id=$1`, key.ID, config.AntigravityPublicModel); err != nil {
+		t.Fatal(err)
+	}
+	for _, enabled := range []bool{false, true} {
+		if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
+			ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "verify native alias model permission"},
+			Model:                  config.AntigravityPublicModel, Enabled: enabled, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !enabled {
+			for _, alias := range aliases {
+				checkNativeGeminiError(t, send(alias, "generateContent", nativeGeminiText), 403, "PERMISSION_DENIED")
+			}
+		}
+	}
+	var rejectedUsage, rejectedQuota, rejectedBilling int
+	if err := repository.DB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_requests), (SELECT count(*) FROM quota_reservations), (SELECT count(*) FROM billing_reservations)`).Scan(&rejectedUsage, &rejectedQuota, &rejectedBilling); err != nil {
+		t.Fatal(err)
+	}
+	if rejectedUsage != 0 || rejectedQuota != 0 || rejectedBilling != 0 || executor.calls.Load() != 0 {
+		t.Fatalf("denied alias reserved resources: usage=%d quota=%d billing=%d calls=%d", rejectedUsage, rejectedQuota, rejectedBilling, executor.calls.Load())
+	}
 	withConversation := func(body, conversationID string) string {
-		return `{"systemInstruction":{"parts":[{"text":"Conversation ID: ` + conversationID + `"}]},` + strings.TrimPrefix(body, "{")
+		// Generation defaults captured from official AGY 1.2.12 selecting Pro high.
+		return `{"generationConfig":{"maxOutputTokens":65535,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":-1}},"systemInstruction":{"parts":[{"text":"Conversation ID: ` + conversationID + `"}]},` + strings.TrimPrefix(body, "{")
 	}
 	const conversationID = "12345678-1234-5678-9012-123456789abc"
 	conversationHash := func(w *httptest.ResponseRecorder) string {
@@ -183,7 +227,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}
 		return hash
 	}
-	textResponse := send(config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, conversationID))
+	textResponse := send("gemini-3.1-pro-preview", "generateContent", withConversation(nativeGeminiText, conversationID))
 	if textResponse.Code != 200 {
 		t.Fatalf("text: %d %s", textResponse.Code, textResponse.Body)
 	}
@@ -201,7 +245,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	executor.response = `{"type":"function_call","name":"read_file","arguments":{"path":"README.md"}}`
 	toolBody := `{"contents":[{"role":"user","parts":[{"text":"read README"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parametersJsonSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
-	toolResponse := send(config.AntigravityPublicModel, "streamGenerateContent", withConversation(toolBody, conversationID))
+	toolResponse := send("gemini-3.1-pro-preview-customtools", "streamGenerateContent", withConversation(toolBody, conversationID))
 	if toolResponse.Code != 200 {
 		t.Fatalf("tool: %d %s", toolResponse.Code, toolResponse.Body)
 	}
@@ -233,7 +277,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	executor.response = "The README describes the gateway."
 	loopBody := fmt.Sprintf(`{"contents":[{"role":"user","parts":[{"text":"read README"}]},{"role":"model","parts":[{"functionCall":{"id":%q,"name":"read_file","args":{"path":"README.md"}}}]},{"role":"model","parts":[{"functionResponse":{"id":%q,"name":"read_file","response":{"output":"Gateway documentation"}}}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parameters":{"type":"OBJECT","properties":{"path":{"type":"STRING"}},"required":["path"]}}]}]}`, call.ID, call.ID)
-	loopResponse := send(config.AntigravityPublicModel, "generateContent", withConversation(loopBody, strings.ToUpper(conversationID)))
+	loopResponse := send("gemini-3.1-pro-preview-customtools", "generateContent", withConversation(loopBody, strings.ToUpper(conversationID)))
 	if loopResponse.Code != 200 {
 		t.Fatalf("loop: %d %s", loopResponse.Code, loopResponse.Body)
 	}
@@ -241,7 +285,18 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if !store.ValidConversationHash(mainConversationHash) || conversationHash(toolResponse) != mainConversationHash || conversationHash(loopResponse) != mainConversationHash {
 		t.Fatalf("main and tool rounds were not grouped: main=%q tool=%q loop=%q", mainConversationHash, conversationHash(toolResponse), conversationHash(loopResponse))
 	}
-	for i, w := range []*httptest.ResponseRecorder{textResponse, toolResponse, loopResponse} {
+	executor.response = "Gateway documentation"
+	titleResponse := send("gemini-3.1-flash-lite-preview", "generateContent", `{"generationConfig":{"thinkingConfig":{"includeThoughts":true,"thinkingBudget":-1}},"contents":[{"role":"user","parts":[{"text":"Generate a short title for this conversation: read the gateway README."}]}]}`)
+	if titleResponse.Code != 200 || conversationHash(titleResponse) != "" {
+		t.Fatalf("title: %d %s", titleResponse.Code, titleResponse.Body)
+	}
+	if executor.model.Load() != config.AntigravityCLIModel {
+		t.Fatalf("executor received alias %q", executor.model.Load())
+	}
+	for i, w := range []*httptest.ResponseRecorder{textResponse, toolResponse, loopResponse, titleResponse} {
+		if !strings.Contains(w.Body.String(), `"modelVersion":"`+config.AntigravityPublicModel+`"`) {
+			t.Fatalf("response did not identify actual model: %s", w.Body)
+		}
 		requestID := w.Header().Get(httpx.RequestIDHeader)
 		if err := repository.SettleRequest(ctx, requestID, time.Now().UTC()); err != nil {
 			t.Fatal(err)
@@ -268,19 +323,28 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 			t.Fatalf("billing metadata mode=%q tier=%q fallback=%q", mode, tier, fallback)
 		}
 	}
-	quotaResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
-	checkNativeGeminiError(t, quotaResponse, 429, "RESOURCE_EXHAUSTED")
-	if quotaResponse.Header().Get("Retry-After") == "" {
-		t.Fatal("quota lost Retry-After")
+	for _, model := range append(aliases, config.AntigravityPublicModel) {
+		quotaResponse := send(model, "generateContent", nativeGeminiText)
+		checkNativeGeminiError(t, quotaResponse, 429, "RESOURCE_EXHAUSTED")
+		if quotaResponse.Header().Get("Retry-After") == "" {
+			t.Fatal("quota lost Retry-After")
+		}
 	}
-	titleResponse := send("gemini-2.5-flash-lite", "generateContent", nativeGeminiText)
-	checkNativeGeminiError(t, titleResponse, 404, "NOT_FOUND")
+	unsupportedTitleResponse := send("gemini-2.5-flash-lite", "generateContent", nativeGeminiText)
+	checkNativeGeminiError(t, unsupportedTitleResponse, 404, "NOT_FOUND")
 	var admitted int
 	if err := repository.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE api_key_id=$1`, key.ID).Scan(&admitted); err != nil {
 		t.Fatal(err)
 	}
-	if admitted != 3 || executor.calls != 3 || h.upstreamCalls.Load() != 0 {
-		t.Fatalf("admitted=%d executor=%d primary=%d", admitted, executor.calls, h.upstreamCalls.Load())
+	if admitted != 4 || executor.calls.Load() != 4 || h.upstreamCalls.Load() != 0 {
+		t.Fatalf("admitted=%d executor=%d primary=%d", admitted, executor.calls.Load(), h.upstreamCalls.Load())
+	}
+	var reserved, completed, tokens int
+	if err := repository.DB().QueryRowContext(ctx, `SELECT requests_reserved,requests_completed,tokens_used FROM quota_counters WHERE scope_type='key' AND scope_id=$1`, key.ID).Scan(&reserved, &completed, &tokens); err != nil {
+		t.Fatal(err)
+	}
+	if reserved != 4 || completed != 4 || tokens != 520 {
+		t.Fatalf("aliases did not share quota: reserved=%d completed=%d tokens=%d", reserved, completed, tokens)
 	}
 	h.server.config.Limits.KeyRequestsPerDay = 0
 	otherConversation := send(config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, "87654321-4321-8765-2109-cba987654321"))
@@ -312,7 +376,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatalf("API key conversation scope was not isolated: %d %s", otherKeyResponse.Code, otherKeyResponse.Body)
 	}
 	for range 2 {
-		title := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
+		title := send("gemini-3.1-flash-lite-preview", "generateContent", nativeGeminiText)
 		if title.Code != 200 || conversationHash(title) != "" {
 			t.Fatalf("unmarked title request was grouped: %d %s", title.Code, title.Body)
 		}
@@ -366,7 +430,10 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if err := repository.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE api_key_id=$1`, key.ID).Scan(&admitted); err != nil {
 		t.Fatal(err)
 	}
-	if admitted != 8 || executor.calls != 9 {
-		t.Fatalf("funding rejection reserved a request: admitted=%d calls=%d", admitted, executor.calls)
+	if admitted != 9 || executor.calls.Load() != 10 {
+		t.Fatalf("funding rejection reserved a request: admitted=%d calls=%d", admitted, executor.calls.Load())
 	}
+	t.Run("AGY CLI 1.2.12", func(t *testing.T) {
+		testNativeAGYCLI(t, h.handler, repository, user.ID, key.ID, h.apiKey, executor)
+	})
 }

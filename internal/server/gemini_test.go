@@ -113,8 +113,18 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
 		},
 		{
-			name: "retired preview alias", path: "/v1/responses",
+			name: "native preview alias excluded from responses", path: "/v1/responses",
 			body:       `{"model":"gemini-3.1-pro-preview","input":[]}`,
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
+		},
+		{
+			name: "native customtools alias excluded from responses", path: "/v1/responses",
+			body:       `{"model":"gemini-3.1-pro-preview-customtools","input":[]}`,
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
+		},
+		{
+			name: "native title alias excluded from responses", path: "/v1/responses",
+			body:       `{"model":"gemini-3.1-flash-lite-preview","input":[]}`,
 			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
 		},
 		{

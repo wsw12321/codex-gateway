@@ -111,8 +111,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /recover", s.page)
 	s.mux.HandleFunc("GET /static/app.js", s.javascript)
 	s.mux.HandleFunc("GET /static/style.css", s.stylesheet)
-	s.mux.HandleFunc("GET /setup/configure-codex.sh", s.codexShellSetup)
-	s.mux.HandleFunc("GET /setup/configure-codex.bat", s.codexWindowsSetup)
+	s.mux.HandleFunc("GET /setup/configure-client.cjs", s.clientSetup)
+	s.mux.HandleFunc("GET /setup/configure-codex.sh", s.retiredClientSetup)
+	s.mux.HandleFunc("GET /setup/configure-codex.bat", s.retiredClientSetup)
 
 	s.publicPOST("/auth/login/begin", s.beginLogin)
 	s.publicPOST("/auth/login/finish", s.finishLogin)

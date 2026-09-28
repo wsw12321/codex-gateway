@@ -395,8 +395,10 @@ Gateway 的请求级并发与 Bridge 的 64 请求保护上限仍按实际请求
 和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
 沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
 新模型默认禁用，管理员需重新授权；旧权限、受限 Key 白名单和倍率不继承，新倍率
-默认为 `1`。当前本机 AGY Gemini 提供方发送的旧 preview/customtools 路径将被拒绝，
-请使用精确模型名的 Responses 或原生 API 请求。完整请求示例、维护窗口协调升级
+默认为 `1`。原生 Gemini 入口兼容 AGY 1.2.12 的 `gemini-3.1-pro-preview`、
+`gemini-3.1-pro-preview-customtools` 和标题模型 `gemini-3.1-flash-lite-preview`，
+统一按 `gemini-3.1-pro-high` 授权、扣减额度和计费；标题等辅助请求也计入用量。
+模型目录和 Responses 仍使用精确模型名。完整请求示例、维护窗口协调升级
 `0023`、API 家族等价定价及出口域名验收见 [Antigravity 接入说明](docs/gemini-pro.md)。
 
 ### 5. 初始化 Owner
@@ -426,24 +428,26 @@ CLIProxyAPI 多账号补丁、两账号尝试上限和账号归因追踪契约�
 `0009` 需要 Gateway 与兼容层配套升级。兼容层先启动并通过健康检查，再启动
 Gateway；登录后的生成冒烟会等待 Gateway 就绪。回调或数据库失败返回 503。
 
-## Codex CLI 配置
+## Codex CLI 与 agy CLI 配置
 
-每台设备创建不同的 API Key，需要区分项目时为 Key 设置默认项目。管理界面的
-“使用指导”可直接生成适用于当前部署地址的一键配置命令；也可以手工在
-`~/.codex/config.toml` 的最前面加入：
+管理界面“使用指导”提供公共准备，以及 Codex CLI、agy CLI 各自的安装、配置和启动
+步骤。先安装 [Node.js LTS](https://nodejs.org/en/download)；Windows 按 Win+R，输入
+`cmd` 打开命令提示符。Codex 使用 `npm install -g @openai/codex`，agy 使用页面列出的
+官方 Windows CMD 或 macOS / Linux 安装命令。
 
-```toml
-openai_base_url = "https://codex.example.com/v1"
-```
+每台设备创建独立 API Key，需要区分项目时设置 Key 的默认项目。复制所选客户端的
+一键配置命令，在终端提示后输入 Key。命令使用当前部署地址，通过 Node.js 处理中文
+路径与 UTF-8，修改配置前备份并保留无关设置。Key 不进入复制命令、命令历史或网页存储。
 
-将域名替换为真实部署域名，然后执行 `codex login --with-api-key` 并按照 Codex
-CLI 的输入流程提供 Gateway API Key。Gateway 使用 Key 的默认项目；Key 没有默认
-项目时记为 `unassigned`。不要把 Key 写进可提交的 TOML、项目 `.env`、shell
-profile 或命令历史。
+Codex 尊重 `CODEX_HOME`，设置内置 `openai` provider、`<站点 origin>/v1`，并通过
+`codex login --with-api-key` 保存持久凭据。agy 合并用户级 `settings.json` 的
+`modelProvider: "gemini"`，保存站点 origin 和 Key；Windows 使用用户环境变量，
+macOS / Linux 使用权限为 `0600` 的独立凭据文件，并配置 Bash / Zsh 自动加载。
 
-一键脚本只维护顶层 `openai_base_url`，不会删除旧版脚本生成的
-`model_provider = "gateway"` 或 `[model_providers.gateway]`。如果本机仍显式启用了
-旧 provider，请手工处理该旧配置。详见 [客户端配置](docs/client-config.md)。
+配置完成后重新打开终端，运行 `codex` 或 `agy --model gemini-3.1-pro-high`，发送
+简单请求并在“使用统计”核对。agy 接入以官方 `1.2.12` 为验收基线，标题等辅助请求
+也按 `gemini-3.1-pro-high` 计费。详细步骤、凭据保存方式和接口说明见
+[客户端配置](docs/client-config.md)。
 
 ## 开发与验证
 

@@ -828,6 +828,28 @@ code {
   margin-top: 1.5rem;
 }
 
+.guide-client-steps {
+  margin-top: 1rem;
+  gap: 1.5rem;
+}
+
+.guide-client-steps > li {
+  min-width: 0;
+}
+
+.guide-client-steps h4 {
+  margin: 0 0 .65rem;
+  font-size: 1rem;
+}
+
+.guide-client-steps .code-card + .code-card {
+  margin-top: .75rem;
+}
+
+.guide-client-steps p {
+  overflow-wrap: anywhere;
+}
+
 .guide-endpoint {
   display: flex;
   align-items: center;

@@ -196,118 +196,114 @@
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
-              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">配置 Codex 或调用 Gemini API</h2><p>Codex 按照下面四步配置；Gemini 使用下方的 API 请求示例。示例地址已自动使用当前站点域名。</p></div>
-              <span class="badge">约 3 分钟</span>
+              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">开始使用 Codex CLI 或 agy CLI</h2><p>先完成公共准备，再按所选客户端的安装、配置、启动步骤操作。复制的配置命令已使用当前站点地址。</p></div>
+              <span class="badge">配置一次，持续使用</span>
             </div>
 
-            <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
-              <div><span>当前 API 地址</span><code id="guide-base-url">正在生成…</code></div>
-              <button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button>
-            </aside>
-
-            <ol class="guide-steps">
-              <li class="guide-step panel">
-                <div class="guide-step-marker" aria-hidden="true">1</div>
-                <div class="guide-step-body">
-                  <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3>准备设备和 API Key</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
-                  <p>API Key 必须绑定设备。新创建的 Key 可在二次验证后再次查看；需要区分项目时，请设置默认项目。</p>
-                  <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
-                  <div class="button-group guide-actions">
-                    <a class="button secondary" href="#resources">管理设备与项目</a>
-                    <a class="button" href="#keys">创建 API Key</a>
-                  </div>
-                </div>
-              </li>
-
-              <li class="guide-step panel">
-                <div class="guide-step-marker" aria-hidden="true">2</div>
-                <div class="guide-step-body">
-                  <div class="guide-step-title"><div><p class="eyebrow">CONFIG.TOML</p><h3>一键配置 Gateway 地址</h3></div></div>
-                  <p>macOS / Linux 在终端复制执行下面的命令；Windows 下载并运行批处理文件。脚本会更新用户级 <code>~/.codex/config.toml</code>，并在修改已有文件前创建 <code>config.toml.bak</code>。</p>
-                  <div class="code-card">
-                    <div class="code-toolbar"><span>Codex CLI · macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-install-code">复制一键命令</button></div>
-                    <pre><code id="guide-install-code">正在生成…</code></pre>
-                  </div>
-                  <div class="button-group guide-actions">
-                    <a id="guide-windows-download" class="button secondary" href="/setup/configure-codex.bat" download="configure-codex.bat">下载 Windows .bat</a>
-                  </div>
-                  <p class="guide-note">脚本只添加或替换顶层 <code>openai_base_url</code>，其他配置会保留。旧版脚本生成的自定义 provider 配置也不会被删除。</p>
-                  <details class="guide-platform">
-                    <summary>查看或手动复制 config.toml 配置</summary>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>~/.codex/config.toml</span><button type="button" class="secondary copy-button" data-copy-target="guide-config-code">复制配置</button></div>
-                      <pre><code id="guide-config-code">正在生成…</code></pre>
-                    </div>
-                  </details>
-                </div>
-              </li>
-
-              <li class="guide-step panel">
-                <div class="guide-step-marker" aria-hidden="true">3</div>
-                <div class="guide-step-body">
-                  <div class="guide-step-title"><div><p class="eyebrow">CREDENTIALS</p><h3>登录 Codex</h3></div></div>
-                  <p>运行 <code>codex login --with-api-key</code>，按照 Codex CLI 的输入流程提供刚创建的 Gateway API Key。无需把 Key 写入配置文件或环境变量。</p>
-                  <p class="guide-warning">不要把 API Key 写入 Git 仓库、项目 <code>.env</code>、Shell 配置文件或命令历史。</p>
-                </div>
-              </li>
-
-              <li class="guide-step panel">
-                <div class="guide-step-marker" aria-hidden="true">4</div>
-                <div class="guide-step-body">
-                  <div class="guide-step-title"><div><p class="eyebrow">VERIFY</p><h3>启动并验证</h3></div></div>
-                  <p>启动 Codex 并发起一个简单请求。成功后可在“使用统计”中看到请求元数据。</p>
-                  <div class="code-card compact-code">
-                    <div class="code-toolbar"><span>终端</span><button type="button" class="secondary copy-button" data-copy-target="guide-start-code">复制</button></div>
-                    <pre><code id="guide-start-code">codex</code></pre>
-                  </div>
-                  <div class="guide-troubleshooting">
-                    <h4>遇到问题？</h4>
-                    <dl>
-                      <div><dt><code>401 invalid_api_key</code></dt><dd>重新执行 Codex 登录，并确认 Key 尚未过期或被删除。</dd></div>
-                      <div><dt><code>403 key_disabled</code></dt><dd>在 API Keys 页面重新启用该 Key，或改用其他活跃 Key。</dd></div>
-                      <div><dt><code>400 invalid_project</code></dt><dd>确认 API Key 的默认项目仍为活跃状态，且属于当前账号。</dd></div>
-                      <div><dt>模型不可用</dt><dd>检查 API Key 的模型白名单及管理员为当前用户配置的模型权限。Gemini 支持 Responses 和原生 Gemini 协议；请求必须使用模型目录中的精确名称。</dd></div>
-                    </dl>
-                  </div>
-                  <div class="button-group guide-actions">
-                    <a class="button secondary" href="#usage">查看使用统计</a>
-                    <a class="button secondary" href="#keys">管理 API Keys</a>
-                  </div>
-                </div>
-              </li>
-            </ol>
-
-            <div id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
+            <article id="guide-prepare" class="guide-client panel" aria-labelledby="guide-prepare-title">
               <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">GEMINI API</p><h3 id="guide-agy-title">通过 Gateway key 调用 Gemini</h3></div><span class="badge">文本与客户端工具</span></div>
-                <p>Gateway 通过服务器的 Antigravity 订阅账号调用 Gemini。管理员需先启用路由，并授予你的账号与 API Key 相应模型权限；请求沿用当前额度与结算。</p>
-                <aside class="guide-endpoint" aria-label="Gemini Gateway 地址">
-                  <div><span>Gateway 站点地址</span><code id="guide-agy-base-url">正在生成…</code></div>
-                  <button type="button" class="secondary copy-button" data-copy-target="guide-agy-base-url">复制地址</button>
+                <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3 id="guide-prepare-title">公共准备</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
+                <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
+                  <div><span>当前 Gateway 站点</span><code id="guide-base-url">正在生成…</code></div>
+                  <button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button>
                 </aside>
-                <h4>1. 选择已获授权的模型</h4>
-                <p>使用 Gateway key 查询 <code>GET /v1/models</code>，选择其中的精确模型名称。下方以 <code>gemini-3.1-pro-high</code> 为例，需先获得该模型权限。</p>
-                <div class="code-card compact-code">
-                  <div class="code-toolbar"><span>POST /v1/responses · 请求正文</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-config-code">复制正文</button></div>
-                  <pre><code id="guide-agy-config-code">{
-  "model": "gemini-3.1-pro-high",
-  "input": "Reply with exactly OK.",
-  "store": false
-}</code></pre>
+                <p>安装 <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">Node.js LTS</a>（包含 npm）。Windows 按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车；macOS / Linux 打开终端。安装后重新打开终端，运行 <code>node --version</code> 和 <code>npm --version</code> 确认安装成功。</p>
+                <p>为当前设备创建 API Key，并确认账号与 Key 已获得要使用的模型权限。新建 Key 可在二次验证后再次查看；项目可选，设置后会用于请求归属。</p>
+                <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
+                <div class="button-group guide-actions">
+                  <a class="button secondary" href="#resources">管理设备与项目</a>
+                  <a class="button" href="#keys">创建 API Key</a>
                 </div>
-                <h4>2. 发送文本请求</h4>
-                <p>在 Bash 中运行下列命令，并在提示出现后粘贴本 Gateway 签发的 key，输入不会显示。Key 仅用于 Gateway 鉴权。</p>
-                <div class="code-card">
-                  <div class="code-toolbar"><span>Bash · 当前终端会话</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-shell-code">复制请求命令</button></div>
-                  <pre><code id="guide-agy-shell-code">正在生成…</code></pre>
-                </div>
-                <p class="guide-note">支持 <code>gemini-3.8-flash-high</code>、<code>gemini-3.8-flash-medium</code>、<code>gemini-3.7-flash-high</code>、<code>gemini-3.7-flash-medium</code>、<code>gemini-3.6-flash-high</code>、<code>gemini-3.6-flash-medium</code> 和 <code>gemini-3.1-pro-high</code>。实际列表取决于管理员授权及可用订阅账号。</p>
-                <h4>3. 原生 Gemini API 与用量</h4>
-                <p>也可调用 <code>POST /v1beta/models/{model}:generateContent</code> 或 <code>:streamGenerateContent?alt=sse</code>，路径使用同一精确模型名。原生请求正文使用 <code>contents</code>，鉴权可使用单一 Bearer 头或 <code>x-goog-api-key</code>。可在“使用统计”查看请求和 API Token 等价费用。</p>
-                <p class="guide-note">请求上限为 1 MiB，支持文本和客户端执行的函数工具。并发对话上限按账号设置：同一 API Key 的同对话重叠请求共享名额，最后一个请求结束后释放；标题等无法识别对话的请求各占一个名额。繁忙时返回 429；流式响应在完整生成并校验后输出。图片、精确 countTokens 和云端内置工具暂不支持。</p>
-                <p class="guide-note">旧 <code>gemini-3.1-pro-preview</code> 与 <code>gemini-3.1-pro-preview-customtools</code> 已停止接受。当前本机 AGY 的 Gemini 提供方会发送这些旧路径，因此不能直接采用该配置连接 Gateway。升级后的七个模型默认禁用，需管理员重新授权；受限 Key 需重新签发包含新名称的白名单。</p>
+                <p class="guide-note">配置命令会在终端提示输入 Gateway API Key，并将地址和凭据保存到当前用户配置中，修改前自动备份。Key 不包含在复制命令中，也不会写入命令历史或网页存储。配置过程使用 Node.js 读写 UTF-8 文件，支持中文及空格路径。</p>
               </div>
-            </div>
+            </article>
+
+            <article id="guide-codex" class="guide-client panel" aria-labelledby="guide-codex-title">
+              <div class="guide-step-body">
+                <div class="guide-step-title"><div><p class="eyebrow">OPENAI</p><h3 id="guide-codex-title">Codex CLI</h3></div><a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                <ol class="guide-steps guide-client-steps">
+                  <li>
+                    <h4>1. 安装 Codex CLI</h4>
+                    <p>在 Windows CMD 或 macOS / Linux 终端运行：</p>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>安装命令 · 全平台</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-install-code">复制安装命令</button></div>
+                      <pre><code id="guide-codex-install-code">npm install -g @openai/codex</code></pre>
+                    </div>
+                    <p>安装后运行 <code>codex --version</code> 确认命令可用。</p>
+                  </li>
+                  <li>
+                    <h4>2. 保存 Gateway 地址和 API Key</h4>
+                    <p>复制并执行下面的一整行命令，按提示输入 Key。配置器会更新用户级 <code>config.toml</code>，选择内置 <code>openai</code> provider，并通过 Codex 登录保存凭据。</p>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-configure-code">复制配置命令</button></div>
+                      <pre><code id="guide-codex-configure-code">正在生成…</code></pre>
+                    </div>
+                    <p class="guide-note">默认配置目录为 <code>~/.codex</code>；已设置 <code>CODEX_HOME</code> 时使用该目录。网关地址自动加上 <code>/v1</code>，其他设置保留。凭据持久保存，下一次打开终端无需重新输入。<a href="https://developers.openai.com/codex/auth/" target="_blank" rel="noopener noreferrer">了解 Codex 认证</a>。</p>
+                  </li>
+                  <li>
+                    <h4>3. 重新打开终端，启动验证</h4>
+                    <p>关闭当前终端并重新打开，再运行以下命令，发送“请回复 OK”。成功后可在“使用统计”查看请求。</p>
+                    <div class="code-card compact-code">
+                      <div class="code-toolbar"><span>启动 Codex</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-start-code">复制启动命令</button></div>
+                      <pre><code id="guide-codex-start-code">codex</code></pre>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+            </article>
+
+            <article id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
+              <div class="guide-step-body">
+                <div class="guide-step-title"><div><p class="eyebrow">ANTIGRAVITY</p><h3 id="guide-agy-title">agy CLI</h3></div><a href="https://antigravity.google/docs/cli/install/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                <p>通过 Gateway 使用服务器的 Antigravity 订阅账号。管理员需先启用路由，并授予账号和 API Key <code>gemini-3.1-pro-high</code> 权限。以下接入以官方 AGY <code>1.2.12</code> 为验收基线。</p>
+                <ol class="guide-steps guide-client-steps">
+                  <li>
+                    <h4>1. 安装 agy CLI</h4>
+                    <p>根据系统选择官方安装命令。Windows 按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车：</p>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>Windows CMD</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-windows-code">复制安装命令</button></div>
+                      <pre><code id="guide-agy-install-windows-code">curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</code></pre>
+                    </div>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-unix-code">复制安装命令</button></div>
+                      <pre><code id="guide-agy-install-unix-code">curl -fsSL https://antigravity.google/cli/install.sh | bash</code></pre>
+                    </div>
+                    <p>重新打开终端，运行 <code>agy --version</code> 确认安装成功。</p>
+                  </li>
+                  <li>
+                    <h4>2. 保存 Gateway 地址和 API Key</h4>
+                    <p>执行下面的一整行命令，按提示输入本 Gateway 签发的 Key。配置器合并用户级 <code>~/.gemini/antigravity-cli/settings.json</code>，设置 <code>modelProvider: "gemini"</code>，并持久保存 <code>GOOGLE_GEMINI_BASE_URL</code> 和 <code>GEMINI_API_KEY</code>。</p>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-configure-code">复制配置命令</button></div>
+                      <pre><code id="guide-agy-configure-code">正在生成…</code></pre>
+                    </div>
+                    <p class="guide-note">Windows 保存为当前用户的环境变量；macOS / Linux 将凭据保存到权限为 <code>0600</code> 的独立文件，并自动配置 Bash / Zsh 加载。地址使用当前站点 origin，不加 <code>/v1</code>。已有无关设置会保留，可重复配置。</p>
+                  </li>
+                  <li>
+                    <h4>3. 重新打开终端，启动验证</h4>
+                    <p>关闭当前终端并重新打开，运行以下命令，发送“请回复 OK”。Windows 若使用 Windows Terminal，请退出整个应用后重开，让新终端读取用户环境变量。</p>
+                    <div class="code-card">
+                      <div class="code-toolbar"><span>启动 agy</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-start-code">复制启动命令</button></div>
+                      <pre><code id="guide-agy-start-code">agy --model gemini-3.1-pro-high</code></pre>
+                    </div>
+                    <p class="guide-note">agy 发出的 <code>gemini-3.1-pro-preview</code>、<code>gemini-3.1-pro-preview-customtools</code> 及标题模型 <code>gemini-3.1-flash-lite-preview</code> 请求，会在原生 Gemini 接口统一使用 <code>gemini-3.1-pro-high</code>。权限、额度和计费均按该实际模型处理，标题等辅助请求同样计入用量。这些兼容名称不用于模型目录或 Responses 接口。</p>
+                  </li>
+                </ol>
+                <details class="guide-platform guide-troubleshooting">
+                  <summary>排查配置与请求问题</summary>
+                  <dl>
+                    <div><dt>命令未找到</dt><dd>安装 Node.js 或客户端后重新打开终端，再检查对应的 <code>--version</code> 命令。</dd></div>
+                    <div><dt>配置失败或取消</dt><dd>根据终端错误检查配置文件语法与写入权限；修复后可重新执行同一条配置命令。不要把 Key 直接写入命令。</dd></div>
+                    <div><dt><code>401 / 403</code></dt><dd>检查 Key 是否活跃、是否过期，以及账号和 Key 的模型权限。修改 Key 后重新执行配置。</dd></div>
+                    <div><dt>模型或额度不可用</dt><dd>请管理员检查模型路由、订阅账号及你的额度。标题请求也会使用模型额度。</dd></div>
+                  </dl>
+                </details>
+                <div class="button-group guide-actions">
+                  <a class="button secondary" href="#usage">查看使用统计</a>
+                  <a class="button secondary" href="#keys">管理 API Keys</a>
+                </div>
+              </div>
+            </article>
           </section>
 
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">

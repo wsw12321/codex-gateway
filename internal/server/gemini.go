@@ -54,8 +54,13 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "unsupported_endpoint", "不支持的 Gemini 接口")
 		return
 	}
-	// Public names are the exact CLI IDs. API-family and customtools aliases
-	// cannot select a different model or share another model's authorization.
+	// AGY 1.2.12 rewrites the selected Pro model for conversation, tools and
+	// title requests. Normalize only this native entry point, before any
+	// permission, quota or billing lookup; the catalog keeps the actual IDs.
+	switch model {
+	case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
+		model = config.AntigravityPublicModel
+	}
 	if !config.IsAntigravityModel(model) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 		return

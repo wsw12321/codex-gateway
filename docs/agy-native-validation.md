@@ -1,9 +1,9 @@
 # AGY 原生 Gemini 接入验证
 
-日期：2026-09-27。本页保留旧 preview/customtools 接入的历史验证记录，
-不代表当前同名模型方案的验收。当前请求示例、模型权限和 `0023` 升级要求以
-[Antigravity 接入说明](gemini-pro.md) 为准；历史抓包夹具保持原始内容。
-本记录区分本地协议、数据库和界面验证；真实订阅账号到 Google 的验收仍待执行。
+本页记录本地协议、数据库和界面验证，历史 AGY 1.2.4 抓包夹具保持原始内容。
+2026-09-28 的 CLI 指南与持久配置说明见下方“管理界面与配置命令回归”；客户端兼容
+基线为官方 AGY 1.2.12。模型权限和 `0023` 升级要求以
+[Antigravity 接入说明](gemini-pro.md) 为准。真实订阅账号到 Google 的验收仍待执行。
 
 ## 数据库与请求生命周期
 
@@ -32,7 +32,22 @@ TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmo
   go test -count=1 -tags=integration ./internal/server -run TestNativeGeminiLifecyclePostgresIntegration
 ```
 
-上述结果不表示真实 AGY 进程、订阅凭证或 Google 上游已经验收。
+2026-09-28 补充执行原生别名回归：三个兼容名称在校验、授权及额度预留前归一到
+`gemini-3.1-pro-high`。测试覆盖 Key 白名单和用户权限拒绝、未配置路由与价格、
+标题请求占用共享配额，以及响应模型、倍率和账单使用实际模型。完整 store 与 server
+数据库测试通过；本轮使用一次性 PostgreSQL `17.6`，无生产数据库读写。
+
+同日设置 `AGY_CLI_TEST_BINARY`，运行真实官方 AGY `1.2.12` 客户端，使用独立中文及
+空格路径 HOME 和合成 Gateway Key。客户端连接实际 Gateway、Bridge 协议适配器及
+测试数据库，仅上游生成执行器返回固定内容。文本、标题及 `manage_task(Action=list)`
+工具续轮全部通过，三个请求均完成并按 `gemini-3.1-pro-high` 结算；这一流程也通过
+race 检查。测试不访问 Google，未使用真实订阅凭证。
+
+```sh
+AGY_CLI_TEST_BINARY=/path/to/official-agy-1.2.12 \
+TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmode=disable' \
+  go test -count=1 -tags=integration ./internal/server -run TestNativeGeminiLifecyclePostgresIntegration
+```
 
 ## Go、Compose 与镜像
 
@@ -88,17 +103,38 @@ AGY 版本仍为 `1.2.4`，无数据库迁移或对外 API 变化。测试用一
 另覆盖无效/停用 key、多来源凭据、模型权限、未知模型、请求大小限制；代理测试覆盖
 尾部错误、不完整 SSE、非法用量、超时和取消，确认无效结果不会先输出成功响应。
 
-## 管理界面回归
+## 管理界面与配置命令回归
 
-当前 `internal/server/testdata/agy_guide_browser.cjs` 使用合成用户状态验证更新后的指南：
+2026-09-28 的配置器回归覆盖首次配置、重复执行、修改前备份、无关配置保留、中文和
+空格路径、`CODEX_HOME`、输入取消、解析或登录失败不修改原文件，以及部分写入失败
+回滚。实际新 Bash 进程在没有继承 Gateway 环境变量时成功读取保存的地址和 Key；
+Zsh 验证加载文件生成和 `ZDOTDIR`，未运行真实 Zsh / macOS 终端。
 
-2026-09-28 已以 Playwright `1.63.0`、Chromium `153.0.8010.12` 完成下列回归，
-浏览器无脚本错误，桌面 1440×1080 与移动端 390×844 均通过并更新截图。
+启用 `GATEWAY_TEST_REAL_CODEX=1` 后，19 项 Node 测试全部通过，包括真实 Codex
+`0.158.0` 在隔离目录中的合成 Key 登录、重新运行 `login status`、重复配置，以及
+非法 TOML 和重复键拒绝。旧默认 `profile` 会明确报错并保持原文件，防止覆盖新的
+Gateway 设置。Windows 用户环境变量及 Codex `.cmd` shim 的调用、失败回滚另有仿真测试。
 
-- Codex 地址保留 `/v1`，Gemini 示例采用当前站点 origin 和 `/v1/responses`。
-- JSON 正文与 Bash/curl 请求均使用 `gemini-3.1-pro-high`，Key 经 stdin 传入 curl。
-- 展示七个精确模型 ID、升级后默认禁用和旧 AGY Gemini 提供方无法直接连接的说明。
-- 地址和请求命令复制内容正确；检查浏览器脚本错误与移动端横向溢出。
+```sh
+GATEWAY_TEST_REAL_CODEX=1 node --test internal/server/testdata/configure_client_test.cjs
+```
+
+本轮完整 `go test -count=1 ./...`、`go test -race -count=1 ./...`、`go vet ./...`、
+Gateway 构建、`gofmt -l .` 和 `git diff --check` 均通过。race 使用固定 Go `1.26.8`
+镜像在隔离容器内执行，并挂载 Node 运行配置器回归；未重新执行部署镜像或 Compose
+校验，上文保留的镜像验证记录属于此前任务。
+
+2026-09-28 使用合成用户状态，以 Playwright `1.63.0`、Chromium `153.0.8010.12`
+完成 `internal/server/testdata/agy_guide_browser.cjs` 回归。浏览器无脚本错误，桌面
+1440×1080 与移动端 390×844 均通过，截图已更新。
+
+- 公共准备、Codex CLI、agy CLI 三部分均包含需要的安装、配置和启动说明。
+- 官方安装命令正确，Windows 明确使用 Win+R → `cmd`，Node.js 提供 LTS 安装入口。
+- 两种配置命令均使用浏览器当前 origin 下载同站配置器；复制内容与对应代码块一致。
+- 模拟启动器的独立临时目录、中文和空格路径、继承终端输入，以及成功、HTTP 下载失败、
+  网络失败、进程启动失败、登录失败和取消后的清理与退出状态。
+- 指南显示 AGY 1.2.12、三个原生别名及标题请求实际模型计费，并提示重新打开终端。
+- 页面无旧下载入口，不保存 Key 或其他内容到浏览器本地存储，移动端无横向溢出。
 
 复现命令（Playwright 及浏览器安装在仓库外）：
 
@@ -107,13 +143,43 @@ PLAYWRIGHT_MODULE=/path/to/node_modules/playwright \
   node internal/server/testdata/agy_guide_browser.cjs
 ```
 
-脚本生成 [桌面截图](screenshots/agy-guide-desktop.png) 和
-[移动端截图](screenshots/agy-guide-mobile.png)。截图只记录指南内容，不表示真实订阅生成成功。
+完整指南截图：[桌面](screenshots/usage-guide-desktop.png)、
+[移动端](screenshots/usage-guide-mobile.png)；agy 部分截图：
+[桌面](screenshots/agy-guide-desktop.png)、[移动端](screenshots/agy-guide-mobile.png)。
+截图只记录指南内容，不表示真实订阅生成成功。
+
+浏览器回归在 Linux 上执行。另于 2026-09-28 使用 Windows `cmd.exe` 与官方便携版
+[Node.js v24.16.0](https://nodejs.org/dist/v24.16.0/node-v24.16.0-win-x64.zip) 执行真实 CMD
+启动器冒烟。Node 未安装到系统，所有文件位于独立临时目录；测试为子进程设置中文加
+空格的临时 HOME、USERPROFILE、TEMP 和 TMP，未修改真实用户环境变量或客户端配置。
+Windows 本地 HTTP 服务提供合成配置器，执行页面原样生成的 `node -e` 命令，覆盖：
+
+- Codex 与 agy 两个客户端参数及带端口的站点 origin 正确传入。
+- 子进程出现提示后再通过 stdin 发送合成 Key，配置器收到输入；Key 不在复制命令中。
+- Windows Node 能在中文和空格临时路径下创建、执行并清理下载脚本。
+- 两种客户端成功退出为 `0`；模拟登录失败保留退出码 `7`；HTTP 503 下载失败退出 `1`。
+  所有情况均清理独立临时目录。
+
+仓库中的 `internal/server/testdata/client_setup_windows.cjs` 可在 Windows 仓库目录下复现：
+
+```bat
+node internal\server\testdata\client_setup_windows.cjs
+```
+
+可用便携 Node 的完整路径代替 `node`。脚本从当前 `assets/app.js` 提取启动命令，
+在系统临时目录中创建独立测试目录，结束后删除全部合成文件；非 Windows 平台明确跳过。
+本轮使用便携 Windows Node 运行该仓库脚本，四种场景全部通过。
+
+以上 Windows 冒烟使用合成配置器和管道输入，未运行真实 Codex / agy 登录流程，也
+未验证真实控制台的隐藏输入或 Windows 用户环境变量写入。中文目录替代测试用户目录，
+不等同于实际中文用户名账户的实机验收；该验收仍待执行。官方客户端安装器和真实 Key
+登录未在本轮执行。客户端持久化文件与模拟登录回归见 `internal/server` 下的配置器测试。
 
 ## 当前上线验收
 
 在维护窗口协调切换新 Bridge 与执行 `0023` 的 Gateway。逐账号按实际可用模型进行
 JSON/SSE 冒烟，管理员重新授权并重新签发受限 Key 后，用精确同名模型调用 Responses
-与原生 API，核对 Standard 账单、Token、旧路径拒绝和取消后的清理。
+与原生 API，核对 Standard 账单、Token、原生别名按实际模型扣费、Responses 别名拒绝
+和取消后的清理。
 完整备份和回滚限制见 [验收和回滚](gemini-pro.md#验收和回滚)。真实 Google 上游验收
 与生产部署应在站点环境单独完成。

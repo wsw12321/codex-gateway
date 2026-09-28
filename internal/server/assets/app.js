@@ -1098,23 +1098,30 @@ function renderSelects() {
   renderGuide();
 }
 
-function renderGuide() {
-  const baseURL = `${location.origin}/v1`;
+function clientSetupCommand(client) {
+  // Keep the outer double-quoted argument safe in both CMD and POSIX shells.
+  // The origin is data, so shell metacharacters can never become command syntax.
+  const origin = btoa(location.origin);
+  const script = [
+    "(async function(){",
+    "const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cp=require('node:child_process');",
+    `const origin=Buffer.from('${origin}','base64').toString('utf8');`,
+    "const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gateway-setup-'));",
+    "try{const res=await fetch(origin+'/setup/configure-client.cjs',{redirect:'error',signal:AbortSignal.timeout(30000)});",
+    "if(res.ok===false)throw new Error('Download failed: HTTP '+res.status);",
+    "const file=path.join(dir,'configure-client.cjs');fs.writeFileSync(file,await res.text(),{mode:384,flag:'wx'});",
+    `const child=cp.spawnSync(process.execPath,[file,'${client}',origin],{stdio:'inherit'});`,
+    "if(child.error)throw child.error;process.exitCode=child.status===null?1:child.status;",
+    "}finally{fs.rmSync(dir,{recursive:true,force:true});}",
+    "})().catch(function(error){console.error(error.message);process.exitCode=1;});",
+  ].join("");
+  return `node -e "${script}"`;
+}
 
-  byId("guide-base-url").textContent = baseURL;
-  byId("guide-install-code").textContent = `curl -fsSL '${location.origin}/setup/configure-codex.sh' | sh`;
-  byId("guide-config-code").textContent = `openai_base_url = "${baseURL}"`;
-  byId("guide-agy-base-url").textContent = location.origin;
-  byId("guide-agy-shell-code").textContent = [
-    `export GATEWAY_BASE_URL='${location.origin}'`,
-    "read -r -s -p 'Gateway API Key: ' GATEWAY_API_KEY",
-    "printf '\\n'",
-    "printf 'header = \"Authorization: Bearer %s\"\\n' \"$GATEWAY_API_KEY\" |",
-    "  curl --fail-with-body --silent --show-error --config - \\",
-    "    -H 'Content-Type: application/json' \\",
-    "    --data '{\"model\":\"gemini-3.1-pro-high\",\"input\":\"Reply with exactly OK.\",\"store\":false}' \\",
-    "    \"$GATEWAY_BASE_URL/v1/responses\"",
-  ].join("\n");
+function renderGuide() {
+  byId("guide-base-url").textContent = location.origin;
+  byId("guide-codex-configure-code").textContent = clientSetupCommand("codex");
+  byId("guide-agy-configure-code").textContent = clientSetupCommand("agy");
 
   if (!state) return;
   const activeDevices = state.devices.filter((item) => item.status === "active").length;

@@ -1,15 +1,12 @@
 package server
 
 import (
+	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
 	"os/exec"
-	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
-
-	"github.com/wsw/codex-gateway/internal/config"
 )
 
 func TestDashboardAssetsAreNotCachedAcrossDeployments(t *testing.T) {
@@ -60,8 +57,6 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 		name  string
 		value string
 	}{
-		{"external HTML URL", "https://"},
-		{"external HTML URL", "http://"},
 		{"inline style", "style="},
 		{"inline click handler", "onclick="},
 		{"inline submit handler", "onsubmit="},
@@ -69,6 +64,12 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 		if strings.Contains(html, forbidden.value) {
 			t.Fatalf("dashboard HTML contains %s", forbidden.name)
 		}
+	}
+	// Official documentation links may leave the site; executable and visual
+	// assets must remain same-origin under the dashboard CSP.
+	externalAsset := regexp.MustCompile(`(?i)<(?:script|link|img|iframe|object|embed|source|video|audio)\b[^>]*(?:src|href|data)\s*=\s*["'](?:https?:)?//`)
+	if externalAsset.MatchString(html) {
+		t.Fatal("dashboard HTML loads an external asset")
 	}
 	for _, forbidden := range []string{
 		"localStorage", "sessionStorage", "innerHTML", "insertAdjacentHTML", "eval(", "new Function",
@@ -90,36 +91,67 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 	}
 }
 
-func TestGuideIncludesCodexGatewayConfiguration(t *testing.T) {
+func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 	t.Parallel()
-
 	html := string(indexHTML)
 	javascript := string(appJS)
 	for _, required := range []string{
-		`data-section="guide"`, `id="guide-base-url"`, `id="guide-install-code"`, `id="guide-config-code"`,
-		`id="guide-windows-download"`, `href="/setup/configure-codex.bat"`,
-		`~/.codex/config.toml`, `codex login --with-api-key`, `不要把 API Key 写入 Git 仓库`,
+		`data-section="guide"`, `id="guide-prepare"`, `id="guide-codex"`, `id="guide-agy"`,
+		`id="guide-base-url"`,
+		`id="guide-codex-install-code"`, `id="guide-codex-configure-code"`, `id="guide-codex-start-code"`,
+		`id="guide-agy-install-windows-code"`, `id="guide-agy-install-unix-code"`,
+		`id="guide-agy-configure-code"`, `id="guide-agy-start-code"`,
+		`npm install -g @openai/codex`, `gemini-3.1-pro-high`, `Win+R`, `cmd`,
 	} {
 		if !strings.Contains(html, required) {
-			t.Fatalf("Codex guide HTML is missing %s", required)
+			t.Fatalf("client guide HTML is missing %s", required)
 		}
 	}
 	for _, required := range []string{
-		`guide: "使用指导"`, `function renderGuide()`, `` + "`openai_base_url = \"${baseURL}\"`" + ``,
-		`/setup/configure-codex.sh`,
-		`all("[data-copy-target]")`,
+		`guide: "使用指导"`, `function renderGuide()`, `location.origin`,
+		`/setup/configure-client.cjs`, `all("[data-copy-target]")`,
 	} {
 		if !strings.Contains(javascript, required) {
-			t.Fatalf("Codex guide JavaScript is missing %s", required)
+			t.Fatalf("client guide JavaScript is missing %s", required)
 		}
 	}
 	for _, forbidden := range []string{
-		`id="guide-project-select"`, `id="guide-shell-code"`, `id="guide-powershell-code"`,
+		`guide-windows-download`, `/setup/configure-codex.`, `本机 AGY`,
 		`CODEX_GATEWAY_API_KEY`, `CODEX_GATEWAY_PROJECT`,
 	} {
 		if strings.Contains(html, forbidden) || strings.Contains(javascript, forbidden) {
-			t.Fatalf("Codex guide still contains obsolete configuration %s", forbidden)
+			t.Fatalf("client guide still contains obsolete configuration %s", forbidden)
 		}
+	}
+}
+
+func TestClientSetupRoutes(t *testing.T) {
+	t.Parallel()
+	server := &Server{mux: http.NewServeMux()}
+	server.routes()
+	for _, target := range []string{"/setup/configure-client.cjs", "/setup/configure-codex.sh", "/setup/configure-codex.bat"} {
+		t.Run(target, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			server.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if target != "/setup/configure-client.cjs" {
+				if recorder.Code != http.StatusGone {
+					t.Fatalf("retired setup returned %d, want 410", recorder.Code)
+				}
+				return
+			}
+			if recorder.Code != http.StatusOK || recorder.Body.String() != string(clientSetupScript) {
+				t.Fatalf("client setup did not serve the embedded configurator: status %d", recorder.Code)
+			}
+			if got := recorder.Header().Get("Content-Type"); got != "application/javascript; charset=utf-8" {
+				t.Fatalf("Content-Type = %q", got)
+			}
+			if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
+				t.Fatal("client setup must disable MIME sniffing")
+			}
+		})
 	}
 }
 
@@ -151,161 +183,6 @@ func TestDesktopSidebarKeepsProfileFixedAndScrollsNavigation(t *testing.T) {
 		if !strings.Contains(stylesheet, required) {
 			t.Fatalf("sidebar stylesheet is missing %s", required)
 		}
-	}
-}
-
-func TestCodexShellSetupAddsOrReplacesOpenAIBaseURL(t *testing.T) {
-	t.Parallel()
-
-	const baseURL = "https://gateway.example/v1"
-	tests := []struct {
-		name     string
-		original *string
-		verify   func(*testing.T, string)
-	}{
-		{
-			name: "new file",
-			verify: func(t *testing.T, configured string) {
-				if configured != `openai_base_url = "`+baseURL+"\"\n" {
-					t.Fatalf("new configuration = %q", configured)
-				}
-			},
-		},
-		{
-			name:     "missing setting",
-			original: stringPointerValue("approval_policy = \"on-request\"\n\n[model_providers.gateway]\nbase_url = \"https://legacy.example/v1\"\n"),
-			verify: func(t *testing.T, configured string) {
-				if !strings.HasPrefix(configured, `openai_base_url = "`+baseURL+"\"\n") {
-					t.Fatalf("openai_base_url was not inserted first:\n%s", configured)
-				}
-				for _, legacy := range []string{
-					`approval_policy = "on-request"`, `[model_providers.gateway]`, `base_url = "https://legacy.example/v1"`,
-				} {
-					if !strings.Contains(configured, legacy) {
-						t.Fatalf("legacy configuration %q was removed:\n%s", legacy, configured)
-					}
-				}
-			},
-		},
-		{
-			name:     "existing top level setting",
-			original: stringPointerValue("approval_policy = \"on-request\"\nopenai_base_url = \"https://old.example/v1\" # old\n\n[features]\nresponses = true\n"),
-			verify: func(t *testing.T, configured string) {
-				if !strings.HasPrefix(configured, "approval_policy") {
-					t.Fatalf("existing setting was not replaced in place:\n%s", configured)
-				}
-				if strings.Contains(configured, "https://old.example/v1") || strings.Count(configured, "openai_base_url =") != 1 {
-					t.Fatalf("existing setting was not replaced exactly once:\n%s", configured)
-				}
-			},
-		},
-		{
-			name:     "comment and nested setting",
-			original: stringPointerValue("# openai_base_url = \"https://comment.example/v1\"\n[profile.local]\nopenai_base_url = \"https://nested.example/v1\"\n"),
-			verify: func(t *testing.T, configured string) {
-				if !strings.HasPrefix(configured, `openai_base_url = "`+baseURL+"\"\n") {
-					t.Fatalf("top-level setting was not inserted:\n%s", configured)
-				}
-				for _, preserved := range []string{"https://comment.example/v1", "https://nested.example/v1"} {
-					if !strings.Contains(configured, preserved) {
-						t.Fatalf("non-top-level setting %q was changed:\n%s", preserved, configured)
-					}
-				}
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			configDir := t.TempDir()
-			configPath := filepath.Join(configDir, "config.toml")
-			if test.original != nil {
-				if err := os.WriteFile(configPath, []byte(*test.original), 0o600); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			runCodexShellSetup(t, configDir, baseURL)
-			configured, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			configuredValue := string(configured)
-			test.verify(t, configuredValue)
-
-			backup, err := os.ReadFile(configPath + ".bak")
-			if test.original == nil {
-				if !os.IsNotExist(err) {
-					t.Fatalf("new configuration unexpectedly has a backup: %v", err)
-				}
-			} else if err != nil || string(backup) != *test.original {
-				t.Fatalf("backup does not match original: err=%v backup=%q", err, backup)
-			}
-
-			runCodexShellSetup(t, configDir, baseURL)
-			configuredAgain, err := os.ReadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(configuredAgain) != configuredValue {
-				t.Fatalf("repeated setup changed configuration:\nfirst:\n%s\nsecond:\n%s", configuredValue, configuredAgain)
-			}
-			backup, err = os.ReadFile(configPath + ".bak")
-			if err != nil || string(backup) != configuredValue {
-				t.Fatalf("repeated setup backup does not match previous configuration: err=%v backup=%q", err, backup)
-			}
-		})
-	}
-}
-
-func runCodexShellSetup(t *testing.T, configDir, baseURL string) {
-	t.Helper()
-	command := exec.Command("sh", "-s", "--", baseURL)
-	command.Stdin = strings.NewReader(string(codexShellSetupScript))
-	command.Env = []string{"CODEX_HOME=" + configDir, "HOME=" + t.TempDir(), "PATH=" + os.Getenv("PATH")}
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("configure script failed: %v\n%s", err, output)
-	}
-}
-
-func stringPointerValue(value string) *string { return &value }
-
-func TestCodexSetupDownloadsUseConfiguredPublicURL(t *testing.T) {
-	t.Parallel()
-
-	publicURL, err := url.Parse("https://codex.example.test/console")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := &Server{config: config.Config{PublicURL: publicURL}}
-
-	shellRecorder := httptest.NewRecorder()
-	server.codexShellSetup(shellRecorder, httptest.NewRequest("GET", "/setup/configure-codex.sh", nil))
-	if shellRecorder.Header().Get("Cache-Control") != "no-store" {
-		t.Fatal("shell setup response is cacheable")
-	}
-	if body := shellRecorder.Body.String(); !strings.Contains(body, "https://codex.example.test/v1") || strings.Contains(body, codexGatewayBaseURLPlaceholder) {
-		t.Fatalf("shell setup contains an unexpected base URL:\n%s", body)
-	}
-	if body := shellRecorder.Body.String(); !strings.Contains(body, `openai_base_url`) || strings.Contains(body, `[model_providers.gateway]`) {
-		t.Fatal("shell setup does not use the simplified openai_base_url configuration")
-	}
-
-	windowsRecorder := httptest.NewRecorder()
-	server.codexWindowsSetup(windowsRecorder, httptest.NewRequest("GET", "/setup/configure-codex.bat", nil))
-	if got := windowsRecorder.Header().Get("Content-Disposition"); got != `attachment; filename="configure-codex.bat"` {
-		t.Fatalf("Content-Disposition = %q", got)
-	}
-	windowsSetup := windowsRecorder.Body.String()
-	if !strings.Contains(windowsSetup, "https://codex.example.test/v1") || strings.Contains(windowsSetup, codexGatewayBaseURLPlaceholder) {
-		t.Fatalf("Windows setup contains an unexpected base URL:\n%s", windowsSetup)
-	}
-	if !strings.Contains(windowsSetup, `:POWERSHELL`) || !strings.Contains(windowsSetup, `config.toml.bak`) {
-		t.Fatal("Windows setup is missing its embedded PowerShell configurator")
-	}
-	if !strings.Contains(windowsSetup, `openai_base_url`) || strings.Contains(windowsSetup, `[model_providers.gateway]`) {
-		t.Fatal("Windows setup does not use the simplified openai_base_url configuration")
 	}
 }
 
@@ -483,7 +360,7 @@ func TestModelAccessDashboardIsOwnerOnlyAndSupportsBatchChanges(t *testing.T) {
 		`id="model-access-enable-selected"`, `id="model-access-disable-selected"`,
 		`id="model-access-enable-all"`, `id="model-access-disable-all"`,
 		`name="reason" required maxlength="500"`,
-		`API Key 的模型白名单及管理员为当前用户配置的模型权限`,
+		`确认账号与 Key 已获得要使用的模型权限`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("model-access dashboard HTML is missing %s", required)
@@ -545,7 +422,7 @@ func TestAPIKeyLifecycleAndPersonalUsageDashboard(t *testing.T) {
 	stylesheet := string(styleCSS)
 	for _, required := range []string{
 		`id="usage-tokens"`, `id="usage-charged-usd"`, `id="personal-usage-metrics"`,
-		`id="secret-eyebrow"`, `403 key_disabled`, `实际扣款`,
+		`id="secret-eyebrow"`, `检查 Key 是否活跃、是否过期`, `实际扣款`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Errorf("API key/usage dashboard HTML is missing %q", required)

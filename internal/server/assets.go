@@ -14,11 +14,8 @@ var appJS []byte
 //go:embed assets/style.css
 var styleCSS []byte
 
-//go:embed assets/configure-codex.sh
-var codexShellSetupScript []byte
-
-//go:embed assets/configure-codex.bat
-var codexWindowsSetupScript []byte
+//go:embed assets/configure-client.cjs
+var clientSetupScript []byte
 
 func (s *Server) page(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")

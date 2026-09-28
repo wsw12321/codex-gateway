@@ -90,10 +90,15 @@ printf 'header = "Authorization: Bearer %s"\n' "$GATEWAY_API_KEY" |
     "$GATEWAY_BASE_URL/v1beta/models/gemini-3.1-pro-high:generateContent"
 ```
 
-`gemini-3.1-pro-preview` 与 `gemini-3.1-pro-preview-customtools` 均返回模型不存在，
-不再归一到新 ID。当前本机 AGY 在 `modelProvider=gemini` 下会发送这些旧路径，
-因此该配置不能直接连接 Gateway；请使用能够发送精确模型名的 API 客户端。
-服务器内部仍使用官方 AGY 调用订阅。Gateway key 不发送给 Bridge 或 Google，
+管理界面“使用指导”也提供 agy CLI 的官方安装和一键持久配置，以官方 AGY `1.2.12`
+为验收基线。启动命令为 `agy --model gemini-3.1-pro-high`，完整步骤见
+[客户端配置](client-config.md#agy-cli)。
+
+仅原生 Gemini 入口将 `gemini-3.1-pro-preview`、`gemini-3.1-pro-preview-customtools`
+和标题请求 `gemini-3.1-flash-lite-preview` 统一映射到 `gemini-3.1-pro-high`。
+权限、额度、路由、响应校验及计费都使用实际模型，标题等辅助请求同样计入用量。
+这些兼容名称不加入模型目录，Responses 接口仍拒绝别名。
+服务器内部使用官方 AGY 调用订阅。Gateway key 不发送给 Bridge 或 Google，
 Gateway→Bridge 使用独立凭据。
 
 ## Gemini 原生 API
@@ -339,7 +344,7 @@ TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生�
    实际可用的受支持模型，对每个模型验证 JSON、SSE 和同名回显，不要求每账号全部七个。
 4. 管理员重新授权新模型，按需设置倍率并重新签发受限 API Key，启用已验收的同名路由。
    使用新 Key 对实际可用模型完成 Responses 和原生 API 冒烟，核对 Standard 计费、
-   Token 与账单；检查旧路径被拒绝、取消后无残余进程或租约。
+   Token 与账单；检查原生别名按实际模型扣费、Responses 拒绝别名，取消后无残余进程或租约。
 5. 对照前后历史账单和已固化 reservation，确认没有用新价格重算旧费用。
    建立 2027-01-01 前的 Flash 手动改价提醒。
 
