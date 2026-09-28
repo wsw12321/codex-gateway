@@ -128,6 +128,11 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
 		},
 		{
+			name: "native Flash alias excluded from responses", path: "/v1/responses",
+			body:       `{"model":"gemini-3.8-flash","input":[]}`,
+			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
+		},
+		{
 			name: "unconfigured Flash", path: "/v1/responses",
 			body:       `{"model":"gemini-3.8-flash-high","input":[]}`,
 			wantStatus: http.StatusNotFound, wantCode: "model_not_found",
@@ -196,6 +201,7 @@ type geminiAdmissionTestConnector struct {
 	keyAllowlist  string
 	modelEnabled  bool
 	missingAccess bool
+	model         string
 	begins        atomic.Int64
 	commits       atomic.Int64
 	rollbacks     atomic.Int64
@@ -223,7 +229,11 @@ func (c geminiAdmissionTestConn) Begin() (driver.Tx, error) {
 func (c geminiAdmissionTestConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 	if strings.Contains(query, "SELECT a.enabled") {
 		c.database.recordQuery(query)
-		if len(args) != 2 || args[0].Value != c.database.userID || args[1].Value != "gemini-3.1-pro-high" {
+		model := c.fixture.model
+		if model == "" {
+			model = config.AntigravityPublicModel
+		}
+		if len(args) != 2 || args[0].Value != c.database.userID || args[1].Value != model {
 			return nil, errors.New("unexpected model permission lookup")
 		}
 		rows := &responsesWebSocketTestRows{columns: []string{"enabled"}}

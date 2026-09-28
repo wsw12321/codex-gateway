@@ -98,6 +98,10 @@ printf 'header = "Authorization: Bearer %s"\n' "$GATEWAY_API_KEY" |
 和标题请求 `gemini-3.1-flash-lite-preview` 统一映射到 `gemini-3.1-pro-high`。
 权限、额度、路由、响应校验及计费都使用实际模型，标题等辅助请求同样计入用量。
 这些兼容名称不加入模型目录，Responses 接口仍拒绝别名。
+AGY `1.2.12` 的 `gemini-3.8-flash` 原生请求按 `generationConfig.thinkingConfig.thinkingBudget`
+选择实际模型：`4000` 对应 `gemini-3.8-flash-medium`，省略或 `-1` 对应
+`gemini-3.8-flash-high`。接受该版本 Flash 默认的 `maxOutputTokens: 65536`；
+其他自定义生成控制仍按原规则校验。权限、路由、响应模型名及计费均使用选中的实际 ID。
 服务器内部使用官方 AGY 调用订阅。Gateway key 不发送给 Bridge 或 Google，
 Gateway→Bridge 使用独立凭据。
 

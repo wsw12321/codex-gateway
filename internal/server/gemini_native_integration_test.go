@@ -149,7 +149,8 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 			t.Error("bridge is missing authenticated user identity")
 		}
 		w.Header().Set("X-Codex-Upstream-Account", "aabbccddeeff0011")
-		if !strings.HasPrefix(r.URL.Path, "/v1beta/models/"+config.AntigravityPublicModel+":") {
+		bridgeModel, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), ":")
+		if !strings.HasPrefix(r.URL.Path, "/v1beta/models/") || !config.IsAntigravityModel(bridgeModel) {
 			t.Error("noncanonical bridge path")
 		}
 		bridge.ServeHTTP(w, r)
@@ -435,5 +436,53 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	t.Run("AGY CLI 1.2.12", func(t *testing.T) {
 		testNativeAGYCLI(t, h.handler, repository, user.ID, key.ID, h.apiKey, executor)
+	})
+	t.Run("Flash client presets", func(t *testing.T) {
+		executor.started, executor.failure, executor.response = nil, nil, "OK"
+		if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
+			BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "Flash preset test"},
+			UserID:             user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := repository.SyncModelAccessCatalog(ctx, config.AntigravityModels()); err != nil {
+			t.Fatal(err)
+		}
+		for _, preset := range []struct{ model, body string }{
+			{"gemini-3.8-flash-high", nativeFlashHigh},
+			{"gemini-3.8-flash-medium", nativeFlashMedium},
+		} {
+			h.server.config.AntigravityModelRoutes[preset.model] = preset.model
+			if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=$2 WHERE id=$1`, key.ID, []string{preset.model}); err != nil {
+				t.Fatal(err)
+			}
+			checkNativeGeminiError(t, send("gemini-3.8-flash", "generateContent", preset.body), 403, "PERMISSION_DENIED")
+			if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
+				ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "authorize Flash preset test"},
+				Model:                  preset.model, Enabled: true, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, action := range []string{"generateContent", "streamGenerateContent"} {
+				response := send("gemini-3.8-flash", action, preset.body)
+				if response.Code != 200 || executor.model.Load() != preset.model || !strings.Contains(response.Body.String(), `"modelVersion":"`+preset.model+`"`) {
+					t.Fatalf("Flash model mismatch: %d %s executor=%v", response.Code, response.Body, executor.model.Load())
+				}
+				requestID := response.Header().Get(httpx.RequestIDHeader)
+				if err := repository.SettleRequest(ctx, requestID, time.Now().UTC()); err != nil {
+					t.Fatal(err)
+				}
+				var model, requested, state, cost string
+				var count int
+				if err := repository.DB().QueryRowContext(ctx, `SELECT u.model,u.requested_model,u.state,l.amount_usd::text,
+					(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1)
+					FROM usage_requests u JOIN billing_ledger_entries l USING(request_id) WHERE u.request_id=$1`, requestID).Scan(&model, &requested, &state, &cost, &count); err != nil {
+					t.Fatal(err)
+				}
+				if model != preset.model || requested != preset.model || state != "completed" || cost != "0.000174000000" || count != 1 {
+					t.Fatalf("Flash settlement: model=%s requested=%s state=%s cost=%s count=%d", model, requested, state, cost, count)
+				}
+			}
+		}
 	})
 }

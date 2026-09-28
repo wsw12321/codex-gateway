@@ -25,7 +25,7 @@ func DecodeGeminiRequest(model string, body []byte) (Request, *Failure) {
 	if !ok || !onlyKeys(fields, "contents", "systemInstruction", "tools", "toolConfig", "generationConfig") {
 		return out, unsupported("parameter")
 	}
-	if raw, exists := fields["generationConfig"]; exists && !defaultGeminiGeneration(raw) {
+	if raw, exists := fields["generationConfig"]; exists && !defaultGeminiGeneration(model, raw) {
 		return out, unsupported("generation_config")
 	}
 	if raw, exists := fields["toolConfig"]; exists {
@@ -125,7 +125,7 @@ func jsonEqual(raw []byte, expected string) bool {
 // These are the defaults actually emitted by AGY 1.2.4. They describe its
 // ordinary main conversation and do not override the server's fixed model.
 // Custom controls cannot be honored by the CLI and must fail before billing.
-func defaultGeminiGeneration(raw []byte) bool {
+func defaultGeminiGeneration(model string, raw []byte) bool {
 	fields, ok := object(raw)
 	if !ok {
 		return false
@@ -135,13 +135,19 @@ func defaultGeminiGeneration(raw []byte) bool {
 		"stopSequences": `["<|user|>","<|bot|>","<|context_request|>","<|endoftext|>","<|end_of_turn|>"]`,
 	}
 	for key, value := range fields {
+		// AGY 1.2.12's Flash presets use a 65536 output limit. Medium also
+		// emits a 4000 thinking budget; the exact CLI model enforces that preset.
+		if key == "maxOutputTokens" && (model == "gemini-3.8-flash-high" || model == "gemini-3.8-flash-medium") && jsonEqual(value, "65536") {
+			continue
+		}
 		if key == "thinkingConfig" {
 			thinking, ok := object(value)
 			if !ok || !onlyKeys(thinking, "includeThoughts", "thinkingBudget") {
 				return false
 			}
 			for key, raw := range thinking {
-				if (key == "includeThoughts" && !jsonEqual(raw, "true")) || (key == "thinkingBudget" && !jsonEqual(raw, "-1")) {
+				if (key == "includeThoughts" && !jsonEqual(raw, "true")) ||
+					(key == "thinkingBudget" && !jsonEqual(raw, "-1") && !(model == "gemini-3.8-flash-medium" && jsonEqual(raw, "4000"))) {
 					return false
 				}
 			}

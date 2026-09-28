@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -61,15 +62,8 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 	case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
 		model = config.AntigravityPublicModel
 	}
-	if !config.IsAntigravityModel(model) {
-		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
-		return
-	}
-	if _, configured := s.config.AntigravityModelRoutes[model]; !configured {
-		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
-		return
-	}
-	if _, priced := s.config.UsagePricing.Models[model]; !priced {
+	flashAlias := model == "gemini-3.8-flash"
+	if !flashAlias && !s.configuredGeminiModel(model) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 		return
 	}
@@ -106,6 +100,15 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	// AGY 1.2.12 sends the same Flash URL for both reasoning presets. Resolve
+	// its bounded body before permissions, quota, forwarding and billing.
+	if flashAlias {
+		model = nativeFlashModel(data)
+		if !s.configuredGeminiModel(model) {
+			httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
+			return
+		}
+	}
 	// Apply the bridge's complete schema/control validation before any quota
 	// or billing reservation. The isolated bridge validates independently too.
 	_, failure := antigravity.DecodeGeminiRequest(model, data)
@@ -120,4 +123,26 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		upstreamPath: prefix + model + ":" + action,
 		endpoint:     "gemini." + action, model: model, body: body, gemini: true,
 	})
+}
+
+func (s *Server) configuredGeminiModel(model string) bool {
+	_, configured := s.config.AntigravityModelRoutes[model]
+	_, priced := s.config.UsagePricing.Models[model]
+	return config.IsAntigravityModel(model) && configured && priced
+}
+
+func nativeFlashModel(body []byte) string {
+	var request struct {
+		GenerationConfig struct {
+			ThinkingConfig struct {
+				ThinkingBudget json.RawMessage `json:"thinkingBudget"`
+			} `json:"thinkingConfig"`
+		} `json:"generationConfig"`
+	}
+	// This projection selects the preset only. The original body still passes
+	// complete validation, including duplicate keys and unsupported controls.
+	if json.Unmarshal(body, &request) == nil && bytes.Equal(bytes.TrimSpace(request.GenerationConfig.ThinkingConfig.ThinkingBudget), []byte("4000")) {
+		return "gemini-3.8-flash-medium"
+	}
+	return "gemini-3.8-flash-high"
 }
