@@ -78,6 +78,13 @@ func (u cliUsage) normalize() (*Usage, bool) {
 // Consume the complete stream before exposing it. In particular a valid result
 // followed by a tool event, a second result, or a process failure is not success.
 func parseStream(model string, reader io.Reader) (Result, *Failure) {
+	return parseStreamUpdates(model, reader, nil)
+}
+
+// An empty update means the CLI has initialized with the required model and
+// permissions. Only validated assistant text is exposed; tool/process events
+// remain forbidden. The terminal result and process exit still decide success.
+func parseStreamUpdates(model string, reader io.Reader, emit func(string) error) (Result, *Failure) {
 	if !config.IsAntigravityModel(model) {
 		return Result{}, protocolFailure()
 	}
@@ -85,6 +92,7 @@ func parseStream(model string, reader io.Reader) (Result, *Failure) {
 	scanner.Buffer(make([]byte, 64<<10), maxOutputBytes+64<<10)
 	initialized, finished, total := false, false, 0
 	var result Result
+	var text strings.Builder
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		total += len(line) + 1
@@ -117,6 +125,9 @@ func parseStream(model string, reader io.Reader) (Result, *Failure) {
 				return result, protocolFailure()
 			}
 			initialized = true
+			if emit != nil && emit("") != nil {
+				return result, &Failure{499, "request_canceled", "Request canceled"}
+			}
 		case "step_update":
 			if !initialized || event.Step == nil || event.Init != nil || event.Result != nil {
 				return result, protocolFailure()
@@ -133,6 +144,15 @@ func parseStream(model string, reader io.Reader) (Result, *Failure) {
 			default:
 				return result, protocolFailure()
 			}
+			if emit != nil && step.Type == "agent_response" && step.Text != "" {
+				if len(step.Text) > maxOutputBytes-text.Len() {
+					return result, protocolFailure()
+				}
+				text.WriteString(step.Text)
+				if emit(step.Text) != nil {
+					return result, &Failure{499, "request_canceled", "Request canceled"}
+				}
+			}
 		case "result":
 			if event.Result == nil || event.Init != nil || event.Step != nil {
 				return result, protocolFailure()
@@ -148,6 +168,9 @@ func parseStream(model string, reader io.Reader) (Result, *Failure) {
 				}
 			}
 			if !initialized || result.Error != "" || result.NumTurns != 1 || event.Result.Usage == nil || len(result.Response) > maxOutputBytes {
+				return result, protocolFailure()
+			}
+			if emit != nil && !strings.HasPrefix(result.Response, text.String()) {
 				return result, protocolFailure()
 			}
 			var valid bool

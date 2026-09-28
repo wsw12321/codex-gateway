@@ -17,10 +17,9 @@ import (
 	"unicode/utf8"
 )
 
-// The bridge emits one complete response after the isolated CLI finishes.
-// Buffer the bounded result so invalid output cannot start a successful client
-// response or report partial usage. The bridge's generated output is bounded
-// independently; allow room here for JSON escaping and protocol metadata.
+// Bound both the legacy complete response and the negotiated incremental
+// stream, allowing room for JSON escaping and protocol metadata. Final usage
+// and tools are released only after terminal validation in either protocol.
 const maxGeminiResponseBytes = 16 << 20
 
 // ForwardGemini only supports configured bridge models. Native Gemini requests
@@ -84,6 +83,7 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	}
 	if stream {
 		outgoing.Header.Set("Accept", "text/event-stream")
+		outgoing.Header.Set(geminiStreamHeader, "v1")
 	} else {
 		outgoing.Header.Set("Accept", "application/json")
 	}
@@ -117,6 +117,12 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != wantMediaType {
 		result.CompletedAt = time.Now()
 		return result, geminiProtocolFailure(errors.New("unexpected Gemini response status or content type"))
+	}
+	if values := response.Header.Values(geminiStreamHeader); len(values) != 0 {
+		if !stream || len(values) != 1 || values[0] != "v1" {
+			return result, geminiProtocolFailure(errors.New("unsupported Gemini stream protocol"))
+		}
+		return c.forwardGeminiStream(ctx, w, response, model, declaredTools, result)
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxGeminiResponseBytes+1))
 	result.CompletedAt = time.Now()

@@ -246,6 +246,10 @@ func accountBusyFailure() *Failure {
 }
 
 func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result, *Failure) {
+	return m.RunStream(ctx, model, prompt, nil)
+}
+
+func (m *AccountManager) RunStream(ctx context.Context, model, prompt string, emit func(string) error) (Result, *Failure) {
 	if !config.IsAntigravityModel(model) {
 		return Result{}, unsupported("model")
 	}
@@ -286,7 +290,16 @@ func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result,
 		} else {
 			defer release()
 		}
-		result, failure := account.runner.Run(ctx, model, prompt)
+		var result Result
+		started := false
+		if streaming, ok := account.runner.(StreamingExecutor); ok && emit != nil {
+			result, failure = streaming.RunStream(ctx, model, prompt, func(text string) error {
+				started = true
+				return emit(text)
+			})
+		} else {
+			result, failure = account.runner.Run(ctx, model, prompt)
+		}
 		m.mu.Lock()
 		if failure == nil {
 			// A sibling request may have observed quota/auth failure after this
@@ -304,15 +317,15 @@ func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result,
 			account.cooldown = time.Now().Add(time.Minute)
 		}
 		m.mu.Unlock()
-		if failure == nil || ctx.Err() != nil || request.directName != "" || (failure.Status != 429 && failure.Status != 401 && failure.Status != 403 && failure.Status != 503) {
+		if failure == nil || started || ctx.Err() != nil || request.directName != "" || (failure.Status != 429 && failure.Status != 401 && failure.Status != 403 && failure.Status != 503) {
 			return result, failure
 		}
 		release()
 		if request.release != nil {
 			*request.release = nil
 		}
-		// Runner buffers and validates the complete CLI response before returning;
-		// retrying here can never mix accounts within an emitted JSON/SSE response.
+		// Retry only before the first stream update: a response must never mix
+		// output or account attribution from different attempts.
 		last = failure
 	}
 }

@@ -121,6 +121,9 @@ type Result struct {
 	FirstByteAt       time.Time
 	FirstTokenAt      time.Time
 	CompletedAt       time.Time
+	// AbortStream asks the HTTP handler to terminate an already-started stream
+	// after recording failure and releasing its reservations.
+	AbortStream bool
 }
 
 type Failure struct {

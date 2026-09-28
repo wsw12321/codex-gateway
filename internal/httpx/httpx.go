@@ -118,6 +118,9 @@ func Recover(logger *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				if recovered == http.ErrAbortHandler {
+					panic(recovered)
+				}
 				logger.Error("http handler panic", "request_id", RequestID(r.Context()))
 				WriteError(w, r, http.StatusInternalServerError, "server_error", "internal_error", "服务器暂时无法处理请求")
 			}

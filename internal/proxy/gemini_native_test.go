@@ -71,7 +71,7 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 						t.Error("wrong internal query or credential")
 					}
 					for key := range r.Header {
-						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader && key != affinityHeader {
+						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader && key != affinityHeader && !(stream && key == geminiStreamHeader) {
 							t.Errorf("caller header crossed bridge boundary: %s", key)
 						}
 					}

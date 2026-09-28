@@ -101,7 +101,36 @@ AGY 版本仍为 `1.2.4`，无数据库迁移或对外 API 变化。测试用一
 脱敏夹具位于 `internal/antigravity/testdata/agy-1.2.4-native.json`，覆盖 AGY 默认
 参数、工具 schema、调用 ID 与结果关联、无签名工具循环及标题模型请求。网关测试
 另覆盖无效/停用 key、多来源凭据、模型权限、未知模型、请求大小限制；代理测试覆盖
-尾部错误、不完整 SSE、非法用量、超时和取消，确认无效结果不会先输出成功响应。
+尾部错误、不完整 SSE、非法用量、超时和取消。JSON 及旧版单事件协议不提前输出；新版
+增量协议允许已校验的文本先到达，但错误流不发送成功终止结果、工具调用或有效用量。
+
+## 原生 Gemini 增量输出
+
+2026-09-28 补充 Bridge `text_delta` 到 Gateway 的增量路径；非流式和旧版协商回退保留。
+用真实 AGY `1.2.4` 与 `1.2.12`、合成 Gemini 服务验证了 CLI NDJSON 增量与最终文本一致。
+真实 AGY `1.2.12` 连接实际 Bridge/Gateway 协议路径的回归，要求客户端在执行器获准
+结束之前报告增量文本，验证无重复正文，并验证流中途错误不能成为成功回答。
+
+测试另外覆盖长工具参数缓冲期间保活、工具及非法用量不提前释放、响应身份和文本前缀
+一致性、尾部错误、超限、不完整 SSE、大整数 Token 不丢精度，以及取消后的生成进程和
+工作目录清理。账号测试验证输出前可故障切换、输出后不混用账号，名额最终释放。
+
+一次性 PostgreSQL 的原生生命周期回归使用增量执行器，包含真实客户端的文本、标题和
+工具续轮；失败流验证在 `http.ErrAbortHandler` 之前完成失败记录、一次零金额结算及
+并发租约释放。`httpx.Recover` 保留这一有意的 HTTP 中止，不改成正常结束的响应。
+
+```sh
+AGY_CLI_TEST_BINARY=/path/to/official-agy-1.2.12 \
+  go test -count=1 ./internal/proxy -run TestNativeGeminiRealAGYIncrementalTextAndStreamError
+AGY_CLI_TEST_BINARY=/path/to/official-agy-1.2.12 \
+TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmode=disable' \
+  go test -count=1 -tags=integration ./internal/server -run TestNativeGeminiLifecyclePostgresIntegration
+```
+
+完整 `go test -count=1 ./...`、受影响四个包的 race、原生 PostgreSQL 生命周期 race、
+`go vet ./...` 以及 Gateway/Bridge 构建通过。race 使用本机 Go `1.26.8` 容器，源码
+只读挂载；凭据属主测试在容器临时目录中运行，数据库为一次性 PostgreSQL `17.6`。
+这些验证没有调用真实 Google 推理或部署生产服务器。
 
 ## 管理界面与配置命令回归
 

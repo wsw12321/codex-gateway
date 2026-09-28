@@ -40,7 +40,7 @@ func bridgeHTTPResult() antigravity.Result {
 	}}
 }
 
-func newBridgeHTTPClient(t *testing.T, executor bridgeHTTPExecutor) (*Client, *antigravity.Server) {
+func newBridgeHTTPClient(t *testing.T, executor antigravity.Executor) (*Client, *antigravity.Server) {
 	t.Helper()
 	bridge := antigravity.NewServer(executor, "independent-bridge-secret")
 	bridge.Refresh(context.Background())

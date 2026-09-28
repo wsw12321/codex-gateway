@@ -138,7 +138,11 @@ func (r Runner) save(root string) *AuthError {
 }
 
 func (r Runner) Run(ctx context.Context, model, prompt string) (Result, *Failure) {
-	result, failure, diagnostic := r.run(ctx, model, prompt)
+	return r.RunStream(ctx, model, prompt, nil)
+}
+
+func (r Runner) RunStream(ctx context.Context, model, prompt string, emit func(string) error) (Result, *Failure) {
+	result, failure, diagnostic := r.runUpdates(ctx, model, prompt, emit)
 	if diagnostic != nil && r.Logger != nil {
 		r.Logger.Warn("agy operation failed", "stage", diagnostic.Stage, "category", diagnostic.Category, "exit_code", diagnostic.ExitCode)
 	}
@@ -150,6 +154,10 @@ func credentialFailure() *Failure {
 }
 
 func (r Runner) run(ctx context.Context, model, prompt string) (Result, *Failure, *AuthError) {
+	return r.runUpdates(ctx, model, prompt, nil)
+}
+
+func (r Runner) runUpdates(ctx context.Context, model, prompt string, emit func(string) error) (Result, *Failure, *AuthError) {
 	if !config.IsAntigravityModel(model) {
 		return Result{}, unsupported("model"), nil
 	}
@@ -180,7 +188,7 @@ func (r Runner) run(ctx context.Context, model, prompt string) (Result, *Failure
 		return Result{}, &Failure{503, "upstream_unavailable", "Antigravity executable is unavailable"}, commandAuthError("generation", ctx.Err(), err)
 	}
 	counted := &countedReader{reader: stdout}
-	result, failure := parseStream(model, counted)
+	result, failure := parseStreamUpdates(model, counted, emit)
 	contextErr := ctx.Err()
 	if failure != nil {
 		cancel()

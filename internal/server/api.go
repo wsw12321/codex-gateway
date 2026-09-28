@@ -378,6 +378,11 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
 	}
+	if result.AbortStream {
+		// Do not send a clean EOF for an incomplete Gemini response: AGY may
+		// interpret it as success. Metadata and quota settlement must run first.
+		panic(http.ErrAbortHandler)
+	}
 }
 
 func degradedUsageRequest(method, requestedModel, upstreamModel string, failure *gatewayproxy.Failure) bool {

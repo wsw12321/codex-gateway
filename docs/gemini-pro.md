@@ -127,9 +127,22 @@ POST /v1beta/models/{model}:streamGenerateContent?alt=sse
 
 原生请求沿用 1 MiB 上限，按账号执行并发对话限制（默认每账号 1 个名额；无法识别对话的请求各占一个）。接受实测 AGY `1.2.4` 主会话默认生成参数，
 推理行为由所请求的 AGY 模型决定；无法兑现的自定义生成控制会返回明确错误。首版不支持
-图片附件、精确 `countTokens` 或云端内置工具。Gemini SSE 在完整生成并验证上游结果后
-发送 `data` JSON 对象，并以 EOF 结束，没有 Responses 的 `[DONE]` 标记。因此首个事件
-仍需等待完整生成。请求取消或超时会结束隔离进程并清理请求数据。
+图片附件、精确 `countTokens` 或云端内置工具。新版 Gateway 与 Bridge 协商增量 Gemini
+SSE：CLI 初始化并验证模型及严格权限后开始响应，普通文本按 `text_delta` 逐段发送，
+不再等待完整生成；等待思考或完整工具参数时，每 10 秒发送一个空 Gemini candidate
+保活。AGY `1.2.12` 不接受 `: keepalive` 注释，因此不能改用 SSE 注释心跳。
+
+潜在工具调用的 JSON 参数继续缓冲，完整校验并确认进程成功退出、凭据写回成功后才
+交给客户端执行。最终结果必须与已发送文本前缀一致，用量只在最终结果及流尾验证通过
+后结算；保活不会被当作首 Token。成功流以 EOF 结束，没有 Responses 的 `[DONE]`。
+流开始后的错误发送脱敏的 `event: error`，网关记录失败并释放配额后中止 HTTP 流，
+避免 AGY 忽略普通 JSON 错误或把半份结果视为成功。取消或超时会结束隔离进程并清理
+请求数据。已经显示的文本可能属于随后失败的请求，不能只凭 HTTP 200 判断完成。
+
+增量协议通过内部头协商，不向客户端暴露；任意一端仍为旧版时沿用原先的完整结果
+缓冲路径。JSON `generateContent` 和 Antigravity 的 Responses 路径仍返回最终结果。
+部署 Gateway 与 Bridge 两个新镜像后，AGY 原生接口才会启用上述流式行为，无新增配置
+或数据库迁移。排查证据与本地验证见 [499 与流式修复记录](agy-499-investigation.md)。
 
 ## API 范围
 

@@ -24,6 +24,10 @@ type Executor interface {
 	Check(context.Context) ([]string, error)
 }
 
+type StreamingExecutor interface {
+	RunStream(context.Context, string, string, func(string) error) (Result, *Failure)
+}
+
 type Server struct {
 	runner  Executor
 	manager *AccountManager
@@ -223,6 +227,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		available := s.models.Load()
 		if available == nil || !modelSet(*available)[request.Model] {
 			writeFailure(w, &Failure{503, "upstream_unavailable", "Antigravity model is unavailable"})
+			return
+		}
+	}
+	if native && request.Stream && len(r.Header.Values(geminiStreamHeader)) == 1 && r.Header.Get(geminiStreamHeader) == "v1" {
+		if runner, ok := s.runner.(StreamingExecutor); ok {
+			s.serveGeminiStream(w, r, request, runner, &selectedAccount)
 			return
 		}
 	}

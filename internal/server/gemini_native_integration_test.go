@@ -55,6 +55,21 @@ func (e *nativeLifecycleExecutor) Run(ctx context.Context, model, prompt string)
 	}}, e.failure
 }
 
+func (e *nativeLifecycleExecutor) RunStream(ctx context.Context, model, prompt string, emit func(string) error) (antigravity.Result, *antigravity.Failure) {
+	if emit("") != nil {
+		return antigravity.Result{}, &antigravity.Failure{Status: 499, Code: "request_canceled"}
+	}
+	result, failure := e.Run(ctx, model, prompt)
+	if failure == nil {
+		for _, part := range strings.SplitAfter(result.Response, " ") {
+			if part != "" && emit(part) != nil {
+				return antigravity.Result{}, &antigravity.Failure{Status: 499, Code: "request_canceled"}
+			}
+		}
+	}
+	return result, failure
+}
+
 // Exercises the real HTTP handlers, bridge adapter and PostgreSQL transaction
 // lifecycle together. A deterministic executor replaces only the Google process.
 func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
@@ -266,7 +281,11 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 			} `json:"content"`
 		} `json:"candidates"`
 	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(toolResponse.Body.String(), "data: "))), &toolResult); err != nil {
+	toolEvents := strings.Split(strings.TrimSpace(toolResponse.Body.String()), "\n\n")
+	if len(toolEvents) < 2 || !strings.Contains(toolEvents[0], `"parts":[]`) {
+		t.Fatal("tool response did not send early keepalive")
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(toolEvents[len(toolEvents)-1], "data: "))), &toolResult); err != nil {
 		t.Fatal(err)
 	}
 	if len(toolResult.Candidates) != 1 || len(toolResult.Candidates[0].Content.Parts) != 1 {
@@ -436,6 +455,40 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	t.Run("AGY CLI 1.2.12", func(t *testing.T) {
 		testNativeAGYCLI(t, h.handler, repository, user.ID, key.ID, h.apiKey, executor)
+	})
+	t.Run("stream failure settles before HTTP abort", func(t *testing.T) {
+		executor.started = nil
+		executor.failure = &antigravity.Failure{Status: 502, Code: "upstream_protocol_error", Message: "private failure detail"}
+		defer func() { executor.failure = nil }()
+		if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
+			BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "stream failure settlement"},
+			UserID:             user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+config.AntigravityPublicModel+":streamGenerateContent?alt=sse", strings.NewReader(nativeGeminiText))
+		r.Header.Set("Authorization", "Bearer "+h.apiKey)
+		w := httptest.NewRecorder()
+		var aborted any
+		func() {
+			defer func() { aborted = recover() }()
+			h.handler.ServeHTTP(w, r)
+		}()
+		if aborted != http.ErrAbortHandler || strings.Contains(w.Body.String(), "private failure") || strings.Contains(w.Body.String(), "finishReason") {
+			t.Fatalf("unsafe failed stream: abort=%v body=%s", aborted, w.Body)
+		}
+		requestID := w.Header().Get(httpx.RequestIDHeader)
+		var state, reservation, cost string
+		var status, leases, count int
+		if err := repository.DB().QueryRowContext(ctx, `SELECT u.state,u.http_status,q.state,l.amount_usd::text,
+			(SELECT count(*) FROM concurrency_leases WHERE request_id=$1),
+			(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1)
+			FROM usage_requests u JOIN quota_reservations q USING(request_id) JOIN billing_ledger_entries l USING(request_id) WHERE u.request_id=$1`, requestID).Scan(&state, &status, &reservation, &cost, &leases, &count); err != nil {
+			t.Fatal(err)
+		}
+		if state != "failed" || status != 502 || reservation != "settled" || cost != "0.000000000000" || leases != 0 || count != 1 {
+			t.Fatalf("failed stream settlement: %s %d %s cost=%s leases=%d count=%d", state, status, reservation, cost, leases, count)
+		}
 	})
 	t.Run("Flash client presets", func(t *testing.T) {
 		executor.started, executor.failure, executor.response = nil, nil, "OK"
