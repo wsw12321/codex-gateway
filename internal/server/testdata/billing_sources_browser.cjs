@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const assets = path.join(__dirname, "../assets");
-const screenshots = path.join(__dirname, "../../../docs/screenshots");
+const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../../docs/screenshots");
 const source = fs.readFileSync(path.join(assets, "app.js"), "utf8");
 const app = source.slice(0, source.lastIndexOf("\nstart().catch("));
 const initialState = {user: {id: "member", username: "lin", display_name: "林同学", role: "member", status: "active"},
@@ -20,7 +20,10 @@ const billing = (id = "member") => ({user: id === "member" ? initialState.user :
       period_started_at: "2026-09-20T00:00:00Z", period_ends_at: "2026-09-21T00:00:00Z", expires_at: "2026-09-23T00:00:00Z"},
     month: {enabled: true, quota_usd: "200", remaining_usd: "165.25", period_count: 0, current_period_number: 2,
       period_started_at: "2026-09-01T00:00:00Z", period_ends_at: "2026-10-02T00:00:00Z"},
-  }, ledger_entries: [], pagination: {offset: 0, limit: 50, has_more: false}});
+  }, ledger_entries: [{entry_type: "usage_charge", amount_usd: "0.000000000123", balance_after_usd: "123.45",
+    occurred_at: "2026-09-29T03:42:00Z", reason: "合成账务记录", request_id: "synthetic-request-" + "x".repeat(80),
+    model: "synthetic-model-" + "x".repeat(80), pricing_multiplier: "1", input_tokens: 125, output_tokens: 42}],
+    pagination: {offset: 0, limit: 50, has_more: false}});
 
 async function main() {
   const browser = await chromium.launch({headless: true});
@@ -28,7 +31,7 @@ async function main() {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
     const errors = [], writes = [];
-    let failRead = false, failWrite = false, writeGate = null;
+    let failRead = false, failWrite = false, writeGate = null, rechargeGate = null, failRecharge = true;
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/*", async (route) => {
       const request = route.request(), url = new URL(request.url());
@@ -39,6 +42,11 @@ async function main() {
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/auth/password/reauth") return send({ok: true});
+      if (url.pathname === "/admin/billing/users") return send({users: [initialState.user, {id: "other", username: "chen", display_name: "陈同学"}]});
+      if (url.pathname === "/admin/billing/users/other/recharges" && request.method() === "POST") {
+        if (rechargeGate) await rechargeGate;
+        return failRecharge ? send({error: {message: "模拟充值失败"}}, 503) : send({ok: true});
+      }
       if (url.pathname === "/admin/billing/me" || url.pathname === "/admin/billing/users/other") {
         return failRead ? send({error: {message: "模拟额度加载失败"}}, 503) : send(billing(url.pathname.endsWith("other") ? "other" : "member"));
       }
@@ -64,6 +72,11 @@ async function main() {
     const toggle = async (source) => { await control(source).click(); await settled(); };
     assert.equal(await page.locator("[data-billing-source]:visible").count(), 4);
     assert.equal(await control("week").isEnabled(), true, "unopened subscriptions can be configured");
+    assert.equal(await page.locator(".subscription-card").count(), 3);
+    assert.equal(await page.locator(".subscription-card progress").count(), 2);
+    assert.equal(await page.locator('[data-subscription-tier="day"] progress').getAttribute("value"), "85");
+    assert.match(await page.locator('[data-subscription-tier="month"]').textContent(), /最终到期：无限期/);
+    assert.equal(await page.locator('.subscription-period-details[open]').count(), 0);
 
     await page.evaluate(() => { state.recently_verified = false; });
     await control("day").click();
@@ -109,6 +122,29 @@ async function main() {
     assert.match(await page.locator("#billing-source-readonly").textContent(), /仅本人可修改/);
     assert.equal(await page.locator("#billing-source-message").textContent(), "");
 
+    await page.evaluate(() => {
+      const form = byId("billing-recharge-form");
+      form.elements.cny_amount.value = "123.456789";
+      form.elements.reason.value = "合成失败场景";
+      form.closest("details").open = true;
+    });
+    let releaseRecharge;
+    rechargeGate = new Promise((resolve) => { releaseRecharge = resolve; });
+    await page.locator('#billing-recharge-form button[type="submit"]').click();
+    await page.waitForFunction(() => byId("billing-recharge-form").dataset.busy === "true");
+    await page.evaluate(() => { byId("billing-recharge-form").closest("details").open = false; });
+    releaseRecharge(); rechargeGate = null;
+    await page.waitForFunction(() => byId("billing-recharge-form").dataset.busy === "false");
+    assert.match(await page.locator("#billing-recharge-form .form-message").textContent(), /模拟充值失败/);
+    assert.equal(await page.locator('#billing-recharge-form input[name="cny_amount"]').inputValue(), "123.456789");
+    assert.equal(await page.locator('#billing-recharge-form').evaluate((form) => form.closest("details").open), true);
+    failRecharge = false; failRead = true;
+    await page.locator('#billing-recharge-form button[type="submit"]').click();
+    await page.waitForFunction(() => byId("billing-recharge-form").dataset.busy === "false");
+    assert.match(await page.locator("#billing-recharge-form .form-message").textContent(), /已入账.*刷新失败.*无需重复提交/);
+    assert.equal(await page.locator('#billing-recharge-form').evaluate((form) => form.closest("details").open), true);
+    failRead = false;
+
     await page.evaluate(async (value) => { renderState(value); await loadBillingDetail(); }, initialState);
     await toggle("cash");
     await page.evaluate(() => { hide("notice"); window.scrollTo(0, 0); });
@@ -116,7 +152,21 @@ async function main() {
     await page.screenshot({path: path.join(screenshots, "billing-sources-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile layout must not overflow horizontally");
+    await page.locator("#billing-ledger-rows .record-details summary").click();
+    assert.equal(await page.locator("#billing-ledger-rows .record-details").evaluate((node) => node.open), true);
+    assert.match(await page.locator("#billing-ledger-rows .record-details").textContent(), /synthetic-request/);
+    assert.match(await page.locator("#billing-ledger-rows .record-details").textContent(), /现金余额/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "expanded ledger details must wrap long values");
+    const readableDetails = () => page.locator("#billing-ledger-rows .record-details").evaluate((node) =>
+      node.getBoundingClientRect().width > node.closest("table").getBoundingClientRect().width * .85);
+    assert.equal(await readableDetails(), true, "expanded details should span the ledger width");
+    await page.evaluate(() => window.scrollTo(0, 0));
     await page.screenshot({path: path.join(screenshots, "billing-sources-mobile.png"), fullPage: true});
+    for (const width of [320, 850]) {
+      await page.setViewportSize({width, height: 844});
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px billing must not overflow`);
+      assert.equal(await readableDetails(), true, `${width}px expanded details should remain readable`);
+    }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, errors, desktop: "1440x1080", mobile: "390x844"}));
   } finally { await browser.close(); }

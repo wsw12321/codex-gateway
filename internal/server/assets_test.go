@@ -212,7 +212,7 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 		`/recharges`, `/adjustments`, `/subscriptions/`, `crypto.randomUUID()`,
 		`return sensitiveAction(() => {`, `beforeSend?.();`,
 		`period_count: billingPeriodCount(form)`, `当前第 ${period.current}/${period.count} 个周期`,
-		`第 ${period.current} 个周期 · 无限期`, `本周期结束（最终失效）`, `最终失效：`,
+		`第 ${period.current} 个周期 · 无限期`, `本周期结束（最终失效）`, `最终到期：`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("billing dashboard JavaScript is missing %s", required)

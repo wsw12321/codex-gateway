@@ -105,6 +105,7 @@ function dashboard(role = "member", initial = detail()) {
   `);
   const buttons = () => root.querySelectorAll("[data-billing-source]");
   return {run, calls, context, node: getNode, buttons,
+    card: (tier) => root.querySelectorAll(".subscription-card").find((node) => node.dataset.subscriptionTier === tier),
     button: (source) => buttons().find((node) => node.dataset.billingSource === source),
     label: (source) => root.querySelectorAll("[data-billing-source-state]").find((node) => node.dataset.billingSourceState === source),
     change: (source) => run(`changeBillingSource(${JSON.stringify(source)})`),
@@ -131,9 +132,9 @@ test("members and owners can disable and restore every own source, including uno
         ]);
       }
       assert.equal(ui.node("billing-cash-balance").textContent, "US$123.45");
-      assert.equal(ui.node("billing-day-remaining").textContent, "US$8.50");
-      assert.match(ui.node("billing-day-ends").textContent, /最终失效/);
-      assert.equal(ui.node("billing-week-remaining").textContent, "未启用");
+      assert.equal(ui.card("day").querySelector(".subscription-remaining").textContent, "US$8.50");
+      assert.equal(ui.card("day").querySelector("progress").attributes.value, "85");
+      assert.equal(ui.card("week").querySelector(".subscription-remaining").textContent, "未启用");
       assert.equal(ui.calls.filter(({options}) => !options).every(({pathname}) => pathname.startsWith("/admin/billing/me?")), true);
     });
   }
@@ -471,4 +472,63 @@ test("old billing user lists and settings cannot render or invalidate a replacem
       });
     }
   }
+});
+
+test("subscription cards separate validity from charging permission and preserve exact amounts", () => {
+  const input = detail("member", {day: true});
+  input.subscriptions.day.quota_usd = "999999999999999999.123456789012";
+  input.subscriptions.day.remaining_usd = "999999999999999998.123456789012";
+  const ui = dashboard("member", input);
+  assert.equal(ui.card("day").querySelector(".status-badge").textContent, "订阅有效");
+  assert.equal(ui.label("day").textContent, "已禁用扣费");
+  assert.equal(ui.card("day").querySelector(".subscription-remaining").textContent, "US$999,999,999,999,999,998.123456789012");
+  assert.equal(ui.card("day").querySelector("details").open, undefined, "period details start collapsed");
+  assert.equal(ui.node("billing-subscriptions").children.length, 3, "one card per subscription tier");
+});
+
+test("subscription progress clamps to zero through one hundred and only renders usable quotas", () => {
+  const ui = dashboard();
+  for (const [quota, remaining, expected] of [["10", "20", 100], ["10", "-2", 0], ["0", "0", null],
+    ["-1", "1", null], [null, "1", null], ["10", null, null], ["bad", "1", null]]) {
+    ui.context.input = {subscriptions: {day: {enabled: true, quota_usd: quota, remaining_usd: remaining, period_count: 1}}};
+    ui.run("renderBillingSubscriptions(input)");
+    const progress = ui.card("day").querySelector("progress");
+    assert.equal(progress?.attributes.value ?? null, expected == null ? null : String(expected), `quota=${quota}, remaining=${remaining}`);
+    assert.equal(ui.run('billingSubscriptionDisplay(input, "day").ratio'), expected);
+  }
+});
+
+test("subscription display distinguishes unopened, indefinite, finite, and unavailable data", () => {
+  const ui = dashboard();
+  for (const [input, status, expires] of [
+    [{subscriptions: {}}, "未启用", "—"],
+    [{subscriptions: {day: {enabled: false}}}, "未启用", "—"],
+    [{subscriptions: {day: {enabled: true, period_count: 0}}}, "订阅有效", "无限期"],
+    [{subscriptions: {day: {enabled: true, period_count: 3}}}, "订阅有效", "数据不可用"],
+    [{subscriptions: {day: {enabled: true}}}, "订阅有效", "数据不可用"],
+    [{}, "数据不可用", "—"],
+    [{subscriptions: {day: {}}}, "数据不可用", "—"],
+  ]) {
+    ui.context.input = input;
+    assert.equal(ui.run('billingSubscriptionDisplay(input, "day").status'), status);
+    assert.equal(ui.run('billingSubscriptionDisplay(input, "day").expires'), expires);
+  }
+  ui.context.input = {subscriptions: {day: {enabled: true, period_count: 2, expires_at: "2026-10-02T00:00:00Z"}}};
+  assert.notEqual(ui.run('billingSubscriptionDisplay(input, "day").expires'), "无限期");
+  assert.equal(ui.run('billingSubscriptionDisplay(input, "day").remaining'), "数据不可用");
+});
+
+test("managed billing refresh failures remain independent of a successful mutation", async () => {
+  const ui = dashboard("owner");
+  ui.run(`
+    loadBillingUsers = async () => { throw new Error("read unavailable"); };
+    loadBillingDetail = async () => {};
+  `);
+  assert.equal(await ui.run("refreshManagedBilling()"), false);
+  ui.context.form = new Element("form");
+  const message = new Element("p");
+  message.className = "form-message hidden";
+  ui.context.form.append(message);
+  ui.run('reportBillingMutation(form, "充值已入账。", false)');
+  assert.match(message.textContent, /充值已入账.*刷新失败.*无需重复提交/);
 });

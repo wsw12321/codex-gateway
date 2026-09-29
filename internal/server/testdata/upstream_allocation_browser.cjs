@@ -31,7 +31,7 @@ async function main() {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
     const errors = [], writes = [], events = [];
-    let failList = false, failSave = false;
+    let failList = false, failSave = false, quotaQueries = 0;
     page.on("pageerror", (error) => errors.push(error.message));
     const response = () => {
       const totalWeight = accounts.filter((account) => account.status === "available").reduce((sum, account) => sum + account.allocation_weight, 0);
@@ -46,6 +46,10 @@ async function main() {
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/upstream-accounts/account-alpha/quota") {
+        quotaQueries++;
+        return send({id: 6, result: {rateLimits: {limitId: "synthetic", primary: {usedPercent: 25, windowDurationMins: 300}}}});
+      }
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: accounts.map((account) => ({id: account.id, active_requests: 0}))});
       if (url.pathname === "/admin/upstream-accounts") {
         return failList ? send({error: {message: "模拟统计服务暂不可用"}}, 503) : send(response());
@@ -78,8 +82,27 @@ async function main() {
     const input = () => card().locator(".upstream-allocation-input");
     const save = () => card().locator(".upstream-allocation-save").click();
     const settled = () => page.waitForFunction(() => !upstreamAccountOperation && !upstreamAccountListLoading);
-    const refresh = async () => { await page.locator("#upstream-account-filter button[type=submit]").click(); await settled(); };
+    const refresh = async () => {
+      await page.locator(".upstream-history-filter").evaluate((node) => { node.open = true; });
+      await page.locator("#upstream-account-filter button[type=submit]").click(); await settled();
+    };
+    assert.equal(await card().locator(".upstream-account-details").getAttribute("open"), null);
+    fs.mkdirSync(screenshots, {recursive: true});
+    await page.screenshot({path: path.join(screenshots, "upstream-accounts-summary-desktop.png"), fullPage: true});
+    await card().locator(".upstream-account-details > summary").click();
     assert.equal(await input().inputValue(), "5");
+    await card().locator(".upstream-quota button").click();
+    await page.waitForFunction(() => document.querySelector('[data-account-id="account-alpha"] .upstream-quota-result').dataset.state === "fresh");
+    await input().fill("17");
+    await page.locator("#upstream-account-search").fill("be***");
+    assert.equal(await card().isVisible(), false);
+    await page.locator("#upstream-account-search").fill("");
+    await page.locator("#upstream-account-sort").selectOption("cost");
+    assert.equal(await page.locator("#upstream-account-list > article").first().getAttribute("data-account-id"), "account-beta");
+    assert.equal(await input().inputValue(), "17");
+    assert.match(await card().locator(".upstream-quota-result").textContent(), /剩余 75%/);
+    await page.locator("#upstream-account-sort").selectOption("default");
+    await input().fill("5");
     assert.match(await card("account-gamma").locator(".upstream-allocation-state").textContent(), /停止接收新对话/);
     assert.match(await page.locator("#upstream-allocation-period").textContent(), /独立于历史统计筛选/);
 
@@ -96,10 +119,13 @@ async function main() {
     await page.locator('#reauth-form button[type="submit"]').click(); await settled();
     assert.deepEqual(events.slice(0, 2), ["verified", "write"]);
     assert.equal(await input().inputValue(), "20");
+    assert.match(await card().locator(".upstream-quota-result").textContent(), /剩余 75%/);
+    assert.equal(quotaQueries, 1, "list refresh restores the cached quota result without querying again");
 
     await input().fill("0"); await save(); await settled();
     assert.match(await card().locator(".upstream-allocation-state").textContent(), /停止接收新对话.*已有有效绑定/);
     await input().fill("5"); await save(); await settled();
+    await page.locator(".upstream-history-filter").evaluate((node) => { node.open = true; });
     await page.locator("#upstream-account-filter select[name=range]").selectOption("month");
     await refresh();
     assert.match(await card().locator(".upstream-allocation-stats").textContent(), /12\.345678/);
@@ -112,7 +138,7 @@ async function main() {
     failSave = true; await input().fill("10"); await save(); await settled();
     assert.match(await page.locator("#upstream-account-action-message").textContent(), /保存未确认.*模拟配置保存失败/);
     failSave = false; await refresh();
-    assert.equal(await input().inputValue(), "5");
+    assert.equal(await input().inputValue(), "10", "refresh must retain an unconfirmed edit");
 
     failList = true; await input().fill("0"); await save(); await settled();
     assert.match(await page.locator("#upstream-account-action-message").textContent(), /已保存为 0/);
@@ -121,11 +147,20 @@ async function main() {
     await page.screenshot({path: path.join(screenshots, "upstream-allocation-refresh-failure.png"), fullPage: true});
     failList = false; await refresh(); await input().fill("5"); await save(); await settled();
 
-    await page.evaluate(() => { window.scrollTo(0, 0); });
+    await page.evaluate(() => { hide("notice"); window.scrollTo(0, 0); });
     await page.screenshot({path: path.join(screenshots, "upstream-allocation-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
+    await page.locator(".upstream-history-filter").evaluate((node) => { node.open = false; });
+    await card().locator(".upstream-account-details").evaluate((node) => { node.open = false; });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const firstSummary = await card().locator(".upstream-account-summary").boundingBox();
+    assert.ok(firstSummary && firstSummary.y + firstSummary.height <= 844, "mobile first screen includes the first account summary");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile layout must not overflow horizontally");
     await page.screenshot({path: path.join(screenshots, "upstream-allocation-mobile.png"), fullPage: true});
+    for (const width of [320, 850]) {
+      await page.setViewportSize({width, height: 844});
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px layout must not overflow`);
+    }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, errors, desktop: "1440x1080", mobile: "390x844"}));
   } finally { await browser.close(); }

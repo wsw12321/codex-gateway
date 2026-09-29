@@ -95,38 +95,48 @@
     </section>
 
     <section id="dashboard" class="app hidden" aria-label="Codex Gateway 管理控制台">
-      <aside>
+      <button id="navigation-backdrop" class="navigation-backdrop" type="button" tabindex="-1" aria-label="关闭导航菜单" hidden></button>
+      <aside id="sidebar" aria-label="主导航">
         <div class="brand">
           <span aria-hidden="true">CG</span>
           <div><strong>Codex Gateway</strong><small>管理控制台</small></div>
         </div>
+        <button id="navigation-close" class="secondary navigation-close" type="button">关闭菜单</button>
         <nav aria-label="控制台分区">
+          <div class="nav-group" aria-labelledby="nav-workspace">
+          <p id="nav-workspace" class="nav-group-title">工作台</p>
           <a href="#overview" data-view="overview">概览</a>
-          <a href="#resources" data-view="resources">资源</a>
+          <a href="#resources" data-view="resources">设备与项目</a>
           <a href="#keys" data-view="keys">API Keys</a>
           <a href="#guide" data-view="guide">使用指导</a>
+          </div>
+          <div class="nav-group" aria-labelledby="nav-billing">
+          <p id="nav-billing" class="nav-group-title">用量与账务</p>
+          <a href="#usage" data-view="usage">使用统计</a>
           <a href="#billing" data-view="billing">额度与订阅</a>
           <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden">模型倍率</a>
-          <a href="#security" data-view="security">账号安全</a>
-          <a href="#usage" data-view="usage">使用统计</a>
+          <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
+          </div>
+          <div class="nav-group owner-only hidden" aria-labelledby="nav-management">
+          <p id="nav-management" class="nav-group-title">管理</p>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
+          <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
           <a href="#model-identification" data-view="model-identification" class="owner-only hidden">模型鉴别</a>
-          <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
-          <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
-          <a href="#antigravity-accounts" data-view="antigravity-accounts" class="owner-only hidden">Antigravity 账号</a>
-          <a href="#information" data-view="information" class="owner-only hidden">信息管理</a>
+          <a href="#information" data-view="information" class="owner-only hidden">数据维护</a>
+          </div>
         </nav>
         <div class="profile">
           <div><strong id="whoami">—</strong><small id="role">—</small></div>
+          <a href="#security" data-view="security">账号安全</a>
           <button id="logout" class="quiet" type="button">退出</button>
         </div>
       </aside>
 
       <div class="workspace">
         <header class="workspace-header">
+          <button id="navigation-toggle" class="secondary navigation-toggle" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="打开导航菜单">菜单</button>
           <div>
-            <p class="eyebrow">PERSONAL CODEX GATEWAY</p>
             <h1 id="page-title">概览</h1>
           </div>
           <span id="connection" class="connection" data-state="loading">正在连接</span>
@@ -136,33 +146,35 @@
           <p id="webauthn-warning" class="callout hidden" role="alert"></p>
           <section class="view" data-section="overview" aria-labelledby="overview-title">
             <h2 id="overview-title" class="sr-only">概览</h2>
-            <div class="metrics overview-metrics">
-              <article><span>最近 7 天请求</span><strong id="metric-requests">—</strong><small>完整筛选区间</small></article>
-              <article><span>Token</span><strong id="metric-tokens">—</strong><small>输入 + 输出</small></article>
-              <article><span>错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small></article>
-              <article><span>活跃 API Keys</span><strong id="metric-active-keys">—</strong><small>当前可使用</small></article>
-              <article class="owner-only hidden"><span>本月全员 Token</span><strong id="metric-global-tokens">—</strong><small>所有用户聚合</small></article>
-              <article class="owner-only hidden"><span>本月计费成本（含倍率）</span><strong id="metric-global-cost">—</strong><small id="metric-global-coverage">仅已定价部分</small></article>
+            <div class="overview-scope"><p>我的账户与最近 7 天</p><button id="overview-refresh" type="button" class="text-button">刷新概览</button></div>
+            <div class="metrics overview-personal-metrics">
+              <article><span>现金余额</span><strong id="overview-cash">—</strong><small id="overview-billing-updated">正在加载本人账务…</small><button class="text-button" type="button" data-overview-billing>查看账务</button></article>
+              <article class="overview-subscription-metric"><span>各订阅剩余</span><div id="overview-subscriptions" class="overview-subscription-list" aria-live="polite">—</div><small id="overview-next-expiry">—</small><button class="text-button" type="button" data-overview-billing>查看订阅</button></article>
+              <article><span>最近 7 天请求</span><strong id="metric-requests">—</strong><small>本人用量 · <b id="metric-tokens">—</b> Token</small><button class="text-button" type="button" data-overview-usage>查看使用记录</button></article>
+              <article><span>最近 7 天错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small><button class="text-button" type="button" data-overview-usage>查看请求结果</button></article>
             </div>
-
-            <div class="overview-grid">
-              <article class="panel">
-                <div class="panel-heading"><div><p class="eyebrow">WORKSPACE</p><h2>资源状态</h2></div></div>
-                <div id="resource-summary" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载资源…</div>
-              </article>
-              <article class="panel">
-                <div class="panel-heading"><div><p class="eyebrow">GET STARTED</p><h2>首次接入</h2></div><span id="onboarding-progress" class="badge">0 / 3</span></div>
-                <ol id="onboarding" class="checklist"></ol>
-              </article>
-              <article class="panel owner-only hidden">
-                <div class="panel-heading"><div><p class="eyebrow">OWNER</p><h2>开放告警</h2></div><a href="#security" class="subtle-link">安全工具</a></div>
-                <div id="alert-summary" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载告警…</div>
-              </article>
-              <article class="panel owner-only hidden">
-                <div class="panel-heading"><div><p class="eyebrow">ESTIMATE</p><h2>本月全员</h2></div><button class="text-button" type="button" data-usage-tab="global">查看汇总</button></div>
-                <div id="global-overview" class="summary-list loading" aria-live="polite" aria-busy="true">正在加载全员统计…</div>
-              </article>
-            </div>
+            <article class="panel overview-recent-panel">
+              <div class="panel-heading"><div><h2>最近请求</h2><p id="overview-usage-updated" class="overview-updated">本人最近 7 天 · 最近 5 条</p></div><button class="text-button" type="button" data-overview-usage>全部记录</button></div>
+              <div id="overview-recent-requests" class="overview-recent-list" aria-live="polite" aria-busy="true">正在加载请求…</div>
+            </article>
+            <section class="overview-management owner-only hidden" aria-labelledby="overview-management-title">
+              <div class="panel-heading"><h2 id="overview-management-title">管理概况</h2><button id="overview-global-usage" class="text-button" type="button">查看全员本月用量</button></div>
+              <div class="metrics overview-management-metrics">
+                <article><span>本月全员 Token</span><strong id="metric-global-tokens">—</strong><small id="overview-global-updated">所有用户聚合</small></article>
+                <article><span>本月计费成本（含倍率）</span><strong id="metric-global-cost">—</strong><small id="metric-global-coverage">计价覆盖：—</small></article>
+              </div>
+              <div id="global-overview" class="summary-list overview-global-summary" aria-live="polite" aria-busy="true">正在加载全员统计…</div>
+              <div class="overview-grid">
+                <article class="panel"><div class="panel-heading"><h3>上游账号可用情况</h3></div><div id="overview-codex-accounts" class="overview-provider" aria-live="polite">正在加载 Codex…</div><div id="overview-antigravity-accounts" class="overview-provider" aria-live="polite">正在加载 Antigravity…</div></article>
+                <article class="panel"><div class="panel-heading"><h3>开放告警</h3><a href="#security" class="subtle-link">安全工具</a></div><div id="alert-summary" class="summary-list" aria-live="polite" aria-busy="true">正在加载告警…</div><p id="overview-alerts-updated" class="overview-updated"></p></article>
+              </div>
+            </section>
+            <article id="overview-onboarding" class="panel overview-onboarding">
+              <div id="onboarding-heading" class="panel-heading"><h2>首次接入</h2><span id="onboarding-progress" class="badge">0 / 3</span></div>
+              <ol id="onboarding" class="checklist"></ol>
+              <div id="onboarding-complete" class="overview-complete hidden"><span>接入已完成</span><a href="#guide" class="subtle-link">查看使用指导</a></div>
+            </article>
+            <details class="overview-resources"><summary>设备与凭证 · <span id="metric-active-keys">—</span> 个活跃 API Keys</summary><div id="resource-summary" class="summary-list" aria-live="polite" aria-busy="true">正在加载资源…</div><a href="#resources" class="subtle-link">管理设备与项目</a></details>
           </section>
 
           <section class="view hidden" data-section="resources" aria-labelledby="resources-title">
@@ -308,7 +320,7 @@
 
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">
             <div class="section-head">
-              <div><p class="eyebrow">ACTUAL BILLING</p><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、有限或无限周期额度与实际结算流水；请求费用包含模型倍率。</p></div>
+              <div><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、订阅状态和实际结算流水。</p></div>
             </div>
             <div id="billing-loading" class="inline-loading" role="status">正在加载额度与订阅…</div>
             <div id="billing-owner-scope" class="scope-banner owner-only hidden">
@@ -323,10 +335,8 @@
               <span id="billing-scope-name">—</span>
             </div>
             <div class="metrics billing-metrics">
-              <article><span>现金余额</span><strong id="billing-cash-balance">—</strong><small>订阅额度用尽后使用</small><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
-              <article><span>日订阅剩余</span><strong id="billing-day-remaining">—</strong><small id="billing-day-ends">未启用</small></article>
-              <article><span>周订阅剩余</span><strong id="billing-week-remaining">—</strong><small id="billing-week-ends">未启用</small></article>
-              <article><span>月订阅剩余</span><strong id="billing-month-remaining">—</strong><small id="billing-month-ends">未启用</small></article>
+              <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
+              <article class="billing-order-card"><span>扣费顺序</span><strong>日 → 周 → 月 → 现金</strong><small>按顺序使用有效且允许扣费的来源；实际扣费以请求结算流水为准。不同周期额度分别计算。</small></article>
             </div>
 
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
@@ -334,14 +344,15 @@
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
             <p id="billing-source-message" class="form-message billing-source-message hidden" role="status" aria-live="polite"></p>
             <article class="panel billing-period-panel">
-              <div class="panel-heading"><div><p class="eyebrow">ROLLING PERIODS</p><h3>当前周期</h3></div><span class="badge">日 → 周 → 月 → 余额</span></div>
+              <div class="panel-heading"><div><h3>订阅额度</h3></div></div>
               <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
             </article>
 
             <div class="owner-only hidden billing-owner-tools">
-              <article id="billing-batch-panel" class="panel billing-batch-panel" aria-labelledby="billing-batch-title">
+              <details id="billing-batch-panel" class="panel billing-batch-panel" aria-labelledby="billing-batch-title">
+                <summary id="billing-batch-title">批量充值与开通订阅</summary>
                 <div class="panel-heading">
-                  <div><p class="eyebrow">BATCH OPERATIONS</p><h3 id="billing-batch-title">批量充值与开通订阅</h3><p>勾选用户，为每人设置相同的充值金额或订阅参数。搜索时会保留已选用户。</p></div>
+                  <div><p>勾选用户，为每人设置相同的充值金额或订阅参数。搜索时会保留已选用户。</p></div>
                   <span id="billing-batch-selected-count" class="badge" role="status" aria-live="polite">已选 0 人</span>
                 </div>
                 <div class="billing-batch-toolbar">
@@ -413,11 +424,13 @@
                     <button id="billing-batch-reset" type="button" class="secondary">结束本批次</button>
                   </div>
                 </section>
-              </article>
+              </details>
 
               <div class="billing-admin-grid">
+                <details class="billing-operation">
+                  <summary>充值汇率</summary>
                 <form id="billing-rate-form" class="panel billing-form">
-                  <div><p class="eyebrow">GLOBAL RATE</p><h3>充值汇率</h3><p>当前：<strong id="billing-current-rate">—</strong> USD/CNY。仅影响之后的充值，历史充值保留当时汇率快照。</p></div>
+                  <div><p>当前：<strong id="billing-current-rate">—</strong> USD/CNY。仅影响之后的充值，历史充值保留当时汇率快照。</p></div>
                   <label>1 CNY 可兑换 USD
                     <input name="usd_per_cny" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,12})?" autocomplete="off" placeholder="1.000000000000">
                   </label>
@@ -427,9 +440,12 @@
                   <p class="form-message hidden" role="alert"></p>
                   <button type="submit">更新充值汇率</button>
                 </form>
+                </details>
 
+                <details class="billing-operation">
+                  <summary>为所选用户充值</summary>
                 <form id="billing-recharge-form" class="panel billing-form">
-                  <div><p class="eyebrow">RECHARGE</p><h3>CNY 充值</h3><p>按当前全局汇率换算并保存汇率快照。</p></div>
+                  <div><p>按当前全局汇率换算并保存汇率快照。</p></div>
                   <label>充值金额（CNY）
                     <input name="cny_amount" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="100.00">
                   </label>
@@ -439,9 +455,12 @@
                   <p class="form-message hidden" role="alert"></p>
                   <button type="submit">为所选用户充值</button>
                 </form>
+                </details>
 
+                <details class="billing-operation">
+                  <summary>调整所选用户余额</summary>
                 <form id="billing-adjustment-form" class="panel billing-form">
-                  <div><p class="eyebrow">CORRECTION</p><h3>余额调整</h3><p>输入带正负号的 USD 金额；负调整不得产生负余额。</p></div>
+                  <div><p>输入带正负号的 USD 金额；负调整不得产生负余额。</p></div>
                   <label>调整金额（USD）
                     <input name="usd_amount" required inputmode="decimal" pattern="[-+]?(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="-5.00">
                   </label>
@@ -451,10 +470,12 @@
                   <p class="form-message hidden" role="alert"></p>
                   <button type="submit">调整所选用户余额</button>
                 </form>
+                </details>
               </div>
 
-              <article class="panel billing-subscription-admin">
-                <div class="panel-heading"><div><p class="eyebrow">SUBSCRIPTIONS</p><h3>配置订阅周期</h3><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。管理员“立即停用”会终止订阅；用户“禁用扣费”仅跳过该资金来源，订阅期限照常运行。</p></div></div>
+              <details class="panel billing-subscription-admin">
+                <summary>配置所选用户的订阅</summary>
+                <div class="panel-heading"><div><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。管理员“立即停用”会终止订阅；用户“禁用扣费”仅跳过该资金来源，订阅期限照常运行。</p></div></div>
                 <div class="billing-subscription-forms">
                   <form id="billing-subscription-day" class="billing-subscription-form" data-tier="day">
                     <div><h4>日订阅</h4><small>固定 24 小时</small></div>
@@ -499,15 +520,15 @@
                     <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="month">立即停用</button></div>
                   </form>
                 </div>
-              </article>
+              </details>
             </div>
 
             <article class="panel billing-ledger-panel">
-              <div class="panel-heading"><div><p class="eyebrow">AUDITABLE LEDGER</p><h3>账务流水</h3></div><span id="billing-ledger-page" class="badge">—</span></div>
+              <div class="panel-heading"><div><h3>账务流水</h3></div><span id="billing-ledger-page" class="badge">—</span></div>
               <div class="table-wrap">
-                <table>
+                <table class="responsive-record-table">
                   <caption>仅包含金额、模型、请求倍率、Token、请求 ID 与操作原因等账务元数据，不包含请求或响应内容。</caption>
-                  <thead><tr><th>时间</th><th>类型</th><th>金额</th><th>说明</th><th>请求 / 模型</th></tr></thead>
+                  <thead><tr><th>时间</th><th>类型</th><th>金额</th><th class="record-secondary">说明</th><th class="record-secondary">请求 / 模型</th><th class="record-details-cell"><span class="sr-only">详情</span></th></tr></thead>
                   <tbody id="billing-ledger-rows"><tr><td colspan="5" class="table-message">正在加载账务流水…</td></tr></tbody>
                 </table>
               </div>
@@ -624,9 +645,9 @@
                 <article><span>p95 耗时</span><strong id="metric-duration">—</strong></article>
               </div>
               <div class="table-wrap panel">
-                <table>
+                <table class="responsive-record-table usage-record-table">
                   <caption>最多显示 500 条请求元数据；汇总卡基于完整筛选区间。<span class="owner-only hidden">上游账号与 CSV 显示最终使用或最后尝试的账号；历史缺失显示“未归因”。</span></caption>
-                  <thead><tr><th>时间</th><th>设备</th><th>Key</th><th>项目</th><th>模型</th><th>状态</th><th>HTTP</th><th>Token</th><th class="owner-only hidden">上游账号</th></tr></thead>
+                  <thead><tr><th>时间</th><th class="record-secondary">设备</th><th class="record-secondary">Key</th><th class="record-secondary">项目</th><th>模型</th><th>状态</th><th class="record-secondary">HTTP</th><th class="record-secondary">Token</th><th class="record-secondary owner-only hidden">上游账号</th><th class="record-details-cell">详情</th></tr></thead>
                   <tbody id="usage-rows"><tr><td colspan="8" class="table-message">正在加载…</td></tr></tbody>
                 </table>
               </div>
@@ -688,11 +709,11 @@
             <div class="monitoring-grid">
               <article class="panel monitoring-window" data-monitor-window="recent">
                 <div class="panel-heading"><div><p class="eyebrow">RECENT</p><h3>最近 2 分钟</h3><p>按 requested_at 计算的请求</p></div><span id="monitoring-recent-count" class="badge">—</span></div>
-                <div class="table-wrap" tabindex="0" role="region" aria-label="最近两分钟请求"><table><caption class="sr-only">最近两分钟请求</caption><thead><tr><th>请求时间</th><th>用户</th><th>对话</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-recent-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近两分钟请求"><table class="responsive-record-table"><caption class="sr-only">最近两分钟请求</caption><thead><tr><th>请求时间</th><th class="record-secondary">用户</th><th class="record-secondary">对话</th><th>模型</th><th class="record-secondary">上游账号</th><th>状态</th><th class="record-details-cell">详情</th></tr></thead><tbody id="monitoring-recent-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
               </article>
               <article class="panel monitoring-window" data-monitor-window="failures">
                 <div class="panel-heading"><div><p class="eyebrow">FAILED</p><h3>最近 1 小时失败</h3><p>按 completed_at 计算且 state = failed</p></div><span id="monitoring-failures-count" class="badge">—</span></div>
-                <div class="table-wrap" tabindex="0" role="region" aria-label="最近一小时失败请求"><table><caption class="sr-only">最近一小时失败请求</caption><thead><tr><th>结束时间</th><th>用户</th><th>对话</th><th>模型</th><th>上游账号</th><th>状态</th></tr></thead><tbody id="monitoring-failures-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
+                <div class="table-wrap" tabindex="0" role="region" aria-label="最近一小时失败请求"><table class="responsive-record-table"><caption class="sr-only">最近一小时失败请求</caption><thead><tr><th>结束时间</th><th class="record-secondary">用户</th><th class="record-secondary">对话</th><th>模型</th><th class="record-secondary">上游账号</th><th>状态</th><th class="record-details-cell">详情</th></tr></thead><tbody id="monitoring-failures-rows"><tr><td colspan="6" class="table-message">登录后加载。</td></tr></tbody></table></div>
               </article>
             </div>
           </section>
@@ -791,7 +812,7 @@
 
           <section class="view owner-only hidden" data-section="information" aria-labelledby="information-title">
             <div class="section-head">
-              <div><p class="eyebrow">OWNER ONLY</p><h2 id="information-title">信息管理</h2><p>按保留期限清理旧账务，并永久删除已无账务关联的普通用户。</p></div>
+              <div><p class="eyebrow">OWNER ONLY</p><h2 id="information-title">数据维护</h2><p>按保留期限清理旧账务，并永久删除已无账务关联的普通用户。</p></div>
               <button id="information-refresh" type="button" class="secondary">刷新</button>
             </div>
             <p id="information-message" class="form-message hidden" role="status" aria-live="polite"></p>
@@ -867,13 +888,27 @@
 
           <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">
             <div class="section-head">
-              <div><p class="eyebrow">OWNER ONLY</p><h2 id="upstream-accounts-title">上游账号</h2><p>管理 ChatGPT OAuth 账号状态及查看本地归因用量；账号添加与刷新仍通过 SSH 完成。</p></div>
+              <div><h2 id="upstream-accounts-title">上游账号</h2></div>
             </div>
             <div id="upstream-account-manager">
+            <div class="upstream-provider-switch" aria-label="上游服务商">
+              <a href="#upstream-accounts" data-upstream-provider="codex" aria-current="page">Codex</a>
+              <a href="#antigravity-accounts" data-upstream-provider="antigravity">Antigravity</a>
+            </div>
+            <div class="upstream-account-toolbar">
+              <label>搜索账号<input id="upstream-account-search" type="search" placeholder="名称或脱敏邮箱" autocomplete="off"></label>
+              <label>账号状态<select id="upstream-account-status-filter"><option value="all">全部状态</option><option value="available">可用</option><option value="unavailable">不可用</option><option value="unknown">未知</option></select></label>
+              <label>排序<select id="upstream-account-sort"><option value="default">默认顺序</option><option value="name">名称</option><option value="cost">近 24 小时费用</option></select></label>
+            </div>
+            <details class="upstream-management-help">
+            <summary>分配、并发与额度说明</summary>
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>
             <p id="upstream-allocation-help" class="callout" role="note"><strong>新对话分配：</strong>按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新对话，已有有效绑定继续使用。参考目标按当前启用账号计算；实际分配会根据当前模型和实时可用账号重算。费用包含请求模型倍率，跨用户、跨模型汇总，不计进行中请求。</p>
             <p id="upstream-concurrency-limit-help" class="callout" role="note"><strong>并发对话数量：</strong>每个账号默认上限为 1，按活跃 root 对话计数。同一 root 的重叠主请求、subagent、fork 和 side 对话在同一账号只占一个名额；不同 root 分别计数。Gateway 自身的请求级并发仍按每个请求计数。所有账号都无法接收新对话时返回 429。降低上限不会中断正在执行的请求；占用降到上限以下后才接收新的 root 对话，活跃 root 的后续请求仍可进入。</p>
             <p id="upstream-quota-warning" class="callout upstream-quota-warning" role="note"><strong>即时额度提示：</strong>额度来自未公开的 ChatGPT 上游接口，可能随时变更或失效；查询失败不会影响代理分流和本地统计。</p>
+            </details>
+            <details class="upstream-history-filter">
+            <summary>历史统计区间与刷新</summary>
             <form id="upstream-account-filter" class="filters upstream-account-filters">
               <label>历史统计区间
                 <select name="range"><option value="month">本月</option><option value="7">最近 7 天</option><option value="30">最近 30 天</option><option value="custom">自定义</option><option value="all">全部历史</option></select>
@@ -887,22 +922,27 @@
               <div class="filter-actions"><button type="submit">应用筛选</button></div>
               <p class="form-message hidden" role="alert"></p>
             </form>
+            <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
+            <p id="upstream-allocation-period" class="upstream-account-period muted" aria-live="polite">近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。</p>
+            </details>
             <p id="upstream-account-action-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
-            <p id="upstream-account-period" class="upstream-account-period muted" aria-live="polite">—</p>
+            <p id="upstream-account-match-count" class="upstream-account-period muted" aria-live="polite"></p>
             <p id="upstream-concurrency-sampled" class="upstream-account-period muted" aria-live="polite">实时并发暂不可用 · 每 5 秒刷新</p>
-            <p id="upstream-allocation-period" class="upstream-account-period muted" aria-live="polite">近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。</p>
+            <p id="upstream-account-no-match" class="empty hidden" role="status">没有匹配的账号，试试其他名称或状态。</p>
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">
               <div class="empty">登录后加载上游账号。</div>
             </div>
+            <div id="upstream-account-unattributed" class="hidden"></div>
             </div>
           </section>
 
           <section class="view owner-only hidden" data-section="antigravity-accounts" aria-labelledby="antigravity-accounts-title">
             <div class="section-head">
-              <div><p class="eyebrow">OWNER ONLY</p><h2 id="antigravity-accounts-title">Antigravity 账号</h2><p>管理 Antigravity 多账号轮换、使用权限、并发对话及本地归因用量。</p></div>
+              <div><h2 id="antigravity-accounts-title">上游账号</h2></div>
             </div>
+            <div id="antigravity-account-manager-host"></div>
             <details class="panel antigravity-login-help">
               <summary>添加或刷新 Antigravity 账号</summary>
               <p>在服务器项目目录通过 SSH 执行以下命令，并按照提示完成 Google 授权。每个账号使用不同名称；再次使用同一名称可刷新该账号。完成后点击“应用筛选”同步账号。</p>
@@ -910,7 +950,6 @@
 ./scripts/antigravity-login.sh team-beta</code></pre>
               <p class="muted">不带账号名称运行 <code>./scripts/antigravity-login.sh</code> 仍会更新默认账号。登录凭据仅保存在服务器，网页不会显示。</p>
             </details>
-            <div id="antigravity-account-manager-host"></div>
           </section>
         </div>
       </div>

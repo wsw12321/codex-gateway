@@ -25,6 +25,19 @@ class Element {
   }
   set textContent(value) { this._text = String(value); this.children = []; }
   get textContent() { return this._text + this.children.map((child) => typeof child === "string" ? child : child.textContent).join(""); }
+  get childNodes() {
+    return [...(this._text ? [this._text] : []), ...this.children].map((child) => {
+      if (typeof child !== "string") return child;
+      const text = new Element("#text"); text._text = child; return text;
+    });
+  }
+  cloneNode(deep = false) {
+    const clone = new Element(this.tagName);
+    clone.className = this.className; clone._text = this._text; clone.value = this.value; clone.disabled = this.disabled;
+    clone.dataset = {...this.dataset}; clone.attributes = {...this.attributes};
+    if (deep) clone.append(...this.children.map((child) => typeof child === "string" ? child : child.cloneNode(true)));
+    return clone;
+  }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   append(...children) { this.children.push(...children); }
   replaceChildren(...children) { this._text = ""; this.children = []; this.append(...children); }

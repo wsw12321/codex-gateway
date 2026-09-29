@@ -631,3 +631,73 @@ test("Antigravity cooldown is automatic and does not masquerade as a manual disa
   assert.deepEqual(writes, [{enabled: false}]);
   assert.equal(ui.button().textContent, "重新启用");
 });
+
+test("search and exact-cost sorting move existing account nodes without discarding edits or quota output", () => {
+  const ui = dashboard([
+    {...account("zeta"), display_name: "Zeta", rolling_cost_usd: "99999999999999999.000001"},
+    {...account("alpha"), display_name: "Alpha", rolling_cost_usd: "99999999999999999.000002"},
+  ]);
+  const original = ui.cards()[0], input = ui.weightInput();
+  input.value = "27";
+  const quota = original.querySelector(".upstream-quota-result");
+  quota.dataset.state = "fresh";
+  original.querySelector(".upstream-account-details").open = true;
+  ui.run('upstreamAccountUIState().sort = "cost"; filterUpstreamAccountCards();');
+  assert.equal(ui.cards()[0].dataset.accountId, "alpha");
+  assert.equal(ui.cards()[1], original);
+  assert.equal(original.querySelector(".upstream-allocation-input"), input);
+  assert.equal(input.value, "27");
+  assert.equal(original.querySelector(".upstream-quota-result"), quota);
+  ui.run('upstreamAccountUIState().search = "ZETA@example.test"; filterUpstreamAccountCards();');
+  assert.equal(original.classList.contains("hidden"), false);
+  assert.equal(ui.cards()[0].classList.contains("hidden"), true);
+  ui.run('upstreamAccountUIState().search = ""; upstreamAccountUIState().sort = "default"; filterUpstreamAccountCards();');
+  assert.equal(ui.cards()[0], original);
+  assert.equal(original.querySelector(".upstream-account-details").open, true);
+});
+
+test("list refresh restores unsaved fields and expansion while confirmed fields take server values", async () => {
+  const ui = dashboard();
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-details").open, false);
+  ui.cards()[0].querySelector(".upstream-account-details").open = true;
+  ui.weightInput().value = "29";
+  ui.limitInput().value = "8";
+  ui.api(async (_, options) => options ? {id: "account-1", allocation_weight: 29} : {accounts: [{...account(), allocation_weight: 31, concurrent_limit: 4}]});
+  await ui.load();
+  assert.equal(ui.weightInput().value, "29");
+  assert.equal(ui.limitInput().value, "8");
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-details").open, true);
+  await ui.saveWeight();
+  assert.equal(ui.weightInput().value, "31", "successfully saved field follows the refreshed server value");
+  assert.equal(ui.limitInput().value, "8", "saving one field retains another unsaved field");
+});
+
+test("unknown filtering is fail-closed and session drafts are isolated by provider and cleared with identity", async () => {
+  const ui = dashboard([account(), {...account("unknown"), cliproxy_status: "future_status"}]);
+  ui.weightInput().value = "42";
+  ui.run('captureUpstreamAccountUIState(); upstreamAccountUIState().status = "unknown"; filterUpstreamAccountCards();');
+  assert.equal(ui.cards()[0].classList.contains("hidden"), true);
+  assert.equal(ui.cards()[1].classList.contains("hidden"), false);
+  assert.equal(ui.button(1).disabled, true);
+  assert.equal(ui.run('upstreamAccountRowState("account-1", "codex").drafts.weight'), "42");
+  assert.equal(ui.run('upstreamAccountRowState("account-1", "antigravity").drafts.weight'), undefined);
+  ui.run('clearUpstreamAccountUIState();');
+  ui.api(async () => ({accounts: [account()]}));
+  await ui.load();
+  assert.equal(ui.weightInput().value, "1");
+  assert.equal(ui.run('upstreamAccountUIState().status'), "all");
+  assert.equal(ui.run('upstreamAccountUIStates.has("antigravity")'), false);
+});
+
+test("clearing account state prevents a late unauthorized response from logging out the new identity", async () => {
+  const ui = dashboard();
+  const pendingResponse = deferred();
+  ui.context.fetch = () => pendingResponse.promise;
+  const pending = ui.load();
+  ui.run('clearUpstreamAccountUIState(); identityGeneration++; state.user.id = "owner-2";');
+  pendingResponse.resolve({ok: false, status: 401, json: async () => ({error: {code: "invalid_session", message: "old session expired"}})});
+  await pending;
+  assert.equal(ui.run("state.user.id"), "owner-2");
+  assert.equal(ui.cards().length, 0);
+  assert.equal(ui.node("upstream-account-refresh-message").textContent, "");
+});

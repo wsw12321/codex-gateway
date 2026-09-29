@@ -49,6 +49,8 @@ async function main() {
       }
       if (url.pathname === "/admin/upstream-accounts") return send({accounts: [{...accounts[0], id: "codex-only", display_name: "", plan: "Plus"}]});
       if (url.pathname === "/admin/billing/users") return send({users: [initialState.user, {id: "member-1", username: "lin", display_name: "林同学", role: "member"}]});
+      if (url.pathname === "/admin/billing/me") return send({cash_balance_usd: "0", subscriptions: [], ledger: []});
+      if (url.pathname === "/admin/usage") return send({summary: {requests: 0, tokens: 0, error_rate: 0}, requests: []});
       if (url.pathname === "/auth/password/reauth") { events.push("verified"); return send({ok: true}); }
       const match = url.pathname.match(/^\/admin\/antigravity-accounts\/([^/]+)\/(allocation-weight|concurrent-limit|status|access)$/);
       if (match && request.method() === "PUT") {
@@ -74,8 +76,13 @@ async function main() {
     const manager = page.locator('[data-section="antigravity-accounts"]');
     const weight = () => card().locator(".upstream-allocation-input");
     const saveWeight = () => card().locator(".upstream-allocation-save").click();
-    const refresh = async () => { await page.locator("#upstream-account-filter button[type=submit]").click(); await settled(); };
+    const refresh = async () => {
+      await page.locator(".upstream-history-filter").evaluate((node) => { node.open = true; });
+      await page.locator("#upstream-account-filter button[type=submit]").click(); await settled();
+    };
     assert.equal(await manager.isVisible(), true);
+    assert.equal(await card().locator(".upstream-account-details").getAttribute("open"), null);
+    await card().locator(".upstream-account-details > summary").click();
     assert.equal(await manager.locator(".upstream-quota").count(), 0);
     assert.match(await card().textContent(), /账号名称：team-alpha/);
     assert.match(await card().locator(".upstream-concurrency").textContent(), /活跃对话名额1同一 API Key.*同对话重叠请求共享名额.*未识别的请求独占/);
@@ -114,6 +121,7 @@ async function main() {
     assert.equal(await card().locator(".upstream-account-status-button").textContent(), "重新启用");
     await card().locator(".upstream-account-status-button").click(); await settled();
 
+    await page.locator(".upstream-history-filter").evaluate((node) => { node.open = true; });
     await page.locator('#upstream-account-filter select[name="range"]').selectOption("all"); await refresh();
     assert.ok(reads.at(-1).includes("all=true"));
     assert.match(await page.locator("#upstream-account-period").textContent(), /Antigravity账号.*全部历史/);
@@ -125,11 +133,14 @@ async function main() {
     assert.match(await page.locator("#upstream-account-refresh-message").textContent(), /操作已成功，但列表与统计刷新失败/);
     failList = false; await refresh();
 
+    await weight().fill("23");
+    await page.locator("#upstream-account-search").fill("team-alpha");
+
     // Late Antigravity responses must not replace the Codex provider's cards.
     holdAGY = true;
     const held = new Promise((resolve) => { heldAGY = resolve; });
     await page.locator("#upstream-account-filter button[type=submit]").click(); await held;
-    await page.locator('nav [data-view="upstream-accounts"]').click(); await settled();
+    await page.locator('[data-upstream-provider="codex"]').click(); await settled();
     await page.locator('[data-account-id="codex-only"]').waitFor({state: "visible"});
     assert.equal(await page.locator('[data-account-id="codex-only"]').isVisible(), true);
     assert.match(await page.locator("#upstream-concurrency-limit-help").textContent(), /活跃 root 对话计数/);
@@ -137,10 +148,18 @@ async function main() {
     releaseAGY(); holdAGY = false;
     await page.waitForTimeout(50);
     assert.equal(await page.locator('[data-account-id="agy-alpha"]').count(), 0);
-    await page.locator('nav [data-view="antigravity-accounts"]').click(); await settled();
+    await page.locator('[data-upstream-provider="antigravity"]').click(); await settled();
     await card().waitFor({state: "visible"});
     assert.equal(await card().isVisible(), true);
     assert.equal(await manager.locator(".upstream-quota").count(), 0);
+    assert.equal(await weight().inputValue(), "23", "provider switch restores unsaved account input");
+    assert.equal(await page.locator("#upstream-account-search").inputValue(), "team-alpha");
+    await page.goBack();
+    await page.locator('[data-account-id="codex-only"]').waitFor({state: "visible"});
+    await page.goForward();
+    await card().waitFor({state: "visible"});
+    assert.equal(await weight().inputValue(), "23", "browser history retains per-provider drafts");
+    await page.locator("#upstream-account-search").fill("");
 
     // Changing providers during permission reauthentication cancels the pending mutation.
     await card().locator(".upstream-access-button").click();
@@ -154,7 +173,7 @@ async function main() {
     await page.locator('[data-account-id="codex-only"]').waitFor({state: "visible"});
     assert.equal(await page.locator("#reauth-dialog").isVisible(), false);
     assert.equal(writes.length, writesBeforeSwitch);
-    await page.locator('nav [data-view="antigravity-accounts"]').click();
+    await page.locator('[data-upstream-provider="antigravity"]').click();
     await card().waitFor({state: "visible"});
 
     fs.mkdirSync(screenshots, {recursive: true});
@@ -164,11 +183,17 @@ async function main() {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "desktop must not overflow horizontally");
     await page.screenshot({path: path.join(screenshots, "antigravity-accounts-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
+    await page.locator(".upstream-history-filter").evaluate((node) => { node.open = false; });
+    await card().locator(".upstream-account-details").evaluate((node) => { node.open = false; });
+    await page.locator(".antigravity-login-help").evaluate((node) => { node.open = false; });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    const summary = await card().locator(".upstream-account-summary").boundingBox();
+    assert.ok(summary && summary.y + summary.height <= 844, "first account summary must be visible without scrolling");
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile must not overflow horizontally");
     await page.screenshot({path: path.join(screenshots, "antigravity-accounts-mobile.png"), fullPage: true});
     await page.evaluate(() => { renderState({...state, user: {...state.user, role: "member"}}); });
     assert.equal(new URL(page.url()).hash, "#overview");
-    assert.equal(await page.locator('nav [data-view="antigravity-accounts"]').isVisible(), false);
+    assert.equal(await page.locator('nav [data-view="upstream-accounts"]').isVisible(), false);
     assert.equal(await manager.isVisible(), false);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, errors, desktop: "1440x1080", mobile: "390x844"}));

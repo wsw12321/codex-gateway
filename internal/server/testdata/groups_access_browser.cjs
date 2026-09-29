@@ -41,6 +41,8 @@ async function main() {
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
+      if (url.pathname === "/admin/usage") return send({summary: {requests: 0}, requests: []});
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: [{id: account.id, active_requests: 0}]});
       if (url.pathname === "/admin/billing/users") return send({users});
       if (url.pathname === "/admin/upstream-accounts") return failAccounts ? send({error: {message: "模拟刷新失败"}}, 503) : send({accounts: [account], all: true});
@@ -173,6 +175,7 @@ async function main() {
 
     await page.setViewportSize({width: 1440, height: 1080});
     await page.evaluate(async () => { location.hash = "upstream-accounts"; routeFromHash(false); await loadUpstreamAccounts(new URLSearchParams({all: "true"})); });
+    await page.locator(".upstream-account-details > summary").click();
     await page.locator(".upstream-access-button").click();
     await page.locator("#upstream-access-dialog").waitFor({state: "visible"});
     assert.equal(await page.getByLabel("授权用户 alice", {exact: true}).isChecked(), true);
