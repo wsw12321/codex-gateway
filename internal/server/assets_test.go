@@ -218,8 +218,11 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 			t.Fatalf("billing dashboard JavaScript is missing %s", required)
 		}
 	}
-	if count := strings.Count(html, `name="period_count"`); count != 4 {
-		t.Fatalf("billing dashboard period-count input count = %d, want 4", count)
+	if count := strings.Count(html, `name="period_count" required type="number" min="0" max="99"`); count != 4 {
+		t.Fatalf("billing dashboard administrator period-count input count = %d, want 4", count)
+	}
+	if !strings.Contains(html, `name="period_count" type="number" min="1" max="99" step="1" required`) {
+		t.Fatal("billing dashboard purchase period-count input must allow only 1–99 periods")
 	}
 	for _, forbidden := range []string{
 		`Number(data.get("cny_amount"))`, `Number(data.get("usd_amount"))`, `Number(data.get("quota_usd"))`,

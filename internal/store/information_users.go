@@ -62,7 +62,8 @@ const informationUserBlockers = `array_remove(ARRAY[
 	CASE WHEN EXISTS(SELECT 1 FROM concurrency_leases c WHERE c.user_id=u.id) THEN 'running_requests' END,
 	CASE WHEN EXISTS(SELECT 1 FROM group_operations g WHERE g.actor_user_id=u.id)
 		OR EXISTS(SELECT 1 FROM billing_settings b WHERE b.updated_by_user_id=u.id)
-		OR EXISTS(SELECT 1 FROM billing_model_multipliers m WHERE m.updated_by_user_id=u.id) THEN 'management_history' END
+		OR EXISTS(SELECT 1 FROM billing_model_multipliers m WHERE m.updated_by_user_id=u.id)
+		OR EXISTS(SELECT 1 FROM billing_plans p WHERE p.updated_by_user_id=u.id) THEN 'management_history' END
 ]::text[],NULL)`
 
 func (s *Store) ListDeletableInformationUsers(ctx context.Context, search string, limit, offset int) ([]DeletableUser, error) {

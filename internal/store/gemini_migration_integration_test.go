@@ -62,6 +62,15 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	if geminiMigration.Name == "" {
 		t.Fatal("Gemini migration missing")
 	}
+	// Current billing helpers need the unrelated plan columns while this test
+	// deliberately leaves the Gemini migration unapplied until after seeding.
+	for _, migration := range migrations {
+		if migration.Name == "0024_subscription_plans.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply billing helper schema: %v", err)
+			}
+		}
+	}
 	const oldModel = "gemini-3.1-pro-preview"
 	models := []string{
 		"gemini-3.8-flash-high", "gemini-3.8-flash-medium",

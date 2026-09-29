@@ -1813,6 +1813,93 @@ code {
   gap: .5rem;
 }
 
+.billing-plans-panel {
+  margin-top: 1.2rem;
+}
+
+.billing-plans-panel > .panel-heading { flex-wrap: wrap; }
+.billing-plans-panel > .panel-heading > div:first-child { flex: 1 1 20rem; }
+.billing-plans-panel > .panel-heading > .actions { flex: 0 0 auto; }
+
+.billing-plan-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  gap: 1rem;
+}
+
+.billing-plan-card {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: .85rem;
+  background: var(--surface-soft);
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+  overflow-wrap: anywhere;
+}
+
+.billing-plan-card header,
+.billing-plan-binding {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .5rem;
+}
+
+.billing-plan-card h4,
+.billing-plan-card p,
+.billing-purchase-summary p {
+  margin: 0;
+}
+
+.billing-plan-card .actions {
+  margin-top: auto;
+  padding-top: .65rem;
+}
+
+.billing-plan-price {
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-plan-card small,
+.billing-plan-card p {
+  color: var(--muted);
+}
+
+.billing-plan-binding {
+  border-top: 1px solid var(--line);
+  margin-top: .25rem;
+  padding-top: .65rem;
+  overflow-wrap: anywhere;
+}
+
+.billing-purchase-summary {
+  display: grid;
+  gap: .6rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: .65rem;
+  background: var(--surface-soft);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.billing-purchase-warning,
+.billing-plan-pending {
+  padding: .8rem 1rem;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-soft);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.billing-plan-pending button { margin: .5rem 0 0 .5rem; }
+.billing-purchase-confirm { display: flex; align-items: flex-start; gap: .65rem; }
+.billing-purchase-confirm input { width: 1.1rem; min-height: 1.1rem; margin-top: .3rem; flex-shrink: 0; }
+
 .billing-source-control {
   display: flex;
   flex-wrap: wrap;

@@ -52,6 +52,14 @@ let identityGeneration = 0;
 let billingDetail = null;
 let billingUsers = [];
 let billingSettings = null;
+let billingPlans = [];
+let billingPlansLoading = false;
+let billingPlansSequence = 0;
+let billingPurchaseDraft = null;
+let billingPlanEdit = null;
+// Keep the exact body until the server confirms the result; a retry must never
+// acquire a fresh operation ID, even if the catalog or selected user changes.
+let billingPlanOperation = null;
 let modelMultiplierModels = [];
 let modelMultiplierDrafts = new Map();
 let modelMultiplierSequence = 0;
@@ -1769,15 +1777,15 @@ function billingSubscriptionPeriod(subscription) {
   const count = Number(subscription?.period_count);
   const current = Number(subscription?.current_period_number);
   return {
-    count: Number.isInteger(count) && count >= 0 && count <= 99 ? count : 0,
-    current: Number.isInteger(current) && current >= 1 ? current : 1,
+    count: Number.isSafeInteger(count) && count >= 0 ? count : 0,
+    current: Number.isSafeInteger(current) && current >= 1 ? current : 1,
   };
 }
 
 function billingPeriodProgress(subscription) {
-  if (subscription?.period_count == null || !Number.isInteger(Number(subscription.period_count)) ||
-      Number(subscription.period_count) < 0 || Number(subscription.period_count) > 99 ||
-      subscription.current_period_number == null || !Number.isInteger(Number(subscription.current_period_number)) ||
+  if (subscription?.period_count == null || !Number.isSafeInteger(Number(subscription.period_count)) ||
+      Number(subscription.period_count) < 0 ||
+      subscription.current_period_number == null || !Number.isSafeInteger(Number(subscription.current_period_number)) ||
       Number(subscription.current_period_number) < 1) return "周期信息不可用";
   const period = billingSubscriptionPeriod(subscription);
   return period.count === 0
@@ -1915,8 +1923,13 @@ function billingTypeLabel(type) {
     recharge_rate: "充值汇率调整",
     model_multiplier: "模型倍率调整",
     subscription_set: "订阅重开",
+    subscription_purchase: "套餐购买并重开",
+    plan_purchase: "套餐购买并重开",
+    plan_renewal: "套餐续费",
+    plan_create: "创建套餐",
+    plan_update: "更新套餐",
     subscription_disable: "订阅停用",
-    subscription_renewal: "订阅续期",
+    subscription_renewal: "周期额度重置",
     subscription_created: "订阅启用",
     subscription_updated: "订阅重开",
     subscription_disabled: "订阅停用",
@@ -1975,6 +1988,7 @@ function renderBillingSubscriptions(detail) {
       progress,
       element("small", {text: `${billingPeriodEndLabel(subscription)}：${display.ends}`}),
       element("small", {text: `最终到期：${display.expires}`}),
+      billingPlanBinding(subscription, tier.id),
       billingSourceControl(tier.id),
       periods,
     );
@@ -2096,7 +2110,11 @@ function renderBillingAdminValues(detail) {
       form.elements.quota_usd.value = subscription?.quota_usd == null ? "" : String(subscription.quota_usd);
     }
     if (document.activeElement !== form.elements.period_count) {
-      form.elements.period_count.value = subscription?.id ? String(subscription.period_count ?? 1) : "1";
+      const count = subscription?.id ? Number(subscription.period_count ?? 1) : 1;
+      // A renewal may accumulate more than 99 periods. Reopening is a new
+      // purchase length, so ask the administrator to choose it explicitly.
+      form.elements.period_count.value = count > 99 ? "" : String(count);
+      form.elements.period_count.placeholder = count > 99 ? `现累计 ${count} 期；请输入重开期数 0–99` : "1";
     }
     form.querySelector("[data-disable-subscription]").disabled = !billingSubscriptionEnabled(subscription);
   }
@@ -2118,6 +2136,7 @@ function renderBillingDetail(detail) {
   renderBillingSubscriptions(detail);
   renderBillingLedger(detail);
   renderBillingAdminValues(detail);
+  renderBillingPlans();
 }
 
 /*
@@ -2470,6 +2489,7 @@ function renderBillingUsers(result) {
 }
 
 function resetBillingUserSearch() {
+  resetBillingPlans();
   resetBillingSourceState();
   billingUserID = "";
   billingDetail = null;
@@ -2489,6 +2509,7 @@ function billingUserReady() {
 
 function syncBillingUserControls() {
   syncBillingSourceControls();
+  syncBillingPlanControls();
   const ready = billingUserReady();
   all("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form").forEach((form) => {
     const busy = form.dataset.busy === "true";
@@ -2511,6 +2532,7 @@ function billingWriteUserID() {
 
 async function selectBillingUser(user) {
   if (user.id !== selectedBillingUserID()) resetBillingSourceState();
+  if (user.id !== state?.user?.id && byId("billing-purchase-dialog")?.open) byId("billing-purchase-dialog").close();
   billingUserID = user.id;
   all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
   await loadBillingDetail(user.id, 0);
@@ -2782,8 +2804,348 @@ async function loadBillingSettings() {
   }
 }
 
+function billingPlanMessage(message = "", error = true) {
+  const node = byId("billing-plan-message");
+  if (!node) return;
+  node.textContent = message;
+  node.dataset.kind = error ? "error" : "ok";
+  node.classList.toggle("hidden", !message);
+}
+
+function resetBillingPlans() {
+  billingPlansSequence++;
+  billingPlans = [];
+  billingPlansLoading = false;
+  billingPurchaseDraft = null;
+  billingPlanEdit = null;
+  billingPlanOperation = null;
+  for (const id of ["billing-purchase-dialog", "billing-plan-dialog"]) {
+    if (byId(id)?.open) byId(id).close();
+  }
+  byId("billing-plans")?.replaceChildren(element("p", {className: "muted", text: "登录后加载套餐。"}));
+  billingPlanMessage();
+  syncBillingPlanControls();
+}
+
+function billingPlanBinding(subscription, tier) {
+  const plan = subscription?.plan;
+  const host = element("div", {className: "billing-plan-binding"},
+    element("small", {text: plan ? `绑定套餐：${plan.name}` : "未绑定套餐，无法续费"}));
+  if (plan && subscription.can_renew === true && selectedBillingUserID() === state?.user?.id) {
+    const button = element("button", {type: "button", className: "secondary", text: "续费", dataset: {billingRenew: tier}});
+    button.disabled = !billingSourceReady() || Boolean(billingPlanOperation);
+    button.addEventListener("click", () => openBillingPurchase(plan, "renewal"));
+    host.append(button);
+  } else if (plan) host.append(element("small", {text: subscription.can_renew === true
+    ? "套餐绑定有效，仅本人可续费。" : "当前订阅不能续费；到期后请重新购买。"}));
+  return host;
+}
+
+function syncBillingPlanControls() {
+  const self = Boolean(state?.user?.id) && selectedBillingUserID() === state.user.id;
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const pending = billingPlanOperation;
+  all("[data-billing-buy], [data-billing-renew]").forEach((button) => {
+    button.classList.toggle("hidden", !self);
+    button.disabled = !billingSourceReady() || Boolean(pending) || billingPlansLoading;
+  });
+  all("[data-billing-plan-edit]").forEach((button) => { button.disabled = !owner || Boolean(pending) || billingPlansLoading; });
+  const create = byId("billing-plan-create");
+  if (create) create.disabled = !owner || Boolean(pending) || billingPlansLoading;
+  byId("billing-plan-readonly")?.classList.toggle("hidden", self || !state);
+  const visiblePending = pending && pending.userID === state?.user?.id && (pending.kind === "plan" ? owner : self);
+  byId("billing-plan-pending")?.classList.toggle("hidden", !visiblePending);
+  const resume = byId("billing-plan-resume");
+  if (resume) resume.disabled = Boolean(pending?.busy);
+  for (const [id, kind] of [["billing-purchase-form", "purchase"], ["billing-plan-form", "plan"]]) {
+    const form = byId(id);
+    if (!form) continue;
+    const matches = pending && (kind === "plan" ? pending.kind === "plan" : pending.kind !== "plan");
+    all("input, select", form).forEach((input) => { input.disabled = Boolean(pending); });
+    const button = byId(kind === "plan" ? "billing-plan-submit" : "billing-purchase-submit");
+    if (!button) continue;
+    button.disabled = Boolean(pending?.busy) || Boolean(pending && !matches) || (kind === "plan" ? !owner : !billingSourceReady());
+    button.textContent = matches ? pending.busy ? "正在确认结果…" : "重试原操作" : kind === "plan"
+      ? billingPlanEdit ? "保存套餐" : "创建套餐"
+      : billingPurchaseDraft?.kind === "renewal" ? "确认续费" : "确认购买并重开";
+  }
+}
+
+function renderBillingPlans() {
+  const host = byId("billing-plans");
+  if (!host) return;
+  if (!billingPlans.length) {
+    host.replaceChildren(element("p", {className: "muted", text: state?.user?.role === "owner" ? "尚未创建套餐。新套餐默认下架。" : "暂无上架套餐。"}));
+    syncBillingPlanControls();
+    return;
+  }
+  host.replaceChildren(...billingPlans.map((plan) => {
+    const tier = billingTiers.find((item) => item.id === plan.tier);
+    const card = element("article", {className: "billing-plan-card", dataset: {planID: plan.id}},
+      element("header", {}, element("h4", {text: plan.name}),
+        element("span", {className: "status-badge", text: plan.active ? "已上架" : "已下架", dataset: {status: plan.active ? "active" : "disabled"}})),
+      element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
+      element("p", {text: `${tier?.label || plan.tier} · 每期 ${tier?.duration || "—"}`}),
+      element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
+      element("small", {text: "每次购买或续费最多 99 期，续费累计不限 99 期。"}));
+    const actions = element("div", {className: "actions"});
+    if (plan.active && selectedBillingUserID() === state?.user?.id) {
+      const buy = element("button", {type: "button", text: "购买并重开", dataset: {billingBuy: plan.id}});
+      buy.addEventListener("click", () => openBillingPurchase(plan, "purchase"));
+      actions.append(buy);
+    }
+    if (state?.user?.role === "owner") {
+      const edit = element("button", {type: "button", className: "secondary", text: "编辑套餐", dataset: {billingPlanEdit: plan.id}});
+      edit.addEventListener("click", () => openBillingPlanEditor(plan));
+      actions.append(edit);
+    }
+    card.append(actions);
+    return card;
+  }));
+  syncBillingPlanControls();
+}
+
+async function loadBillingPlans() {
+  if (!state || loggingOut) return;
+  const sequence = ++billingPlansSequence, generation = identityGeneration, actor = state.user.id;
+  const current = () => !loggingOut && sequence === billingPlansSequence && generation === identityGeneration && state?.user?.id === actor;
+  billingPlansLoading = true;
+  syncBillingPlanControls();
+  try {
+    const result = await api(`/admin/billing/plans${state.user.role === "owner" ? "?include_inactive=true" : ""}`, undefined, current);
+    if (!current()) return;
+    if (!Array.isArray(result?.plans)) throw new Error("套餐目录格式无效，请刷新后重试。");
+    billingPlans = result.plans;
+    renderBillingPlans();
+  } catch (error) {
+    if (!current()) return;
+    billingPlans = [];
+    byId("billing-plans")?.replaceChildren(element("p", {className: "muted", text: "套餐目录加载失败，请刷新套餐后重试。"}));
+    throw error;
+  } finally {
+    if (current()) { billingPlansLoading = false; syncBillingPlanControls(); }
+  }
+}
+
+function billingPlanPeriodCount(value, minimum = 1) {
+  const raw = String(value).trim();
+  if (!/^[1-9][0-9]?$/.test(raw) || Number(raw) < minimum) throw new Error(`本次周期数须为 ${minimum}–99 的整数。`);
+  return Number(raw);
+}
+
+function billingPlanTotal(price, count) {
+  const match = String(price).match(/^(\d+)(?:\.(\d+))?$/);
+  if (!match || !Number.isSafeInteger(count) || count < 1 || count > 99) throw new Error("套餐价格或周期数无效。");
+  const scale = (match[2] || "").length;
+  const digits = (BigInt(match[1] + (match[2] || "")) * BigInt(count)).toString().padStart(scale + 1, "0");
+  return scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}` : digits;
+}
+
+function billingRenewalExpiry(subscription, tier, count) {
+  const days = {day: 1, week: 7, month: 31}[tier];
+  const expiry = new Date(subscription?.expires_at).getTime();
+  const next = new Date(expiry + days * count * 86400000);
+  if (!days || !Number.isFinite(expiry) || Number.isNaN(next.getTime()) || next.getUTCFullYear() > 9999) throw new Error("续费到期时间超出支持范围。");
+  return next.toISOString();
+}
+
+function openBillingPurchase(plan, kind = "purchase") {
+  if (!billingSourceReady() || billingPlanOperation || !plan?.active) return;
+  const subscription = billingSubscription(billingDetail, plan.tier);
+  if (kind === "renewal" && (!subscription?.can_renew || subscription.plan?.id !== plan.id)) return;
+  const version = subscription?.config_version ?? 0;
+  if (!Number.isSafeInteger(version) || !Number.isSafeInteger(plan.version)) {
+    billingPlanMessage("订阅或套餐版本不可用，请刷新后重试。");
+    return;
+  }
+  billingPurchaseDraft = {kind, plan: {...plan}, subscription: subscription ? {...subscription} : null,
+    configVersion: version, userID: state.user.id, generation: identityGeneration};
+  const form = byId("billing-purchase-form");
+  form.reset();
+  form.elements.period_count.min = String(plan.min_period_count);
+  form.elements.period_count.value = String(plan.min_period_count);
+  form.elements.confirmed.checked = false;
+  byId("billing-purchase-title").textContent = kind === "renewal" ? "续费当前套餐" : "购买并重开";
+  byId("billing-purchase-plan").textContent = `${plan.name} · 每期 ${formatUSD(plan.price_usd)}`;
+  byId("billing-purchase-minimum").textContent = `本次最低 ${plan.min_period_count} 期，最多 99 期。总价由服务端按单价 × 本次数量计算。`;
+  setLocalMessage(form);
+  updateBillingPurchaseSummary();
+  syncBillingPlanControls();
+  byId("billing-purchase-dialog").showModal();
+}
+
+function updateBillingPurchaseSummary() {
+  const draft = billingPurchaseDraft;
+  if (!draft || billingPlanOperation) return;
+  const {plan, subscription, kind} = draft;
+  const host = byId("billing-purchase-summary");
+  const tier = billingTiers.find((item) => item.id === plan.tier);
+  try {
+    const count = billingPlanPeriodCount(byId("billing-purchase-form").elements.period_count.value, plan.min_period_count);
+    const total = billingPlanTotal(plan.price_usd, count);
+    const lines = [`本次金额：${formatUSD(plan.price_usd)} × ${count} 期 = ${formatUSD(total)}`,
+      `每期额度：${formatUSD(plan.allowance_usd)} · 每期 ${tier.duration}`];
+    if (kind === "renewal") {
+      lines.push(`追加 ${count} 期；新到期时间：${formatDateTime(billingRenewalExpiry(subscription, plan.tier, count))}`);
+      lines.push(`当前第 ${subscription.current_period_number} 期，剩余额度 ${formatUSD(subscription.remaining_usd)}；续费保留本周期和剩余额度。`);
+    } else lines.push(`成交后从当前时刻、第 1 期开始，共 ${count} 期，首期补满 ${formatUSD(plan.allowance_usd)}。`);
+    host.replaceChildren(...lines.map((text) => element("p", {text})));
+  } catch (error) { host.replaceChildren(element("p", {text: friendlyError(error)})); }
+  byId("billing-purchase-warning").textContent = kind === "renewal"
+    ? "续费从原到期时间追加周期。每期额度仍不结转；到期后需要重新购买。"
+    : subscription?.id || subscription?.config_version > 0 || billingSubscriptionEnabled(subscription)
+      ? `将覆盖已有${tier.label}（${subscription?.plan?.name || "未绑定套餐"}）。旧订阅剩余额度 ${formatUSD(subscription?.remaining_usd || "0")} 及未到期权益不结转、不自动退款。购买后重新计时并绑定新套餐。`
+      : "购买后立即开始计时，每期剩余额度不结转。再次购买同周期套餐会覆盖本次订阅。";
+}
+
+function openBillingPlanEditor(plan = null) {
+  if (loggingOut || state?.user?.role !== "owner" || billingPlanOperation) return;
+  billingPlanEdit = plan ? {...plan} : null;
+  const form = byId("billing-plan-form");
+  form.reset();
+  for (const [name, value] of Object.entries({name: plan?.name || "", price_usd: plan?.price_usd || "",
+    tier: plan?.tier || "day", allowance_usd: plan?.allowance_usd || "", min_period_count: plan?.min_period_count || 1,
+    active: String(plan?.active === true), reason: ""})) form.elements[name].value = String(value);
+  byId("billing-plan-dialog-title").textContent = plan ? "编辑套餐" : "创建套餐";
+  byId("billing-plan-edit-warning").classList.toggle("hidden", !plan);
+  setLocalMessage(form);
+  syncBillingPlanControls();
+  byId("billing-plan-dialog").showModal();
+}
+
+function billingPlanOperationCurrent(operation) {
+  return billingPlanOperation === operation && !loggingOut && state?.user?.id === operation.userID && identityGeneration === operation.generation;
+}
+
+function makeBillingPlanOperation(kind, path, method, payload) {
+  if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
+  return {kind, path, method, body: JSON.stringify({...payload, operation_id: crypto.randomUUID()}),
+    userID: state.user.id, generation: identityGeneration, busy: false, uncertain: false, sent: false};
+}
+
+async function submitBillingPurchase() {
+  if (billingPlanOperation) {
+    if (billingPlanOperation.kind !== "plan") await executeBillingPlanOperation(billingPlanOperation);
+    return;
+  }
+  const draft = billingPurchaseDraft;
+  if (!draft || !billingSourceReady() || draft.userID !== state.user.id || draft.generation !== identityGeneration) throw new Error("查看的用户或登录身份已变化，请重新确认。");
+  const form = byId("billing-purchase-form");
+  if (!form.elements.confirmed.checked) throw new Error("请先核对并确认权益变化。");
+  const count = billingPlanPeriodCount(form.elements.period_count.value, draft.plan.min_period_count);
+  billingPlanTotal(draft.plan.price_usd, count);
+  if (draft.kind === "renewal") billingRenewalExpiry(draft.subscription, draft.plan.tier, count);
+  const payload = {plan_version: draft.plan.version, subscription_config_version: draft.configVersion, period_count: count};
+  if (draft.kind === "purchase") payload.plan_id = draft.plan.id;
+  const path = draft.kind === "purchase" ? "/admin/billing/me/purchases" : `/admin/billing/me/subscriptions/${draft.plan.tier}/renewals`;
+  billingPlanOperation = makeBillingPlanOperation(draft.kind, path, "POST", payload);
+  await executeBillingPlanOperation(billingPlanOperation);
+}
+
+async function submitBillingPlan() {
+  if (billingPlanOperation) {
+    if (billingPlanOperation.kind === "plan") await executeBillingPlanOperation(billingPlanOperation);
+    return;
+  }
+  if (state?.user?.role !== "owner" || loggingOut) return;
+  const form = byId("billing-plan-form"), data = new FormData(form);
+  const payload = {name: String(data.get("name") || "").trim(), price_usd: String(data.get("price_usd") || "").trim(),
+    tier: String(data.get("tier") || ""), allowance_usd: String(data.get("allowance_usd") || "").trim(),
+    min_period_count: billingPlanPeriodCount(data.get("min_period_count")), active: data.get("active") === "true", reason: billingReason(form)};
+  if (!payload.name) throw new Error("请输入套餐名称。");
+  billingPlanTotal(payload.price_usd, 1);
+  billingPlanTotal(payload.allowance_usd, 1);
+  if (billingPlanEdit && !window.confirm("此操作将解除已有订阅的套餐绑定，已购权益保持有效。重新上架或恢复旧配置不会恢复旧绑定。确认保存？")) return;
+  if (billingPlanEdit) payload.version = billingPlanEdit.version;
+  billingPlanOperation = makeBillingPlanOperation("plan", `/admin/billing/plans${billingPlanEdit ? `/${encodeURIComponent(billingPlanEdit.id)}` : ""}`,
+    billingPlanEdit ? "PUT" : "POST", payload);
+  await executeBillingPlanOperation(billingPlanOperation);
+}
+
+async function refreshBillingPlanData() {
+  const tasks = [loadBillingPlans(), loadBillingDetail(selectedBillingUserID(), 0)];
+  if (state?.user?.role === "owner") tasks.push(loadBillingUsers());
+  return (await Promise.allSettled(tasks)).every((result) => result.status === "fulfilled");
+}
+
+async function executeBillingPlanOperation(operation) {
+  if (!billingPlanOperationCurrent(operation) || operation.busy) return;
+  const form = byId(operation.kind === "plan" ? "billing-plan-form" : "billing-purchase-form");
+  const current = () => billingPlanOperationCurrent(operation);
+  const allowed = () => current() && (operation.kind === "plan" ? state.user.role === "owner" : selectedBillingUserID() === operation.userID);
+  if (!allowed()) throw new Error("请回到本人账务后重试原操作。");
+  operation.busy = true;
+  setLocalMessage(form);
+  syncBillingPlanControls();
+  try {
+    const result = await sensitiveAction(() => {
+      if (!allowed()) throw new Error("登录身份或查看的用户已变化，操作已停止。");
+      operation.sent = true;
+      return api(operation.path, {method: operation.method, body: operation.body}, current);
+    }, allowed);
+    if (!billingPlanOperationCurrent(operation)) return;
+    const plan = result?.plan || (operation.kind === "plan" ? result : null);
+    if (!plan?.id || (operation.kind !== "plan" && (!result?.subscription || typeof result.total_usd !== "string" || typeof result.balance_usd !== "string"))) {
+      throw new Error("返回结果不完整，无法确认操作是否成功。");
+    }
+    billingPlanOperation = null;
+    byId(operation.kind === "plan" ? "billing-plan-dialog" : "billing-purchase-dialog").close();
+    const message = operation.kind === "plan" ? "套餐已保存。已有订阅权益保持有效。"
+      : `${operation.kind === "renewal" ? "续费" : "购买并重开"}成功，已扣款 ${formatUSD(result.total_usd)}，现金余额 ${formatUSD(result.balance_usd)}。`;
+    const refreshed = await refreshBillingPlanData();
+    if (state?.user?.id === operation.userID && identityGeneration === operation.generation) billingPlanMessage(message + (refreshed ? "" : " 部分数据刷新失败，请刷新核对，已完成的操作无需重复提交。"), !refreshed);
+  } catch (error) {
+    if (!billingPlanOperationCurrent(operation)) return;
+    const uncertain = operation.uncertain || operation.sent && (error.network || !error.status || error.status >= 500 || error.status === 408);
+    if (uncertain) {
+      operation.uncertain = true;
+      setLocalMessage(form, `结果尚未确认：${friendlyError(error)} 原请求和操作 ID 已保留，仅可重试原操作。请勿刷新或关闭整个页面。`);
+    } else {
+      billingPlanOperation = null;
+      if (error.status === 409 || error.status === 404) {
+        byId(operation.kind === "plan" ? "billing-plan-dialog" : "billing-purchase-dialog").close();
+        await refreshBillingPlanData();
+        billingPlanMessage(`套餐或订阅已变化：${friendlyError(error)} 请重新选择并确认。`);
+      } else setLocalMessage(form, friendlyError(error));
+    }
+  } finally {
+    operation.busy = false;
+    syncBillingPlanControls();
+  }
+}
+
+function resumeBillingPlanOperation() {
+  if (!billingPlanOperation || billingPlanOperation.busy) return;
+  const operation = billingPlanOperation;
+  if (!billingPlanOperationCurrent(operation) || (operation.kind !== "plan" && selectedBillingUserID() !== operation.userID)) return;
+  const dialog = byId(operation.kind === "plan" ? "billing-plan-dialog" : "billing-purchase-dialog");
+  if (!dialog.open) dialog.showModal();
+  syncBillingPlanControls();
+}
+
+function bindBillingPlanUI() {
+  byId("billing-plan-create")?.addEventListener("click", () => openBillingPlanEditor());
+  byId("billing-plan-resume")?.addEventListener("click", resumeBillingPlanOperation);
+  byId("billing-plans-refresh")?.addEventListener("click", () => runButton(byId("billing-plans-refresh"), async () => {
+    billingPlanMessage();
+    if (!await refreshBillingPlanData()) billingPlanMessage("部分账务或套餐数据刷新失败，请重试。");
+  }));
+  byId("billing-purchase-form")?.elements.period_count.addEventListener("input", () => {
+    byId("billing-purchase-form").elements.confirmed.checked = false;
+    updateBillingPurchaseSummary();
+  });
+  for (const [id, handler] of [["billing-purchase-form", submitBillingPurchase], ["billing-plan-form", submitBillingPlan]]) {
+    byId(id)?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      try { await handler(); } catch (error) { setLocalMessage(byId(id), friendlyError(error)); }
+    });
+  }
+}
+
 async function loadBillingDashboard() {
-  const tasks = [loadBillingDetail(selectedBillingUserID(), 0)];
+  const tasks = [loadBillingDetail(selectedBillingUserID(), 0), loadBillingPlans().catch((error) => {
+    billingPlanMessage(`套餐加载失败：${friendlyError(error)}`);
+  })];
   if (state.user.role === "owner") {
     tasks.push(
       loadBillingSettings().catch((error) => {
@@ -6101,6 +6463,7 @@ function bindUI() {
     announce("请求监控已刷新。");
   }, "刷新中…", () => ownerSectionVisible("monitoring"));
   bindGroupUI();
+  bindBillingPlanUI();
   billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
   globalUserSearch = createUserSearch("global-user-search", drillDownUser);

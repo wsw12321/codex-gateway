@@ -348,6 +348,14 @@
               <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
             </article>
 
+            <article id="billing-plans-panel" class="panel billing-plans-panel" aria-labelledby="billing-plans-title">
+              <div class="panel-heading"><div><h3 id="billing-plans-title">套餐目录</h3><p>使用现金余额购买。日／周／月分别为 24 小时／7 天／31 天，每周期额度不结转。</p></div><div class="actions"><button id="billing-plans-refresh" type="button" class="secondary">刷新套餐</button><button id="billing-plan-create" type="button" class="owner-only hidden">创建套餐</button></div></div>
+              <p id="billing-plan-message" class="form-message hidden" role="status" aria-live="polite"></p>
+              <p id="billing-plan-pending" class="billing-plan-pending hidden" role="status">有一笔操作结果待确认。请保留本页，仅重试原操作。<button id="billing-plan-resume" type="button" class="secondary">查看原操作</button></p>
+              <p id="billing-plan-readonly" class="muted hidden">正在查看其他用户，购买和续费仅供本人操作。</p>
+              <div id="billing-plans" class="billing-plan-list" aria-live="polite">正在加载套餐…</div>
+            </article>
+
             <div class="owner-only hidden billing-owner-tools">
               <details id="billing-batch-panel" class="panel billing-batch-panel" aria-labelledby="billing-batch-title">
                 <summary id="billing-batch-title">批量充值与开通订阅</summary>
@@ -964,6 +972,35 @@
       </label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">添加设备</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="billing-purchase-dialog" aria-labelledby="billing-purchase-title">
+    <form id="billing-purchase-form">
+      <div class="dialog-heading"><p class="eyebrow">SUBSCRIPTION</p><h2 id="billing-purchase-title">购买并重开</h2><p id="billing-purchase-plan"></p></div>
+      <label>本次周期数<input name="period_count" type="number" min="1" max="99" step="1" required value="1"></label>
+      <p id="billing-purchase-minimum" class="muted"></p>
+      <div id="billing-purchase-summary" class="billing-purchase-summary" aria-live="polite"></div>
+      <p id="billing-purchase-warning" class="billing-purchase-warning"></p>
+      <label class="billing-purchase-confirm"><input name="confirmed" type="checkbox" required><span>我已核对金额、周期及以上权益变化，确认从本人现金余额扣款。</span></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-purchase-submit" type="submit">确认购买并重开</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="billing-plan-dialog" aria-labelledby="billing-plan-dialog-title">
+    <form id="billing-plan-form">
+      <div class="dialog-heading"><p class="eyebrow">PLAN</p><h2 id="billing-plan-dialog-title">创建套餐</h2></div>
+      <label>套餐名称<input name="name" required maxlength="120" autocomplete="off"></label>
+      <label>每周期价格（USD）<input name="price_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 10.00"></label>
+      <label>周期<select name="tier"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option></select></label>
+      <label>每周期额度（USD）<input name="allowance_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 25.00"></label>
+      <label>最低购买周期数<input name="min_period_count" type="number" required min="1" max="99" step="1" value="1"></label>
+      <label>上架状态<select name="active"><option value="false">下架</option><option value="true">上架</option></select></label>
+      <p id="billing-plan-edit-warning" class="billing-purchase-warning hidden">此操作将解除已有订阅的套餐绑定，已购权益保持有效。重新上架或恢复旧配置不会恢复旧绑定。</p>
+      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-submit" type="submit">创建套餐</button></div>
     </form>
   </dialog>
 

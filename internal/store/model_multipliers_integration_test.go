@@ -620,6 +620,15 @@ func TestModelMultiplierMigrationPostgresIntegration(t *testing.T) {
 	if !equalAllocationDecimal(reservationMultiplier, "1") || !equalAllocationDecimal(ledgerMultiplier, "1") || reservationCost != "1.000000000000" || ledgerCost != "1.000000000000" {
 		t.Fatalf("legacy snapshot/cost changed: %s/%s %s/%s", reservationMultiplier, ledgerMultiplier, reservationCost, ledgerCost)
 	}
+	// The migration under test has been verified above. Install the unrelated
+	// plan schema before exercising current billing helpers for replay.
+	for _, migration := range migrations {
+		if migration.Name == "0024_subscription_plans.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply billing helper schema: %v", err)
+			}
+		}
+	}
 	if _, err := s.SetModelMultiplier(ctx, SetModelMultiplierParams{
 		BillingWriteParams: billingIntegrationWrite(t, user.ID, "post migration multiplier", now), Model: "billing-priced-model", Multiplier: "9",
 	}); err != nil {

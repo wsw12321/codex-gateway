@@ -43,6 +43,7 @@ type Server struct {
 	monitoringRepo          monitoringRepository
 	modelAccessRepo         modelAccessRepository
 	modelMultiplierRepo     modelMultiplierRepository
+	billingPlanRepo         billingPlanRepository
 	modelIdentificationRepo modelIdentificationRepository
 	identificationContext   context.Context
 	identificationCancel    context.CancelFunc
@@ -159,6 +160,11 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
+	s.mux.Handle("GET /admin/billing/plans", s.requireSession(http.HandlerFunc(s.billingPlans)))
+	s.mux.Handle("POST /admin/billing/plans", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createBillingPlan)))))
+	s.mux.Handle("PUT /admin/billing/plans/{plan_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateBillingPlan)))))
+	s.mux.Handle("POST /admin/billing/me/purchases", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.purchaseBillingPlan))))
+	s.mux.Handle("POST /admin/billing/me/subscriptions/{tier}/renewals", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.renewBillingSubscription))))
 	s.mux.Handle("PUT /admin/billing/me/sources/{source}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSourceStatus))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("GET /admin/billing/model-multipliers", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelMultipliers))))
