@@ -268,8 +268,9 @@ jobs:
           bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
           bridge_id=$(docker image inspect "$bridge_image" --format '{{.Id}}')
           docker build -f deploy/cpa-migrate/Dockerfile \
-            --build-arg LEGACY_BRIDGE_IMAGE="$bridge_id" \
+            --build-arg LEGACY_BRIDGE_IMAGE="$bridge_image" \
             -t codex-gateway-cpa-migrate:validation .
+          test "$(docker image inspect "$bridge_image" --format '{{.Id}}')" = "$bridge_id"
           ./scripts/test-cpa-migration-image.sh
       - name: Scan application images with digest-locked Trivy
         shell: bash

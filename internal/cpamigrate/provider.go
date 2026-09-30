@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	googleTokenURL    = "https://oauth2.googleapis.com/token"
+	googleOAuthURL    = "https://oauth2.googleapis.com/token"
 	googleIdentityURL = "https://www.googleapis.com/oauth2/v2/userinfo?alt=json"
 	googleProjectURL  = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 	googleModelsURL   = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
@@ -123,7 +123,7 @@ func (p *provider) refresh(ctx context.Context, old token) (token, error) {
 	}
 	form := url.Values{"client_id": {p.oauthClient.ClientID}, "client_secret": {p.oauthClient.ClientSecret}, "grant_type": {"refresh_token"}, "refresh_token": {old.Refresh}}
 	var fresh token
-	if err := p.request(ctx, http.MethodPost, googleTokenURL, "application/x-www-form-urlencoded", "", []byte(form.Encode()), &fresh); err != nil {
+	if err := p.request(ctx, http.MethodPost, googleOAuthURL, "application/x-www-form-urlencoded", "", []byte(form.Encode()), &fresh); err != nil {
 		return token{}, errors.New("refresh_failed_reauthorize")
 	}
 	if strings.TrimSpace(fresh.Access) == "" || fresh.ExpiresIn <= 0 || fresh.ExpiresIn > 86400 || (fresh.Type != "" && !strings.EqualFold(fresh.Type, "Bearer")) {

@@ -24,7 +24,7 @@ func testProvider(t *testing.T, identity string) *provider {
 	return &provider{oauthClient: googleOAuthClient{ClientID: "test-client-id", ClientSecret: "test-client-secret"}, now: func() time.Time { return time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC) }, client: &http.Client{Transport: transportFunc(func(r *http.Request) (*http.Response, error) {
 		var body string
 		switch r.URL.String() {
-		case googleTokenURL:
+		case googleOAuthURL:
 			if err := r.ParseForm(); err != nil {
 				t.Fatal(err)
 			}
@@ -221,7 +221,7 @@ func TestProviderRefusesRedirectsAndProxyBypass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, _ := http.NewRequest(http.MethodPost, googleTokenURL, nil)
+	request, _ := http.NewRequest(http.MethodPost, googleOAuthURL, nil)
 	proxy, err := p.client.Transport.(*http.Transport).Proxy(request)
 	if err != nil || proxy.Host != "127.0.0.1:9999" {
 		t.Fatal("explicit proxy missing")

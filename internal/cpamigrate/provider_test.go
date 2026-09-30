@@ -28,7 +28,7 @@ func TestProviderUsesRuntimeOAuthClient(t *testing.T) {
 	called := false
 	p.client.Transport = transportFunc(func(r *http.Request) (*http.Response, error) {
 		called = true
-		if r.Method != http.MethodPost || r.URL.String() != googleTokenURL {
+		if r.Method != http.MethodPost || r.URL.String() != googleOAuthURL {
 			t.Fatal("unexpected refresh request")
 		}
 		if err := r.ParseForm(); err != nil {

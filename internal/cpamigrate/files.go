@@ -33,7 +33,7 @@ func openDirectory(path string, uid int) (*privateDir, error) {
 	}
 	for _, part := range strings.Split(strings.TrimPrefix(filepath.Clean(path), "/"), "/") {
 		next, err := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-		unix.Close(fd)
+		_ = unix.Close(fd) // The read-only parent descriptor is no longer needed.
 		if err != nil {
 			return nil, errors.New("unsafe_directory")
 		}
@@ -42,13 +42,13 @@ func openDirectory(path string, uid int) (*privateDir, error) {
 	f := os.NewFile(uintptr(fd), "private-directory")
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil || int(st.Uid) != uid || st.Mode&07777 != 0700 {
-		f.Close()
+		_ = f.Close()
 		return nil, errors.New("directory_permissions_invalid")
 	}
 	return &privateDir{f, uid}, nil
 }
 
-func (d *privateDir) close() { d.file.Close() }
+func (d *privateDir) close() { _ = d.file.Close() }
 func validFilename(name string) bool {
 	return name != "" && name != "." && name != ".." && filepath.Base(name) == name && !strings.ContainsAny(name, "/\x00")
 }
@@ -77,7 +77,7 @@ func (d *privateDir) read(name string) ([]byte, error) {
 	return raw, nil
 }
 
-func (d *privateDir) write(name string, raw []byte) error {
+func (d *privateDir) write(name string, raw []byte) (err error) {
 	if !validFilename(name) || len(raw) > maxFileSize {
 		return errors.New("unsafe_file")
 	}
@@ -94,7 +94,11 @@ func (d *privateDir) write(name string, raw []byte) error {
 		return errors.New("file_write_failed")
 	}
 	f := os.NewFile(uintptr(fd), "private-file")
-	defer func() { f.Close(); unix.Unlinkat(int(d.file.Fd()), tmp, 0) }()
+	defer func() {
+		if cleanupErr := d.finishWrite(f, tmp); cleanupErr != nil {
+			err = cleanupErr
+		}
+	}()
 	if os.Geteuid() == 0 {
 		if err := unix.Fchown(fd, d.uid, d.uid); err != nil {
 			return errors.New("file_owner_failed")
@@ -109,6 +113,17 @@ func (d *privateDir) write(name string, raw []byte) error {
 	return nil
 }
 
+func (d *privateDir) finishWrite(f *os.File, tmp string) error {
+	closeErr := f.Close()
+	if err := unix.Unlinkat(int(d.file.Fd()), tmp, 0); err != nil && !errors.Is(err, unix.ENOENT) {
+		return errors.New("file_cleanup_failed")
+	}
+	if closeErr != nil {
+		return errors.New("file_close_failed")
+	}
+	return nil
+}
+
 func (d *privateDir) lock() (*os.File, error) {
 	const name = ".gateway-refresh.lock"
 	fd, err := unix.Openat(int(d.file.Fd()), name, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
@@ -118,18 +133,18 @@ func (d *privateDir) lock() (*os.File, error) {
 	f := os.NewFile(uintptr(fd), "refresh-lock")
 	var st unix.Stat_t
 	if unix.Fstat(fd, &st) != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || st.Mode&07777 != 0600 || st.Nlink != 1 {
-		f.Close()
+		_ = f.Close()
 		return nil, errors.New("refresher_lock_invalid")
 	}
 	if int(st.Uid) != d.uid {
 		// Only a new root-owned empty lock may be assigned to the service UID.
 		if os.Geteuid() != 0 || st.Uid != 0 || st.Size != 0 || unix.Fchown(fd, d.uid, d.uid) != nil {
-			f.Close()
+			_ = f.Close()
 			return nil, errors.New("refresher_lock_invalid")
 		}
 	}
 	if unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB) != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, errors.New("refresher_still_running")
 	}
 	return f, nil

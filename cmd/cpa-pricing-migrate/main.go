@@ -47,6 +47,7 @@ func main() {
 }
 
 func readSnapshot(path string) ([]byte, error) {
+	// #nosec G304 -- The local operator selects rollback snapshot paths through CLI flags; this command does not accept remote requests.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open pricing snapshot: %w", err)

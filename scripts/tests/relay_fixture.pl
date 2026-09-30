@@ -118,7 +118,7 @@ if ($mode eq 'serve') {
     my $payload = join('', map { chr($_ % 251) } 0..65535);
     my $deadline = time + ($operation eq 'stream' ? 3 : $operation eq 'disconnect' ? 15 : 0);
     if ($operation eq 'disconnect') {
-        open my $ready, '>', "/run/fixture-stream-ready-$source" or die $!;
+        open my $ready, '>', "/run/fixture-stream-ready-$source-$host" or die $!;
         close $ready;
     }
     my $completed = eval {

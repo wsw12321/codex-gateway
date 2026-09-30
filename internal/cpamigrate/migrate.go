@@ -123,7 +123,9 @@ func Run(ctx context.Context, o Options) ([]Report, error) {
 			return reports, errors.New("staging_unavailable")
 		}
 		if err := os.Chown(home, 10002, 10002); err != nil {
-			os.RemoveAll(home)
+			if cleanupErr := removeStaging(home); cleanupErr != nil {
+				return reports, cleanupErr
+			}
 			return reports, errors.New("staging_permissions_invalid")
 		}
 		if o.Direction == "forward" {
@@ -131,7 +133,9 @@ func Run(ctx context.Context, o Options) ([]Report, error) {
 		} else {
 			err = m.reverse(ctx, record, home, &report)
 		}
-		os.RemoveAll(home)
+		if cleanupErr := removeStaging(home); cleanupErr != nil {
+			return reports, cleanupErr
+		}
 		if err != nil {
 			report.Reason = err.Error()
 		} else {
@@ -143,6 +147,13 @@ func Run(ctx context.Context, o Options) ([]Report, error) {
 		return nil, errors.New("no_matching_legacy_account")
 	}
 	return reports, nil
+}
+
+func removeStaging(home string) error {
+	if err := os.RemoveAll(home); err != nil {
+		return errors.New("staging_cleanup_failed")
+	}
+	return nil
 }
 
 type migrator struct {

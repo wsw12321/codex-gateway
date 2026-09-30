@@ -17,6 +17,7 @@ import (
 type processKeyring struct{ executable, proxy string }
 
 func (p processKeyring) invoke(ctx context.Context, action, account, home string) error {
+	// #nosec G204 -- The fixed helper validates the executable and action; all values remain separate, quoted arguments without shell evaluation.
 	cmd := exec.CommandContext(ctx, "/usr/local/bin/cpa-keyring-helper", p.executable, action, account, home)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
