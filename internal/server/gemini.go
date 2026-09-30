@@ -56,16 +56,20 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "unsupported_endpoint", "不支持的 Gemini 接口")
 		return
 	}
-	// AGY 1.2.12 rewrites the selected Pro model for conversation, tools and
-	// title requests. Normalize only this native entry point, before any
-	// permission, quota or billing lookup; the catalog keeps the actual IDs.
-	if !s.config.UsesCPAAntigravity() {
+	// The official AGY client rewrites model names on the native endpoint.
+	// Resolve its title model to the same native family before authorization;
+	// the legacy bridge retains its separate Pro compatibility behavior.
+	if s.config.UsesCPAAntigravity() {
+		if model == "gemini-3.1-flash-lite-preview" {
+			model = "gemini-3.1-flash-lite"
+		}
+	} else {
 		switch model {
 		case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
 			model = antigravity.PublicModel
 		}
 	}
-	flashAlias := !s.config.UsesCPAAntigravity() && model == "gemini-3.8-flash"
+	flashAlias := model == "gemini-3.8-flash"
 	if !flashAlias && !s.configuredGeminiModel(model) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 		return
@@ -103,10 +107,28 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if s.config.UsesCPAAntigravity() {
+		if err := cpaprotocol.GeminiRequest(data); err != nil {
+			writeCPANativeRequestError(w, r, err)
+			return
+		}
+	}
 	// AGY 1.2.12 sends the same Flash URL for both reasoning presets. Resolve
 	// its bounded body before permissions, quota, forwarding and billing.
 	if flashAlias {
-		model = nativeFlashModel(data)
+		if s.config.UsesCPAAntigravity() {
+			// CPA accepts arbitrary reasoning controls for exact IDs. The CLI
+			// alias supports only observed presets, and cannot infer a model
+			// from duplicate keys or silently change a custom reasoning budget.
+			var err error
+			model, err = cpaFlashModel(data)
+			if err != nil {
+				writeCPANativeRequestError(w, r, err)
+				return
+			}
+		} else {
+			model = nativeFlashModel(data)
+		}
 		if !s.configuredGeminiModel(model) {
 			httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 			return
@@ -114,12 +136,7 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 	}
 	// Apply the bridge's complete schema/control validation before any quota
 	// or billing reservation. The isolated bridge validates independently too.
-	if s.config.UsesCPAAntigravity() {
-		if err := cpaprotocol.GeminiRequest(data); err != nil {
-			writeCPANativeRequestError(w, r, err)
-			return
-		}
-	} else {
+	if !s.config.UsesCPAAntigravity() {
 		_, failure := antigravity.DecodeGeminiRequest(model, data)
 		if failure != nil {
 			httpx.WriteError(w, r, failure.Status, "invalid_request_error", failure.Code, failure.Message)
@@ -167,4 +184,31 @@ func nativeFlashModel(body []byte) string {
 		return "gemini-3.8-flash-medium"
 	}
 	return "gemini-3.8-flash-high"
+}
+
+// cpaFlashModel is called after full protocol validation. The CLI's high
+// preset uses -1; its retired medium preset must remain unavailable rather
+// than receiving the high model. Explicit native IDs do not use this adapter.
+func cpaFlashModel(body []byte) (string, error) {
+	var request struct {
+		GenerationConfig struct {
+			ThinkingConfig struct {
+				ThinkingBudget json.RawMessage `json:"thinkingBudget"`
+				ThinkingLevel  string          `json:"thinkingLevel"`
+			} `json:"thinkingConfig"`
+		} `json:"generationConfig"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return "", cpaprotocol.ErrUnsupported
+	}
+	thinking := request.GenerationConfig.ThinkingConfig
+	budget := bytes.TrimSpace(thinking.ThinkingBudget)
+	if bytes.Equal(budget, []byte("4000")) && thinking.ThinkingLevel == "" {
+		return "gemini-3.8-flash-medium", nil
+	}
+	if len(budget) != 0 && !bytes.Equal(budget, []byte("-1")) ||
+		thinking.ThinkingLevel != "" && thinking.ThinkingLevel != "HIGH" {
+		return "", cpaprotocol.ErrUnsupported
+	}
+	return "gemini-3.8-flash-high", nil
 }

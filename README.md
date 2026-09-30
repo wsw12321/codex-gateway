@@ -441,8 +441,9 @@ Codex 尊重 `CODEX_HOME`，设置内置 `openai` provider、`<站点 origin>/v1
 macOS / Linux 使用权限为 `0600` 的独立凭据文件，并配置 Bash / Zsh 自动加载。
 
 配置完成后重新打开终端，用 `codex` 或支持原生 Gemini ID 的客户端发送简单请求，
-在“使用统计”核对实际模型和费用。旧 AGY 1.2.12 重写模型名称的行为不适用于默认 CPA 链路；
-使用 `GET /v1/models` 返回的精确 ID，并在请求参数中设置推理档位。详见
+在“使用统计”核对实际模型和费用。旧 AGY 的 Pro preview/customtools 名称不兼容默认 CPA 链路；
+使用 `GET /v1/models` 返回的精确 ID，并在请求参数中设置推理档位。原生入口兼容
+AGY 1.2.14 的 Flash-high 和标题请求名称，权限与计费使用解析后的原生 ID。详见
 [客户端配置](docs/client-config.md)。
 
 ## 开发与验证

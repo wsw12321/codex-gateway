@@ -89,10 +89,16 @@ macOS / Linux：
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
-客户端必须保留 CPA 原生模型 ID。旧 AGY 1.2.12 会重写 Pro/标题等请求名称，
-因此旧配置不能作为 CPA v8 的兼容性保证；如果客户端无法原样发送目录中的 ID，请使用
-支持原生 Gemini/Responses 的客户端。配置器仅配置 Gateway 地址和 Key，不替客户端
-伪造签名或替换模型。
+AGY 1.2.14 实测选择 `gemini-3.8-flash-high` 时，主请求仍发送
+`gemini-3.8-flash`，标题请求发送 `gemini-3.1-flash-lite-preview`。Gateway 在原生
+Gemini 入口将这两个请求分别解析为 `gemini-3.8-flash-high` 和
+`gemini-3.1-flash-lite`，再检查各自的权限、额度并计费。Flash 别名仅接受 High
+默认推理参数（预算省略或 `-1`，推理级别省略或 `HIGH`）；Medium 旧模型保持不可用，
+其他自定义推理参数必须使用精确原生 ID。标题请求也需要 Lite 模型权限。
+
+其他客户端应保留 CPA 原生模型 ID。旧 AGY 的 Pro preview/customtools 名称仍不兼容，
+请使用支持原生 Gemini/Responses 的客户端。配置器仅配置 Gateway 地址和 Key，
+不会伪造工具签名；旧 CLI 会话请新建。
 
 配置器保留用户级 `~/.gemini/antigravity-cli/settings.json` 的其他字段并合并
 `{"modelProvider":"gemini"}`，保存 `GOOGLE_GEMINI_BASE_URL=<站点 origin>`（不加 `/v1`）
