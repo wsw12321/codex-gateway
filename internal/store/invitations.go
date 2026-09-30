@@ -344,7 +344,7 @@ func (s *Store) ReviewInvitationApplications(ctx context.Context, invitationID s
 		for rows.Next() {
 			var id string
 			if err := rows.Scan(&id); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			userIDs = append(userIDs, id)
@@ -378,7 +378,7 @@ func (s *Store) ReviewInvitationApplications(ctx context.Context, invitationID s
 		for rows.Next() {
 			a, err := scanInvitationApplication(rows)
 			if err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return err
 			}
 			applications = append(applications, a)
