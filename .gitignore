@@ -8,6 +8,8 @@ backups/
 *.dump
 *.sql
 !internal/store/migrations/*.sql
+!scripts/rollback-cpa-model-config.sql
+node_modules/
 *.log
 coverage.out
 sbom*.json

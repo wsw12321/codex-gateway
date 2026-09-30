@@ -85,7 +85,7 @@ func parseStream(model string, reader io.Reader) (Result, *Failure) {
 // permissions. Only validated assistant text is exposed; tool/process events
 // remain forbidden. The terminal result and process exit still decide success.
 func parseStreamUpdates(model string, reader io.Reader, emit func(string) error) (Result, *Failure) {
-	if !config.IsAntigravityModel(model) {
+	if !config.IsLegacyAntigravityModel(model) {
 		return Result{}, protocolFailure()
 	}
 	scanner := bufio.NewScanner(io.LimitReader(reader, maxProtocolBytes+1))

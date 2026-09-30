@@ -40,6 +40,9 @@ func (r *Router) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	if r.antigravity == nil {
 		return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_unavailable", Message: "Antigravity 尚未就绪"}
 	}
+	if r.antigravity.cpaNative {
+		return r.antigravity.ForwardWithOptions(ctx, w, incoming, path, options)
+	}
 	// Codex account affinity is not part of the bridge's protocol.
 	return r.antigravity.ForwardWithOptions(ctx, w, incoming, path, ForwardOptions{
 		UserID:            options.UserID,
@@ -58,7 +61,7 @@ func (r *Router) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 	if incoming.Method != http.MethodGet {
 		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}
 	}
-	if len(r.routes) == 0 {
+	if len(r.routes) == 0 || (r.antigravity != nil && r.antigravity.cpaNative) {
 		return r.primary.ForwardModelsWithOptions(ctx, w, incoming, allowedModels, options)
 	}
 	// A bridge outage must not hold the existing catalog hostage. Catalog

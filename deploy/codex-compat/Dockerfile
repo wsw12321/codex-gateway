@@ -5,7 +5,7 @@ FROM ${RUNTIME_IMAGE} AS runtime-base
 # Keep the reviewed glibc runtime. Netcat powers
 # the TCP probes without placing the internal API key in process arguments.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd \
+    && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 cliproxy \
     && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \
@@ -30,8 +30,10 @@ RUN git init \
     && git checkout --detach "${CLIPROXY_COMMIT}" \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
-COPY deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch /tmp/cliproxy-multi-account.patch
-RUN git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
+ARG CLIPROXY_PATCH_SHA256
+COPY deploy/codex-compat/cliproxy-v8.0.4-gateway.patch /tmp/cliproxy-multi-account.patch
+RUN printf "%s  /tmp/cliproxy-multi-account.patch\n" "$CLIPROXY_PATCH_SHA256" | sha256sum -c - \
+    && git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
 
@@ -43,6 +45,11 @@ RUN go test -count=1 \
     ./internal/api \
     ./internal/api/middleware \
     ./internal/auth/codex \
+    ./internal/auth/antigravity \
+    ./internal/api/handlers/management \
+    ./internal/runtime/executor/helps \
+    ./internal/translator/gemini/openai/responses \
+    ./internal/translator/antigravity/openai/responses \
     ./internal/logging \
     ./internal/util \
     ./internal/watcher \

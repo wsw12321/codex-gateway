@@ -151,9 +151,9 @@ jobs:
           agy_manifest_url=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
           agy_url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz
           agy_sha512=5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897
-          grep -q 'CLIProxyAPI v7.3.15' THIRD_PARTY_NOTICES
-          grep -q '673131f57484517c3a1eae7e36c4cfa7b9bb4efc' THIRD_PARTY_NOTICES
-          grep -q '673131f57484517c3a1eae7e36c4cfa7b9bb4efc' docker-compose.yml
+          grep -q 'CLIProxyAPI v8.0.4' THIRD_PARTY_NOTICES
+          grep -q 'd33f63f8e3d98428440ebca5a5b6a981a61ff71e' THIRD_PARTY_NOTICES
+          grep -q 'd33f63f8e3d98428440ebca5a5b6a981a61ff71e' docker-compose.yml
           grep -q 'Google Antigravity CLI' THIRD_PARTY_NOTICES
           grep -Fq "$agy_url" THIRD_PARTY_NOTICES
           grep -Fq "$agy_sha512" THIRD_PARTY_NOTICES
@@ -227,7 +227,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/egress/*.sh deploy/relay/wg-codex; do
+          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/cpa-migrate/*.sh deploy/egress/*.sh deploy/relay/wg-codex; do
             case "$(sed -n '1p' "$script")" in
               '#!/bin/sh') sh -n "$script" ;;
               '#!/sbin/openrc-run') sh -n "$script" ;;
@@ -254,6 +254,23 @@ jobs:
         run: ./scripts/test-sidecar-image.sh
       - name: Verify Antigravity keyring isolation without a Google account
         run: ./scripts/test-antigravity-image.sh
+      - name: Build and verify compatible CPA rollback image
+        shell: bash
+        run: |
+          set -eu
+          legacy_image=codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-rollback
+          docker build -f deploy/codex-compat/legacy.Dockerfile -t "$legacy_image" .
+          ./scripts/test-legacy-sidecar-image.sh "$legacy_image"
+      - name: Build and verify credential migration and rollback tooling
+        shell: bash
+        run: |
+          set -eu
+          bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
+          bridge_id=$(docker image inspect "$bridge_image" --format '{{.Id}}')
+          docker build -f deploy/cpa-migrate/Dockerfile \
+            --build-arg LEGACY_BRIDGE_IMAGE="$bridge_id" \
+            -t codex-gateway-cpa-migrate:validation .
+          ./scripts/test-cpa-migration-image.sh
       - name: Scan application images with digest-locked Trivy
         shell: bash
         run: |
@@ -262,8 +279,8 @@ jobs:
           . deploy/images.lock.env
           . ./.env
           set +a
-          compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["codex-compat"].image')
-          bridge_image=$(./scripts/compose.sh config --format json | jq -er '.services["antigravity-bridge"].image')
+          compat_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["codex-compat"].image')
+          bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
@@ -283,7 +300,7 @@ jobs:
           set -euo pipefail
           bundle=$RUNNER_TEMP/ci-images
           mkdir -p "$bundle"
-          ./scripts/compose.sh config --format json | jq '{
+          ./scripts/compose.sh --profile legacy-bridge config --format json | jq '{
             gateway: .services.gateway.image,
             "codex-compat": .services["codex-compat"].image,
             "antigravity-bridge": .services["antigravity-bridge"].image

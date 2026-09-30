@@ -1,0 +1,16 @@
+# Explicit rollback transport. Use only with the new Gateway migration set;
+# stopping CPA Google refresh and converting the latest tokens comes first.
+services:
+  codex-compat:
+    environment:
+      # Start CPA again only after reverse conversion. This gate prevents the
+      # Google credential loader, management and refresher from running.
+      CPA_ANTIGRAVITY_ENABLED: "false"
+  gateway:
+    environment:
+      ANTIGRAVITY_TRANSPORT: legacy-bridge
+      ANTIGRAVITY_BRIDGE_URL: http://antigravity-bridge:8318
+      ANTIGRAVITY_BRIDGE_API_KEY_FILE: /run/secrets/antigravity_bridge_api_key
+      ANTIGRAVITY_MODEL_ROUTES_JSON: '{"gemini-3.6-flash-high":"gemini-3.6-flash-high","gemini-3.7-flash-high":"gemini-3.7-flash-high","gemini-3.8-flash-high":"gemini-3.8-flash-high"}'
+    secrets:
+      - antigravity_bridge_api_key

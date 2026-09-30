@@ -231,7 +231,7 @@ func (c geminiAdmissionTestConn) QueryContext(ctx context.Context, query string,
 		c.database.recordQuery(query)
 		model := c.fixture.model
 		if model == "" {
-			model = config.AntigravityPublicModel
+			model = config.LegacyAntigravityPublicModel
 		}
 		if len(args) != 2 || args[0].Value != c.database.userID || args[1].Value != model {
 			return nil, errors.New("unexpected model permission lookup")

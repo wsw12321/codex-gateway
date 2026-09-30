@@ -42,7 +42,7 @@ func (f *fakeModelMultiplierRepository) SetModelMultiplier(_ context.Context, pa
 func newModelMultiplierTestServer(t *testing.T, role string, verified *time.Time) (*Server, *fakeModelMultiplierRepository) {
 	t.Helper()
 	s, _ := newBillingSourceTestServer(t, role, verified)
-	s.config.UsagePricing.Models = map[string]config.ModelPricing{"gpt-6-astra": {}, config.AntigravityPublicModel: {}}
+	s.config.UsagePricing.Models = map[string]config.ModelPricing{"gpt-6-astra": {}, config.LegacyAntigravityPublicModel: {}}
 	f := &fakeModelMultiplierRepository{}
 	s.modelMultiplierRepo = f
 	return s, f
@@ -122,7 +122,7 @@ func TestModelMultiplierCatalogAndWriteAttribution(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &document); err != nil || w.Code != 200 {
 		t.Fatalf("status=%d body=%s error=%v", w.Code, w.Body, err)
 	}
-	if !reflect.DeepEqual(f.models, []string{config.InternalGovernanceModel, config.AntigravityPublicModel, "gpt-6-astra"}) || len(document.Models) != 3 {
+	if !reflect.DeepEqual(f.models, []string{config.InternalGovernanceModel, config.LegacyAntigravityPublicModel, "gpt-6-astra"}) || len(document.Models) != 3 {
 		t.Fatalf("catalog=%+v read=%v", document.Models, f.models)
 	}
 	for _, row := range document.Models {
@@ -134,12 +134,12 @@ func TestModelMultiplierCatalogAndWriteAttribution(t *testing.T) {
 		t.Fatal("settings may be cached")
 	}
 	w = httptest.NewRecorder()
-	s.mux.ServeHTTP(w, modelMultiplierTestRequest(t, "PUT", config.AntigravityPublicModel, validModelMultiplierBody))
+	s.mux.ServeHTTP(w, modelMultiplierTestRequest(t, "PUT", config.LegacyAntigravityPublicModel, validModelMultiplierBody))
 	if w.Code != 200 || len(f.params) != 1 {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body)
 	}
 	p := f.params[0]
-	if p.Model != config.AntigravityPublicModel || p.Multiplier != "0.5" || p.ActorUserID != "self-1" || p.ActorSessionID != "session-1" || p.OperationID != "c99f6d40-3fe3-4901-934c-0b41d835d6a0" || p.Reason != "discount" || p.At.IsZero() {
+	if p.Model != config.LegacyAntigravityPublicModel || p.Multiplier != "0.5" || p.ActorUserID != "self-1" || p.ActorSessionID != "session-1" || p.OperationID != "c99f6d40-3fe3-4901-934c-0b41d835d6a0" || p.Reason != "discount" || p.At.IsZero() {
 		t.Fatalf("incorrect billing attribution: %+v", p)
 	}
 	for _, model := range []string{"removed", config.InternalGovernanceModel, "gemini-3.1-pro-preview-customtools"} {

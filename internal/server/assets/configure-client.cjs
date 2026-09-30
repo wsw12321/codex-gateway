@@ -338,7 +338,8 @@ async function main() {
     const key = await readSecret();
     const backups = configureClient(client, origin, key);
     process.stdout.write(`\n${client} 配置和 API Key 已保存。${backups.length ? `已创建 ${backups.length} 个 .bak 备份文件。` : ''}\n`);
-    process.stdout.write(`请完全退出并重新打开终端${process.platform === 'win32' ? '（包括 Windows Terminal / VS Code；若仍读取旧环境变量，请注销并重新登录 Windows）' : ''}，然后运行 ${client === 'codex' ? 'codex' : 'agy --model gemini-3.1-pro-high'} 验证。\n`);
+    process.stdout.write(`请完全退出并重新打开终端${process.platform === 'win32' ? '（包括 Windows Terminal / VS Code；若仍读取旧环境变量，请注销并重新登录 Windows）' : ''}，然后运行 ${client === 'codex' ? 'codex' : 'agy --model gemini-pro-agent'} 验证。\n`);
+    if (client === 'agy') process.stdout.write('客户端必须原样发送已授权的 CPA 原生模型 ID；Gateway 不改写旧别名。推理档位通过请求参数设置。旧 CLI 会话缺少签名时请新建会话。\n');
   } catch (error) {
     process.stderr.write(`配置失败：${error.message}\n`);
     process.exitCode = 1;

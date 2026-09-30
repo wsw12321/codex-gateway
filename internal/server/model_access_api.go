@@ -32,7 +32,7 @@ func (s *Server) allowedModelsForAPIKey(ctx context.Context, key store.APIKey) (
 	allowed := intersectAllowedModels(s.config.UsagePricing, enabled, key.ModelAllowlist)
 	for model := range allowed {
 		if strings.HasPrefix(model, "gemini-") {
-			if cli, routed := s.config.AntigravityModelRoutes[model]; !config.IsAntigravityModel(model) || !routed || cli != model {
+			if !s.configuredGeminiModel(model) {
 				delete(allowed, model)
 			}
 		}

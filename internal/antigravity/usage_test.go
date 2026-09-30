@@ -97,7 +97,7 @@ func TestCLIUsageAccountingIncludesCacheInContextThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshotJSON, _, found, err := pricing.ModelSnapshot(PublicModel)
+	snapshotJSON, _, found, err := pricing.ModelSnapshot(config.AntigravityPublicModel)
 	if err != nil || !found {
 		t.Fatalf("model pricing: found=%t err=%v", found, err)
 	}

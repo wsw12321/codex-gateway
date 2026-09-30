@@ -25,6 +25,12 @@ func nativeGeminiPricing(t *testing.T) config.UsagePricing {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// These fixtures exercise the retained legacy bridge rollback path. Its
+	// retired IDs are intentionally absent from the current deployment catalog.
+	pricing.Models[config.LegacyAntigravityPublicModel] = pricing.Models[config.AntigravityPublicModel]
+	for _, family := range []string{"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"} {
+		pricing.Models[family+"-medium"] = pricing.Models[family+"-high"]
+	}
 	return pricing
 }
 
@@ -71,10 +77,10 @@ func TestNativeGeminiRejectsBeforeReservation(t *testing.T) {
 			h := newResponsesWebSocketTestHarness(t)
 			h.server.config.UsagePricing = nativeGeminiPricing(t)
 			if tc.noPrice {
-				delete(h.server.config.UsagePricing.Models, config.AntigravityPublicModel)
+				delete(h.server.config.UsagePricing.Models, config.LegacyAntigravityPublicModel)
 			}
 			if !tc.noRoute {
-				h.server.config.AntigravityModelRoutes = map[string]string{config.AntigravityPublicModel: config.AntigravityCLIModel}
+				h.server.config.AntigravityModelRoutes = map[string]string{config.LegacyAntigravityPublicModel: config.LegacyAntigravityPublicModel}
 			}
 			if tc.disabled {
 				h.database.status = store.StatusDisabled
@@ -84,7 +90,7 @@ func TestNativeGeminiRejectsBeforeReservation(t *testing.T) {
 			t.Cleanup(func() { _ = db.Close() })
 			h.server.store = store.New(db)
 			if tc.model == "" {
-				tc.model = config.AntigravityPublicModel
+				tc.model = config.LegacyAntigravityPublicModel
 			}
 			if tc.action == "" {
 				tc.action = "generateContent"

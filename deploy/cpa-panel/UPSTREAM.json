@@ -1,0 +1,8 @@
+{
+  "repository": "https://github.com/router-for-me/Cli-Proxy-API-Management-Center",
+  "tag": "v1.25.0",
+  "commit": "b87b9487f63e08ad97b1fb4e7c17b4adb811b922",
+  "variant": "Gateway restricted credential administration",
+  "files": ["src/components/ui/Button.tsx", "src/components/ui/Card.tsx", "LICENSE"],
+  "notes": "Pinned upstream UI primitives and dependency lock. Gateway-specific page and typed API replace unrestricted upstream routes. External JS/CSS preserve Gateway CSP. No management secret is stored in the browser."
+}

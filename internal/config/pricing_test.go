@@ -53,15 +53,13 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-09-28" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-09-30" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
-		"codex-auto-review", "gemini-3.1-pro-high",
-		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
-		"gemini-3.7-flash-high", "gemini-3.7-flash-medium",
-		"gemini-3.8-flash-high", "gemini-3.8-flash-medium", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
-		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
+		"codex-auto-review", "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-low", "gemini-3.5-flash-lite",
+		"gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high", "gemini-pro-agent", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
 	for model := range pricing.Models {
@@ -163,7 +161,7 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const model = "gemini-3.1-pro-high"
+	const model = "gemini-pro-agent"
 	snapshotRaw, rule, ok, err := pricing.ModelSnapshot(model)
 	if err != nil || !ok {
 		t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
@@ -247,9 +245,7 @@ func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
 		t.Fatalf("retired Gemini alias remains priced: ok=%t err=%v", ok, err)
 	}
 	for _, model := range []string{
-		"gemini-3.8-flash-high", "gemini-3.8-flash-medium",
-		"gemini-3.7-flash-high", "gemini-3.7-flash-medium",
-		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+		"gemini-3.8-flash-high", "gemini-3.7-flash-high", "gemini-3.6-flash-high",
 	} {
 		t.Run(model, func(t *testing.T) {
 			raw, rule, ok, err := pricing.ModelSnapshot(model)

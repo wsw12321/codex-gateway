@@ -312,6 +312,38 @@ func TestAccountRegistryValidatesAndProtectsMetadata(t *testing.T) {
 	}
 }
 
+func TestAccountRegistryReauthorizationPreservesStableIDAndDisabledState(t *testing.T) {
+	registry := testRegistry(t, "existing")
+	before := registry.Records()[0]
+	if err := registry.SetEnabled(before.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register("existing", "n***@example.test"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := OpenAccountRegistry(context.Background(), registry.path, Runner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := loaded.Records()
+	if len(accounts) != 1 || accounts[0].ID != before.ID || accounts[0].Name != "existing" || accounts[0].Enabled || accounts[0].MaskedEmail != "n***@example.test" {
+		t.Fatalf("reauthorization changed stable account or disabled state: %+v", accounts)
+	}
+}
+
+func TestExistingRegistryReauthorizationNeverAdoptsMissingMetadata(t *testing.T) {
+	registry := testRegistry(t, "default")
+	if err := os.Remove(registry.path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenExistingAccountRegistry(context.Background(), registry.path); !errors.Is(err, ErrCredentialsMissing) {
+		t.Fatalf("missing registry did not fail before legacy adoption: %v", err)
+	}
+	if _, err := os.Stat(registry.path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("reauthorization created new metadata")
+	}
+}
+
 func TestAccountRegistryAdoptsLegacyCredentialsAndMasksIdentity(t *testing.T) {
 	registry := testRegistry(t)
 	data := strings.Replace(syntheticCredential, `"auth_method":"oauth"`, `"auth_method":"oauth","email":"private.person@example.com"`, 1)

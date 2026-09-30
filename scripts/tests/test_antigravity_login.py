@@ -34,17 +34,31 @@ import time
 root = Path(os.environ["BRIDGE_TEST_ROOT"])
 scenario = json.loads((root / "scenario.json").read_text())
 args = sys.argv[1:]
+legacy_profile = args[:2] == ["--profile", "legacy-bridge"]
+if legacy_profile:
+    args = args[2:]
 with (root / "commands.jsonl").open("a") as output:
     output.write(json.dumps({"args": args, "stdin_tty": os.isatty(0),
+        "legacy_profile": legacy_profile,
         "stdout_tty": os.isatty(1),
         "stdin_null": os.fstat(0).st_rdev == os.stat("/dev/null").st_rdev}) + "\n")
 if args == ["ps", "-q", "antigravity-bridge"]:
     step = "ps"
     print("synthetic-bridge")
+elif args == ["ps", "-q", "codex-compat"]:
+    step = "cpa_ps"
+    if scenario.get("cpa_running"):
+        print("synthetic-cpa")
+elif args[:2] == ["inspect", "-f"] and args[-1] == "synthetic-cpa":
+    step = "cpa_inspect"
+    for value in scenario.get("cpa_env", []):
+        if value.split("=", 1)[0] == "CPA_ANTIGRAVITY_ENABLED":
+            print("F" if value == "CPA_ANTIGRAVITY_ENABLED=false" else "X", end="")
+    print()
 elif args == ["inspect", "-f", "{{.State.Running}}", "synthetic-bridge"]:
     step = "inspect"
     print("true" if scenario.get("still_running") else "false")
-elif "login" in args:
+elif "login" in args or "reauthorize" in args:
     step = "login"
     if scenario.get("change_terminal"):
         attrs = termios.tcgetattr(0)
@@ -118,7 +132,7 @@ class AntigravityLoginTests(unittest.TestCase):
         for before, after in zip([STOP, LOGIN, VERIFY, START], [LOGIN, VERIFY, START, SMOKE]):
             self.assertLess(commands.index(before), commands.index(after))
         self.assertEqual(commands.count(STOP), 1)
-        self.assertNotIn("codex-compat", json.dumps(commands))
+        self.assertFalse(any("codex-compat" in command and command[0] != "ps" for command in commands))
         self.assertEqual((self.root / ".antigravity-login.lock").stat().st_mode & 0o777, 0o600)
 
     def test_named_account_reaches_login_verification_and_http_smoke(self):
@@ -128,6 +142,72 @@ class AntigravityLoginTests(unittest.TestCase):
         for base in (LOGIN, VERIFY, SMOKE):
             self.assertIn(base + ["work-account_2"], commands)
         self.assertNotIn(PRIVATE, result.stdout + result.stderr)
+
+    def test_every_compose_call_explicitly_enables_the_legacy_profile(self):
+        result = self.run_login()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for record in self.records():
+            with self.subTest(command=record["args"]):
+                self.assertEqual(record["legacy_profile"], record["args"][0] != "inspect")
+
+    def test_credentials_only_reauthorizes_named_slot_without_start_or_smoke(self):
+        result = self.run_login("--credentials-only", "work-account_2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = self.commands()
+        self.assertIn(["ps", "-q", "codex-compat"], commands)
+        reauthorize = ["run", "--rm", "--no-deps", "antigravity-bridge", "reauthorize", "work-account_2"]
+        self.assertIn(reauthorize, commands)
+        self.assertIn(VERIFY + ["work-account_2"], commands)
+        self.assertLess(commands.index(STOP), commands.index(reauthorize))
+        self.assertLess(commands.index(reauthorize), commands.index(VERIFY + ["work-account_2"]))
+        self.assertNotIn(START, commands)
+        self.assertFalse(any("/usr/local/bin/antigravity-smoke" in command for command in commands))
+        self.assertIn("bridge remains stopped", result.stdout)
+        self.assertNotIn(PRIVATE, result.stdout + result.stderr)
+
+    def test_credentials_only_requires_explicit_slot_and_stopped_cpa(self):
+        result = self.run_login("--credentials-only")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.commands(), [])
+        self.scenario(cpa_running=True)
+        result = self.run_login("--credentials-only", "existing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("stage=service_state category=still_running", result.stderr)
+        self.assertFalse(any("reauthorize" in command for command in self.commands()))
+        self.assertNotIn(STOP, self.commands())
+
+    def test_regular_login_refuses_live_cpa_unless_google_is_literally_disabled(self):
+        for values in ([], ["CPA_ANTIGRAVITY_ENABLED=true"], ["CPA_ANTIGRAVITY_ENABLED=False"],
+                       ["CPA_ANTIGRAVITY_ENABLED=false", "CPA_ANTIGRAVITY_ENABLED=true"],
+                       ["CPA_ANTIGRAVITY_ENABLED=false", "CPA_ANTIGRAVITY_ENABLED=false"]):
+            with self.subTest(environment=values):
+                self.scenario(cpa_running=True, cpa_env=values)
+                result = self.run_login("existing")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("stage=service_state category=still_running", result.stderr)
+                self.assertNotIn(STOP, self.commands())
+                self.assertFalse(any("login" in command for command in self.commands()))
+        self.scenario(cpa_running=True, cpa_env=["UNRELATED_SECRET=" + PRIVATE, "CPA_ANTIGRAVITY_ENABLED=false"])
+        result = self.run_login("existing")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(LOGIN + ["existing"], self.commands())
+        self.assertNotIn(PRIVATE, result.stdout + result.stderr)
+
+    def test_credentials_only_also_rejects_running_cpa_with_google_disabled(self):
+        self.scenario(cpa_running=True, cpa_env=["CPA_ANTIGRAVITY_ENABLED=false"])
+        result = self.run_login("--credentials-only", "existing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(STOP, self.commands())
+        self.assertFalse(any("reauthorize" in command for command in self.commands()))
+
+    def test_credentials_only_failed_reauthorization_does_not_start_bridge(self):
+        for failure in ("login", "verify"):
+            with self.subTest(failure=failure):
+                self.scenario(failure=failure, diagnostic="antigravity: stage=authorization category=credential_missing exit_code=7")
+                result = self.run_login("--credentials-only", "existing")
+                self.assertEqual(result.returncode, 7)
+                self.assertNotIn(START, self.commands())
+                self.assertNotIn(PRIVATE, result.stdout + result.stderr)
 
     def test_invalid_slots_are_rejected_before_stopping_service(self):
         for slot in ("../secret", "two words", "UpperCase", "-option", "_slot", "", "x" * 33):

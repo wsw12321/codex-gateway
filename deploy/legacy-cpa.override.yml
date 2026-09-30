@@ -1,0 +1,13 @@
+# Apply after legacy-bridge.override.yml only when CPA v8 itself must roll back.
+# Gateway stays on this release so database migrations and new snapshots remain
+# readable. This immutable v7 source patch is deliberately retained for 7 days.
+services:
+  codex-compat:
+    image: codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-rollback
+    build:
+      context: .
+      dockerfile: deploy/codex-compat/legacy.Dockerfile
+      args:
+        CLIPROXY_VERSION: v7.3.15
+        CLIPROXY_COMMIT: 673131f57484517c3a1eae7e36c4cfa7b9bb4efc
+        CLIPROXY_PATCH_SHA256: 2dc404c8b22496a6de935a8fd07ca6006d3681bcf503ea33f2cd529610f3096b

@@ -31,7 +31,7 @@ func (e bridgeHTTPExecutor) Run(ctx context.Context, model, prompt string) (anti
 }
 
 func (bridgeHTTPExecutor) Check(context.Context) ([]string, error) {
-	return config.AntigravityModels(), nil
+	return config.LegacyAntigravityModels(), nil
 }
 
 func bridgeHTTPResult() antigravity.Result {
@@ -59,7 +59,7 @@ func newBridgeHTTPClient(t *testing.T, executor antigravity.Executor) (*Client, 
 }
 
 func TestAntigravityHTTPPreservesEveryAGYModelAcrossProtocols(t *testing.T) {
-	for _, model := range config.AntigravityModels() {
+	for _, model := range config.LegacyAntigravityModels() {
 		for _, native := range []bool{false, true} {
 			for _, stream := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/native=%t/stream=%t", model, native, stream), func(t *testing.T) {

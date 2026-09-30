@@ -101,7 +101,7 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 		`id="guide-codex-install-code"`, `id="guide-codex-configure-code"`, `id="guide-codex-start-code"`,
 		`id="guide-agy-install-windows-code"`, `id="guide-agy-install-unix-code"`,
 		`id="guide-agy-configure-code"`, `id="guide-agy-start-code"`,
-		`npm install -g @openai/codex`, `gemini-3.1-pro-high`, `Win+R`, `cmd`,
+		`npm install -g @openai/codex`, `gemini-pro-agent`, `Gateway 不再改写旧模型别名`, `Win+R`, `cmd`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("client guide HTML is missing %s", required)

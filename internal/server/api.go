@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wsw/codex-gateway/internal/config"
+	"github.com/wsw/codex-gateway/internal/cpaprotocol"
 	"github.com/wsw/codex-gateway/internal/httpx"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 	"github.com/wsw/codex-gateway/internal/store"
@@ -72,6 +75,21 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			return
 		}
 		prepared.model, prepared.serviceTier, prepared.body = routing.Model, routing.ServiceTier, parsedBody
+		if s.config.UsesCPAAntigravity() && config.IsAntigravityModel(routing.Model) {
+			data, readErr := io.ReadAll(io.LimitReader(parsedBody, (1<<20)+1))
+			_ = parsedBody.Close()
+			if readErr != nil || len(data) > 1<<20 {
+				httpx.WriteError(w, r, http.StatusRequestEntityTooLarge, "invalid_request_error", "antigravity_request_too_large", "Antigravity 请求体超过 1 MiB 限制")
+				return
+			}
+			if err := cpaprotocol.ResponsesRequest(data); err != nil {
+				writeCPANativeRequestError(w, r, err)
+				return
+			}
+			replay := io.NopCloser(bytes.NewReader(data))
+			prepared.body = &countingBody{reader: replay, closer: replay}
+			r.Body, r.ContentLength = prepared.body, int64(len(data))
+		}
 	}
 	s.executeAPIRequest(w, r, prepared)
 }
@@ -99,7 +117,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		}
 	}
 	if r.Method == http.MethodPost {
-		if strings.HasPrefix(model, "gemini-") && (!config.IsAntigravityModel(model) || !upstreams.IsAntigravityModel(model)) {
+		if strings.HasPrefix(model, "gemini-") && !s.configuredGeminiModel(model) {
 			httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 			return
 		}
@@ -143,7 +161,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			pricingSnapshot = priceSnapshot
 			cacheWriteMode = price.CacheWriteMode
 			billingMode = store.BillingModeOpenAIAPIEquivalent
-			if config.IsAntigravityModel(model) {
+			if upstreams.IsAntigravityModel(model) {
 				billingMode = store.BillingModeGeminiAPIEquivalent
 			} else if model == "codex-auto-review" {
 				billingMode = store.BillingModeInternalZero

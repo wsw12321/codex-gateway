@@ -15,7 +15,7 @@ import (
 // The HTTP handler supplies the model and streaming mode from the URL.
 func DecodeGeminiRequest(model string, body []byte) (Request, *Failure) {
 	out := Request{Model: model}
-	if !config.IsAntigravityModel(model) {
+	if !config.IsLegacyAntigravityModel(model) {
 		return out, unsupported("model")
 	}
 	if uniqueJSON(body) != nil {

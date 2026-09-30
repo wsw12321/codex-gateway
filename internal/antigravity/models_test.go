@@ -47,7 +47,7 @@ func managedModels(server http.Handler, user string) *httptest.ResponseRecorder 
 }
 
 func TestBridgeForwardsEveryExactModelAcrossProtocols(t *testing.T) {
-	for _, model := range config.AntigravityModels() {
+	for _, model := range config.LegacyAntigravityModels() {
 		t.Run(model, func(t *testing.T) {
 			runner, capturePath := fakeRunner(t, fakeCLIConfig{
 				Models: model + " Gemini model\n",
@@ -103,7 +103,7 @@ func TestBridgeRejectsAliasesAndUnavailableModels(t *testing.T) {
 
 func TestRunnerDiscoveryReturnsOnlyExactModelsInCatalogOrder(t *testing.T) {
 	models := "other-model " + flashModel + "\n" + PublicModel + "-next Unsupported\n"
-	catalog := config.AntigravityModels()
+	catalog := config.LegacyAntigravityModels()
 	for index := len(catalog) - 1; index >= 0; index-- {
 		models += catalog[index] + " Gemini\n" + catalog[index] + " Duplicate\n"
 	}

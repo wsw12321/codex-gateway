@@ -1,0 +1,18 @@
+{
+  "repository": "https://github.com/router-for-me/CLIProxyAPI",
+  "tag": "v8.0.4",
+  "commit": "d33f63f8e3d98428440ebca5a5b6a981a61ff71e",
+  "patch": "cliproxy-v8.0.4-gateway.patch",
+  "patch_sha256": "8d605cc62e3da445753adf0a4d09f902836c2ccc825fb0e7b2a62c63ef491e95",
+  "go_version": "1.26.8",
+  "model_catalog": {
+    "repository": "https://github.com/router-for-me/models",
+    "commit": "690c37fdbe62dc05f609f3a3e609d07ea4d16bf1",
+    "file": "models.json",
+    "sha256": "35efe922ff4061d959e6d8632bd34bbe2fdca18804e0b338f9d7ec2a3aa40b81",
+    "usage": "Only reviewed gpt-6.1-sol entries added to fixed local Codex plus/pro/team lists; CPA channel context 272000 tokens. Remote model updates disabled."
+  },
+  "management_panel": "../cpa-panel/UPSTREAM.json",
+  "base_image_locks": "../images.lock.env",
+  "automatic_updates": false
+}

@@ -80,6 +80,11 @@ if test "${1:-}" = "oauth-inventory"; then
     exit 0
 fi
 
+# Keep a stable lock inode across startup, login and server-side migration.
+# FD 9 remains inherited by CPA, so no second process can refresh this store.
+exec 9>"$auth_dir/.gateway-refresh.lock"
+flock -n 9 || fail "OAuth store is owned by another refresh process"
+
 mkdir -p "$run_dir"
 cat > "$config_file" <<EOF
 host: "${listen_addr}"

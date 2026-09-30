@@ -11,6 +11,7 @@ import (
 
 	"github.com/wsw/codex-gateway/internal/antigravity"
 	"github.com/wsw/codex-gateway/internal/config"
+	"github.com/wsw/codex-gateway/internal/cpaprotocol"
 	"github.com/wsw/codex-gateway/internal/httpx"
 )
 
@@ -58,11 +59,13 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 	// AGY 1.2.12 rewrites the selected Pro model for conversation, tools and
 	// title requests. Normalize only this native entry point, before any
 	// permission, quota or billing lookup; the catalog keeps the actual IDs.
-	switch model {
-	case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
-		model = config.AntigravityPublicModel
+	if !s.config.UsesCPAAntigravity() {
+		switch model {
+		case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
+			model = antigravity.PublicModel
+		}
 	}
-	flashAlias := model == "gemini-3.8-flash"
+	flashAlias := !s.config.UsesCPAAntigravity() && model == "gemini-3.8-flash"
 	if !flashAlias && !s.configuredGeminiModel(model) {
 		httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
 		return
@@ -111,10 +114,17 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 	}
 	// Apply the bridge's complete schema/control validation before any quota
 	// or billing reservation. The isolated bridge validates independently too.
-	_, failure := antigravity.DecodeGeminiRequest(model, data)
-	if failure != nil {
-		httpx.WriteError(w, r, failure.Status, "invalid_request_error", failure.Code, failure.Message)
-		return
+	if s.config.UsesCPAAntigravity() {
+		if err := cpaprotocol.GeminiRequest(data); err != nil {
+			writeCPANativeRequestError(w, r, err)
+			return
+		}
+	} else {
+		_, failure := antigravity.DecodeGeminiRequest(model, data)
+		if failure != nil {
+			httpx.WriteError(w, r, failure.Status, "invalid_request_error", failure.Code, failure.Message)
+			return
+		}
 	}
 	replay := io.NopCloser(bytes.NewReader(data))
 	body := &countingBody{reader: replay, closer: replay}
@@ -128,7 +138,19 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 func (s *Server) configuredGeminiModel(model string) bool {
 	_, configured := s.config.AntigravityModelRoutes[model]
 	_, priced := s.config.UsagePricing.Models[model]
-	return config.IsAntigravityModel(model) && configured && priced
+	valid := config.IsAntigravityModel(model)
+	if !s.config.UsesCPAAntigravity() {
+		valid = config.IsLegacyAntigravityModel(model)
+	}
+	return valid && configured && priced
+}
+
+func writeCPANativeRequestError(w http.ResponseWriter, r *http.Request, err error) {
+	code, message := "antigravity_request_unsupported", "仅支持 Gemini 文本和客户端函数工具；请求包含不支持的字段或无效值"
+	if errors.Is(err, cpaprotocol.ErrNewSession) {
+		code, message = "antigravity_new_session_required", "旧会话无法继续；请新建会话并使用当前响应中的工具签名"
+	}
+	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", code, message)
 }
 
 func nativeFlashModel(body []byte) string {

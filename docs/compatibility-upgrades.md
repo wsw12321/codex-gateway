@@ -1,5 +1,7 @@
 # CLIProxyAPI 兼容层升级规程
 
+> 以下旧 bridge / CPA v7 内容保留用于历史排障；当前默认部署以 [CPA v8 切换与回滚](cpa-v8-cutover.md) 和 [原生模型目录](cpa-native-models.md) 为准。
+
 兼容层继续使用独立锁定的 Debian slim/glibc 运行镜像。旧第三方 Gemini 插件
 和对应补丁已经移除；构建回归检查确认历史 Gemini OAuth 文件被忽略且保留，
 Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyring 卷，详见

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "purpose": "Local validation artifacts; not a published deployment manifest",
+  "validated_on": "2026-09-30",
+  "source_state": "uncommitted-workspace",
+  "registry_published": false,
+  "sources": {
+    "cpa": "codex-compat/source.lock.json",
+    "panel": "cpa-panel/UPSTREAM.json"
+  },
+  "images": {
+    "gateway": {
+      "local_tag": "codex-gateway-gateway:cpa-v8-validation",
+      "local_oci_digest": "sha256:7b12d8ecf01532b3075e5dda30c7f1c7be010dee945449638a1049c9cbb78965"
+    },
+    "cpa": {
+      "local_tag": "codex-gateway-compat:v8.0.4-d33f63f8-8d605cc62e3da445-cpa",
+      "local_oci_digest": "sha256:ab86ff459dc08733b49c9c2c84155dca1be28901f761b3055c8b8fb5a0cb7baa"
+    },
+    "credentials_migration": {
+      "local_tag": "codex-gateway-cpa-migrate:validation",
+      "local_oci_digest": "sha256:e1535f31ea21984ceb960dce4bf04bb978e5b381922c4d1c7f1dbb2407a54e40"
+    },
+    "cpa_rollback": {
+      "local_tag": "codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-rollback",
+      "local_oci_digest": "sha256:fb16b59346455656dd055c812fe9620125fee72a9c4e336b975a0d1dde15ed14"
+    }
+  },
+  "pending_validation": [
+    {
+      "component": "legacy_bridge",
+      "reason": "Docker storage became read-only and daemon stopped responding before final bridge image export",
+      "source_binary_sha256": "d769f07ab8e01bc6971d08f4b28708d4c0ba45a9ff1d0be948abec6b78b2f740",
+      "required": [
+        "final image build",
+        "current-code keyring runtime probe",
+        "race for final existing-slot maintenance helper"
+      ]
+    },
+    {
+      "component": "production",
+      "required": [
+        "publish immutable registry manifests",
+        "per-account Gateway generation and refresh acceptance",
+        "maintenance cutover and live rollback rehearsal"
+      ]
+    }
+  ]
+}

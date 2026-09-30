@@ -4,7 +4,7 @@ umask 077
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 image=${1:-}
 if test -z "$image"; then
-    image=$("$root/scripts/compose.sh" config --format json | jq -er '.services["antigravity-bridge"].image')
+    image=$("$root/scripts/compose.sh" --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
 fi
 volume_name=codex-antigravity-keyring-test-$(date +%s)-$$
 docker volume create "$volume_name" >/dev/null

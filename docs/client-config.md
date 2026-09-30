@@ -89,56 +89,52 @@ macOS / Linux：
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
-重新打开终端并运行 `agy --version`。当前网关兼容验收以官方 AGY `1.2.12` 为基线，
-官方安装器可能安装更新版本。
+客户端必须保留 CPA 原生模型 ID。旧 AGY 1.2.12 会重写 Pro/标题等请求名称，
+因此旧配置不能作为 CPA v8 的兼容性保证；如果客户端无法原样发送目录中的 ID，请使用
+支持原生 Gemini/Responses 的客户端。配置器仅配置 Gateway 地址和 Key，不替客户端
+伪造签名或替换模型。
 
-复制管理界面 agy CLI 部分的配置命令，在终端执行并按提示输入 Gateway Key。
-配置器保留用户级 `~/.gemini/antigravity-cli/settings.json` 的其他字段并合并：
-
-```json
-{"modelProvider": "gemini"}
-```
-
-同时持久保存 `GOOGLE_GEMINI_BASE_URL=<当前站点 origin>`（不加 `/v1`）和
-`GEMINI_API_KEY`。Windows 使用当前用户的环境变量；macOS / Linux 使用权限为 `0600`
-的独立凭据文件，并幂等添加 Bash / Zsh 的加载配置。修改前备份，可重复配置。
-配置解析失败、取消输入或 Codex 登录失败时会明确报错，按错误提示修复后可重试。
-
-关闭并重新打开终端；Windows Terminal 用户应退出整个应用后重开，确保读到用户
-环境变量。然后运行：
-
-```sh
-agy --model gemini-3.1-pro-high
-```
-
-发送“请回复 OK”，再到“使用统计”查看请求。管理员需先启用路由，并为账号及 Key
-授予 `gemini-3.1-pro-high` 权限。
-
-原生 Gemini 入口兼容 AGY `1.2.12` 的以下请求名称：
-
-| AGY 请求名称 | 实际模型 |
-| --- | --- |
-| `gemini-3.1-pro-preview` | `gemini-3.1-pro-high` |
-| `gemini-3.1-pro-preview-customtools` | `gemini-3.1-pro-high` |
-| `gemini-3.1-flash-lite-preview`（标题） | `gemini-3.1-pro-high` |
-
-权限、额度、路由、响应校验和计费均使用实际模型；标题等辅助请求同样计入该模型用量。
-兼容名称不加入模型目录，Responses 接口仍要求使用目录中的精确 ID。
+配置器保留用户级 `~/.gemini/antigravity-cli/settings.json` 的其他字段并合并
+`{"modelProvider":"gemini"}`，保存 `GOOGLE_GEMINI_BASE_URL=<站点 origin>`（不加 `/v1`）
+和 `GEMINI_API_KEY`。Windows 使用当前用户环境变量；macOS / Linux 使用 0600 凭据文件，
+并幂等更新 Bash / Zsh 加载配置。修改前备份；重开整个终端后生效。
 
 ## Gemini API
 
-Gateway 也支持 `POST /v1/responses` 及原生 Gemini 的
-`POST /v1beta/models/{model}:generateContent` 和
-`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`。
-客户端使用 Gateway 签发的 Key；服务器内部通过官方 AGY 调用订阅账号。
+链路为客户端 → Gateway → 同一 CPA → Antigravity。Gateway 支持
+`POST /v1/responses`、`POST /v1beta/models/{model}:generateContent` 及
+`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`。使用 Gateway Key；原生 Gemini
+可以用 `X-Goog-Api-Key` 或 Bearer，不能同时提供两种凭据，也不接受 URL 中的 Key。
 
-以 Key 查询 `GET /v1/models` 可获取实际可用模型。目录包含
-`gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.7-flash-high`、
-`gemini-3.7-flash-medium`、`gemini-3.6-flash-high`、`gemini-3.6-flash-medium` 和
-`gemini-3.1-pro-high`；实际可用性取决于用户权限、Key 白名单及订阅账号。
-新模型默认禁用，管理员需重新授权并重新签发受限 Key。
+先查询 `GET /v1/models`。经过价格、用户权限、受限 Key 和可用账号交集筛选后，
+目录最多公开八个原生 Gemini ID：`gemini-pro-agent`、`gemini-3.1-pro-low`、`gemini-3-flash`、
+`gemini-3.6-flash-high`、`gemini-3.7-flash-high`、`gemini-3.8-flash-high`、
+`gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`。
 
-完整 Responses 与原生 Gemini 请求示例见
-[精确模型名请求](gemini-pro.md#使用精确模型名请求-gateway)。支持文本和客户端函数工具，
-请求上限 1 MiB；流式响应在完整生成并校验后发送。计费使用 Gemini API Standard
-家族价格对应的 Token 等价费用，不代表 Antigravity 订阅实际账单。
+原生请求示例：
+
+```http
+POST /v1beta/models/gemini-pro-agent:generateContent
+Content-Type: application/json
+Authorization: Bearer <Gateway Key>
+
+{"contents":[{"role":"user","parts":[{"text":"Reply with OK"}]}],"generationConfig":{"thinkingConfig":{"thinkingLevel":"LOW"}}}
+```
+
+Responses 示例：
+
+```json
+{"model":"gemini-pro-agent","input":"Reply with OK","reasoning":{"effort":"low"},"store":false}
+```
+
+支持文本、流式输出和客户端函数工具，请求上限 1 MiB。原生 Gemini 的 `functionCall`、
+`functionResponse` 和 `thoughtSignature` 必须完整保留；收到 `antigravity_new_session_required`
+时新建会话。不要复用旧 CLI 工具历史，也不要填写绕过验证的伪签名。不开放 Claude、图片、
+音视频、供应商搜索或代码执行，Antigravity compact 返回 501。
+
+一次性迁移将八个 Gemini ID 和 `gpt-6.1-sol` 的用户权限/未来用户默认权限设为允许，倍率设为 1。
+已受限 API Key 的白名单完全不变；仅包含退役名称的 Key 需要 Owner 明确重新配置。退役名称
+不会自动变成新名称。其他 Codex 设置、汇率和历史账单保持不变。
+
+Gemini 仅 Standard，按 Google API 家族价格进行本地等价计费，不代表 Antigravity 订阅账单。
+完整价格、长上下文阈值、Sol 服务档位见 [CPA 原生模型与价格](cpa-native-models.md)。

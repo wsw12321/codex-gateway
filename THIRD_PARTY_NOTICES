@@ -1,11 +1,11 @@
 CLIProxyAPI
 ===========
 
-This distribution builds and runs CLIProxyAPI v7.3.15 from the immutable
+This distribution builds and runs CLIProxyAPI v8.0.4 from the immutable
 upstream commit:
 
   https://github.com/router-for-me/CLIProxyAPI
-  673131f57484517c3a1eae7e36c4cfa7b9bb4efc
+  d33f63f8e3d98428440ebca5a5b6a981a61ff71e
 
 CLIProxyAPI is licensed under the MIT License. Its copyright remains with the
 upstream authors and contributors. The license text supplied by the upstream
@@ -71,6 +71,39 @@ licensed under the MIT License:
 MIT License
 
 Copyright (c) 2026 xqy2006
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Cli-Proxy-API-Management-Center
+================================
+
+The same-origin restricted credential panel derives its Card and Button
+components from v1.25.0, commit b87b9487f63e08ad97b1fb4e7c17b4adb811b922:
+
+  https://github.com/router-for-me/Cli-Proxy-API-Management-Center
+
+The full upstream management application is not bundled. Source checksums
+and the exact license are included in deploy/cpa-panel/.
+
+MIT License
+
+Copyright (c) 2026 Router-For.ME
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

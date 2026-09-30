@@ -1,5 +1,7 @@
 # 通过 Antigravity 订阅接入 Gemini
 
+> 以下旧 bridge / CPA v7 内容保留用于历史排障；当前默认部署以 [CPA v8 切换与回滚](cpa-v8-cutover.md) 和 [原生模型目录](cpa-native-models.md) 为准。
+
 Gateway 使用 Google 官方 AGY 的精确模型名，独立 `antigravity-bridge` 将请求模型
 原样传给 `agy --model`，并校验 CLI 返回的模型名。CLI 固定为 `1.2.4`；安装包 URL
 和官方 SHA512 位于 [agy.lock.json](../deploy/antigravity-bridge/agy.lock.json)，构建验证

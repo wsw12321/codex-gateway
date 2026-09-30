@@ -250,7 +250,7 @@ func (m *AccountManager) Run(ctx context.Context, model, prompt string) (Result,
 }
 
 func (m *AccountManager) RunStream(ctx context.Context, model, prompt string, emit func(string) error) (Result, *Failure) {
-	if !config.IsAntigravityModel(model) {
+	if !config.IsLegacyAntigravityModel(model) {
 		return Result{}, unsupported("model")
 	}
 	request, ok := ctx.Value(accountRequestKey{}).(accountRequest)

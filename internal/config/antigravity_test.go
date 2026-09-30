@@ -35,6 +35,7 @@ func TestParseAntigravityModelRoutes(t *testing.T) {
 
 func TestLoadAntigravityBridgeSecretFileAndRoutes(t *testing.T) {
 	setValidLoadEnvironment(t)
+	t.Setenv("ANTIGRAVITY_TRANSPORT", "legacy-bridge")
 	path := t.TempDir() + "/antigravity-secret"
 	if err := os.WriteFile(path, []byte("independent-antigravity-bridge-secret\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -66,7 +67,7 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 	}{
 		{name: "disabled"},
 		{name: "unrouted bridge for rollback", url: "http://antigravity-bridge:8318", token: bridgeToken},
-		{name: "supported mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{AntigravityPublicModel: AntigravityCLIModel}},
+		{name: "supported mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{LegacyAntigravityPublicModel: LegacyAntigravityPublicModel}},
 		{name: "missing URL", routes: map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}, wantError: true},
 		{name: "missing secret", url: "http://antigravity-bridge:8318", wantError: true},
 		{name: "short secret", url: "http://antigravity-bridge:8318", token: strings.Repeat("x", 31), wantError: true},
@@ -97,19 +98,18 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 	}
 }
 
-func TestAntigravityCatalogUsesExactCLIIDs(t *testing.T) {
+func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 	models := AntigravityModels()
-	if len(models) != 7 {
+	if len(models) != 8 {
 		t.Fatalf("catalog contains %d models", len(models))
 	}
 	seen := map[string]bool{}
 	cfg := validConfigForValidation(t)
-	cfg.AntigravityBridgeURL, _ = url.Parse("http://antigravity-bridge:8318")
-	cfg.AntigravityBridgeToken = "independent-antigravity-bridge-secret"
+	cfg.AntigravityTransport = "cpa"
 	cfg.AntigravityModelRoutes = map[string]string{}
 	for _, model := range models {
 		family, ok := AntigravityPricingModel(model)
-		if seen[model] || !ok || !IsAntigravityModel(model) || family == model {
+		if seen[model] || !ok || !IsAntigravityModel(model) || family == "" {
 			t.Fatalf("invalid catalog entry %q -> %q", model, family)
 		}
 		seen[model] = true

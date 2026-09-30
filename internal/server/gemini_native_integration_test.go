@@ -36,7 +36,7 @@ type nativeLifecycleExecutor struct {
 }
 
 func (e *nativeLifecycleExecutor) Check(context.Context) ([]string, error) {
-	return config.AntigravityModels(), nil
+	return config.LegacyAntigravityModels(), nil
 }
 func (e *nativeLifecycleExecutor) Run(ctx context.Context, model, prompt string) (antigravity.Result, *antigravity.Failure) {
 	e.calls.Add(1)
@@ -100,7 +100,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if err := repository.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.SyncModelAccessCatalog(ctx, []string{config.AntigravityPublicModel}); err != nil {
+	if err := repository.SyncModelAccessCatalog(ctx, []string{config.LegacyAntigravityPublicModel}); err != nil {
 		t.Fatal(err)
 	}
 	user, err := repository.CreateUser(ctx, store.CreateUserParams{Username: "native-test", DisplayName: "Native test", Role: store.UserRoleOwner})
@@ -109,7 +109,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
 		ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "authorize native lifecycle test"},
-		Model:                  config.AntigravityPublicModel, Enabled: true, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+		Model:                  config.LegacyAntigravityPublicModel, Enabled: true, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	key, err := repository.CreateAPIKey(ctx, store.CreateAPIKeyParams{
 		UserID: user.ID, DeviceID: device.ID, Name: "AGY test", PublicID: h.database.publicID,
 		KeyPrefix: h.database.keyPrefix, KeyHash: h.database.keyHash, SecretCiphertext: h.database.secretCiphertext,
-		ModelAllowlist: []string{config.AntigravityPublicModel}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+		ModelAllowlist: []string{config.LegacyAntigravityPublicModel}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,12 +135,12 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	h.server.store = repository
 	if _, err := repository.SetModelMultiplier(ctx, store.SetModelMultiplierParams{
 		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "Pro model discount"},
-		Model:              config.AntigravityPublicModel, Multiplier: "0.5",
+		Model:              config.LegacyAntigravityPublicModel, Multiplier: "0.5",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	h.server.config.UsagePricing = nativeGeminiPricing(t)
-	h.server.config.AntigravityModelRoutes = map[string]string{config.AntigravityPublicModel: config.AntigravityCLIModel}
+	h.server.config.AntigravityModelRoutes = map[string]string{config.LegacyAntigravityPublicModel: config.LegacyAntigravityPublicModel}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 4}
 	executor := &nativeLifecycleExecutor{response: "Hello"}
 	bridge := antigravity.NewServer(executor, "internal-bridge-token")
@@ -165,7 +165,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}
 		w.Header().Set("X-Codex-Upstream-Account", "aabbccddeeff0011")
 		bridgeModel, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), ":")
-		if !strings.HasPrefix(r.URL.Path, "/v1beta/models/") || !config.IsAntigravityModel(bridgeModel) {
+		if !strings.HasPrefix(r.URL.Path, "/v1beta/models/") || !config.IsLegacyAntigravityModel(bridgeModel) {
 			t.Error("noncanonical bridge path")
 		}
 		bridge.ServeHTTP(w, r)
@@ -203,17 +203,17 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	for _, alias := range aliases {
 		checkNativeGeminiError(t, send(alias, "generateContent", nativeGeminiText), 403, "PERMISSION_DENIED")
-		if config.IsAntigravityModel(alias) {
+		if config.IsLegacyAntigravityModel(alias) {
 			t.Fatalf("native alias leaked into model catalog: %s", alias)
 		}
 	}
-	if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=ARRAY[$2] WHERE id=$1`, key.ID, config.AntigravityPublicModel); err != nil {
+	if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=ARRAY[$2] WHERE id=$1`, key.ID, config.LegacyAntigravityPublicModel); err != nil {
 		t.Fatal(err)
 	}
 	for _, enabled := range []bool{false, true} {
 		if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
 			ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "verify native alias model permission"},
-			Model:                  config.AntigravityPublicModel, Enabled: enabled, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+			Model:                  config.LegacyAntigravityPublicModel, Enabled: enabled, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -310,11 +310,11 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if titleResponse.Code != 200 || conversationHash(titleResponse) != "" {
 		t.Fatalf("title: %d %s", titleResponse.Code, titleResponse.Body)
 	}
-	if executor.model.Load() != config.AntigravityCLIModel {
+	if executor.model.Load() != config.LegacyAntigravityPublicModel {
 		t.Fatalf("executor received alias %q", executor.model.Load())
 	}
 	for i, w := range []*httptest.ResponseRecorder{textResponse, toolResponse, loopResponse, titleResponse} {
-		if !strings.Contains(w.Body.String(), `"modelVersion":"`+config.AntigravityPublicModel+`"`) {
+		if !strings.Contains(w.Body.String(), `"modelVersion":"`+config.LegacyAntigravityPublicModel+`"`) {
 			t.Fatalf("response did not identify actual model: %s", w.Body)
 		}
 		requestID := w.Header().Get(httpx.RequestIDHeader)
@@ -332,7 +332,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		if i == 1 {
 			wantEndpoint = "gemini.streamGenerateContent"
 		}
-		if endpoint != wantEndpoint || model != config.AntigravityPublicModel || state != "completed" || input != 100 || cached != 20 || output != 30 || reasoning != 7 || cost != "0.000262000000" || count != 1 || multiplier != "0.500000000000" {
+		if endpoint != wantEndpoint || model != config.LegacyAntigravityPublicModel || state != "completed" || input != 100 || cached != 20 || output != 30 || reasoning != 7 || cost != "0.000262000000" || count != 1 || multiplier != "0.500000000000" {
 			t.Fatalf("settlement %s %s %s %d %d %d %d %s count=%d multiplier=%s", endpoint, model, state, input, cached, output, reasoning, cost, count, multiplier)
 		}
 		var mode, tier, fallback string
@@ -343,7 +343,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 			t.Fatalf("billing metadata mode=%q tier=%q fallback=%q", mode, tier, fallback)
 		}
 	}
-	for _, model := range append(aliases, config.AntigravityPublicModel) {
+	for _, model := range append(aliases, config.LegacyAntigravityPublicModel) {
 		quotaResponse := send(model, "generateContent", nativeGeminiText)
 		checkNativeGeminiError(t, quotaResponse, 429, "RESOURCE_EXHAUSTED")
 		if quotaResponse.Header().Get("Retry-After") == "" {
@@ -367,7 +367,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatalf("aliases did not share quota: reserved=%d completed=%d tokens=%d", reserved, completed, tokens)
 	}
 	h.server.config.Limits.KeyRequestsPerDay = 0
-	otherConversation := send(config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, "87654321-4321-8765-2109-cba987654321"))
+	otherConversation := send(config.LegacyAntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, "87654321-4321-8765-2109-cba987654321"))
 	if otherConversation.Code != 200 || !store.ValidConversationHash(conversationHash(otherConversation)) || conversationHash(otherConversation) == mainConversationHash {
 		t.Fatalf("new conversation was not isolated: %d %s", otherConversation.Code, otherConversation.Body)
 	}
@@ -386,12 +386,12 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	otherKey, err := repository.CreateAPIKey(ctx, store.CreateAPIKeyParams{
 		UserID: user.ID, DeviceID: device.ID, Name: "AGY second key", PublicID: generated.PublicID,
 		KeyPrefix: generated.Prefix, KeyHash: digest[:], SecretCiphertext: ciphertext,
-		ModelAllowlist: []string{config.AntigravityPublicModel}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
+		ModelAllowlist: []string{config.LegacyAntigravityPublicModel}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	otherKeyResponse := sendWithKey(generated.Token, config.AntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, conversationID))
+	otherKeyResponse := sendWithKey(generated.Token, config.LegacyAntigravityPublicModel, "generateContent", withConversation(nativeGeminiText, conversationID))
 	if otherKey.ID == key.ID || otherKeyResponse.Code != 200 || !store.ValidConversationHash(conversationHash(otherKeyResponse)) || conversationHash(otherKeyResponse) == mainConversationHash {
 		t.Fatalf("API key conversation scope was not isolated: %d %s", otherKeyResponse.Code, otherKeyResponse.Body)
 	}
@@ -402,7 +402,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}
 	}
 	executor.failure = &antigravity.Failure{Status: 504, Code: "upstream_timeout", Message: "private provider detail"}
-	timeoutResponse := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
+	timeoutResponse := send(config.LegacyAntigravityPublicModel, "generateContent", nativeGeminiText)
 	checkNativeGeminiError(t, timeoutResponse, 504, "DEADLINE_EXCEEDED")
 	if strings.Contains(timeoutResponse.Body.String(), "private provider") {
 		t.Fatal("provider details exposed")
@@ -417,7 +417,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	executor.failure, executor.started = nil, make(chan struct{})
 	cancelCtx, cancelRequest := context.WithCancel(ctx)
 	defer cancelRequest()
-	cancelled := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+config.AntigravityPublicModel+":streamGenerateContent?alt=sse", strings.NewReader(nativeGeminiText)).WithContext(cancelCtx)
+	cancelled := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+config.LegacyAntigravityPublicModel+":streamGenerateContent?alt=sse", strings.NewReader(nativeGeminiText)).WithContext(cancelCtx)
 	cancelled.Header.Set("Authorization", "Bearer "+h.apiKey)
 	cancelledResponse := httptest.NewRecorder()
 	finished := make(chan struct{})
@@ -445,7 +445,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	exhausted := send(config.AntigravityPublicModel, "generateContent", nativeGeminiText)
+	exhausted := send(config.LegacyAntigravityPublicModel, "generateContent", nativeGeminiText)
 	checkNativeGeminiError(t, exhausted, 429, "RESOURCE_EXHAUSTED")
 	if err := repository.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE api_key_id=$1`, key.ID).Scan(&admitted); err != nil {
 		t.Fatal(err)
@@ -466,7 +466,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		r := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+config.AntigravityPublicModel+":streamGenerateContent?alt=sse", strings.NewReader(nativeGeminiText))
+		r := httptest.NewRequest(http.MethodPost, "/v1beta/models/"+config.LegacyAntigravityPublicModel+":streamGenerateContent?alt=sse", strings.NewReader(nativeGeminiText))
 		r.Header.Set("Authorization", "Bearer "+h.apiKey)
 		w := httptest.NewRecorder()
 		var aborted any
@@ -498,7 +498,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.SyncModelAccessCatalog(ctx, config.AntigravityModels()); err != nil {
+		if err := repository.SyncModelAccessCatalog(ctx, config.LegacyAntigravityModels()); err != nil {
 			t.Fatal(err)
 		}
 		for _, preset := range []struct{ model, body string }{
@@ -506,6 +506,14 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 			{"gemini-3.8-flash-medium", nativeFlashMedium},
 		} {
 			h.server.config.AntigravityModelRoutes[preset.model] = preset.model
+			// CPA migration grants the shared Flash-high ID by default. Revoke
+			// it explicitly before exercising rollback permission rejection.
+			if _, err := repository.SetUserModelAccess(ctx, store.SetUserModelAccessParams{
+				ModelAccessWriteParams: store.ModelAccessWriteParams{ActorUserID: user.ID, Reason: "exercise revoked Flash access"},
+				Model:                  preset.model, Enabled: false, Scope: store.ModelAccessScopeSelected, UserIDs: []string{user.ID},
+			}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := repository.DB().ExecContext(ctx, `UPDATE api_keys SET model_allowlist=$2 WHERE id=$1`, key.ID, []string{preset.model}); err != nil {
 				t.Fatal(err)
 			}

@@ -94,7 +94,7 @@ func testNativeAGYCLI(t *testing.T, handler http.Handler, repository *store.Stor
 	}
 	command := exec.CommandContext(ctx, binary,
 		"--print", "Reply with exactly OK. Only listing in-memory task state is allowed for this local protocol test.",
-		"--model", config.AntigravityPublicModel, "--output-format", "json", "--mode", "plan",
+		"--model", config.LegacyAntigravityPublicModel, "--output-format", "json", "--mode", "plan",
 		"--print-timeout", "15s", "--disable-slash-commands", "--log-file", filepath.Join(root, "cli.log"))
 	command.Env, command.Dir = env, project
 	var stderr bytes.Buffer
@@ -133,12 +133,12 @@ func testNativeAGYCLI(t *testing.T, handler http.Handler, repository *store.Stor
 		if err := repository.DB().QueryRowContext(ctx, `SELECT u.model,u.state,l.amount_usd::text FROM usage_requests u JOIN billing_ledger_entries l USING(request_id) WHERE u.request_id=$1 AND u.api_key_id=$2`, record.requestID, keyID).Scan(&model, &state, &cost); err != nil {
 			t.Fatalf("missing AGY request settlement for %s: %v", record.path, err)
 		}
-		if model != config.AntigravityPublicModel || state != "completed" || cost != "0.000262000000" {
+		if model != config.LegacyAntigravityPublicModel || state != "completed" || cost != "0.000262000000" {
 			t.Fatalf("AGY request settlement for %s: model=%s state=%s cost=%s", record.path, model, state, cost)
 		}
 	}
 	if mainCalls != 2 || titleCalls != 1 || toolResults != 1 {
 		t.Fatalf("incomplete AGY tool loop: main=%d title=%d tool_result=%d", mainCalls, titleCalls, toolResults)
 	}
-	t.Logf("AGY %s completed text, title and manage_task loop; all %d requests settled as %s", strings.TrimSpace(string(versionOut)), len(captures), config.AntigravityPublicModel)
+	t.Logf("AGY %s completed text, title and manage_task loop; all %d requests settled as %s", strings.TrimSpace(string(versionOut)), len(captures), config.LegacyAntigravityPublicModel)
 }

@@ -308,7 +308,8 @@ test('CLI saves agy credentials without printing the synthetic key', t => {
   const context = workspace(t);
   const result = spawnSync(process.execPath, [script, 'agy', origin], { env: context.env, input: key + '\n', encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /agy --model gemini-3.1-pro-high/);
+  assert.match(result.stdout, /agy --model gemini-pro-agent/);
+  assert.match(result.stdout, /不改写旧别名/);
   assert.ok(!result.stdout.includes(key));
   assert.ok(!result.stderr.includes(key));
 });

@@ -22,6 +22,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/wsw/codex-gateway/internal/cpaprotocol"
 )
 
 const (
@@ -150,6 +152,7 @@ type Client struct {
 	http           *http.Client
 	diagnosticHTTP *http.Client
 	antigravity    bool
+	cpaNative      bool
 }
 
 type ForwardOptions struct {
@@ -443,12 +446,33 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	if !allowedPath(incoming.Method, upstreamPath) {
 		return Result{}, &Failure{Status: http.StatusNotFound, Type: "invalid_request_error", Code: "unsupported_endpoint", Message: "不支持的接口"}
 	}
+	requestBody := incoming.Body
+	var nativeModel string
+	nativeTools := map[string]struct{}{}
+	if c.cpaNative {
+		data, err := io.ReadAll(io.LimitReader(incoming.Body, maxInternalResponseBodyBytes+1))
+		if err != nil || len(data) > maxInternalResponseBodyBytes || cpaprotocol.ResponsesRequest(data) != nil {
+			return Result{}, &Failure{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "antigravity_request_unsupported", Message: "Antigravity 请求格式无效"}
+		}
+		var req struct {
+			Model string `json:"model"`
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		}
+		_ = json.Unmarshal(data, &req)
+		nativeModel = req.Model
+		for _, tool := range req.Tools {
+			nativeTools[tool.Name] = struct{}{}
+		}
+		requestBody = io.NopCloser(bytes.NewReader(data))
+	}
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + upstreamPath
 	target.RawQuery = ""
 	target.Fragment = ""
 
-	outgoing, err := http.NewRequestWithContext(ctx, incoming.Method, target.String(), incoming.Body)
+	outgoing, err := http.NewRequestWithContext(ctx, incoming.Method, target.String(), requestBody)
 	if err != nil {
 		return Result{}, protocolFailure(err)
 	}
@@ -491,6 +515,9 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		failure := c.sanitizeFailure(response)
 		result.CompletedAt = time.Now()
 		return result, failure
+	}
+	if c.cpaNative {
+		return c.forwardNativeResponses(ctx, w, response, nativeModel, nativeTools, result)
 	}
 
 	w.Header().Set("Content-Type", safeContentType(result.ContentType))

@@ -25,6 +25,7 @@ type Server struct {
 	identity              *identity.Service
 	upstream              *gatewayproxy.Client
 	antigravity           *gatewayproxy.Client
+	cpaAdmin              *cpaAdminState
 	logger                *slog.Logger
 	mux                   *http.ServeMux
 	attempts              *attemptLimiter
@@ -83,7 +84,9 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		activeConversations:     make(map[string]activeRequestConversation),
 	}
 	s.identificationContext, s.identificationCancel = context.WithCancel(context.Background())
-	if cfg.AntigravityBridgeURL != nil {
+	if cfg.UsesCPAAntigravity() {
+		s.antigravity = gatewayproxy.NewCPAAntigravity(cfg.SidecarURL, cfg.SidecarToken)
+	} else if cfg.AntigravityBridgeURL != nil {
 		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
 	}
 	s.routes()
@@ -107,6 +110,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/select", s.selectUpstreamAccount)
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/eligible", s.eligibleUpstreamAccounts)
 	s.antigravityAccountRoutes()
+	s.cpaAdminRoutes()
 	s.mux.HandleFunc("GET /", s.page)
 	s.mux.HandleFunc("GET /join", s.page)
 	s.mux.HandleFunc("GET /recover", s.page)

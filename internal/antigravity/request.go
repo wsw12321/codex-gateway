@@ -15,8 +15,8 @@ import (
 	"github.com/wsw/codex-gateway/internal/config"
 )
 
-const PublicModel = config.AntigravityPublicModel
-const CLIModel = config.AntigravityCLIModel
+const PublicModel = "gemini-3.1-pro-high"
+const CLIModel = PublicModel
 
 type Failure struct {
 	Status  int
@@ -70,7 +70,7 @@ func DecodeRequest(body []byte) (Request, *Failure) {
 			return out, unsupported("parameter")
 		}
 	}
-	if json.Unmarshal(fields["model"], &out.Model) != nil || !config.IsAntigravityModel(out.Model) {
+	if json.Unmarshal(fields["model"], &out.Model) != nil || !config.IsLegacyAntigravityModel(out.Model) {
 		return out, unsupported("model")
 	}
 	if raw, ok := fields["stream"]; ok {

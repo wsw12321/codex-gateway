@@ -39,7 +39,7 @@ test "$(git -C "$root" rev-parse HEAD)" = "$revision" || \
 
 config=$(mktemp)
 trap 'rm -f "$config"' EXIT HUP INT TERM
-"$root/scripts/compose.sh" config --format json > "$config"
+"$root/scripts/compose.sh" --profile legacy-bridge config --format json > "$config"
 jq -e --arg revision "$revision" '
   .services.gateway.build.args.REVISION == $revision and
   .services.gateway.build.args.VERSION == $revision and

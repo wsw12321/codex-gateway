@@ -121,6 +121,7 @@
           <p id="nav-management" class="nav-group-title">管理</p>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
+          <a href="/admin/cpa/" class="owner-only hidden">CPA 授权管理</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
           <a href="#model-identification" data-view="model-identification" class="owner-only hidden">模型鉴别</a>
           <a href="#information" data-view="information" class="owner-only hidden">数据维护</a>
@@ -267,7 +268,7 @@
             <article id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
               <div class="guide-step-body">
                 <div class="guide-step-title"><div><p class="eyebrow">ANTIGRAVITY</p><h3 id="guide-agy-title">agy CLI</h3></div><a href="https://antigravity.google/docs/cli/install/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
-                <p>通过 Gateway 使用服务器的 Antigravity 订阅账号。管理员需先启用路由，并授予账号和 API Key <code>gemini-3.1-pro-high</code> 权限。以下接入以官方 AGY <code>1.2.12</code> 为验收基线。</p>
+                <p>通过 Gateway 使用服务器的 Antigravity 订阅账号。管理员需先启用可用账号，并授予用户和 API Key <code>gemini-pro-agent</code> 权限。客户端必须原样发送 CPA 原生模型 ID；请先确认当前 agy 版本支持所选模型。</p>
                 <ol class="guide-steps guide-client-steps">
                   <li>
                     <h4>1. 安装 agy CLI</h4>
@@ -296,9 +297,9 @@
                     <p>关闭当前终端并重新打开，运行以下命令，发送“请回复 OK”。Windows 若使用 Windows Terminal，请退出整个应用后重开，让新终端读取用户环境变量。</p>
                     <div class="code-card">
                       <div class="code-toolbar"><span>启动 agy</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-start-code">复制启动命令</button></div>
-                      <pre><code id="guide-agy-start-code">agy --model gemini-3.1-pro-high</code></pre>
+                      <pre><code id="guide-agy-start-code">agy --model gemini-pro-agent</code></pre>
                     </div>
-                    <p class="guide-note">agy 发出的 <code>gemini-3.1-pro-preview</code>、<code>gemini-3.1-pro-preview-customtools</code> 及标题模型 <code>gemini-3.1-flash-lite-preview</code> 请求，会在原生 Gemini 接口统一使用 <code>gemini-3.1-pro-high</code>。权限、额度和计费均按该实际模型处理，标题等辅助请求同样计入用量。这些兼容名称不用于模型目录或 Responses 接口。</p>
+                    <p class="guide-note">Gateway 不再改写旧模型别名。模型目录仅显示已定价、已授权且有可用账号的原生 ID；推理档位通过请求参数设置。若客户端仍发送旧 preview / pro-high 名称，请更新客户端或配置其模型 ID，辅助标题请求也需使用已授权模型。旧 CLI 会话缺少可续传签名时必须新建会话，不能继续复用历史工具调用。</p>
                   </li>
                 </ol>
                 <details class="guide-platform guide-troubleshooting">

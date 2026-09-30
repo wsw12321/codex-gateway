@@ -16,12 +16,12 @@ relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch
-compat_patch_sha256=2dc404c8b22496a6de935a8fd07ca6006d3681bcf503ea33f2cd529610f3096b
+compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.4-gateway.patch
+compat_patch_sha256=8d605cc62e3da445753adf0a4d09f902836c2ccc825fb0e7b2a62c63ef491e95
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-codex-only
+compat_image=codex-gateway-compat:v8.0.4-d33f63f8-8d605cc62e3da445-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -34,6 +34,7 @@ fail() {
 command -v jq >/dev/null 2>&1 || {
     fail 'jq is required'
 }
+"$root/scripts/validate-cpa-panel.sh"
 test -r "$lock" || {
     fail 'run scripts/lock-images.sh first'
 }
@@ -43,6 +44,15 @@ test -r "$env_file" || {
 test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
 test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
+jq -e --arg patch "$compat_patch_sha256" '
+    .tag == "v8.0.4" and
+    .commit == "d33f63f8e3d98428440ebca5a5b6a981a61ff71e" and
+    .patch_sha256 == $patch and .go_version == "1.26.8" and
+    .automatic_updates == false and
+    .model_catalog.commit == "690c37fdbe62dc05f609f3a3e609d07ea4d16bf1" and
+    .model_catalog.sha256 == "35efe922ff4061d959e6d8632bd34bbe2fdca18804e0b338f9d7ec2a3aa40b81"
+' "$root/deploy/codex-compat/source.lock.json" >/dev/null || \
+    fail 'CPA source and reviewed local model provenance must remain locked'
 if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" "$compat_entrypoint"; then
     fail 'codex-compat must not build or load the retired Gemini plugin'
 fi
@@ -67,16 +77,18 @@ grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
     grep -Fxq 'http_access deny all' "$egress_config" && \
     grep -Fxq 'request_header_access Forwarded deny all' "$egress_config" || \
     fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
-test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "codex_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
+test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
     "$(printf '%s\n' \
         'acl codex_clients src 172.28.30.3/32' \
         'acl antigravity_clients src 172.28.40.3/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
+        'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
         'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
         'http_access allow CONNECT codex_clients codex_upstreams' \
+        'http_access allow CONNECT codex_clients cpa_google_upstreams' \
         'http_access allow CONNECT antigravity_clients antigravity_upstreams' 'http_access deny all')" || \
     fail 'egress must separate Codex and Antigravity destination rules'
 # The generated fragment is the only place permitted to select an upstream or
@@ -111,10 +123,12 @@ test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cac
         'acl TLS_port port 443' \
         'acl relay_clients src 10.77.0.1/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
+        'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
         'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net' \
         'http_access deny !CONNECT' \
         'http_access deny !TLS_port' \
         'http_access allow CONNECT relay_clients codex_upstreams' \
+        'http_access allow CONNECT relay_clients cpa_google_upstreams' \
         'http_access allow CONNECT relay_clients antigravity_upstreams' \
         'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex and Antigravity HTTPS destinations'
 test "$(awk '$1 == "cache_mem" { print }' "$relay_config")" = 'cache_mem 0 MB' || \
@@ -206,7 +220,7 @@ test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }
 
-"$compose" config --format json > "$tmp"
+"$compose" --profile legacy-bridge config --format json > "$tmp"
 
 # Validate JSON strings before extracting them: command substitution strips
 # trailing newlines, which must never turn an injected value into a valid one.
@@ -399,13 +413,14 @@ pricing_validator='
   (.models |
     exact_keys([
       "codex-auto-review",
-      "gemini-3.1-pro-high",
+      "gemini-pro-agent",
+      "gemini-3.1-pro-low",
+      "gemini-3-flash",
+      "gemini-3.1-flash-lite",
+      "gemini-3.5-flash-lite",
       "gemini-3.6-flash-high",
-      "gemini-3.6-flash-medium",
       "gemini-3.7-flash-high",
-      "gemini-3.7-flash-medium",
       "gemini-3.8-flash-high",
-      "gemini-3.8-flash-medium",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.5",
@@ -414,10 +429,12 @@ pricing_validator='
       "gpt-5.6-terra",
       "gpt-6-astra",
       "gpt-6-luna",
-      "gpt-6-sol"
+      "gpt-6-sol",
+      "gpt-6.1-sol"
     ]) and
     (.["gpt-6-astra"] | separate_long_model) and
     (.["gpt-6-sol"] | separate_long_model) and
+    (.["gpt-6.1-sol"] | separate_long_model) and
     (.["gpt-6-luna"] | separate_long_model) and
     (.["gpt-5.6-sol"] | separate_long_model) and
     (.["gpt-5.6-terra"] | separate_long_model) and
@@ -425,13 +442,14 @@ pricing_validator='
     (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and
-    (.["gemini-3.1-pro-high"] | gemini_pro_model) and
+    (.["gemini-pro-agent"] | gemini_pro_model) and
+    (.["gemini-3.1-pro-low"] | gemini_pro_model) and
+    (.["gemini-3-flash"] | gemini_flash_model) and
+    (.["gemini-3.1-flash-lite"] | gemini_flash_model) and
+    (.["gemini-3.5-flash-lite"] | gemini_flash_model) and
     (.["gemini-3.6-flash-high"] | gemini_flash_model) and
-    (.["gemini-3.6-flash-medium"] | gemini_flash_model) and
     (.["gemini-3.7-flash-high"] | gemini_flash_model) and
-    (.["gemini-3.7-flash-medium"] | gemini_flash_model) and
     (.["gemini-3.8-flash-high"] | gemini_flash_model) and
-    (.["gemini-3.8-flash-medium"] | gemini_flash_model) and
     (.["codex-auto-review"] | internal_zero_model))
 '
 printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
@@ -466,29 +484,44 @@ reject_pricing_mutation \
     '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
     'an unpublished service tier'
 reject_pricing_mutation \
-    'del(.models["gemini-3.1-pro-high"])' \
+    'del(.models["gemini-pro-agent"])' \
     'a missing Gemini model'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"].service_tiers.flex = .models["gemini-3.1-pro-high"].service_tiers.standard' \
+    '.models["gemini-pro-agent"].service_tiers.flex = .models["gemini-pro-agent"].service_tiers.standard' \
     'an unconfigured Gemini service tier'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"].long_context_threshold_tokens = 272000' \
+    '.models["gemini-pro-agent"].long_context_threshold_tokens = 272000' \
     'an incorrect Gemini long-context boundary'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"].max_input_tokens = 1050000' \
+    '.models["gemini-pro-agent"].max_input_tokens = 1050000' \
     'an incorrect Gemini input limit'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
+    '.models["gemini-pro-agent"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
     'a separate Gemini cache-write price'
 reject_pricing_mutation \
     '.models["gemini-3.8-flash-high"].service_tiers.standard.long = .models["gemini-3.8-flash-high"].service_tiers.standard.short' \
     'an unpublished Flash long-context price'
 reject_pricing_mutation \
-    '.models["gemini-3.8-flash-medium"].long_context_threshold_tokens = 200000' \
+    '.models["gemini-3.8-flash-high"].long_context_threshold_tokens = 200000' \
     'an incorrect Flash context boundary'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"] = .models["gemini-3.1-pro-high"]' \
+    '.models["gemini-3.1-pro-preview"] = .models["gemini-pro-agent"]' \
     'a retired Gemini alias'
+reject_pricing_mutation \
+    'del(.models["gpt-6.1-sol"])' \
+    'a missing GPT-6.1 Sol model'
+reject_pricing_mutation \
+    '.models["gpt-6.1-sol"].long_context_threshold_tokens = 200000' \
+    'an incorrect GPT-6.1 Sol long-context boundary'
+reject_pricing_mutation \
+    'del(.models["gpt-6.1-sol"].service_tiers.standard.short.cache_write_usd_per_million)' \
+    'a missing GPT-6.1 Sol cache-write price'
+reject_pricing_mutation \
+    '.models["gemini-3.1-pro-high"] = .models["gemini-pro-agent"]' \
+    'a retired Gemini Pro-high model'
+reject_pricing_mutation \
+    '.models["gemini-3.8-flash-medium"] = .models["gemini-3.8-flash-high"]' \
+    'a retired Gemini Medium model'
 unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
@@ -627,14 +660,15 @@ jq -e \
   .services["antigravity-bridge"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
 ' "$tmp" >/dev/null
 
-jq -e '
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v7.3.15" and
+jq -e --arg patch "$compat_patch_sha256" '
+  .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.4" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "673131f57484517c3a1eae7e36c4cfa7b9bb4efc" and
+    "d33f63f8e3d98428440ebca5a5b6a981a61ff71e" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
-    fail 'codex-compat image tag must identify the reviewed Codex-only build'
+    fail 'codex-compat image tag must identify the reviewed CPA build'
 jq -e '.services["codex-compat"].depends_on.gateway == null and
     .services.gateway.depends_on["codex-compat"].condition == "service_healthy" and
     .services.gateway.environment.GATEWAY_LISTEN == ":8080"' "$tmp" >/dev/null || \
@@ -679,7 +713,7 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
   (.services.gateway.environment.API_KEY_ENCRYPTION_KEY == null) and
   .secrets.gateway_api_key_encryption_key.file == $encryption_key_file and
   ([.services.gateway.secrets[] | .source] | sort) == [
-    "antigravity_bridge_api_key",
+    "cpa_management_key",
     "database_url",
     "gateway_api_key_encryption_key",
     "gateway_api_key_pepper",
@@ -697,6 +731,7 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
 # in this container. Gateway availability does not depend on Bridge readiness.
 jq -e '
   .services["antigravity-bridge"] as $bridge |
+  $bridge.profiles == ["legacy-bridge"] and
   $bridge.read_only == true and
   ($bridge.user | test("^10002:[1-9][0-9]*$")) and
   ($bridge.cap_drop | sort) == ["ALL"] and
@@ -712,7 +747,7 @@ jq -e '
   ([.services | to_entries[] | select(any(.value.volumes[]?; .source == "codex_oauth")) | .key]) == ["codex-compat"] and
   ($bridge.secrets | map(.source) | sort) == ["antigravity_bridge_api_key", "antigravity_keyring_password"] and
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_keyring_password")) | .key]) == ["antigravity-bridge"] and
-  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge", "gateway"] and
+  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge"] and
   ($bridge.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | fromjson) == {
     "gemini-3.8-flash-high": "gemini-3.8-flash-high",
     "gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
@@ -725,8 +760,9 @@ jq -e '
   $bridge.environment.AGY_CLI_DISABLE_AUTO_UPDATE == "true" and
   $bridge.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
   $bridge.environment.ANTIGRAVITY_GATEWAY_URL == "http://gateway:8080" and
-  .services.gateway.environment.ANTIGRAVITY_BRIDGE_URL == "http://antigravity-bridge:8318" and
-  .services.gateway.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
+  .services.gateway.environment.ANTIGRAVITY_TRANSPORT == "cpa" and
+  .services.gateway.environment.ANTIGRAVITY_BRIDGE_URL == null and
+  .services.gateway.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == null and
   .services.gateway.depends_on["antigravity-bridge"] == null and
   ($bridge.tmpfs | sort) == [
     "/run/antigravity:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10002,gid=10002",
@@ -735,13 +771,23 @@ jq -e '
   (.services.gateway.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | if . == "" then {} else fromjson end |
     type == "object" and all(to_entries[];
       .key == .value and (.key | IN(
-        "gemini-3.8-flash-high", "gemini-3.8-flash-medium",
-        "gemini-3.7-flash-high", "gemini-3.7-flash-medium",
-        "gemini-3.6-flash-high", "gemini-3.6-flash-medium",
-        "gemini-3.1-pro-high"))))
+        "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
+        "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
+        "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"))))
 ' "$tmp" >/dev/null || fail 'Antigravity process, network, route, keyring or secret isolation failed'
 if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/antigravity_bridge_api_key"; then
     fail 'Codex and Antigravity must use distinct internal Bearer secrets'
+fi
+
+jq -e '
+  .services.gateway.environment.CPA_MANAGEMENT_KEY_FILE == "/run/secrets/cpa_management_key" and
+  .services["codex-compat"].environment.CPA_MANAGEMENT_KEY_FILE == "/run/secrets/cpa_management_key" and
+  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "cpa_management_key")) | .key] | sort) == ["codex-compat", "gateway"] and
+  .services.gateway.environment.CPA_MANAGEMENT_KEY == null and
+  .services["codex-compat"].environment.CPA_MANAGEMENT_KEY == null
+' "$tmp" >/dev/null || fail 'CPA management secret must remain server-only and file-mounted'
+if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/cpa_management_key"; then
+    fail 'CPA execution and management must use distinct internal secrets'
 fi
 
 # prepareModelBody admits at most four simultaneous 64 MiB request files.
@@ -765,6 +811,7 @@ for secret_name in \
     gateway_api_key_pepper \
     gateway_session_secret \
     sidecar_api_key \
+    cpa_management_key \
     antigravity_bridge_api_key \
     antigravity_keyring_password \
     database_url

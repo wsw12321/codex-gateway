@@ -38,12 +38,12 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v7.3.15
+  CLIProxyAPI v8.0.4
       │ HTTP(S)_PROXY；无直接互联网路由
       ▼
   Squid 域名白名单出口
       │
-      └─────────────────── auth.openai.com:443 / chatgpt.com:443
+      └─────────────────── OpenAI / Google 精确域名:443
 ```
 
 Compose 中的服务职责如下：
@@ -54,8 +54,8 @@ Compose 中的服务职责如下：
 | `caddy` | 内部反向代理、安全头、64 MiB 请求上限和 SSE 刷新 | 无 |
 | `gateway` | 身份、Key、配额、统计、管理界面及固定 Responses / Gemini 代理 | 无 |
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
-| `codex-compat` | 在唯一隔离实例中持有多个 Plus/Pro OAuth 状态并适配 Codex 协议 | 无 |
-| `antigravity-bridge` | 通过隔离的官方 AGY 进程使用服务器 Antigravity 订阅 | 无 |
+| `codex-compat` | 在同一 CPA 中维护 Codex/Antigravity OAuth、刷新和模型执行 | 无 |
+| `antigravity-bridge` | 仅在 `legacy-bridge` profile 中保留旧 AGY 传输供回滚 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
 
 所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
@@ -97,9 +97,10 @@ Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 `426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
 不进入上游转发、配额、计费、并发租约或 usage 统计。
 
-Gemini 原生接口只转发到 Antigravity Bridge，接受 `x-goog-api-key` 或 Bearer 中的
+Gemini 原生接口转发到同一 CPA 的 Antigravity provider，接受 `x-goog-api-key` 或 Bearer 中的
 Gateway key，重复或多来源凭据拒绝。它们共用现有权限、配额和结算，使用 Gemini
-格式错误；首版请求限制为 1 MiB，SSE 在完整生成并校验后输出，以 EOF 结束。
+格式错误；请求限制为 1 MiB，支持文本、客户端函数工具和原生 SSE。累计 usage 只结算一次，
+缺失或无效 usage 不能按成功零费用结算；响应开始后不切换账号。
 
 每个响应都带 `X-Gateway-Request-ID`。Responses 错误采用 OpenAI 风格 JSON，并返回稳定的
 `type`、`code`、安全消息和 `request_id`。常见映射包括：
@@ -331,12 +332,12 @@ connector token 以精确 `0640` 保存为
 CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v7.3.15` / commit
-`673131f57484517c3a1eae7e36c4cfa7b9bb4efc`，兼容层镜像标签为
-`v7.3.15-673131f5-be3a7f7524f6451b-codex-only`，固定主程序、多账号补丁及移除旧 Gemini 插件后的构建。
+锁定；CLIProxyAPI 固定为 `v8.0.4` / commit
+`d33f63f8e3d98428440ebca5a5b6a981a61ff71e`。CPA 补丁和本地构建产物另行记录 SHA-256；
+镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
-此次版本升级交付仓库改动和构建验证；生产切换及真实 OAuth 账号的 Astra 冒烟
-按 [CLIProxyAPI 升级规程](docs/compatibility-upgrades.md) 执行。
+此次版本升级交付仓库改动和本地构建验证；生产切换及真实 OAuth 账号验收
+按 [CPA v8 切换与回滚](docs/cpa-v8-cutover.md) 执行。
 
 ```sh
 ./scripts/validate-compose.sh
@@ -381,25 +382,20 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-Gemini 支持 Responses 和原生生成接口，使用相同的 Gateway key，模型目录采用七个 AGY 官方 ID：
-`gemini-3.8-flash-high`、`gemini-3.8-flash-medium`、`gemini-3.7-flash-high`、
-`gemini-3.7-flash-medium`、`gemini-3.6-flash-high`、`gemini-3.6-flash-medium` 及
-`gemini-3.1-pro-high`，
-请求、响应和账单名称完全一致。独立 Antigravity Bridge 通过官方 `agy` 使用订阅额度，
-调用 `./scripts/antigravity-login.sh [账号名称]` 完成登录验收后配置精确模型路由。
-Owner 可在「Antigravity 账号」页面管理多账号启停、轮换系数、专属权限和并发对话上限，
-并查看账号用量及费用统计。AGY 1.2.12 Gemini 模式按系统提示中的 `Conversation ID` 标记
-识别对话：同一 API Key 的同对话重叠请求在同一账号共用一个名额，最后一个请求结束后释放；
-标题等无法识别对话的请求各占一个名额。此标记是实测兼容规则，并非官方稳定协议字段。
-Gateway 的请求级并发与 Bridge 的 64 请求保护上限仍按实际请求计数。支持文本 JSON
-和完成后发送的 SSE，以及客户端执行的函数工具和工具历史；多模态返回 400，compact 返回 501。
-沿用现有用户模型权限、API Key 范围和额度/结算，无额外 Owner 限制。
-新模型默认禁用，管理员需重新授权；旧权限、受限 Key 白名单和倍率不继承，新倍率
-默认为 `1`。原生 Gemini 入口兼容 AGY 1.2.12 的 `gemini-3.1-pro-preview`、
-`gemini-3.1-pro-preview-customtools` 和标题模型 `gemini-3.1-flash-lite-preview`，
-统一按 `gemini-3.1-pro-high` 授权、扣减额度和计费；标题等辅助请求也计入用量。
-模型目录和 Responses 仍使用精确模型名。完整请求示例、维护窗口协调升级
-`0023`、API 家族等价定价及出口域名验收见 [Antigravity 接入说明](docs/gemini-pro.md)。
+CPA 固定为 **v8.0.4**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
+`legacy-bridge` profile。Owner 在 `/admin/cpa/` 进行 OAuth、导入、重新授权、刷新、删除
+和额度查询，复用 Gateway 会话；权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。
+管理面板使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。
+
+公开模型使用八个 CPA 原生 Gemini ID，及独立定价的 `gpt-6.1-sol`；仅公开已定价、已授权
+并有可用账号的模型。支持文本 JSON/SSE 和客户端函数工具，保留原生工具签名；媒体、供应商
+内置工具和 Antigravity compact 不开放。旧 Pro-high、Medium 和客户端重写别名退出默认链路。
+现有受限 Key 白名单不变；九个目标模型的一次性用户权限、倍率迁移不会在启动时反复执行。
+
+升级须先执行维护窗口内的凭据转换及验收，不能仅替换镜像标签。参见
+[切换与回滚](docs/cpa-v8-cutover.md)、[凭据迁移](docs/cpa-credentials-migration.md)、
+[模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
+[本地验证记录](docs/cpa-v8-validation.md)。
 
 ### 5. 初始化 Owner
 
@@ -417,8 +413,8 @@ Gateway 的请求级并发与 Bridge 的 64 请求保护上限仍按实际请求
 升级到 `0004_subscription_period_limits.sql`、`0005_official_token_pricing.sql`、
 `0006_api_key_lifecycle.sql`、`0007_upstream_accounts.sql` 或
 `0009_upstream_allocation.sql` 前必须完成加密备份和恢复演练。迁移是
-forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像；回滚必须
-停止写入，并把升级前备份恢复到新的隔离数据库卷后再切换旧 revision。`0005`
+forward-only：应用后旧二进制会触发未知迁移保护，不能只切回旧镜像。本次 CPA v8
+回滚使用能识别同一迁移集的 Gateway 构建，保留切换后的账单和余额，不恢复旧全库。`0005`
 的停写、核账、迁移和模型冒烟 7 步见
 [升级到 OpenAI API Token 等价成本 v2](docs/operations.md#升级到-0005_official_token_pricingsql)。
 `0006` 上线前还必须先生成并安全保存独立 API Key 加密 secret；数据库备份不包含
@@ -444,9 +440,9 @@ Codex 尊重 `CODEX_HOME`，设置内置 `openai` provider、`<站点 origin>/v1
 `modelProvider: "gemini"`，保存站点 origin 和 Key；Windows 使用用户环境变量，
 macOS / Linux 使用权限为 `0600` 的独立凭据文件，并配置 Bash / Zsh 自动加载。
 
-配置完成后重新打开终端，运行 `codex` 或 `agy --model gemini-3.1-pro-high`，发送
-简单请求并在“使用统计”核对。agy 接入以官方 `1.2.12` 为验收基线，标题等辅助请求
-也按 `gemini-3.1-pro-high` 计费。详细步骤、凭据保存方式和接口说明见
+配置完成后重新打开终端，用 `codex` 或支持原生 Gemini ID 的客户端发送简单请求，
+在“使用统计”核对实际模型和费用。旧 AGY 1.2.12 重写模型名称的行为不适用于默认 CPA 链路；
+使用 `GET /v1/models` 返回的精确 ID，并在请求参数中设置推理档位。详见
 [客户端配置](docs/client-config.md)。
 
 ## 开发与验证

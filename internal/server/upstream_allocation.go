@@ -32,7 +32,7 @@ func (s *Server) eligibleUpstreamAccounts(w http.ResponseWriter, r *http.Request
 
 func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request, eligibility bool) {
 	token := s.config.SidecarToken
-	if isAntigravityAccountRequest(r) {
+	if isAntigravityAccountRequest(r) && !s.config.UsesCPAAntigravity() {
 		token = s.config.AntigravityBridgeToken
 	}
 	authorization := r.Header.Values("Authorization")

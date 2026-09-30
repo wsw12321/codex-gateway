@@ -158,7 +158,7 @@ func (r Runner) run(ctx context.Context, model, prompt string) (Result, *Failure
 }
 
 func (r Runner) runUpdates(ctx context.Context, model, prompt string, emit func(string) error) (Result, *Failure, *AuthError) {
-	if !config.IsAntigravityModel(model) {
+	if !config.IsLegacyAntigravityModel(model) {
 		return Result{}, unsupported("model"), nil
 	}
 	timeout := r.Timeout
@@ -276,7 +276,7 @@ func (r Runner) Check(ctx context.Context) ([]string, error) {
 	available := map[string]bool{}
 	for _, line := range strings.Split(string(models), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) > 0 && config.IsAntigravityModel(fields[0]) {
+		if len(fields) > 0 && config.IsLegacyAntigravityModel(fields[0]) {
 			available[fields[0]] = true
 		}
 	}
@@ -291,7 +291,7 @@ func (r Runner) Check(ctx context.Context) ([]string, error) {
 // provider IDs or let CLI display ordering choose the verification model.
 func orderedModels(available map[string]bool) []string {
 	models := []string{}
-	for _, model := range config.AntigravityModels() {
+	for _, model := range config.LegacyAntigravityModels() {
 		if available[model] {
 			models = append(models, model)
 		}
@@ -302,7 +302,7 @@ func orderedModels(available map[string]bool) []string {
 func modelSet(models []string) map[string]bool {
 	available := map[string]bool{}
 	for _, model := range models {
-		if config.IsAntigravityModel(model) {
+		if config.IsLegacyAntigravityModel(model) {
 			available[model] = true
 		}
 	}

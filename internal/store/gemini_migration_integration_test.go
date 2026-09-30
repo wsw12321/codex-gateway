@@ -111,7 +111,8 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule := pricing.Models["gemini-3.1-pro-high"]
+	// Reuse equivalent current prices while retaining the historical model ID.
+	rule := pricing.Models["gemini-pro-agent"]
 	snapshot := billingIntegrationV2Snapshot(t, oldModel, rule)
 	requestIDs := []string{"gemini-before-migration-settled", "gemini-before-migration-inflight"}
 	for index, requestID := range requestIDs {

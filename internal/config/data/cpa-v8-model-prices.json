@@ -1,0 +1,173 @@
+{
+  "gemini-pro-agent": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 200000,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "2",
+          "cached_input_usd_per_million": "0.20",
+          "output_usd_per_million": "12"
+        },
+        "long": {
+          "input_usd_per_million": "4",
+          "cached_input_usd_per_million": "0.40",
+          "output_usd_per_million": "18"
+        }
+      }
+    }
+  },
+  "gemini-3.1-pro-low": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 200000,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "2",
+          "cached_input_usd_per_million": "0.20",
+          "output_usd_per_million": "12"
+        },
+        "long": {
+          "input_usd_per_million": "4",
+          "cached_input_usd_per_million": "0.40",
+          "output_usd_per_million": "18"
+        }
+      }
+    }
+  },
+  "gemini-3-flash": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.50",
+          "cached_input_usd_per_million": "0.05",
+          "output_usd_per_million": "3"
+        }
+      }
+    }
+  },
+  "gemini-3.6-flash-high": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.75",
+          "cached_input_usd_per_million": "0.075",
+          "output_usd_per_million": "3.75"
+        }
+      }
+    }
+  },
+  "gemini-3.7-flash-high": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.75",
+          "cached_input_usd_per_million": "0.075",
+          "output_usd_per_million": "3.75"
+        }
+      }
+    }
+  },
+  "gemini-3.8-flash-high": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.75",
+          "cached_input_usd_per_million": "0.075",
+          "output_usd_per_million": "3.75"
+        }
+      }
+    }
+  },
+  "gemini-3.1-flash-lite": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.25",
+          "cached_input_usd_per_million": "0.025",
+          "output_usd_per_million": "1.50"
+        }
+      }
+    }
+  },
+  "gemini-3.5-flash-lite": {
+    "cache_write_mode": "included_in_input",
+    "max_input_tokens": 1048576,
+    "long_context_threshold_tokens": 1048576,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "0.30",
+          "cached_input_usd_per_million": "0.03",
+          "output_usd_per_million": "2.50"
+        }
+      }
+    }
+  },
+  "gpt-6.1-sol": {
+    "cache_write_mode": "separate",
+    "max_input_tokens": 1050000,
+    "long_context_threshold_tokens": 272000,
+    "service_tiers": {
+      "standard": {
+        "short": {
+          "input_usd_per_million": "2",
+          "cached_input_usd_per_million": "0.10",
+          "output_usd_per_million": "10",
+          "cache_write_usd_per_million": "2.50"
+        },
+        "long": {
+          "input_usd_per_million": "4",
+          "cached_input_usd_per_million": "0.20",
+          "output_usd_per_million": "15",
+          "cache_write_usd_per_million": "5"
+        }
+      },
+      "flex": {
+        "short": {
+          "input_usd_per_million": "1",
+          "cached_input_usd_per_million": "0.05",
+          "output_usd_per_million": "5",
+          "cache_write_usd_per_million": "1.25"
+        },
+        "long": {
+          "input_usd_per_million": "2",
+          "cached_input_usd_per_million": "0.10",
+          "output_usd_per_million": "7.5",
+          "cache_write_usd_per_million": "2.5"
+        }
+      },
+      "fast": {
+        "short": {
+          "input_usd_per_million": "4",
+          "cached_input_usd_per_million": "0.20",
+          "output_usd_per_million": "20",
+          "cache_write_usd_per_million": "5"
+        },
+        "long": {
+          "input_usd_per_million": "8",
+          "cached_input_usd_per_million": "0.40",
+          "output_usd_per_million": "30",
+          "cache_write_usd_per_million": "10"
+        }
+      }
+    }
+  }
+}

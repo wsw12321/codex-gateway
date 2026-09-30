@@ -171,7 +171,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	nativeModel := ""
 	if strings.HasPrefix(r.URL.Path, "/v1beta/models/") {
 		model, method, found := strings.Cut(strings.TrimPrefix(r.URL.Path, "/v1beta/models/"), ":")
-		native = found && config.IsAntigravityModel(model) && (method == "generateContent" || method == "streamGenerateContent")
+		native = found && config.IsLegacyAntigravityModel(model) && (method == "generateContent" || method == "streamGenerateContent")
 		nativeModel = model
 		nativeStream = method == "streamGenerateContent"
 		query, queryErr := url.ParseQuery(r.URL.RawQuery)

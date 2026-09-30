@@ -55,6 +55,16 @@ func AccountCredentials(name string) *KeyringCredentials {
 // OpenAccountRegistry adopts an existing single-account installation as
 // "default" without rewriting, exporting, or weakening its encrypted keyring.
 func OpenAccountRegistry(ctx context.Context, path string, runner Runner) (*AccountRegistry, error) {
+	return openAccountRegistry(ctx, path, runner, true)
+}
+
+// OpenExistingAccountRegistry is for migration reauthorization: missing
+// metadata must fail, even if a legacy default credential could be adopted.
+func OpenExistingAccountRegistry(ctx context.Context, path string) (*AccountRegistry, error) {
+	return openAccountRegistry(ctx, path, Runner{}, false)
+}
+
+func openAccountRegistry(ctx context.Context, path string, runner Runner, adoptLegacy bool) (*AccountRegistry, error) {
 	registry := &AccountRegistry{path: path, records: []AccountRecord{}}
 	dir, err := registry.directory()
 	if err != nil {
@@ -63,6 +73,9 @@ func OpenAccountRegistry(ctx context.Context, path string, runner Runner) (*Acco
 	defer dir.Close()
 	fd, err := syscall.Openat(int(dir.Fd()), filepath.Base(path), syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if errors.Is(err, os.ErrNotExist) {
+		if !adoptLegacy {
+			return nil, credentialError("credential_missing")
+		}
 		if runner.Credentials == nil {
 			runner.Credentials = AccountCredentials("default")
 		}

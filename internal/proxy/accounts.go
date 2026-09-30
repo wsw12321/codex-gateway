@@ -354,6 +354,9 @@ func (c *Client) internalJSONBody(ctx context.Context, method, path, body string
 }
 
 func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, body string, headers http.Header, destination any) error {
+	if c.cpaNative && strings.HasPrefix(path, "/internal/upstream-accounts") {
+		path = "/internal/antigravity-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
+	}
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + path
 	target.RawQuery = ""

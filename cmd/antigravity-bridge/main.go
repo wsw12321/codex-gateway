@@ -49,16 +49,32 @@ func run(logger *slog.Logger) error {
 		if len(os.Args) == 3 {
 			name = os.Args[2]
 		}
-		if !antigravity.ValidAccountName(name) || (os.Args[1] != "auth-login" && os.Args[1] != "auth-verify") {
+		if !antigravity.ValidAccountName(name) || (os.Args[1] != "auth-login" && os.Args[1] != "auth-verify" && os.Args[1] != "auth-reauthorize") ||
+			(os.Args[1] == "auth-reauthorize" && len(os.Args) != 3) {
 			return &antigravity.AuthError{Stage: "authorization", Category: "configuration", ExitCode: 2}
 		}
-		registry, err := antigravity.OpenAccountRegistry(ctx, registryPath, runner)
+		var registry *antigravity.AccountRegistry
+		var err error
+		if os.Args[1] == "auth-reauthorize" {
+			registry, err = antigravity.OpenExistingAccountRegistry(ctx, registryPath)
+		} else {
+			registry, err = antigravity.OpenAccountRegistry(ctx, registryPath, runner)
+		}
 		if err != nil {
 			return &antigravity.AuthError{Stage: "credential_restore", Category: antigravity.CredentialCategory(err), ExitCode: 1}
 		}
+		if os.Args[1] == "auth-reauthorize" {
+			found := false
+			for _, account := range registry.Records() {
+				found = found || account.Name == name
+			}
+			if !found {
+				return &antigravity.AuthError{Stage: "authorization", Category: "credential_missing", ExitCode: 1}
+			}
+		}
 		runner.Credentials = antigravity.AccountCredentials(name)
 		switch os.Args[1] {
-		case "auth-login":
+		case "auth-login", "auth-reauthorize":
 			if err := runner.AuthLogin(ctx, os.Stdin, os.Stdout); err != nil {
 				return err
 			}
@@ -90,7 +106,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 	for public, cli := range routes {
-		if !config.IsAntigravityModel(public) || cli != public {
+		if !config.IsLegacyAntigravityModel(public) || cli != public {
 			return errors.New("unsupported Antigravity model mapping")
 		}
 	}

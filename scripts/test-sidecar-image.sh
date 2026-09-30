@@ -19,6 +19,9 @@ docker run --rm --network none --read-only --cap-drop ALL \
         export CLIPROXY_API_KEY_FILE=/run/cliproxy/synthetic-key
         printf "%s\n" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > "$CLIPROXY_API_KEY_FILE"
 
+        export CPA_MANAGEMENT_KEY_FILE=/run/cliproxy/synthetic-management-key
+        printf "%s\n" BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB > "$CPA_MANAGEMENT_KEY_FILE"
+
         auth=/var/lib/cliproxy/oauth
         printf "%s\n" "{}" > "$auth/imported-codex.json"
         printf "%s\n" "{}" > "$auth/imported-gemini.JSON"
@@ -49,6 +52,8 @@ docker run --rm --network none --read-only --cap-drop ALL \
             test "$attempt" -lt 30
             sleep 1
         done
+        grep -Fq "Version: v8.0.4" /run/cliproxy/startup.log
+        grep -Fq "Commit: d33f63f8e3d98428440ebca5a5b6a981a61ff71e" /run/cliproxy/startup.log
         # No Gateway exists on this network: health must not wait for allocation.
         grep -Fq "strategy: \"gateway-allocation\"" /run/cliproxy/config.yaml
         grep -A1 "^discovery:" /run/cliproxy/config.yaml | grep -Eq "enabled:[[:space:]]*false"
@@ -81,5 +86,23 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "GET /internal/upstream-accounts/concurrency HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/concurrency-unauthorized
         grep -Fq "401 Unauthorized" /run/cliproxy/concurrency-unauthorized
-        printf "%s\n" "Sidecar OAuth inventory, permission rejection, account access and diagnostic capabilities, diagnostic actor validation, authenticated concurrency and Gateway-independent startup checks passed"
+        {
+            printf "GET /internal/antigravity-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/antigravity-capabilities
+        grep -Fq "200 OK" /run/cliproxy/antigravity-capabilities
+        grep -Fq "upstream_account_access_v1" /run/cliproxy/antigravity-capabilities
+        {
+            printf "POST /internal/gateway-management/antigravity/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/management-wrong-key
+        grep -Fq "401 Unauthorized" /run/cliproxy/management-wrong-key
+        {
+            printf "POST /internal/gateway-management/antigravity/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/management-invalid-import
+        grep -Fq "400 Bad Request" /run/cliproxy/management-invalid-import
+        if /usr/local/bin/sidecar-entrypoint --version > /run/cliproxy/second-process.log 2>&1; then
+            printf "%s\n" "A second OAuth refresh process acquired the credential store" >&2
+            exit 1
+        fi
+        grep -Fq "OAuth store is owned by another refresh process" /run/cliproxy/second-process.log
+        printf "%s\n" "CPA OAuth permissions, both provider capabilities, diagnostics, concurrency, separate management authentication, exclusive refresh locking and Gateway-independent startup checks passed"
     '

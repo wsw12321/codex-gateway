@@ -23,6 +23,12 @@ test -z "$(find "$keyring_dir" ! -type d ! -type f -print -quit)" || fail unsafe
 test -z "$(find "$keyring_dir" -type f ! -perm 0600 -print -quit)" || fail invalid_permissions
 test -z "$(find "$keyring_dir" ! -user 10002 -print -quit)" || fail invalid_permissions
 test -z "$(find "$keyring_dir" -type d ! -perm 0700 -print -quit)" || fail invalid_permissions
+# One credential owner at a time: serving, login, and migration must never
+# refresh the same token concurrently. The inherited descriptor holds the lock
+# across exec; migration takes the same lock before opening Secret Service.
+exec 9>"$keyring_dir/.gateway-refresh.lock"
+chmod 0600 "$keyring_dir/.gateway-refresh.lock"
+flock -n 9 || fail credential_owner_busy
 test -r "$key_file" && test -s "$key_file" || fail configuration
 export GNOME_KEYRING_CONTROL="$XDG_RUNTIME_DIR/keyring"
 mkdir -p "$HOME/.gemini/antigravity-cli" "$GNOME_KEYRING_CONTROL" 2>/dev/null || fail io_failed
@@ -58,6 +64,13 @@ case "${1:-serve}" in
         export SSH_CONNECTION='127.0.0.1 1 127.0.0.1 22'
         shift
         exec /usr/local/bin/antigravity-bridge auth-login "$@"
+        ;;
+    reauthorize)
+        # Migration retries must use an existing registry slot and retain its
+        # Gateway ID and disabled state, never create a new account by typo.
+        export SSH_CONNECTION='127.0.0.1 1 127.0.0.1 22'
+        shift
+        exec /usr/local/bin/antigravity-bridge auth-reauthorize "$@"
         ;;
     verify-login)
         export TERM=dumb

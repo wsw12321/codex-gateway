@@ -83,7 +83,9 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	}
 	if stream {
 		outgoing.Header.Set("Accept", "text/event-stream")
-		outgoing.Header.Set(geminiStreamHeader, "v1")
+		if !c.cpaNative {
+			outgoing.Header.Set(geminiStreamHeader, "v1")
+		}
 	} else {
 		outgoing.Header.Set("Accept", "application/json")
 	}
@@ -117,6 +119,9 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	if response.StatusCode != http.StatusOK || mediaErr != nil || mediaType != wantMediaType {
 		result.CompletedAt = time.Now()
 		return result, geminiProtocolFailure(errors.New("unexpected Gemini response status or content type"))
+	}
+	if c.cpaNative {
+		return c.forwardNativeGemini(ctx, w, response, model, declaredTools, stream, result)
 	}
 	if values := response.Header.Values(geminiStreamHeader); len(values) != 0 {
 		if !stream || len(values) != 1 || values[0] != "v1" {

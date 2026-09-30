@@ -22,6 +22,14 @@ func NewAntigravity(baseURL *url.URL, token string) *Client {
 	return client
 }
 
+// NewCPAAntigravity uses the same CPA instance and internal secret as Codex.
+// Provider routing comes from the reviewed model catalog, never caller headers.
+func NewCPAAntigravity(baseURL *url.URL, token string) *Client {
+	client := NewAntigravity(baseURL, token)
+	client.cpaNative = true
+	return client
+}
+
 func (c *Client) transportFailure(ctx context.Context, err error) *Failure {
 	failure := transportFailure(ctx, err)
 	if c.antigravity && failure.Code == "upstream_unavailable" {
@@ -31,7 +39,7 @@ func (c *Client) transportFailure(ctx context.Context, err error) *Failure {
 }
 
 func (c *Client) sanitizeFailure(response *http.Response) *Failure {
-	if !c.antigravity {
+	if !c.antigravity || c.cpaNative {
 		return sanitizeUpstreamFailure(response)
 	}
 	// Never expose the CLI's stderr, provider messages, or credentials through

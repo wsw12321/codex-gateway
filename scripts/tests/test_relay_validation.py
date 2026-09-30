@@ -26,6 +26,8 @@ class RelayValidationTests(unittest.TestCase):
                         ignore=shutil.ignore_patterns("secrets"))
         (cls.root / "scripts").mkdir()
         shutil.copy2(ROOT / "scripts/validate-compose.sh", cls.root / "scripts")
+        shutil.copy2(ROOT / "scripts/validate-cpa-panel.sh", cls.root / "scripts")
+        shutil.copytree(ROOT / "internal/server/assets/cpa", cls.root / "internal/server/assets/cpa")
         shutil.copy2(ROOT / "docker-compose.yml", cls.root)
         config = (ROOT / "deploy/env.example").read_text()
         gid = os.getgid() or 1
@@ -51,7 +53,7 @@ class RelayValidationTests(unittest.TestCase):
 
         def render(compose):
             result = subprocess.run(
-                ["docker", "compose", "--env-file", str(cls.root / ".env"),
+                ["docker", "compose", "--profile", "legacy-bridge", "--env-file", str(cls.root / ".env"),
                  "--env-file", str(cls.root / "deploy/images.lock.env"),
                  "-f", str(compose), "config", "--format", "json"],
                 env=cls.env, capture_output=True, text=True, timeout=30,
@@ -142,6 +144,64 @@ else:
         self.assertIn("CODEX_RELAY_IP=10.77.0.2", runs[1])
         self.assertIn("/usr/sbin/squid", runs[2])
         self.assertEqual(runs[2][runs[2].index("--ulimit") + 1], "nofile=4096:4096")
+
+    def test_pricing_requires_all_reviewed_native_models_and_preserves_codex(self):
+        environment = self.gateway["services"]["gateway"]["environment"]
+        pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
+        native = {
+            "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
+            "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
+            "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gpt-6.1-sol",
+        }
+        codex = {
+            "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
+            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
+        }
+        self.assertEqual(set(pricing["models"]), native | codex | {"codex-auto-review"})
+        for model in sorted(native):
+            with self.subTest(missing=model):
+                changed = copy.deepcopy(pricing)
+                del changed["models"][model]
+                environment["GATEWAY_USAGE_PRICING_JSON"] = json.dumps(changed)
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("strict reviewed schema v2 pricing catalog", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_pricing_rejects_retired_names_and_invalid_native_billing_shapes(self):
+        environment = self.gateway["services"]["gateway"]["environment"]
+        pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
+
+        def add_retired(model):
+            return lambda p: p["models"].update({model: p["models"]["gemini-pro-agent"]})
+
+        mutations = [
+            (model, add_retired(model)) for model in (
+                "gemini-3.1-pro-high", "gemini-3.6-flash-medium",
+                "gemini-3.7-flash-medium", "gemini-3.8-flash-medium",
+                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview",
+            )
+        ] + [
+            ("Gemini Flex", lambda p: p["models"]["gemini-3.1-pro-low"]["service_tiers"].update(
+                flex=p["models"]["gemini-3.1-pro-low"]["service_tiers"]["standard"])),
+            ("Gemini cache write", lambda p: p["models"]["gemini-3.1-flash-lite"]["service_tiers"]["standard"]["short"].update(
+                cache_write_usd_per_million="0.25")),
+            ("Pro threshold", lambda p: p["models"]["gemini-3.1-pro-low"].update(
+                long_context_threshold_tokens=272000)),
+            ("Sol threshold", lambda p: p["models"]["gpt-6.1-sol"].update(
+                long_context_threshold_tokens=200000)),
+            ("Sol cache write", lambda p: p["models"]["gpt-6.1-sol"]["service_tiers"]["standard"]["short"].pop(
+                "cache_write_usd_per_million")),
+        ]
+        for name, mutate in mutations:
+            with self.subTest(mutation=name):
+                changed = copy.deepcopy(pricing)
+                mutate(changed)
+                environment["GATEWAY_USAGE_PRICING_JSON"] = json.dumps(changed)
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("strict reviewed schema v2 pricing catalog", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
 
     def test_b_descriptor_limit_cannot_be_removed_or_increased(self):
         for limit in (None, {}, 4096, {"soft": 4096}, {"hard": 4096},

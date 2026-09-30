@@ -32,13 +32,17 @@ type Limits struct {
 }
 
 type Config struct {
-	ListenAddress          string
-	PublicURL              *url.URL
-	RPID                   string
-	RPOrigins              []string
-	DatabaseURL            string
-	SidecarURL             *url.URL
-	SidecarToken           string
+	ListenAddress      string
+	PublicURL          *url.URL
+	RPID               string
+	RPOrigins          []string
+	DatabaseURL        string
+	SidecarURL         *url.URL
+	SidecarToken       string
+	CPAManagementToken string
+	// AntigravityTransport is cpa by default. legacy-bridge is reserved for
+	// the rehearsed rollback build and requires separate bridge credentials.
+	AntigravityTransport   string
 	AntigravityBridgeURL   *url.URL
 	AntigravityBridgeToken string
 	AntigravityModelRoutes map[string]string
@@ -61,6 +65,10 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	sidecarToken, err := envOrFile("SIDECAR_API_KEY")
+	if err != nil {
+		return Config{}, err
+	}
+	cpaManagementToken, err := envOrFile("CPA_MANAGEMENT_KEY")
 	if err != nil {
 		return Config{}, err
 	}
@@ -92,6 +100,8 @@ func Load() (Config, error) {
 		ListenAddress:          envDefault("GATEWAY_LISTEN", ":8080"),
 		DatabaseURL:            databaseURL,
 		SidecarToken:           sidecarToken,
+		CPAManagementToken:     cpaManagementToken,
+		AntigravityTransport:   envDefault("ANTIGRAVITY_TRANSPORT", "cpa"),
 		AntigravityBridgeToken: antigravityToken,
 		AntigravityModelRoutes: antigravityRoutes,
 		BodyLimit:              defaultBodyLimit,
@@ -120,6 +130,12 @@ func Load() (Config, error) {
 	if value := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BRIDGE_URL")); value != "" {
 		if cfg.AntigravityBridgeURL, err = parseURL("ANTIGRAVITY_BRIDGE_URL", value); err != nil {
 			return Config{}, err
+		}
+	}
+	if cfg.UsesCPAAntigravity() && len(cfg.AntigravityModelRoutes) == 0 {
+		cfg.AntigravityModelRoutes = make(map[string]string)
+		for _, model := range AntigravityModels() {
+			cfg.AntigravityModelRoutes[model] = model
 		}
 	}
 	cfg.RPID = envDefault("WEBAUTHN_RP_ID", cfg.PublicURL.Hostname())
