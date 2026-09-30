@@ -67,7 +67,8 @@ sidecar，不进入数据库或备份。
 
 ### 身份与凭证
 
-- 无密码、无公开注册的邀请制身份系统；Owner 初始化链接只能从 SSH 终端生成。
+- 支持 Passkey 和密码的邀请制身份系统；Owner 初始化链接只能从 SSH 终端生成。
+- Owner 可创建自定义有效期、人数上限和审核流程的注册或群组邀请码，见[邀请管理](docs/invitations.md)。
 - 可发现 Passkey 登录、多 Passkey、WebAuthn RP/Origin 校验及 challenge 防重放。
 - API Key 创建、查看、启停、删除以及邀请和恢复等敏感操作要求 5 分钟内再次验证。
 - 每批生成 10 个一次性恢复码；Owner 可签发恢复邀请。

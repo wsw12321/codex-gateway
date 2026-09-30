@@ -73,12 +73,7 @@ func (s *Server) finishRegistration(w http.ResponseWriter, r *http.Request) {
 		s.authenticationFailure(w, r, "registration", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
-	s.audit(r, result.User.ID, "", "identity.registration", true, "user", result.User.ID, nil)
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok": true, "user": publicUser(result.User), "recovery_codes": result.RecoveryCodes,
-		"warning": "恢复码只显示这一次；请立即离线保存。",
-	})
+	s.writeRegistrationResult(w, r, result, "passkey")
 }
 
 func (s *Server) beginRecovery(w http.ResponseWriter, r *http.Request) {
@@ -387,8 +382,12 @@ func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Kind           string `json:"kind"`
-		TargetUsername string `json:"target_username"`
+		Kind             string     `json:"kind"`
+		TargetUsername   string     `json:"target_username"`
+		ExpiresAt        *time.Time `json:"expires_at"`
+		MaxUses          *int       `json:"max_uses"`
+		RequiresApproval bool       `json:"requires_approval"`
+		GroupID          string     `json:"group_id"`
 	}
 	if err := decodeJSON(w, r, &input, 32<<10); err != nil {
 		badJSON(w, r, err)
@@ -399,13 +398,30 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	if input.Kind == "recovery" {
 		kind = store.InvitationRecovery
 		target, err := s.store.GetUserByUsername(r.Context(), input.TargetUsername)
-		if err != nil {
+		if err != nil || target.Status != store.StatusActive {
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "unknown_recovery_user", "恢复账号不存在")
 			return
 		}
 		targetID = target.ID
+	} else if input.Kind == store.InvitationGroup {
+		kind = store.InvitationGroup
 	} else if input.Kind != "" && input.Kind != "member" {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_invitation_kind", "邀请类型无效")
+		return
+	}
+	maxUses := 1
+	if input.MaxUses != nil {
+		maxUses = *input.MaxUses
+	}
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	if input.ExpiresAt != nil {
+		expiresAt = input.ExpiresAt.UTC()
+	}
+	if maxUses < 1 || (kind == store.InvitationGroup && !validGroupID(input.GroupID)) ||
+		(kind != store.InvitationGroup && input.GroupID != "") ||
+		(kind == store.InvitationRecovery && (maxUses != 1 || input.RequiresApproval)) ||
+		(kind != store.InvitationRecovery && input.TargetUsername != "") {
+		s.invitationError(w, r, "create invitation", store.ErrInvalid)
 		return
 	}
 	generated, err := security.GenerateOpaqueToken(security.InvitationToken)
@@ -421,7 +437,8 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	user := userFrom(r.Context())
 	invitation, err := s.store.CreateInvitation(r.Context(), store.CreateInvitationParams{
 		Kind: kind, TokenHash: digest[:], InviterID: user.ID, TargetUserID: targetID,
-		ExpiresAt: time.Now().UTC().Add(24 * time.Hour), SourceIP: safeIP(r.Context()),
+		ExpiresAt: expiresAt, SourceIP: safeIP(r.Context()), MaxUses: maxUses,
+		RequiresApproval: input.RequiresApproval, GroupID: input.GroupID,
 	})
 	if err != nil {
 		s.storeWriteError(w, r, "create invitation", err)
@@ -429,13 +446,19 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	link := invitationLink(s.config.PublicURL.String(), generated.Token, kind)
 	s.audit(r, user.ID, sessionFrom(r.Context()).ID, "invitation.created", true, "invitation", invitation.ID, map[string]any{"kind": kind})
-	writeJSON(w, http.StatusCreated, map[string]any{"id": invitation.ID, "link": link, "expires_at": invitation.ExpiresAt})
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": invitation.ID, "link": link, "token": generated.Token, "expires_at": invitation.ExpiresAt,
+		"kind": invitation.Kind, "max_uses": invitation.MaxUses, "requires_approval": invitation.RequiresApproval,
+		"group_id": invitation.GroupID,
+	})
 }
 
 func invitationLink(publicURL, token, kind string) string {
 	fragment := "#token=" + token
 	if kind == store.InvitationRecovery {
 		fragment += "&kind=recovery"
+	} else if kind == store.InvitationGroup {
+		fragment += "&kind=group"
 	}
 	return strings.TrimRight(publicURL, "/") + "/join" + fragment
 }

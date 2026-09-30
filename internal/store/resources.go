@@ -37,11 +37,19 @@ func (s *Store) CreateDevice(ctx context.Context, params CreateDeviceParams) (De
 			return Device{}, err
 		}
 	}
-	device, err := scanDevice(s.db.QueryRowContext(ctx, `
-		INSERT INTO devices (id, user_id, name) VALUES ($1, $2, $3)
-		RETURNING `+deviceColumns, params.ID, params.UserID, params.Name,
-	))
-	return device, mapDBError("create device", err)
+	var device Device
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockNonPendingUserTx(ctx, tx, params.UserID); err != nil {
+			return err
+		}
+		var err error
+		device, err = scanDevice(tx.QueryRowContext(ctx, `
+			INSERT INTO devices (id, user_id, name) VALUES ($1, $2, $3)
+			RETURNING `+deviceColumns, params.ID, params.UserID, params.Name,
+		))
+		return mapDBError("create device", err)
+	})
+	return device, err
 }
 
 func (s *Store) GetDevice(ctx context.Context, userID, deviceID string) (Device, error) {
@@ -115,11 +123,19 @@ func (s *Store) CreateProject(ctx context.Context, params CreateProjectParams) (
 			return Project{}, err
 		}
 	}
-	project, err := scanProject(s.db.QueryRowContext(ctx, `
-		INSERT INTO projects (id, user_id, slug, name) VALUES ($1, $2, $3, $4)
-		RETURNING `+projectColumns, params.ID, params.UserID, params.Slug, params.Name,
-	))
-	return project, mapDBError("create project", err)
+	var project Project
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockNonPendingUserTx(ctx, tx, params.UserID); err != nil {
+			return err
+		}
+		var err error
+		project, err = scanProject(tx.QueryRowContext(ctx, `
+			INSERT INTO projects (id, user_id, slug, name) VALUES ($1, $2, $3, $4)
+			RETURNING `+projectColumns, params.ID, params.UserID, params.Slug, params.Name,
+		))
+		return mapDBError("create project", err)
+	})
+	return project, err
 }
 
 func (s *Store) GetProject(ctx context.Context, userID, projectID string) (Project, error) {
@@ -252,6 +268,9 @@ func (s *Store) CreateAPIKey(ctx context.Context, params CreateAPIKeyParams) (AP
 	}
 	var key APIKey
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockNonPendingUserTx(ctx, tx, params.UserID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO api_key_history (id, user_id, device_id, key_prefix, created_at)
 			VALUES ($1, $2, $3, $4, $5)`,

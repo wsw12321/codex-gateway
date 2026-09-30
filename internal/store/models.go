@@ -13,10 +13,12 @@ const (
 
 	StatusActive   = "active"
 	StatusDisabled = "disabled"
+	StatusPending  = "pending"
 
 	InvitationOwnerBootstrap = "owner_bootstrap"
 	InvitationMember         = "member"
 	InvitationRecovery       = "recovery"
+	InvitationGroup          = "group"
 
 	UpstreamAccountStatusAvailable   = "available"
 	UpstreamAccountStatusUnavailable = "unavailable"
@@ -36,17 +38,35 @@ type User struct {
 }
 
 type Invitation struct {
-	ID           string
-	Kind         string
-	TokenHash    []byte
-	InviterID    *string
-	TargetUserID *string
-	CreatedAt    time.Time
-	ExpiresAt    time.Time
-	UsedAt       *time.Time
-	UsedByUserID *string
-	RevokedAt    *time.Time
-	SourceIP     *string
+	ID               string
+	Kind             string
+	TokenHash        []byte
+	InviterID        *string
+	TargetUserID     *string
+	CreatedAt        time.Time
+	ExpiresAt        time.Time
+	UsedAt           *time.Time
+	UsedByUserID     *string
+	RevokedAt        *time.Time
+	SourceIP         *string
+	MaxUses          int
+	RequiresApproval bool
+	GroupID          *string
+	GroupName        string
+	UsedCount        int
+}
+
+type InvitationApplication struct {
+	ID           string     `json:"id"`
+	InvitationID string     `json:"invitation_id"`
+	UserID       *string    `json:"user_id"`
+	Username     string     `json:"username"`
+	DisplayName  string     `json:"display_name"`
+	RegisteredAt time.Time  `json:"registered_at"`
+	AppliedAt    time.Time  `json:"applied_at"`
+	Status       string     `json:"status"`
+	ReviewedAt   *time.Time `json:"reviewed_at"`
+	ReviewedBy   *string    `json:"reviewed_by"`
 }
 
 type WebAuthnCredential struct {

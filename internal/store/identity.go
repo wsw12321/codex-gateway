@@ -148,32 +148,58 @@ func (s *Store) RecordUserLogin(ctx context.Context, userID string, at time.Time
 	return requireAffected("record user login", result)
 }
 
+// invitationColumns is shared by invitation reads and INSERT/UPDATE RETURNING.
 const invitationColumns = `id, kind, token_hash, inviter_id, target_user_id, created_at, expires_at,
-	used_at, used_by_user_id, revoked_at, host(source_ip)`
+ used_at, used_by_user_id, revoked_at, host(source_ip), max_uses, requires_approval, group_id,
+ COALESCE((SELECT g.name FROM user_groups g WHERE g.id=invitations.group_id),''),
+ (SELECT count(*) FROM invitation_applications a WHERE a.invitation_id=invitations.id)`
 
 func scanInvitation(row rowScanner) (Invitation, error) {
 	var invitation Invitation
-	err := row.Scan(
-		&invitation.ID, &invitation.Kind, &invitation.TokenHash, &invitation.InviterID,
+	err := row.Scan(&invitation.ID, &invitation.Kind, &invitation.TokenHash, &invitation.InviterID,
 		&invitation.TargetUserID, &invitation.CreatedAt, &invitation.ExpiresAt,
 		&invitation.UsedAt, &invitation.UsedByUserID, &invitation.RevokedAt, &invitation.SourceIP,
-	)
+		&invitation.MaxUses, &invitation.RequiresApproval, &invitation.GroupID, &invitation.GroupName, &invitation.UsedCount)
 	return invitation, err
 }
 
 type CreateInvitationParams struct {
-	ID           string
-	Kind         string
-	TokenHash    []byte
-	InviterID    string
-	TargetUserID string
-	ExpiresAt    time.Time
-	SourceIP     string
+	ID               string
+	Kind             string
+	TokenHash        []byte
+	InviterID        string
+	TargetUserID     string
+	ExpiresAt        time.Time
+	SourceIP         string
+	MaxUses          int
+	RequiresApproval bool
+	GroupID          string
 }
 
 func (s *Store) CreateInvitation(ctx context.Context, params CreateInvitationParams) (Invitation, error) {
-	if len(params.TokenHash) != 32 || params.ExpiresAt.IsZero() {
-		return Invitation{}, fmt.Errorf("%w: invalid invitation hash or expiry", ErrInvalid)
+	now := s.now().UTC()
+	if params.ExpiresAt.IsZero() {
+		params.ExpiresAt = now.Add(24 * time.Hour)
+	}
+	if params.MaxUses == 0 {
+		params.MaxUses = 1
+	}
+	if len(params.TokenHash) != 32 || !params.ExpiresAt.After(now) || params.MaxUses < 1 || params.MaxUses > math.MaxInt32 {
+		return Invitation{}, fmt.Errorf("%w: invalid invitation hash, expiry or capacity", ErrInvalid)
+	}
+	switch params.Kind {
+	case InvitationOwnerBootstrap, InvitationRecovery:
+		if params.MaxUses != 1 || params.RequiresApproval || params.ExpiresAt.After(now.Add(24*time.Hour)) {
+			return Invitation{}, ErrInvalid
+		}
+	case InvitationMember, InvitationGroup:
+	default:
+		return Invitation{}, ErrInvalid
+	}
+	if (params.Kind == InvitationGroup) != (params.GroupID != "") ||
+		(params.Kind == InvitationRecovery) != (params.TargetUserID != "") ||
+		(params.Kind != InvitationOwnerBootstrap && params.InviterID == "") {
+		return Invitation{}, ErrInvalid
 	}
 	if params.ID == "" {
 		var err error
@@ -182,110 +208,106 @@ func (s *Store) CreateInvitation(ctx context.Context, params CreateInvitationPar
 			return Invitation{}, err
 		}
 	}
-	invitation, err := scanInvitation(s.db.QueryRowContext(ctx, `
-		INSERT INTO invitations
-			(id, kind, token_hash, inviter_id, target_user_id, expires_at, source_ip)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::inet)
-		RETURNING `+invitationColumns,
-		params.ID, params.Kind, params.TokenHash, valueOrNil(params.InviterID),
-		valueOrNil(params.TargetUserID), params.ExpiresAt, valueOrNil(params.SourceIP),
-	))
-	return invitation, mapDBError("create invitation", err)
+	var invitation Invitation
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		ids := []string{}
+		if params.InviterID != "" {
+			ids = append(ids, params.InviterID)
+		}
+		if params.TargetUserID != "" {
+			ids = append(ids, params.TargetUserID)
+		}
+		users, err := lockInvitationUsersTx(ctx, tx, ids, false)
+		if err != nil {
+			return err
+		}
+		for _, user := range users {
+			if user.Status != StatusActive {
+				return ErrConflict
+			}
+		}
+		if params.GroupID != "" {
+			if err := lockActiveInvitationGroupTx(ctx, tx, params.GroupID); err != nil {
+				return err
+			}
+		}
+		invitation, err = scanInvitation(tx.QueryRowContext(ctx, `INSERT INTO invitations
+   (id,kind,token_hash,inviter_id,target_user_id,created_at,expires_at,source_ip,max_uses,requires_approval,group_id)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8::inet,$9,$10,$11) RETURNING `+invitationColumns,
+			params.ID, params.Kind, params.TokenHash, valueOrNil(params.InviterID), valueOrNil(params.TargetUserID), now,
+			params.ExpiresAt, valueOrNil(params.SourceIP), params.MaxUses, params.RequiresApproval, valueOrNil(params.GroupID)))
+		return mapDBError("create invitation", err)
+	})
+	return invitation, err
 }
 
-// GetAvailableInvitation is a read-only ceremony preflight. Security-sensitive
-// completion must still use CreateUserFromInvitation or ConsumeInvitation,
-// which re-check availability while holding a row lock.
+// GetAvailableInvitation is a read-only ceremony preflight. Completion checks
+// capacity again after acquiring the invitation row lock.
 func (s *Store) GetAvailableInvitation(ctx context.Context, tokenHash []byte, at time.Time) (Invitation, error) {
 	if at.IsZero() {
 		at = s.now().UTC()
 	}
-	invitation, err := scanInvitation(s.db.QueryRowContext(ctx, `
-		SELECT `+invitationColumns+` FROM invitations
-		WHERE token_hash = $1 AND used_at IS NULL AND revoked_at IS NULL
-		  AND expires_at > $2`, tokenHash, at,
-	))
+	invitation, err := scanInvitation(s.db.QueryRowContext(ctx, `SELECT `+invitationColumns+` FROM invitations
+  WHERE token_hash=$1 AND used_at IS NULL AND revoked_at IS NULL AND expires_at>$2
+  AND (kind NOT IN ('member','group') OR (SELECT count(*) FROM invitation_applications a WHERE a.invitation_id=invitations.id)<max_uses)
+  AND (group_id IS NULL OR EXISTS (SELECT 1 FROM user_groups g WHERE g.id=invitations.group_id AND g.archived_at IS NULL))`, tokenHash, at))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Invitation{}, ErrInvitationUnavailable
 	}
 	return invitation, mapDBError("get available invitation", err)
 }
 
-// ConsumeInvitation is a single-use compare-and-set. For recovery invitations,
-// usedByUserID must match the invitation target.
+// ConsumeInvitation retains the single-use primitive for identity invitations.
+// Member and group invitations must use their complete application transaction.
 func (s *Store) ConsumeInvitation(ctx context.Context, tokenHash []byte, usedByUserID string, at time.Time) (Invitation, error) {
-	invitation, err := scanInvitation(s.db.QueryRowContext(ctx, `
-		UPDATE invitations
-		SET used_at = $3, used_by_user_id = $2
-		WHERE token_hash = $1
-		  AND used_at IS NULL AND revoked_at IS NULL AND expires_at > $3
-		  AND (target_user_id IS NULL OR target_user_id = $2)
-		RETURNING `+invitationColumns,
-		tokenHash, usedByUserID, at,
-	))
-	if errors.Is(err, sql.ErrNoRows) {
-		return Invitation{}, ErrInvitationUnavailable
+	if at.IsZero() {
+		at = s.now().UTC()
 	}
-	return invitation, mapDBError("consume invitation", err)
-}
-
-// CreateUserFromInvitation atomically creates a member/owner and consumes the
-// invitation. Recovery invitations intentionally use ConsumeInvitation.
-func (s *Store) CreateUserFromInvitation(ctx context.Context, tokenHash []byte, params CreateUserParams) (User, error) {
-	var created User
+	var invitation Invitation
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		invitation, err := scanInvitation(tx.QueryRowContext(ctx, `
-			SELECT `+invitationColumns+`
-			FROM invitations WHERE token_hash = $1 FOR UPDATE`, tokenHash,
-		))
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrInvitationUnavailable
-		}
-		if err != nil {
-			return mapDBError("lock invitation", err)
-		}
-		now := s.now().UTC()
-		if invitation.Kind == InvitationRecovery || invitation.UsedAt != nil ||
-			invitation.RevokedAt != nil || !invitation.ExpiresAt.After(now) {
-			return ErrInvitationUnavailable
-		}
-		if invitation.Kind == InvitationOwnerBootstrap {
-			params.Role = UserRoleOwner
-		} else {
-			params.Role = UserRoleMember
-		}
-		params, err = normalizeCreateUser(params)
+		users, err := lockInvitationUsersTx(ctx, tx, []string{usedByUserID}, false)
 		if err != nil {
 			return err
 		}
-		created, err = scanUser(tx.QueryRowContext(ctx, `
-			INSERT INTO users (id, username, display_name, webauthn_user_id, role)
-			VALUES ($1, $2, $3, $4, $5)
-			RETURNING `+userColumns,
-			params.ID, params.Username, params.DisplayName, params.WebAuthnUserID, params.Role,
-		))
-		if err != nil {
-			return mapDBError("create invited user", err)
+		if users[usedByUserID].Status != StatusActive {
+			return ErrInvitationUnavailable
 		}
-		result, err := tx.ExecContext(ctx, `
-			UPDATE invitations SET used_at = $2, used_by_user_id = $3
-			WHERE id = $1 AND used_at IS NULL AND revoked_at IS NULL`,
-			invitation.ID, now, created.ID,
-		)
-		if err != nil {
-			return mapDBError("consume invitation", err)
+		invitation, err = scanInvitation(tx.QueryRowContext(ctx, `UPDATE invitations SET used_at=$3,used_by_user_id=$2
+   WHERE token_hash=$1 AND kind IN ('owner_bootstrap','recovery') AND used_at IS NULL AND revoked_at IS NULL
+   AND expires_at>$3 AND (target_user_id IS NULL OR target_user_id=$2) RETURNING `+invitationColumns, tokenHash, usedByUserID, at))
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInvitationUnavailable
 		}
-		return requireAffected("consume invitation", result)
+		return mapDBError("consume invitation", err)
+	})
+	return invitation, err
+}
+
+// CreateUserFromInvitation is the credential-free counterpart used by setup
+// helpers. Production registration writes credentials in the same transaction.
+func (s *Store) CreateUserFromInvitation(ctx context.Context, tokenHash []byte, params CreateUserParams) (User, error) {
+	var created User
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		invitation, err := lockRegistrationInvitationTx(ctx, tx, tokenHash, s.now().UTC())
+		if err != nil {
+			return err
+		}
+		created, err = createInvitedUserTx(ctx, tx, invitation, params)
+		if err != nil {
+			return err
+		}
+		return recordRegistrationApplicationTx(ctx, tx, invitation, created, s.now().UTC())
 	})
 	return created, err
 }
 
 func (s *Store) RevokeInvitation(ctx context.Context, invitationID, inviterID string, at time.Time) error {
-	result, err := s.db.ExecContext(ctx, `
-		UPDATE invitations SET revoked_at = $3
-		WHERE id = $1 AND inviter_id = $2 AND used_at IS NULL AND revoked_at IS NULL`,
-		invitationID, inviterID, at,
-	)
+	if at.IsZero() {
+		at = s.now().UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE invitations SET revoked_at=COALESCE(revoked_at,$3)
+  WHERE id=$1 AND (inviter_id=$2 OR EXISTS (SELECT 1 FROM users WHERE id=$2 AND role='owner' AND status='active'))
+  AND used_at IS NULL`, invitationID, inviterID, at)
 	if err != nil {
 		return mapDBError("revoke invitation", err)
 	}
@@ -518,37 +540,20 @@ func scanSession(row rowScanner) (Session, error) {
 }
 
 func (s *Store) CreateSession(ctx context.Context, params CreateSessionParams) (Session, error) {
-	if len(params.TokenHash) != 32 || len(params.CSRFSecret) < 32 ||
-		(len(params.UserAgentHash) != 0 && len(params.UserAgentHash) != 32) {
-		return Session{}, fmt.Errorf("%w: invalid session secret hash", ErrInvalid)
-	}
 	if params.CreatedAt.IsZero() {
 		params.CreatedAt = s.now().UTC()
 	}
-	if !params.IdleExpiresAt.After(params.CreatedAt) ||
-		params.IdleExpiresAt.After(params.CreatedAt.Add(12*time.Hour)) ||
-		params.IdleExpiresAt.After(params.AbsoluteExpiresAt) ||
-		params.AbsoluteExpiresAt.After(params.CreatedAt.Add(7*24*time.Hour)) {
-		return Session{}, fmt.Errorf("%w: invalid session expiry", ErrInvalid)
-	}
-	if params.ID == "" {
-		var err error
-		params.ID, err = newUUID()
-		if err != nil {
-			return Session{}, err
+	var session Session
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		var userID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE id=$1 AND status='active' FOR UPDATE`, params.UserID).Scan(&userID); err != nil {
+			return mapDBError("lock session user", err)
 		}
-	}
-	session, err := scanSession(s.db.QueryRowContext(ctx, `
-		INSERT INTO sessions
-			(id, user_id, token_hash, csrf_secret, source_ip, user_agent_hash,
-			 created_at, last_seen_at, idle_expires_at, absolute_expires_at)
-		VALUES ($1, $2, $3, $4, $5::inet, $6, $7, $7, $8, $9)
-		RETURNING `+sessionColumns,
-		params.ID, params.UserID, params.TokenHash, params.CSRFSecret,
-		valueOrNil(params.SourceIP), valueOrNilBytes(params.UserAgentHash), params.CreatedAt,
-		params.IdleExpiresAt, params.AbsoluteExpiresAt,
-	))
-	return session, mapDBError("create session", err)
+		var err error
+		session, err = insertSession(ctx, tx, params, false)
+		return err
+	})
+	return session, err
 }
 
 func (s *Store) GetActiveSession(ctx context.Context, tokenHash []byte, at time.Time) (Session, error) {

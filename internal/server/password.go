@@ -30,12 +30,7 @@ func (s *Server) passwordRegister(w http.ResponseWriter, r *http.Request) {
 		s.passwordFailure(w, r, "password_registration", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
-	s.audit(r, result.User.ID, "", "identity.registration", true, "user", result.User.ID, map[string]any{"method": "password"})
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"ok": true, "user": publicUser(result.User), "recovery_codes": result.RecoveryCodes,
-		"warning": "恢复码只显示这一次；请立即离线保存。",
-	})
+	s.writeRegistrationResult(w, r, result, "password")
 }
 
 func (s *Server) passwordLogin(w http.ResponseWriter, r *http.Request) {

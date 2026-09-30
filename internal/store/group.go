@@ -430,6 +430,11 @@ func (s *Store) SetGroupMembers(ctx context.Context, params SetGroupMembersParam
 				return Group{}, fmt.Errorf("%w: user already belongs to another group", ErrConflict)
 			}
 		}
+		for _, id := range ids {
+			if err := lockNonPendingUserTx(ctx, tx, id); err != nil {
+				return Group{}, err
+			}
+		}
 		if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {
 			return Group{}, err
 		}

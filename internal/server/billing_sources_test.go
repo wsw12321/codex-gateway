@@ -256,6 +256,11 @@ func newBillingSourceTestServer(t *testing.T, role string, verified *time.Time) 
 		switch {
 		case strings.Contains(query, "FROM sessions"):
 			return &upstreamAuditRows{columns: make([]string, 13), values: []driver.Value{"session-1", "self-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verification, nil, ""}}, nil
+		case strings.Contains(query, "SELECT status FROM users"):
+			if len(args) != 1 || args[0].Value != "self-1" {
+				return nil, errors.New("only session user may be targeted")
+			}
+			return &upstreamAuditRows{columns: []string{"status"}, values: []driver.Value{store.StatusActive}}, nil
 		case strings.Contains(query, "FROM users"):
 			return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"self-1", "self", "Self", []byte("webauthn-id"), role, store.StatusActive, now, now, nil, nil}}, nil
 		case strings.Contains(query, "FROM billing_accounts"):

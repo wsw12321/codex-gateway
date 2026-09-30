@@ -175,30 +175,14 @@ func (s *Store) CompleteInvitationRegistration(ctx context.Context, params Compl
 		return user, session, err
 	}
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		invitation, err := scanInvitation(tx.QueryRowContext(ctx, `SELECT `+invitationColumns+` FROM invitations WHERE token_hash=$1 FOR UPDATE`, params.InvitationHash))
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrInvitationUnavailable
-		}
-		if err != nil {
-			return mapDBError("lock invitation", err)
-		}
 		now := s.now().UTC()
-		if invitation.Kind == InvitationRecovery || invitation.UsedAt != nil || invitation.RevokedAt != nil || !invitation.ExpiresAt.After(now) {
-			return ErrInvitationUnavailable
-		}
-		if invitation.Kind == InvitationOwnerBootstrap {
-			params.User.Role = UserRoleOwner
-		} else {
-			params.User.Role = UserRoleMember
-		}
-		params.User, err = normalizeCreateUser(params.User)
+		invitation, err := lockRegistrationInvitationTx(ctx, tx, params.InvitationHash, now)
 		if err != nil {
 			return err
 		}
-		user, err = scanUser(tx.QueryRowContext(ctx, `INSERT INTO users (id,username,display_name,webauthn_user_id,role) VALUES ($1,$2,$3,$4,$5) RETURNING `+userColumns,
-			params.User.ID, params.User.Username, params.User.DisplayName, params.User.WebAuthnUserID, params.User.Role))
+		user, err = createInvitedUserTx(ctx, tx, invitation, params.User)
 		if err != nil {
-			return mapDBError("create invited user", err)
+			return err
 		}
 		if err := writeIdentityCredential(ctx, tx, user.ID, params.Credential, now, false); err != nil {
 			return err
@@ -206,16 +190,14 @@ func (s *Store) CompleteInvitationRegistration(ctx context.Context, params Compl
 		if err := insertRecoveryCodes(ctx, tx, user.ID, params.RecoveryHashes); err != nil {
 			return err
 		}
-		params.Session.UserID = user.ID
-		session, err = insertSession(ctx, tx, params.Session, false)
-		if err != nil {
-			return err
+		if user.Status != StatusPending {
+			params.Session.UserID = user.ID
+			session, err = insertSession(ctx, tx, params.Session, false)
+			if err != nil {
+				return err
+			}
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE invitations SET used_at=$2,used_by_user_id=$3 WHERE id=$1 AND used_at IS NULL AND revoked_at IS NULL`, invitation.ID, now, user.ID)
-		if err != nil {
-			return mapDBError("consume invitation", err)
-		}
-		return requireAffected("consume invitation", result)
+		return recordRegistrationApplicationTx(ctx, tx, invitation, user, now)
 	})
 	return user, session, err
 }
@@ -239,7 +221,25 @@ func (s *Store) CompleteAccountRecovery(ctx context.Context, params CompleteReco
 		params.At = s.now().UTC()
 	}
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		var err error
+		if len(params.InvitationHash) == 32 {
+			var target *string
+			if err := tx.QueryRowContext(ctx, `SELECT target_user_id FROM invitations WHERE token_hash=$1 AND kind='recovery'`, params.InvitationHash).Scan(&target); err != nil || target == nil {
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return mapDBError("read recovery target", err)
+				}
+				return ErrInvitationUnavailable
+			}
+			params.UserID = *target
+		}
+		users, err := lockInvitationUsersTx(ctx, tx, []string{params.UserID}, false)
+		if err != nil {
+			return err
+		}
+		user = users[params.UserID]
+		if user.Status != StatusActive {
+			return ErrNotFound
+		}
+
 		if len(params.InvitationHash) == 32 {
 			invitation, scanErr := scanInvitation(tx.QueryRowContext(ctx, `SELECT `+invitationColumns+` FROM invitations WHERE token_hash=$1 FOR UPDATE`, params.InvitationHash))
 			if errors.Is(scanErr, sql.ErrNoRows) {
@@ -271,10 +271,6 @@ func (s *Store) CompleteAccountRecovery(ctx context.Context, params CompleteReco
 			if _, err := tx.ExecContext(ctx, `UPDATE recovery_codes SET used_at=$2 WHERE id=$1`, codeID, params.At); err != nil {
 				return mapDBError("consume recovery code", err)
 			}
-		}
-		user, err = scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1 AND status='active' FOR UPDATE`, params.UserID))
-		if err != nil {
-			return mapDBError("lock recovery user", err)
 		}
 		if err := writeIdentityCredential(ctx, tx, user.ID, params.Credential, params.At, true); err != nil {
 			return err

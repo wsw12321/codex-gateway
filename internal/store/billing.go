@@ -939,7 +939,7 @@ func lockBillingAccountTx(ctx context.Context, tx *sql.Tx, userID string) error 
 		WHERE user_id = $1 FOR UPDATE`, userID).Scan(&locked); err != nil {
 		return mapDBError("lock billing account", err)
 	}
-	return nil
+	return lockNonPendingUserTx(ctx, tx, userID)
 }
 
 func appendBillingAuditTx(ctx context.Context, tx *sql.Tx, params BillingWriteParams,
@@ -986,6 +986,9 @@ func (s *Store) SetBillingSourceDisabled(ctx context.Context, params SetBillingS
 		if err := tx.QueryRowContext(ctx, `SELECT `+column+` FROM billing_accounts
 			WHERE user_id = $1 FOR UPDATE`, params.UserID).Scan(&previous); err != nil {
 			return mapDBError("lock billing source preference", err)
+		}
+		if err := lockNonPendingUserTx(ctx, tx, params.UserID); err != nil {
+			return err
 		}
 		// #nosec G202 -- column comes from the fixed switch allowlist above; user ID, preference, and time are bound parameters.
 		if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET `+column+` = $2,
@@ -1600,7 +1603,7 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 			SELECT u.id, u.username, u.display_name, a.balance_usd::text,
 				a.day_source_disabled, a.week_source_disabled, a.month_source_disabled, a.cash_source_disabled
 			FROM users u JOIN billing_accounts a ON a.user_id = u.id
-			WHERE u.id = $1 FOR UPDATE OF a`, userID).Scan(
+			WHERE u.id = $1 AND u.status <> 'pending' FOR UPDATE OF a`, userID).Scan(
 			&state.UserID, &state.Username, &state.DisplayName, &state.BalanceUSD,
 			&state.SourceDisabled.Day, &state.SourceDisabled.Week,
 			&state.SourceDisabled.Month, &state.SourceDisabled.Cash); err != nil {
@@ -1675,7 +1678,7 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 
 func (s *Store) ListBillingUsers(ctx context.Context) ([]BillingUserSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, username, display_name, role, status
-		FROM users ORDER BY lower(username), id`)
+		FROM users WHERE status <> 'pending' ORDER BY lower(username), id`)
 	if err != nil {
 		return nil, mapDBError("list billing users", err)
 	}

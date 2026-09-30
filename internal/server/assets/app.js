@@ -10,6 +10,7 @@ const sectionTitles = {
   billing: "额度与订阅",
   "model-multipliers": "模型倍率",
   groups: "群组额度",
+  invitations: "邀请管理",
   security: "账号安全",
   usage: "使用统计",
   monitoring: "请求监控",
@@ -25,6 +26,7 @@ ownerOnlySections.add("model-access");
 ownerOnlySections.add("model-multipliers");
 ownerOnlySections.add("model-identification");
 ownerOnlySections.add("groups");
+ownerOnlySections.add("invitations");
 ownerOnlySections.add("information");
 ownerOnlySections.add("monitoring");
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -37,6 +39,10 @@ const integerFormatter = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 
 
 let invitationToken = "";
 let invitationKind = "member";
+let invitationContextSequence = 0;
+let inspectedInvitation = null;
+let groupInvitationUser = null;
+let checkingInvitationSession = false;
 let state = null;
 let overviewSummary = null;
 let overviewRequestSequence = 0;
@@ -562,6 +568,7 @@ function setBusy(host, busy, label = "处理中…") {
   if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh") syncGroupControls();
   if (host.closest?.('[data-section="information"]')) syncInformationControls();
   if (host.id === "model-identification-form") syncModelIdentificationControls();
+  if (host.closest?.('[data-section="invitations"], #invitation-dialog')) syncInvitationControls();
 }
 
 function bindAsync(id, eventName, handler, busyLabel = "处理中…", requestCurrent = null) {
@@ -629,6 +636,7 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  const preserveGroupInvitation = checkingInvitationSession === invitationContextSequence && invitationKind === "group" && Boolean(invitationToken);
   closeNavigationDrawer(false);
   resetOverview();
   clearUpstreamAccountUIState();
@@ -637,9 +645,10 @@ function handleUnauthorized() {
   resetMonitoring();
   resetInformation();
   resetGroupManagement();
+  resetInvitationManagement();
   identityGeneration++;
   cancelReauthentication();
-  invitationToken = "";
+  if (!preserveGroupInvitation) clearInvitationContext();
   secretAfterClose = null;
   personalRequestSequence++;
   globalRequestSequence++;
@@ -676,6 +685,8 @@ function handleUnauthorized() {
   show("auth");
   hide("join-view");
   hide("recover-view");
+  hide("registration-pending-view");
+  if (!preserveGroupInvitation) hide("group-invitation-view");
   show("login-view");
   byId("whoami").textContent = "—";
   byId("role").textContent = "—";
@@ -835,19 +846,32 @@ async function getPasskey(ceremony) {
 }
 
 async function login() {
-  const ceremony = await api("/auth/login/begin", {method: "POST", body: "{}"});
+  const current = loginRequestCurrent();
+  const ceremony = await api("/auth/login/begin", {method: "POST", body: "{}"}, current);
   const credential = await getPasskey(ceremony);
-  await api("/auth/login/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})});
+  requireCurrentRequest(current);
+  await api("/auth/login/finish", {method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential})}, current);
+  requireCurrentRequest(current);
   await finishLogin();
 }
 
 async function passwordLogin(event) {
-  const data = Object.fromEntries(new FormData(event.currentTarget));
-  await api("/auth/password/login", {method: "POST", body: JSON.stringify(data)});
+  const current = loginRequestCurrent();
+  const form = event.currentTarget;
+  const data = Object.fromEntries(new FormData(form));
+  await api("/auth/password/login", {method: "POST", body: JSON.stringify(data)}, current);
+  requireCurrentRequest(current);
+  form.reset();
   await finishLogin();
 }
 
 async function finishLogin() {
+  const current = loginRequestCurrent();
+  requireCurrentRequest(current);
+  if (invitationKind === "group" && invitationToken) {
+    await loadGroupInvitationAccount(current);
+    return;
+  }
   history.replaceState(null, "", "/#overview");
   await loadDashboard();
 }
@@ -975,19 +999,28 @@ function showSecret(title, value, description, afterClose = null, dismissible = 
   window.setTimeout(() => byId("secret-value").focus(), 0);
 }
 
-function finishWithRecoveryCodes(codes) {
+function finishWithRecoveryCodes(codes, status = "approved") {
   const values = Array.isArray(codes) ? codes : [];
-  invitationToken = "";
+  clearInvitationContext();
+  byId("join-form").reset();
+  setBusy(byId("join-form"), false);
   showSecret(
     "保存新的恢复码",
     values.join("\n"),
     "恢复码只显示这一次。请立即离线保存；每个恢复码只能使用一次。",
-    () => location.assign("/#overview"),
+    () => {
+      if (status !== "pending") { location.assign("/#overview"); return; }
+      for (const id of ["login-view", "join-view", "recover-view", "group-invitation-view", "dashboard"]) hide(id);
+      show("auth");
+      show("registration-pending-view");
+    },
   );
 }
 
 async function register(event) {
   if (!invitationToken) throw new Error("邀请链接缺少令牌，或链接已被浏览器清理。");
+  if (invitationKind === "group") throw new Error("群组邀请仅供已有账号申请入群。");
+  const current = invitationRequestCurrent();
   const data = Object.fromEntries(new FormData(event.currentTarget));
   data.invitation_token = invitationToken;
   if (data.login_method === "password") {
@@ -997,23 +1030,26 @@ async function register(event) {
     if (invitationKind === "recovery") {
       delete data.username;
       delete data.display_name;
-      const result = await api("/auth/password/recovery", {method: "POST", body: JSON.stringify(data)});
+      const result = await api("/auth/password/recovery", {method: "POST", body: JSON.stringify(data)}, current);
       finishWithRecoveryCodes(result.recovery_codes);
       return;
     }
-    const result = await api("/auth/password/register", {method: "POST", body: JSON.stringify(data)});
-    finishWithRecoveryCodes(result.recovery_codes);
+    const result = await api("/auth/password/register", {method: "POST", body: JSON.stringify(data)}, current);
+    requireCurrentRequest(current);
+    finishWithRecoveryCodes(result.recovery_codes, result.status);
     return;
   }
   delete data.login_method;
   delete data.password;
   delete data.password_confirmation;
-  const ceremony = await api("/auth/register/begin", {method: "POST", body: JSON.stringify(data)});
+  const ceremony = await api("/auth/register/begin", {method: "POST", body: JSON.stringify(data)}, current);
   const credential = await createPasskey(ceremony);
+  requireCurrentRequest(current);
   const result = await api("/auth/register/finish", {
     method: "POST", body: JSON.stringify({flow_id: ceremony.flow_id, credential}),
-  });
-  finishWithRecoveryCodes(result.recovery_codes);
+  }, current);
+  requireCurrentRequest(current);
+  finishWithRecoveryCodes(result.recovery_codes, result.status);
 }
 
 async function recover(event) {
@@ -1528,6 +1564,7 @@ function renderState(value) {
     resetInformation();
     identityGeneration++;
     resetGroupManagement();
+    resetInvitationManagement();
     billingRequestSequence++;
     billingUsersRequestSequence++;
     globalRequestSequence++;
@@ -1680,15 +1717,454 @@ function recoveryHintedLink(link) {
 }
 
 async function invite(kind, targetUsername = "") {
+  const current = invitationOwnerCurrent();
+  requireCurrentRequest(current);
   const result = await sensitiveAction(() => api("/admin/invitations", {
     method: "POST", body: JSON.stringify({kind, target_username: targetUsername}),
-  }));
+  }, current), current);
+  requireCurrentRequest(current);
   const link = kind === "recovery" ? recoveryHintedLink(result.link) : result.link;
   showSecret(
     kind === "recovery" ? "保存恢复邀请" : "分享成员邀请",
     link || "",
     `链接只可使用一次，将于 ${formatDateTime(result.expires_at, "24 小时内")} 失效。`,
   );
+}
+
+let invitationListSequence = 0;
+let invitationDetailSequence = 0;
+let invitationGroupsSequence = 0;
+let invitationList = [];
+let invitationGroups = [];
+let selectedInvitation = null;
+let invitationApplications = [];
+let invitationSelectedApplications = new Set();
+let invitationOffset = 0;
+let invitationApplicationOffset = 0;
+let invitationListLoading = false;
+let invitationApplicationsLoading = false;
+let invitationOperation = false;
+const invitationPageSize = 50;
+
+function invitationOwnerCurrent() {
+  const generation = identityGeneration;
+  const actor = state?.user?.id;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner" && state.user.id === actor;
+}
+
+function invitationMessage(id, message = "", error = false) {
+  const target = byId(id);
+  target.textContent = message;
+  target.dataset.kind = error ? "error" : "ok";
+  target.classList.toggle("hidden", !message);
+}
+
+function resetInvitationManagement() {
+  invitationListSequence++;
+  invitationDetailSequence++;
+  invitationGroupsSequence++;
+  invitationList = [];
+  invitationGroups = [];
+  selectedInvitation = null;
+  invitationApplications = [];
+  invitationSelectedApplications.clear();
+  invitationOffset = invitationApplicationOffset = 0;
+  invitationListLoading = invitationApplicationsLoading = invitationOperation = false;
+  byId("invitation-list").replaceChildren(emptyState("登录后加载邀请码。"));
+  byId("invitation-applications").replaceChildren();
+  byId("invitation-detail-summary").textContent = "";
+  byId("invitation-detail-title").textContent = "申请名单";
+  hide("invitation-detail");
+  invitationMessage("invitations-message");
+  invitationMessage("invitation-detail-message");
+  byId("invitations-filter").reset();
+  byId("invitation-form").reset();
+  for (const field of ["kind", "group_id"]) {
+    const control = byId("invitation-form").elements?.[field];
+    if (control) control.disabled = false;
+  }
+  if (byId("invitation-dialog").open) byId("invitation-dialog").close();
+  setBusy(byId("invitation-form"), false);
+  syncInvitationControls();
+}
+
+function invitationTypeLabel(invitation) {
+  return ({member: "成员注册", group: "加入群组", recovery: "账号恢复", owner_bootstrap: "初始化 Owner"})[invitation.kind] || invitation.kind;
+}
+
+function invitationStatus(invitation) {
+  const status = {revoked: "已撤销", expired: "已过期", full: "名额已满"}[invitation.status];
+  if (status) return status;
+  if (invitation.revoked_at) return "已撤销";
+  if (new Date(invitation.expires_at).getTime() <= Date.now()) return "已过期";
+  if (Number(invitation.used_count) >= Number(invitation.max_uses)) return "名额已满";
+  return "可申请";
+}
+
+function invitationDescription(invitation) {
+  return `${invitationTypeLabel(invitation)}${invitation.group_name ? ` · ${invitation.group_name}` : ""} · ${invitation.used_count || 0} / ${invitation.max_uses} 人 · ${invitation.requires_approval ? "需审核" : "免审核"}`;
+}
+
+function syncInvitationControls() {
+  const unavailable = invitationOperation || loggingOut || state?.user?.role !== "owner";
+  all("input, select, button", byId("invitations-filter")).forEach((control) => { control.disabled = unavailable; });
+  all("button", byId("invitation-list")).forEach((control) => { control.disabled = unavailable; });
+  byId("invitation-create").disabled = unavailable;
+  byId("invitations-refresh").disabled = unavailable || invitationListLoading;
+  byId("invitations-prev").disabled = unavailable || invitationListLoading || invitationOffset === 0;
+  byId("invitations-next").disabled = unavailable || invitationListLoading || invitationList.length < invitationPageSize;
+  byId("invitation-applications-prev").disabled = unavailable || invitationApplicationsLoading || invitationApplicationOffset === 0;
+  byId("invitation-applications-next").disabled = unavailable || invitationApplicationsLoading || invitationApplications.length < invitationPageSize;
+  byId("invitation-revoke").disabled = unavailable || !selectedInvitation || Boolean(selectedInvitation.revoked_at);
+  const pending = invitationApplications.filter((application) => application.status === "pending");
+  const allSelected = byId("invitation-select-all");
+  allSelected.disabled = unavailable || invitationApplicationsLoading || !pending.length;
+  allSelected.checked = pending.length > 0 && pending.every((application) => invitationSelectedApplications.has(application.id));
+  allSelected.indeterminate = invitationSelectedApplications.size > 0 && !allSelected.checked;
+  byId("invitation-selected-count").textContent = `已选 ${invitationSelectedApplications.size} 条`;
+  for (const id of ["invitation-approve", "invitation-reject"]) byId(id).disabled = unavailable || invitationApplicationsLoading || !invitationSelectedApplications.size;
+  all("input, button", byId("invitation-applications")).forEach((control) => { control.disabled = unavailable || invitationApplicationsLoading; });
+  byId("invitation-list").setAttribute("aria-busy", String(invitationListLoading));
+  byId("invitation-applications").setAttribute("aria-busy", String(invitationApplicationsLoading));
+}
+
+async function loadInvitationGroups(current = invitationOwnerCurrent()) {
+  const sequence = ++invitationGroupsSequence;
+  const requestCurrent = () => current() && sequence === invitationGroupsSequence;
+  const result = await api("/admin/groups", {}, requestCurrent);
+  requireCurrentRequest(requestCurrent);
+  invitationGroups = Array.isArray(result.groups) ? result.groups : [];
+  fillSelect(byId("invitations-filter").elements.group_id, "全部群组", invitationGroups, (group) => group.name);
+  fillSelect(byId("invitation-form").elements.group_id, "请选择群组", invitationGroups.filter((group) => !group.archived_at), (group) => group.name);
+}
+
+function renderInvitationList() {
+  byId("invitation-list").replaceChildren(...(invitationList.length ? invitationList.map((invitation) => {
+    const detail = element("button", {type: "button", className: "secondary", text: "查看申请", attributes: {"aria-label": `查看 ${invitationTypeLabel(invitation)} ${invitation.group_name || invitation.id} 的申请`}});
+    detail.addEventListener("click", () => {
+      const current = invitationOwnerCurrent();
+      loadInvitationApplications(invitation, 0).catch((error) => {
+        if (current() && error.code !== "stale_request") invitationMessage("invitation-detail-message", friendlyError(error), true);
+      });
+    });
+    return element("article", {className: "panel invitation-card"},
+      element("div", {}, element("h3", {text: invitationTypeLabel(invitation)}), element("p", {text: invitation.group_name || "新用户注册"}), element("small", {className: "muted", text: `编号 ${invitation.id}`})),
+      element("dl", {className: "invitation-facts"},
+        element("div", {}, element("dt", {text: "人数占用"}), element("dd", {text: `${invitation.used_count || 0} / ${invitation.max_uses}`})),
+        element("div", {}, element("dt", {text: "到期时间"}), element("dd", {text: formatDateTime(invitation.expires_at)})),
+        element("div", {}, element("dt", {text: "审核"}), element("dd", {text: invitation.requires_approval ? "需要审核" : "免审核"}))),
+      element("div", {className: "invitation-card-actions"}, element("span", {className: "badge", text: invitationStatus(invitation)}), detail));
+  }) : [emptyState("没有符合筛选条件的邀请码。") ]));
+  byId("invitations-page").textContent = `第 ${Math.floor(invitationOffset / invitationPageSize) + 1} 页 · 每页 ${invitationPageSize} 条`;
+  syncInvitationControls();
+}
+
+async function loadInvitations(offset = 0) {
+  const identityCurrent = invitationOwnerCurrent();
+  if (!identityCurrent() || invitationOperation) return;
+  const sequence = ++invitationListSequence;
+  const current = () => identityCurrent() && sequence === invitationListSequence;
+  const form = byId("invitations-filter");
+  const query = new URLSearchParams({limit: String(invitationPageSize), offset: String(offset)});
+  for (const name of ["kind", "group_id"]) if (form.elements[name].value) query.set(name, form.elements[name].value);
+  invitationListLoading = true;
+  syncInvitationControls();
+  try {
+    const result = await api(`/admin/invitations?${query}`, {}, current);
+    requireCurrentRequest(current);
+    invitationList = Array.isArray(result.invitations) ? result.invitations : [];
+    invitationOffset = offset;
+    if (selectedInvitation) {
+      const updated = invitationList.find((item) => item.id === selectedInvitation.id);
+      if (updated) { selectedInvitation = updated; byId("invitation-detail-summary").textContent = invitationDescription(updated); }
+    }
+    renderInvitationList();
+    invitationMessage("invitations-message");
+  } finally {
+    if (current()) { invitationListLoading = false; syncInvitationControls(); }
+  }
+}
+
+function renderInvitationApplications() {
+  byId("invitation-applications").replaceChildren(...(invitationApplications.length ? invitationApplications.map((application) => {
+    const checkbox = element("input", {type: "checkbox", attributes: {"aria-label": `选择 ${application.username} 的申请`}});
+    checkbox.checked = invitationSelectedApplications.has(application.id);
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) invitationSelectedApplications.add(application.id); else invitationSelectedApplications.delete(application.id);
+      syncInvitationControls();
+    });
+    const pending = application.status === "pending";
+    const actions = element("div", {className: "button-group"});
+    if (pending) {
+      for (const [decision, label] of [["approve", "批准"], ["reject", "拒绝"]]) {
+        const button = element("button", {type: "button", className: decision === "reject" ? "danger" : "secondary", text: label, attributes: {"aria-label": `${label} ${application.username} 的申请`}});
+        button.addEventListener("click", () => runInvitationReview(decision, [application.id]));
+        actions.append(button);
+      }
+    }
+    return element("article", {className: "invitation-application", dataset: {applicationId: application.id}},
+      element("div", {className: "invitation-applicant"}, pending ? checkbox : null,
+        element("div", {}, element("strong", {text: application.display_name || application.username}), element("p", {className: "muted", text: application.username}))),
+      element("dl", {className: "invitation-facts"},
+        element("div", {}, element("dt", {text: "注册时间"}), element("dd", {text: formatDateTime(application.registered_at)})),
+        element("div", {}, element("dt", {text: "申请时间"}), element("dd", {text: formatDateTime(application.applied_at)})),
+        element("div", {}, element("dt", {text: pending ? "状态" : "审批时间"}), element("dd", {text: pending ? "等待审核" : formatDateTime(application.reviewed_at)}))),
+      element("div", {className: "invitation-card-actions"}, element("span", {className: "badge", text: pending ? "待审核" : "已通过"}), actions));
+  }) : [emptyState("暂无申请。") ]));
+  byId("invitation-applications-page").textContent = `第 ${Math.floor(invitationApplicationOffset / invitationPageSize) + 1} 页 · 每页 ${invitationPageSize} 条`;
+  syncInvitationControls();
+}
+
+async function loadInvitationApplications(invitation, offset = 0) {
+  const identityCurrent = invitationOwnerCurrent();
+  if (!identityCurrent() || invitationOperation) return;
+  const sequence = ++invitationDetailSequence;
+  const current = () => identityCurrent() && sequence === invitationDetailSequence;
+  selectedInvitation = invitation;
+  invitationApplications = [];
+  invitationSelectedApplications.clear();
+  invitationApplicationsLoading = true;
+  byId("invitation-detail-title").textContent = `${invitationTypeLabel(invitation)} · 申请名单`;
+  byId("invitation-detail-summary").textContent = invitationDescription(invitation);
+  byId("invitation-applications").replaceChildren(emptyState("正在加载申请…"));
+  invitationMessage("invitation-detail-message");
+  show("invitation-detail");
+  syncInvitationControls();
+  try {
+    const query = new URLSearchParams({limit: String(invitationPageSize), offset: String(offset)});
+    const result = await api(`/admin/invitations/${encodeURIComponent(invitation.id)}/applications?${query}`, {}, current);
+    requireCurrentRequest(current);
+    invitationApplications = Array.isArray(result.applications) ? result.applications : [];
+    invitationApplicationOffset = offset;
+    renderInvitationApplications();
+  } finally {
+    if (current()) { invitationApplicationsLoading = false; syncInvitationControls(); }
+  }
+}
+
+function syncInvitationForm() {
+  const form = byId("invitation-form");
+  const group = form.elements.kind.value === "group";
+  byId("invitation-group-field").classList.toggle("hidden", !group);
+  form.elements.group_id.required = group;
+}
+
+async function openInvitationEditor(group = null) {
+  const current = invitationOwnerCurrent();
+  if (!current() || invitationOperation || group?.archived_at) return;
+  await loadInvitationGroups(current);
+  requireCurrentRequest(current);
+  const form = byId("invitation-form");
+  form.reset();
+  form.elements.kind.value = group ? "group" : "member";
+  form.elements.kind.disabled = Boolean(group);
+  form.elements.group_id.disabled = Boolean(group);
+  form.elements.group_id.value = group?.id || "";
+  const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  form.elements.expires_at.value = new Date(expires.getTime() - expires.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+  form.elements.max_uses.value = "1";
+  form.elements.requires_approval.checked = false;
+  syncInvitationForm();
+  openDialog("invitation-dialog");
+}
+
+async function createInvitation(event) {
+  const current = invitationOwnerCurrent();
+  if (!current() || invitationOperation) return;
+  const form = event.currentTarget;
+  const expires = new Date(form.elements.expires_at.value);
+  const maxUses = Number(form.elements.max_uses.value);
+  if (!Number.isSafeInteger(maxUses) || maxUses < 1) throw new Error("人数上限须为正整数。");
+  if (!Number.isFinite(expires.getTime()) || expires.getTime() <= Date.now()) throw new Error("到期时间须晚于当前时间。");
+  const payload = {kind: form.elements.kind.value, expires_at: expires.toISOString(), max_uses: maxUses, requires_approval: form.elements.requires_approval.checked};
+  if (payload.kind === "group") {
+    payload.group_id = form.elements.group_id.value;
+    if (!payload.group_id) throw new Error("请选择目标群组。");
+  }
+  invitationOperation = true;
+  syncInvitationControls();
+  try {
+    const result = await sensitiveAction(() => api("/admin/invitations", {method: "POST", body: JSON.stringify(payload)}, current), current);
+    requireCurrentRequest(current);
+    byId("invitation-dialog").close();
+    let link = result.link || "";
+    if (payload.kind === "group" && link) {
+      const url = new URL(link, location.href);
+      const fragment = new URLSearchParams(url.hash.slice(1));
+      fragment.set("kind", "group");
+      url.hash = fragment.toString();
+      link = url.toString();
+    }
+    showSecret("保存邀请码与邀请链接", `${link}${result.token ? `\n\n邀请码：${result.token}` : ""}`,
+      `最多 ${maxUses} 人，${payload.requires_approval ? "需要审核" : "免审核"}，将于 ${formatDateTime(result.expires_at)} 失效。链接与邀请码只显示这一次。`);
+  } finally {
+    if (current()) { invitationOperation = false; syncInvitationControls(); }
+  }
+  if (current()) await loadInvitations(0).catch((error) => {
+    if (current() && error.code !== "stale_request") invitationMessage("invitations-message", `邀请码已创建，列表刷新失败：${friendlyError(error)}`, true);
+  });
+}
+
+async function reviewInvitationApplications(decision, ids) {
+  const identityCurrent = invitationOwnerCurrent();
+  const invitation = selectedInvitation;
+  if (!identityCurrent() || invitationOperation || !invitation) return;
+  const applicationIDs = [...new Set(ids)];
+  if (!applicationIDs.length || applicationIDs.length > 100) throw new Error("每次请选择 1 至 100 条申请。");
+  if (decision === "reject" && !window.confirm(`拒绝这 ${applicationIDs.length} 条申请？${invitation.kind === "member" ? "待审账号与登录凭证会被删除，用户名和名额将释放。" : "已有账号会保留，名额将释放。"}`)) return;
+  const current = () => identityCurrent() && selectedInvitation?.id === invitation.id;
+  invitationOperation = true;
+  invitationListSequence++;
+  invitationListLoading = false;
+  syncInvitationControls();
+  try {
+    await sensitiveAction(() => api(`/admin/invitations/${encodeURIComponent(invitation.id)}/review`, {method: "POST", body: JSON.stringify({application_ids: applicationIDs, decision})}, current), current);
+    requireCurrentRequest(current);
+    invitationSelectedApplications.clear();
+  } finally {
+    if (identityCurrent()) { invitationOperation = false; syncInvitationControls(); }
+  }
+  requireCurrentRequest(current);
+  const offset = invitationApplications.length <= applicationIDs.length && decision === "reject" ? Math.max(0, invitationApplicationOffset - invitationPageSize) : invitationApplicationOffset;
+  await Promise.all([loadInvitations(invitationOffset), loadInvitationApplications(invitation, offset)]);
+  requireCurrentRequest(current);
+  invitationMessage("invitation-detail-message", decision === "approve" ? "所选申请已批准。" : "所选申请已拒绝，名额已释放。");
+}
+
+function runInvitationReview(decision, ids = [...invitationSelectedApplications]) {
+  const current = invitationOwnerCurrent();
+  return reviewInvitationApplications(decision, ids).catch((error) => {
+    if (current() && error.code !== "stale_request") invitationMessage("invitation-detail-message", friendlyError(error), true);
+  });
+}
+
+async function revokeInvitation() {
+  const identityCurrent = invitationOwnerCurrent();
+  const invitation = selectedInvitation;
+  if (!identityCurrent() || invitationOperation || !invitation || invitation.revoked_at) return;
+  if (!window.confirm("撤销此邀请码？撤销后不能提交新申请，已提交申请仍可审核。")) return;
+  const current = () => identityCurrent() && selectedInvitation?.id === invitation.id;
+  invitationOperation = true;
+  invitationListSequence++;
+  invitationListLoading = false;
+  syncInvitationControls();
+  try {
+    await sensitiveAction(() => api(`/admin/invitations/${encodeURIComponent(invitation.id)}/revoke`, {method: "POST", body: "{}"}, current), current);
+    requireCurrentRequest(current);
+    selectedInvitation = {...invitation, revoked_at: new Date().toISOString()};
+    invitationMessage("invitation-detail-message", "邀请码已撤销。已提交申请仍可审核。");
+  } finally {
+    if (identityCurrent()) { invitationOperation = false; syncInvitationControls(); }
+  }
+  await loadInvitations(invitationOffset);
+}
+
+function bindInvitationUI() {
+  const owner = invitationOwnerCurrent;
+  bindAsync("invitation-create", "click", () => openInvitationEditor(), "加载中…", owner);
+  bindAsync("group-invitation-create", "click", () => openInvitationEditor(managedGroup), "加载中…", owner);
+  bindAsync("invitation-form", "submit", createInvitation, "创建中…", owner);
+  byId("invitation-form").elements.kind.addEventListener("change", syncInvitationForm);
+  bindAsync("invitations-refresh", "click", () => Promise.all([
+    loadInvitations(invitationOffset),
+    selectedInvitation ? loadInvitationApplications(selectedInvitation, invitationApplicationOffset) : Promise.resolve(),
+  ]), "刷新中…", owner);
+  bindAsync("invitations-filter", "submit", () => {
+    if (invitationOperation) return;
+    invitationDetailSequence++;
+    selectedInvitation = null;
+    invitationSelectedApplications.clear();
+    hide("invitation-detail");
+    return loadInvitations(0);
+  }, "筛选中…", owner);
+  bindAsync("invitations-prev", "click", () => loadInvitations(Math.max(0, invitationOffset - invitationPageSize)), "加载中…", owner);
+  bindAsync("invitations-next", "click", () => loadInvitations(invitationOffset + invitationPageSize), "加载中…", owner);
+  bindAsync("invitation-applications-prev", "click", () => loadInvitationApplications(selectedInvitation, Math.max(0, invitationApplicationOffset - invitationPageSize)), "加载中…", owner);
+  bindAsync("invitation-applications-next", "click", () => loadInvitationApplications(selectedInvitation, invitationApplicationOffset + invitationPageSize), "加载中…", owner);
+  byId("invitation-select-all").addEventListener("change", (event) => {
+    invitationSelectedApplications = new Set(event.currentTarget.checked ? invitationApplications.filter((application) => application.status === "pending").map((application) => application.id) : []);
+    renderInvitationApplications();
+  });
+  byId("invitation-approve").addEventListener("click", () => runInvitationReview("approve"));
+  byId("invitation-reject").addEventListener("click", () => runInvitationReview("reject"));
+  bindAsync("invitation-revoke", "click", revokeInvitation, "撤销中…", owner);
+  bindAsync("group-invitation-join", "click", joinInvitedGroup, "提交中…", invitationRequestCurrent);
+  bindAsync("group-invitation-logout", "click", async () => {
+    loggingOut = true;
+    identityGeneration++;
+    clearInvitationContext();
+    byId("group-invitation-name").textContent = "";
+    byId("group-invitation-account").textContent = "";
+    hide("group-invitation-join");
+    hide("group-invitation-account");
+    hide("login-view");
+    byId("group-invitation-help").textContent = "邀请上下文已清除。退出后请重新打开邀请链接。";
+    try { await api("/auth/logout", {method: "POST", body: "{}"}); location.assign("/"); }
+    finally { loggingOut = false; }
+  }, "退出中…");
+}
+
+function clearInvitationContext() {
+  invitationContextSequence++;
+  invitationToken = "";
+  inspectedInvitation = null;
+  groupInvitationUser = null;
+}
+
+function invitationRequestCurrent() {
+  const sequence = invitationContextSequence;
+  const token = invitationToken;
+  return () => sequence === invitationContextSequence && token === invitationToken && Boolean(token) && !loggingOut;
+}
+
+function loginRequestCurrent() {
+  if (invitationKind === "group" && invitationToken) return invitationRequestCurrent();
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut;
+}
+
+function renderGroupInvitation() {
+  const invitation = inspectedInvitation;
+  if (!invitation || !invitationToken) return;
+  hide("join-view");
+  hide("recover-view");
+  hide("registration-pending-view");
+  hide("dashboard");
+  show("auth");
+  show("group-invitation-view");
+  byId("group-invitation-name").textContent = invitation.group_name || "目标群组";
+  byId("group-invitation-help").textContent = groupInvitationUser
+    ? `${invitation.requires_approval ? "提交后等待 Owner 审核。" : "确认后即可加入群组。"}当前占用 ${invitation.used_count || 0} / ${invitation.max_uses} 人；${formatDateTime(invitation.expires_at)} 到期。`
+    : "请先使用已有账号登录，再确认申请加入此群组。";
+  const unavailable = {full: "名额已满", expired: "邀请码已过期", revoked: "邀请码已撤销"}[invitation.status];
+  if (unavailable) byId("group-invitation-help").textContent += ` ${unavailable}，无法提交新申请；已提交的申请仍可确认处理结果。`;
+  byId("group-invitation-account").textContent = groupInvitationUser ? `当前账号：${groupInvitationUser.display_name || groupInvitationUser.username}（${groupInvitationUser.username}）` : "";
+  for (const id of ["group-invitation-account", "group-invitation-join", "group-invitation-logout"]) byId(id).classList.toggle("hidden", !groupInvitationUser);
+  byId("login-view").classList.toggle("hidden", Boolean(groupInvitationUser));
+  hide("group-invitation-done");
+}
+
+async function loadGroupInvitationAccount(current = invitationRequestCurrent()) {
+  requireCurrentRequest(current);
+  const result = await api("/admin/state", {}, current);
+  requireCurrentRequest(current);
+  if (!result.user) throw new Error("无法确认当前登录账号，请重新登录。");
+  groupInvitationUser = result.user;
+  renderGroupInvitation();
+}
+
+async function joinInvitedGroup() {
+  const current = invitationRequestCurrent();
+  if (!current() || invitationKind !== "group" || !groupInvitationUser) throw new Error("请重新打开群组邀请链接并登录。");
+  const result = await api("/auth/invitations/join", {method: "POST", body: JSON.stringify({invitation_token: invitationToken})}, current);
+  requireCurrentRequest(current);
+  const pending = (result.status || result.application?.status) === "pending";
+  clearInvitationContext();
+  byId("group-invitation-title").textContent = pending ? "等待管理员审核" : "入群申请已通过";
+  byId("group-invitation-help").textContent = pending ? "申请已提交。Owner 批准后即可使用群组额度。" : "申请处理完成。已处理的申请不会重复加入群组。";
+  hide("group-invitation-join");
+  hide("group-invitation-logout");
+  show("group-invitation-done");
 }
 
 function localDateBoundary(value, nextDay = false) {
@@ -4335,6 +4811,7 @@ function syncGroupControls() {
   byId("group-members-remove").disabled = unavailable || !selected.some((id) => members.has(id));
   byId("group-archive").disabled = unavailable || members.size > 0;
   byId("group-edit").disabled = unavailable;
+  byId("group-invitation-create").disabled = unavailable;
   byId("group-create").disabled = groupOperation;
   byId("groups-refresh").disabled = groupOperation;
   byId("group-select-visible").disabled = unavailable;
@@ -6370,6 +6847,12 @@ function routeFromHash(focusContent = true) {
   syncVisiblePolling();
   if (section === "overview") loadOverview();
   if (section === "model-multipliers") loadModelMultipliers();
+  if (section === "invitations") {
+    const current = invitationOwnerCurrent();
+    Promise.all([loadInvitations(invitationOffset), loadInvitationGroups(current)]).catch((error) => {
+      if (current() && error.code !== "stale_request") invitationMessage("invitations-message", friendlyError(error), true);
+    });
+  }
   if (section === "information" && !informationLoaded) {
     informationLoaded = true;
     const current = informationIdentityCurrent();
@@ -6407,16 +6890,79 @@ async function loadDashboard() {
   await Promise.allSettled(tasks);
 }
 
-function configureInvitationView() {
+async function configureInvitationView() {
+  clearInvitationContext();
   const rawFragment = location.hash.slice(1);
   const parameters = new URLSearchParams(rawFragment);
   invitationToken = parameters.get("token") || (rawFragment.includes("=") ? "" : rawFragment);
-  invitationKind = parameters.get("kind") === "recovery" ? "recovery" : "member";
+  invitationKind = "member";
   history.replaceState(null, "", "/join");
+  clearSensitiveDOM();
+  hide("registration-pending-view");
+  hide("group-invitation-view");
+  hide("dashboard");
+  show("auth");
   hide("login-view");
   hide("recover-view");
   show("join-view");
   const form = byId("join-form");
+  form.reset();
+  const passwordFields = form.querySelector(".password-fields");
+  passwordFields.classList.add("hidden");
+  all("input", passwordFields).forEach((input) => { input.required = false; });
+  setBusy(form, false);
+  for (const id of ["group-invitation-join", "group-invitation-logout", "login"]) setBusy(byId(id), false);
+  setBusy(byId("password-login-form"), false);
+  byId("group-invitation-title").textContent = "申请加入群组";
+  byId("group-invitation-name").textContent = "";
+  byId("group-invitation-account").textContent = "";
+  setLocalMessage(byId("group-invitation-view"));
+  byId("join-eyebrow").textContent = "接受邀请";
+  byId("join-title").textContent = "创建本地身份";
+  byId("join-help").textContent = "设置资料后，选择 Passkey 或密码作为首个登录方式。";
+  for (const id of ["join-username", "join-display"]) {
+    show(id);
+    const input = byId(id).querySelector("input");
+    input.required = true;
+    input.disabled = false;
+  }
+  const submit = form.querySelector("button[type=submit]");
+  submit.textContent = "完成注册";
+  submit.disabled = true;
+  if (!invitationToken) {
+    setLocalMessage(form, "邀请链接缺少令牌，无法继续。请向 Owner 重新索取链接。");
+    return;
+  }
+  const current = invitationRequestCurrent();
+  setLocalMessage(form, "正在检查邀请…", "ok");
+  try {
+    const invitation = await api("/auth/invitations/inspect", {method: "POST", body: JSON.stringify({invitation_token: invitationToken})}, current);
+    requireCurrentRequest(current);
+    inspectedInvitation = invitation;
+    invitationKind = inspectedInvitation.kind;
+    if (!["owner_bootstrap", "member", "group", "recovery"].includes(invitationKind)) throw new Error("不支持的邀请类型。");
+    setLocalMessage(form);
+  } catch (error) {
+    if (current()) setLocalMessage(form, friendlyError(error));
+    return;
+  }
+  if (invitationKind === "group") {
+    renderGroupInvitation();
+    const probeSequence = invitationContextSequence;
+    checkingSession = true;
+    checkingInvitationSession = probeSequence;
+    try { await loadGroupInvitationAccount(current); }
+    catch (error) {
+      if (current() && error.status !== 401) setLocalMessage(byId("group-invitation-view"), friendlyError(error));
+    } finally {
+      if (checkingInvitationSession === probeSequence) {
+        checkingSession = false;
+        checkingInvitationSession = false;
+      }
+    }
+    if (current()) renderGroupInvitation();
+    return;
+  }
   if (invitationKind === "recovery") {
     byId("join-eyebrow").textContent = "账号恢复邀请";
     byId("join-title").textContent = "为账号创建新的 Passkey";
@@ -6429,10 +6975,8 @@ function configureInvitationView() {
     }
     form.querySelector("button[type=submit]").textContent = "恢复账号";
   }
-  if (!invitationToken) {
-    setLocalMessage(form, "邀请链接缺少令牌，无法继续。请向 Owner 重新索取链接。");
-    form.querySelector("button[type=submit]").disabled = true;
-  }
+  if (invitationKind === "member" && inspectedInvitation.requires_approval) byId("join-help").textContent = "设置资料与登录凭证后提交申请。请保存恢复码，等待 Owner 批准后再登录。";
+  submit.disabled = false;
 }
 
 function applyWebAuthnSupport() {
@@ -6463,6 +7007,7 @@ function bindUI() {
     announce("请求监控已刷新。");
   }, "刷新中…", () => ownerSectionVisible("monitoring"));
   bindGroupUI();
+  bindInvitationUI();
   bindBillingPlanUI();
   billingUserSearch = createUserSearch("billing-user-search", selectBillingUser,
     (user) => `现金余额：${formatUSD(user.cash_balance_usd, formatUSD("0"))}`);
@@ -6480,12 +7025,14 @@ function bindUI() {
   bindBillingBatchAction("billing-batch-retry", "click", retryBillingBatch);
   bindBillingBatchAction("billing-batch-reset", "click", finishBillingBatch);
   bindBillingBatchAction("billing-batch-refresh-users", "click", refreshBillingBatchData);
-  bindAsync("login", "click", login, "等待 Passkey…");
-  bindAsync("password-login-form", "submit", passwordLogin, "登录中…");
-  bindAsync("join-form", "submit", register, "等待 Passkey…");
+  bindAsync("login", "click", login, "等待 Passkey…", loginRequestCurrent);
+  bindAsync("password-login-form", "submit", passwordLogin, "登录中…", loginRequestCurrent);
+  bindAsync("join-form", "submit", register, "提交中…", invitationRequestCurrent);
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
     loggingOut = true;
+    clearInvitationContext();
+    resetInvitationManagement();
     closeNavigationDrawer(false);
     resetOverview();
     clearUpstreamAccountUIState();
@@ -6551,7 +7098,7 @@ function bindUI() {
   for (const tier of billingTiers) {
     bindAsync(`billing-subscription-${tier.id}`, "submit", updateBillingSubscription, "保存中…");
   }
-  bindAsync("member-invite", "click", () => invite("member"), "生成中…");
+  byId("member-invite").addEventListener("click", () => { location.hash = "invitations"; });
   bindAsync("recovery-invite-form", "submit", (event) => {
     const username = String(new FormData(event.currentTarget).get("target_username") || "").trim();
     return invite("recovery", username);
@@ -6658,7 +7205,13 @@ function bindUI() {
     syncModelAccessSelection();
   });
   byId("model-access-users-form").addEventListener("submit", (event) => event.preventDefault());
-  window.addEventListener("hashchange", () => routeFromHash(true));
+  window.addEventListener("hashchange", () => {
+    if (location.pathname === "/join" && location.hash) {
+      configureInvitationView().then(applyWebAuthnSupport).catch((error) => notice(friendlyError(error), "error"));
+      return;
+    }
+    routeFromHash(true);
+  });
 
   all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {
     runButton(button, async () => {
@@ -6699,7 +7252,7 @@ async function start() {
   initializeDateFilters();
   const path = location.pathname;
   if (path === "/join") {
-    configureInvitationView();
+    await configureInvitationView();
     applyWebAuthnSupport();
     return;
   }

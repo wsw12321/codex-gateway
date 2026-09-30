@@ -141,11 +141,11 @@ func (s *Store) SetUserModelAccessBatch(ctx context.Context, params SetUserModel
 			if _, err := tx.ExecContext(ctx, `LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 				return mapDBError("lock users for model access batch", err)
 			}
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&users); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE status <> 'pending'`).Scan(&users); err != nil {
 				return mapDBError("count model access batch users", err)
 			}
 		} else {
-			rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE id IN
+			rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE status <> 'pending' AND id IN
 				(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, encodedUserIDs)
 			if err != nil {
 				return mapDBError("lock selected model access batch users", err)
@@ -171,6 +171,7 @@ func (s *Store) SetUserModelAccessBatch(ctx context.Context, params SetUserModel
 		for _, model := range models {
 			var accessCount int64
 			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM user_model_access WHERE model = $1
+				AND user_id IN (SELECT id FROM users WHERE status <> 'pending')
 				AND ($2 = 'all' OR user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($3::jsonb)))`,
 				model, params.Scope, encodedUserIDs).Scan(&accessCount); err != nil {
 				return mapDBError("count model access batch rows", err)
@@ -182,6 +183,7 @@ func (s *Store) SetUserModelAccessBatch(ctx context.Context, params SetUserModel
 			update, err := tx.ExecContext(ctx, `UPDATE user_model_access
 				SET enabled = $2, updated_at = $3, updated_by_user_id = $4
 				WHERE model = $1 AND enabled IS DISTINCT FROM $2
+				AND user_id IN (SELECT id FROM users WHERE status <> 'pending')
 				AND ($5 = 'all' OR user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($6::jsonb)))`,
 				model, params.Enabled, write.At, write.ActorUserID, params.Scope, encodedUserIDs)
 			if err != nil {
@@ -232,7 +234,7 @@ func (s *Store) ListModelAccessUsersBatch(ctx context.Context, requested []strin
 			a.enabled, a.updated_at, a.updated_by_user_id
 			FROM users u CROSS JOIN model_access_defaults d
 			LEFT JOIN user_model_access a ON a.user_id = u.id AND a.model = d.model
-			WHERE d.model IN (SELECT value FROM jsonb_array_elements_text($1::jsonb))
+			WHERE u.status <> 'pending' AND d.model IN (SELECT value FROM jsonb_array_elements_text($1::jsonb))
 			ORDER BY lower(u.username), u.id, d.model`, encoded)
 		if err != nil {
 			return mapDBError("list model access batch users", err)

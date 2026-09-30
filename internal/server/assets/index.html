@@ -64,6 +64,27 @@
         </form>
       </section>
 
+      <section id="group-invitation-view" class="panel auth-card hidden" aria-labelledby="group-invitation-title">
+        <p class="eyebrow">群组邀请</p>
+        <h1 id="group-invitation-title">申请加入群组</h1>
+        <p id="group-invitation-name"></p>
+        <p id="group-invitation-help">请先使用已有账号登录，再确认加入。</p>
+        <p id="group-invitation-account" class="hidden"></p>
+        <p class="form-message hidden" role="alert"></p>
+        <div class="actions">
+          <button id="group-invitation-join" type="button" class="hidden">确认申请加入</button>
+          <button id="group-invitation-logout" type="button" class="secondary hidden">退出当前账号</button>
+          <a id="group-invitation-done" class="button secondary hidden" href="/">进入控制台</a>
+        </div>
+      </section>
+
+      <section id="registration-pending-view" class="panel auth-card hidden" aria-labelledby="registration-pending-title">
+        <p class="eyebrow">申请已提交</p>
+        <h1 id="registration-pending-title">等待管理员审核</h1>
+        <p>请等待 Owner 批准。批准后，使用刚才设置的密码或 Passkey 登录。</p>
+        <a class="button secondary" href="/">返回登录</a>
+      </section>
+
       <section id="recover-view" class="panel auth-card hidden">
         <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow">账号恢复</p>
@@ -119,6 +140,7 @@
           </div>
           <div class="nav-group owner-only hidden" aria-labelledby="nav-management">
           <p id="nav-management" class="nav-group-title">管理</p>
+          <a href="#invitations" data-view="invitations" class="owner-only hidden">邀请管理</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
           <a href="/admin/cpa/" class="owner-only hidden">CPA 授权管理</a>
@@ -574,8 +596,8 @@
                 <div class="panel-heading"><div><p class="eyebrow">OWNER ONLY</p><h3>邀请与恢复</h3></div></div>
                 <div class="tool-block">
                   <h4>成员邀请</h4>
-                  <p>链接 24 小时内有效，且只能使用一次。</p>
-                  <button id="member-invite" type="button">生成成员邀请</button>
+                  <p>配置邀请码有效期、人数上限与审批，并查看申请名单。</p>
+                  <button id="member-invite" type="button">打开邀请管理</button>
                   <p id="member-invite-message" class="form-message hidden" role="alert"></p>
                 </div>
                 <form id="recovery-invite-form" class="tool-block">
@@ -727,6 +749,30 @@
             </div>
           </section>
 
+          <section class="view owner-only hidden" data-section="invitations" aria-labelledby="invitations-title">
+            <div class="section-head">
+              <div><p class="eyebrow">INVITATIONS</p><h2 id="invitations-title">邀请管理</h2><p>成员邀请用于注册；群组邀请供已有账号申请入群。</p></div>
+              <div class="button-group"><button id="invitation-create" type="button">创建邀请码</button><button id="invitations-refresh" type="button" class="secondary">刷新</button></div>
+            </div>
+            <form id="invitations-filter" class="filters">
+              <label>邀请类型<select name="kind"><option value="">全部类型</option><option value="member">成员注册</option><option value="group">加入群组</option></select></label>
+              <label>群组<select name="group_id"><option value="">全部群组</option></select></label>
+              <button type="submit">筛选</button>
+              <p class="form-message hidden" role="alert"></p>
+            </form>
+            <p id="invitations-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div id="invitation-list" class="invitation-list" aria-live="polite" aria-busy="false"><p class="empty">打开页面后加载邀请码。</p></div>
+            <div class="billing-pagination"><span id="invitations-page" class="muted"></span><button id="invitations-prev" type="button" class="secondary" disabled>上一页</button><button id="invitations-next" type="button" class="secondary" disabled>下一页</button></div>
+            <article id="invitation-detail" class="panel hidden" aria-labelledby="invitation-detail-title">
+              <div class="panel-heading"><div><h3 id="invitation-detail-title">申请名单</h3><p id="invitation-detail-summary" class="muted"></p></div><button id="invitation-revoke" type="button" class="danger">撤销邀请码</button></div>
+              <p class="muted">待审与已通过申请均占用名额。拒绝后释放名额；拒绝注册申请会删除待审账号。过期或撤销后，已提交申请仍可审核。</p>
+              <div class="invitation-review-toolbar"><label class="check-label"><input id="invitation-select-all" type="checkbox">选择本页待审申请</label><span id="invitation-selected-count">已选 0 条</span><div class="button-group"><button id="invitation-approve" type="button" disabled>批准所选</button><button id="invitation-reject" type="button" class="danger" disabled>拒绝所选</button></div></div>
+              <p id="invitation-detail-message" class="form-message hidden" role="status" aria-live="polite"></p>
+              <div id="invitation-applications" class="invitation-applications" aria-live="polite" aria-busy="false"></div>
+              <div class="billing-pagination"><span id="invitation-applications-page" class="muted"></span><button id="invitation-applications-prev" type="button" class="secondary" disabled>上一页</button><button id="invitation-applications-next" type="button" class="secondary" disabled>下一页</button></div>
+            </article>
+          </section>
+
           <section class="view owner-only hidden" data-section="groups" aria-labelledby="groups-title">
             <div class="section-head">
               <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为一组用户设置共同的美元用量上限；每人仍需有可用的个人订阅或余额。</p></div>
@@ -737,7 +783,7 @@
             <div class="groups-layout">
               <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
               <article id="group-detail" class="panel hidden">
-                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p></div><button id="group-edit" type="button" class="secondary">编辑额度</button></div>
+                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
                 <div id="group-metrics" class="metrics compact"></div>
                 <form id="group-members-form" class="group-members-form">
                   <div class="panel-heading"><h4>成员管理</h4><span id="group-selected-count" class="badge">已选 0 人</span></div>
@@ -964,6 +1010,20 @@
       </div>
     </section>
   </main>
+
+  <dialog id="invitation-dialog" aria-labelledby="invitation-dialog-title">
+    <form id="invitation-form">
+      <div class="dialog-heading"><p class="eyebrow">INVITATION</p><h2 id="invitation-dialog-title">创建邀请码</h2><p>链接与邀请码仅显示一次。配置创建后固定，如需变更请撤销后重建。</p></div>
+      <label>邀请类型<select name="kind"><option value="member">成员注册</option><option value="group">加入群组</option></select></label>
+      <label id="invitation-group-field" class="hidden">目标群组<select name="group_id"><option value="">请选择群组</option></select></label>
+      <label>到期时间<input name="expires_at" type="datetime-local" required></label>
+      <label>人数上限<input name="max_uses" type="number" min="1" step="1" required value="1" inputmode="numeric"></label>
+      <label class="check-label"><input name="requires_approval" type="checkbox">需要 Owner 审核</label>
+      <p class="muted">待审注册暂时无法登录；批准后使用原凭证登录。群组邀请仅接收已有账号申请。</p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">创建邀请码</button></div>
+    </form>
+  </dialog>
 
   <dialog id="device-dialog" aria-labelledby="device-dialog-title">
     <form id="device-form">

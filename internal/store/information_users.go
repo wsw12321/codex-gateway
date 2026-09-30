@@ -49,6 +49,7 @@ type DeleteInformationUsersResult struct {
 // recheck. An automatically-created, empty billing account is not history.
 const informationUserBlockers = `array_remove(ARRAY[
 	CASE WHEN u.role <> 'member' THEN 'owner' END,
+	CASE WHEN u.status = 'pending' THEN 'pending_approval' END,
 	CASE WHEN EXISTS(SELECT 1 FROM billing_accounts a WHERE a.user_id=u.id AND a.balance_usd<>0) THEN 'balance' END,
 	CASE WHEN EXISTS(SELECT 1 FROM billing_subscriptions s WHERE s.user_id=u.id) THEN 'subscriptions' END,
 	CASE WHEN EXISTS(SELECT 1 FROM usage_requests r WHERE r.user_id=u.id) THEN 'requests' END,
@@ -170,6 +171,22 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 			(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded)); err != nil {
 			return err
 		}
+		// Keep invitations and approved application snapshots when deleting a
+		// former member. Pending group applications release their slots. Lock in
+		// the same order as join/review before changing application ownership.
+		if _, err := tx.ExecContext(ctx, `SELECT i.id FROM invitations i WHERE
+			i.inviter_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))
+			OR i.target_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))
+			OR i.used_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))
+			OR EXISTS (SELECT 1 FROM invitation_applications a WHERE a.invitation_id=i.id
+				AND a.user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)))
+			ORDER BY i.id FOR UPDATE`, string(encoded)); err != nil {
+			return mapDBError("lock user invitations for deletion", err)
+		}
+		if _, err := tx.ExecContext(ctx, `SELECT id FROM invitation_applications WHERE user_id IN
+			(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded)); err != nil {
+			return mapDBError("lock user invitation applications for deletion", err)
+		}
 		blockers := make([]UserDeletionBlocker, 0)
 		for _, id := range ids {
 			var reasonsJSON []byte
@@ -204,7 +221,10 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 			actor_session_id_snapshot=COALESCE(actor_session_id_snapshot,actor_session_id::text),
 			actor_api_key_id_snapshot=COALESCE(actor_api_key_id_snapshot,actor_api_key_id::text),
 			actor_session_id=NULL,actor_api_key_id=NULL,actor_user_id=NULL WHERE actor_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
-			`DELETE FROM invitations WHERE inviter_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) OR target_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) OR used_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
+			`DELETE FROM invitation_applications WHERE status='pending' AND user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
+			`DELETE FROM invitations WHERE kind IN ('owner_bootstrap','recovery') AND (inviter_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) OR target_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) OR used_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)))`,
+			`UPDATE invitations SET inviter_id=NULL WHERE kind IN ('member','group') AND inviter_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
+			`UPDATE invitations SET used_by_user_id=NULL,used_at=NULL WHERE kind IN ('member','group') AND used_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`UPDATE model_access_defaults SET updated_by_user_id=NULL WHERE updated_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`UPDATE user_model_access SET updated_by_user_id=NULL WHERE updated_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`DELETE FROM user_model_access WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,

@@ -102,6 +102,7 @@ type RegistrationResult struct {
 	User          store.User
 	SessionToken  string
 	RecoveryCodes []string
+	InvitationID  string
 }
 
 type LoginResult struct {
@@ -125,6 +126,7 @@ type pendingCeremony struct {
 	session        webauthn.SessionData
 	user           authnUser
 	invitationHash []byte
+	invitationID   string
 	username       string
 	displayName    string
 	recoveryHash   []byte
@@ -153,6 +155,9 @@ func (s *Service) BeginInvitationRegistration(ctx context.Context, token, userna
 		}
 		return s.beginExistingRegistration(ctx, *invitation.TargetUserID, pendingRecoveryInvitation, digest[:])
 	}
+	if invitation.Kind != store.InvitationMember && invitation.Kind != store.InvitationOwnerBootstrap {
+		return Ceremony{}, store.ErrInvitationUnavailable
+	}
 	username, displayName, err = validateNames(username, displayName)
 	if err != nil {
 		return Ceremony{}, err
@@ -172,7 +177,7 @@ func (s *Service) BeginInvitationRegistration(ctx context.Context, token, userna
 	}
 	flowID, err := s.challenges.put(pendingCeremony{
 		kind: pendingInvitation, session: *session, user: user,
-		invitationHash: append([]byte(nil), digest[:]...), username: username,
+		invitationHash: append([]byte(nil), digest[:]...), invitationID: invitation.ID, username: username,
 		displayName: displayName, expiresAt: now.Add(s.config.CeremonyTTL),
 	})
 	if err != nil {
@@ -216,7 +221,10 @@ func (s *Service) FinishInvitationRegistration(ctx context.Context, flowID strin
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: recoveryPlain}, nil
+	if user.Status == store.StatusPending {
+		token = ""
+	}
+	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: recoveryPlain, InvitationID: pending.invitationID}, nil
 }
 
 func (s *Service) BeginLogin() (Ceremony, error) {

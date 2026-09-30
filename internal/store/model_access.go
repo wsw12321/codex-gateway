@@ -192,9 +192,10 @@ func (s *Store) ListModelAccessModels(ctx context.Context) ([]ModelAccessModel, 
 		SELECT d.model, d.enabled, d.updated_at, d.updated_by_user_id,
 			count(a.user_id) FILTER (WHERE a.enabled),
 			count(a.user_id) FILTER (WHERE NOT a.enabled),
-			(SELECT count(*) FROM users)
+			(SELECT count(*) FROM users WHERE status <> 'pending')
 		FROM model_access_defaults d
 		LEFT JOIN user_model_access a ON a.model = d.model
+			AND EXISTS (SELECT 1 FROM users u WHERE u.id=a.user_id AND u.status <> 'pending')
 		WHERE d.catalog_active
 		GROUP BY d.model, d.enabled, d.updated_at, d.updated_by_user_id
 		ORDER BY d.model`)
@@ -246,6 +247,7 @@ func (s *Store) ListModelAccessUsers(ctx context.Context, model string) ([]Model
 				a.enabled, a.updated_at, a.updated_by_user_id
 			FROM users u
 			LEFT JOIN user_model_access a ON a.user_id = u.id AND a.model = $1
+			WHERE u.status <> 'pending'
 			ORDER BY lower(u.username), u.id`, model)
 		if err != nil {
 			return mapDBError("list model access users", err)
@@ -289,7 +291,7 @@ func (s *Store) ListEnabledModelsForUser(ctx context.Context, userID string) ([]
 	result := make([]string, 0)
 	err := s.withTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(tx *sql.Tx) error {
 		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1)`, userID).Scan(&exists); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND status <> 'pending')`, userID).Scan(&exists); err != nil {
 			return mapDBError("find model access user", err)
 		}
 		if !exists {
@@ -348,7 +350,8 @@ func requireModelAccess(ctx context.Context, queryer queryRower, userID, model s
 		SELECT a.enabled
 		FROM model_access_defaults d
 		LEFT JOIN user_model_access a ON a.model = d.model AND a.user_id = $1
-		WHERE d.model = $2 AND d.catalog_active`, userID, model).Scan(&enabled)
+		WHERE d.model = $2 AND d.catalog_active
+		AND EXISTS (SELECT 1 FROM users WHERE id=$1 AND status <> 'pending')`, userID, model).Scan(&enabled)
 	if errors.Is(err, sql.ErrNoRows) || err == nil && !enabled.Valid {
 		return fmt.Errorf("model access state missing for user %q and model %q: %w",
 			userID, model, ErrModelAccessUnavailable)

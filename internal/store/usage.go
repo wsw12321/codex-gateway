@@ -481,6 +481,7 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 		COALESCE(c.actual_cost_usd, '0'), COALESCE(c.charged_usd, '0'),
 		COALESCE(c.uncovered_usd, '0'), COALESCE(c.ledger_tokens, 0)
 	FROM users u LEFT JOIN combined c ON c.user_id = u.id
+	WHERE u.status <> 'pending'
 	ORDER BY u.username, c.model`
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

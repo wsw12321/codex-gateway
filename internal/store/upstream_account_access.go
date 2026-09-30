@@ -74,7 +74,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 		}
 		encoded, _ := json.Marshal(params.UserIDs)
 		// Lock users in stable order, protecting membership validation from deletion.
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR KEY SHARE`, string(encoded))
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE status <> 'pending' AND id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded))
 		if err != nil {
 			return mapDBError("validate upstream authorized users", err)
 		}

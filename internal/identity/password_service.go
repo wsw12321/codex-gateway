@@ -29,7 +29,7 @@ func (s *Service) RegisterPassword(ctx context.Context, invitationToken, usernam
 		return RegistrationResult{}, err
 	}
 	invitation, err := s.store.GetAvailableInvitation(ctx, digest[:], s.now().UTC())
-	if err != nil || invitation.Kind == store.InvitationRecovery {
+	if err != nil || (invitation.Kind != store.InvitationMember && invitation.Kind != store.InvitationOwnerBootstrap) {
 		return RegistrationResult{}, store.ErrInvitationUnavailable
 	}
 	encoded, err := hashPasswordContext(ctx, password)
@@ -58,7 +58,10 @@ func (s *Service) RegisterPassword(ctx context.Context, invitationToken, usernam
 	if err != nil {
 		return RegistrationResult{}, err
 	}
-	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: plain}, nil
+	if user.Status == store.StatusPending {
+		token = ""
+	}
+	return RegistrationResult{User: user, SessionToken: token, RecoveryCodes: plain, InvitationID: invitation.ID}, nil
 }
 
 func (s *Service) PasswordLogin(ctx context.Context, username, password string, sourceIP net.IP, userAgent string) (LoginResult, error) {

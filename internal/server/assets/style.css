@@ -3099,3 +3099,34 @@ dialog form {
   .billing-batch-users-table,
   .billing-batch-results-table { max-width: 100%; }
 }
+
+/* Invitation management uses the same stacked cards on narrow screens. */
+.invitation-list, .invitation-applications { display: grid; gap: 1rem; }
+.invitation-card, .invitation-application { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(20rem, 2fr) auto; align-items: center; gap: 1.25rem; min-width: 0; }
+.invitation-card h3, .invitation-card p, .invitation-applicant p { margin: 0 0 .35rem; }
+.invitation-card small, .invitation-applicant { overflow-wrap: anywhere; }
+.invitation-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .9rem; margin: 0; }
+.invitation-facts dt { color: var(--muted); font-size: .78rem; margin-bottom: .35rem; }
+.invitation-facts dd { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
+.invitation-card-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .65rem; }
+.invitation-application { border-bottom: 1px solid var(--line); padding: 1rem 0; }
+.invitation-applicant { display: flex; align-items: flex-start; gap: .65rem; }
+.invitation-applicant input, .check-label input { width: auto; flex-shrink: 0; margin: .2rem 0; }
+.check-label { display: flex; align-items: center; gap: .65rem; }
+.invitation-review-toolbar { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 1rem; margin: 1.25rem 0; }
+.invitation-review-toolbar label { margin: 0; }
+#invitation-detail { margin-top: 1.5rem; }
+#group-invitation-name { font-weight: 650; font-size: 1.25rem; overflow-wrap: anywhere; }
+#group-invitation-account { overflow-wrap: anywhere; }
+#group-invitation-view .actions { flex-wrap: wrap; }
+@media (max-width: 1100px) {
+  .invitation-card, .invitation-application { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .invitation-card-actions { justify-content: flex-start; }
+}
+@media (max-width: 600px) {
+  .invitation-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .invitation-facts > div:last-child { grid-column: 1 / -1; }
+  .invitation-review-toolbar { align-items: flex-start; }
+  .invitation-review-toolbar .button-group { width: 100%; }
+  #invitation-detail .panel-heading { align-items: flex-start; }
+}

@@ -129,6 +129,8 @@ func (s *Server) routes() {
 	s.publicPOST("/auth/password/register", s.passwordRegister)
 	s.mux.Handle("POST /auth/password/login", s.browserOrigin(s.limitBrowserAttempts(s.limitPasswordLogin(http.HandlerFunc(s.passwordLogin)))))
 	s.publicPOST("/auth/password/recovery", s.passwordRecovery)
+	s.publicPOST("/auth/invitations/inspect", s.inspectInvitation)
+	s.browserPOST("/auth/invitations/join", s.requireSession(http.HandlerFunc(s.joinInvitation)))
 
 	s.browserPOST("/auth/logout", s.requireSession(http.HandlerFunc(s.logout)))
 	s.browserPOST("/auth/reauth/begin", s.requireSession(http.HandlerFunc(s.beginReauthentication)))
@@ -141,6 +143,10 @@ func (s *Server) routes() {
 	s.browserPOST("/admin/passkeys/begin", s.requireRecentVerification(http.HandlerFunc(s.beginAddPasskey)))
 	s.browserPOST("/admin/passkeys/finish", s.requireRecentVerification(http.HandlerFunc(s.finishAddPasskey)))
 	s.browserPOST("/admin/invitations", s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createInvitation))))
+	s.mux.Handle("GET /admin/invitations", s.requireSession(s.ownerOnly(http.HandlerFunc(s.invitationsJSON))))
+	s.mux.Handle("GET /admin/invitations/{id}/applications", s.requireSession(s.ownerOnly(http.HandlerFunc(s.invitationApplicationsJSON))))
+	s.browserPOST("/admin/invitations/{id}/review", s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.reviewInvitation))))
+	s.browserPOST("/admin/invitations/{id}/revoke", s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.revokeInvitation))))
 
 	s.mux.Handle("PUT /admin/api-keys/{id}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setAPIKeyStatus))))
 	s.mux.Handle("DELETE /admin/api-keys/{id}", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.deleteAPIKey))))

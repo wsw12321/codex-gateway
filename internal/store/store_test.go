@@ -24,15 +24,15 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 25 {
-		t.Fatalf("migration count = %d, want 25", len(migrations))
+	if len(migrations) != 26 {
+		t.Fatalf("migration count = %d, want 26", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
 		sql += migration.SQL
 	}
 	for _, table := range []string{
-		"users", "invitations", "webauthn_credentials", "recovery_codes",
+		"users", "invitations", "invitation_applications", "webauthn_credentials", "recovery_codes",
 		"sessions", "devices", "projects", "api_keys", "api_key_history", "usage_requests",
 		"usage_daily", "audit_events", "alerts", "quota_locks",
 		"usage_monthly", "upstream_accounts", "model_identifications",
