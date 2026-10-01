@@ -9,6 +9,27 @@ COPY cmd/antigravity-bridge ./cmd/antigravity-bridge
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/antigravity-bridge ./cmd/antigravity-bridge
 
+FROM ${RUNTIME_IMAGE} AS expat
+# DLA-4807-1 fixes Expat, but the Bookworm amd64 binary is not yet published.
+# Build the checksum-locked official Debian source with its security patches.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl debhelper docbook-to-man docbook2x \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY deploy/antigravity-bridge/expat.sha256 ./
+RUN set -eu; \
+    test "$(dpkg --print-architecture)" = amd64; \
+    while read -r checksum filename; do \
+        curl --proto '=https' --tlsv1.2 -fsSL \
+            "https://deb.debian.org/debian-security/pool/updates/main/e/expat/$filename" -o "$filename"; \
+    done < expat.sha256; \
+    sha256sum -c expat.sha256; \
+    dpkg-source -x expat_2.5.0-1+deb12u4.dsc
+RUN cd expat-2.5.0 \
+    && DEB_BUILD_OPTIONS=parallel=2 dpkg-buildpackage -b -us -uc \
+    && make -C build check \
+    && install -D ../libexpat1_2.5.0-1+deb12u4_amd64.deb /out/libexpat1.deb
+
 FROM ${RUNTIME_IMAGE} AS agy
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq \
     && rm -rf /var/lib/apt/lists/*
@@ -23,8 +44,11 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
     && test "$(AGY_CLI_DISABLE_AUTO_UPDATE=true /out/agy --version)" = "$(jq -er .version /tmp/agy.lock.json)"
 
 FROM ${RUNTIME_IMAGE}
+COPY --from=expat /out/libexpat1.deb /tmp/libexpat1.deb
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq util-linux \
+    && apt-get install -y --no-install-recommends /tmp/libexpat1.deb ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq util-linux \
+    && test "$(dpkg-query -W -f='${Version}' libexpat1)" = '2.5.0-1+deb12u4' \
+    && rm /tmp/libexpat1.deb \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10002 antigravity \
     && useradd --system --no-create-home --uid 10002 --gid 10002 --shell /usr/sbin/nologin antigravity \

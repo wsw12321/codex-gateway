@@ -2,6 +2,9 @@
 set -eu
 umask 077
 
+# Secret Service loads Expat through D-Bus; reject the vulnerable Bookworm build.
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libexpat1)" ge '2.5.0-1+deb12u4'
+
 # Sent over Docker stdin by test-antigravity-image.sh. All fixtures and the fake
 # executable live in private tmpfs; the only persistent mount is the keyring.
 mode=$1
