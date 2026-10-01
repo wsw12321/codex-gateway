@@ -855,6 +855,9 @@ https://gateway.example.com    现有 Gateway 的 Cloudflare Tunnel 入口
 Gateway 的 CORS。不要将 Worker 套到自己的上游域名上造成递归代理。
 保留 Gateway 现有管理台来源，不在聊天域名下复制其认证 Cookie 或嵌入管理台。
 
+已有纯静态网页若采用浏览器直连 Gateway，可参考[浏览器 CORS 配置](browser-cors.md)。
+该指南是另一种部署方式，本设计的 Worker 同源转发不需要启用它。
+
 生产使用 Workers Static Assets 部署 SPA 和 API Worker。`/api/*` 先进入 Worker；
 静态资源可缓存，API 和错误不可缓存；`/parsers/*` 等解析资源应用独立安全头。
 

@@ -93,8 +93,9 @@ sidecar，不进入数据库或备份。
 
 Responses 支持普通 JSON 和 SSE。Gateway 会丢弃客户端的 `Authorization`、
 Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调用 sidecar。
-不开放 WebSocket、Chat Completions、CORS 或任意 URL 反向代理。Codex 首次尝试
-Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
+不开放 WebSocket、Chat Completions 或任意 URL 反向代理。默认不启用 CORS；
+独立网页直连可按[浏览器 CORS 配置](docs/browser-cors.md)在 Caddy 中仅允许指定
+来源访问模型接口。Codex 首次尝试 Responses WebSocket 时，认证后的 `GET /v1/responses` 会返回一次
 `426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
 不进入上游转发、配额、计费、并发租约或 usage 统计。
 
