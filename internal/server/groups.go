@@ -2,12 +2,14 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	decimal "github.com/wsw/codex-gateway/internal/billing"
 	"github.com/wsw/codex-gateway/internal/httpx"
 	"github.com/wsw/codex-gateway/internal/store"
 )
@@ -22,11 +24,12 @@ type groupRepository interface {
 
 type groupInput struct {
 	billingOperationInput
-	Name       string     `json:"name"`
-	LimitUSD   string     `json:"limit_usd"`
-	Period     string     `json:"period"`
-	CustomDays int        `json:"custom_days"`
-	StartsAt   *time.Time `json:"starts_at"`
+	Name           string          `json:"name"`
+	LimitUSD       string          `json:"limit_usd"`
+	MemberLimitUSD json.RawMessage `json:"member_limit_usd"`
+	Period         string          `json:"period"`
+	CustomDays     int             `json:"custom_days"`
+	StartsAt       *time.Time      `json:"starts_at"`
 }
 
 type groupMembersInput struct {
@@ -96,6 +99,20 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		s.groupStoreError(w, r, "update group", store.ErrInvalid)
 		return
 	}
+	var memberLimit *string
+	memberLimitSet := len(input.MemberLimitUSD) != 0
+	if memberLimitSet && string(input.MemberLimitUSD) != "null" {
+		var amount string
+		if json.Unmarshal(input.MemberLimitUSD, &amount) != nil {
+			s.groupStoreError(w, r, "update group", store.ErrInvalid)
+			return
+		}
+		if _, err := decimal.ParseInput(amount, false, true); err != nil {
+			s.groupStoreError(w, r, "update group", store.ErrInvalid)
+			return
+		}
+		memberLimit = &amount
+	}
 	repository := s.groupStorage()
 	if repository == nil {
 		internalError(s, w, r, "update group", errors.New("group repository unavailable"))
@@ -104,6 +121,7 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 	group, err := repository.PutGroup(r.Context(), store.PutGroupParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
 		GroupID:            id, Name: input.Name, LimitUSD: input.LimitUSD,
+		MemberLimitUSD: memberLimit, MemberLimitSet: memberLimitSet,
 		Period: input.Period, CustomDays: input.CustomDays, StartsAt: input.StartsAt,
 	})
 	if err != nil {

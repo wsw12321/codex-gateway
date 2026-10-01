@@ -71,6 +71,9 @@ func TestInformationUserDeletionPostgresIntegration(t *testing.T) {
 		if _, err := s.DB().ExecContext(ctx, `UPDATE group_usage_periods SET used_usd=3 WHERE id=$1`, group.PeriodID); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := s.DB().ExecContext(ctx, `INSERT INTO group_member_usage(period_id,user_id,used_usd) VALUES($1,$2,3)`, group.PeriodID, u.ID); err != nil {
+			t.Fatal(err)
+		}
 		users, err := s.ListDeletableInformationUsers(ctx, u.Username, 100, 0)
 		if err != nil || len(users) != 1 || users[0].ID != u.ID {
 			t.Fatalf("candidates: %+v %v", users, err)
@@ -113,6 +116,10 @@ func TestInformationUserDeletionPostgresIntegration(t *testing.T) {
 		var used string
 		if err := s.DB().QueryRowContext(ctx, `SELECT used_usd::text FROM group_usage_periods WHERE id=$1`, group.PeriodID).Scan(&used); err != nil || used != "3.000000000000" {
 			t.Fatalf("group usage changed: %s %v", used, err)
+		}
+		var memberCounters int
+		if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM group_member_usage WHERE user_id=$1`, u.ID).Scan(&memberCounters); err != nil || memberCounters != 0 {
+			t.Fatalf("deleted user retained member counters: %d %v", memberCounters, err)
 		}
 		if _, err := s.DeleteInformationUsers(ctx, params); err != nil {
 			t.Fatalf("idempotent replay: %v", err)

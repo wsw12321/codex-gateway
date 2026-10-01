@@ -1,10 +1,23 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 )
+
+func TestPutGroupRejectsInvalidMemberLimit(t *testing.T) {
+	s := New(nil)
+	for _, value := range []string{"", " ", "-1", "+1", "1e3", "01", "0.1234567", "1000000000000000000", " 1", "1 "} {
+		t.Run(value, func(t *testing.T) {
+			_, err := s.PutGroup(context.Background(), PutGroupParams{Name: "Test", LimitUSD: "10", Period: "day", MemberLimitUSD: &value})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("member limit %q: %v", value, err)
+			}
+		})
+	}
+}
 
 func TestGroupPeriodDuration(t *testing.T) {
 	for _, tc := range []struct {

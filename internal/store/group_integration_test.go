@@ -66,7 +66,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		return r
 	}
 
-	t.Run("full cost concurrent in-flight overshoot and personal quota", func(t *testing.T) {
+	t.Run("group pays first and personal funds cover the remainder", func(t *testing.T) {
 		g := create("Shared budget", "1")
 		u1, d1, k1 := billingIntegrationPrincipal(t, ctx, s, "group-a-"+suffix)
 		u2, d2, k2 := billingIntegrationPrincipal(t, ctx, s, "group-b-"+suffix)
@@ -85,7 +85,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if settled.UncoveredUSD == nil || *settled.UncoveredUSD != "0.900000000000" {
+		if settled.UncoveredUSD == nil || *settled.UncoveredUSD != "0.000000000000" {
 			t.Fatalf("uncovered cost: %+v", settled)
 		}
 		if _, err := s.SettleBilling(ctx, r2.RequestID, now); err != nil {
@@ -95,14 +95,29 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		g = get(g)
-		if g.UsedUSD != "1.500000000000" || g.RemainingUSD != "0.000000000000" {
+		if g.UsedUSD != "1.000000000000" || g.RemainingUSD != "0.000000000000" {
 			t.Fatalf("group accumulated: %+v", g)
 		}
 		request := billingIntegrationAdmission(u1, d1, k1, "group-both-exhausted-"+suffix, now)
+		admission, err := s.AdmitRequest(ctx, request)
+		if err != nil || admission.Billing.GroupPeriodID != nil {
+			t.Fatalf("exhausted group should fall back to personal funds: %+v %v", admission, err)
+		}
+		if _, err := s.CompleteUsageRequest(ctx, CompleteUsageRequestParams{RequestID: request.Quota.RequestID, State: "completed", HTTPStatus: 200, CompletedAt: now.Add(time.Second), InputTokens: 200000, ActualModel: "billing-priced-model"}); err != nil {
+			t.Fatal(err)
+		}
+		settled, err = s.SettleBilling(ctx, request.Quota.RequestID, now)
+		if err != nil || settled.UncoveredUSD == nil || *settled.UncoveredUSD != "0.100000000000" {
+			t.Fatalf("accepted request records uncovered remainder: %+v %v", settled, err)
+		}
+		if err := s.SettleRequest(ctx, request.Quota.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		request = billingIntegrationAdmission(u1, d1, k1, "group-all-exhausted-"+suffix, now)
 		_, err = s.AdmitRequest(ctx, request)
-		var groupErr *GroupQuotaExceededError
-		if !errors.As(err, &groupErr) {
-			t.Fatalf("group must take priority over personal: %v", err)
+		var fundsErr *InsufficientFundsError
+		if !errors.As(err, &fundsErr) {
+			t.Fatalf("all exhausted must reject: %v", err)
 		}
 		var count int
 		if err := s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM billing_reservations WHERE request_id=$1)+(SELECT count(*) FROM quota_reservations WHERE request_id=$1)+(SELECT count(*) FROM usage_requests WHERE request_id=$1)`, request.Quota.RequestID).Scan(&count); err != nil || count != 0 {
@@ -112,13 +127,15 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if g.UsedUSD != "1.500000000000" || g.RemainingUSD != "0.500000000000" {
+		if g.UsedUSD != "1.000000000000" || g.RemainingUSD != "1.000000000000" {
 			t.Fatalf("amount edit reset usage: %+v", g)
 		}
-		_, err = s.AdmitRequest(ctx, request)
-		var fundsErr *InsufficientFundsError
-		if !errors.As(err, &fundsErr) {
-			t.Fatalf("personal funds remain required: %v", err)
+		admission, err = s.AdmitRequest(ctx, request)
+		if err != nil || admission.Billing.GroupPeriodID == nil {
+			t.Fatalf("available group admits member without personal funds: %+v %v", admission, err)
+		}
+		if err := s.ReleaseRequest(ctx, request.Quota.RequestID, now); err != nil {
+			t.Fatal(err)
 		}
 		state, err := s.GetBillingState(ctx, u2.ID, 10, 0)
 		if err != nil || state.Group == nil || state.Group.ID != g.ID {
@@ -174,7 +191,113 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("subscriptions retain cash fallback while group measures total cost", func(t *testing.T) {
+	t.Run("member limit edits and rejoining retain paid usage", func(t *testing.T) {
+		originalNow := now
+		defer func() { now = originalNow }()
+		cap := "5"
+		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Member cap", LimitUSD: "50", MemberLimitUSD: &cap, Period: "day"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		u, d, k := billingIntegrationPrincipal(t, ctx, s, "group-cap-edit-"+suffix)
+		credit(u, "10")
+		members(g, "add", u.ID)
+		first := reserve(u, k, "group-cap-edit-first-"+suffix)
+		billingIntegrationComplete(t, ctx, s, u, d, k, first.RequestID, now, 3000000, "billing-priced-model")
+		if _, err := s.SettleBilling(ctx, first.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		g = get(g)
+		if len(g.Members) != 1 || g.Members[0].UsedUSD != "3.000000000000" || g.Members[0].RemainingUSD == nil || *g.Members[0].RemainingUSD != "2.000000000000" {
+			t.Fatalf("member usage: %+v", g)
+		}
+		members(g, "remove", u.ID)
+		g = members(g, "add", u.ID)
+		if g.Members[0].UsedUSD != "3.000000000000" || *g.Members[0].RemainingUSD != "2.000000000000" {
+			t.Fatalf("rejoining restored allowance: %+v", g)
+		}
+		g, err = s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", Period: "day"})
+		if err != nil || g.MemberLimitUSD == nil || *g.MemberLimitUSD != "5.000000000000" || g.UsedUSD != "3.000000000000" {
+			t.Fatalf("omitted cap must preserve current limit and usage: %+v %v", g, err)
+		}
+		cap = "2"
+		lower := PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", MemberLimitUSD: &cap, Period: "day"}
+		g, err = s.PutGroup(ctx, lower)
+		if err != nil || g.Members[0].UsedUSD != "3.000000000000" || *g.Members[0].RemainingUSD != "0.000000000000" {
+			t.Fatalf("lowered cap: %+v %v", g, err)
+		}
+		if _, err := s.PutGroup(ctx, lower); err != nil {
+			t.Fatalf("cap update replay: %v", err)
+		}
+		lower.MemberLimitUSD = nil
+		lower.MemberLimitSet = true
+		if _, err := s.PutGroup(ctx, lower); !errors.Is(err, ErrConflict) {
+			t.Fatalf("null replay must conflict with prior amount: %v", err)
+		}
+		personal := reserve(u, k, "group-cap-edit-personal-"+suffix)
+		if personal.GroupPeriodID != nil {
+			t.Fatalf("member over cap must use personal funds: %+v", personal)
+		}
+		billingIntegrationComplete(t, ctx, s, u, d, k, personal.RequestID, now, 1000000, "billing-priced-model")
+		if _, err := s.SettleBilling(ctx, personal.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		cap = "0"
+		g, err = s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", MemberLimitUSD: &cap, Period: "day"})
+		if err != nil || *g.MemberLimitUSD != "0.000000000000" {
+			t.Fatalf("zero cap: %+v %v", g, err)
+		}
+		zero := reserve(u, k, "group-cap-edit-zero-"+suffix)
+		if zero.GroupPeriodID != nil {
+			t.Fatalf("zero cap must disable group funds: %+v", zero)
+		}
+		if err := s.ReleaseBilling(ctx, zero.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		g, err = s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", MemberLimitSet: true, Period: "day"})
+		if err != nil || g.MemberLimitUSD != nil || g.Members[0].RemainingUSD != nil || g.Members[0].UsedUSD != "3.000000000000" {
+			t.Fatalf("clearing cap must preserve usage: %+v %v", g, err)
+		}
+		state, err := s.GetBillingState(ctx, u.ID, 10, 0)
+		if err != nil || state.GroupMemberUsedUSD == nil || *state.GroupMemberUsedUSD != "3.000000000000" || state.GroupMemberRemainingUSD != nil || state.BalanceUSD != "9.000000000000" {
+			t.Fatalf("own unlimited member summary: %+v %v", state, err)
+		}
+		cap = "6"
+		g, err = s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", MemberLimitUSD: &cap, Period: "day"})
+		if err != nil || *g.Members[0].RemainingUSD != "3.000000000000" {
+			t.Fatalf("raised cap: %+v %v", g, err)
+		}
+		late := reserve(u, k, "group-cap-edit-late-"+suffix)
+		oldPeriod := g.PeriodID
+		newAnchor := now.Add(-time.Hour)
+		g, err = s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), GroupID: g.ID, Name: g.Name, LimitUSD: "60", Period: "day", StartsAt: &newAnchor})
+		if err != nil || g.PeriodID == oldPeriod || g.Members[0].UsedUSD != "0.000000000000" || *g.Members[0].RemainingUSD != "6.000000000000" {
+			t.Fatalf("anchor edit starts fresh member period: %+v %v", g, err)
+		}
+		billingIntegrationComplete(t, ctx, s, u, d, k, late.RequestID, now, 1000000, "billing-priced-model")
+		if _, err := s.SettleBilling(ctx, late.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		var oldUsed, oldLimit string
+		if err := s.db.QueryRowContext(ctx, `SELECT m.used_usd::text,p.member_limit_usd::text FROM group_member_usage m JOIN group_usage_periods p ON p.id=m.period_id WHERE m.period_id=$1 AND m.user_id=$2`, oldPeriod, u.ID).Scan(&oldUsed, &oldLimit); err != nil || oldUsed != "4.000000000000" || oldLimit != "6.000000000000" {
+			t.Fatalf("old period member snapshot: used=%s limit=%s err=%v", oldUsed, oldLimit, err)
+		}
+		if get(g).Members[0].UsedUSD != "0.000000000000" {
+			t.Fatal("late settlement changed current member usage")
+		}
+		current := reserve(u, k, "group-cap-edit-current-"+suffix)
+		billingIntegrationComplete(t, ctx, s, u, d, k, current.RequestID, now, 1000000, "billing-priced-model")
+		if _, err := s.SettleBilling(ctx, current.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		now = g.PeriodEndsAt
+		g = get(g)
+		if g.PeriodID == *current.GroupPeriodID || g.Members[0].UsedUSD != "0.000000000000" || *g.Members[0].RemainingUSD != "6.000000000000" {
+			t.Fatalf("natural cycle renews member allowance: %+v", g)
+		}
+	})
+
+	t.Run("group funding preserves subscription and cash balances", func(t *testing.T) {
 		g := create("Subscription and cash", "1")
 		u, d, k := billingIntegrationPrincipal(t, ctx, s, "group-sub-"+suffix)
 		credit(u, "0.3")
@@ -189,20 +312,20 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		state, err := s.GetBillingState(ctx, u.ID, 10, 0)
-		if err != nil || state.BalanceUSD != "0.250000000000" || state.Subscriptions[0].RemainingUSD != "0.000000000000" {
+		if err != nil || state.BalanceUSD != "0.300000000000" || state.Subscriptions[0].RemainingUSD != "0.200000000000" {
 			t.Fatalf("subscription then cash fallback: %+v %v", state, err)
 		}
 		billingIntegrationComplete(t, ctx, s, u, d, k, second.RequestID, now, 750000, "billing-priced-model")
 		settled, err := s.SettleBilling(ctx, second.RequestID, now)
-		if err != nil || *settled.UncoveredUSD != "0.500000000000" {
+		if err != nil || *settled.UncoveredUSD != "0.000000000000" {
 			t.Fatalf("in-flight uncovered cost: %+v %v", settled, err)
 		}
 		if get(g).UsedUSD != "1.000000000000" {
-			t.Fatal("group did not count subscription, cash and uncovered together")
+			t.Fatal("group should pay the complete covered cost")
 		}
 	})
 
-	t.Run("model queries are exempt and group cap precedes request limits", func(t *testing.T) {
+	t.Run("model queries are exempt and exhausted group falls back to personal funding", func(t *testing.T) {
 		g := create("Blocked", "0")
 		u, d, k := billingIntegrationPrincipal(t, ctx, s, "group-endpoints-"+suffix)
 		credit(u, "1")
@@ -222,9 +345,12 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 			request.Usage.Endpoint = endpoint
 			request.Quota.Limits.KeyRequestsPerMinute = 1
 			_, err := s.AdmitRequest(ctx, request)
-			var exceeded *GroupQuotaExceededError
-			if !errors.As(err, &exceeded) {
-				t.Fatalf("%s cap priority: %v", endpoint, err)
+			if !errors.Is(err, ErrQuotaExceeded) {
+				t.Fatalf("%s must preserve request limits: %v", endpoint, err)
+			}
+			var groupError *GroupQuotaExceededError
+			if errors.As(err, &groupError) {
+				t.Fatalf("%s should not reject solely for empty group: %v", endpoint, err)
 			}
 		}
 	})
@@ -239,12 +365,14 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		credit(u, "5")
 		members(g, "add", u.ID)
 		params := billingIntegrationAdmission(u, d, k, "group-future-request-"+suffix, now)
-		_, err = s.AdmitRequest(ctx, params)
-		var exceeded *GroupQuotaExceededError
-		if !errors.As(err, &exceeded) || !exceeded.NotStarted || exceeded.RetryAfter != time.Hour {
-			t.Fatalf("future start: %v", err)
+		personal, err := s.AdmitRequest(ctx, params)
+		if err != nil || personal.Billing.GroupPeriodID != nil {
+			t.Fatalf("future group should use personal funding: %+v %v", personal, err)
 		}
-		params = billingIntegrationAdmission(u, d, k, params.Quota.RequestID, future)
+		if err := s.ReleaseRequest(ctx, params.Quota.RequestID, now); err != nil {
+			t.Fatal(err)
+		}
+		params = billingIntegrationAdmission(u, d, k, "group-start-request-"+suffix, future)
 		admission, err := s.AdmitRequest(ctx, params)
 		if err != nil {
 			t.Fatal(err)
@@ -267,6 +395,9 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		var start, timeEnd time.Time
 		if err := s.db.QueryRowContext(ctx, `SELECT starts_at,ends_at FROM group_usage_periods WHERE id=$1`, renewed.Billing.GroupPeriodID).Scan(&start, &timeEnd); err != nil || !start.Equal(end) || timeEnd.Sub(start) != 48*time.Hour {
 			t.Fatalf("renewed period: %v %v %v", start, timeEnd, err)
+		}
+		if err := s.ReleaseRequest(ctx, params.Quota.RequestID, end); err != nil {
+			t.Fatal(err)
 		}
 	})
 
@@ -346,7 +477,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if used := get(g).UsedUSD; used != "1.200000000000" {
+		if used := get(g).UsedUSD; used != "0.500000000000" {
 			t.Fatalf("parallel total = %s", used)
 		}
 	})

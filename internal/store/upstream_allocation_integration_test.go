@@ -132,8 +132,8 @@ func TestUpstreamAllocationPostgresIntegration(t *testing.T) {
 	} {
 		if _, err := repository.db.ExecContext(ctx, `INSERT INTO billing_ledger_entries
 			(user_id, entry_type, amount_usd, cash_delta_usd, request_id, upstream_account_id,
-			 model, actual_cost_usd, charged_usd, uncovered_usd, usage_requested_at, created_at)
-			VALUES ($1,$2,$3::numeric,0,$4,$5,$6,$3::numeric,0,$3::numeric,$7,$8)`,
+			 model, actual_cost_usd, charged_usd, group_charged_usd, personal_charged_usd, uncovered_usd, usage_requested_at, created_at)
+			VALUES ($1,$2,$3::numeric,0,$4,$5,$6,$3::numeric,0,CASE WHEN $2='usage_charge' THEN 0 END,CASE WHEN $2='usage_charge' THEN 0 END,$3::numeric,$7,$8)`,
 			fixture.userID, fixture.entryType, fixture.cost, fmt.Sprintf("allocation-ledger-%s-%d", suffix, index),
 			fixture.accountID, fixture.model, fixture.requested, fixture.created); err != nil {
 			t.Fatalf("ledger fixture %d: %v", index, err)

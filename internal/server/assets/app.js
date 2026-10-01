@@ -2488,6 +2488,8 @@ function renderBillingLedger(detail) {
       const balance = field(entry, "balance_after_usd", "cash_balance_after_usd");
       const actual = field(entry, "actual_cost_usd");
       const charged = field(entry, "charged_usd");
+      const groupCharged = field(entry, "group_charged_usd");
+      const personalCharged = field(entry, "personal_charged_usd");
       const uncovered = field(entry, "uncovered_usd");
       const amountDetails = [];
       const addAmountDetail = (text) => {
@@ -2496,7 +2498,9 @@ function renderBillingLedger(detail) {
       };
       if (balance != null) addAmountDetail(`现金余额：${formatUSD(balance)}`);
       if (actual != null && String(actual) !== String(amount)) addAmountDetail(`实际成本：${formatUSD(actual)}`);
-      if (charged != null && String(charged) !== String(amount)) addAmountDetail(`已扣额度：${formatUSD(charged)}`);
+      if (charged != null && String(charged) !== String(amount)) addAmountDetail(`已覆盖：${formatUSD(charged)}`);
+      if (groupCharged != null) addAmountDetail(`群组支付：${formatUSD(groupCharged)}`);
+      if (personalCharged != null) addAmountDetail(`个人支付：${formatUSD(personalCharged)}`);
       if (uncovered != null && String(uncovered) !== "0" && String(uncovered) !== "0.000000000000") {
         addAmountDetail(`未覆盖：${formatUSD(uncovered)}`);
       }
@@ -2599,7 +2603,7 @@ function renderBillingAdminValues(detail) {
 
 function renderBillingDetail(detail) {
   billingDetail = detail || {};
-  renderBillingGroup(detail?.group);
+  renderBillingGroup(detail?.group, detail);
   const user = billingUserForDetail(detail);
   const cash = detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd;
   byId("billing-cash-balance").textContent = formatUSD(cash, "数据不可用");
@@ -4698,18 +4702,23 @@ function groupPeriodLabel(group) {
 
 function groupMetrics(group) {
   return [
-    ["周期额度", group.limit_usd], ["实际已用", group.used_usd], ["剩余额度", group.remaining_usd],
-  ].map(([label, value]) => element("article", {}, element("span", {text: label}), element("strong", {text: formatUSD(value)})));
+    ["周期额度", group.limit_usd], ["群组已用", group.used_usd], ["群组剩余", group.remaining_usd],
+    ["单个成员周期上限", group.member_limit_usd, "不限"],
+  ].map(([label, value, empty]) => element("article", {}, element("span", {text: label}), element("strong", {text: formatUSD(value, empty)})));
 }
 
-function renderBillingGroup(group) {
+function renderBillingGroup(group, detail = {}) {
   const host = byId("billing-group");
   host.classList.toggle("hidden", !group);
   host.replaceChildren();
   if (!group) return;
   host.append(element("h3", {text: `群组额度 · ${group.name}`}),
     element("div", {className: "metrics compact"}, ...groupMetrics(group)),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。已用费用包含请求模型倍率；群组额度与个人可用资金必须同时有剩余。`}),
+    element("div", {className: "metrics compact"},
+      element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(detail.group_member_used_usd, "数据不可用")})),
+      element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(detail.group_member_remaining_usd, "数据不可用")})),
+    ),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按允许扣费的个人日、周、月额度及现金结算。群组耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
   );
 }
 
@@ -4794,7 +4803,8 @@ function renderGroupMembers() {
       if (checkbox.checked) groupSelectedUsers.add(user.id); else groupSelectedUsers.delete(user.id);
       syncGroupControls();
     });
-    const description = member ? `当前成员 · 本期 ${formatUSD(member.used_usd)}` : user.group_id ? "已加入其他群组，需先移除" : "未加入群组";
+    const remaining = managedGroup?.member_limit_usd == null ? "不限" : formatUSD(member?.remaining_usd, "数据不可用");
+    const description = member ? `当前成员 · 本期群组已用 ${formatUSD(member.used_usd)} · 上限剩余 ${remaining}` : user.group_id ? "已加入其他群组，需先移除" : "未加入群组";
     return element("label", {className: "user-check-row"}, checkbox,
       element("span", {}, element("strong", {text: user.display_name || user.username}), element("small", {text: `${user.username} · ${description}`})));
   });
@@ -4827,6 +4837,7 @@ function openGroupEditor(group = null) {
   form.elements.group_id.value = group?.id || "";
   form.elements.name.value = group?.name || "";
   form.elements.limit_usd.value = group ? String(group.limit_usd).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") : "";
+  form.elements.member_limit_usd.value = group?.member_limit_usd == null ? "" : String(group.member_limit_usd).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   form.elements.period.value = group?.period || "month";
   form.elements.custom_days.value = String(group?.custom_days || 14);
   byId("group-dialog-title").textContent = group ? "编辑群组额度" : "创建群组";
@@ -4883,7 +4894,11 @@ async function saveGroup(event) {
   if (!/^(0|[1-9][0-9]{0,17})(\.[0-9]{1,6})?$/.test(amount)) {
     throw new Error("额度必须大于或等于 0，最多 18 位整数和 6 位小数。");
   }
-  const payload = {name: form.elements.name.value.trim(), limit_usd: amount, period: form.elements.period.value,
+  const memberLimit = String(form.elements.member_limit_usd.value || "").trim();
+  if (memberLimit && !/^(0|[1-9][0-9]{0,17})(\.[0-9]{1,6})?$/.test(memberLimit)) {
+    throw new Error("成员上限必须大于或等于 0，最多 18 位整数和 6 位小数；留空表示不限。");
+  }
+  const payload = {name: form.elements.name.value.trim(), limit_usd: amount, member_limit_usd: memberLimit || null, period: form.elements.period.value,
     custom_days: form.elements.period.value === "custom" ? Number(form.elements.custom_days.value) : 0,
     reason: billingReason(form)};
   if (form.elements.starts_at.value) payload.starts_at = new Date(form.elements.starts_at.value).toISOString();

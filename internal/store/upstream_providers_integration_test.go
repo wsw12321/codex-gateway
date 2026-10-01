@@ -212,8 +212,8 @@ func TestUpstreamProvidersIsolateUsageAndCostSummaries(t *testing.T) {
 			}
 			if _, err := repository.db.ExecContext(ctx, `INSERT INTO billing_ledger_entries
 				(user_id,entry_type,amount_usd,cash_delta_usd,request_id,upstream_account_id,
-				 model,actual_cost_usd,charged_usd,uncovered_usd,usage_requested_at,created_at)
-				VALUES ($1,'usage_charge',$2::numeric,0,$3,$4,'provider-fixture',$2::numeric,0,$2::numeric,$5,$5)`,
+				 model,actual_cost_usd,charged_usd,group_charged_usd,personal_charged_usd,uncovered_usd,usage_requested_at,created_at)
+				VALUES ($1,'usage_charge',$2::numeric,0,$3,$4,'provider-fixture',$2::numeric,0,0,0,$2::numeric,$5,$5)`,
 				actor.ID, fixture.cost, requestID, fixture.id, requestedAt); err != nil {
 				t.Fatal(err)
 			}

@@ -120,10 +120,10 @@ func TestModelMultipliersPostgresIntegration(t *testing.T) {
 				t.Fatalf("idempotent settlement %s: %v", id, err)
 			}
 		}
-		billingIntegrationAssertAllocations(t, ctx, s, requestB, []string{"day", "cash"}, []string{"0.500000000000", "1.500000000000"})
-		billingIntegrationAssertAllocations(t, ctx, s, requestA, []string{"cash"}, []string{"1.000000000000"})
+		billingIntegrationAssertAllocations(t, ctx, s, requestB, []string{"group"}, []string{"2.000000000000"})
+		billingIntegrationAssertAllocations(t, ctx, s, requestA, []string{"group"}, []string{"1.000000000000"})
 		state, err := s.GetBillingState(ctx, user.ID, 20, 0)
-		if err != nil || state.BalanceUSD != "2.500000000000" || state.Group == nil || state.Group.UsedUSD != "3.000000000000" {
+		if err != nil || state.BalanceUSD != "5.000000000000" || state.Group == nil || state.Group.UsedUSD != "3.000000000000" {
 			t.Fatalf("multiplied cash and group cost: %+v, %v", state, err)
 		}
 		charges := 0
@@ -174,11 +174,11 @@ func TestModelMultipliersPostgresIntegration(t *testing.T) {
 		checkReports()
 		set(model, "0.5")
 		checkReports()
-		blocked := billingIntegrationAdmission(user, device, key, "multiplier-exhausted-group-request", now.Add(time.Minute))
-		blocked.Usage.Model, blocked.Billing.Model = model, model
-		var groupExceeded *GroupQuotaExceededError
-		if _, err := s.AdmitRequest(ctx, blocked); !errors.As(err, &groupExceeded) {
-			t.Fatalf("multiplied group total did not close admission: %v", err)
+		fallback := billingIntegrationAdmission(user, device, key, "multiplier-exhausted-group-request", now.Add(time.Minute))
+		fallback.Usage.Model, fallback.Billing.Model = model, model
+		admitted, err := s.AdmitRequest(ctx, fallback)
+		if err != nil || admitted.Billing == nil || admitted.Billing.GroupPeriodID != nil || admitted.Billing.DayPeriodID == nil {
+			t.Fatalf("exhausted group did not fall back to personal funds: %+v %v", admitted, err)
 		}
 	})
 
@@ -621,9 +621,9 @@ func TestModelMultiplierMigrationPostgresIntegration(t *testing.T) {
 		t.Fatalf("legacy snapshot/cost changed: %s/%s %s/%s", reservationMultiplier, ledgerMultiplier, reservationCost, ledgerCost)
 	}
 	// The migration under test has been verified above. Install the unrelated
-	// plan schema before exercising current billing helpers for replay.
+	// plan and funding schemas before exercising current billing helpers for replay.
 	for _, migration := range migrations {
-		if migration.Name == "0024_subscription_plans.sql" {
+		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply billing helper schema: %v", err)
 			}

@@ -359,7 +359,7 @@
             </div>
             <div class="metrics billing-metrics">
               <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
-              <article class="billing-order-card"><span>扣费顺序</span><strong>日 → 周 → 月 → 现金</strong><small>按顺序使用有效且允许扣费的来源；实际扣费以请求结算流水为准。不同周期额度分别计算。</small></article>
+              <article class="billing-order-card"><span>扣费顺序</span><strong>群组 → 个人日 → 周 → 月 → 现金</strong><small>群组在剩余额度和成员本期上限内优先支付；剩余费用使用允许扣费的个人来源。实际分摊以结算流水为准。</small></article>
             </div>
 
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
@@ -775,10 +775,10 @@
 
           <section class="view owner-only hidden" data-section="groups" aria-labelledby="groups-title">
             <div class="section-head">
-              <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为一组用户设置共同的美元用量上限；每人仍需有可用的个人订阅或余额。</p></div>
+              <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为成员提供共同的美元支付额度，并设置统一的单个成员周期上限。</p></div>
               <div class="button-group"><button id="group-create" type="button">创建群组</button><button id="groups-refresh" type="button" class="secondary">刷新</button></div>
             </div>
-            <p class="callout">群组已用费用包含请求模型倍率，额度优先于个人额度。达到上限后停止接受新请求，已接收的请求正常完成并计费，实际用量可能超过上限。固定周期自动重置，剩余额度不结转。</p>
+            <p class="callout">群组优先支付，金额不超过群组剩余额度及成员本期剩余上限；余下费用使用个人额度。群组耗尽、额度为零、成员达到上限或周期未开始时回退个人；所有来源均不可用时拒绝新请求。固定周期自动重置，剩余额度不结转。</p>
             <p id="groups-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <div class="groups-layout">
               <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
@@ -794,7 +794,7 @@
                   <div class="button-group"><button id="group-members-add" type="button">加入所选用户</button><button id="group-members-remove" type="button" class="secondary">移除所选成员</button><button id="group-archive" type="button" class="danger">归档空群组</button></div>
                   <p class="form-message hidden" role="alert"></p>
                 </form>
-                <p class="muted">每人最多加入一个群组。加入其他群组前需先移除；变更前已接收的请求仍记入原群组、原周期。</p>
+                <p class="muted">每人最多加入一个群组。加入其他群组前需先移除；变更前已接收的请求仍使用原群组、原周期。退群再加入或清理历史不恢复已用额度。</p>
               </article>
             </div>
           </section>
@@ -1147,10 +1147,11 @@
       <input name="group_id" type="hidden">
       <label>群组名称<input name="name" required maxlength="120" autocomplete="off"></label>
       <label>每周期额度（USD）<input name="limit_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 100.00"></label>
+      <label>单个成员周期用量上限（USD）<input name="member_limit_usd" inputmode="decimal" autocomplete="off" placeholder="留空表示不限，0 表示不使用群组额度"></label>
       <label>周期<select name="period"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
       <label id="group-custom-days-label" class="hidden">自定义天数<input name="custom_days" type="number" min="1" max="106751" step="1" value="14"></label>
       <label>周期起点（本地时间，可留空）<input name="starts_at" type="datetime-local" step="1"></label>
-      <p class="muted">创建时留空立即开始。编辑时留空保留起点；修改周期后立即重开。仅修改金额会保留当前累计，修改周期或起点会关闭旧期、建立新期。</p>
+      <p class="muted">成员上限与群组共用周期，留空表示不限，0 表示不使用群组额度。周期起点创建时留空立即开始，编辑时留空保留。仅修改额度或成员上限保留累计；修改周期或起点关闭旧期、建立新期，成员计数随新周期归零。</p>
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存群组</button></div>

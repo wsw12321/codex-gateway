@@ -252,7 +252,7 @@ func TestInformationSubscriptionAndGroupPostgresIntegration(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT used_usd::text FROM group_usage_periods WHERE id=$1`, group.PeriodID).Scan(&groupUsed); err != nil {
 		t.Fatal(err)
 	}
-	if remaining != "9.000000000000" || groupUsed != "1.000000000000" {
+	if remaining != "10.000000000000" || groupUsed != "1.000000000000" {
 		t.Fatalf("current quota changed: subscription=%s group=%s", remaining, groupUsed)
 	}
 	var activeLedger, endedHistory int

@@ -63,11 +63,13 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 		"user": map[string]any{
 			"id": state.UserID, "username": state.Username, "display_name": state.DisplayName,
 		},
-		"cash_balance_usd": state.BalanceUSD,
-		"source_disabled":  state.SourceDisabled,
-		"group":            state.Group,
-		"subscriptions":    billingSubscriptionsResponse(state.Subscriptions),
-		"ledger_entries":   state.Ledger,
+		"cash_balance_usd":           state.BalanceUSD,
+		"source_disabled":            state.SourceDisabled,
+		"group":                      state.Group,
+		"group_member_used_usd":      state.GroupMemberUsedUSD,
+		"group_member_remaining_usd": state.GroupMemberRemainingUSD,
+		"subscriptions":              billingSubscriptionsResponse(state.Subscriptions),
+		"ledger_entries":             state.Ledger,
 		"pagination": map[string]any{
 			"limit": limit, "offset": offset, "total": state.LedgerTotal,
 			"has_more": hasMore, "next_offset": offset + len(state.Ledger),

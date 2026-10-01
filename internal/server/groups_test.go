@@ -243,6 +243,63 @@ func TestGroupWriteRoutesCarryAuthenticatedAttribution(t *testing.T) {
 	}
 }
 
+func TestGroupMemberLimitInputDistinguishesAbsentNullAndAmount(t *testing.T) {
+	for _, e := range groupHandlerWriteEndpoints()[:2] {
+		for _, tc := range []struct {
+			name    string
+			present bool
+			value   any
+			want    *string
+		}{
+			{name: "omitted"},
+			{name: "unlimited", present: true},
+			{name: "zero", present: true, value: "0", want: groupTestString("0")},
+			{name: "limited", present: true, value: "2.345678", want: groupTestString("2.345678")},
+		} {
+			t.Run(e.name+"/"+tc.name, func(t *testing.T) {
+				now := time.Now()
+				s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+				repo := &fakeGroupRepository{}
+				s.groupRepo = repo
+				if tc.present {
+					e.body["member_limit_usd"] = tc.value
+				} else {
+					delete(e.body, "member_limit_usd")
+				}
+				r := groupHandlerRequest(t, e)
+				addBillingSourceTestSession(t, r)
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				if w.Code != 200 || repo.put == nil || repo.put.MemberLimitSet != tc.present || !reflect.DeepEqual(repo.put.MemberLimitUSD, tc.want) {
+					t.Fatalf("status=%d body=%s put=%+v", w.Code, w.Body.String(), repo.put)
+				}
+			})
+		}
+	}
+}
+
+func groupTestString(v string) *string { return &v }
+
+func TestGroupMemberLimitRejectsInvalidAmountsAndTypes(t *testing.T) {
+	for _, value := range []any{"", " ", "-1", "+1", "1e3", "01", "0.1234567", "1000000000000000000", " 1", "1 ", 0, 1.2, true, []any{}, map[string]any{}} {
+		t.Run(fmt.Sprintf("%T/%v", value, value), func(t *testing.T) {
+			now := time.Now()
+			s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+			repo := &fakeGroupRepository{}
+			s.groupRepo = repo
+			e := groupHandlerWriteEndpoints()[0]
+			e.body["member_limit_usd"] = value
+			r := groupHandlerRequest(t, e)
+			addBillingSourceTestSession(t, r)
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != 400 || !strings.Contains(w.Body.String(), "invalid_group_operation") || repo.calls != 0 {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), repo.calls)
+			}
+		})
+	}
+}
+
 func TestGroupReadAndStoreErrorResponses(t *testing.T) {
 	endpoints := append(groupHandlerWriteEndpoints(), groupHandlerEndpoint{name: "list", method: http.MethodGet, path: "/admin/groups"}, groupHandlerEndpoint{name: "detail", method: http.MethodGet, path: "/admin/groups/" + groupHandlerTestID})
 	for _, e := range endpoints {
@@ -349,18 +406,20 @@ func TestGroupRoutesRejectMalformedResourceAndMemberRequests(t *testing.T) {
 }
 
 func TestBillingStateResponseIncludesOnlyGroupSummary(t *testing.T) {
-	g := store.GroupSummary{ID: groupHandlerTestID, Name: "Research", LimitUSD: "10.000000000000", UsedUSD: "2.000000000000", RemainingUSD: "8.000000000000", Period: "month", MemberCount: 2}
-	encoded, err := json.Marshal(billingStateResponse(store.BillingState{UserID: "self", Group: &g}, 10, 0))
+	g := store.GroupSummary{ID: groupHandlerTestID, Name: "Research", LimitUSD: "10.000000000000", MemberLimitUSD: groupTestString("3.000000000000"), UsedUSD: "2.000000000000", RemainingUSD: "8.000000000000", Period: "month", MemberCount: 2}
+	encoded, err := json.Marshal(billingStateResponse(store.BillingState{UserID: "self", Group: &g, GroupMemberUsedUSD: groupTestString("1.000000000000"), GroupMemberRemainingUSD: groupTestString("2.000000000000")}, 10, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var response struct {
-		Group map[string]any `json:"group"`
+		Group           map[string]any `json:"group"`
+		MemberUsed      *string        `json:"group_member_used_usd"`
+		MemberRemaining *string        `json:"group_member_remaining_usd"`
 	}
 	if err := json.Unmarshal(encoded, &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.Group["id"] != g.ID || response.Group["used_usd"] != g.UsedUSD || response.Group["remaining_usd"] != g.RemainingUSD || response.Group["period"] != "month" {
+	if response.Group["id"] != g.ID || response.Group["used_usd"] != g.UsedUSD || response.Group["remaining_usd"] != g.RemainingUSD || response.Group["period"] != "month" || response.Group["member_limit_usd"] != *g.MemberLimitUSD || response.MemberUsed == nil || *response.MemberUsed != "1.000000000000" || response.MemberRemaining == nil || *response.MemberRemaining != "2.000000000000" {
 		t.Fatalf("group summary: %s", encoded)
 	}
 	for _, key := range []string{"members", "user_ids", "member_usage", "ledger"} {
@@ -369,7 +428,7 @@ func TestBillingStateResponseIncludesOnlyGroupSummary(t *testing.T) {
 		}
 	}
 	encoded, err = json.Marshal(billingStateResponse(store.BillingState{}, 10, 0))
-	if err != nil || !strings.Contains(string(encoded), `"group":null`) {
+	if err != nil || !strings.Contains(string(encoded), `"group":null`) || !strings.Contains(string(encoded), `"group_member_used_usd":null`) || !strings.Contains(string(encoded), `"group_member_remaining_usd":null`) {
 		t.Fatalf("ungrouped response: %s %v", encoded, err)
 	}
 }

@@ -228,6 +228,9 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 			`UPDATE model_access_defaults SET updated_by_user_id=NULL WHERE updated_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`UPDATE user_model_access SET updated_by_user_id=NULL WHERE updated_by_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`DELETE FROM user_model_access WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
+			// Member counters survive history cleanup and membership changes. Only
+			// permanent user deletion removes them; group totals remain intact.
+			`DELETE FROM group_member_usage WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`DELETE FROM upstream_account_users WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))`,
 			`DELETE FROM quota_counters WHERE (scope_type='user' AND scope_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))) OR (scope_type='key' AND scope_id IN (SELECT id FROM api_key_history WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))))`,
 			`DELETE FROM quota_rate_windows WHERE (scope_type='user' AND scope_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))) OR (scope_type='key' AND scope_id IN (SELECT id FROM api_key_history WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))))`,

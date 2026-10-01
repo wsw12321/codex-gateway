@@ -62,10 +62,10 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	if geminiMigration.Name == "" {
 		t.Fatal("Gemini migration missing")
 	}
-	// Current billing helpers need the unrelated plan columns while this test
-	// deliberately leaves the Gemini migration unapplied until after seeding.
+	// Current billing helpers need the unrelated plan and funding columns while
+	// this test leaves the Gemini migration unapplied until after seeding.
 	for _, migration := range migrations {
-		if migration.Name == "0024_subscription_plans.sql" {
+		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply billing helper schema: %v", err)
 			}

@@ -18,6 +18,7 @@ const users = [
   {id: "carol", username: "carol", display_name: "研发组 · Carol", group_id: "engineering"},
 ];
 const groups = [{id: "design", name: "产品设计团队", period: "month", custom_days: 0, limit_usd: "100.000000000000", used_usd: "42.500000000000", remaining_usd: "57.500000000000", member_count: 1,
+  member_limit_usd: "100.000000000000",
   starts_at: "2026-09-01T08:00:00Z", period_starts_at: "2026-09-01T08:00:00Z", period_ends_at: "2026-10-02T08:00:00Z", members: []}];
 const account = {id: "a1b2c3d4e5f60718", email_masked: "a***@example.test", plan: "Pro", status: "available", can_manage: true,
   access_mode: "exclusive", authorized_user_ids: ["alice"], allocation_weight: 1, rolling_cost_usd: "42.5", rolling_cost_share: "1", target_share: "1"};
@@ -30,7 +31,12 @@ async function main() {
     const errors = [], writes = [], idempotency = new Map();
     let failCreateOnce = false, failAccounts = false, delayNextGroupRead = false, releaseGroupRead;
     let delayOldList = false, releaseOldList;
-    const detail = (group) => ({...group, members: users.filter((u) => u.group_id === group.id).map((u) => ({user_id: u.id, username: u.username, display_name: u.display_name, used_usd: u.id === "alice" ? group.used_usd : "0"}))});
+    const memberUsage = {design: {alice: "12.500000000000"}};
+    const detail = (group) => ({...group, members: users.filter((u) => u.group_id === group.id).map((u) => {
+      const used = memberUsage[group.id]?.[u.id] || "0";
+      return {user_id: u.id, username: u.username, display_name: u.display_name, used_usd: used,
+        remaining_usd: group.member_limit_usd == null ? null : Math.max(0, Number(group.member_limit_usd) - Number(used)).toFixed(12)};
+    })});
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("dialog", (dialog) => dialog.accept());
     await page.route("**/*", async (route) => {
@@ -88,6 +94,7 @@ async function main() {
           Object.assign(group, body);
           if (resets) {
             group.used_usd = "0";
+            memberUsage[group.id] = {};
             group.period_starts_at = "2026-09-21T08:00:00Z";
             group.period_ends_at = "2026-10-05T08:00:00Z";
           }
@@ -102,6 +109,7 @@ async function main() {
     });
     await page.goto("http://127.0.0.1:8765/#groups");
     await page.evaluate(async (value) => { bindUI(); initializeDateFilters(); renderState(value); await loadGroups(); }, initialState);
+    assert.match(await page.locator("#group-member-list").textContent(), /本期群组已用 US\$12\.50.*上限剩余 US\$87\.50/);
     await page.getByLabel("选择用户 alice", {exact: true}).check();
     await page.locator("#group-member-search").fill("bob");
     await page.getByLabel("选择用户 bob", {exact: true}).check();
@@ -115,21 +123,36 @@ async function main() {
     assert.equal(await page.locator("#group-archive").isDisabled(), true);
 
     await page.locator("#group-edit").click();
+    assert.equal(await page.locator("#group-form input[name=member_limit_usd]").inputValue(), "100");
+    await page.locator("#group-form input[name=reason]").fill("调整团队预算");
+    await page.locator("#group-form input[name=member_limit_usd]").fill("-1");
+    const beforeInvalidCap = writes.length;
+    await page.locator("#group-form button[type=submit]").click();
+    assert.equal(writes.length, beforeInvalidCap);
+    assert.match(await page.locator("#group-form .form-message").textContent(), /成员上限必须/);
+    await page.locator("#group-form input[name=member_limit_usd]").fill("50");
     await page.locator("#group-form input[name=limit_usd]").fill("125.50");
     await page.locator("#group-form input[name=reason]").fill("调整团队预算");
     await page.locator("#group-form button[type=submit]").click();
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.limit_usd, "125.50");
+    assert.equal(writes.at(-1).body.member_limit_usd, "50");
     assert.equal("starts_at" in writes.at(-1).body, false);
     assert.equal(groups[0].used_usd, "42.500000000000");
+    await page.waitForFunction(() => managedGroup?.id === "design" && managedGroup.member_limit_usd === "50");
+    assert.match(await page.locator("#group-member-list").textContent(), /本期群组已用 US\$12\.50.*上限剩余 US\$37\.50/);
 
     await page.locator("#group-edit").click();
+    await page.locator("#group-form input[name=member_limit_usd]").fill("");
     await page.locator("#group-form select[name=period]").selectOption("custom");
     await page.locator("#group-form input[name=custom_days]").fill("14");
     await page.locator("#group-form input[name=reason]").fill("采用双周周期");
     await page.locator("#group-form button[type=submit]").click();
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.custom_days, 14);
+    assert.equal(writes.at(-1).body.member_limit_usd, null);
+    await page.waitForFunction(() => managedGroup?.period === "custom" && managedGroup.member_limit_usd === null);
+    assert.match(await page.locator("#group-member-list").textContent(), /本期群组已用 US\$0\.00.*上限剩余 不限/);
 
     failCreateOnce = true;
     await page.locator("#group-create").click();
@@ -144,34 +167,68 @@ async function main() {
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.operation_id, operationID);
     assert.equal(groups.filter((g) => g.id === "new-team").length, 1);
+    assert.equal(writes.at(-1).body.member_limit_usd, null);
 
     await page.waitForFunction(() => managedGroup?.id === "new-team");
     await page.locator("#group-edit").click();
     await page.locator("#group-form input[name=limit_usd]").fill("0");
+    await page.locator("#group-form input[name=member_limit_usd]").fill("0");
     await page.locator("#group-form input[name=reason]").fill("暂停新团队用量");
     await page.locator("#group-form button[type=submit]").click();
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.limit_usd, "0");
+    assert.equal(writes.at(-1).body.member_limit_usd, "0");
+    await page.waitForFunction(() => managedGroup?.id === "new-team" && managedGroup.limit_usd === "0" && managedGroup.member_limit_usd === "0");
 
-    await page.evaluate(async () => { await loadGroupDetail("design"); });
+    await page.evaluate(async () => { await loadGroups("design"); });
     delayNextGroupRead = true;
     await page.evaluate(() => { window.pendingGroupRead = loadGroupDetail("design"); });
     await page.locator("#group-edit").click();
     await page.locator("#group-form input[name=limit_usd]").fill("150");
+    await page.locator("#group-form input[name=member_limit_usd]").fill("100");
     await page.locator("#group-form input[name=reason]").fill("调整双周预算");
     await page.locator("#group-form button[type=submit]").click();
-    await page.waitForFunction(() => managedGroup?.limit_usd === "150" && !byId("group-dialog").open);
+    await page.waitForFunction(() => managedGroup?.id === "design" && managedGroup.limit_usd === "150" && managedGroup.member_limit_usd === "100" && !byId("group-dialog").open);
     assert.equal(typeof releaseGroupRead, "function");
     releaseGroupRead();
     await page.evaluate(async () => { await window.pendingGroupRead; });
     assert.equal(await page.evaluate(() => managedGroup.limit_usd), "150", "late reads cannot overwrite a completed mutation");
 
-    await page.evaluate(async () => { await loadGroupDetail("design"); renderBillingGroup(managedGroup); });
-    assert.match(await page.locator("#billing-group").textContent(), /群组额度.*产品设计/);
+    await page.evaluate(async () => { await loadGroupDetail("design"); });
     await page.screenshot({path: path.join(screenshots, "groups-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({path: path.join(screenshots, "groups-mobile.png"), fullPage: true});
+
+    await page.setViewportSize({width: 1440, height: 1080});
+    await page.locator("#group-edit").click();
+    assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").inputValue(), "100");
+    await page.screenshot({path: path.join(screenshots, "groups-form-desktop.png"), fullPage: true});
+    await page.setViewportSize({width: 390, height: 844});
+    assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").isVisible(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png"), fullPage: true});
+    await page.locator("#group-form [data-close]").click();
+
+    await page.evaluate(() => {
+      location.hash = "billing"; routeFromHash(false);
+      renderBillingDetail({user: state.user, cash_balance_usd: "0", subscriptions: {}, group: {...managedGroup, used_usd: "95", remaining_usd: "55"},
+        group_member_used_usd: "95", group_member_remaining_usd: "5", ledger_entries: [
+          {entry_type: "usage_charge", request_id: "split-request", actual_cost_usd: "20", charged_usd: "18", group_charged_usd: "5", personal_charged_usd: "13", uncovered_usd: "2"},
+          {entry_type: "usage_charge", request_id: "group-only", actual_cost_usd: "3", charged_usd: "3", group_charged_usd: "3", personal_charged_usd: "0", uncovered_usd: "0"},
+          {entry_type: "cash_adjustment", amount_usd: "10", group_charged_usd: null, personal_charged_usd: null},
+        ]});
+    });
+    assert.match(await page.locator("#billing-group").textContent(), /本用户本期群组已用US\$95\.00.*本用户本期上限剩余US\$5\.00/);
+    assert.match(await page.locator(".billing-order-card").textContent(), /群组 → 个人日 → 周 → 月 → 现金/);
+    await page.locator("#billing-ledger-rows .record-details > summary").first().click();
+    assert.match(await page.locator("#billing-ledger-rows tr").first().textContent(), /群组支付：US\$5\.00.*个人支付：US\$13\.00.*未覆盖：US\$2\.00/);
+    assert.match(await page.locator("#billing-ledger-rows tr").nth(1).textContent(), /个人支付：US\$0\.00/);
+    assert.doesNotMatch(await page.locator("#billing-ledger-rows tr").nth(2).textContent(), /群组支付|个人支付/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.screenshot({path: path.join(screenshots, "groups-billing-mobile.png"), fullPage: true});
+    await page.setViewportSize({width: 1440, height: 1080});
+    await page.screenshot({path: path.join(screenshots, "groups-billing-desktop.png"), fullPage: true});
 
     await page.setViewportSize({width: 1440, height: 1080});
     await page.evaluate(async () => { location.hash = "upstream-accounts"; routeFromHash(false); await loadUpstreamAccounts(new URLSearchParams({all: "true"})); });
@@ -226,7 +283,7 @@ async function main() {
     assert.equal(await page.locator("#group-member-list").textContent(), "");
     assert.equal(await page.locator("#upstream-access-user-list").textContent(), "");
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, idempotent retry, membership, period reset, exclusivity, refresh failure, mobile, logout", errors}));
+    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, nullable/zero/invalid member caps, independent member usage, split ledger, idempotent retry, membership, period reset, exclusivity, refresh failure, desktop/mobile forms, logout", errors}));
   } finally { await browser.close(); }
 }
 

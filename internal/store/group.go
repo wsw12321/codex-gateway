@@ -14,8 +14,8 @@ import (
 	decimal "github.com/wsw/codex-gateway/internal/billing"
 )
 
-// GroupQuotaExceededError takes precedence over personal funding and request
-// limits. Requests accepted before a group reaches its cap still settle in full.
+// GroupQuotaExceededError is retained for legacy quota error responses. New
+// admission falls back to personal funds when group funding is unavailable.
 type GroupQuotaExceededError struct {
 	GroupID    string
 	RetryAfter time.Duration
@@ -29,6 +29,7 @@ type GroupSummary struct {
 	ID             string     `json:"id"`
 	Name           string     `json:"name"`
 	LimitUSD       string     `json:"limit_usd"`
+	MemberLimitUSD *string    `json:"member_limit_usd"`
 	UsedUSD        string     `json:"used_usd"`
 	RemainingUSD   string     `json:"remaining_usd"`
 	Period         string     `json:"period"`
@@ -44,10 +45,11 @@ type GroupSummary struct {
 }
 
 type GroupMember struct {
-	UserID      string `json:"user_id"`
-	Username    string `json:"username"`
-	DisplayName string `json:"display_name"`
-	UsedUSD     string `json:"used_usd"`
+	UserID       string  `json:"user_id"`
+	Username     string  `json:"username"`
+	DisplayName  string  `json:"display_name"`
+	UsedUSD      string  `json:"used_usd"`
+	RemainingUSD *string `json:"remaining_usd"`
 }
 
 type Group struct {
@@ -57,12 +59,14 @@ type Group struct {
 
 type PutGroupParams struct {
 	BillingWriteParams
-	GroupID    string
-	Name       string
-	LimitUSD   string
-	Period     string
-	CustomDays int
-	StartsAt   *time.Time
+	GroupID        string
+	Name           string
+	LimitUSD       string
+	MemberLimitUSD *string
+	MemberLimitSet bool
+	Period         string
+	CustomDays     int
+	StartsAt       *time.Time
 }
 
 type SetGroupMembersParams struct {
@@ -91,7 +95,7 @@ func groupPeriodDuration(period string, customDays int) (time.Duration, error) {
 	return billingPeriodDuration(period)
 }
 
-const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, p.used_usd::text,
+const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd::text, p.used_usd::text,
 	GREATEST(g.limit_usd-p.used_usd,0)::numeric(30,12)::text, g.period, g.custom_days, g.starts_at,
 	p.id, p.starts_at, p.ends_at,
 	(SELECT count(*) FROM billing_accounts a WHERE a.group_id=g.id),
@@ -99,7 +103,7 @@ const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, p.used_usd::text,
 
 func scanGroupSummary(row rowScanner) (GroupSummary, error) {
 	var g GroupSummary
-	err := row.Scan(&g.ID, &g.Name, &g.LimitUSD, &g.UsedUSD, &g.RemainingUSD,
+	err := row.Scan(&g.ID, &g.Name, &g.LimitUSD, &g.MemberLimitUSD, &g.UsedUSD, &g.RemainingUSD,
 		&g.Period, &g.CustomDays, &g.StartsAt, &g.PeriodID, &g.PeriodStartsAt,
 		&g.PeriodEndsAt, &g.MemberCount, &g.ArchivedAt, &g.CreatedAt, &g.UpdatedAt)
 	return g, err
@@ -168,8 +172,8 @@ func replaceGroupPeriodTx(ctx context.Context, tx *sql.Tx, g GroupSummary, start
 	if err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO group_usage_periods(id,group_id,starts_at,ends_at,limit_usd,created_at)
-		VALUES($1,$2,$3,$4,$5::numeric,$6)`, id, g.ID, starts, ends, g.LimitUSD, at); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO group_usage_periods(id,group_id,starts_at,ends_at,limit_usd,member_limit_usd,created_at)
+		VALUES($1,$2,$3,$4,$5::numeric,$6::numeric,$7)`, id, g.ID, starts, ends, g.LimitUSD, g.MemberLimitUSD, at); err != nil {
 		return mapDBError("create group period", err)
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE user_groups SET current_period_id=$2,updated_at=$3 WHERE id=$1`, g.ID, id, at)
@@ -183,21 +187,43 @@ func groupDetailTx(ctx context.Context, tx *sql.Tx, id string) (Group, error) {
 		return result, err
 	}
 	rows, err := tx.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,
-		COALESCE((SELECT sum(l.actual_cost_usd) FROM billing_ledger_entries l
-		WHERE l.group_period_id=$2 AND l.user_id=u.id AND l.entry_type='usage_charge'),0)::numeric(30,12)::text
-		FROM billing_accounts a JOIN users u ON u.id=a.user_id WHERE a.group_id=$1 ORDER BY u.username,u.id`, id, summary.PeriodID)
+		COALESCE(m.used_usd,0)::numeric(30,12)::text,
+		CASE WHEN $3::numeric IS NULL THEN NULL ELSE GREATEST($3::numeric-COALESCE(m.used_usd,0),0)::numeric(30,12)::text END
+		FROM billing_accounts a JOIN users u ON u.id=a.user_id
+		LEFT JOIN group_member_usage m ON m.period_id=$2 AND m.user_id=u.id
+		WHERE a.group_id=$1 ORDER BY u.username,u.id`, id, summary.PeriodID, summary.MemberLimitUSD)
 	if err != nil {
 		return result, mapDBError("list group members", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var m GroupMember
-		if err := rows.Scan(&m.UserID, &m.Username, &m.DisplayName, &m.UsedUSD); err != nil {
+		if err := rows.Scan(&m.UserID, &m.Username, &m.DisplayName, &m.UsedUSD, &m.RemainingUSD); err != nil {
 			return result, fmt.Errorf("scan group member: %w", err)
 		}
 		result.Members = append(result.Members, m)
 	}
 	return result, rows.Err()
+}
+
+// Member counters live independently from the ledger so deleting history or
+// temporarily removing a member never restores the member's current allowance.
+func groupMemberUsedTx(ctx context.Context, tx *sql.Tx, periodID, userID string) (string, error) {
+	var used string
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT used_usd FROM group_member_usage WHERE period_id=$1 AND user_id=$2),0)::numeric(30,12)::text`, periodID, userID).Scan(&used)
+	return used, mapDBError("read group member usage", err)
+}
+
+func groupMemberRemainingTx(ctx context.Context, tx *sql.Tx, periodID, userID string, memberLimit *string) (*string, error) {
+	if memberLimit == nil {
+		return nil, nil
+	}
+	var remaining string
+	err := tx.QueryRowContext(ctx, `SELECT GREATEST($3::numeric-COALESCE((SELECT used_usd FROM group_member_usage WHERE period_id=$1 AND user_id=$2),0),0)::numeric(30,12)::text`, periodID, userID, *memberLimit).Scan(&remaining)
+	if err != nil {
+		return nil, mapDBError("read group member remaining", err)
+	}
+	return &remaining, nil
 }
 
 func (s *Store) GetGroup(ctx context.Context, id string) (Group, error) {
@@ -324,6 +350,14 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 		return Group{}, fmt.Errorf("%w: invalid group limit", ErrInvalid)
 	}
 	params.LimitUSD = amount
+	if params.MemberLimitUSD != nil {
+		memberLimit, err := decimal.ParseInput(*params.MemberLimitUSD, false, true)
+		if err != nil {
+			return Group{}, fmt.Errorf("%w: invalid group member limit", ErrInvalid)
+		}
+		params.MemberLimitUSD = &memberLimit
+		params.MemberLimitSet = true
+	}
 	duration, err := groupPeriodDuration(params.Period, params.CustomDays)
 	if err != nil {
 		return Group{}, err
@@ -333,7 +367,15 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 	if params.StartsAt != nil {
 		startFingerprint = params.StartsAt.UTC().Format(time.RFC3339Nano)
 	}
-	return s.groupWrite(ctx, params.BillingWriteParams, "put", []string{params.GroupID, params.Name, amount, params.Period, fmt.Sprint(params.CustomDays), startFingerprint}, func(tx *sql.Tx) (Group, error) {
+	fingerprintValues := []string{params.GroupID, params.Name, amount, params.Period, fmt.Sprint(params.CustomDays), startFingerprint}
+	if params.MemberLimitSet {
+		memberLimitFingerprint := "null"
+		if params.MemberLimitUSD != nil {
+			memberLimitFingerprint = *params.MemberLimitUSD
+		}
+		fingerprintValues = append(fingerprintValues, "member_limit_usd", memberLimitFingerprint)
+	}
+	return s.groupWrite(ctx, params.BillingWriteParams, "put", fingerprintValues, func(tx *sql.Tx) (Group, error) {
 		var g GroupSummary
 		create := params.GroupID == ""
 		if create {
@@ -345,9 +387,9 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 			if params.StartsAt != nil {
 				start = params.StartsAt.UTC()
 			}
-			g = GroupSummary{ID: id, Name: params.Name, LimitUSD: amount, Period: params.Period, CustomDays: params.CustomDays, StartsAt: start}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO user_groups(id,name,limit_usd,period,custom_days,starts_at,created_at,updated_at)
-				VALUES($1,$2,$3::numeric,$4,$5,$6,$7,$7)`, id, params.Name, amount, params.Period, params.CustomDays, start, params.At); err != nil {
+			g = GroupSummary{ID: id, Name: params.Name, LimitUSD: amount, MemberLimitUSD: params.MemberLimitUSD, Period: params.Period, CustomDays: params.CustomDays, StartsAt: start}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO user_groups(id,name,limit_usd,member_limit_usd,period,custom_days,starts_at,created_at,updated_at)
+				VALUES($1,$2,$3::numeric,$4::numeric,$5,$6,$7,$8,$8)`, id, params.Name, amount, params.MemberLimitUSD, params.Period, params.CustomDays, start, params.At); err != nil {
 				return Group{}, mapDBError("create group", err)
 			}
 		} else {
@@ -372,7 +414,10 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 				start = params.At
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE user_groups SET name=$2,limit_usd=$3::numeric,period=$4,custom_days=$5,starts_at=$6,updated_at=$7 WHERE id=$1`, g.ID, params.Name, amount, params.Period, params.CustomDays, start, params.At); err != nil {
+		if params.MemberLimitSet {
+			g.MemberLimitUSD = params.MemberLimitUSD
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE user_groups SET name=$2,limit_usd=$3::numeric,period=$4,custom_days=$5,starts_at=$6,updated_at=$7,member_limit_usd=$8::numeric WHERE id=$1`, g.ID, params.Name, amount, params.Period, params.CustomDays, start, params.At, g.MemberLimitUSD); err != nil {
 			return Group{}, mapDBError("update group", err)
 		}
 		g.LimitUSD = amount
@@ -387,7 +432,7 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 				return Group{}, err
 			}
 		} else {
-			if _, err := tx.ExecContext(ctx, `UPDATE group_usage_periods SET limit_usd=$2::numeric WHERE id=$1`, g.PeriodID, amount); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE group_usage_periods SET limit_usd=$2::numeric,member_limit_usd=$3::numeric WHERE id=$1`, g.PeriodID, amount, g.MemberLimitUSD); err != nil {
 				return Group{}, mapDBError("update group period limit", err)
 			}
 		}

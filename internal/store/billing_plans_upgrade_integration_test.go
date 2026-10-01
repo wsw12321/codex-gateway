@@ -62,6 +62,15 @@ func TestBillingPlanMigrationPreservesLegacyPostgresIntegration(t *testing.T) {
 	if planMigration.Name == "" {
 		t.Fatal("plan migration missing")
 	}
+	// Current billing readers require the independent funding metadata while
+	// this test keeps the subscription-plan migration unapplied for its fixture.
+	for _, migration := range migrations {
+		if migration.Name == "0027_group_priority_billing.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply funding helper schema: %v", err)
+			}
+		}
+	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	user := globalUsageIntegrationUser(t, ctx, s, "plan-legacy", UserRoleMember)

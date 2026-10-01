@@ -135,9 +135,9 @@ func TestUpstreamAccountsPostgresIntegration(t *testing.T) {
 			INSERT INTO billing_ledger_entries
 				(user_id,entry_type,amount_usd,cash_delta_usd,request_id,
 				 upstream_account_id,model,input_tokens,cached_input_tokens,output_tokens,
-				 actual_cost_usd,charged_usd,uncovered_usd,reason,created_at,usage_requested_at)
+				 actual_cost_usd,charged_usd,group_charged_usd,personal_charged_usd,uncovered_usd,reason,created_at,usage_requested_at)
 			SELECT user_id,'usage_charge',$3::numeric,0,request_id,$2,model,
-				input_tokens,cached_input_tokens,output_tokens,$3::numeric,0,$3::numeric,
+				input_tokens,cached_input_tokens,output_tokens,$3::numeric,0,0,0,$3::numeric,
 				'upstream account fixture',completed_at,requested_at
 			FROM usage_requests WHERE request_id = $1`,
 			fixture.requestID, fixture.accountID, fixture.cost); err != nil {

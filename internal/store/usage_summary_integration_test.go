@@ -134,9 +134,9 @@ func TestUsageSummaryChargedUSDPostgresIntegration(t *testing.T) {
 			INSERT INTO billing_ledger_entries
 				(user_id,entry_type,amount_usd,cash_delta_usd,request_id,model,
 				 input_tokens,cached_input_tokens,output_tokens,actual_cost_usd,
-				 charged_usd,uncovered_usd,reason,created_at)
+				 charged_usd,group_charged_usd,personal_charged_usd,uncovered_usd,reason,created_at)
 			VALUES ($1,'usage_charge',$2::numeric,0,$3,$4,$5,0,$6,
-				$2::numeric,$2::numeric,0,'usage summary fixture',$7)`,
+				$2::numeric,$2::numeric,0,$2::numeric,0,'usage summary fixture',$7)`,
 			value.user.ID, value.charged, requestID, value.model,
 			value.input, value.output, value.requested.Add(time.Second),
 		); err != nil {

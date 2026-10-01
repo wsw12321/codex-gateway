@@ -19,7 +19,7 @@ Gemini 回归对 `gemini.generateContent`、`gemini.streamGenerateContent` 两�
 覆盖 200,000 / 200,001 输入 Token 的短/长上下文价格、缓存作为输入子集、思考计入
 输出、并发及重复结算只产生一条账单、日/月汇总保留独立 endpoint。资金已满足但
 流量配额不足的请求验证 quota、usage、billing reservation 和 ledger 均不留记录；
-群组额度拒绝也覆盖两个原生接口。
+群组额度耗尽后的个人回退及全部资金不可用时的拒绝也覆盖两个原生接口。
 
 Gateway 集成测试 `TestNativeGeminiLifecyclePostgresIntegration` 使用实际 HTTP
 处理器、实际 Bridge 协议适配器和一次性 PostgreSQL schema；仅以固定执行器替代

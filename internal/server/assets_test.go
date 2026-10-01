@@ -349,6 +349,18 @@ func TestUpstreamAccountDashboardBehavior(t *testing.T) {
 	}
 }
 
+func TestGroupBillingDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "testdata/groups_billing_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("group billing dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
 func TestModelAccessDashboardIsOwnerOnlyAndSupportsBatchChanges(t *testing.T) {
 	t.Parallel()
 

@@ -176,8 +176,8 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	}
 	for _, fixture := range []struct{ id, cost string }{{codexID, "9"}, {agyID, "2"}} {
 		if _, err := repository.DB().ExecContext(ctx, `INSERT INTO billing_ledger_entries
-			(user_id,entry_type,amount_usd,cash_delta_usd,request_id,upstream_account_id,model,actual_cost_usd,charged_usd,uncovered_usd,usage_requested_at,created_at)
-			VALUES ($1,'usage_charge',$2::numeric,0,$3,$4,'management-fixture',$2::numeric,0,$2::numeric,$5,$5)`, owner.ID, fixture.cost, uuid.NewString(), fixture.id, now.Add(-time.Minute)); err != nil {
+			(user_id,entry_type,amount_usd,cash_delta_usd,request_id,upstream_account_id,model,actual_cost_usd,charged_usd,group_charged_usd,personal_charged_usd,uncovered_usd,usage_requested_at,created_at)
+			VALUES ($1,'usage_charge',$2::numeric,0,$3,$4,'management-fixture',$2::numeric,0,0,0,$2::numeric,$5,$5)`, owner.ID, fixture.cost, uuid.NewString(), fixture.id, now.Add(-time.Minute)); err != nil {
 			t.Fatal(err)
 		}
 	}
