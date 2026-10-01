@@ -68,7 +68,7 @@ func (s *Server) accessLog(next http.Handler) http.Handler {
 		}
 		s.logger.Info("http request",
 			"request_id", httpx.RequestID(r.Context()), "method", r.Method,
-			"path", r.URL.Path, "status", status, "response_bytes", recorder.bytes,
+			"path", security.RedactText(r.URL.Path), "status", status, "response_bytes", recorder.bytes,
 			"duration_ms", time.Since(start).Milliseconds(), "client_ip", safeIP(r.Context()),
 		)
 	})

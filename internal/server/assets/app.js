@@ -142,6 +142,9 @@ let monitoringRequestSequence = 0;
 let monitoringPolling = false;
 let monitoringController = null;
 let monitoringSnapshot = null;
+let browserHandoffDraft = null;
+let browserHandoffCreationPending = null;
+let browserHandoffUncertain = null;
 let reauthResolve = null;
 let reauthReject = null;
 let reauthPromise = null;
@@ -623,6 +626,7 @@ async function copyText(value) {
 }
 
 function clearSensitiveDOM() {
+  resetBrowserHandoff();
   const dialog = byId("secret-dialog");
   secretAfterClose = null;
   secretDismissible = false;
@@ -1500,6 +1504,261 @@ function renderSelects() {
   renderGuide();
 }
 
+function browserHandoffKeys() {
+  const devices = new Set((state?.devices || []).filter((item) => item.status === "active").map((item) => item.id));
+  return (state?.api_keys || []).filter((key) => key.status === "active" && key.secret_available === true &&
+    devices.has(key.device_id) && (!key.expires_at || new Date(key.expires_at).getTime() > Date.now()));
+}
+
+function browserHandoffDevices() {
+  return (state?.devices || []).filter((item) => item.status === "active").slice().sort((a, b) =>
+    (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0) || a.id.localeCompare(b.id));
+}
+
+function browserHandoffDeviceName() {
+  const names = new Set((state?.devices || []).map((device) => device.name));
+  const base = "网页工作台设备";
+  let name = base;
+  for (let index = 2; names.has(name); index++) name = `${base} ${index}`;
+  return name;
+}
+
+function browserHandoffCurrent(draft) {
+  return Boolean(draft && browserHandoffDraft === draft && draft.generation === identityGeneration &&
+    state?.user?.id === draft.actorID && !loggingOut && byId("browser-handoff-dialog").open);
+}
+
+function resetBrowserHandoff() {
+  browserHandoffDraft = null;
+  browserHandoffCreationPending = null;
+  browserHandoffUncertain = null;
+  const dialog = byId("browser-handoff-dialog");
+  if (dialog?.open) dialog.close();
+  byId("browser-handoff-form")?.reset?.();
+}
+
+function renderBrowserHandoff() {
+  const enabled = Boolean(state?.browser_client_enabled && !loggingOut);
+  all("[data-browser-handoff-open]").forEach((button) => { button.disabled = !enabled; });
+  all("[data-browser-handoff-status]").forEach((node) => node.classList.toggle("hidden", enabled));
+  const draft = browserHandoffDraft;
+  if (!draft) return;
+  const keys = browserHandoffKeys(), devices = browserHandoffDevices();
+  if (!keys.some((key) => key.id === draft.keyID)) draft.keyID = keys[0]?.id || "";
+  if (!devices.some((device) => device.id === draft.deviceID)) draft.deviceID = devices[0]?.id || "";
+  const keySelect = byId("browser-handoff-key");
+  keySelect.replaceChildren(...keys.map((key) => option(key.id, `${key.name} · ${key.key_prefix} · 到期 ${formatDateTime(key.expires_at, "长期有效")}`)));
+  keySelect.value = draft.keyID;
+  const selected = keys.find((key) => key.id === draft.keyID);
+  byId("browser-handoff-key-detail").textContent = selected ? `${selected.name} · ${selected.key_prefix} · 到期：${formatDateTime(selected.expires_at, "长期有效")}` : "";
+  byId("browser-handoff-existing").classList.toggle("hidden", draft.create || !keys.length);
+  byId("browser-handoff-empty").classList.toggle("hidden", keys.length > 0);
+  byId("browser-handoff-create").classList.toggle("hidden", !draft.create);
+  const deviceSelect = byId("browser-handoff-device");
+  deviceSelect.replaceChildren(...(devices.length ? devices.map((device) => option(device.id, device.name)) : [option("", `自动创建“${browserHandoffDeviceName()}”`)]));
+  deviceSelect.value = draft.deviceID;
+  byId("browser-handoff-device-help").textContent = devices.length ? "默认使用最近创建的有效设备，也可切换。" : "确认后将自动创建设备，再创建密钥。";
+  const busy = draft.busy || Boolean(browserHandoffCreationPending);
+  for (const id of ["browser-handoff-key", "browser-handoff-device", "browser-handoff-remember"]) byId(id).disabled = busy;
+  for (const id of ["browser-handoff-name", "browser-handoff-days"]) {
+    byId(id).disabled = busy || !draft.create;
+    byId(id).required = draft.create;
+  }
+  byId("browser-handoff-remember").checked = draft.remember;
+  byId("browser-handoff-remember-help").textContent = draft.remember ? "已勾选：密钥将保存在这台设备的浏览器中，刷新后可继续使用。请勿在共用设备上勾选。" : "未勾选：密钥仅用于本次页面，刷新工作台后需要重新连接。";
+  const create = byId("browser-handoff-new");
+  create.textContent = draft.create && keys.length ? "选择已有 API Key" : browserHandoffUncertain ? "已核对资源，仍需创建新密钥" : "创建新的 API Key";
+  create.classList.toggle("hidden", draft.create && !keys.length);
+  create.disabled = busy || !draft.resourcesReady || Boolean(browserHandoffUncertain && !browserHandoffUncertain.refreshed);
+  byId("browser-handoff-refresh").disabled = busy;
+  const submit = byId("browser-handoff-submit");
+  submit.disabled = busy || !enabled || !draft.resourcesReady || Boolean(browserHandoffUncertain && draft.create) || (!draft.create && !draft.keyID);
+  submit.textContent = busy ? "正在处理…" : draft.create ? "创建并进入工作台" : "进入工作台";
+  byId("browser-handoff-form").setAttribute("aria-busy", busy ? "true" : "false");
+  byId("browser-handoff-resource-status").textContent = browserHandoffCreationPending ? "正在确认创建结果，请稍候；不会重复创建。" : browserHandoffUncertain ?
+    (browserHandoffUncertain.refreshed ? "上次创建结果不明，资源已刷新。请先核对并选择已创建的资源；不会自动重复创建。" : "上次创建结果不明，请刷新资源后核对；不会自动重复创建。") :
+    !draft.resourcesReady ? "请等待资源刷新完成后继续。" : "确认后将在当前标签页打开工作台。";
+}
+
+async function refreshBrowserHandoff(draft = browserHandoffDraft) {
+  const current = () => browserHandoffCurrent(draft);
+  requireCurrentRequest(current);
+  draft.resourcesReady = false;
+  draft.busy = true;
+  renderBrowserHandoff();
+  try {
+    const value = await api("/admin/state", {}, current);
+    requireCurrentRequest(current);
+    // Never render another identity into a handoff opened by the previous one.
+    if (value.user?.id !== draft.actorID) { handleUnauthorized(); return; }
+    renderState(value);
+    requireCurrentRequest(current);
+    draft.resourcesReady = true;
+    if (browserHandoffUncertain) browserHandoffUncertain.refreshed = true;
+    if (draft.initial) {
+      draft.create = !browserHandoffKeys().length && !browserHandoffUncertain;
+      draft.initial = false;
+    }
+  } finally {
+    if (current()) { draft.busy = false; renderBrowserHandoff(); }
+  }
+}
+
+async function openBrowserHandoff() {
+  if (!state?.browser_client_enabled || loggingOut || browserHandoffDraft) return;
+  const form = byId("browser-handoff-form");
+  form.reset();
+  setLocalMessage(form);
+  const draft = {actorID: state.user.id, generation: identityGeneration, initial: true, resourcesReady: false,
+    keyID: "", deviceID: "", remember: false, create: false, busy: false};
+  browserHandoffDraft = draft;
+  byId("browser-handoff-dialog").showModal();
+  try { await refreshBrowserHandoff(draft); }
+  catch (error) { if (browserHandoffCurrent(draft)) setLocalMessage(form, friendlyError(error)); }
+}
+
+function browserHandoffCreationIsUncertain(error) {
+  return error.network || error.uncertain || !error.status || error.status >= 500;
+}
+
+async function createBrowserHandoffResource(draft, kind, body) {
+  const current = () => browserHandoffCurrent(draft);
+  const identityCurrent = () => draft.generation === identityGeneration && state?.user?.id === draft.actorID && !loggingOut;
+  requireCurrentRequest(current);
+  let attempted = false;
+  const pending = {};
+  browserHandoffCreationPending = pending;
+  renderBrowserHandoff();
+  try {
+    const result = await sensitiveAction(async () => {
+      requireCurrentRequest(current);
+      attempted = true;
+      // The identity guard lets us retain confirmed IDs if the dialog was closed
+      // during a write. The dialog guard below prevents starting another step.
+      try {
+        const result = await api(`/admin/${kind}`, {method: "POST", body: JSON.stringify(body)}, identityCurrent);
+        if (kind === "api-keys") result.api_key = "";
+        return result;
+      } catch (error) {
+        // Record an ambiguous write before sensitiveAction applies its dialog
+        // cancellation guard, including when another dialog has since opened.
+        if (identityCurrent() && error.code !== "stale_request" && browserHandoffCreationIsUncertain(error)) {
+          browserHandoffUncertain = {refreshed: false};
+          if (browserHandoffDraft) { browserHandoffDraft.create = false; browserHandoffDraft.resourcesReady = false; }
+        }
+        throw error;
+      }
+    }, current);
+    if (!result.id) throw Object.assign(new Error("创建响应缺少资源 ID。"), {uncertain: true});
+    requireCurrentRequest(identityCurrent);
+    if (kind === "devices") {
+      if (!state.devices.some((item) => item.id === result.id)) state.devices.push(result);
+      draft.deviceID = result.id;
+    } else {
+      const key = {id: result.id, name: body.name, device_id: body.device_id, key_prefix: result.prefix,
+        expires_at: result.expires_at, status: "active", secret_available: true, model_allowlist: []};
+      if (!state.api_keys.some((item) => item.id === result.id)) state.api_keys.push(key);
+      draft.keyID = result.id;
+      draft.create = false;
+      if (browserHandoffDraft && browserHandoffDraft !== draft) {
+        browserHandoffDraft.keyID = result.id;
+        browserHandoffDraft.create = false;
+      }
+    }
+    renderDevices(); renderAPIKeys(); renderSelects(); renderResourceSummary(); renderOnboarding();
+    requireCurrentRequest(current);
+    return result.id;
+  } catch (error) {
+    if (identityCurrent() && attempted && error.code !== "stale_request" && error.code !== "reauth_cancelled" && browserHandoffCreationIsUncertain(error)) {
+      browserHandoffUncertain = {refreshed: false};
+      if (browserHandoffDraft) { browserHandoffDraft.create = false; browserHandoffDraft.resourcesReady = false; }
+    }
+    throw error;
+  } finally {
+    if (browserHandoffCreationPending === pending) browserHandoffCreationPending = null;
+    renderBrowserHandoff();
+  }
+}
+
+async function submitBrowserHandoff(event) {
+  event.preventDefault();
+  const draft = browserHandoffDraft;
+  if (!browserHandoffCurrent(draft) || !state?.browser_client_enabled || draft.busy || browserHandoffCreationPending || !draft.resourcesReady) return;
+  const current = () => browserHandoffCurrent(draft);
+  const form = byId("browser-handoff-form");
+  const creating = draft.create;
+  const name = byId("browser-handoff-name").value.trim();
+  const days = Number(byId("browser-handoff-days").value);
+  if (creating && (!name || !Number.isInteger(days) || days < 1 || days > 365)) {
+    setLocalMessage(form, "请填写密钥名称，并将有效期设为 1 到 365 天。"); return;
+  }
+  if (creating && browserHandoffUncertain) return;
+  draft.busy = true;
+  setLocalMessage(form);
+  renderBrowserHandoff();
+  try {
+    if (creating) {
+      // Verify before creating either resource, so cancelling verification leaves
+      // the account untouched even when there are no devices yet.
+      await sensitiveAction(async () => {}, current);
+      requireCurrentRequest(current);
+      if (!draft.deviceID) await createBrowserHandoffResource(draft, "devices", {name: browserHandoffDeviceName()});
+      requireCurrentRequest(current);
+      await createBrowserHandoffResource(draft, "api-keys", {name, device_id: draft.deviceID, expires_days: days, models: []});
+    }
+    requireCurrentRequest(current);
+    if (!browserHandoffKeys().some((key) => key.id === draft.keyID)) throw new Error("该密钥已不可用，请刷新资源后重新选择。");
+    const result = await sensitiveAction(() => api("/admin/browser-handoffs", {method: "POST",
+      body: JSON.stringify({api_key_id: draft.keyID, remember_key: draft.remember})}, current), current);
+    requireCurrentRequest(current);
+    if (typeof result.launch_url !== "string" || !result.launch_url) throw new Error("未收到工作台接入链接，请重试。");
+    location.assign(result.launch_url);
+  } catch (error) {
+    if (!current()) return;
+    if (browserHandoffUncertain && !browserHandoffUncertain.refreshed) {
+      try { await refreshBrowserHandoff(draft); }
+      catch (_) { /* Keep creation blocked until resources can be refreshed. */ }
+    }
+    if (current()) setLocalMessage(form, browserHandoffUncertain ? "创建结果不明。请先刷新并核对资源，确认是否已经创建成功。" : friendlyError(error));
+  } finally {
+    if (current()) { draft.busy = false; renderBrowserHandoff(); }
+  }
+}
+
+function bindBrowserHandoff() {
+  all("[data-browser-handoff-open]").forEach((button) => button.addEventListener("click", openBrowserHandoff));
+  byId("browser-handoff-form").addEventListener("submit", submitBrowserHandoff);
+  byId("browser-handoff-dialog").addEventListener("close", () => {
+    browserHandoffDraft = null;
+    if (reauthRequestCurrent && !reauthRequestCurrent()) cancelReauthentication();
+    byId("browser-handoff-form").reset();
+  });
+  byId("browser-handoff-key").addEventListener("change", (event) => {
+    if (!browserHandoffDraft || browserHandoffDraft.busy) return;
+    browserHandoffDraft.keyID = event.target.value; renderBrowserHandoff();
+  });
+  byId("browser-handoff-device").addEventListener("change", (event) => {
+    if (browserHandoffDraft && !browserHandoffDraft.busy) browserHandoffDraft.deviceID = event.target.value;
+  });
+  byId("browser-handoff-remember").addEventListener("change", (event) => {
+    if (!browserHandoffDraft || browserHandoffDraft.busy) return;
+    browserHandoffDraft.remember = event.target.checked; renderBrowserHandoff();
+  });
+  byId("browser-handoff-new").addEventListener("click", () => {
+    const draft = browserHandoffDraft;
+    if (!draft || draft.busy || browserHandoffCreationPending || !draft.resourcesReady || (browserHandoffUncertain && !browserHandoffUncertain.refreshed)) return;
+    browserHandoffUncertain = null;
+    draft.create = !draft.create; renderBrowserHandoff();
+  });
+  byId("browser-handoff-refresh").addEventListener("click", async () => {
+    const draft = browserHandoffDraft;
+    if (!draft || draft.busy || browserHandoffCreationPending) return;
+    setLocalMessage(byId("browser-handoff-form"));
+    try { await refreshBrowserHandoff(draft); }
+    catch (error) { if (browserHandoffCurrent(draft)) setLocalMessage(byId("browser-handoff-form"), friendlyError(error)); }
+  });
+}
+
 function clientSetupCommand(client) {
   // Keep the outer double-quoted argument safe in both CMD and POSIX shells.
   // The origin is data, so shell metacharacters can never become command syntax.
@@ -1553,6 +1812,7 @@ function renderState(value) {
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
+    resetBrowserHandoff();
     closeNavigationDrawer(false);
     resetOverview();
     clearUpstreamAccountUIState();
@@ -1585,6 +1845,7 @@ function renderState(value) {
   renderPasskeys();
   renderLoginMethods();
   renderSelects();
+  renderBrowserHandoff();
   renderResourceSummary();
   renderOnboarding();
   routeFromHash(false);
@@ -1653,6 +1914,7 @@ async function revealKey(key) {
 function renderAPIKeyMutation() {
   renderAPIKeys();
   renderSelects();
+  renderBrowserHandoff();
   renderResourceSummary();
   renderOnboarding();
 }
@@ -7011,6 +7273,7 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  bindBrowserHandoff();
   bindNavigation();
   bindOverview();
   bindUpstreamAccountUI();

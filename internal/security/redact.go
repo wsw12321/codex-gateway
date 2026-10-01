@@ -28,8 +28,8 @@ var sensitiveHeaders = map[string]struct{}{
 }
 
 var (
-	apiKeyPattern              = regexp.MustCompile(`\bcgk_v1_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]+`)
-	opaquePattern              = regexp.MustCompile(`\bcg[isr]_v1_[A-Za-z0-9_-]+`)
+	apiKeyPattern              = regexp.MustCompile(`cgk_v1_[A-Za-z0-9_-]{16}_[A-Za-z0-9_-]+`)
+	opaquePattern              = regexp.MustCompile(`cg[isrb]_v1_[A-Za-z0-9_-]+`)
 	recoveryCodePattern        = regexp.MustCompile(`\b[0-9A-HJKMNP-TV-Z]{4}(?:-[0-9A-HJKMNP-TV-Z]{4}){5}\b`)
 	passwordPHCPattern         = regexp.MustCompile(`\$argon2id\$v=\d+\$m=\d+,t=\d+,p=\d+\$[A-Za-z0-9+/=_-]+\$[A-Za-z0-9+/=_-]+`)
 	authSchemePattern          = regexp.MustCompile(`(?i)\b(?:Bearer|Basic)\s+[^\s,;]+`)

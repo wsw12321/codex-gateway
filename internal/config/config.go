@@ -34,6 +34,7 @@ type Limits struct {
 type Config struct {
 	ListenAddress      string
 	PublicURL          *url.URL
+	BrowserClientURL   *url.URL
 	RPID               string
 	RPOrigins          []string
 	DatabaseURL        string
@@ -124,6 +125,11 @@ func Load() (Config, error) {
 	if cfg.PublicURL, err = parseURL("GATEWAY_PUBLIC_URL", os.Getenv("GATEWAY_PUBLIC_URL")); err != nil {
 		return Config{}, err
 	}
+	if value := strings.TrimSpace(os.Getenv("GATEWAY_BROWSER_CLIENT_URL")); value != "" {
+		if cfg.BrowserClientURL, err = parseURL("GATEWAY_BROWSER_CLIENT_URL", value); err != nil {
+			return Config{}, err
+		}
+	}
 	if cfg.SidecarURL, err = parseURL("SIDECAR_URL", os.Getenv("SIDECAR_URL")); err != nil {
 		return Config{}, err
 	}
@@ -198,6 +204,14 @@ func (c Config) Validate() error {
 	}
 	if c.PublicURL.User != nil || c.PublicURL.RawQuery != "" || c.PublicURL.Fragment != "" {
 		return errors.New("GATEWAY_PUBLIC_URL must not contain credentials, query, or fragment")
+	}
+	if u := c.BrowserClientURL; u != nil {
+		if u.Host == "" || (u.Scheme != "https" && !(c.DevInsecure && u.Scheme == "http")) {
+			return errors.New("GATEWAY_BROWSER_CLIENT_URL must be an absolute https URL (http only in insecure development)")
+		}
+		if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.Opaque != "" {
+			return errors.New("GATEWAY_BROWSER_CLIENT_URL must not contain credentials, query, or fragment")
+		}
 	}
 	if c.SidecarURL.Scheme != "http" && c.SidecarURL.Scheme != "https" {
 		return errors.New("SIDECAR_URL must use http or https")

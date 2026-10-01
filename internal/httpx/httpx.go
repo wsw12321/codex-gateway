@@ -129,8 +129,8 @@ func Recover(logger *slog.Logger, next http.Handler) http.Handler {
 	})
 }
 
-// RequireBrowserOrigin rejects cross-site state changes. API bearer-token
-// routes do not use this middleware and intentionally emit no CORS headers.
+// RequireBrowserOrigin rejects cross-site management changes. API bearer-token
+// routes use the server's separate, exact browser-client CORS policy.
 func RequireBrowserOrigin(origins []string, next http.Handler) http.Handler {
 	allowed := make(map[string]struct{}, len(origins))
 	for _, origin := range origins {

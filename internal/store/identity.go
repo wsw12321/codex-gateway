@@ -567,6 +567,19 @@ func (s *Store) GetActiveSession(ctx context.Context, tokenHash []byte, at time.
 	return session, mapDBError("get active session", err)
 }
 
+// GetActiveSessionByID validates a handoff's session reference without retaining
+// a cookie, token hash, or other session credential in the handoff store.
+func (s *Store) GetActiveSessionByID(ctx context.Context, userID, sessionID string, at time.Time) (Session, error) {
+	session, err := scanSession(s.db.QueryRowContext(ctx, `
+		SELECT `+prefixColumns("s", sessionColumns)+`
+		FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.id = $1 AND s.user_id = $2 AND s.revoked_at IS NULL
+		  AND s.idle_expires_at > $3 AND s.absolute_expires_at > $3
+		  AND u.status = 'active'`, sessionID, userID, at,
+	))
+	return session, mapDBError("get active session reference", err)
+}
+
 func (s *Store) TouchSession(ctx context.Context, sessionID string, at time.Time, idleTTL time.Duration) error {
 	if idleTTL <= 0 || idleTTL > 12*time.Hour {
 		return fmt.Errorf("%w: idle TTL must be within 12 hours", ErrInvalid)

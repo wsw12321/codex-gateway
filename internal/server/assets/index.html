@@ -169,7 +169,7 @@
           <p id="webauthn-warning" class="callout hidden" role="alert"></p>
           <section class="view" data-section="overview" aria-labelledby="overview-title">
             <h2 id="overview-title" class="sr-only">概览</h2>
-            <div class="overview-scope"><p>我的账户与最近 7 天</p><button id="overview-refresh" type="button" class="text-button">刷新概览</button></div>
+            <div class="overview-scope"><p>我的账户与最近 7 天</p><div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button><button id="overview-refresh" type="button" class="text-button">刷新概览</button></div></div>
             <div class="metrics overview-personal-metrics">
               <article><span>现金余额</span><strong id="overview-cash">—</strong><small id="overview-billing-updated">正在加载本人账务…</small><button class="text-button" type="button" data-overview-billing>查看账务</button></article>
               <article class="overview-subscription-metric"><span>各订阅剩余</span><div id="overview-subscriptions" class="overview-subscription-list" aria-live="polite">—</div><small id="overview-next-expiry">—</small><button class="text-button" type="button" data-overview-billing>查看订阅</button></article>
@@ -232,7 +232,7 @@
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
               <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">开始使用 Codex CLI 或 agy CLI</h2><p>先完成公共准备，再按所选客户端的安装、配置、启动步骤操作。复制的配置命令已使用当前站点地址。</p></div>
-              <span class="badge">配置一次，持续使用</span>
+              <div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button></div>
             </div>
 
             <article id="guide-prepare" class="guide-client panel" aria-labelledby="guide-prepare-title">
@@ -1022,6 +1022,30 @@
       <p class="muted">待审注册暂时无法登录；批准后使用原凭证登录。群组邀请仅接收已有账号申请。</p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">创建邀请码</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="browser-handoff-dialog" aria-labelledby="browser-handoff-title">
+    <form id="browser-handoff-form">
+      <div class="dialog-heading"><p class="eyebrow">WEB WORKSPACE</p><h2 id="browser-handoff-title">一键使用网页工作台</h2><p>选择或创建 API Key，进入工作台后自动配置并检查可用模型。</p></div>
+      <div id="browser-handoff-existing">
+        <label>API Key<select id="browser-handoff-key" aria-describedby="browser-handoff-key-detail"></select></label>
+        <p id="browser-handoff-key-detail" class="muted"></p>
+      </div>
+      <p id="browser-handoff-empty" class="muted hidden">没有可用的 API Key。仅可使用未过期、能取回完整值且关联设备正常的密钥。</p>
+      <button id="browser-handoff-new" type="button" class="text-button">创建新的 API Key</button>
+      <div id="browser-handoff-create" class="hidden">
+        <label>密钥名称<input id="browser-handoff-name" maxlength="80" value="网页工作台" autocomplete="off"></label>
+        <label>有效天数<input id="browser-handoff-days" type="number" min="1" max="365" value="90" inputmode="numeric"></label>
+        <label>关联设备<select id="browser-handoff-device"></select></label>
+        <p id="browser-handoff-device-help" class="muted"></p>
+        <p class="muted">新密钥继承账户当前的模型权限。</p>
+      </div>
+      <label class="check-label"><input id="browser-handoff-remember" type="checkbox"><span>在这台设备记住密钥</span></label>
+      <p id="browser-handoff-remember-help" class="muted">未勾选：密钥仅用于本次页面，刷新工作台后需要重新连接。</p>
+      <p id="browser-handoff-resource-status" class="muted" role="status"></p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button id="browser-handoff-refresh" type="button" class="secondary">刷新资源</button><button id="browser-handoff-submit" type="submit">进入工作台</button></div>
     </form>
   </dialog>
 

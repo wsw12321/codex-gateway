@@ -1,179 +1,135 @@
-# 浏览器直连网关的 CORS 配置
+# 网页工作台一键接入与 CORS
 
-当独立网页通过浏览器直接请求 Gateway 时，需要在网关入口允许该网页的来源。
-例如网页是 `https://ai.water555.com`，API 是 `https://codex.water555.com/v1`：
-两者主机名不同，属于跨域请求。命令行使用 API 地址和 Key 成功，不代表浏览器
-的跨域预检也能通过。
+网关 `https://codex.water555.com` 的“概览”和“使用指导”提供“一键使用”，
+跳转到 `https://ai.water555.com`，自动配置 Responses 连接并检查模型权限。
+该功能由 Gateway 的 Go 服务提供 CORS，不需要 Caddy 添加响应头。
 
-本指南适用于仓库标准 Docker Compose 部署：
-`Cloudflare Tunnel → cloudflared → Caddy → gateway`。配置位置是
-[`deploy/Caddyfile`](../deploy/Caddyfile)，无需重建 Gateway 镜像。
-如果实际入口绕过了 Caddy，应先确认请求经过的位置；修改本文件只影响经过该
-Caddy 服务的请求。
+## 发布顺序
 
-Gateway 默认不启用 CORS，也没有 `CORS_ORIGINS` 之类的环境变量开关。
-`WEBAUTHN_ORIGINS` 用于管理台身份验证，不能代替 API 的 CORS 配置。
-下面是可选的部署配置，仓库默认 Caddyfile 不会自动开启它。
+1. **先发布工作台**，确认它支持 `#handoff_version=1&code=…`，并在构建时设置
+   `VITE_GATEWAY_URL=https://codex.water555.com`（这也是默认值）。工作台只向这个
+   可信网关兑换连接码；构建变量修改后需重新构建、发布。
+2. 发布包含接入接口的 Gateway 镜像。先保持 `.env` 中
+   `GATEWAY_BROWSER_CLIENT_URL=` 为空，管理台入口显示尚未启用。
+3. 如果线上曾按旧指南在 Caddy 设置 `@browser_api`、`@ai_api`、
+   `@ai_preflight` 及对应 `header`、`respond` 指令，删除这些自定义 CORS
+   块；保留原来的 `reverse_proxy gateway:8080` 和 `flush_interval -1`。
+   其他代理也不能重复添加 `Access-Control-Allow-Origin`。
+4. 在 `.env` 设置 `GATEWAY_BROWSER_CLIENT_URL=https://ai.water555.com`，
+   按正常发布流程重新创建 Gateway 容器，使新环境变量生效。该配置同时启用入口、
+   固定跳转目标与该网站 Origin 的 API CORS。不要把工作台域名添加到
+   `WEBAUTHN_ORIGINS`；后者仍只用于管理台身份验证。
+5. 按下面的检查验证预检、错误响应以及一次真实的一键接入。连接成功只检查模型
+   列表，不会自动发送收费的推理请求。
 
-## 1. 添加来源和接口白名单
-
-在目标服务器的仓库根目录编辑 `deploy/Caddyfile`。将以下片段放进现有的
-`http://{$GATEWAY_DOMAIN} { ... }` 站点块中、`reverse_proxy gateway:8080`
-之前，保留现有配置：
-
-```caddyfile
-# 这些接口的响应随 Origin 而不同，包括未命中来源白名单的响应。
-@browser_api path /v1/models /v1/responses
-header @browser_api {
-    +Vary Origin
-    defer
-}
-
-# 仅允许指定网页读取模型 API 响应。
-@ai_api {
-    path /v1/models /v1/responses
-    header Origin https://ai.water555.com
-}
-header @ai_api {
-    Access-Control-Allow-Origin "https://ai.water555.com"
-    Access-Control-Allow-Methods "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers "Authorization, Content-Type"
-    defer
-}
-
-# 预检没有 API Key，在 Caddy 中直接响应。
-@ai_preflight {
-    method OPTIONS
-    path /v1/models /v1/responses
-    header Origin https://ai.water555.com
-}
-respond @ai_preflight 204
-```
-
-使用其他网页域名时，将片段中三处 `https://ai.water555.com` 一起替换为实际
-来源。来源包含协议、主机名和非默认端口，不含路径或末尾 `/`。自定义域名与
-`*.pages.dev` 预览地址是不同来源，此示例只放行一个来源。
-
-配置覆盖 `GET /v1/models` 和 `POST /v1/responses` 所需的预检与实际响应，
-包括 SSE 和 API 返回的 401、403、429 等错误。实际请求仍由 Gateway 验证
-Bearer Key、权限和配额；CORS 不是身份认证，非浏览器客户端可以伪造 Origin。
-
-网页应使用 `credentials: 'omit'` 并显式发送 `Authorization: Bearer …`。
-此方式不需要 `Access-Control-Allow-Credentials`。管理台和 `/auth/*` 不在
-上述路径白名单中。现有代理的 `flush_interval -1` 继续负责 SSE 即时转发。
-
-## 2. 校验并重载 Caddy
-
-以下命令均在服务器的仓库根目录运行。先校验修改后的配置：
+Caddy 如有修改，先校验再重载（在服务器仓库根目录执行）：
 
 ```sh
 ./scripts/compose.sh exec -T caddy caddy validate \
   --config - --adapter caddyfile < deploy/Caddyfile
-```
-
-只有校验成功后，才执行重载：
-
-```sh
 ./scripts/compose.sh exec -T caddy caddy reload \
   --config - --adapter caddyfile < deploy/Caddyfile
 ```
 
-标准输入传入的是刚编辑的文件，可避免编辑器替换文件后，容器的单文件挂载
-仍指向旧文件内容。文件中的 `{$GATEWAY_DOMAIN}` 由 Caddy 容器已有环境变量
-展开。保留服务器上的文件修改，后续重新创建容器时也会加载它。
+`GATEWAY_BROWSER_CLIENT_URL` 必须是 HTTPS 绝对地址，可以包含部署路径，
+不能包含用户名、密码、查询参数或片段。它为空时不允许兑换，也不开放浏览器
+API CORS。只有本地设置 `GATEWAY_DEV_INSECURE_HTTP=true` 时才接受 HTTP。
 
-此步骤通过 Caddy 的管理接口重载配置，无需重建或重启 Gateway、数据库和
-sidecar。若后续更新仓库，请保留这项部署配置并重新检查差异。
+## 接入与恢复
 
-## 3. 验证预检和实际响应
+用户可以选择有效、关联设备正常且能取回完整值的 Key；没有可用 Key 时，
+弹窗默认创建“网页工作台”（90 天，继承账户模型权限），并选择最新的有效设备。
+没有设备则创建“网页工作台设备”。创建 Key 与接入都复用密码或 Passkey
+二次验证。创建结果不明时刷新列表供用户选择，不自动重复创建。
 
-以下检查不需要 API Key；使用其他域名时同时替换 URL 和 Origin。
+“在这台设备记住密钥”默认关闭，未勾选时 Key 仅保存在当前工作台页面内存，
+刷新后需要重新接入。勾选后按工作台设置保存于该浏览器的本地存储；备份始终
+剔除密钥。已有不同连接时工作台先确认切换，取消、兑换失败或模型检查失败都
+保留原连接。确认成功后保留文件及历史并进入新对话。
 
-先验证 Responses 的 POST 预检：
+工作台优先选 `gpt-6.1-sol`；无权限时，按 ID 排序依次选其他可见 GPT 或
+网关已支持的 Gemini 模型，排除 `codex-auto-review`。降级后显示实际模型，
+Gemini 提示当前仅支持文本。模型检查失败可以重试，且不重复兑换连接码。
+
+## 接口与安全边界
+
+| 接口 | 授权与结果 |
+| --- | --- |
+| `POST /admin/browser-handoffs` | 管理台同源、登录且最近二次验证；接收 `api_key_id`、`remember_key`，返回 `launch_url`、`expires_at`。 |
+| `POST /browser-handoffs/exchange` | 仅固定工作台 Origin；接收 `code`，返回 `base_url`、`api_key`、`api_key_id`、`remember_key`、`protocol: "responses"`。 |
+
+跳转片段只有协议版本和连接码，不含 API Key。连接码使用 `cgb_v1_` 前缀与
+256 位随机数，120 秒有效，单次原子消费。服务内存只保存 SHA-256 摘要、
+用户／会话／Key 引用、记住选项和到期时间，最多 4096 项；到上限返回可重试
+错误。签发和兑换均重新检查账户、会话、设备、Key、归属及加密数据完整性。
+接入过程不记录连接码或明文 Key，也不新增持久存储；既有 Key 仍按原有机制
+加密保存在数据库中。两个接入接口的所有响应禁止缓存。
+
+沿用**单实例** Gateway 部署，无数据库迁移。重启会使待兑换连接码失效，
+用户返回网关重新接入即可；不要把此内存存储直接部署到多个独立副本。
+会话注销、账号／设备／Key 禁用及 Key 过期都会使待兑换连接失败。网络中断
+导致兑换结果不明时，用户需返回网关重新签发；不能重放旧码。
+
+Go 层只开放以下跨域路由，精确匹配配置 URL 的 Origin（协议、主机和端口）：
+
+| 路径 | 预检允许的方法 | 允许的请求头 |
+| --- | --- | --- |
+| `/browser-handoffs/exchange` | `POST` | `Content-Type` |
+| `/v1/models` | `GET` | `Authorization, Content-Type` |
+| `/v1/responses` | `POST` | `Authorization, Content-Type` |
+
+预检直接返回 204，无需 API Key；实际请求仍验证 Key 和权限。错误响应、流式
+响应均带允许来源头与 `Vary: Origin`。不启用 `Access-Control-Allow-Credentials`，
+客户端使用 `credentials: 'omit'`。管理、登录、`/v1/responses/compact` 和
+Gemini 原生接口不在白名单中。命令行不带 Origin 的模型请求继续使用 Bearer Key。
+CORS 不是身份认证，非浏览器客户端可以伪造 Origin。
+
+## 验证
 
 ```sh
+curl -i -X OPTIONS 'https://codex.water555.com/browser-handoffs/exchange' \
+  -H 'Origin: https://ai.water555.com' \
+  -H 'Access-Control-Request-Method: POST' \
+  -H 'Access-Control-Request-Headers: content-type'
+curl -i -X OPTIONS 'https://codex.water555.com/v1/models' \
+  -H 'Origin: https://ai.water555.com' \
+  -H 'Access-Control-Request-Method: GET' \
+  -H 'Access-Control-Request-Headers: authorization'
 curl -i -X OPTIONS 'https://codex.water555.com/v1/responses' \
   -H 'Origin: https://ai.water555.com' \
   -H 'Access-Control-Request-Method: POST' \
   -H 'Access-Control-Request-Headers: authorization,content-type'
 ```
 
-再验证模型列表的 GET 预检。GET 也会因 `Authorization` 请求头而需要预检：
-
-```sh
-curl -i -X OPTIONS 'https://codex.water555.com/v1/models' \
-  -H 'Origin: https://ai.water555.com' \
-  -H 'Access-Control-Request-Method: GET' \
-  -H 'Access-Control-Request-Headers: authorization'
-```
-
-两者应返回 `204`，并包含以下响应头（名称大小写和顺序可能不同）：
-
-```http
-Access-Control-Allow-Origin: https://ai.water555.com
-Access-Control-Allow-Methods: GET, POST, OPTIONS
-Access-Control-Allow-Headers: Authorization, Content-Type
-Vary: Origin
-```
-
-`Vary` 可能还包含其他值。接着验证实际错误响应也带 CORS 头：
+三者应返回 204，`Access-Control-Allow-Origin` 只能有一个且等于工作台
+Origin，`Access-Control-Allow-Methods` 等于该接口的方法。兑换接口另有
+`Cache-Control: no-store`。用未授权来源重试应返回 403 且没有允许来源头。
 
 ```sh
 curl -i 'https://codex.water555.com/v1/models' \
   -H 'Origin: https://ai.water555.com'
 ```
 
-由于没有发送 Key，通常返回 `401`；反复尝试触发无效 Key 限流时可能返回
-`429`。两者都应包含上述允许来源的响应头。这说明 API 鉴权仍然生效，网页
-也能读取真实错误。预检成功并不能代替此项检查。
+无 Key 请求应返回 401（反复尝试可能限流为 429），仍包含允许来源头。
+最后在桌面与手机浏览器验证两个入口、验证取消、重复点击、创建资源、
+重新签发、连接切换确认／取消、刷新持久化和备份不含密钥。
 
-最后验证未允许的来源：
+本地跨域回归可以用测试夹具提供真实 Go 接口（仅回环地址，不发送推理）：
 
 ```sh
-curl -i -X OPTIONS 'https://codex.water555.com/v1/responses' \
-  -H 'Origin: https://untrusted.example' \
-  -H 'Access-Control-Request-Method: POST' \
-  -H 'Access-Control-Request-Headers: authorization,content-type'
+GATEWAY_BROWSER_FIXTURE_LISTEN=127.0.0.1:4180 \
+GATEWAY_BROWSER_FIXTURE_ORIGIN=http://127.0.0.1:4174 \
+go test -v -run '^TestBrowserHandoffBrowserFixture$' -timeout 20m ./internal/server
 ```
 
-这个响应不应包含 `Access-Control-Allow-Origin`。curl 不执行浏览器的 CORS
-检查，需要查看响应头，并在网页中完成下面的实际调用验证。
+浏览器开发服务使用 `VITE_GATEWAY_URL=http://127.0.0.1:4180` 和端口 4174。
+夹具 `POST /test/setup` 接收 `models`、`model_failures`、`remember_key`，返回
+真实签发的 `launch_url`；`GET /test/stats` 检查兑换／模型／推理次数，
+`POST /test/stop` 结束夹具。此夹具只编译进测试二进制。
 
-## 4. 网页连接设置
+## 回滚
 
-| 设置 | 示例 |
-| --- | --- |
-| API 地址 | `https://codex.water555.com/v1` |
-| API Key | 用户自己的 Gateway 设备 Key |
-| 协议 | Responses |
-| 模型 | `/v1/models` 返回且该 Key 有权使用的模型 |
-
-在 `https://ai.water555.com` 刷新模型列表，再发送一条消息，确认流式回复能
-持续显示。Gateway 不提供 Chat Completions；添加 CORS 不会增加这个接口。
-本示例也未放行 `/v1/responses/compact` 或 Gemini 原生接口，如客户端需要
-其他接口，应按实际路由单独评估并扩展路径白名单。
-
-## 排查与回滚
-
-- 预检仍返回 `405`：确认请求经过仓库的 Caddy 服务、已重载修改后的文件，
-  且 Origin 和路径与配置完全一致。
-- 预检返回 `401` 或登录跳转：检查入口是否有额外鉴权拦截 OPTIONS；浏览器
-  预检不会携带 API Key。
-- 预检成功但网页仍报跨域错误：检查实际 GET/POST 响应是否带允许来源的头，
-  并确认实际页面来源是否变成了另一个自定义域名或预览域名。
-- 出现重复的 `Access-Control-Allow-Origin`：检查其他代理或应用是否同时
-  添加 CORS 头。此方案由 Caddy 统一设置。
-- 能读取 JSON 错误：按 Gateway 返回的 Key、权限、模型或额度错误处理；
-  这已经是实际 API 响应。
-
-回滚时删除第 1 节新增的三个命名匹配器及对应的 `header`、`respond` 指令，
-再执行第 2 节的校验和重载。网页直连恢复为不允许跨域，命令行 Bearer Key
-调用和管理台继续按原配置工作。
-
-本指南采用浏览器直连模式；[浏览器聊天开发设计](browser-chat-development.md#131-域名与路由)
-中描述的 Worker 同源转发是另一种架构，不依赖这里的 CORS 配置。
-
-参考：[MDN CORS](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS)、
-[Caddy header](https://caddyserver.com/docs/caddyfile/directives/header)、
-[Caddy respond](https://caddyserver.com/docs/caddyfile/directives/respond)、
-[Caddy 命令行](https://caddyserver.com/docs/command-line)。
+清空 `GATEWAY_BROWSER_CLIENT_URL` 并重新创建 Gateway 容器即可停用入口、兑换
+和跨域 API。已保存的 Key 不会因此被撤销；需要撤销访问时禁用对应 Key。
+不要恢复旧的 Caddy CORS 块，除非已经回滚到没有 Go CORS 的旧 Gateway 镜像，
+并明确需要继续支持旧版网页直连。

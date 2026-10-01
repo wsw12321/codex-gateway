@@ -51,6 +51,9 @@ type Server struct {
 	identificationWG        sync.WaitGroup
 	groupRepo               groupRepository
 	informationRepo         informationRepository
+	browserHandoffRepo      browserHandoffRepository
+	browserHandoffs         *browserHandoffStore
+	browserHandoffOnce      sync.Once
 
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
@@ -79,6 +82,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		monitoringRepo:          repository,
 		modelAccessRepo:         repository,
 		modelIdentificationRepo: repository,
+		browserHandoffRepo:      repository,
 		spoolSlots:              make(chan struct{}, maxConcurrentRequestSpools),
 		activeAttributions:      make(map[string]activeRequestAttribution),
 		activeConversations:     make(map[string]activeRequestConversation),
@@ -97,6 +101,7 @@ func (s *Server) Handler() http.Handler {
 	var handler http.Handler = s.mux
 	handler = s.accessLog(handler)
 	handler = httpx.Recover(s.logger, handler)
+	handler = s.browserClientCORS(handler)
 	handler = httpx.SecurityHeaders(handler)
 	handler = httpx.RequestContext(s.config.TrustedProxy)(handler)
 	return handler
@@ -140,6 +145,8 @@ func (s *Server) routes() {
 	s.browserPOST("/admin/projects", s.requireSession(http.HandlerFunc(s.createProject)))
 	s.browserPOST("/admin/api-keys", s.requireRecentVerification(http.HandlerFunc(s.createAPIKey)))
 	s.browserPOST("/admin/api-keys/{id}/reveal", s.requireRecentVerification(http.HandlerFunc(s.revealAPIKey)))
+	s.browserPOST("/admin/browser-handoffs", s.requireRecentVerification(http.HandlerFunc(s.createBrowserHandoff)))
+	s.mux.Handle("POST /browser-handoffs/exchange", httpx.NoStore(http.HandlerFunc(s.exchangeBrowserHandoff)))
 	s.browserPOST("/admin/passkeys/begin", s.requireRecentVerification(http.HandlerFunc(s.beginAddPasskey)))
 	s.browserPOST("/admin/passkeys/finish", s.requireRecentVerification(http.HandlerFunc(s.finishAddPasskey)))
 	s.browserPOST("/admin/invitations", s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createInvitation))))

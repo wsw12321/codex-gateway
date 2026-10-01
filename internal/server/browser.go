@@ -1,7 +1,6 @@
 package server
 
 import (
-	"crypto/hmac"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -302,33 +301,9 @@ func (s *Server) revealAPIKey(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "api_key_secret_unavailable", "此 API Key 创建于加密保存功能上线前，无法查看完整值")
 		return
 	}
-	if !hmac.Equal([]byte(secret.ID), []byte(keyID)) ||
-		!hmac.Equal([]byte(secret.UserID), []byte(user.ID)) {
-		internalError(s, w, r, "validate API key secret owner", errors.New("stored API key secret owner mismatch"))
-		return
-	}
-	plaintext, err := security.DecryptAPIKeySecret(
-		s.config.APIKeyEncryptionKey, user.ID, secret.PublicID, secret.SecretCiphertext,
-	)
+	plaintext, err := s.decryptAPIKeySecret(user.ID, keyID, secret)
 	if err != nil {
-		internalError(s, w, r, "decrypt API key", err)
-		return
-	}
-	var expected security.APIKeyDigest
-	if len(secret.KeyHash) != len(expected) {
-		internalError(s, w, r, "validate API key secret", errors.New("stored API key digest has invalid length"))
-		return
-	}
-	copy(expected[:], secret.KeyHash)
-	parsed, verified, err := security.VerifyAPIKey(s.config.KeyPepper, plaintext, expected)
-	if err != nil {
-		internalError(s, w, r, "verify API key secret", err)
-		return
-	}
-	if !verified ||
-		!hmac.Equal([]byte(parsed.PublicID), []byte(secret.PublicID)) ||
-		!hmac.Equal([]byte(parsed.Prefix()), []byte(secret.KeyPrefix)) {
-		internalError(s, w, r, "validate API key secret", errors.New("stored API key secret failed verification"))
+		internalError(s, w, r, "validate API key secret", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"api_key": plaintext})
@@ -501,12 +476,15 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 			verificationExpires = &value
 		}
 	}
-	writeJSON(w, http.StatusOK, newAdminStateResponse(
+	response := newAdminStateResponse(
 		user, devices, projects, keys, credentials, methods, recent, verificationExpires,
-	))
+	)
+	response.BrowserClientEnabled = s.config.BrowserClientURL != nil
+	writeJSON(w, http.StatusOK, response)
 }
 
 type adminStateResponse struct {
+	BrowserClientEnabled        bool               `json:"browser_client_enabled"`
 	User                        adminUser          `json:"user"`
 	Devices                     []adminDevice      `json:"devices"`
 	Projects                    []adminProject     `json:"projects"`

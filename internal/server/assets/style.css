@@ -3130,3 +3130,17 @@ dialog form {
   .invitation-review-toolbar .button-group { width: 100%; }
   #invitation-detail .panel-heading { align-items: flex-start; }
 }
+
+/* The same browser handoff entry and dialog serve overview and setup guidance. */
+.browser-handoff-entry { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: .65rem; }
+.browser-handoff-entry .muted { font-size: .8rem; }
+#browser-handoff-dialog { width: min(36rem, calc(100vw - 2rem)); }
+#browser-handoff-dialog .muted { margin: 0; font-size: .875rem; overflow-wrap: anywhere; }
+#browser-handoff-dialog select { max-width: 100%; }
+#browser-handoff-dialog .actions { flex-wrap: wrap; }
+#browser-handoff-create { display: grid; gap: .65rem; }
+@media (max-width: 600px) {
+  .overview-scope { align-items: flex-start; flex-wrap: wrap; }
+  .browser-handoff-entry { justify-content: flex-start; }
+  #browser-handoff-dialog button, #browser-handoff-dialog input:not([type="checkbox"]), #browser-handoff-dialog select { min-height: 44px; }
+}

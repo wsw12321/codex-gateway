@@ -170,3 +170,36 @@ func validConfigForValidation(t *testing.T) Config {
 		BodyLimit: defaultBodyLimit,
 	}
 }
+
+func TestBrowserClientURLConfiguration(t *testing.T) {
+	for _, test := range []struct {
+		url     string
+		dev, ok bool
+	}{
+		{"", false, true},
+		{"https://ai.water555.com", false, true},
+		{"https://ai.water555.com/workbench/", false, true},
+		{"http://127.0.0.1:4174", true, true},
+		{"http://ai.water555.com", false, false},
+		{"ftp://ai.water555.com", true, false},
+		{"https://user:password@ai.water555.com", false, false},
+		{"https://ai.water555.com?next=evil", false, false},
+		{"https://ai.water555.com?", false, false},
+		{"https://ai.water555.com/#code=secret", false, false},
+		{"//ai.water555.com", false, false},
+		{"javascript:alert(1)", true, false},
+	} {
+		t.Run(test.url, func(t *testing.T) {
+			setValidLoadEnvironment(t)
+			t.Setenv("GATEWAY_BROWSER_CLIENT_URL", test.url)
+			t.Setenv("GATEWAY_DEV_INSECURE_HTTP", strconv.FormatBool(test.dev))
+			cfg, err := Load()
+			if (err == nil) != test.ok {
+				t.Fatalf("URL %q: err=%v", test.url, err)
+			}
+			if err == nil && (cfg.BrowserClientURL != nil) != (test.url != "") {
+				t.Fatal("unexpected enablement")
+			}
+		})
+	}
+}

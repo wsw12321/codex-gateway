@@ -269,10 +269,11 @@ Caddy 的 `172.28.10.2/32`。Caddy 的 HSTS 不声明 `preload`；不要在未�
 
 ### 独立网页直连的 CORS 配置
 
-Gateway 默认不启用 CORS。若独立网页需要从浏览器直接请求模型接口，按
-[浏览器 CORS 配置](browser-cors.md)在现有 Caddy 中添加精确来源和接口白名单，
-并处理 OPTIONS 预检。该指南包含配置校验、重载、验证与回滚步骤；无需重建
-Gateway 镜像。`WEBAUTHN_ORIGINS` 用于管理台身份验证，不是 API CORS 开关。
+Gateway 默认不启用工作台接入与 CORS。先发布支持接入的工作台，再配置
+`GATEWAY_BROWSER_CLIENT_URL=https://ai.water555.com` 并重新创建 Gateway 容器。
+Go 层为兑换、模型列表与 Responses 接口提供精确来源的 CORS。按
+[网页工作台一键接入与 CORS](browser-cors.md)移除线上旧 Caddy CORS 块，
+避免重复响应头，并验证预检和错误响应。`WEBAUTHN_ORIGINS` 仍只用于管理台身份验证。
 
 ## 4. 构建和首次启动
 
