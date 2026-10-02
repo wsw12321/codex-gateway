@@ -1211,6 +1211,13 @@ tombstone；当前倍率设置不清理。保留的设置更新者属于管理�
 含义对应包含倍率后的金额；CNY 展示继续按现有汇率折算。
 验证范围及截图见[模型倍率验证记录](model-multipliers-validation.md)。
 
+## 吾水阁统一账号接入
+
+此功能默认关闭，通过可选 `deploy/oidc.override.yml` 启用；客户端登记、secret
+配置、Squid 来源隔离、数据库升级、关闭开关回退与真实 Supabase 联调要求见
+[OIDC 接入与回退](oidc.md)。启用部署的 Compose 命令应始终携带该 overlay，
+校验改用 `./scripts/validate-compose.sh --oidc`。账号中心退出不等于网关退出。
+
 ## 12. 上线验收清单
 
 生产启用前必须记录以下结果；任一项失败都保持 Tunnel 或调用入口停用：

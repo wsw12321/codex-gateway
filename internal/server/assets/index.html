@@ -22,6 +22,7 @@
         <p id="login-error" class="form-message hidden" role="alert"></p>
         <div class="auth-actions">
           <button id="login" type="button">使用 Passkey 登录</button>
+          <button id="oidc-login" class="secondary hidden" type="button">使用吾水阁账号登录</button>
           <a href="/recover">使用恢复码</a>
         </div>
         <form id="password-login-form" class="auth-method-form">
@@ -584,6 +585,15 @@
               <div><p class="eyebrow">IDENTITY</p><h2 id="security-title">账号安全</h2><p>管理登录凭证以及一次性邀请。</p></div>
             </div>
             <div class="grid security-grid">
+              <article id="identity-link-panel" class="panel hidden">
+                <div class="panel-heading"><h3>吾水阁账号</h3></div>
+                <p id="identity-link-status"></p>
+                <p class="muted">绑定后可使用吾水阁账号登录。原密码、Passkey 和业务数据保持不变。解绑会退出该绑定产生的统一登录会话。</p>
+                <div class="button-row">
+                  <button id="identity-link-begin" type="button">绑定吾水阁账号</button>
+                  <button id="identity-link-unlink" class="secondary hidden" type="button">解绑吾水阁账号</button>
+                </div>
+              </article>
               <article class="panel">
                 <div class="panel-heading"><h3>Passkeys</h3><button id="add-passkey" type="button">新增 Passkey</button></div>
                 <div id="passkeys" class="list loading" aria-live="polite" aria-busy="true">正在加载 Passkeys…</div>

@@ -38,7 +38,9 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request) {
 		s.authenticationFailure(w, r, "login", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
+	if !s.setSessionCookie(w, r, result.SessionToken) {
+		return
+	}
 	s.audit(r, result.User.ID, "", "identity.login", true, "user", result.User.ID, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(result.User)})
 }
@@ -104,7 +106,9 @@ func (s *Server) finishRecovery(w http.ResponseWriter, r *http.Request) {
 		s.authenticationFailure(w, r, "recovery", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
+	if !s.setSessionCookie(w, r, result.SessionToken) {
+		return
+	}
 	s.audit(r, result.User.ID, "", "identity.account_recovered", true, "user", result.User.ID, nil)
 	_, _ = s.store.CreateAlert(r.Context(), store.CreateAlertParams{
 		Type: "account_recovery", Severity: "warning", UserID: result.User.ID,
@@ -119,7 +123,17 @@ func (s *Server) finishRecovery(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	session := sessionFrom(r.Context())
-	_ = s.store.RevokeSession(r.Context(), session.ID, "user_logout", time.Now().UTC())
+	if err := s.cancelOIDCFlows(r); err != nil {
+		internalError(s, w, r, "cancel OIDC login on logout", err)
+		return
+	}
+	if err := s.store.RevokeSession(r.Context(), session.ID, "user_logout", time.Now().UTC()); err != nil && !errors.Is(err, store.ErrNotFound) {
+		internalError(s, w, r, "revoke session on logout", err)
+		return
+	}
+	if oidcBrowser(r) != "" {
+		s.setOIDCCookie(w, "", -1)
+	}
 	s.clearSessionCookie(w)
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
@@ -479,20 +493,27 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 	response := newAdminStateResponse(
 		user, devices, projects, keys, credentials, methods, recent, verificationExpires,
 	)
+	link, err := s.store.GetExternalIdentity(r.Context(), user.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		internalError(s, w, r, "read external identity", err)
+		return
+	}
+	response.ExternalIdentity = externalIdentityView(s.config.OIDCEnabled, link)
 	response.BrowserClientEnabled = s.config.BrowserClientURL != nil
 	writeJSON(w, http.StatusOK, response)
 }
 
 type adminStateResponse struct {
-	BrowserClientEnabled        bool               `json:"browser_client_enabled"`
-	User                        adminUser          `json:"user"`
-	Devices                     []adminDevice      `json:"devices"`
-	Projects                    []adminProject     `json:"projects"`
-	APIKeys                     []adminAPIKey      `json:"api_keys"`
-	Passkeys                    []adminPasskey     `json:"passkeys"`
-	LoginMethods                store.LoginMethods `json:"login_methods"`
-	RecentlyVerified            bool               `json:"recently_verified"`
-	RecentVerificationExpiresAt *time.Time         `json:"recent_verification_expires_at"`
+	ExternalIdentity            adminExternalIdentity `json:"external_identity"`
+	BrowserClientEnabled        bool                  `json:"browser_client_enabled"`
+	User                        adminUser             `json:"user"`
+	Devices                     []adminDevice         `json:"devices"`
+	Projects                    []adminProject        `json:"projects"`
+	APIKeys                     []adminAPIKey         `json:"api_keys"`
+	Passkeys                    []adminPasskey        `json:"passkeys"`
+	LoginMethods                store.LoginMethods    `json:"login_methods"`
+	RecentlyVerified            bool                  `json:"recently_verified"`
+	RecentVerificationExpiresAt *time.Time            `json:"recent_verification_expires_at"`
 }
 
 type adminUser struct {
@@ -635,7 +656,21 @@ func (s *Server) storeWriteError(w http.ResponseWriter, r *http.Request, operati
 	internalError(s, w, r, operation, err)
 }
 
-func (s *Server) setSessionCookie(w http.ResponseWriter, token string) {
+func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) bool {
+	if err := s.cancelOIDCFlows(r); err != nil {
+		internalError(s, w, r, "cancel OIDC login on local authentication", err)
+		return false
+	}
+	if oidcBrowser(r) != "" {
+		s.setOIDCCookie(w, "", -1)
+	}
+	s.writeSessionCookie(w, token)
+	return true
+}
+
+// External login calls this only under its flow lock, after recording the
+// session ID for cancellation by a racing local login or logout.
+func (s *Server) writeSessionCookie(w http.ResponseWriter, token string) {
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookieName, Value: token, Path: "/", MaxAge: int(s.config.SessionMax.Seconds()),
 		Secure: !s.config.DevInsecure, HttpOnly: true, SameSite: http.SameSiteStrictMode,

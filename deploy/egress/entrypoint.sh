@@ -9,6 +9,36 @@ fail() {
 
 relay_ip=${CODEX_RELAY_IP:-}
 relay_port=${CODEX_RELAY_PORT:-3128}
+oidc_enabled=${OIDC_ENABLED:-false}
+oidc_host=${OIDC_AUTH_HOST:-}
+
+case "$oidc_enabled" in
+    true|false) ;;
+    *) fail 'OIDC_ENABLED must be true or false' ;;
+esac
+validate_hostname() {
+    case "$1" in
+        ''|*[!a-z0-9.-]*|.*|*.|*..*) return 1 ;;
+    esac
+    test "${#1}" -le 253 || return 1
+    saved_ifs=$IFS
+    IFS=.
+    set -- $1
+    IFS=$saved_ifs
+    test "$#" -ge 2 || return 1
+    for label do
+        case "$label" in ''|-*|*-) return 1 ;; esac
+        test "${#label}" -le 63 || return 1
+    done
+    # Reject literal IP addresses and numeric final labels.
+    case "$label" in *[!a-z]*) return 1 ;; esac
+}
+if test -n "$oidc_host"; then
+    validate_hostname "$oidc_host" || fail 'OIDC_AUTH_HOST must be one exact lowercase DNS hostname'
+fi
+if test "$oidc_enabled" = true && test -z "$oidc_host"; then
+    fail 'OIDC_AUTH_HOST is required when OIDC is enabled'
+fi
 
 # Accept canonical decimal values only. Validate even when the relay is off so
 # a bad dormant port cannot become active during a later configuration change.
@@ -55,10 +85,26 @@ render_config() {
         'never_direct deny all'
 }
 
+render_oidc_config() {
+    if test "$oidc_enabled" = false; then
+        printf '%s\n' '# Gateway OIDC egress disabled.'
+        return
+    fi
+    printf 'acl gateway_oidc_upstream dstdomain -n %s\n' "$oidc_host"
+    printf '%s\n' \
+        'http_access allow CONNECT TLS_port gateway_oidc_clients gateway_oidc_upstream' \
+        'always_direct allow gateway_oidc_clients'
+}
+
 # Used by deployment validation without writing /run or starting Squid.
 if test "${1:-}" = --render-config; then
     test "$#" -eq 1 || fail '--render-config takes no arguments'
     render_config
+    exit 0
+fi
+if test "${1:-}" = --render-oidc-config; then
+    test "$#" -eq 1 || fail '--render-oidc-config takes no arguments'
+    render_oidc_config
     exit 0
 fi
 
@@ -70,6 +116,14 @@ trap 'rm -f "$relay_tmp"' EXIT HUP INT TERM
 render_config > "$relay_tmp"
 chmod 0644 "$relay_tmp"
 mv -f "$relay_tmp" "$relay_config"
+trap - EXIT HUP INT TERM
+
+oidc_config=/run/gateway-oidc.conf
+oidc_tmp=$(mktemp "${oidc_config}.XXXXXX")
+trap 'rm -f "$oidc_tmp"' EXIT HUP INT TERM
+render_oidc_config > "$oidc_tmp"
+chmod 0644 "$oidc_tmp"
+mv -f "$oidc_tmp" "$oidc_config"
 trap - EXIT HUP INT TERM
 
 exec /usr/local/bin/entrypoint.sh "$@"

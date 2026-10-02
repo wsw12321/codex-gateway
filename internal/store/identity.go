@@ -526,7 +526,7 @@ type CreateSessionParams struct {
 
 const sessionColumns = `id, user_id, token_hash, csrf_secret, host(source_ip), user_agent_hash,
 	created_at, last_seen_at, idle_expires_at, absolute_expires_at,
-	recently_verified_at, revoked_at, revoke_reason`
+	recently_verified_at, revoked_at, revoke_reason, external_identity_id`
 
 func scanSession(row rowScanner) (Session, error) {
 	var session Session
@@ -534,7 +534,7 @@ func scanSession(row rowScanner) (Session, error) {
 		&session.ID, &session.UserID, &session.TokenHash, &session.CSRFSecret,
 		&session.SourceIP, &session.UserAgentHash, &session.CreatedAt, &session.LastSeenAt,
 		&session.IdleExpiresAt, &session.AbsoluteExpiresAt, &session.RecentlyVerifiedAt,
-		&session.RevokedAt, &session.RevokeReason,
+		&session.RevokedAt, &session.RevokeReason, &session.ExternalIdentityID,
 	)
 	return session, err
 }

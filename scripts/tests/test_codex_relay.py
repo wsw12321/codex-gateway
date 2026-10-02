@@ -17,6 +17,8 @@ class CodexRelayTests(unittest.TestCase):
         env = os.environ.copy()
         env.pop("CODEX_RELAY_IP", None)
         env.pop("CODEX_RELAY_PORT", None)
+        env.pop("OIDC_ENABLED", None)
+        env.pop("OIDC_AUTH_HOST", None)
         if ip is not None:
             env["CODEX_RELAY_IP"] = ip
         if port is not None:

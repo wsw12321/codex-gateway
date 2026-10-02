@@ -51,11 +51,14 @@ class RelayValidationTests(unittest.TestCase):
                 if line and not line.startswith("#") and "=" in line:
                     cls.env.pop(line.split("=", 1)[0], None)
 
-        def render(compose):
+        def render(compose, overlay=False):
+            files = ["-f", str(compose)]
+            if overlay:
+                files += ["-f", str(cls.root / "deploy/oidc.override.yml")]
             result = subprocess.run(
                 ["docker", "compose", "--profile", "legacy-bridge", "--env-file", str(cls.root / ".env"),
                  "--env-file", str(cls.root / "deploy/images.lock.env"),
-                 "-f", str(compose), "config", "--format", "json"],
+                 *files, "config", "--format", "json"],
                 env=cls.env, capture_output=True, text=True, timeout=30,
             )
             if result.returncode:
@@ -64,9 +67,14 @@ class RelayValidationTests(unittest.TestCase):
 
         cls.gateway_baseline = render(cls.root / "docker-compose.yml")
         cls.relay_baseline = render(cls.root / "deploy/relay/docker-compose.yml")
+        cls.env.update({"OIDC_ENABLED": "true", "OIDC_AUTH_HOST": "staging.supabase.co",
+                        "OIDC_ISSUER": "https://staging.supabase.co/auth/v1", "OIDC_CLIENT_ID": "staging-client"})
+        cls.oidc_baseline = render(cls.root / "docker-compose.yml", overlay=True)
+        for name in ("OIDC_ENABLED", "OIDC_AUTH_HOST", "OIDC_ISSUER", "OIDC_CLIENT_ID"):
+            cls.env.pop(name, None)
         secrets = cls.root / "deploy/secrets"
         secrets.mkdir()
-        for name in cls.gateway_baseline["secrets"]:
+        for name in cls.oidc_baseline["secrets"]:
             secret = secrets / name
             secret.write_text("A" * 43 if name == "gateway_api_key_encryption_key"
                               else f"non-production-fixture-{name}")
@@ -124,11 +132,11 @@ else:
         self.b_config.write_text(self.b_baseline)
         self.run_log.write_text("")
 
-    def validate(self, **env):
+    def validate(self, oidc=False, **env):
         self.gateway_json.write_text(json.dumps(self.gateway))
         self.relay_json.write_text(json.dumps(self.relay))
         return subprocess.run(
-            ["sh", str(self.root / "scripts/validate-compose.sh")],
+            ["sh", str(self.root / "scripts/validate-compose.sh"), *(["--oidc"] if oidc else [])],
             env={**self.env, **env}, capture_output=True, text=True, timeout=15,
         )
 
@@ -144,6 +152,62 @@ else:
         self.assertIn("CODEX_RELAY_IP=10.77.0.2", runs[1])
         self.assertIn("/usr/sbin/squid", runs[2])
         self.assertEqual(runs[2][runs[2].index("--ulimit") + 1], "nofile=4096:4096")
+
+    def test_oidc_overlay_uses_only_its_file_secret_and_exact_internal_proxy(self):
+        self.gateway = copy.deepcopy(self.oidc_baseline)
+        result = self.validate(oidc=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runs = [json.loads(line) for line in self.run_log.read_text().splitlines()]
+        self.assertEqual(len(runs), 5)
+        self.assertIn("OIDC_ENABLED=true", runs[2])
+        self.assertIn("OIDC_AUTH_HOST=staging.supabase.co", runs[2])
+        self.assertEqual(runs[2][runs[2].index("--network") + 1], "none")
+
+    def test_oidc_rejects_host_mismatch_global_proxy_and_other_secret_readers(self):
+        mutations = [
+            lambda s: s["gateway"]["environment"].update(OIDC_PROXY_URL="http://egress-allowlist:3128"),
+            lambda s: s["gateway"]["environment"].update(HTTPS_PROXY="http://172.28.30.4:3128"),
+            lambda s: s["gateway"]["environment"].update(http_proxy="http://172.28.30.4:3128"),
+            lambda s: s["gateway"]["environment"].update(OIDC_CLIENT_SECRET="inline-secret"),
+            lambda s: s["gateway"]["environment"].update(OIDC_ISSUER="https://other.supabase.co/auth/v1"),
+            lambda s: s["egress-allowlist"]["environment"].update(OIDC_AUTH_HOST="staging.supabase.co\n"),
+            lambda s: s["egress-allowlist"]["environment"].update(OIDC_ENABLED="false"),
+            lambda s: s["codex-compat"]["secrets"].append({"source": "oidc_client_secret"}),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                self.gateway = copy.deepcopy(self.oidc_baseline)
+                mutate(self.gateway["services"])
+                result = self.validate(oidc=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("OIDC requires its optional overlay", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_default_deployment_requires_no_oidc_secret(self):
+        secret = self.root / "deploy/secrets/oidc_client_secret"
+        content = secret.read_text()
+        secret.unlink()
+        try:
+            result = self.validate()
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            secret.write_text(content)
+            secret.chmod(0o640)
+            if (os.getgid() or 1) != os.getgid():
+                os.chown(secret, -1, os.getgid() or 1)
+
+    def test_caddy_runtime_error_logs_require_callback_query_redaction(self):
+        caddyfile = self.root / "deploy/Caddyfile"
+        original = caddyfile.read_text()
+        try:
+            caddyfile.write_text(original.replace('request>uri regexp "[?].*$" ""',
+                                                  '# request URI redaction removed'))
+            result = self.validate()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Caddy runtime error logs must redact", result.stderr)
+            self.assertEqual(self.run_log.read_text(), "")
+        finally:
+            caddyfile.write_text(original)
 
     def test_pricing_requires_all_reviewed_native_models_and_preserves_codex(self):
         environment = self.gateway["services"]["gateway"]["environment"]

@@ -640,6 +640,8 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  hide("identity-link-panel");
+  if (byId("identity-link-status")) byId("identity-link-status").textContent = "";
   const preserveGroupInvitation = checkingInvitationSession === invitationContextSequence && invitationKind === "group" && Boolean(invitationToken);
   closeNavigationDrawer(false);
   resetOverview();
@@ -847,6 +849,57 @@ async function getPasskey(ceremony) {
   const credential = await navigator.credentials.get(assertionOptions(ceremony.options));
   if (!credential) throw new DOMException("Passkey assertion returned no credential", "NotAllowedError");
   return serializeCredential(credential);
+}
+
+function identityLinkCurrent() {
+  const actor = state?.user?.id, generation = identityGeneration;
+  return () => Boolean(actor) && state?.user?.id === actor && identityGeneration === generation && !loggingOut;
+}
+
+function renderIdentityLink() {
+  const link = state?.external_identity;
+  byId("identity-link-panel")?.classList.toggle("hidden", !link?.enabled && !link?.linked);
+  if (!link) return;
+  byId("identity-link-status").textContent = link.linked ?
+    `已绑定 ${link.masked_email || "（邮箱未提供）"} · ${formatDateTime(link.linked_at)}` : "尚未绑定吾水阁账号。";
+  byId("identity-link-begin").classList.toggle("hidden", link.linked || !link.enabled);
+  byId("identity-link-unlink").classList.toggle("hidden", !link.linked);
+}
+
+async function loadOIDCConfig() {
+  try {
+    const result = await api("/auth/oidc/config");
+    byId("oidc-login")?.classList.toggle("hidden", result.enabled !== true);
+  } catch (_) { hide("oidc-login"); }
+}
+
+async function loginOIDC() {
+  const current = loginRequestCurrent();
+  const result = await api("/auth/oidc/login", {method: "POST", body: "{}"}, current);
+  requireCurrentRequest(current);
+  location.assign(result.authorization_url);
+}
+
+async function beginIdentityLink() {
+  const current = identityLinkCurrent();
+  // Always obtain explicit local proof before leaving this site.
+  await reauthenticate(current);
+  const result = await api("/admin/identity-link/begin", {method: "POST", body: "{}"}, current);
+  requireCurrentRequest(current);
+  location.assign(result.authorization_url);
+}
+
+async function unlinkIdentity() {
+  const current = identityLinkCurrent();
+  if (!window.confirm("解绑吾水阁账号？该绑定产生的统一登录会话将全部退出，密码和 Passkey 会话保持有效。")) return;
+  await reauthenticate(current);
+  const result = await api("/admin/identity-link", {method: "DELETE"}, current);
+  requireCurrentRequest(current);
+  if (result.logged_out) { location.assign("/"); return; }
+  const value = await api("/admin/state", {}, current);
+  requireCurrentRequest(current);
+  renderState(value);
+  notice("已解绑吾水阁账号。", "ok");
 }
 
 async function login() {
@@ -1844,6 +1897,7 @@ function renderState(value) {
   renderAPIKeys();
   renderPasskeys();
   renderLoginMethods();
+  renderIdentityLink();
   renderSelects();
   renderBrowserHandoff();
   renderResourceSummary();
@@ -7303,6 +7357,9 @@ function bindUI() {
   bindBillingBatchAction("billing-batch-retry", "click", retryBillingBatch);
   bindBillingBatchAction("billing-batch-reset", "click", finishBillingBatch);
   bindBillingBatchAction("billing-batch-refresh-users", "click", refreshBillingBatchData);
+  bindAsync("oidc-login", "click", loginOIDC, "正在跳转…", loginRequestCurrent);
+  bindAsync("identity-link-begin", "click", beginIdentityLink, "正在验证…", identityLinkCurrent);
+  bindAsync("identity-link-unlink", "click", unlinkIdentity, "正在解绑…", identityLinkCurrent);
   bindAsync("login", "click", login, "等待 Passkey…", loginRequestCurrent);
   bindAsync("password-login-form", "submit", passwordLogin, "登录中…", loginRequestCurrent);
   bindAsync("join-form", "submit", register, "提交中…", invitationRequestCurrent);
@@ -7527,6 +7584,7 @@ function bindUI() {
 
 async function start() {
   bindUI();
+  void loadOIDCConfig();
   initializeDateFilters();
   const path = location.pathname;
   if (path === "/join") {

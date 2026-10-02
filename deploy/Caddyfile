@@ -1,5 +1,16 @@
 {
 	admin 127.0.0.1:2019
+	# Runtime proxy errors include request URIs even without access logging.
+	# Keep paths for diagnosis, but never log OAuth callback queries.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request>uri regexp "[?].*$" ""
+				request>headers>Referer regexp "[?].*$" ""
+			}
+		}
+	}
 	servers {
 		trusted_proxies static 172.28.10.4/32
 		trusted_proxies_strict

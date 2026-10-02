@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>吾水阁账号授权 · Codex Gateway</title>
+  <script src="/static/oidc-callback.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="auth-shell">
+    <section class="panel auth-card" aria-labelledby="oidc-title">
+      <p class="eyebrow">IDENTITY</p>
+      <h1 id="oidc-title">吾水阁账号授权</h1>
+      <p id="oidc-message" role="status" aria-live="polite">正在验证授权结果…</p>
+      <div id="oidc-preview" class="hidden">
+        <p id="oidc-accounts"></p>
+        <p>确认后可使用该吾水阁账号登录原网关账号。请核对两个账号；如有误，请取消并重新开始。</p>
+        <p id="oidc-expiry" class="muted"></p>
+        <div class="button-row">
+          <button id="oidc-confirm" type="button">确认绑定</button>
+          <button id="oidc-cancel" type="button" class="secondary">取消绑定</button>
+        </div>
+      </div>
+      <p><a id="oidc-return" href="/#security">返回网关</a></p>
+    </section>
+  </main>
+</body>
+</html>

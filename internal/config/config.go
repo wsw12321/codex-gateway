@@ -58,6 +58,11 @@ type Config struct {
 	Limits                 Limits
 	UsagePricing           UsagePricing
 	DevInsecure            bool
+	OIDCEnabled            bool
+	OIDCIssuer             string
+	OIDCClientID           string
+	OIDCClientSecret       string
+	OIDCProxyURL           *url.URL
 }
 
 func Load() (Config, error) {
@@ -188,6 +193,9 @@ func Load() (Config, error) {
 			return Config{}, err
 		}
 	}
+	if err := cfg.loadOIDC(); err != nil {
+		return Config{}, err
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -220,6 +228,9 @@ func (c Config) Validate() error {
 		return errors.New("SIDECAR_URL must not contain credentials, query, or fragment")
 	}
 	if err := c.validateAntigravity(); err != nil {
+		return err
+	}
+	if err := c.ValidateOIDC(); err != nil {
 		return err
 	}
 	if c.DatabaseURL == "" {

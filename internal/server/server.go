@@ -55,6 +55,10 @@ type Server struct {
 	browserHandoffs         *browserHandoffStore
 	browserHandoffOnce      sync.Once
 
+	oidc      oidcProvider
+	oidcRepo  oidcRepository
+	oidcFlows *oidcFlowStore
+
 	spoolOnce  sync.Once
 	spoolSlots chan struct{}
 }
@@ -87,6 +91,13 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		activeAttributions:      make(map[string]activeRequestAttribution),
 		activeConversations:     make(map[string]activeRequestConversation),
 	}
+	if cfg.OIDCEnabled {
+		s.oidc, err = identity.NewOIDC(cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.oidcFlows = newOIDCFlowStore(maxOIDCFlows)
 	s.identificationContext, s.identificationCancel = context.WithCancel(context.Background())
 	if cfg.UsesCPAAntigravity() {
 		s.antigravity = gatewayproxy.NewCPAAntigravity(cfg.SidecarURL, cfg.SidecarToken)
@@ -108,6 +119,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
+	s.oidcRoutes()
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
 	s.mux.HandleFunc("POST /internal/upstream-accounts/select", s.selectUpstreamAccount)

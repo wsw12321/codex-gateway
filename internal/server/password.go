@@ -40,7 +40,9 @@ func (s *Server) passwordLogin(w http.ResponseWriter, r *http.Request) {
 		s.passwordFailure(w, r, "password_login", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
+	if !s.setSessionCookie(w, r, result.SessionToken) {
+		return
+	}
 	s.audit(r, result.User.ID, "", "identity.login", true, "user", result.User.ID, map[string]any{"method": "password"})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": publicUser(result.User)})
 }
@@ -61,7 +63,9 @@ func (s *Server) passwordRecovery(w http.ResponseWriter, r *http.Request) {
 		s.passwordFailure(w, r, "password_recovery", err)
 		return
 	}
-	s.setSessionCookie(w, result.SessionToken)
+	if !s.setSessionCookie(w, r, result.SessionToken) {
+		return
+	}
 	s.audit(r, result.User.ID, "", "identity.account_recovered", true, "user", result.User.ID, map[string]any{"method": "password"})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "recovery_codes": result.RecoveryCodes,

@@ -119,6 +119,12 @@ func insertRecoveryCodes(ctx context.Context, tx *sql.Tx, userID string, hashes 
 }
 
 func insertSession(ctx context.Context, tx *sql.Tx, params CreateSessionParams, recentlyVerified bool) (Session, error) {
+	return insertSessionWithSource(ctx, tx, params, recentlyVerified, "")
+}
+
+// Only the atomic external-login transaction supplies a binding ID. Existing
+// password, Passkey, invitation and recovery paths always retain a NULL source.
+func insertSessionWithSource(ctx context.Context, tx *sql.Tx, params CreateSessionParams, recentlyVerified bool, externalIdentityID string) (Session, error) {
 	if len(params.TokenHash) != 32 || len(params.CSRFSecret) < 32 || (len(params.UserAgentHash) != 0 && len(params.UserAgentHash) != 32) {
 		return Session{}, fmt.Errorf("%w: invalid session secret hash", ErrInvalid)
 	}
@@ -141,11 +147,11 @@ func insertSession(ctx context.Context, tx *sql.Tx, params CreateSessionParams, 
 	}
 	session, err := scanSession(tx.QueryRowContext(ctx, `
 		INSERT INTO sessions (id, user_id, token_hash, csrf_secret, source_ip, user_agent_hash,
-			created_at, last_seen_at, idle_expires_at, absolute_expires_at, recently_verified_at)
-		VALUES ($1,$2,$3,$4,$5::inet,$6,$7,$7,$8,$9,$10)
+			created_at, last_seen_at, idle_expires_at, absolute_expires_at, recently_verified_at, external_identity_id)
+		VALUES ($1,$2,$3,$4,$5::inet,$6,$7,$7,$8,$9,$10,$11)
 		RETURNING `+sessionColumns, params.ID, params.UserID, params.TokenHash, params.CSRFSecret,
 		valueOrNil(params.SourceIP), valueOrNilBytes(params.UserAgentHash), params.CreatedAt,
-		params.IdleExpiresAt, params.AbsoluteExpiresAt, verified))
+		params.IdleExpiresAt, params.AbsoluteExpiresAt, verified, valueOrNil(externalIdentityID)))
 	return session, mapDBError("create session", err)
 }
 

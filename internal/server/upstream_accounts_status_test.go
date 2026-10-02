@@ -175,7 +175,7 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 				}
 				db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, _ []driver.NamedValue) (driver.Rows, error) {
 					if strings.Contains(query, "FROM sessions") {
-						return &upstreamAuditRows{columns: make([]string, 13), values: []driver.Value{"session-1", "owner-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verified, nil, ""}}, nil
+						return &upstreamAuditRows{columns: make([]string, 14), values: []driver.Value{"session-1", "owner-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verified, nil, "", nil}}, nil
 					}
 					if strings.Contains(query, "FROM users") {
 						return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"owner-1", "owner", "Owner", []byte("webauthn-id"), test.role, store.StatusActive, now, now, nil, nil}}, nil

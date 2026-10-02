@@ -82,6 +82,8 @@ services:
       GATEWAY_LISTEN: ":8080"
       GATEWAY_PUBLIC_URL: https://${GATEWAY_DOMAIN:?Set GATEWAY_DOMAIN in .env}
       GATEWAY_BROWSER_CLIENT_URL: ${GATEWAY_BROWSER_CLIENT_URL:-}
+      # The optional deploy/oidc.override.yml mounts its dedicated client secret.
+      OIDC_ENABLED: "false"
       GATEWAY_USAGE_PRICING_JSON: ${GATEWAY_USAGE_PRICING_JSON:?Set GATEWAY_USAGE_PRICING_JSON in .env}
       TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:-172.28.10.2/32}
       DATABASE_URL_FILE: /run/secrets/database_url

@@ -273,6 +273,10 @@ POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=peer
 
 ## 部署准备
 
+吾水阁账号绑定与已绑定用户的统一登录默认关闭。可选部署、客户端登记、
+Strict Cookie 回调及真实测试项目验收见[OIDC 接入与回退](docs/oidc.md)。
+未启用时无需新增客户端 secret，原登录与会话继续有效。
+
 ### 前置条件
 
 - 一台可通过 SSH 管理的 Linux VPS；

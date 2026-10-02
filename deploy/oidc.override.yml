@@ -1,0 +1,22 @@
+# Opt in explicitly: ./scripts/compose.sh -f deploy/oidc.override.yml ...
+# The base deployment never references this optional secret file.
+services:
+  gateway:
+    environment:
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set the exact trusted issuer in .env}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?Set the confidential client ID in .env}
+      OIDC_CLIENT_SECRET_FILE: /run/secrets/oidc_client_secret
+      # A literal internal address prevents service-name DNS changes from
+      # selecting a different proxy. Do not set global HTTP(S)_PROXY variables.
+      OIDC_PROXY_URL: http://172.28.30.4:3128
+    secrets:
+      - oidc_client_secret
+  egress-allowlist:
+    environment:
+      OIDC_ENABLED: ${OIDC_ENABLED:-false}
+      OIDC_AUTH_HOST: ${OIDC_AUTH_HOST:?Set the exact OIDC issuer hostname in .env}
+
+secrets:
+  oidc_client_secret:
+    file: ./deploy/secrets/oidc_client_secret

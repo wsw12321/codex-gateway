@@ -255,7 +255,7 @@ func newBillingSourceTestServer(t *testing.T, role string, verified *time.Time) 
 	conn := &billingSourceTestConn{statusTestConn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 		switch {
 		case strings.Contains(query, "FROM sessions"):
-			return &upstreamAuditRows{columns: make([]string, 13), values: []driver.Value{"session-1", "self-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verification, nil, ""}}, nil
+			return &upstreamAuditRows{columns: make([]string, 14), values: []driver.Value{"session-1", "self-1", []byte("hash"), []byte("csrf"), nil, nil, now, now, now.Add(time.Hour), now.Add(time.Hour), verification, nil, "", nil}}, nil
 		case strings.Contains(query, "SELECT status FROM users"):
 			if len(args) != 1 || args[0].Value != "self-1" {
 				return nil, errors.New("only session user may be targeted")

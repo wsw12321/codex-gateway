@@ -223,7 +223,9 @@ func (s *Server) writeRegistrationResult(w http.ResponseWriter, r *http.Request,
 			SubjectType: "invitation", SubjectID: result.InvitationID, Metadata: map[string]any{"count": 1},
 		})
 	} else {
-		s.setSessionCookie(w, result.SessionToken)
+		if !s.setSessionCookie(w, r, result.SessionToken) {
+			return
+		}
 		s.audit(r, result.User.ID, "", "identity.registration", true, "user", result.User.ID, map[string]any{"method": method})
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{

@@ -34,3 +34,22 @@ func (s *Server) stylesheet(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write(styleCSS)
 }
+
+//go:embed assets/oidc-callback.html
+var oidcCallbackHTML []byte
+
+//go:embed assets/oidc-callback.js
+var oidcCallbackJS []byte
+
+// A cross-site GET intentionally does not inspect cookies, redeem codes or
+// mutate identity. The landing page performs a subsequent same-origin POST.
+func (s *Server) oidcCallback(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(oidcCallbackHTML)
+}
+func (s *Server) oidcCallbackJavascript(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(oidcCallbackJS)
+}

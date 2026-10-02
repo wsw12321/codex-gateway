@@ -2,6 +2,16 @@
 set -eu
 umask 077
 
+oidc_overlay=false
+if test "${1:-}" = --oidc; then
+    oidc_overlay=true
+    shift
+fi
+test "$#" -eq 0 || {
+    printf '%s\n' 'usage: validate-compose.sh [--oidc]' >&2
+    exit 1
+}
+
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 lock=$root/deploy/images.lock.env
 env_file=$root/.env
@@ -77,10 +87,11 @@ grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
     grep -Fxq 'http_access deny all' "$egress_config" && \
     grep -Fxq 'request_header_access Forwarded deny all' "$egress_config" || \
     fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
-test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
+test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "gateway_oidc_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
     "$(printf '%s\n' \
         'acl codex_clients src 172.28.30.3/32' \
         'acl antigravity_clients src 172.28.40.3/32' \
+        'acl gateway_oidc_clients src 172.28.30.2/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
         'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
         'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
@@ -95,12 +106,12 @@ test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
 # change direct routing. Check its output as well as parsing it with Squid below.
 sh -n "$egress_entrypoint" && sh -n "$relay_service" || fail 'relay shell syntax is invalid'
 test "$(awk '$1 == "include" || $1 ~ /^(cache_peer|cache_peer_access|cache_peer_domain|always_direct|never_direct|ssl_bump|https_port)$/ { print }' "$egress_config")" = \
-    'include /run/codex-relay.conf' || fail 'egress must use only its generated relay routing fragment'
-relay_rules=$(CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+    "$(printf '%s\n' 'include /run/codex-relay.conf' 'include /run/gateway-oidc.conf')" || fail 'egress must use only its generated relay routing fragment and OIDC fragment'
+relay_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'disabled relay fragment generation failed'
 test -z "$(printf '%s\n' "$relay_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
     fail 'disabled relay must retain direct egress'
-relay_rules=$(CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+relay_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'relay fragment generation failed'
 test "$relay_rules" = "$(printf '%s\n' \
     'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
@@ -111,6 +122,21 @@ test "$relay_rules" = "$(printf '%s\n' \
     'never_direct allow antigravity_clients' \
     'never_direct deny all')" || fail 'Codex and Antigravity must share a unique mandatory parent without direct fallback'
 unset relay_rules
+oidc_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
+    fail 'disabled OIDC fragment generation failed'
+test -z "$(printf '%s\n' "$oidc_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
+    fail 'disabled OIDC must not grant Gateway egress'
+oidc_rules=$(OIDC_ENABLED=true OIDC_AUTH_HOST=staging.supabase.co CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
+    fail 'enabled OIDC fragment generation failed'
+test "$oidc_rules" = "$(printf '%s\n' \
+    'acl gateway_oidc_upstream dstdomain -n staging.supabase.co' \
+    'http_access allow CONNECT TLS_port gateway_oidc_clients gateway_oidc_upstream' \
+    'always_direct allow gateway_oidc_clients')" || \
+    fail 'OIDC must allow only the Gateway source to its exact Auth host without the model relay'
+unset oidc_rules
+test "$(awk '$1 == "http_access" || ($1 == "include" && $2 == "/run/gateway-oidc.conf") { print }' "$egress_config" | head -n 3)" = \
+    "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' 'include /run/gateway-oidc.conf')" || \
+    fail 'OIDC egress must follow the global CONNECT and TLS port denials'
 grep -Fxq 'logformat codex_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
     grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" && \
     grep -Fxq 'logformat bridge_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
@@ -220,7 +246,11 @@ test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }
 
-"$compose" --profile legacy-bridge config --format json > "$tmp"
+if test "$oidc_overlay" = true; then
+    "$compose" -f "$root/deploy/oidc.override.yml" --profile legacy-bridge config --format json > "$tmp"
+else
+    "$compose" --profile legacy-bridge config --format json > "$tmp"
+fi
 
 # Validate JSON strings before extracting them: command substitution strips
 # trailing newlines, which must never turn an injected value into a valid one.
@@ -235,13 +265,43 @@ jq -e '
     (test("[^0-9]") | not) and test("^[1-9][0-9]{0,4}$") and
     (tonumber <= 65535);
   .services["egress-allowlist"].environment |
-  (keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT"] and
+  ((keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT"] or
+   (keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT", "OIDC_AUTH_HOST", "OIDC_ENABLED"]) and
   (.CODEX_RELAY_IP | . == "" or ipv4) and (.CODEX_RELAY_PORT | port)
 ' "$tmp" >/dev/null || fail 'CODEX_RELAY_IP must be empty or canonical IPv4; CODEX_RELAY_PORT must be 1..65535'
 relay_ip=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_IP' "$tmp")
 relay_port=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_PORT' "$tmp")
-CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port sh "$egress_entrypoint" --render-config >/dev/null || \
+OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port sh "$egress_entrypoint" --render-config >/dev/null || \
     fail 'configured relay values were rejected by the startup wrapper'
+
+jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_secret" '
+  .services.gateway.environment as $env |
+  .services["egress-allowlist"].environment as $egress |
+  ($env | keys | all(.[]; (ascii_upcase | IN("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")) | not)) and
+  ($env.OIDC_ENABLED | IN("true", "false")) and
+  (if $overlay then
+    $egress.OIDC_ENABLED == $env.OIDC_ENABLED and
+    ($egress.OIDC_AUTH_HOST | type == "string" and length > 0 and (test("[^a-z0-9.-]") | not)) and
+    ($env.OIDC_ISSUER | type == "string" and
+      (capture("^https://(?<host>[a-z0-9.-]+)(/[A-Za-z0-9._~/-]+)?$").host == $egress.OIDC_AUTH_HOST) and
+      (test("[^A-Za-z0-9.:/~_-]") | not)) and
+    ($env.OIDC_CLIENT_ID | type == "string" and length > 0 and length <= 512 and (test("[[:space:][:cntrl:]]") | not)) and
+    $env.OIDC_CLIENT_SECRET_FILE == "/run/secrets/oidc_client_secret" and
+    $env.OIDC_CLIENT_SECRET == null and
+    $env.OIDC_PROXY_URL == "http://172.28.30.4:3128" and
+    .secrets.oidc_client_secret.file == $secret and
+    ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "oidc_client_secret")) | .key]) == ["gateway"]
+  else
+    $env.OIDC_ENABLED == "false" and
+    ($env | keys | map(select(startswith("OIDC_")))) == ["OIDC_ENABLED"] and
+    $egress.OIDC_ENABLED == null and $egress.OIDC_AUTH_HOST == null and
+    .secrets.oidc_client_secret == null
+  end)
+' "$tmp" >/dev/null || fail 'OIDC requires its optional overlay, exact issuer/host, isolated proxy and Gateway-only file secret; global Gateway proxies are forbidden'
+oidc_enabled=$(jq -r '.services.gateway.environment.OIDC_ENABLED' "$tmp")
+oidc_host=$(jq -r '.services["egress-allowlist"].environment.OIDC_AUTH_HOST // ""' "$tmp")
+OIDC_ENABLED=$oidc_enabled OIDC_AUTH_HOST=$oidc_host CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port \
+    sh "$egress_entrypoint" --render-oidc-config >/dev/null || fail 'configured OIDC host was rejected by the startup wrapper'
 
 gateway_domain=$(jq -r '.services.caddy.environment.GATEWAY_DOMAIN // ""' "$tmp")
 case "$gateway_domain" in
@@ -712,14 +772,14 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
     "/run/secrets/gateway_api_key_encryption_key" and
   (.services.gateway.environment.API_KEY_ENCRYPTION_KEY == null) and
   .secrets.gateway_api_key_encryption_key.file == $encryption_key_file and
-  ([.services.gateway.secrets[] | .source] | sort) == [
+  ([.services.gateway.secrets[] | .source] | sort) == ([
     "cpa_management_key",
     "database_url",
     "gateway_api_key_encryption_key",
     "gateway_api_key_pepper",
     "gateway_session_secret",
     "sidecar_api_key"
-  ] and
+  ] + (if .secrets.oidc_client_secret != null then ["oidc_client_secret"] else [] end) | sort) and
   ([.services | to_entries[] |
     select(any(.value.secrets[]?; .source == "gateway_api_key_encryption_key")) |
     .key]) == ["gateway"]
@@ -804,6 +864,8 @@ jq -e '
 secret_gid=$(jq -r '.services.gateway.user | split(":")[1]' "$tmp")
 test "$(jq -r '.services.cloudflared.user | split(":")[1]' "$tmp")" = "$secret_gid" || \
     fail 'cloudflared and gateway must use the same configured secret GID'
+optional_secret=
+if test "$oidc_overlay" = true; then optional_secret=oidc_client_secret; fi
 for secret_name in \
     cloudflared_tunnel_token \
     postgres_password \
@@ -814,7 +876,7 @@ for secret_name in \
     cpa_management_key \
     antigravity_bridge_api_key \
     antigravity_keyring_password \
-    database_url
+    database_url $optional_secret
 do
     secret=$secret_dir/$secret_name
     test -f "$secret" && test ! -L "$secret" || \
@@ -864,6 +926,10 @@ grep -Fq 'header_up -X-Forwarded-For' "$caddyfile" || \
     fail 'Caddy must remove the incoming X-Forwarded-For value'
 grep -Fq 'header_up X-Forwarded-For {http.request.client_ip}' "$caddyfile" || \
     fail 'Caddy must send only its validated client IP to Gateway'
+grep -Fq 'log default {' "$caddyfile" && \
+    grep -Fq 'request>uri regexp "[?].*$" ""' "$caddyfile" && \
+    grep -Fq 'request>headers>Referer regexp "[?].*$" ""' "$caddyfile" || \
+    fail 'Caddy runtime error logs must redact URI and Referer queries'
 if grep -Fq 'preload' "$caddyfile"; then
     fail 'Caddy must not opt the deployment domain into HSTS preload'
 fi
@@ -876,6 +942,7 @@ validate_egress_squid() {
         --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13 \
         --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13 \
         -e "CODEX_RELAY_IP=$1" -e "CODEX_RELAY_PORT=$2" \
+        -e "OIDC_ENABLED=${3:-false}" -e "OIDC_AUTH_HOST=${4:-}" \
         -v "$egress_config:/etc/squid/squid.conf:ro" \
         -v "$egress_entrypoint:/usr/local/bin/codex-egress-entrypoint.sh:ro" \
         --entrypoint /usr/local/bin/codex-egress-entrypoint.sh \
@@ -885,6 +952,9 @@ validate_egress_squid '' 3128
 validate_egress_squid 10.77.0.2 3128
 if test -n "$relay_ip" && { test "$relay_ip" != 10.77.0.2 || test "$relay_port" != 3128; }; then
     validate_egress_squid "$relay_ip" "$relay_port"
+fi
+if test "$oidc_enabled" = true; then
+    validate_egress_squid "$relay_ip" "$relay_port" true "$oidc_host"
 fi
 docker run --rm --network none --read-only --security-opt no-new-privileges:true \
     --ulimit nofile=4096:4096 \

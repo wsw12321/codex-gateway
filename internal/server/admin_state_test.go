@@ -63,7 +63,7 @@ func TestAdminStateDTOFieldWhitelist(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJSONKeys(t, document,
-		"api_keys", "browser_client_enabled", "devices", "login_methods", "passkeys", "projects", "recent_verification_expires_at", "recently_verified", "user",
+		"api_keys", "browser_client_enabled", "devices", "external_identity", "login_methods", "passkeys", "projects", "recent_verification_expires_at", "recently_verified", "user",
 	)
 	assertJSONKeys(t, document["login_methods"].(map[string]any), "passkey", "password")
 	assertJSONKeys(t, document["user"].(map[string]any), "display_name", "id", "role", "username")

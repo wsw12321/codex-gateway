@@ -103,6 +103,7 @@ type LoginMethods struct {
 type Session struct {
 	ID                 string
 	UserID             string
+	ExternalIdentityID *string
 	TokenHash          []byte
 	CSRFSecret         []byte
 	SourceIP           *string
