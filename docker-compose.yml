@@ -282,6 +282,8 @@ services:
     # An explicit entrypoint clears the image CMD in Compose; preserve it here.
     command: ["-f", "/etc/squid/squid.conf", "-NYC"]
     environment:
+      # Empty preserves legacy selection by CODEX_RELAY_IP. Explicit modes win.
+      EGRESS_MODE: ${EGRESS_MODE:-}
       CODEX_RELAY_IP: ${CODEX_RELAY_IP:-}
       CODEX_RELAY_PORT: "${CODEX_RELAY_PORT:-3128}"
     volumes:

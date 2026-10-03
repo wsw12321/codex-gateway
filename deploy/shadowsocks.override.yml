@@ -1,0 +1,65 @@
+# Loaded automatically by scripts/compose.sh only in shadowsocks mode.
+services:
+  egress-allowlist:
+    networks:
+      ss_internal:
+        ipv4_address: 172.28.50.2
+    depends_on:
+      ss-egress:
+        condition: service_healthy
+
+  ss-egress:
+    image: codex-gateway-ss-egress:1.19.32-v1
+    build:
+      context: .
+      dockerfile: deploy/shadowsocks/Dockerfile
+      args:
+        MIHOMO_IMAGE: ${MIHOMO_IMAGE:?Run ./scripts/lock-images.sh first}
+        GOLANG_IMAGE: ${GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
+    restart: unless-stopped
+    read_only: true
+    user: "10003:${GATEWAY_SECRET_GID:-1000}"
+    init: true
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    environment:
+      SHADOWSOCKS_SERVER: ${SHADOWSOCKS_SERVER:?Set SHADOWSOCKS_SERVER in .env}
+      SHADOWSOCKS_PORT: "${SHADOWSOCKS_PORT:?Set SHADOWSOCKS_PORT in .env}"
+      SHADOWSOCKS_CIPHER: ${SHADOWSOCKS_CIPHER:-aes-128-gcm}
+    secrets:
+      - shadowsocks_password
+    tmpfs:
+      - /run/mihomo:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10003,gid=10003
+      - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=0700,uid=10003,gid=10003
+    networks:
+      ss_internal:
+        ipv4_address: 172.28.50.3
+      egress_external: {}
+    healthcheck:
+      # Read the local listening socket, without a request to B or relaxing ACLs.
+      test: ["CMD", "/usr/local/bin/ss-egress-helper", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
+networks:
+  ss_internal:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.50.0/24
+
+secrets:
+  shadowsocks_password:
+    file: ${SHADOWSOCKS_PASSWORD_FILE:?Set SHADOWSOCKS_PASSWORD_FILE in .env}

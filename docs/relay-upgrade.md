@@ -3,6 +3,8 @@
 适用于 A 上网关与 Gemini 已正常运行、Codex 已按旧版
 [双服务器教程](openai-relay.md) 经 WireGuard 和 B Squid 出网的部署。
 首次配置双机中转请使用该教程。
+新版可通过 `EGRESS_MODE` 显式选择出口；三种模式的切换和 SS 密码准备见
+[出口模式说明](egress.md)。未设置或为空时继续兼容原有中转参数。
 
 本次沿用现有 `CODEX_RELAY_IP` / `CODEX_RELAY_PORT`。升级后 Codex 和整个
 Antigravity Bridge 的获准出口都经 B；B 故障时两者均失败，不自动回退 A。
@@ -250,11 +252,11 @@ docker compose --env-file ../images.lock.env up -d --no-deps --force-recreate re
 
 **让 Codex 和 Gemini 都改回 A 直连：**
 
-保留新版配置，清空 A 项目 `.env` 的 `CODEX_RELAY_IP`，然后执行：
+保留新版配置，将 A 项目 `.env` 的 `EGRESS_MODE` 设为 `direct`（可保留旧中转 IP），然后执行：
 
 ```bash
 ./scripts/validate-compose.sh
-./scripts/compose.sh up -d --no-deps --force-recreate egress-allowlist
+./scripts/apply-egress.sh
 ```
 
 这是两类流量一起切回 A，不是只回退 Gemini。两种回退都会中断当前代理连接，

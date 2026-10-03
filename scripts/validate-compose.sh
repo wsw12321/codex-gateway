@@ -107,11 +107,11 @@ test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
 sh -n "$egress_entrypoint" && sh -n "$relay_service" || fail 'relay shell syntax is invalid'
 test "$(awk '$1 == "include" || $1 ~ /^(cache_peer|cache_peer_access|cache_peer_domain|always_direct|never_direct|ssl_bump|https_port)$/ { print }' "$egress_config")" = \
     "$(printf '%s\n' 'include /run/codex-relay.conf' 'include /run/gateway-oidc.conf')" || fail 'egress must use only its generated relay routing fragment and OIDC fragment'
-relay_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+relay_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'disabled relay fragment generation failed'
 test -z "$(printf '%s\n' "$relay_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
     fail 'disabled relay must retain direct egress'
-relay_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+relay_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'relay fragment generation failed'
 test "$relay_rules" = "$(printf '%s\n' \
     'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
@@ -121,12 +121,21 @@ test "$relay_rules" = "$(printf '%s\n' \
     'never_direct allow codex_clients' \
     'never_direct allow antigravity_clients' \
     'never_direct deny all')" || fail 'Codex and Antigravity must share a unique mandatory parent without direct fallback'
-unset relay_rules
-oidc_rules=$(OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
+direct_rules=$(EGRESS_MODE=direct OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+    fail 'explicit direct fragment generation failed'
+test -z "$(printf '%s\n' "$direct_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
+    fail 'explicit direct must ignore retained relay settings'
+ss_rules=$(EGRESS_MODE=shadowsocks OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
+    fail 'Shadowsocks fragment generation failed'
+# All routing permissions stay identical; only the unique parent changes.
+test "$ss_rules" = "$(printf '%s\n' "$relay_rules" | sed 's/cache_peer 10.77.0.2 parent 3128 /cache_peer 172.28.50.3 parent 17890 /')" || \
+    fail 'Shadowsocks must use only Mihomo without direct fallback'
+unset relay_rules direct_rules ss_rules
+oidc_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
     fail 'disabled OIDC fragment generation failed'
 test -z "$(printf '%s\n' "$oidc_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
     fail 'disabled OIDC must not grant Gateway egress'
-oidc_rules=$(OIDC_ENABLED=true OIDC_AUTH_HOST=staging.supabase.co CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
+oidc_rules=$(EGRESS_MODE= OIDC_ENABLED=true OIDC_AUTH_HOST=staging.supabase.co CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
     fail 'enabled OIDC fragment generation failed'
 test "$oidc_rules" = "$(printf '%s\n' \
     'acl gateway_oidc_upstream dstdomain -n staging.supabase.co' \
@@ -265,13 +274,16 @@ jq -e '
     (test("[^0-9]") | not) and test("^[1-9][0-9]{0,4}$") and
     (tonumber <= 65535);
   .services["egress-allowlist"].environment |
-  ((keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT"] or
-   (keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT", "OIDC_AUTH_HOST", "OIDC_ENABLED"]) and
-  (.CODEX_RELAY_IP | . == "" or ipv4) and (.CODEX_RELAY_PORT | port)
+  ((keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT", "EGRESS_MODE"] or
+   (keys | sort) == ["CODEX_RELAY_IP", "CODEX_RELAY_PORT", "EGRESS_MODE", "OIDC_AUTH_HOST", "OIDC_ENABLED"]) and
+  (.CODEX_RELAY_IP | . == "" or ipv4) and (.CODEX_RELAY_PORT | port) and
+  (.EGRESS_MODE | IN("", "direct", "relay", "shadowsocks")) and
+  (if .EGRESS_MODE == "relay" then .CODEX_RELAY_IP != "" else true end)
 ' "$tmp" >/dev/null || fail 'CODEX_RELAY_IP must be empty or canonical IPv4; CODEX_RELAY_PORT must be 1..65535'
 relay_ip=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_IP' "$tmp")
 relay_port=$(jq -r '.services["egress-allowlist"].environment.CODEX_RELAY_PORT' "$tmp")
-OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port sh "$egress_entrypoint" --render-config >/dev/null || \
+egress_mode=$(jq -r '.services["egress-allowlist"].environment | if .EGRESS_MODE != "" then .EGRESS_MODE elif .CODEX_RELAY_IP != "" then "relay" else "direct" end' "$tmp")
+EGRESS_MODE=$egress_mode OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port sh "$egress_entrypoint" --render-config >/dev/null || \
     fail 'configured relay values were rejected by the startup wrapper'
 
 jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_secret" '
@@ -300,7 +312,7 @@ jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_se
 ' "$tmp" >/dev/null || fail 'OIDC requires its optional overlay, exact issuer/host, isolated proxy and Gateway-only file secret; global Gateway proxies are forbidden'
 oidc_enabled=$(jq -r '.services.gateway.environment.OIDC_ENABLED' "$tmp")
 oidc_host=$(jq -r '.services["egress-allowlist"].environment.OIDC_AUTH_HOST // ""' "$tmp")
-OIDC_ENABLED=$oidc_enabled OIDC_AUTH_HOST=$oidc_host CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port \
+EGRESS_MODE=$egress_mode OIDC_ENABLED=$oidc_enabled OIDC_AUTH_HOST=$oidc_host CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port \
     sh "$egress_entrypoint" --render-oidc-config >/dev/null || fail 'configured OIDC host was rejected by the startup wrapper'
 
 gateway_domain=$(jq -r '.services.caddy.environment.GATEWAY_DOMAIN // ""' "$tmp")
@@ -585,13 +597,13 @@ reject_pricing_mutation \
 unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
-# host port. Only cloudflared and the Squid allowlist proxy may reach an
-# external Docker network, each through its dedicated egress network.
+# host port. Only cloudflared, Squid and the optional SS transport may reach
+# external Docker networks. Application containers remain internal-only.
 jq -e '
   all(.services[]; ((.ports // []) | length) == 0)
 ' "$tmp" >/dev/null
 
-jq -e '
+jq -e --arg mode "$egress_mode" '
   .networks.edge_internal.internal == true and
   .networks.data_internal.internal == true and
   .networks.compat_internal.internal == true and
@@ -604,8 +616,8 @@ jq -e '
   (.services.caddy.networks | keys) == ["edge_internal"] and
   ([.services | to_entries[] | select(.value.networks.tunnel_external != null) | .key]) ==
     ["cloudflared"] and
-  ([.services | to_entries[] | select(.value.networks.egress_external != null) | .key]) ==
-    ["egress-allowlist"] and
+  ([.services | to_entries[] | select(.value.networks.egress_external != null) | .key] | sort) ==
+    (if $mode == "shadowsocks" then ["egress-allowlist", "ss-egress"] else ["egress-allowlist"] end) and
   .services.cloudflared.networks.edge_internal.ipv4_address == "172.28.10.4" and
   .services.caddy.networks.edge_internal.ipv4_address == "172.28.10.2" and
   .services.gateway.networks.compat_internal.ipv4_address == "172.28.30.2" and
@@ -647,6 +659,73 @@ cliproxy_golang_image=$(lock_value CLIPROXY_GOLANG_IMAGE)
 runtime_image=$(lock_value RUNTIME_IMAGE)
 cliproxy_runtime_image=$(lock_value CLIPROXY_RUNTIME_IMAGE)
 squid_image=$(lock_value SQUID_IMAGE)
+mihomo_image=$(lock_value MIHOMO_IMAGE)
+
+# The optional transport must not give an application container an alternate
+# proxy or credential path. Its sole client is Squid on a private subnet.
+jq -e --arg mode "$egress_mode" --arg mihomo "$mihomo_image" \
+    --arg golang "$golang_image" --arg runtime "$runtime_image" --arg root "$root" '
+  if $mode == "shadowsocks" then
+    .networks.ss_internal.internal == true and
+    .networks.ss_internal.driver == "bridge" and
+    .networks.ss_internal.ipam.config == [{"subnet":"172.28.50.0/24"}] and
+    ([.services | to_entries[] | select(.value.networks.ss_internal != null) | .key] | sort) ==
+      ["egress-allowlist", "ss-egress"] and
+    .services["egress-allowlist"].networks.ss_internal.ipv4_address == "172.28.50.2" and
+    (.services["egress-allowlist"].depends_on | keys) == ["ss-egress"] and
+    .services["egress-allowlist"].depends_on["ss-egress"].condition == "service_healthy" and
+    ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "shadowsocks_password")) | .key]) == ["ss-egress"] and
+    (.secrets.shadowsocks_password | keys) == ["file", "name"] and
+    (.secrets.shadowsocks_password.file | type == "string" and startswith("/")) and
+    .services.gateway.user as $gateway_user |
+    (.services["ss-egress"] |
+      .image == "codex-gateway-ss-egress:1.19.32-v1" and
+      .build.context == $root and .build.dockerfile == "deploy/shadowsocks/Dockerfile" and
+      .build.args == {"MIHOMO_IMAGE":$mihomo,"GOLANG_IMAGE":$golang,"RUNTIME_IMAGE":$runtime} and
+      ($mihomo | startswith("docker.io/metacubex/mihomo:v1.19.32@sha256:")) and
+      .user == ("10003:" + ($gateway_user | split(":")[1])) and
+      .read_only == true and .init == true and .restart == "unless-stopped" and
+      .pids_limit == 128 and ((.privileged // false) == false) and
+      .network_mode == null and .pid == null and .ipc == null and
+      .entrypoint == null and .command == null and
+      ((.volumes // []) | length == 0) and ((.devices // []) | length == 0) and
+      ((.cap_add // []) | length == 0) and .cap_drop == ["ALL"] and
+      .security_opt == ["no-new-privileges:true"] and
+      .logging.driver == "json-file" and .logging.options == {"max-size":"10m","max-file":"5"} and
+      (.networks | keys | sort) == ["egress_external","ss_internal"] and
+      .networks.ss_internal.ipv4_address == "172.28.50.3" and
+      ([.secrets[] | .source]) == ["shadowsocks_password"] and
+      (.secrets[0].target | IN("shadowsocks_password", "/run/secrets/shadowsocks_password")) and
+      .tmpfs == [
+        "/run/mihomo:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10003,gid=10003",
+        "/tmp:rw,noexec,nosuid,nodev,size=8m,mode=0700,uid=10003,gid=10003"
+      ] and
+      .healthcheck.test == ["CMD","/usr/local/bin/ss-egress-helper","healthcheck"] and
+      (.healthcheck.disable // false) == false and
+      (.environment | keys) == ["SHADOWSOCKS_CIPHER","SHADOWSOCKS_PORT","SHADOWSOCKS_SERVER"]) and
+    # Validate the complete JSON strings before any shell extraction.
+    (.services["ss-egress"].environment |
+      (.SHADOWSOCKS_CIPHER | IN("aes-128-gcm","aes-256-gcm","chacha20-ietf-poly1305")) and
+      (.SHADOWSOCKS_PORT | type == "string" and (test("[^0-9]") | not) and
+        test("^[1-9][0-9]{0,4}$") and tonumber <= 65535) and
+      (.SHADOWSOCKS_SERVER | type == "string" and length > 0 and length <= 253 and
+        (test("[^a-z0-9.-]") | not)))
+  else
+    .services["ss-egress"] == null and .networks.ss_internal == null and
+    .secrets.shadowsocks_password == null and
+    (.services["egress-allowlist"].depends_on // {} | length) == 0
+  end
+' "$tmp" >/dev/null || fail 'Shadowsocks transport image, isolation, file credential or local health policy changed'
+
+if test "$egress_mode" = shadowsocks; then
+    ss_secret=$(jq -r '.secrets.shadowsocks_password.file' "$tmp")
+    ss_gid=$(jq -r '.services["ss-egress"].user | split(":")[1]' "$tmp")
+    test -f "$ss_secret" && test ! -L "$ss_secret" && test -s "$ss_secret" &&
+        test "$(stat -c '%a' "$ss_secret")" = 640 &&
+        test "$(stat -c '%g' "$ss_secret")" = "$ss_gid" || \
+        fail 'Shadowsocks password must be a nonempty regular file with mode 0640 and GATEWAY_SECRET_GID'
+    unset ss_secret ss_gid
+fi
 
 # Render B independently of site settings, using the same reviewed digest.
 (
@@ -656,7 +735,7 @@ squid_image=$(lock_value SQUID_IMAGE)
 )
 jq -e '.services.relay.ulimits.nofile == {"soft":4096, "hard":4096}' \
     "$relay_tmp" >/dev/null || fail 'B relay nofile soft and hard limits must both be 4096'
-jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" \
+jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" --arg mode "$egress_mode" \
     --arg egress_config "$egress_config" --arg egress_entrypoint "$egress_entrypoint" \
     --arg relay_config "$relay_config" '
   def squid_security:
@@ -675,7 +754,9 @@ jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" \
     .type == "bind" and .source == $source and .target == $target and .read_only == true;
   (.services["egress-allowlist"] |
     squid_security and .network_mode == null and
-    (.networks | keys | sort) == ["antigravity_internal", "compat_internal", "egress_external"] and
+    (.networks | keys | sort) ==
+      (if $mode == "shadowsocks" then ["antigravity_internal", "compat_internal", "egress_external", "ss_internal"]
+       else ["antigravity_internal", "compat_internal", "egress_external"] end) and
     .entrypoint == ["/usr/local/bin/codex-egress-entrypoint.sh"] and
     .command == ["-f", "/etc/squid/squid.conf", "-NYC"] and
     (.volumes | length == 2) and
@@ -941,7 +1022,7 @@ validate_egress_squid() {
         --tmpfs /run:rw,noexec,nosuid,nodev,size=8m \
         --tmpfs /var/log/squid:rw,noexec,nosuid,nodev,size=16m,mode=0750,uid=13,gid=13 \
         --tmpfs /var/spool/squid:rw,noexec,nosuid,nodev,size=64m,mode=0750,uid=13,gid=13 \
-        -e "CODEX_RELAY_IP=$1" -e "CODEX_RELAY_PORT=$2" \
+        -e "CODEX_RELAY_IP=$1" -e "CODEX_RELAY_PORT=$2" -e "EGRESS_MODE=${5:-}" \
         -e "OIDC_ENABLED=${3:-false}" -e "OIDC_AUTH_HOST=${4:-}" \
         -v "$egress_config:/etc/squid/squid.conf:ro" \
         -v "$egress_entrypoint:/usr/local/bin/codex-egress-entrypoint.sh:ro" \
@@ -950,11 +1031,15 @@ validate_egress_squid() {
 }
 validate_egress_squid '' 3128
 validate_egress_squid 10.77.0.2 3128
+validate_egress_squid 10.77.0.2 3128 false '' direct
+validate_egress_squid 10.77.0.2 3128 false '' shadowsocks
 if test -n "$relay_ip" && { test "$relay_ip" != 10.77.0.2 || test "$relay_port" != 3128; }; then
-    validate_egress_squid "$relay_ip" "$relay_port"
+    validate_egress_squid "$relay_ip" "$relay_port" false '' "$egress_mode"
 fi
 if test "$oidc_enabled" = true; then
-    validate_egress_squid "$relay_ip" "$relay_port" true "$oidc_host"
+    for parse_mode in direct relay shadowsocks; do
+        validate_egress_squid 10.77.0.2 3128 true "$oidc_host" "$parse_mode"
+    done
 fi
 docker run --rm --network none --read-only --security-opt no-new-privileges:true \
     --ulimit nofile=4096:4096 \
@@ -978,4 +1063,4 @@ docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SER
 printf '%s\n' \
     'Compose ingress, network isolation, secrets, and immutable revisions validated' \
     'Pricing v2, request tmpfs, Caddy policy, PostgreSQL SCRAM auth, and image locks validated' \
-    'A/B Squid image parsing and shared mandatory Codex/Antigravity relay routing validated'
+    'A/B Squid parsing, three shared Codex/Gemini egress modes and OIDC routing validated'

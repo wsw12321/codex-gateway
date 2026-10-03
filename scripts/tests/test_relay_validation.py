@@ -51,10 +51,12 @@ class RelayValidationTests(unittest.TestCase):
                 if line and not line.startswith("#") and "=" in line:
                     cls.env.pop(line.split("=", 1)[0], None)
 
-        def render(compose, overlay=False):
+        def render(compose, overlay=False, shadowsocks=False):
             files = ["-f", str(compose)]
             if overlay:
                 files += ["-f", str(cls.root / "deploy/oidc.override.yml")]
+            if shadowsocks:
+                files += ["-f", str(cls.root / "deploy/shadowsocks.override.yml")]
             result = subprocess.run(
                 ["docker", "compose", "--profile", "legacy-bridge", "--env-file", str(cls.root / ".env"),
                  "--env-file", str(cls.root / "deploy/images.lock.env"),
@@ -72,9 +74,13 @@ class RelayValidationTests(unittest.TestCase):
         cls.oidc_baseline = render(cls.root / "docker-compose.yml", overlay=True)
         for name in ("OIDC_ENABLED", "OIDC_AUTH_HOST", "OIDC_ISSUER", "OIDC_CLIENT_ID"):
             cls.env.pop(name, None)
+        cls.env.update({"EGRESS_MODE": "shadowsocks", "SHADOWSOCKS_SERVER": "192.0.2.1"})
+        cls.ss_baseline = render(cls.root / "docker-compose.yml", shadowsocks=True)
+        cls.env.pop("EGRESS_MODE", None)
+        cls.env.pop("SHADOWSOCKS_SERVER", None)
         secrets = cls.root / "deploy/secrets"
         secrets.mkdir()
-        for name in cls.oidc_baseline["secrets"]:
+        for name in cls.oidc_baseline["secrets"] | cls.ss_baseline["secrets"]:
             secret = secrets / name
             secret.write_text("A" * 43 if name == "gateway_api_key_encryption_key"
                               else f"non-production-fixture-{name}")
@@ -140,28 +146,72 @@ else:
             env={**self.env, **env}, capture_output=True, text=True, timeout=15,
         )
 
-    def test_valid_fixture_parses_both_a_modes_and_b_without_site_networks(self):
+    def test_valid_fixture_parses_all_a_modes_and_b_without_site_networks(self):
         result = self.validate()
         self.assertEqual(result.returncode, 0, result.stderr)
         runs = [json.loads(line) for line in self.run_log.read_text().splitlines()]
-        self.assertEqual(len(runs), 4)  # A disabled, A enabled, B, then Caddy.
+        self.assertEqual(len(runs), 6)  # Legacy off/on, explicit direct/SS, B, Caddy.
         for args in runs:
             self.assertEqual(args[args.index("--network") + 1], "none")
             self.assertIn("--read-only", args)
         self.assertIn("CODEX_RELAY_IP=", runs[0])
         self.assertIn("CODEX_RELAY_IP=10.77.0.2", runs[1])
-        self.assertIn("/usr/sbin/squid", runs[2])
-        self.assertEqual(runs[2][runs[2].index("--ulimit") + 1], "nofile=4096:4096")
+        self.assertIn("EGRESS_MODE=direct", runs[2])
+        self.assertIn("EGRESS_MODE=shadowsocks", runs[3])
+        self.assertIn("/usr/sbin/squid", runs[4])
+        self.assertEqual(runs[4][runs[4].index("--ulimit") + 1], "nofile=4096:4096")
 
     def test_oidc_overlay_uses_only_its_file_secret_and_exact_internal_proxy(self):
         self.gateway = copy.deepcopy(self.oidc_baseline)
         result = self.validate(oidc=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         runs = [json.loads(line) for line in self.run_log.read_text().splitlines()]
-        self.assertEqual(len(runs), 5)
-        self.assertIn("OIDC_ENABLED=true", runs[2])
-        self.assertIn("OIDC_AUTH_HOST=staging.supabase.co", runs[2])
-        self.assertEqual(runs[2][runs[2].index("--network") + 1], "none")
+        self.assertEqual(len(runs), 9)
+        for index, mode in enumerate(("direct", "relay", "shadowsocks"), start=4):
+            self.assertIn("OIDC_ENABLED=true", runs[index])
+            self.assertIn("OIDC_AUTH_HOST=staging.supabase.co", runs[index])
+            self.assertIn(f"EGRESS_MODE={mode}", runs[index])
+            self.assertEqual(runs[index][runs[index].index("--network") + 1], "none")
+
+    def test_shadowsocks_preserves_the_transport_boundary(self):
+        self.gateway = copy.deepcopy(self.ss_baseline)
+        result = self.validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_shadowsocks_security_mutations_fail_before_running_images(self):
+        mutations = [
+            lambda c: c["networks"]["ss_internal"].update(internal=False),
+            lambda c: c["services"]["gateway"]["networks"].update(ss_internal={}),
+            lambda c: c["services"]["ss-egress"].update(read_only=False),
+            lambda c: c["services"]["ss-egress"].update(user="0:1000"),
+            lambda c: c["services"]["ss-egress"].update(cap_add=["NET_ADMIN"]),
+            lambda c: c["services"]["ss-egress"].update(command=["-ext-ctl", "0.0.0.0:9090"]),
+            lambda c: c["services"]["ss-egress"]["networks"].update(compat_internal={}),
+            lambda c: c["services"]["ss-egress"]["networks"]["ss_internal"].update(ipv4_address="172.28.50.4"),
+            lambda c: c["services"]["ss-egress"]["environment"].update(SHADOWSOCKS_PASSWORD="inline-secret"),
+            lambda c: c["services"]["ss-egress"]["build"]["args"].update(MIHOMO_IMAGE="metacubex/mihomo:latest"),
+            lambda c: c["services"]["ss-egress"]["healthcheck"].update(test=["CMD", "curl", "https://example.com"]),
+            lambda c: c["services"]["egress-allowlist"]["depends_on"]["ss-egress"].update(condition="service_started"),
+            lambda c: c["services"]["gateway"]["secrets"].append({"source": "shadowsocks_password"}),
+            lambda c: c["services"]["ss-egress"].update(tmpfs=["/run/mihomo:mode=0777"]),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                self.gateway = copy.deepcopy(self.ss_baseline)
+                mutate(self.gateway)
+                self.run_log.write_text("")
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_other_modes_cannot_load_shadowsocks_transport(self):
+        for mode in ("direct", "relay"):
+            self.gateway = copy.deepcopy(self.ss_baseline)
+            self.gateway["services"]["egress-allowlist"]["environment"].update(
+                EGRESS_MODE=mode, CODEX_RELAY_IP="10.77.0.2")
+            result = self.validate()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.run_log.read_text(), "")
 
     def test_oidc_rejects_host_mismatch_global_proxy_and_other_secret_readers(self):
         mutations = [

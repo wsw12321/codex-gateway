@@ -13,8 +13,9 @@ ENTRYPOINT = ROOT / "deploy/egress/entrypoint.sh"
 
 
 class CodexRelayTests(unittest.TestCase):
-    def render(self, ip=None, port=None, *args):
+    def render(self, ip=None, port=None, *args, mode=None):
         env = os.environ.copy()
+        env.pop("EGRESS_MODE", None)
         env.pop("CODEX_RELAY_IP", None)
         env.pop("CODEX_RELAY_PORT", None)
         env.pop("OIDC_ENABLED", None)
@@ -23,6 +24,8 @@ class CodexRelayTests(unittest.TestCase):
             env["CODEX_RELAY_IP"] = ip
         if port is not None:
             env["CODEX_RELAY_PORT"] = port
+        if mode is not None:
+            env["EGRESS_MODE"] = mode
         return subprocess.run(
             ["sh", str(ENTRYPOINT), *(args or ("--render-config",))],
             env=env, capture_output=True, text=True, timeout=5,
@@ -93,6 +96,39 @@ class CodexRelayTests(unittest.TestCase):
                         result = self.render(ip, port)
                         self.assertNotEqual(result.returncode, 0)
                         self.assertFalse(marker.exists())
+
+    def test_explicit_direct_overrides_retained_relay_settings(self):
+        result = self.render("10.77.0.2", "3128", mode="direct")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("cache_peer", result.stdout)
+        self.assertNotIn("never_direct", result.stdout)
+
+    def test_empty_mode_preserves_legacy_selection(self):
+        for ip in (None, "", "10.77.0.2"):
+            self.assertEqual(self.render(ip).stdout, self.render(ip, mode="").stdout)
+
+    def test_explicit_relay_requires_address(self):
+        for ip in (None, ""):
+            result = self.render(ip, mode="relay")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("CODEX_RELAY_IP", result.stderr)
+
+    def test_shadowsocks_uses_only_isolated_parent_and_forbids_fallback(self):
+        for ip in (None, "", "10.77.0.2"):
+            result = self.render(ip, mode="shadowsocks")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("cache_peer 172.28.50.3 parent 17890 0", result.stdout)
+            self.assertEqual(result.stdout.count("cache_peer "), 1)
+            self.assertNotIn("10.77.0.2", result.stdout)
+            self.assertIn("never_direct allow codex_clients", result.stdout)
+            self.assertIn("never_direct allow antigravity_clients", result.stdout)
+
+    def test_invalid_mode_fails_before_any_configuration(self):
+        for mode in ("auto", "DIRECT", "direct ", "relay\n", "direct;true", "$(id)"):
+            result = self.render(mode=mode)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("EGRESS_MODE", result.stderr)
+            self.assertEqual(result.stdout, "")
 
 
 if __name__ == "__main__":

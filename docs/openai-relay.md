@@ -2,6 +2,7 @@
 
 本页保留原 OpenAI 中转教程地址。已按旧教程部署“Codex 经 B、Gemini 经 A”的站点，
 请使用[现有部署升级指南](relay-upgrade.md)，无需重建 WireGuard 或重新登录账号。
+在直连、旧 WireGuard 中转和 Shadowsocks 之间切换，见[出口模式说明](egress.md)。
 
 启用中转后的链路：
 
@@ -12,8 +13,9 @@ Gateway → antigravity-bridge ┘
 ```
 
 A 仍按容器来源分别限制 OpenAI 和 Antigravity 的精确域名。两者共用
-`CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；变量名为兼容旧部署而保留。IP 非空时，
-两者均强制经 B，B 故障就失败，不自动回退 A。IP 为空时，两者从 A 直连。
+`CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；变量名为兼容旧部署而保留。
+本教程显式设置 `EGRESS_MODE=relay`，两者均强制经 B，B 故障就失败，不自动回退 A。
+旧 `.env` 未设置模式或值为空时，仍按 IP 是否非空选择旧中转或直连。
 
 这会迁移整个 Antigravity Bridge 的获准出口，包括服务器侧登录、刷新、模型查询
 和生成请求，不只按 Gemini 模型名分流。用户本地浏览器的授权流量不在此链路内。
@@ -72,6 +74,7 @@ apk add docker docker-cli-compose wireguard-tools iptables iptables-openrc iprou
 在 A 的项目 `.env` 中设置持久配置：
 
 ```dotenv
+EGRESS_MODE=relay
 CODEX_RELAY_IP=10.77.0.2
 CODEX_RELAY_PORT=3128
 ```
@@ -287,7 +290,7 @@ done
 
 ```bash
 ./scripts/validate-compose.sh
-./scripts/compose.sh up -d --no-deps --force-recreate egress-allowlist
+./scripts/apply-egress.sh
 ./scripts/compose.sh ps egress-allowlist
 ```
 
@@ -484,14 +487,14 @@ wg show wg-codex
 需要让两类上游都恢复 A 直连时，编辑 A 的 `.env`：
 
 ```dotenv
-CODEX_RELAY_IP=
+EGRESS_MODE=direct
 ```
 
 然后执行：
 
 ```bash
 ./scripts/validate-compose.sh
-./scripts/compose.sh up -d --no-deps --force-recreate egress-allowlist
+./scripts/apply-egress.sh
 ```
 
 这会同时改变 Codex 和 Gemini 的出口，不会删除 WireGuard 或登录凭据。

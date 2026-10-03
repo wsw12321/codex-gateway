@@ -283,7 +283,7 @@ Strict Cookie 回调及真实测试项目验收见[OIDC 接入与回退](docs/oi
 - Cloudflare 托管的域名和可创建 Dashboard Tunnel 的权限；
 - 公网入站只允许固定管理 IP 访问 SSH，80、443 和所有容器端口均关闭；
 - Docker Engine 与 Docker Compose v2；
-- `openssl`、`jq`、`age`、`age-keygen` 和 util-linux 的 `flock`；镜像升级时另需
+- `openssl`、`jq`、Python 3、`age`、`age-keygen` 和 util-linux 的 `flock`；镜像升级时另需
   `skopeo`、`crane` 或 Docker Buildx；
 - 支持 WebAuthn 的浏览器与安全密钥或平台认证器；
 - 可用于设备码登录的个人 ChatGPT Pro 账号。
@@ -363,10 +363,12 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 
 默认路由为 `{}`，Antigravity Bridge 由后续登录脚本验收成功后启动。
 
-Codex 与 Gemini 需要经第二台服务器出网时，按
-[双服务器中转首次部署](docs/openai-relay.md) 配置 WireGuard 和 B 端 Squid。
-两者共用 `CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；启用后整个 Antigravity Bridge
-与 Codex 都强制经 B，B 故障时均失败、不回退 A。旧版仅 Codex 经 B 的站点按
+Codex 与 Gemini 共用 `.env` 中的 `EGRESS_MODE`：`direct`、`relay` 或 `shadowsocks`。
+修改后执行 `./scripts/apply-egress.sh`；SS 组件和认证出口会按配置自动选择。
+节点和密码文件准备、切换与回滚见[出口模式说明](docs/egress.md)。
+旧 `.env` 未设置模式时仍按 `CODEX_RELAY_IP` 是否非空决定旧中转或直连。
+WireGuard 和 B Squid 的准备见[双服务器中转首次部署](docs/openai-relay.md)。
+两种中转模式在 B 故障时均失败，不回退 A。旧版仅 Codex 经 B 的站点按
 [现有部署升级指南](docs/relay-upgrade.md) 先更新 B，再重建 A 出口代理。
 
 A 的网关 Compose 服务均不发布宿主机端口。Cloudflare 负责公网 TLS 和

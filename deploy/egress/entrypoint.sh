@@ -9,6 +9,14 @@ fail() {
 
 relay_ip=${CODEX_RELAY_IP:-}
 relay_port=${CODEX_RELAY_PORT:-3128}
+egress_mode=${EGRESS_MODE:-}
+if test -z "$egress_mode"; then
+    if test -n "$relay_ip"; then egress_mode=relay; else egress_mode=direct; fi
+fi
+case "$egress_mode" in
+    direct|relay|shadowsocks) ;;
+    *) fail 'EGRESS_MODE must be direct, relay or shadowsocks' ;;
+esac
 oidc_enabled=${OIDC_ENABLED:-false}
 oidc_host=${OIDC_AUTH_HOST:-}
 
@@ -69,13 +77,22 @@ validate_ipv4() {
 if test -n "$relay_ip"; then
     validate_ipv4 "$relay_ip" || fail 'CODEX_RELAY_IP must be a canonical IPv4 address'
 fi
+if test "$egress_mode" = relay && test -z "$relay_ip"; then
+    fail 'CODEX_RELAY_IP is required in relay mode'
+fi
 
 render_config() {
-    if test -z "$relay_ip"; then
+    if test "$egress_mode" = direct; then
         printf '%s\n' '# Shared Codex/Antigravity relay disabled; preserve direct egress.'
         return
     fi
-    printf 'cache_peer %s parent %s 0 no-query default name=codex_relay\n' "$relay_ip" "$relay_port"
+    if test "$egress_mode" = shadowsocks; then
+        # The optional SS overlay is the only attachment to this isolated LAN.
+        # Keep one parent and forbid model-provider traffic from falling back.
+        printf '%s\n' 'cache_peer 172.28.50.3 parent 17890 0 no-query default name=codex_relay'
+    else
+        printf 'cache_peer %s parent %s 0 no-query default name=codex_relay\n' "$relay_ip" "$relay_port"
+    fi
     printf '%s\n' \
         'cache_peer_access codex_relay allow codex_clients' \
         'cache_peer_access codex_relay allow antigravity_clients' \

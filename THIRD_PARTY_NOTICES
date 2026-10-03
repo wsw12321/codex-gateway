@@ -135,3 +135,18 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Mihomo v1.19.32
+================
+
+The optional Shadowsocks egress image includes the unmodified Mihomo binary
+from the official MetaCubeX/mihomo v1.19.32 image. Its registry digest is
+recorded in deploy/images.lock.env; the source tag is in deploy/images.sources.
+Upstream source and build instructions:
+
+  https://github.com/MetaCubeX/mihomo/tree/v1.19.32
+
+Mihomo is licensed under GNU GPL version 3. The exact upstream license is
+included at deploy/shadowsocks/upstream/LICENSE and installed in the image at
+/usr/share/licenses/mihomo/LICENSE. The gateway application and the separate
+ss-egress startup helper do not link to Mihomo.

@@ -12,11 +12,11 @@ ENTRYPOINT = ROOT / "deploy/egress/entrypoint.sh"
 
 
 class OIDCEgressTests(unittest.TestCase):
-    def render(self, enabled="false", host="", relay="", operation="--render-oidc-config"):
+    def render(self, enabled="false", host="", relay="", operation="--render-oidc-config", mode=""):
         return subprocess.run(
             ["sh", str(ENTRYPOINT), operation],
             env={**os.environ, "OIDC_ENABLED": enabled, "OIDC_AUTH_HOST": host,
-                 "CODEX_RELAY_IP": relay, "CODEX_RELAY_PORT": "3128"},
+                 "CODEX_RELAY_IP": relay, "CODEX_RELAY_PORT": "3128", "EGRESS_MODE": mode},
             capture_output=True, text=True, timeout=5,
         )
 
@@ -62,6 +62,20 @@ class OIDCEgressTests(unittest.TestCase):
             result = self.render(enabled, "project.supabase.co")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("OIDC_ENABLED", result.stderr)
+
+    def test_explicit_modes_preserve_oidc_direct_route(self):
+        for mode in ("direct", "relay", "shadowsocks"):
+            with self.subTest(mode=mode):
+                result = self.render("true", "auth.example.com", "10.77.0.2", mode=mode)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [
+                    "acl gateway_oidc_upstream dstdomain -n auth.example.com",
+                    "http_access allow CONNECT TLS_port gateway_oidc_clients gateway_oidc_upstream",
+                    "always_direct allow gateway_oidc_clients",
+                ])
+                providers = self.render("true", "auth.example.com", "10.77.0.2", "--render-config", mode)
+                self.assertEqual(providers.returncode, 0, providers.stderr)
+                self.assertNotIn("gateway_oidc", providers.stdout)
 
 
 if __name__ == "__main__":

@@ -198,7 +198,7 @@ jobs:
         run: |
           set -eu
           sudo apt-get update
-          sudo apt-get install --yes jq skopeo
+          sudo apt-get install --yes jq skopeo python3
       - name: Resolve and verify image locks
         shell: bash
         run: |
@@ -239,12 +239,35 @@ jobs:
         shell: bash
         run: |
           set -eu
-          ./scripts/validate-compose.sh
-          ./scripts/compose.sh config --quiet
+          ci_env_backup=$(mktemp)
+          cp .env "$ci_env_backup"
+          trap 'cp "$ci_env_backup" .env; rm -f "$ci_env_backup"' EXIT
+          printf '%s\n' 'synthetic-ci-shadowsocks-password' > deploy/secrets/shadowsocks_password
+          printf '%s\n' 'synthetic-ci-oidc-client-secret' > deploy/secrets/oidc_client_secret
+          chmod 0640 deploy/secrets/shadowsocks_password deploy/secrets/oidc_client_secret
+          for mode in direct relay shadowsocks; do
+            cp "$ci_env_backup" .env
+            sed -i \
+              -e "s/^EGRESS_MODE=.*/EGRESS_MODE=$mode/" \
+              -e 's/^CODEX_RELAY_IP=.*/CODEX_RELAY_IP=10.77.0.2/' \
+              -e 's/^SHADOWSOCKS_SERVER=.*/SHADOWSOCKS_SERVER=192.0.2.1/' \
+              .env
+            ./scripts/validate-compose.sh
+            ./scripts/compose.sh config --quiet
+            sed -i \
+              -e 's/^OIDC_ENABLED=.*/OIDC_ENABLED=true/' \
+              -e 's|^OIDC_ISSUER=.*|OIDC_ISSUER=https://auth.ci.invalid/auth/v1|' \
+              -e 's/^OIDC_AUTH_HOST=.*/OIDC_AUTH_HOST=auth.ci.invalid/' \
+              -e 's/^OIDC_CLIENT_ID=.*/OIDC_CLIENT_ID=synthetic-ci-client/' \
+              .env
+            ./scripts/validate-compose.sh --oidc
+          done
       - name: Deployment and login regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Verify relay routing, fail-closed behavior and streaming
         run: ./scripts/test-relay-image.sh
+      - name: Verify Shadowsocks AEAD routing, isolation and streaming
+        run: ./scripts/test-shadowsocks-image.sh
       - name: Build immutable application images
         shell: bash
         run: |

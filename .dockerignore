@@ -4,6 +4,7 @@
 .codex
 .env
 .env.*
+.egress-apply.lock
 !.env.example
 backups
 deploy/secrets
