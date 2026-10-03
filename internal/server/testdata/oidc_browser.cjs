@@ -30,7 +30,9 @@ async function main() {
     "-out", cert, "-days", "1", "-subj", "/CN=gateway.localhost"], {stdio: "ignore"});
   const requests = [], errors = [];
   let gateway, center, state = initial(), enabled = true, completeMode = "confirm", confirmFailure = false;
+  let signedIn = true, stateFailure = false;
   let holdComplete = false, releaseComplete, holdBegin = false, releaseBegin;
+  let holdConfig = false, releaseConfig;
   const server = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, async (req, res) => {
     try {
       const url = new URL(req.url, `https://${req.headers.host}`);
@@ -48,6 +50,7 @@ async function main() {
       };
       const file = (name, type) => send(fs.readFileSync(path.join(assets, name), "utf8"), 200, type);
       if (url.hostname === "accounts.localhost") {
+        if (url.pathname === "/sites") return send(`<html lang="zh-CN"><a id="launch" href="${gateway}/?login=water5">进入已授权网关</a></html>`, 200, "text/html");
         const query = url.searchParams.get("query") || "state=synthetic-state&code=synthetic-code";
         return send(`<html lang="zh-CN"><a id="authorize" href="${gateway}/auth/oidc/callback?${query.replaceAll("&", "&amp;")}">同意并返回网关</a></html>`, 200, "text/html");
       }
@@ -60,7 +63,10 @@ async function main() {
       if (url.pathname === "/static/style.css") return file("style.css", "text/css");
       if (url.pathname === "/static/oidc-callback.js") return file("oidc-callback.js", "application/javascript");
       if (url.pathname === "/auth/oidc/callback") return file("oidc-callback.html", "text/html");
-      if (url.pathname === "/auth/oidc/config") return send({enabled});
+      if (url.pathname === "/auth/oidc/config") {
+        if (holdConfig) await new Promise((resolve) => {releaseConfig = resolve;});
+        return send({enabled});
+      }
       if (url.pathname === "/auth/oidc/login") return send({authorization_url: `${center}/authorize`});
       if (url.pathname === "/auth/oidc/complete") {
         if (holdComplete) await new Promise((resolve) => {releaseComplete = resolve;});
@@ -85,8 +91,12 @@ async function main() {
       }
       if (url.pathname === "/auth/password/reauth") return send({ok: true});
       if (url.pathname === "/auth/logout") return send({ok: true});
-      if (url.pathname === "/admin/state") return send(state);
+      if (url.pathname === "/admin/state") {
+        if (stateFailure) return send({error: {message: "数据库暂不可用"}}, 500);
+        return signedIn ? send(state) : send({error: {code: "session_required", message: "请登录"}}, 401);
+      }
       if (url.pathname === "/admin/billing/me") return send({cash_balance_usd: "48.75", subscriptions: {}});
+      if (url.pathname === "/admin/billing/plans") return send({plans: []});
       if (url.pathname === "/admin/usage") return send({summary: {requests: 0, tokens: 0}, requests: []});
       if (url.pathname === "/favicon.ico") return send("", 204);
       throw new Error(`Unexpected request ${url.pathname}`);
@@ -219,10 +229,62 @@ async function main() {
     assert.equal(await page.locator("#oidc-login").isVisible(), false);
     enabled = true; completeMode = "login";
     await goCallback(); await page.waitForURL(`${gateway}/#overview`);
+
+    const launchFromCenter = async () => {
+      await page.goto(`${center}/sites`);
+      await page.locator("#launch").click();
+      await page.waitForURL(`${gateway}/?login=water5`);
+      await page.evaluate(() => {void start();});
+    };
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({width, height: width < 600 ? 844 : 1000});
+      signedIn = false;
+      const logins = count("/auth/oidc/login");
+      await launchFromCenter();
+      await page.waitForURL(`${center}/authorize`);
+      assert.equal(count("/auth/oidc/login"), logins + 1, "center launch automatically starts exactly one login");
+      const request = requests.filter((value) => value.path === "/auth/oidc/login").at(-1);
+      assert.equal(request.method, "POST");
+      assert.equal(request.origin, gateway, "login must originate from the gateway landing page");
+      assert.deepEqual(request.body, {}, "launch carries no user credentials");
+    }
+    signedIn = true;
+    const logins = count("/auth/oidc/login");
+    await launchFromCenter();
+    await page.locator("#dashboard").waitFor({state: "visible"});
+    await page.waitForLoadState("networkidle");
+    assert.equal(count("/auth/oidc/login"), logins, "existing gateway session must not start another login");
+    assert.equal(new URL(page.url()).searchParams.has("login"), false, "one-time launch marker is removed");
+    assert.equal((await page.evaluate(() => window.oidcLocationsAtFetch)).every((value) => !value.includes("login=water5")), true);
+    assert.equal(requests.filter((value) => value.path === "/" && value.query === "?login=water5").at(-1).cookie, "");
+    assert.match(requests.filter((value) => value.path === "/admin/state").at(-1).cookie, /__Host-cg_session=/,
+      "same-origin session check restores Strict cookies omitted on the cross-site landing");
+
+    signedIn = false; enabled = false;
+    await launchFromCenter();
+    await page.waitForFunction(() => document.querySelector("#login-view").textContent.includes("吾水阁账号登录暂不可用"));
+    assert.equal(count("/auth/oidc/login"), logins, "disabled OIDC retains local login instead of redirecting");
+    assert.equal(await page.locator("#password-login-form").isVisible(), true);
+    enabled = true; stateFailure = true;
+    await launchFromCenter();
+    await page.waitForFunction(() => document.querySelector("#login-view").textContent.includes("无法加载控制台"));
+    assert.equal(count("/auth/oidc/login"), logins, "session storage failure must not be treated as signed out");
+    stateFailure = false;
+    await page.goto(`${gateway}/?login=water5&login=water5`);
+    await page.evaluate(() => start());
+    assert.equal(count("/auth/oidc/login"), logins, "ambiguous launch markers must not start a login");
+    holdConfig = true; releaseConfig = undefined;
+    await launchFromCenter();
+    await waitForSignal(() => releaseConfig);
+    await page.waitForFunction(() => !checkingSession);
+    await page.evaluate((value) => renderState(value), initial());
+    releaseConfig(); holdConfig = false;
+    await page.waitForLoadState("networkidle");
+    assert.equal(count("/auth/oidc/login"), logins, "local login while loading config must cancel automatic login");
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: browser.version(), checks: "cross-site HTTPS Strict cookie GET/POST, URL removal before fetch, no browser storage, desktop/mobile login/security/confirmation, reauth cancel, explicit single-use confirm/cancel, unlink cancel/proof/logout, missing transaction, denied/duplicate callback, stale session, late callback/begin after pagehide/logout, bfcache invalidation, login return", screenshots}));
+    console.log(JSON.stringify({browser: browser.version(), checks: "cross-site HTTPS Strict cookie GET/POST, URL removal before fetch, no browser storage, desktop/mobile login/security/confirmation, reauth cancel, explicit single-use confirm/cancel, unlink cancel/proof/logout, missing transaction, denied/duplicate callback, stale session, late callback/begin after pagehide/logout, bfcache invalidation, login return, center launch with automatic same-origin login, existing session, disabled OIDC, storage failure, duplicate launch markers", screenshots}));
   } finally {
-    releaseComplete?.(); releaseBegin?.();
+    releaseComplete?.(); releaseBegin?.(); releaseConfig?.();
     await browser?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

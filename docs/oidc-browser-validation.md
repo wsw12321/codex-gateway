@@ -34,6 +34,13 @@ PLAYWRIGHT_MODULE=/path/to/playwright \
 ```
 
 默认截图写入 `docs/screenshots/oidc/`，可用 `SCREENSHOT_DIR` 改写输出目录。
+
+账号中心应用入口 `/?login=water5` 的浏览器回归也已通过：桌面与手机从账号中心
+跨站点击后，网关移除登录提示并自动以本站 Origin 发起一次 POST；已有网关会话
+通过站内请求恢复 Strict Cookie 并直接进入控制台。OIDC 关闭、会话服务失败、
+重复登录提示均不发起自动登录；等待配置期间完成本地登录也会取消自动跳转。
+这些检查使用模拟用户与服务，真实 Supabase 换码及线上部署仍需另行验收。
+
 本次环境提供的 Playwright 在账号站已有 `node_modules/@playwright/test`，另外
 通过 `LD_LIBRARY_PATH` 和 `FONTCONFIG_FILE` 指定本地解包的浏览器依赖与中文字体；
 未安装或修改系统依赖。

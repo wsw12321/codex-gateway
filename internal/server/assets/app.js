@@ -870,7 +870,17 @@ async function loadOIDCConfig() {
   try {
     const result = await api("/auth/oidc/config");
     byId("oidc-login")?.classList.toggle("hidden", result.enabled !== true);
-  } catch (_) { hide("oidc-login"); }
+    return result.enabled === true;
+  } catch (_) { hide("oidc-login"); return false; }
+}
+
+function takeOIDCLoginRequest() {
+  const url = new URL(location.href);
+  const values = url.searchParams.getAll("login");
+  if (url.pathname !== "/" || values.length !== 1 || values[0] !== "water5") return false;
+  url.searchParams.delete("login");
+  history.replaceState(null, "", url.pathname + url.search + url.hash);
+  return true;
 }
 
 async function loginOIDC() {
@@ -7584,7 +7594,8 @@ function bindUI() {
 
 async function start() {
   bindUI();
-  void loadOIDCConfig();
+  const autoOIDCLogin = takeOIDCLoginRequest();
+  const oidcConfig = loadOIDCConfig();
   initializeDateFilters();
   const path = location.pathname;
   if (path === "/join") {
@@ -7604,12 +7615,14 @@ async function start() {
   hide("recover-view");
   show("login-view");
   checkingSession = true;
+  let loggedOut = false;
   setLocalMessage(byId("login-view"), "正在检查现有会话…", "ok");
   try {
     await loadDashboard();
     setLocalMessage(byId("login-view"));
   } catch (error) {
     if (error.status === 401) {
+      loggedOut = true;
       setLocalMessage(byId("login-view"));
     } else {
       setConnection("连接失败", "error");
@@ -7619,6 +7632,13 @@ async function start() {
     checkingSession = false;
   }
   applyWebAuthnSupport();
+  if (autoOIDCLogin && loggedOut) {
+    const current = loginRequestCurrent();
+    const enabled = await oidcConfig;
+    if (!current() || state?.user || byId("login-view").classList.contains("hidden")) return;
+    if (enabled) byId("oidc-login").click();
+    else setLocalMessage(byId("login-view"), "吾水阁账号登录暂不可用，请使用密码或 Passkey 登录。");
+  }
 }
 
 start().catch((error) => {

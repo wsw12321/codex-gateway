@@ -13,6 +13,13 @@
 或 ES256 签名。吾水阁已有授权页面，基础接入无需修改账号站代码。
 登记与签名要求见 [Supabase OAuth Server 官方说明](https://supabase.com/docs/guides/auth/oauth-server/getting-started)。
 
+账号中心的“已授权应用”可链接到
+`https://<GATEWAY_DOMAIN>/?login=water5`。网关先移除一次性登录提示并检查现有
+会话；已有会话直接进入控制台，未登录且 OIDC 已启用时自动通过站内 POST
+发起统一登录。登录提示不包含用户凭据，也不指定 OAuth 回调或跳转目标。
+OIDC 未启用或暂不可用时保留密码与 Passkey 登录入口；未绑定账号仍需先在
+“账号安全”完成绑定。
+
 从实际项目确认可信 issuer，通常为
 `https://<PROJECT_REF>.supabase.co/auth/v1`。自定义 Auth 域名以该项目实际发现
 文档为准，不能用吾水阁前端站点地址、publishable key 或 service-role key 代替。
