@@ -93,12 +93,12 @@ func TestOIDCCancellationSerializesWithIssuedSession(t *testing.T) {
 	key, _ := flows.put(oidcFlow{Kind: "login", Browser: sha256.Sum256([]byte(browser)), Expires: now.Add(time.Minute)}, now)
 	flow, _ := flows.take(key, browser, now)
 	flow.lifecycle.mu.Lock()
-	cancelled := make(chan []string, 1)
+	cancelled := make(chan []oidcFlowEffects, 1)
 	go func() { cancelled <- flows.discardBrowser(browser) }()
 	flow.lifecycle.issuedSessionID = "issued-session-id"
 	flow.lifecycle.mu.Unlock()
 	sessions := <-cancelled
-	if len(sessions) != 1 || sessions[0] != "issued-session-id" || flow.active(now) {
+	if len(sessions) != 1 || sessions[0].issuedSessionID != "issued-session-id" || flow.active(now) {
 		t.Fatalf("late issued session escaped cancellation: %v", sessions)
 	}
 }
@@ -119,6 +119,67 @@ func TestOIDCFlowStoreConcurrentTakeOnce(t *testing.T) {
 	wg.Wait()
 	if count.Load() != 1 {
 		t.Fatalf("consumed %d times", count.Load())
+	}
+}
+
+func TestOIDCCancelOriginalStateAfterChoiceAndVerification(t *testing.T) {
+	now := time.Now()
+	browser := oidcRandom()
+	flows := newOIDCFlowStore(2)
+	key, _ := flows.put(oidcFlow{Kind: "login", Browser: sha256.Sum256([]byte(browser)), Expires: now.Add(time.Minute)}, now)
+	flow, _ := flows.take(key, browser, now)
+	flow.Kind = "register"
+	flow.lifecycle.mu.Lock()
+	choice, ok := flows.confirmation(flow, now)
+	flow.lifecycle.mu.Unlock()
+	if !ok {
+		t.Fatal("rotate")
+	}
+	if _, ok := flows.cancel(key, oidcRandom(), now); ok {
+		t.Fatal("wrong browser cancelled flow")
+	}
+	if _, ok := flows.cancel(key, browser, now); !ok {
+		t.Fatal("original state lost after rotation")
+	}
+	if _, ok := flows.take(choice, browser, now); ok {
+		t.Fatal("cancelled choice remained usable")
+	}
+	newKey, _ := flows.put(oidcFlow{Kind: "reauth", Browser: sha256.Sum256([]byte(browser)), Expires: now.Add(time.Minute)}, now)
+	newFlow, _ := flows.take(newKey, browser, now)
+	newFlow.lifecycle.verifiedUserID, newFlow.lifecycle.verifiedSessionID, newFlow.lifecycle.verifiedAt = "user", "original-session", now
+	if _, ok := flows.cancel(key, browser, now); !ok || !newFlow.active(now) {
+		t.Fatal("old cancellation affected newer flow")
+	}
+	effects, ok := flows.cancel(newKey, browser, now)
+	if !ok || effects.issuedSessionID != "" || effects.verifiedSessionID != "original-session" || effects.verifiedAt != now {
+		t.Fatalf("reauth cancellation tried to revoke original session: %+v", effects)
+	}
+}
+
+func TestOIDCReauthenticationCancellationOutlivesCeremonyDeadline(t *testing.T) {
+	now := time.Now()
+	browser := oidcRandom()
+	flows := newOIDCFlowStore(1)
+	key, _ := flows.put(oidcFlow{Kind: "reauth", UserID: "user", SessionID: "session", Browser: sha256.Sum256([]byte(browser)), Expires: now.Add(10 * time.Minute)}, now)
+	flow, _ := flows.take(key, browser, now.Add(9*time.Minute))
+	verifiedAt := now.Add(9 * time.Minute)
+	flow.lifecycle.verifiedUserID, flow.lifecycle.verifiedSessionID, flow.lifecycle.verifiedAt = "user", "session", verifiedAt
+	flows.retainVerificationCancellation(flow, verifiedAt.Add(oidcVerificationAge))
+	later := now.Add(11 * time.Minute)
+	if _, ok := flows.take(key, browser, later); ok {
+		t.Fatal("retention extended consumption deadline")
+	}
+	if _, ok := flows.put(oidcFlow{Expires: later.Add(time.Minute)}, later); ok {
+		t.Fatal("capacity pruned live cancellation metadata")
+	}
+	if effects, ok := flows.cancel(key, browser, later); !ok || effects.verifiedAt != verifiedAt {
+		t.Fatal("late cancellation lost its verification marker")
+	}
+	if effects := flows.cancelSessionReauthentication(key, store.Session{ID: "session", UserID: "user"}, later); len(effects) != 1 {
+		t.Fatal("original session cannot cancel late response")
+	}
+	if _, ok := flows.put(oidcFlow{Expires: now.Add(16 * time.Minute)}, now.Add(15*time.Minute)); !ok {
+		t.Fatal("expired proof retained capacity")
 	}
 }
 func TestOIDCStateWhitelist(t *testing.T) {
@@ -149,7 +210,7 @@ func TestOIDCDisabledAndOriginGuards(t *testing.T) {
 	s := &Server{mux: http.NewServeMux(), attempts: newAttemptLimiter()}
 	s.config.RPOrigins = []string{"https://gateway.example"}
 	s.oidcRoutes()
-	for _, path := range []string{"/auth/oidc/login", "/auth/oidc/complete", "/admin/identity-link/begin", "/admin/identity-link/confirm", "/admin/identity-link/cancel"} {
+	for _, path := range []string{"/auth/oidc/login", "/auth/oidc/complete", "/auth/oidc/register", "/auth/oidc/register/cancel", "/auth/oidc/cancel", "/auth/oidc/reauth/begin", "/admin/identity-link/begin", "/admin/identity-link/confirm", "/admin/identity-link/cancel"} {
 		r := httptest.NewRequest("POST", path, strings.NewReader("{}"))
 		r.Header.Set("Origin", "https://evil.example")
 		w := httptest.NewRecorder()
@@ -158,7 +219,7 @@ func TestOIDCDisabledAndOriginGuards(t *testing.T) {
 			t.Fatalf("origin accepted for %s: %d", path, w.Code)
 		}
 	}
-	for _, path := range []string{"/auth/oidc/login", "/auth/oidc/complete"} {
+	for _, path := range []string{"/auth/oidc/login", "/auth/oidc/complete", "/auth/oidc/register", "/auth/oidc/register/cancel", "/auth/oidc/cancel"} {
 		r := httptest.NewRequest("POST", path, strings.NewReader("{}"))
 		r.Header.Set("Origin", s.config.RPOrigins[0])
 		w := httptest.NewRecorder()

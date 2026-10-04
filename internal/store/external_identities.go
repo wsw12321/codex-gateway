@@ -39,7 +39,29 @@ type CompleteExternalLoginParams struct {
 	Subject string
 	Session CreateSessionParams
 	At      time.Time
+	// VerifiedAt is the server's authorization-exchange completion time.
+	// Delayed account creation must never refresh this timestamp.
+	VerifiedAt time.Time
 }
+
+type CompleteExternalRegistrationParams struct {
+	Issuer, Subject, MaskedEmail string
+	Session                      CreateSessionParams
+	At, VerifiedAt               time.Time
+}
+
+type CompleteExternalReauthenticationParams struct {
+	UserID, SessionID, ExternalIdentityID string
+	Issuer, Subject                       string
+	At, VerifiedAt                        time.Time
+}
+
+var (
+	// Only an explicitly absent binding permits a first-login account choice.
+	// A stale binding, disabled user or database failure must not match this.
+	ErrExternalIdentityUnbound = errors.New("store: external identity is not bound")
+	ErrLastLoginMethod         = errors.New("store: cannot remove the only login method")
+)
 
 const externalIdentityColumns = `id, user_id, issuer, subject, masked_email, linked_at, unlinked_at`
 
@@ -97,7 +119,7 @@ func (s *Store) lockExternalIdentitySession(ctx context.Context, tx *sql.Tx, use
 	at = s.externalIdentityTime(at)
 	if session.RevokedAt != nil || !session.IdleExpiresAt.After(at) || !session.AbsoluteExpiresAt.After(at) ||
 		session.RecentlyVerifiedAt == nil || !session.RecentlyVerifiedAt.After(at.Add(-5*time.Minute)) || session.RecentlyVerifiedAt.After(at) {
-		return time.Time{}, fmt.Errorf("%w: recent local session verification required", ErrNotFound)
+		return time.Time{}, fmt.Errorf("%w: recent session verification required", ErrNotFound)
 	}
 	return at, nil
 }
@@ -154,6 +176,9 @@ func (s *Store) CompleteExternalLogin(ctx context.Context, params CompleteExtern
 		var identityID, userID string
 		if err := tx.QueryRowContext(ctx, `SELECT id, user_id FROM external_identities
 			WHERE issuer=$1 AND subject=$2 AND unlinked_at IS NULL`, params.Issuer, params.Subject).Scan(&identityID, &userID); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrExternalIdentityUnbound
+			}
 			return mapDBError("find external login binding", err)
 		}
 		var err error
@@ -176,9 +201,15 @@ func (s *Store) CompleteExternalLogin(ctx context.Context, params CompleteExtern
 		if params.Session.CreatedAt.IsZero() {
 			params.Session.CreatedAt = params.At
 		}
-		// External authentication never grants local recent verification.
 		session, err = insertSessionWithSource(ctx, tx, params.Session, false, identityID)
-		return err
+		if err != nil {
+			return err
+		}
+		verifiedAt := params.VerifiedAt
+		if verifiedAt.IsZero() {
+			verifiedAt = params.Session.CreatedAt
+		}
+		return setExternalLoginVerification(ctx, tx, &session, verifiedAt, params.At)
 	})
 	if err != nil {
 		return User{}, Session{}, err
@@ -202,12 +233,24 @@ func (s *Store) UnlinkExternalIdentity(ctx context.Context, userID, sessionID st
 		if err != nil {
 			return err
 		}
+		var hasLocalLogin bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM password_credentials WHERE user_id=$1)
+			OR EXISTS (SELECT 1 FROM webauthn_credentials WHERE user_id=$1)`, userID).Scan(&hasLocalLogin); err != nil {
+			return mapDBError("check remaining login methods", err)
+		}
+		if !hasLocalLogin {
+			return ErrLastLoginMethod
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE external_identities SET unlinked_at=$2 WHERE id=$1`, identity.ID, at); err != nil {
 			return mapDBError("unlink external identity", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revoked_at=$2, revoke_reason='external_identity_unlinked'
 			WHERE external_identity_id=$1 AND revoked_at IS NULL`, identity.ID, at); err != nil {
 			return mapDBError("revoke external identity sessions", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE sessions SET recently_verified_at=NULL
+			WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
+			return mapDBError("clear verification after external identity unlink", err)
 		}
 		identity.UnlinkedAt = &at
 		return nil

@@ -287,6 +287,17 @@ EGRESS_MODE=$egress_mode OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=$rela
     fail 'configured relay values were rejected by the startup wrapper'
 
 jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_secret" '
+  def valid_oidc_authorization_url:
+    . == "" or ((test("[[:space:][:cntrl:]]") | not) and (
+      capture("^https://(?<host>[A-Za-z0-9.-]+)(:443)?(?<path>/[A-Za-z0-9._~!$&\u0027()*+,;=:@/-]*)?$") as $url |
+      ($url.host | length <= 253 and contains(".") and (test("^[0-9.]+$") | not)) and
+      ($url.host | split(".") | last | test("^[A-Za-z]")) and
+      ($url.host | split(".") | all(.[]; test("^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"))) and
+      (($url.path // "") as $path |
+        ($path | contains("//") | not) and
+        ($path == "/" or ($path | endswith("/") | not)) and
+        ($path | split("/") | all(.[]; . != "." and . != "..")))
+    ));
   .services.gateway.environment as $env |
   .services["egress-allowlist"].environment as $egress |
   ($env | keys | all(.[]; (ascii_upcase | IN("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY")) | not)) and
@@ -297,6 +308,7 @@ jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_se
     ($env.OIDC_ISSUER | type == "string" and
       (capture("^https://(?<host>[a-z0-9.-]+)(/[A-Za-z0-9._~/-]+)?$").host == $egress.OIDC_AUTH_HOST) and
       (test("[^A-Za-z0-9.:/~_-]") | not)) and
+    (($env.OIDC_AUTHORIZATION_URL // "") | type == "string" and valid_oidc_authorization_url) and
     ($env.OIDC_CLIENT_ID | type == "string" and length > 0 and length <= 512 and (test("[[:space:][:cntrl:]]") | not)) and
     $env.OIDC_CLIENT_SECRET_FILE == "/run/secrets/oidc_client_secret" and
     $env.OIDC_CLIENT_SECRET == null and
@@ -309,7 +321,7 @@ jq -e --argjson overlay "$oidc_overlay" --arg secret "$secret_dir/oidc_client_se
     $egress.OIDC_ENABLED == null and $egress.OIDC_AUTH_HOST == null and
     .secrets.oidc_client_secret == null
   end)
-' "$tmp" >/dev/null || fail 'OIDC requires its optional overlay, exact issuer/host, isolated proxy and Gateway-only file secret; global Gateway proxies are forbidden'
+' "$tmp" >/dev/null || fail 'OIDC requires its optional overlay, exact issuer/host, safe HTTPS browser authorization URL, isolated proxy and Gateway-only file secret; global Gateway proxies are forbidden'
 oidc_enabled=$(jq -r '.services.gateway.environment.OIDC_ENABLED' "$tmp")
 oidc_host=$(jq -r '.services["egress-allowlist"].environment.OIDC_AUTH_HOST // ""' "$tmp")
 EGRESS_MODE=$egress_mode OIDC_ENABLED=$oidc_enabled OIDC_AUTH_HOST=$oidc_host CODEX_RELAY_IP=$relay_ip CODEX_RELAY_PORT=$relay_port \

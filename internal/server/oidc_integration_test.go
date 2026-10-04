@@ -76,6 +76,8 @@ func (f oidcHTTPFixture) begin(t *testing.T, kind, session string) (string, stri
 	path := "/auth/oidc/login"
 	if kind == "link" {
 		path = "/admin/identity-link/begin"
+	} else if kind == "reauth" {
+		path = "/auth/oidc/reauth/begin"
 	}
 	w := f.request(t, path, "POST", session, "", map[string]any{}, 200)
 	result := invitationResponse(t, w)
@@ -94,10 +96,15 @@ func (f oidcHTTPFixture) preview(t *testing.T) (string, string) {
 }
 func TestOIDCHTTPPostgresLifecycle(t *testing.T) {
 	f := newOIDCHTTPFixture(t)
+	f.setLocalPassword(t)
 	ctx := context.Background()
 	f.request(t, "/auth/oidc/login", "POST", f.cookie, "", nil, 409)
 	loginState, browser := f.begin(t, "login", "")
-	f.request(t, "/auth/oidc/complete", "POST", "", browser, map[string]string{"state": loginState, "code": "unbound"}, 403)
+	first := invitationResponse(t, f.request(t, "/auth/oidc/complete", "POST", "", browser, map[string]string{"state": loginState, "code": "unbound"}, 200))
+	if first["result"] != "registration_required" {
+		t.Fatal("unbound identity not offered a choice", first)
+	}
+	f.request(t, "/auth/oidc/register/cancel", "POST", "", browser, map[string]any{"flow_id": first["flow_id"]}, 200)
 	flow, browser := f.preview(t)
 	if _, err := f.s.store.GetExternalIdentity(ctx, f.owner.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("preview wrote mapping")
@@ -116,8 +123,11 @@ func TestOIDCHTTPPostgresLifecycle(t *testing.T) {
 	externalCookie := oidcResponseCookie(t, w, sessionCookieName)
 	f.request(t, "/auth/oidc/complete", "POST", "", browser, map[string]string{"state": state, "code": "bound"}, 400)
 	extSession, err := f.s.oidcCurrentSession(cookieRequest(externalCookie))
-	if err != nil || extSession.UserID != f.owner.ID || extSession.RecentlyVerifiedAt != nil || extSession.ExternalIdentityID == nil {
+	if err != nil || extSession.UserID != f.owner.ID || !oidcRecent(extSession, time.Now()) || extSession.ExternalIdentityID == nil {
 		t.Fatalf("external session: %+v %v", extSession, err)
+	}
+	if _, err := f.s.store.DB().ExecContext(ctx, `UPDATE sessions SET recently_verified_at=now()-interval '6 minutes' WHERE id=$1`, extSession.ID); err != nil {
+		t.Fatal(err)
 	}
 	f.request(t, "/admin/api-keys/key-id/reveal", "POST", externalCookie, "", nil, 403)
 	f.request(t, "/admin/identity-link", "DELETE", externalCookie, "", nil, 403)

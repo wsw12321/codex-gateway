@@ -124,7 +124,7 @@ func (s *Server) requireRecentVerification(next http.Handler) http.Handler {
 	return s.requireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session := sessionFrom(r.Context())
 		now := time.Now().UTC()
-		if session.RecentlyVerifiedAt == nil || now.Sub(*session.RecentlyVerifiedAt) > s.config.ReauthMaxAge {
+		if session.RecentlyVerifiedAt == nil || session.RecentlyVerifiedAt.After(now) || now.Sub(*session.RecentlyVerifiedAt) >= s.config.ReauthMaxAge {
 			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "recent_identity_verification_required", "此操作需要在 5 分钟内再次验证身份")
 			return
 		}

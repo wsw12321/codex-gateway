@@ -1215,7 +1215,10 @@ tombstone；当前倍率设置不清理。保留的设置更新者属于管理�
 
 此功能默认关闭，通过可选 `deploy/oidc.override.yml` 启用；客户端登记、secret
 配置、Squid 来源隔离、数据库升级、关闭开关回退与真实 Supabase 联调要求见
-[OIDC 接入与回退](oidc.md)。启用部署的 Compose 命令应始终携带该 overlay，
+[OIDC 接入与回退](oidc.md)。启用即支持未绑定用户选择首次开通或绑定已有账号，
+新账号立即激活、零余额，无须设置本地密码或 Passkey；敏感操作可使用五分钟的
+SSO 验证窗口及同标签页再验证。可选 `OIDC_AUTHORIZATION_URL` 只配置浏览器
+代理授权入口，后端 issuer 和专用出口保持不变。启用部署的 Compose 命令应始终携带该 overlay，
 校验改用 `./scripts/validate-compose.sh --oidc`。账号中心退出不等于网关退出。
 
 ## 12. 上线验收清单

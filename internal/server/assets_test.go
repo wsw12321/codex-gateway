@@ -71,6 +71,14 @@ func TestDashboardAssetsRemainDependencyFreeAndCSPCompatible(t *testing.T) {
 	if externalAsset.MatchString(html) {
 		t.Fatal("dashboard HTML loads an external asset")
 	}
+	// The only permitted browser storage write is a known feature name for
+	// returning from same-tab SSO verification. Keep the blanket prohibition
+	// below for every other storage use, especially credentials and mutations.
+	navigationOnlyStorage := `sessionStorage.setItem(oidcReturnKey, JSON.stringify({section: Object.hasOwn(sectionTitles, section) ? section : "security"}));`
+	if strings.Count(javascript, navigationOnlyStorage) != 1 || !strings.Contains(javascript, `const oidcReturnKey = "cg_oidc_reauth_return";`) {
+		t.Fatal("OIDC return storage must contain only an allowlisted feature name")
+	}
+	javascript = strings.Replace(javascript, navigationOnlyStorage, "", 1)
 	for _, forbidden := range []string{
 		"localStorage", "sessionStorage", "innerHTML", "insertAdjacentHTML", "eval(", "new Function",
 	} {

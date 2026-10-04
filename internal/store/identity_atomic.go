@@ -344,6 +344,7 @@ func (s *Store) CompletePasswordLogin(ctx context.Context, params CompletePasswo
 }
 
 func (s *Store) VerifyPasswordSession(ctx context.Context, userID, sessionID, expectedHash string, at time.Time) error {
+	at = at.UTC().Truncate(time.Microsecond)
 	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		var current string
 		if err := tx.QueryRowContext(ctx, `SELECT encoded_hash FROM password_credentials WHERE user_id=$1 FOR UPDATE`, userID).Scan(&current); err != nil {
@@ -352,7 +353,9 @@ func (s *Store) VerifyPasswordSession(ctx context.Context, userID, sessionID, ex
 		if err := ComparePasswordHash(current, expectedHash); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE sessions SET recently_verified_at=$3 WHERE id=$1 AND user_id=$2 AND revoked_at IS NULL AND idle_expires_at>$3 AND absolute_expires_at>$3`, sessionID, userID, at)
+		result, err := tx.ExecContext(ctx, `UPDATE sessions SET recently_verified_at=$3 WHERE id=$1 AND user_id=$2
+			AND revoked_at IS NULL AND idle_expires_at>$3 AND absolute_expires_at>$3
+			AND (recently_verified_at IS NULL OR recently_verified_at<$3)`, sessionID, userID, at)
 		if err != nil {
 			return mapDBError("verify password session", err)
 		}

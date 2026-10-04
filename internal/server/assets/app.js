@@ -149,6 +149,9 @@ let reauthResolve = null;
 let reauthReject = null;
 let reauthPromise = null;
 let reauthRequestCurrent = null;
+let oidcLinkRequested = false;
+const oidcReturnKey = "cg_oidc_reauth_return";
+let oidcPendingReauthentication = "";
 
 const billingLedgerPageSize = 50;
 const upstreamQuotaStaleAfterMS = 5 * 60 * 1000;
@@ -864,21 +867,28 @@ function renderIdentityLink() {
     `已绑定 ${link.masked_email || "（邮箱未提供）"} · ${formatDateTime(link.linked_at)}` : "尚未绑定吾水阁账号。";
   byId("identity-link-begin").classList.toggle("hidden", link.linked || !link.enabled);
   byId("identity-link-unlink").classList.toggle("hidden", !link.linked);
+  const localLogin = state?.login_methods?.password || state?.login_methods?.passkey;
+  byId("identity-link-unlink").disabled = Boolean(link.linked && !localLogin);
+  const guidance = byId("identity-link-guidance");
+  if (guidance) {
+    guidance.classList.toggle("hidden", !link.linked || Boolean(localLogin));
+    guidance.textContent = "吾水阁账号是当前唯一登录方式。如需解绑，请先按需设置密码或添加 Passkey。";
+  }
 }
 
 async function loadOIDCConfig() {
   try {
     const result = await api("/auth/oidc/config");
-    byId("oidc-login")?.classList.toggle("hidden", result.enabled !== true);
+    byId("oidc-login")?.classList.toggle("hidden", result.enabled !== true || oidcLinkRequested);
     return result.enabled === true;
   } catch (_) { hide("oidc-login"); return false; }
 }
 
-function takeOIDCLoginRequest() {
+function takeOIDCRequest(name) {
   const url = new URL(location.href);
-  const values = url.searchParams.getAll("login");
+  const values = url.searchParams.getAll(name);
   if (url.pathname !== "/" || values.length !== 1 || values[0] !== "water5") return false;
-  url.searchParams.delete("login");
+  url.searchParams.delete(name);
   history.replaceState(null, "", url.pathname + url.search + url.hash);
   return true;
 }
@@ -901,9 +911,9 @@ async function beginIdentityLink() {
 
 async function unlinkIdentity() {
   const current = identityLinkCurrent();
+  if (!state?.login_methods?.password && !state?.login_methods?.passkey) throw new Error("请先设置密码或添加 Passkey，再解绑唯一的登录方式。");
   if (!window.confirm("解绑吾水阁账号？该绑定产生的统一登录会话将全部退出，密码和 Passkey 会话保持有效。")) return;
-  await reauthenticate(current);
-  const result = await api("/admin/identity-link", {method: "DELETE"}, current);
+  const result = await sensitiveAction(() => api("/admin/identity-link", {method: "DELETE"}, current), current);
   requireCurrentRequest(current);
   if (result.logged_out) { location.assign("/"); return; }
   const value = await api("/admin/state", {}, current);
@@ -939,8 +949,16 @@ async function finishLogin() {
     await loadGroupInvitationAccount(current);
     return;
   }
-  history.replaceState(null, "", "/#overview");
+  history.replaceState(null, "", oidcLinkRequested ? "/#security" : "/#overview");
   await loadDashboard();
+  if (oidcLinkRequested) guideIdentityLink();
+}
+
+function guideIdentityLink() {
+  oidcLinkRequested = false;
+  history.replaceState(null, "", "/#security");
+  routeFromHash(false);
+  notice(state?.external_identity?.linked ? "此账号已绑定吾水阁账号。" : "已登录原账号。请点击“绑定吾水阁账号”，验证身份并重新授权后确认绑定。", "ok", true);
 }
 
 async function reauthenticate(current = null) {
@@ -1001,6 +1019,36 @@ function syncReauthMethod() {
   const password = byId("reauth-form").elements.method.value === "password";
   byId("reauth-form").querySelector(".reauth-password").classList.toggle("hidden", !password);
   byId("reauth-form").elements.password.required = password;
+  byId("reauth-oidc-help")?.classList.toggle("hidden", byId("reauth-form").elements.method.value !== "oidc");
+}
+
+async function beginOIDCReauthentication(current) {
+  requireCurrentRequest(current);
+  const response = await fetch("/auth/oidc/reauth/begin", {method: "POST", credentials: "same-origin", cache: "no-store",
+    headers: {"Content-Type": "application/json"}, body: "{}"});
+  const result = await response.json();
+  if (!current()) {
+    // A closed dialog or changed identity may race with begin. Cancel only its returned flow.
+    const flowID = result.authorization_url ? new URL(result.authorization_url).searchParams.get("state") : "";
+    if (flowID) fetch("/auth/oidc/cancel", {method: "POST", credentials: "same-origin", cache: "no-store", keepalive: true,
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({flow_id: flowID})}).catch(() => {});
+    requireCurrentRequest(current);
+  }
+  if (!response.ok) {
+    if (response.status === 401 && ["session_required", "invalid_session"].includes(result?.error?.code)) handleUnauthorized();
+    throw Object.assign(new Error(result?.error?.message || "无法开始吾水阁账号验证。"), {status: response.status, code: result?.error?.code});
+  }
+  return result;
+}
+
+function cancelOIDCReauthenticationRedirect() {
+  const flowID = oidcPendingReauthentication;
+  oidcPendingReauthentication = "";
+  if (!flowID) return;
+  fetch("/auth/oidc/cancel", {method: "POST", credentials: "same-origin", cache: "no-store", keepalive: true,
+    headers: {"Content-Type": "application/json"}, body: JSON.stringify({flow_id: flowID})}).catch(() => {});
+  if (state) state.recently_verified = false;
+  notice("已返回原页面。请重新验证身份并执行操作。", "ok");
 }
 
 async function submitReauthentication(event) {
@@ -1009,7 +1057,17 @@ async function submitReauthentication(event) {
   if (!current) return;
   requireCurrentRequest(current);
   const method = form.elements.method.value;
-  if (method === "password") {
+  if (method === "oidc") {
+    const result = await beginOIDCReauthentication(current);
+    requireCurrentRequest(current);
+    oidcPendingReauthentication = new URL(result.authorization_url).searchParams.get("state") || "";
+    const section = location.hash.slice(1);
+    // Save navigation only. Never persist a pending mutation or authorization credential.
+    try { sessionStorage.setItem(oidcReturnKey, JSON.stringify({section: Object.hasOwn(sectionTitles, section) ? section : "security"})); } catch (_) { /* The callback safely falls back to account security. */ }
+    cancelReauthentication();
+    location.assign(result.authorization_url);
+    return;
+  } else if (method === "password") {
     await api("/auth/password/reauth", {method: "POST", body: JSON.stringify({password: form.elements.password.value})}, current);
     requireCurrentRequest(current);
     notice("密码二次验证成功，敏感操作已临时解锁。", "ok");
@@ -1514,7 +1572,7 @@ function renderPasskeys() {
   container.classList.remove("loading");
   container.setAttribute("aria-busy", "false");
   if (!passkeys.length) {
-    container.replaceChildren(emptyState("没有可显示的 Passkey。请尽快添加新的登录凭证。", "新增 Passkey", () => openDialog("passkey-dialog")));
+    container.replaceChildren(emptyState("尚未添加 Passkey，可按需添加作为另一种登录方式。", "新增 Passkey", () => openDialog("passkey-dialog")));
     return;
   }
   container.replaceChildren(...passkeys.map((passkey) => {
@@ -1535,6 +1593,7 @@ function renderLoginMethods() {
   byId("password-status").replaceChildren(
     summaryItem("密码登录", methods.password ? "已设置" : "未设置"),
     summaryItem("Passkey 登录", methods.passkey ? "已设置" : "未设置"),
+    summaryItem("吾水阁账号登录", methods.oidc ? "可用" : "未启用"),
   );
   byId("set-password").textContent = methods.password ? "更改密码" : "设置密码";
 }
@@ -7557,6 +7616,9 @@ function bindUI() {
     }
     routeFromHash(true);
   });
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) cancelOIDCReauthenticationRedirect();
+  });
 
   all("[data-copy-target]").forEach((button) => button.addEventListener("click", () => {
     runButton(button, async () => {
@@ -7594,7 +7656,10 @@ function bindUI() {
 
 async function start() {
   bindUI();
-  const autoOIDCLogin = takeOIDCLoginRequest();
+  const autoOIDCLogin = takeOIDCRequest("login");
+  oidcLinkRequested = takeOIDCRequest("link");
+  const oidcVerified = takeOIDCRequest("verified");
+  byId("oidc-link-guidance")?.classList.toggle("hidden", !oidcLinkRequested);
   const oidcConfig = loadOIDCConfig();
   initializeDateFilters();
   const path = location.pathname;
@@ -7620,6 +7685,8 @@ async function start() {
   try {
     await loadDashboard();
     setLocalMessage(byId("login-view"));
+    if (oidcLinkRequested) guideIdentityLink();
+    if (oidcVerified) notice(verificationIsRecent() ? "吾水阁账号验证成功。请重新执行刚才的操作。" : "身份验证窗口已结束，请重新验证后再执行操作。", verificationIsRecent() ? "ok" : "error", true);
   } catch (error) {
     if (error.status === 401) {
       loggedOut = true;

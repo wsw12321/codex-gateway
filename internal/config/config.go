@@ -60,6 +60,7 @@ type Config struct {
 	DevInsecure            bool
 	OIDCEnabled            bool
 	OIDCIssuer             string
+	OIDCAuthorizationURL   string
 	OIDCClientID           string
 	OIDCClientSecret       string
 	OIDCProxyURL           *url.URL

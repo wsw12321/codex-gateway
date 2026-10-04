@@ -98,6 +98,7 @@ type PasswordCredential struct {
 type LoginMethods struct {
 	Passkey  bool `json:"passkey"`
 	Password bool `json:"password"`
+	OIDC     bool `json:"oidc"`
 }
 
 type Session struct {

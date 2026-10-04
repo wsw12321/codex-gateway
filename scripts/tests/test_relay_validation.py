@@ -173,6 +173,40 @@ else:
             self.assertIn(f"EGRESS_MODE={mode}", runs[index])
             self.assertEqual(runs[index][runs[index].index("--network") + 1], "none")
 
+    def test_oidc_browser_authorization_proxy_does_not_extend_backend_egress(self):
+        for endpoint in ("https://accounts.example.test/oauth/authorize",
+                         "https://accounts.example.test:443/", "https://accounts.example.test"):
+            with self.subTest(endpoint=endpoint):
+                self.gateway = copy.deepcopy(self.oidc_baseline)
+                self.gateway["services"]["gateway"]["environment"]["OIDC_AUTHORIZATION_URL"] = endpoint
+                self.run_log.write_text("")
+                result = self.validate(oidc=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runs = self.run_log.read_text()
+                self.assertIn("OIDC_AUTH_HOST=staging.supabase.co", runs)
+                self.assertNotIn("accounts.example.test", runs)
+
+    def test_oidc_rejects_unsafe_browser_authorization_url(self):
+        for endpoint in ("http://accounts.example.test/authorize", "/authorize",
+                         "https://accounts.example.test:8443/authorize",
+                         "https://user:pass@accounts.example.test/authorize",
+                         "https://accounts.example.test/authorize?client_id=other",
+                         "https://accounts.example.test/authorize#fragment",
+                         "https://accounts.example.test/authorize?", "https://accounts.example.test/authorize#",
+                         "https://accounts.example.test/a/../authorize", "https://accounts.example.test//authorize",
+                         "https://accounts.example.test/%61uthorize", "https://accounts.example.test/a\\authorize",
+                         "https://127.0.0.1/authorize", "https://localhost/authorize",
+                         "https://127.1/authorize", "https://0177.0.0.1/authorize", "https://0x7f.0.0.1/authorize",
+                         "https://.example.test/authorize", "https://accounts..test/authorize",
+                         "https://accounts.example.test/authorize\n"):
+            with self.subTest(endpoint=endpoint):
+                self.gateway = copy.deepcopy(self.oidc_baseline)
+                self.gateway["services"]["gateway"]["environment"]["OIDC_AUTHORIZATION_URL"] = endpoint
+                result = self.validate(oidc=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("OIDC requires its optional overlay", result.stderr)
+                self.assertEqual(self.run_log.read_text(), "")
+
     def test_shadowsocks_preserves_the_transport_boundary(self):
         self.gateway = copy.deepcopy(self.ss_baseline)
         result = self.validate()

@@ -46,15 +46,19 @@ type oidcFixture struct {
 	requests   map[string]int
 }
 
-func newOIDCFixture(t *testing.T) *oidcFixture {
+func newOIDCFixture(t *testing.T, authorizationURL ...string) *oidcFixture {
 	t.Helper()
 	issuer := "https://project.supabase.co/auth/v1"
 	publicURL, _ := url.Parse("https://gateway.example.test")
 	proxyURL, _ := url.Parse("http://172.28.30.4:3128")
-	client, err := NewOIDC(config.Config{
+	cfg := config.Config{
 		OIDCEnabled: true, OIDCIssuer: issuer, OIDCClientID: "gateway-client", OIDCClientSecret: "backend-only-secret",
 		OIDCProxyURL: proxyURL, PublicURL: publicURL,
-	})
+	}
+	if len(authorizationURL) > 0 {
+		cfg.OIDCAuthorizationURL = authorizationURL[0]
+	}
+	client, err := NewOIDC(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,6 +189,35 @@ func TestOIDCCodeFlowAndLazyDiscovery(t *testing.T) {
 	}
 }
 
+func TestOIDCBrowserAuthorizationProxy(t *testing.T) {
+	f := newOIDCFixture(t, "https://accounts.example.test/oauth/authorize")
+	state := oauth2.GenerateVerifier()
+	authURL, err := f.client.AuthorizationURL(context.Background(), state, f.nonce, f.verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := mustOIDCURL(t, authURL)
+	q := u.Query()
+	if u.Scheme != "https" || u.Host != "accounts.example.test" || u.Path != "/oauth/authorize" ||
+		q.Get("state") != state || q.Get("nonce") != f.nonce || q.Get("response_type") != "code" ||
+		q.Get("client_id") != "gateway-client" || q.Get("scope") != "openid email" ||
+		q.Get("redirect_uri") != f.client.redirectURL || q.Get("code_challenge_method") != "S256" ||
+		q.Get("code_challenge") != oauth2.S256ChallengeFromVerifier(f.verifier) ||
+		q.Get("client_secret") != "" || q.Get("prompt") != "" || q.Get("max_age") != "" {
+		t.Fatal("browser proxy did not preserve the authorization parameters")
+	}
+	if _, err := f.client.Exchange(context.Background(), f.code, f.nonce, f.verifier); err != nil {
+		t.Fatal(err)
+	}
+	if f.requests["/auth/v1/oauth/token"] != 1 || f.requests["/auth/v1/.well-known/jwks.json"] != 1 {
+		t.Fatal("browser proxy changed backend exchange or JWKS")
+	}
+	req, _ := http.NewRequest(http.MethodGet, authURL, nil)
+	if _, err := f.client.client.Transport.RoundTrip(req); err != ErrOIDCUnavailable {
+		t.Fatalf("backend transport allowed the browser proxy: %v", err)
+	}
+}
+
 func TestOIDCRejectsInvalidClaims(t *testing.T) {
 	tests := map[string]func(*oidcFixture){
 		"issuer":            func(f *oidcFixture) { f.claims["iss"] = "https://attacker.test/auth/v1" },
@@ -282,10 +315,12 @@ func TestOIDCRejectsUnsafeDiscovery(t *testing.T) {
 		"code_challenge_methods_supported":      []string{"plain"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f := newOIDCFixture(t)
-			f.metadata[name] = value
-			if _, err := f.client.AuthorizationURL(context.Background(), oauth2.GenerateVerifier(), f.nonce, f.verifier); err != ErrOIDCUnavailable {
-				t.Fatalf("accepted unsafe discovery metadata: %v", err)
+			for _, authorizationURL := range []string{"", "https://accounts.example.test/oauth/authorize"} {
+				f := newOIDCFixture(t, authorizationURL)
+				f.metadata[name] = value
+				if _, err := f.client.AuthorizationURL(context.Background(), oauth2.GenerateVerifier(), f.nonce, f.verifier); err != ErrOIDCUnavailable {
+					t.Fatalf("accepted unsafe discovery metadata with browser URL %q: %v", authorizationURL, err)
+				}
 			}
 		})
 	}

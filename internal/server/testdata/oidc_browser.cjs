@@ -32,7 +32,7 @@ async function main() {
   let gateway, center, state = initial(), enabled = true, completeMode = "confirm", confirmFailure = false;
   let signedIn = true, stateFailure = false;
   let holdComplete = false, releaseComplete, holdBegin = false, releaseBegin;
-  let holdConfig = false, releaseConfig;
+  let holdConfig = false, releaseConfig, holdReauth = false, releaseReauth;
   const server = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, async (req, res) => {
     try {
       const url = new URL(req.url, `https://${req.headers.host}`);
@@ -68,11 +68,26 @@ async function main() {
         return send({enabled});
       }
       if (url.pathname === "/auth/oidc/login") return send({authorization_url: `${center}/authorize`});
+      if (url.pathname === "/auth/oidc/cancel") return send({ok: true});
+      if (url.pathname === "/auth/oidc/register/cancel") return send({ok: true});
+      if (url.pathname === "/auth/oidc/register") {
+        signedIn = true;
+        state = {...initial(), recently_verified: true, login_methods: {password: false, passkey: false, oidc: true},
+          external_identity: {enabled: true, linked: true, masked_email: "l***@example.com", linked_at: "2026-10-03T10:00:00Z"}};
+        return send({result: "login"});
+      }
+      if (url.pathname === "/auth/oidc/reauth/begin") {
+        if (holdReauth) await new Promise((resolve) => {releaseReauth = resolve;});
+        return send({authorization_url: `${center}/authorize?state=synthetic-reauth-state`});
+      }
+      if (url.pathname === "/auth/password/login") {signedIn = true; return send({ok: true});}
       if (url.pathname === "/auth/oidc/complete") {
         if (holdComplete) await new Promise((resolve) => {releaseComplete = resolve;});
         if (body.error) return send({error: {message: "授权已取消，请重新开始。"}}, 400);
         if (!req.headers.cookie?.includes("__Host-cg_oidc=")) return send({error: {message: "授权事务无效，请重新开始。"}}, 400);
         if (completeMode === "login") return send({result: "login"});
+        if (completeMode === "registration") return send({result: "registration_required", flow_id: "synthetic-registration", masked_email: "l***@example.com"});
+        if (completeMode === "reauthenticated") {state.recently_verified = true; return send({result: "reauthenticated"});}
         return send({result: "confirm", flow_id: "synthetic-preview", user: {username: "lin"}, masked_email: "l***@example.com", expires_at: "2099-10-03T10:05:00Z"});
       }
       if (url.pathname === "/admin/identity-link/confirm") {
@@ -203,9 +218,12 @@ async function main() {
 
     holdComplete = true; releaseComplete = undefined;
     await goCallback(); await waitForSignal(() => releaseComplete);
+    const cancelledCallbacks = count("/auth/oidc/cancel");
+    const lateCompletion = page.waitForResponse((response) => response.url().endsWith("/auth/oidc/complete"));
     await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pagehide")));
     releaseComplete(); holdComplete = false;
-    await page.waitForLoadState("networkidle");
+    await lateCompletion;
+    await waitForSignal(() => count("/auth/oidc/cancel") > cancelledCallbacks);
     assert.equal(await page.locator("#oidc-preview").isVisible(), false, "late completion after pagehide cannot restore preview");
     await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent("pageshow", {persisted: true})));
     assert.match(await page.locator("#oidc-message").textContent(), /页面已失效/);
@@ -281,10 +299,104 @@ async function main() {
     releaseConfig(); holdConfig = false;
     await page.waitForLoadState("networkidle");
     assert.equal(count("/auth/oidc/login"), logins, "local login while loading config must cancel automatic login");
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({width, height: width < 600 ? 844 : 1000});
+      signedIn = false; completeMode = "registration";
+      const creates = count("/auth/oidc/register"), cancels = count("/auth/oidc/register/cancel");
+      await goCallback();
+      await page.locator("#oidc-registration").waitFor({state: "visible"});
+      assert.equal(count("/auth/oidc/register"), creates, "first-login choice does not create an account");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({path: path.join(screenshots, `registration-${width}.png`), fullPage: true});
+      await page.locator("#oidc-register-cancel").click();
+      await page.waitForFunction(() => document.getElementById("oidc-message").textContent.includes("未创建本站账号"));
+      assert.equal(count("/auth/oidc/register/cancel"), cancels + 1);
+      await goCallback(); await page.locator("#oidc-register-link").click();
+      await page.waitForURL(`${gateway}/?link=water5`);
+      await page.evaluate(() => start());
+      assert.equal(await page.locator("#oidc-link-guidance").isVisible(), true);
+      assert.equal(new URL(page.url()).search, "");
+      state = initial();
+      await page.locator('#password-login-form input[name="username"]').fill("lin");
+      await page.locator('#password-login-form input[name="password"]').fill("synthetic-password");
+      await page.locator('#password-login-form button[type="submit"]').click();
+      await page.waitForURL(`${gateway}/#security`);
+      await page.locator("#identity-link-begin").waitFor({state: "visible"});
+      await page.waitForFunction(() => document.getElementById("notice").textContent.includes("重新授权"));
+      assert.match(await page.locator("#notice").textContent(), /重新授权/);
+      assert.equal(count("/auth/oidc/register"), creates, "binding choice retains the local account");
+
+      await goCallback(); await page.locator("#oidc-register-create").dblclick();
+      await page.waitForURL(`${gateway}/#overview`);
+      assert.equal(count("/auth/oidc/register"), creates + 1, "creation is single use even on double click");
+      assert.deepEqual(requests.filter((value) => value.path === "/auth/oidc/register").at(-1).body, {flow_id: "synthetic-registration"});
+      await initialize();
+      assert.equal(await page.locator("#identity-link-unlink").isDisabled(), true, "SSO-only account retains its sole login method");
+      assert.equal(await page.locator("#set-password").isEnabled(), true);
+      assert.equal(await page.locator("#add-passkey").isEnabled(), true);
+      await page.screenshot({path: path.join(screenshots, `sso-only-${width}.png`), fullPage: true});
+      await page.evaluate(() => {
+        state.recently_verified = false;
+        history.replaceState(null, "", "/#billing");
+        routeFromHash(false);
+        window.replayedMutation = false;
+        sensitiveAction(async () => {window.replayedMutation = true;}).catch(() => {});
+      });
+      await page.locator("#reauth-dialog").waitFor({state: "visible"});
+      assert.equal(await page.locator('#reauth-form select[name="method"]').inputValue(), "oidc");
+      assert.equal(await page.locator("#reauth-oidc-help").isVisible(), true);
+      await page.screenshot({path: path.join(screenshots, `reauth-${width}.png`)});
+      completeMode = "reauthenticated";
+      await page.locator('#reauth-form button[type="submit"]').click();
+      await page.waitForURL(`${center}/authorize?state=synthetic-reauth-state`);
+      await page.locator("#authorize").click();
+      await page.waitForURL(`${gateway}/?verified=water5#billing`);
+      await page.evaluate(() => start());
+      assert.equal(page.url(), `${gateway}/#billing`);
+      assert.match(await page.locator("#notice").textContent(), /请重新执行/);
+      assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+      assert.equal(requests.some((value) => value.path.includes("purchase") || value.path === "/admin/password"), false,
+        "returning from SSO cannot replay purchases or password saves");
+    }
+    state.recently_verified = false;
+    await initialize();
+    await page.evaluate(() => {reauthenticate().catch(() => {});});
+    holdReauth = true; releaseReauth = undefined;
+    await page.locator('#reauth-form button[type="submit"]').click();
+    await waitForSignal(() => releaseReauth);
+    await page.locator("#reauth-dialog [data-close]").click();
+    const cancelledBegins = count("/auth/oidc/cancel");
+    releaseReauth(); holdReauth = false;
+    await waitForSignal(() => count("/auth/oidc/cancel") > cancelledBegins);
+    assert.deepEqual(requests.filter((value) => value.path === "/auth/oidc/cancel").at(-1).body, {flow_id: "synthetic-reauth-state"});
+    assert.equal(page.url(), `${gateway}/#security`, "cancelled late reauth begin cannot navigate");
+
+    // Unlinking after an SSO return must reuse the newly granted window, so
+    // the required manual retry can finish instead of redirecting forever.
+    state.login_methods.password = true;
+    state.recently_verified = false;
+    await initialize();
+    const unlinkStarts = count("/admin/identity-link"), unlinkProofs = count("/auth/oidc/reauth/begin");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#identity-link-unlink").click();
+    await page.locator("#reauth-dialog").waitFor({state: "visible"});
+    await page.locator('#reauth-form select[name="method"]').selectOption("oidc");
+    await page.locator('#reauth-form button[type="submit"]').click();
+    await page.waitForURL(`${center}/authorize?state=synthetic-reauth-state`);
+    assert.equal(count("/admin/identity-link"), unlinkStarts, "SSO navigation cannot perform the original unlink");
+    await page.locator("#authorize").click();
+    await page.waitForURL(`${gateway}/?verified=water5#security`);
+    await page.evaluate(() => start());
+    assert.equal(count("/admin/identity-link"), unlinkStarts, "returning from SSO requires an explicit retry");
+    page.once("dialog", (dialog) => dialog.accept());
+    await page.locator("#identity-link-unlink").click();
+    await page.waitForURL(`${gateway}/`);
+    assert.equal(count("/admin/identity-link"), unlinkStarts + 1);
+    assert.equal(count("/auth/oidc/reauth/begin"), unlinkProofs + 1, "manual retry reuses the SSO verification window");
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: browser.version(), checks: "cross-site HTTPS Strict cookie GET/POST, URL removal before fetch, no browser storage, desktop/mobile login/security/confirmation, reauth cancel, explicit single-use confirm/cancel, unlink cancel/proof/logout, missing transaction, denied/duplicate callback, stale session, late callback/begin after pagehide/logout, bfcache invalidation, login return, center launch with automatic same-origin login, existing session, disabled OIDC, storage failure, duplicate launch markers", screenshots}));
+    console.log(JSON.stringify({browser: browser.version(), checks: "cross-site HTTPS Strict cookies, URL removal before fetch, no credential storage, desktop/mobile login/security/confirmation/registration/reauth, explicit first-login cancel/bind/create, single-use confirmation/creation, fixed local login guide, SSO-only optional credentials and unlink protection, same-tab reauth return with server refresh and no mutation replay, exact-flow late cancellation, stale sessions, bfcache, center launch, disabled OIDC and storage failure", screenshots}));
   } finally {
-    releaseComplete?.(); releaseBegin?.(); releaseConfig?.();
+    releaseComplete?.(); releaseBegin?.(); releaseConfig?.(); releaseReauth?.();
     await browser?.close();
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));

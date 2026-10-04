@@ -18,11 +18,12 @@
         <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow">CODEX GATEWAY</p>
         <h1>安全进入你的工作边界</h1>
-        <p>使用 Passkey，或使用用户名与密码登录。</p>
+        <p>选择一种登录方式进入控制台。</p>
         <p id="login-error" class="form-message hidden" role="alert"></p>
         <div class="auth-actions">
           <button id="login" type="button">使用 Passkey 登录</button>
           <button id="oidc-login" class="secondary hidden" type="button">使用吾水阁账号登录</button>
+          <p id="oidc-link-guidance" class="muted hidden">请用本站密码或 Passkey 登录已有账号，再到账号安全完成吾水阁账号绑定。</p>
           <a href="/recover">使用恢复码</a>
         </div>
         <form id="password-login-form" class="auth-method-form">
@@ -588,6 +589,7 @@
               <article id="identity-link-panel" class="panel hidden">
                 <div class="panel-heading"><h3>吾水阁账号</h3></div>
                 <p id="identity-link-status"></p>
+                <p id="identity-link-guidance" class="muted hidden"></p>
                 <p class="muted">绑定后可使用吾水阁账号登录。原密码、Passkey 和业务数据保持不变。解绑会退出该绑定产生的统一登录会话。</p>
                 <div class="button-row">
                   <button id="identity-link-begin" type="button">绑定吾水阁账号</button>
@@ -1165,11 +1167,12 @@
     <form id="reauth-form">
       <div class="dialog-heading"><p class="eyebrow">VERIFY</p><h2 id="reauth-dialog-title">再次验证身份</h2><p>选择一种现有登录方式以解锁敏感操作。</p></div>
       <label>验证方式
-        <select name="method"><option value="passkey">Passkey</option><option value="password">密码</option></select>
+        <select name="method"><option value="passkey">Passkey</option><option value="password">密码</option><option value="oidc">使用吾水阁账号验证</option></select>
       </label>
       <div class="reauth-password hidden"><label>密码
         <input name="password" type="password" autocomplete="current-password">
       </label></div>
+      <p id="reauth-oidc-help" class="muted hidden">将前往吾水阁账号中心验证。返回后请重新执行操作，未保存的内容不会自动提交。</p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">验证</button></div>
     </form>

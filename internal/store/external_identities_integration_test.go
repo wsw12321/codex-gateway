@@ -71,7 +71,7 @@ func TestExternalIdentityLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := s.CompleteExternalLogin(ctx, CompleteExternalLoginParams{Issuer: externalIdentityTestIssuer,
-		Subject: "unbound", Session: externalIdentityTestSession(t, "", at), At: at}); !errors.Is(err, ErrNotFound) {
+		Subject: "unbound", Session: externalIdentityTestSession(t, "", at), At: at}); !errors.Is(err, ErrExternalIdentityUnbound) {
 		t.Fatalf("unbound login = %v", err)
 	}
 	var afterCount int
@@ -86,20 +86,14 @@ func TestExternalIdentityLifecyclePostgresIntegration(t *testing.T) {
 		t.Helper()
 		loggedIn, session, err := s.CompleteExternalLogin(ctx, CompleteExternalLoginParams{Issuer: externalIdentityTestIssuer,
 			Subject: "bound-user", Session: externalIdentityTestSession(t, "", at), At: at})
-		if err != nil || loggedIn.ID != user.ID || session.UserID != user.ID || session.ExternalIdentityID == nil || *session.ExternalIdentityID != identity.ID || session.RecentlyVerifiedAt != nil {
+		if err != nil || loggedIn.ID != user.ID || session.UserID != user.ID || session.ExternalIdentityID == nil || *session.ExternalIdentityID != identity.ID || session.RecentlyVerifiedAt == nil || !session.RecentlyVerifiedAt.Equal(at) {
 			t.Fatalf("%s login changed ownership/source/verification: user=%+v session=%+v err=%v", label, loggedIn, session, err)
 		}
 		return session
 	}
 	one, two := login("first"), login("second")
-	if _, err := s.UnlinkExternalIdentity(ctx, user.ID, one.ID, at); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("external auth granted local verification: %v", err)
-	}
 	if _, err := s.LinkExternalIdentity(ctx, LinkExternalIdentityParams{UserID: user.ID, SessionID: local.ID, Issuer: externalIdentityTestIssuer, Subject: "bound-user", At: at}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("duplicate confirm = %v", err)
-	}
-	if err := s.MarkSessionVerified(ctx, one.ID, at); err != nil {
-		t.Fatal(err)
 	}
 	removed, err := s.UnlinkExternalIdentity(ctx, user.ID, one.ID, at)
 	if err != nil || removed.ID != identity.ID || removed.UnlinkedAt == nil {
@@ -110,7 +104,7 @@ func TestExternalIdentityLifecyclePostgresIntegration(t *testing.T) {
 			t.Fatalf("external session survived unlink: %v", err)
 		}
 	}
-	if current, err := s.GetActiveSession(ctx, local.TokenHash, at); err != nil || current.ExternalIdentityID != nil {
+	if current, err := s.GetActiveSession(ctx, local.TokenHash, at); err != nil || current.ExternalIdentityID != nil || current.RecentlyVerifiedAt != nil {
 		t.Fatalf("local session changed or revoked: %+v %v", current, err)
 	}
 	if got, err := s.GetPasswordCredential(ctx, user.ID); err != nil || got.EncodedHash != strings.Repeat("x", 80) {
@@ -124,6 +118,9 @@ func TestExternalIdentityLifecyclePostgresIntegration(t *testing.T) {
 	}
 	if _, err := s.GetExternalIdentity(ctx, user.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unlinked identity still active: %v", err)
+	}
+	if err := s.MarkSessionVerified(ctx, local.ID, at); err != nil {
+		t.Fatal(err)
 	}
 	newIdentity := externalIdentityTestLink(t, ctx, s, user.ID, local.ID, "bound-user", at)
 	if newIdentity.ID == identity.ID {
@@ -259,7 +256,15 @@ func TestExternalIdentityConcurrencyPostgresIntegration(t *testing.T) {
 	t.Run("unlink revokes racing logins", func(t *testing.T) {
 		user := globalUsageIntegrationUser(t, ctx, s, "racing-login", UserRoleMember)
 		local := externalIdentityTestLocalSession(t, ctx, s, user.ID, at)
+		if err := s.SetPassword(ctx, user.ID, local.ID, strings.Repeat("x", 80), at); err != nil {
+			t.Fatal(err)
+		}
 		for i := range 12 {
+			if i > 0 {
+				if err := s.MarkSessionVerified(ctx, local.ID, at); err != nil {
+					t.Fatal(err)
+				}
+			}
 			identity := externalIdentityTestLink(t, ctx, s, user.ID, local.ID, user.ID, at)
 			params := CompleteExternalLoginParams{Issuer: externalIdentityTestIssuer, Subject: user.ID, Session: externalIdentityTestSession(t, "", at), At: at}
 			var session Session
@@ -270,7 +275,7 @@ func TestExternalIdentityConcurrencyPostgresIntegration(t *testing.T) {
 			wg.Go(func() { <-start; _, unlinkErr = s.UnlinkExternalIdentity(ctx, user.ID, local.ID, at) })
 			close(start)
 			wg.Wait()
-			if unlinkErr != nil || (loginErr != nil && !errors.Is(loginErr, ErrNotFound)) {
+			if unlinkErr != nil || (loginErr != nil && !errors.Is(loginErr, ErrNotFound) && !errors.Is(loginErr, ErrExternalIdentityUnbound)) {
 				t.Fatalf("round %d: login=%v unlink=%v", i, loginErr, unlinkErr)
 			}
 			if loginErr == nil {

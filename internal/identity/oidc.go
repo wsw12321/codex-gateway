@@ -46,11 +46,12 @@ type OIDCIdentity struct {
 // OIDC is a fixed-issuer confidential client. Construction is offline; discovery
 // is fetched once on demand. The provider retains a concurrent, rotating JWKS cache.
 type OIDC struct {
-	issuer       *url.URL
-	clientID     string
-	clientSecret string
-	redirectURL  string
-	client       *http.Client
+	issuer           *url.URL
+	authorizationURL string
+	clientID         string
+	clientSecret     string
+	redirectURL      string
+	client           *http.Client
 
 	mu          sync.Mutex
 	provider    *oidc.Provider
@@ -78,7 +79,8 @@ func NewOIDC(cfg config.Config) (*OIDC, error) {
 	transport.MaxIdleConnsPerHost = 2
 	return &OIDC{
 		issuer: issuer, clientID: cfg.OIDCClientID, clientSecret: cfg.OIDCClientSecret,
-		redirectURL: cfg.PublicURL.Scheme + "://" + cfg.PublicURL.Host + "/auth/oidc/callback",
+		authorizationURL: cfg.OIDCAuthorizationURL,
+		redirectURL:      cfg.PublicURL.Scheme + "://" + cfg.PublicURL.Host + "/auth/oidc/callback",
 		client: &http.Client{
 			Transport: &oidcTransport{issuer: issuer, base: transport},
 			Timeout:   oidcRequestTimeout,
@@ -230,6 +232,12 @@ func (o *OIDC) configureProvider(provider *oidc.Provider) error {
 		return ErrOIDCUnavailable
 	}
 	endpoint.AuthStyle = oauth2.AuthStyleInHeader
+	// The account center may proxy browser authorization. Its deployment-owned
+	// URL changes only the redirect destination, after validating discovery;
+	// token exchange and JWKS remain restricted to the trusted issuer.
+	if o.authorizationURL != "" {
+		endpoint.AuthURL = o.authorizationURL
+	}
 	verifier := provider.Verifier(&oidc.Config{ClientID: o.clientID, SupportedSigningAlgs: algorithms})
 	o.mu.Lock()
 	defer o.mu.Unlock()

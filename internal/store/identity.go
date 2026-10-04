@@ -114,8 +114,9 @@ func (s *Store) LoginMethods(ctx context.Context, userID string) (LoginMethods, 
 	var methods LoginMethods
 	err := s.db.QueryRowContext(ctx, `
 		SELECT EXISTS (SELECT 1 FROM webauthn_credentials WHERE user_id = $1),
-		       EXISTS (SELECT 1 FROM password_credentials WHERE user_id = $1)`, userID,
-	).Scan(&methods.Passkey, &methods.Password)
+		       EXISTS (SELECT 1 FROM password_credentials WHERE user_id = $1),
+		       EXISTS (SELECT 1 FROM external_identities WHERE user_id = $1 AND unlinked_at IS NULL)`, userID,
+	).Scan(&methods.Passkey, &methods.Password, &methods.OIDC)
 	return methods, mapDBError("get login methods", err)
 }
 
@@ -598,10 +599,12 @@ func (s *Store) TouchSession(ctx context.Context, sessionID string, at time.Time
 }
 
 func (s *Store) MarkSessionVerified(ctx context.Context, sessionID string, at time.Time) error {
+	at = at.UTC().Truncate(time.Microsecond)
 	result, err := s.db.ExecContext(ctx, `
 		UPDATE sessions SET recently_verified_at = $2
 		WHERE id = $1 AND revoked_at IS NULL
-		  AND idle_expires_at > $2 AND absolute_expires_at > $2`, sessionID, at,
+		  AND idle_expires_at > $2 AND absolute_expires_at > $2
+		  AND (recently_verified_at IS NULL OR recently_verified_at < $2)`, sessionID, at,
 	)
 	if err != nil {
 		return mapDBError("mark session verified", err)

@@ -123,6 +123,10 @@ func (s *Server) finishRecovery(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	session := sessionFrom(r.Context())
+	if err := s.cancelOIDCReauthenticationOnSessionChange(r); err != nil {
+		internalError(s, w, r, "cancel OIDC reauthentication on logout", err)
+		return
+	}
 	if err := s.cancelOIDCFlows(r); err != nil {
 		internalError(s, w, r, "cancel OIDC login on logout", err)
 		return
@@ -485,7 +489,7 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 	var verificationExpires *time.Time
 	if session.RecentlyVerifiedAt != nil {
 		value := session.RecentlyVerifiedAt.Add(s.config.ReauthMaxAge)
-		if value.After(now) {
+		if !session.RecentlyVerifiedAt.After(now) && value.After(now) {
 			recent = true
 			verificationExpires = &value
 		}
@@ -499,6 +503,7 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.ExternalIdentity = externalIdentityView(s.config.OIDCEnabled, link)
+	response.LoginMethods.OIDC = s.config.OIDCEnabled && link.ID != ""
 	response.BrowserClientEnabled = s.config.BrowserClientURL != nil
 	writeJSON(w, http.StatusOK, response)
 }
@@ -657,6 +662,10 @@ func (s *Server) storeWriteError(w http.ResponseWriter, r *http.Request, operati
 }
 
 func (s *Server) setSessionCookie(w http.ResponseWriter, r *http.Request, token string) bool {
+	if err := s.cancelOIDCReauthenticationOnSessionChange(r); err != nil {
+		internalError(s, w, r, "cancel OIDC reauthentication on local authentication", err)
+		return false
+	}
 	if err := s.cancelOIDCFlows(r); err != nil {
 		internalError(s, w, r, "cancel OIDC login on local authentication", err)
 		return false

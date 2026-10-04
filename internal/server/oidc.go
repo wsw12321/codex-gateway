@@ -28,21 +28,39 @@ type oidcFlow struct {
 	Kind                   string
 	Browser                [32]byte
 	UserID, SessionID      string
+	ExternalIdentityID     string
 	Nonce, Verifier        string
 	Identity               identity.OIDCIdentity
+	VerifiedAt             time.Time
 	Expires, VerifiedUntil time.Time
+	retainUntil            time.Time
 	key                    [32]byte
+	originalKey            [32]byte
 	consumed               bool
 	lifecycle              *oidcFlowLifecycle
 }
 
-// Retain cancellation and issued-session metadata until the original flow TTL,
-// including after take. A late response can otherwise restore a login after
-// another tab logs in or out. No session token is retained here.
+// Retain cancellation metadata after take, through the original flow TTL and
+// any verification window it grants. A late response can otherwise restore a
+// login or proof after another tab logs in or out. No session token is retained.
 type oidcFlowLifecycle struct {
-	mu              sync.Mutex
-	cancelled       atomic.Bool
-	issuedSessionID string
+	mu                sync.Mutex
+	cancelled         atomic.Bool
+	issuedSessionID   string
+	verifiedUserID    string
+	verifiedSessionID string
+	verifiedAt        time.Time
+}
+
+type oidcFlowEffects struct {
+	issuedSessionID                   string
+	verifiedUserID, verifiedSessionID string
+	verifiedAt                        time.Time
+}
+
+func (l *oidcFlowLifecycle) cancel() oidcFlowEffects {
+	l.cancelled.Store(true)
+	return oidcFlowEffects{l.issuedSessionID, l.verifiedUserID, l.verifiedSessionID, l.verifiedAt}
 }
 
 func (flow oidcFlow) active(now time.Time) bool {
@@ -68,7 +86,7 @@ func (f *oidcFlowStore) put(flow oidcFlow, now time.Time) (string, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for key, entry := range f.entries {
-		if !entry.Expires.After(now) {
+		if !entry.retainUntil.After(now) {
 			delete(f.entries, key)
 		}
 	}
@@ -77,6 +95,8 @@ func (f *oidcFlowStore) put(flow oidcFlow, now time.Time) (string, bool) {
 	}
 	key := oidcRandom()
 	flow.key = sha256.Sum256([]byte(key))
+	flow.originalKey = flow.key
+	flow.retainUntil = flow.Expires
 	if flow.lifecycle == nil {
 		flow.lifecycle = &oidcFlowLifecycle{}
 	}
@@ -95,7 +115,9 @@ func (f *oidcFlowStore) take(key, browser string, now time.Time) (oidcFlow, bool
 		return oidcFlow{}, false
 	}
 	if !flow.Expires.After(now) {
-		delete(f.entries, digest)
+		if !flow.retainUntil.After(now) {
+			delete(f.entries, digest)
+		}
 		return oidcFlow{}, false
 	}
 	if flow.consumed || !flow.active(now) || flow.Browser != sha256.Sum256([]byte(browser)) {
@@ -109,7 +131,7 @@ func (f *oidcFlowStore) take(key, browser string, now time.Time) (oidcFlow, bool
 	f.entries[digest] = retained
 	return flow, true
 }
-func (f *oidcFlowStore) discardBrowser(browser string) []string {
+func (f *oidcFlowStore) discardBrowser(browser string) []oidcFlowEffects {
 	if browser == "" {
 		return nil
 	}
@@ -122,18 +144,80 @@ func (f *oidcFlowStore) discardBrowser(browser string) []string {
 		}
 	}
 	f.mu.Unlock()
-	var sessions []string
+	var effects []oidcFlowEffects
 	for _, lifecycle := range lifecycles {
 		// Final issuance holds this per-flow lock until its response headers
 		// are set. Cancellation then sees and revokes any issued session.
 		lifecycle.mu.Lock()
-		lifecycle.cancelled.Store(true)
-		if lifecycle.issuedSessionID != "" {
-			sessions = append(sessions, lifecycle.issuedSessionID)
-		}
+		effects = append(effects, lifecycle.cancel())
 		lifecycle.mu.Unlock()
 	}
-	return sessions
+	return effects
+}
+
+// Cancellation can use the original authorization state even after its key
+// rotates for confirmation. It never cancels another tab's newer transaction.
+func (f *oidcFlowStore) cancel(key, browser string, now time.Time) (oidcFlowEffects, bool) {
+	if len(key) != 43 || len(browser) != 43 {
+		return oidcFlowEffects{}, false
+	}
+	digest, browserDigest := sha256.Sum256([]byte(key)), sha256.Sum256([]byte(browser))
+	f.mu.Lock()
+	var lifecycle *oidcFlowLifecycle
+	for _, flow := range f.entries {
+		if (flow.key == digest || flow.originalKey == digest) && flow.Browser == browserDigest && flow.retainUntil.After(now) {
+			lifecycle = flow.lifecycle
+			break
+		}
+	}
+	f.mu.Unlock()
+	if lifecycle == nil {
+		return oidcFlowEffects{}, false
+	}
+	lifecycle.mu.Lock()
+	defer lifecycle.mu.Unlock()
+	return lifecycle.cancel(), true
+}
+
+// Successful reauthentication clears the transaction cookie. The original
+// authenticated session remains a browser credential for late cancellation,
+// including a page departure after headers but before consuming the response.
+// An empty key is used only by local login/logout to cancel that old session's
+// reauthentication flows; linking and ordinary begin never call this path.
+func (f *oidcFlowStore) cancelSessionReauthentication(key string, session store.Session, now time.Time) []oidcFlowEffects {
+	if session.ID == "" || (key != "" && len(key) != 43) {
+		return nil
+	}
+	digest := sha256.Sum256([]byte(key))
+	f.mu.Lock()
+	var lifecycles []*oidcFlowLifecycle
+	for _, flow := range f.entries {
+		if flow.Kind == "reauth" && flow.UserID == session.UserID && flow.SessionID == session.ID && flow.retainUntil.After(now) &&
+			(key == "" || flow.key == digest || flow.originalKey == digest) {
+			lifecycles = append(lifecycles, flow.lifecycle)
+		}
+	}
+	f.mu.Unlock()
+	var effects []oidcFlowEffects
+	for _, lifecycle := range lifecycles {
+		lifecycle.mu.Lock()
+		effects = append(effects, lifecycle.cancel())
+		lifecycle.mu.Unlock()
+	}
+	return effects
+}
+
+// Keep cancellation metadata as long as this proof can authorize an action,
+// even when exchange finished near the original ceremony deadline. This never
+// extends the deadline for consuming or completing a flow.
+func (f *oidcFlowStore) retainVerificationCancellation(flow oidcFlow, until time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	entry, ok := f.entries[flow.key]
+	if ok && entry.lifecycle == flow.lifecycle && until.After(entry.retainUntil) {
+		entry.retainUntil = until
+		f.entries[flow.key] = entry
+	}
 }
 
 // confirmation rotates the authorization key without losing its cancellation
@@ -162,6 +246,8 @@ type oidcRepository interface {
 	GetExternalIdentity(context.Context, string) (store.ExternalIdentity, error)
 	LinkExternalIdentity(context.Context, store.LinkExternalIdentityParams) (store.ExternalIdentity, error)
 	UnlinkExternalIdentity(context.Context, string, string, time.Time) (store.ExternalIdentity, error)
+	CompleteExternalReauthentication(context.Context, store.CompleteExternalReauthenticationParams) (time.Time, error)
+	ClearSessionVerificationIfCurrent(context.Context, string, string, time.Time) error
 	RevokeSession(context.Context, string, string, time.Time) error
 	AppendAuditEvent(context.Context, store.AppendAuditEventParams) (store.AuditEvent, error)
 }
@@ -180,6 +266,10 @@ func (s *Server) oidcRoutes() {
 	s.mux.HandleFunc("GET /static/oidc-callback.js", s.oidcCallbackJavascript)
 	s.publicPOST("/auth/oidc/login", s.beginOIDCLogin)
 	s.publicPOST("/auth/oidc/complete", s.completeOIDC)
+	s.publicPOST("/auth/oidc/register", s.registerOIDC)
+	s.publicPOST("/auth/oidc/register/cancel", s.cancelOIDCRegistration)
+	s.publicPOST("/auth/oidc/cancel", s.cancelOIDC)
+	s.browserPOST("/auth/oidc/reauth/begin", s.requireSession(http.HandlerFunc(s.beginOIDCReauthentication)))
 	s.browserPOST("/admin/identity-link/begin", s.requireRecentVerification(http.HandlerFunc(s.beginIdentityLink)))
 	s.browserPOST("/admin/identity-link/confirm", s.requireRecentVerification(http.HandlerFunc(s.confirmIdentityLink)))
 	s.browserPOST("/admin/identity-link/cancel", s.requireSession(http.HandlerFunc(s.cancelIdentityLink)))
@@ -208,12 +298,38 @@ func (s *Server) cancelOIDCFlows(r *http.Request) error {
 	if s.oidcFlows == nil {
 		return nil
 	}
-	for _, sessionID := range s.oidcFlows.discardBrowser(oidcBrowser(r)) {
-		if err := s.revokeOIDCSession(r, sessionID); err != nil {
-			return err
-		}
+	var errs []error
+	for _, effects := range s.oidcFlows.discardBrowser(oidcBrowser(r)) {
+		errs = append(errs, s.clearOIDCEffects(r, effects))
 	}
-	return nil
+	return errors.Join(errs...)
+}
+
+func (s *Server) cancelOIDCReauthenticationOnSessionChange(r *http.Request) error {
+	if s.oidcFlows == nil {
+		return nil
+	}
+	session, err := s.oidcCurrentSession(r)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, effects := range s.oidcFlows.cancelSessionReauthentication("", session, time.Now()) {
+		errs = append(errs, s.clearOIDCEffects(r, effects))
+	}
+	return errors.Join(errs...)
+}
+
+func (s *Server) clearOIDCEffects(r *http.Request, effects oidcFlowEffects) error {
+	if effects.issuedSessionID != "" {
+		return s.revokeOIDCSession(r, effects.issuedSessionID)
+	}
+	if effects.verifiedSessionID == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+	defer cancel()
+	return s.oidcRepository().ClearSessionVerificationIfCurrent(ctx, effects.verifiedUserID, effects.verifiedSessionID, effects.verifiedAt)
 }
 
 func (s *Server) revokeOIDCSession(r *http.Request, sessionID string) error {
@@ -235,7 +351,7 @@ func (s *Server) oidcAudit(r *http.Request, flow oidcFlow, operation string, suc
 }
 func (s *Server) rejectOIDC(w http.ResponseWriter, r *http.Request, flow oidcFlow) {
 	s.oidcAudit(r, flow, "oidc_rejected", false)
-	httpx.WriteError(w, r, http.StatusBadRequest, "authentication_error", "oidc_rejected", "授权流程无效或已过期，请返回网关重新开始。绑定需要保持原账号登录，且在本地身份验证后 5 分钟内确认。")
+	httpx.WriteError(w, r, http.StatusBadRequest, "authentication_error", "oidc_rejected", "授权流程无效或已过期，请返回网关重新开始。绑定或再次验证需要保持原账号及原会话登录。")
 }
 
 // Optional authentication is fail-closed on storage errors. An old or malformed
@@ -359,12 +475,17 @@ func (s *Server) completeOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	browser := oidcBrowser(r)
 	flow, ok := s.oidcFlows.take(input.State, browser, time.Now())
-	if !ok || (flow.Kind != "login" && flow.Kind != "link") || input.Error != "" || input.Code == "" || len(input.Code) > 8192 {
+	if !ok || (flow.Kind != "login" && flow.Kind != "link" && flow.Kind != "reauth") || input.Error != "" || input.Code == "" || len(input.Code) > 8192 {
 		s.rejectOIDC(w, r, flow)
 		return
 	}
 	if flow.Kind == "login" {
 		if !s.oidcRequireLoggedOut(w, r) {
+			return
+		}
+	} else if flow.Kind == "reauth" {
+		if !s.oidcReauthenticationSession(r, flow) {
+			s.rejectOIDC(w, r, flow)
 			return
 		}
 	} else if _, ok := s.oidcOriginalSession(r, flow); !ok {
@@ -376,6 +497,9 @@ func (s *Server) completeOIDC(w http.ResponseWriter, r *http.Request) {
 		s.rejectOIDC(w, r, flow)
 		return
 	}
+	// Capture successful exchange time before waiting for locks or a user's
+	// provisioning choice. Neither step may refresh the verification window.
+	flow.VerifiedAt = time.Now().UTC().Truncate(time.Microsecond)
 	// Provider I/O runs without a lock. Final database mutation and response
 	// serialize with local login/logout for this browser transaction only.
 	flow.lifecycle.mu.Lock()
@@ -388,31 +512,33 @@ func (s *Server) completeOIDC(w http.ResponseWriter, r *http.Request) {
 		if !s.oidcRequireLoggedOut(w, r) {
 			return
 		}
-		result, err := s.identity.LoginExternal(r.Context(), external, httpx.ClientIP(r.Context()), r.UserAgent())
+		result, err := s.identity.LoginExternalAt(r.Context(), external, flow.VerifiedAt, httpx.ClientIP(r.Context()), r.UserAgent())
+		if errors.Is(err, store.ErrExternalIdentityUnbound) {
+			flow.Kind, flow.Identity = "register", external
+			flow.Nonce, flow.Verifier = "", ""
+			key, ok := s.oidcFlows.confirmation(flow, time.Now())
+			if !ok {
+				s.rejectOIDC(w, r, flow)
+				return
+			}
+			s.oidcAudit(r, flow, "registration_offered", true)
+			writeJSON(w, http.StatusOK, map[string]any{"result": "registration_required", "flow_id": key, "masked_email": external.MaskedEmail, "expires_at": flow.Expires})
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			s.oidcAudit(r, flow, "oidc_login_rejected", false)
-			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "oidc_account_unavailable", "此吾水阁账号尚未绑定可用的网关账号。请先使用原密码或 Passkey 登录网关，并在账号安全中绑定。")
+			httpx.WriteError(w, r, http.StatusForbidden, "authentication_error", "oidc_account_unavailable", "绑定账号不可用或绑定已失效，请重新登录或联系管理员。")
 			return
 		}
 		if err != nil {
 			internalError(s, w, r, "create external login session", err)
 			return
 		}
-		flow.lifecycle.issuedSessionID = result.SessionID
-		if !flow.active(time.Now()) || r.Context().Err() != nil {
-			flow.lifecycle.cancelled.Store(true)
-			if err := s.revokeOIDCSession(r, result.SessionID); err != nil {
-				internalError(s, w, r, "revoke expired OIDC login", err)
-				return
-			}
-			s.rejectOIDC(w, r, flow)
-			return
-		}
-		s.setOIDCCookie(w, "", -1)
-		s.writeSessionCookie(w, result.SessionToken)
-		flow.UserID = result.User.ID
-		s.oidcAudit(r, flow, "login", true)
-		writeJSON(w, http.StatusOK, map[string]string{"result": "login"})
+		s.finishOIDCLogin(w, r, flow, result, "login")
+		return
+	}
+	if flow.Kind == "reauth" {
+		s.completeOIDCReauthentication(w, r, flow, external)
 		return
 	}
 	user, ok := s.oidcOriginalSession(r, flow)
@@ -499,6 +625,11 @@ func (s *Server) cancelIdentityLink(w http.ResponseWriter, r *http.Request) {
 func (s *Server) unlinkIdentity(w http.ResponseWriter, r *http.Request) {
 	session := sessionFrom(r.Context())
 	link, err := s.oidcRepository().UnlinkExternalIdentity(r.Context(), session.UserID, session.ID, time.Now().UTC())
+	if errors.Is(err, store.ErrLastLoginMethod) {
+		s.oidcAudit(r, oidcFlow{UserID: session.UserID, SessionID: session.ID}, "unlink_rejected", false)
+		httpx.WriteError(w, r, http.StatusConflict, "authentication_error", "last_login_method", "吾水阁账号是当前唯一登录方式，请先添加密码或 Passkey 后再解绑。")
+		return
+	}
 	if err != nil {
 		s.rejectOIDC(w, r, oidcFlow{UserID: session.UserID, SessionID: session.ID})
 		return
