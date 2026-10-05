@@ -21,7 +21,7 @@ const models = [
 ];
 
 async function main() {
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
@@ -34,8 +34,13 @@ async function main() {
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      // Losing Owner privileges redirects to the member overview.
+      if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
+      if (url.pathname === "/admin/usage") return send({summary: {requests: 0, tokens: 0, error_rate: 0}, requests: []});
       if (url.pathname === "/admin/billing/model-multipliers") {
         const result = {models: models.map((row) => ({...row}))};
         if (holdRead) { const callback = holdRead; holdRead = null; callback(() => send(result)); return; }

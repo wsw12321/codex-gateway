@@ -38,6 +38,8 @@ async function main() {
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/app.js") return send(application, 200, "application/javascript");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/users") return send({users: [owner, member]});
       if (url.pathname === "/admin/state") {

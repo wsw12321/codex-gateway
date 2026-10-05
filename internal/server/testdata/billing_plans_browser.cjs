@@ -31,7 +31,7 @@ const billing = (id = member.id) => ({user: id === member.id ? activeState.user 
 
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN", timezoneId: "Asia/Shanghai"});
     const page = await context.newPage(), errors = [], writes = [], committed = new Map();
@@ -44,6 +44,8 @@ async function main() {
       const send = (value, contentType = "application/json") => route.fulfill({status: 200, contentType, body: typeof value === "string" ? value : JSON.stringify(value)});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(app, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/plans" && request.method() === "GET") return send({plans});

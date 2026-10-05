@@ -3,7 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Codex Gateway 管理控制台</title>
+  <meta name="description" content="水源喵中转站，在一处连接 AI 模型，管理你的凭证、用量与额度。">
+  <meta name="theme-color" content="#f4f8f7">
+  <title>水源喵 · AI 中转站</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/app.js" defer></script>
 </head>
@@ -13,35 +17,63 @@
   <p id="operation-status" class="sr-only" role="status" aria-live="polite"></p>
 
   <main id="main-content" tabindex="-1">
-    <section id="auth" class="auth-shell" aria-label="身份验证">
-      <section id="login-view" class="panel auth-card hidden">
-        <div class="auth-mark" aria-hidden="true">CG</div>
-        <p class="eyebrow">CODEX GATEWAY</p>
-        <h1>安全进入你的工作边界</h1>
-        <p>选择一种登录方式进入控制台。</p>
-        <p id="login-error" class="form-message hidden" role="alert"></p>
-        <div class="auth-actions">
-          <button id="login" type="button">使用 Passkey 登录</button>
-          <button id="oidc-login" class="secondary hidden" type="button">使用吾水阁账号登录</button>
-          <p id="oidc-link-guidance" class="muted hidden">请用本站密码或 Passkey 登录已有账号，再到账号安全完成吾水阁账号绑定。</p>
-          <a href="/recover">使用恢复码</a>
+    <section id="auth" class="auth-page" aria-label="身份验证">
+      <header class="auth-header">
+        <a class="auth-brand" href="/" aria-label="水源喵中转站首页">
+          <img src="/static/favicon.svg" width="42" height="42" alt="">
+          <span><strong>水源喵</strong><small>SHUIYUAN MIAO</small></span>
+        </a>
+        <div class="auth-header-actions">
+          <a class="account-center-link" href="https://auth.water555.com" target="_blank" rel="noopener noreferrer">吾水阁账号中心 ↗</a>
+          <div class="theme-switcher" role="group" aria-label="显示模式">
+            <button type="button" data-theme-choice="light" aria-label="浅色模式" aria-pressed="false">浅色</button>
+            <button type="button" data-theme-choice="dark" aria-label="深色模式" aria-pressed="false">深色</button>
+            <button type="button" data-theme-choice="system" aria-label="跟随系统" aria-pressed="true">自动</button>
+          </div>
         </div>
+      </header>
+      <div class="auth-layout">
+        <div class="brand-story">
+          <p class="eyebrow">SHUIYUAN MIAO · AI RELAY</p>
+          <h2>让每一次灵感，<br><span>都有回应。</span></h2>
+          <p class="story-intro">连接模型，也连接你的好奇心。<br>从一行代码到一个新想法，水源喵陪你继续探索。</p>
+          <svg class="water-scene" viewBox="0 0 460 240" fill="none" aria-hidden="true">
+            <ellipse cx="226" cy="173" rx="192" ry="51"/><ellipse cx="226" cy="173" rx="142" ry="36"/><ellipse cx="226" cy="173" rx="84" ry="21"/>
+            <path class="water-cat" d="M190 110 185 51Q184 43 191 47L215 65Q230 60 245 66L267 48Q274 43 273 53L268 114Q265 143 230 146Q195 143 190 110Z"/>
+            <path class="cat-face" d="M207 96q5-7 10 0m22 0q5-7 10 0m-25 11 5 4 5-4m-5 4v5m-9-1q9 9 18 0M195 104l-12-3m13 11-12 2m77-10 12-3m-13 11 12 2"/>
+            <path class="water-spark" d="M319 64v14m-7-7h14M141 39v9m-4.5-4.5h9"/>
+            <circle class="water-point" cx="69" cy="161" r="4"/><circle class="water-point" cx="348" cy="122" r="3"/>
+          </svg>
+          <div class="story-caption"><span>一处接入 · 自在创作</span><span>CODEX / ANTIGRAVITY</span></div>
+        </div>
+        <div class="auth-forms">
+      <section id="login-view" class="panel auth-card hidden">
+        <p class="eyebrow">WELCOME BACK</p>
+        <h1>欢迎回到水源喵</h1>
+        <p class="auth-intro">登录中转站，开始今天的创作。</p>
+        <p id="login-error" class="form-message hidden" role="alert"></p>
         <form id="password-login-form" class="auth-method-form">
           <label>用户名
-            <input name="username" required autocomplete="username">
+            <input name="username" required autocomplete="username" placeholder="输入你的用户名">
           </label>
           <label>密码
-            <input name="password" type="password" required autocomplete="current-password">
+            <input name="password" type="password" required autocomplete="current-password" placeholder="输入你的密码">
           </label>
           <p class="form-message hidden" role="alert"></p>
-          <button type="submit" class="secondary">使用密码登录</button>
+          <button type="submit">使用密码登录 <span aria-hidden="true">→</span></button>
         </form>
+        <div class="auth-divider"><span>或选择其他方式</span></div>
+        <div class="auth-actions">
+          <button id="login" class="secondary" type="button">使用 Passkey 登录</button>
+          <button id="oidc-login" class="secondary hidden" type="button">使用吾水阁账号登录</button>
+          <p id="oidc-link-guidance" class="muted hidden">请用本站密码或 Passkey 登录已有账号，再到账号安全完成吾水阁账号绑定。</p>
+        </div>
+        <p class="auth-card-footer">无法登录？ <a href="/recover">使用恢复码</a></p>
       </section>
 
       <section id="join-view" class="panel auth-card hidden">
-        <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow" id="join-eyebrow">接受邀请</p>
-        <h1 id="join-title">创建本地身份</h1>
+        <h1 id="join-title">加入水源喵</h1>
         <p id="join-help">设置资料后，选择 Passkey 或密码作为首个登录方式。</p>
         <form id="join-form">
           <label id="join-username">用户名
@@ -88,7 +120,6 @@
       </section>
 
       <section id="recover-view" class="panel auth-card hidden">
-        <div class="auth-mark" aria-hidden="true">CG</div>
         <p class="eyebrow">账号恢复</p>
         <h1>使用一次性恢复码</h1>
         <p>成功后，旧会话和整批旧恢复码都会失效；未选择的既有登录方式会保留。</p>
@@ -115,40 +146,43 @@
         </form>
         <a class="back-link" href="/">返回登录</a>
       </section>
+        </div>
+      </div>
+      <footer class="auth-footer"><span>水源喵中转站 · 灵感在此汇流</span><span>由吾水阁连接彼此</span></footer>
     </section>
 
-    <section id="dashboard" class="app hidden" aria-label="Codex Gateway 管理控制台">
+    <section id="dashboard" class="app hidden" aria-label="水源喵中转站控制台">
       <button id="navigation-backdrop" class="navigation-backdrop" type="button" tabindex="-1" aria-label="关闭导航菜单" hidden></button>
       <aside id="sidebar" aria-label="主导航">
         <div class="brand">
-          <span aria-hidden="true">CG</span>
-          <div><strong>Codex Gateway</strong><small>管理控制台</small></div>
+          <img src="/static/favicon.svg" width="40" height="40" alt="">
+          <div><strong>水源喵</strong><small>AI 中转站</small></div>
         </div>
         <button id="navigation-close" class="secondary navigation-close" type="button">关闭菜单</button>
         <nav aria-label="控制台分区">
           <div class="nav-group" aria-labelledby="nav-workspace">
           <p id="nav-workspace" class="nav-group-title">工作台</p>
-          <a href="#overview" data-view="overview">概览</a>
-          <a href="#resources" data-view="resources">设备与项目</a>
-          <a href="#keys" data-view="keys">API Keys</a>
-          <a href="#guide" data-view="guide">使用指导</a>
+          <a href="#overview" data-view="overview"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>概览</a>
+          <a href="#resources" data-view="resources"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>设备与项目</a>
+          <a href="#keys" data-view="keys"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m11.5 11.5 9 9m-3-3 3-3m-6 0 3-3"/></svg>API Keys</a>
+          <a href="#guide" data-view="guide"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5Q7 2 3 4v15q5-2 9 1 4-3 9-1V4q-4-2-9 1Zm0 0v15"/></svg>使用指导</a>
           </div>
           <div class="nav-group" aria-labelledby="nav-billing">
           <p id="nav-billing" class="nav-group-title">用量与账务</p>
-          <a href="#usage" data-view="usage">使用统计</a>
-          <a href="#billing" data-view="billing">额度与订阅</a>
-          <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden">模型倍率</a>
-          <a href="#groups" data-view="groups" class="owner-only hidden">群组额度</a>
+          <a href="#usage" data-view="usage"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v18h17M8 16v-4m5 4V7m5 9V4"/></svg>使用统计</a>
+          <a href="#billing" data-view="billing"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18m-5 6h2"/></svg>额度与订阅</a>
+          <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>模型倍率</a>
+          <a href="#groups" data-view="groups" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 12 0v4M16 4a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5v2"/></svg>群组额度</a>
           </div>
           <div class="nav-group owner-only hidden" aria-labelledby="nav-management">
           <p id="nav-management" class="nav-group-title">管理</p>
-          <a href="#invitations" data-view="invitations" class="owner-only hidden">邀请管理</a>
-          <a href="#monitoring" data-view="monitoring" class="owner-only hidden">请求监控</a>
-          <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden">上游账号</a>
-          <a href="/admin/cpa/" class="owner-only hidden">CPA 授权管理</a>
-          <a href="#model-access" data-view="model-access" class="owner-only hidden">模型权限</a>
-          <a href="#model-identification" data-view="model-identification" class="owner-only hidden">模型鉴别</a>
-          <a href="#information" data-view="information" class="owner-only hidden">数据维护</a>
+          <a href="#invitations" data-view="invitations" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="m3 6 9 7 9-7"/></svg>邀请管理</a>
+          <a href="#monitoring" data-view="monitoring" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5"/></svg>请求监控</a>
+          <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1m5-11h5m-5 11h5"/></svg>上游账号</a>
+          <a href="/admin/cpa/" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 3a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2"/></svg>CPA 授权管理</a>
+          <a href="#model-access" data-view="model-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6q0 6-8 10-8-4-8-10V6Zm-4 9 3 3 5-6"/></svg>模型权限</a>
+          <a href="#model-identification" data-view="model-identification" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6M7 10h6m-3-3v6"/></svg>模型鉴别</a>
+          <a href="#information" data-view="information" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14a8 3 0 0 0 16 0V5M4 12a8 3 0 0 0 16 0"/></svg>数据维护</a>
           </div>
         </nav>
         <div class="profile">
@@ -161,16 +195,28 @@
       <div class="workspace">
         <header class="workspace-header">
           <button id="navigation-toggle" class="secondary navigation-toggle" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="打开导航菜单">菜单</button>
-          <div>
+          <div class="workspace-heading">
+            <p class="workspace-eyebrow">水源喵 / 控制台</p>
             <h1 id="page-title">概览</h1>
           </div>
-          <span id="connection" class="connection" data-state="loading">正在连接</span>
+          <div class="workspace-tools">
+            <span id="connection" class="connection" data-state="loading">正在连接</span>
+            <div class="theme-switcher" role="group" aria-label="显示模式">
+              <button type="button" data-theme-choice="light" aria-label="浅色模式" aria-pressed="false">浅色</button>
+              <button type="button" data-theme-choice="dark" aria-label="深色模式" aria-pressed="false">深色</button>
+              <button type="button" data-theme-choice="system" aria-label="跟随系统" aria-pressed="true">自动</button>
+            </div>
+          </div>
         </header>
 
         <div id="content" tabindex="-1">
           <p id="webauthn-warning" class="callout hidden" role="alert"></p>
           <section class="view" data-section="overview" aria-labelledby="overview-title">
             <h2 id="overview-title" class="sr-only">概览</h2>
+            <div class="overview-welcome">
+              <div><p class="eyebrow">YOUR AI WORKSPACE</p><h2>灵感汇流，从这里开始。</h2><p>你的模型、凭证与用量，都在这一处。</p></div>
+              <a class="button secondary" href="#guide">开始接入 <span aria-hidden="true">↗</span></a>
+            </div>
             <div class="overview-scope"><p>我的账户与最近 7 天</p><div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button><button id="overview-refresh" type="button" class="text-button">刷新概览</button></div></div>
             <div class="metrics overview-personal-metrics">
               <article><span>现金余额</span><strong id="overview-cash">—</strong><small id="overview-billing-updated">正在加载本人账务…</small><button class="text-button" type="button" data-overview-billing>查看账务</button></article>
@@ -1119,7 +1165,7 @@
         <input name="slug" required maxlength="64" pattern="[a-z0-9_-]+" autocomplete="off" placeholder="gateway">
       </label>
       <label>名称
-        <input name="name" required maxlength="120" autocomplete="off" placeholder="Codex Gateway">
+        <input name="name" required maxlength="120" autocomplete="off" placeholder="水源喵">
       </label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">添加项目</button></div>

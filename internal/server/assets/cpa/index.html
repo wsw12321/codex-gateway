@@ -1,4 +1,28 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CPA 账号管理 · Gateway</title>  <script type="module" crossorigin src="/admin/cpa/assets/panel.js"></script>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f8f7">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <title>CPA 账号管理 · 水源喵</title>
+  <script src="/static/theme.js"></script>
+  <script type="module" crossorigin src="/admin/cpa/assets/panel.js"></script>
   <link rel="stylesheet" crossorigin href="/admin/cpa/assets/panel.css">
-</head><body><div id="root"></div></body></html>
+</head>
+<body>
+  <div class="site-header">
+    <a class="brand" href="/" aria-label="返回水源喵中转站">
+      <img class="brand-symbol" src="/static/favicon.svg" width="42" height="42" alt="">
+      <span><strong>水源喵</strong><small>SHUIYUAN MIAO</small></span>
+    </a>
+    <div class="theme-switcher" role="group" aria-label="显示模式">
+      <button type="button" data-theme-choice="light" aria-label="浅色模式" aria-pressed="false">浅色</button>
+      <button type="button" data-theme-choice="dark" aria-label="深色模式" aria-pressed="false">深色</button>
+      <button type="button" data-theme-choice="system" aria-label="跟随系统" aria-pressed="true">自动</button>
+    </div>
+  </div>
+  <div id="root"></div>
+</body>
+</html>

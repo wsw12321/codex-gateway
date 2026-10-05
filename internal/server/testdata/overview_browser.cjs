@@ -26,7 +26,7 @@ const usage = {summary: {requests: 128, tokens: 180234, error_rate: 2 / 128, cha
 
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const page = await browser.newPage({viewport: {width: 1440, height: 1080}, locale: "zh-CN"});
     const errors = [], calls = [];
@@ -38,6 +38,8 @@ async function main() {
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(application, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       calls.push(url.pathname);

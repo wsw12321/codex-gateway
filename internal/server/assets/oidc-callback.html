@@ -4,15 +4,31 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>吾水阁账号授权 · Codex Gateway</title>
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f4f8f7">
+  <title>账号授权 · 水源喵</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <script src="/static/theme.js"></script>
   <script src="/static/oidc-callback.js" defer></script>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="auth-page">
+  <a class="skip-link" href="#oidc-title">跳到授权内容</a>
+  <header class="auth-header">
+    <a class="auth-brand" href="/" aria-label="水源喵首页">
+      <img class="brand-mark" src="/static/favicon.svg" width="40" height="40" alt="">
+      <span><strong>水源喵</strong><small>SHUIYUAN MIAO</small></span>
+    </a>
+    <div class="theme-switcher" role="group" aria-label="显示模式">
+      <button type="button" data-theme-choice="light" aria-label="浅色模式" aria-pressed="false">浅色</button>
+      <button type="button" data-theme-choice="dark" aria-label="深色模式" aria-pressed="false">深色</button>
+      <button type="button" data-theme-choice="system" aria-label="跟随系统显示模式" aria-pressed="true">自动</button>
+    </div>
+  </header>
   <main class="auth-shell">
     <section class="panel auth-card" aria-labelledby="oidc-title">
-      <p class="eyebrow">IDENTITY</p>
-      <h1 id="oidc-title">吾水阁账号授权</h1>
+      <p class="eyebrow">SHUIYUAN MIAO</p>
+      <h1 id="oidc-title" tabindex="-1">吾水阁账号授权</h1>
       <p id="oidc-message" role="status" aria-live="polite">正在验证授权结果…</p>
       <div id="oidc-registration" class="hidden">
         <p id="oidc-registration-account"></p>
@@ -35,15 +51,16 @@
       </div>
       <div id="oidc-preview" class="hidden">
         <p id="oidc-accounts"></p>
-        <p>确认后可使用该吾水阁账号登录原网关账号。请核对两个账号；如有误，请取消并重新开始。</p>
+        <p>确认后可使用该吾水阁账号登录原水源喵账号。请核对两个账号；如有误，请取消并重新开始。</p>
         <p id="oidc-expiry" class="muted"></p>
         <div class="button-row">
           <button id="oidc-confirm" type="button">确认绑定</button>
           <button id="oidc-cancel" type="button" class="secondary">取消绑定</button>
         </div>
       </div>
-      <p><a id="oidc-return" href="/#security">返回网关</a></p>
+      <p><a id="oidc-return" href="/#security">返回水源喵</a></p>
     </section>
   </main>
+  <footer class="auth-footer">水源喵 · 连接每一份灵感</footer>
 </body>
 </html>

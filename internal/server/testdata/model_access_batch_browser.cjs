@@ -19,7 +19,7 @@ const initialState = {user: {id: "user-1", username: "alice", display_name: "Ali
   login_methods: {password: true}, devices: [], projects: [], api_keys: [], passkeys: []};
 
 async function main() {
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, locale: "zh-CN"});
     const page = await context.newPage();
@@ -32,6 +32,8 @@ async function main() {
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/model-access/models") return send({models: models.map((model) => ({model, default_enabled: defaults.get(model), enabled_user_count: users.filter((user) => permissions.get(`${model}/${user.user_id}`)).length, disabled_user_count: users.filter((user) => !permissions.get(`${model}/${user.user_id}`)).length}))});

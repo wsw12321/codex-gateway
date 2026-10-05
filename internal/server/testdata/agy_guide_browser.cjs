@@ -67,7 +67,7 @@ async function verifyLauncher(command, client, expectedOrigin) {
 }
 
 async function main() {
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
@@ -78,6 +78,8 @@ async function main() {
       assert.equal(url.origin, origin);
       if (url.pathname === "/") return route.fulfill({contentType: "text/html", body: fs.readFileSync(path.join(assets, "index.html"), "utf8")});
       if (url.pathname === "/static/style.css") return route.fulfill({contentType: "text/css", body: fs.readFileSync(path.join(assets, "style.css"), "utf8")});
+      if (url.pathname === "/static/theme.js") return route.fulfill({contentType: "application/javascript", body: fs.readFileSync(path.join(assets, "theme.js"), "utf8")});
+      if (url.pathname === "/static/favicon.svg") return route.fulfill({contentType: "image/svg+xml", body: fs.readFileSync(path.join(assets, "favicon.svg"), "utf8")});
       if (url.pathname === "/static/app.js") return route.fulfill({contentType: "application/javascript", body: app});
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       throw new Error(`Unexpected synthetic request: ${url.pathname}`);

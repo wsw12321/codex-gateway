@@ -54,9 +54,9 @@ function App() {
   }, [oauth]);
 
   return <main>
-    <header><div><p className="eyebrow">GATEWAY · OWNER</p><h1>CPA 账号管理</h1><p>维护授权、凭据与供应商额度。</p></div><a href="/">返回 Gateway</a></header>
+    <header className="page-header"><div><p className="eyebrow">水源喵中转站 · 站点管理</p><h1>CPA 账号管理</h1><p>维护授权、凭据与供应商额度。</p></div><a href="/">返回控制台 ↗</a></header>
     <nav aria-label="供应商"><Button disabled={busy} variant={provider === 'codex' ? 'primary' : 'secondary'} onClick={() => setProvider('codex')}>Codex</Button><Button disabled={busy} variant={provider === 'antigravity' ? 'primary' : 'secondary'} onClick={() => setProvider('antigravity')}>Antigravity</Button></nav>
-    <p className="notice">凭据操作需要近期身份验证。若提示验证过期，请返回 Gateway 验证后重试。账号共享、权重、权限和计费在 Gateway 管理。</p>
+    <p className="notice">凭据操作需要近期身份验证。若提示验证过期，请返回控制台验证后重试。账号共享、权重、权限和计费在水源喵控制台管理。</p>
     <div role="status" aria-live="polite" className="message">{message}</div>
     <Card title={`${provider === 'codex' ? 'Codex' : 'Antigravity'} 授权`}>
       <div className="actions"><Button disabled={busy} onClick={() => run(async () => setOAuth(await api.begin(provider)), '请打开授权页面并完成登录')}>新增 / 重新授权</Button><label className="file-label">导入 OAuth 凭据<input type="file" accept="application/json,.json" disabled={busy} onChange={event => {
@@ -69,7 +69,7 @@ function App() {
           finally { for (const key of Object.keys(credentials)) credentials[key] = ''; }
         });
       }}/></label></div>
-      <p className="hint">导入时会验证刷新和真实身份；同一账号重新授权保留 Gateway 权限。迁移旧 Keyring 请使用服务端迁移工具。</p>
+      <p className="hint">导入时会验证刷新和真实身份；同一账号重新授权保留中转站权限。迁移旧 Keyring 请使用服务端迁移工具。</p>
       {oauth && <form onSubmit={event => { event.preventDefault(); const raw = callback; setCallback(''); void run(async () => { const fields = callbackFields(raw); await api.callback(oauth.id, fields.code, fields.state); }, '已提交，正在完成授权'); }}>
         <a className="authorize" href={oauth.url} target="_blank" rel="noopener noreferrer">打开供应商授权页面 ↗</a>
         <p>登录后浏览器可能显示本地地址无法连接。复制地址栏中的完整回调 URL，在 5 分钟内提交。</p>
@@ -80,7 +80,7 @@ function App() {
     <Card title="账号" extra={<Button variant="secondary" size="sm" disabled={busy} onClick={() => run(refresh, '账号列表已更新')}>刷新列表</Button>}>
       {accounts.length === 0 && <p className="empty">暂无已登记账号</p>}
       <div className="accounts">{accounts.map(account => <article key={account.id}>
-        <div><h2>{account.display_name || account.email_masked || account.id}</h2><p>{account.email_masked} · <code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · Gateway：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p></div>
+        <div><h2>{account.display_name || account.email_masked || account.id}</h2><p>{account.email_masked} · <code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p></div>
         <div className="actions">
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.status(provider, account.id, account.gateway_manual_status !== 'enabled'); await refresh(); })}>{account.gateway_manual_status === 'enabled' ? '停用' : '启用'}</Button>
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.refresh(provider, account.id); await refresh(); })}>刷新凭据</Button>
@@ -91,7 +91,7 @@ function App() {
       </article>)}</div>
     </Card>
     {quota && <Card title="供应商额度"><ul>{quota.map((item, index) => <li key={`${item.model}-${index}`}>{item.model}：剩余 {(item.remaining_fraction * 100).toFixed(1)}%{item.reset_time ? ` · 重置 ${item.reset_time}` : ''}</li>)}</ul></Card>}
-    <footer>管理面板 v1.25.0 · Gateway 受限版本</footer>
+    <footer>水源喵中转站 · 账号管理</footer>
   </main>;
 }
 

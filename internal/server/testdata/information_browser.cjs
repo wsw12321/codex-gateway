@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const assets = path.join(__dirname, "../assets");
-const screenshots = path.join(__dirname, "../../../docs/screenshots");
+const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../../docs/screenshots");
 const source = fs.readFileSync(path.join(assets, "app.js"), "utf8");
 const app = source.slice(0, source.lastIndexOf("\nstart().catch("));
 const initialState = {user: {id: "owner", username: "owner", display_name: "团队管理员", role: "owner", status: "active"},
@@ -29,7 +29,7 @@ const accounts = [
   equivalent_cost_usd: "18.732", rolling_cost_usd: "2.43", rolling_cost_share: "0.25", target_share: "0.25", ...account}));
 
 async function main() {
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     fs.mkdirSync(screenshots, {recursive: true});
     const context = await browser.newContext({viewport: {width: 1440, height: 1100}, deviceScaleFactor: 1, locale: "zh-CN"});
@@ -45,8 +45,12 @@ async function main() {
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
+      if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
+      if (url.pathname === "/admin/usage") return send({summary: {requests: 0, tokens: 0, error_rate: 0}, requests: []});
       if (url.pathname === "/admin/information") return send({latest_job: latestJob, cleaned_before: latestJob?.status === "completed" ? cutoff : null});
       if (url.pathname === "/admin/information/preview") { previews.push(request.postDataJSON()); return send(report); }
       if (url.pathname === "/admin/information/jobs") {
@@ -152,8 +156,9 @@ async function main() {
     await page.evaluate(async () => { location.hash = "upstream-accounts"; await loadUpstreamAccounts(new URLSearchParams("all=true")); });
     await page.waitForFunction(() => upstreamConcurrencySnapshot !== null);
     const card = (id) => page.locator(`[data-account-id="${id}"]`);
-    assert.equal(await card(accounts[1].id).locator(".upstream-concurrency-count").textContent(), "0");
-    assert.equal(await card(accounts[2].id).locator(".upstream-concurrency-count").textContent(), "暂不可用");
+    assert.deepEqual(await card(accounts[1].id).locator(".upstream-concurrency-count").allTextContents(), ["0", "0"]);
+    assert.deepEqual(await card(accounts[2].id).locator(".upstream-concurrency-count").allTextContents(), ["暂不可用", "暂不可用"]);
+    await card(accounts[0].id).locator(".upstream-account-details > summary").click();
     await card(accounts[0].id).locator(".upstream-allocation-input").fill("37");
     const sampled = concurrencyReads;
     await page.waitForFunction((previous) => Number(document.querySelector(".upstream-concurrency-count").textContent) > previous + 3, sampled, {timeout: 12000});
@@ -177,7 +182,7 @@ async function main() {
       {State: "failed", Model: "test-model", upstream_account_id: "a1b2c3d4e5f60001", upstream_masked_email: "al***@example.test"},
       {State: "completed", Model: "test-model", upstream_account_id: null, upstream_masked_email: null},
     ]}));
-    assert.equal(await page.locator("#usage-rows tr").first().locator("td").count(), 9);
+    assert.equal(await page.locator("#usage-rows tr").first().locator("td:not(.record-details-cell)").count(), 9);
     assert.match(await page.locator("#usage-rows").textContent(), /al\*\*\*@example.test.*a1b2c3d4e5f60001.*未归因/);
     assert.equal(await page.locator("#metric-ttft").textContent(), "—");
     await page.evaluate((value) => {
@@ -187,7 +192,7 @@ async function main() {
     }, initialState);
     await page.waitForFunction(() => location.hash === "#overview");
     assert.equal(await page.locator('nav a[href="#information"]').isVisible(), false);
-    assert.equal(await page.locator("#usage-rows tr").first().locator("td").count(), 8);
+    assert.equal(await page.locator("#usage-rows tr").first().locator("td:not(.record-details-cell)").count(), 8);
     assert.doesNotMatch(await page.locator("#usage-rows").textContent(), /private-account|private-email/);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), previews: previews.length, jobs: jobs.length, deletions: deletions.length, concurrencyReads, errors}));

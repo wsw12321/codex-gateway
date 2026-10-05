@@ -16,7 +16,7 @@ const cookie = (name, value) => `${name}=${value}; Path=/; Secure; HttpOnly; Sam
 const initial = () => ({user: {id: "synthetic-user", username: "lin", display_name: "林同学", role: "member", status: "active"},
   recently_verified: false, login_methods: {password: true}, passkeys: [], devices: [], projects: [], api_keys: [],
   external_identity: {enabled: true, linked: false, masked_email: "", linked_at: null}});
-const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; connect-src 'self'";
+const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'";
 const tick = () => new Promise((resolve) => setTimeout(resolve, 10));
 const waitForSignal = async (ready) => {
   const deadline = Date.now() + 10000;
@@ -63,6 +63,8 @@ async function main() {
       if (url.pathname === "/") return file("index.html", "text/html");
       if (url.pathname === "/static/app.js") return send(application, 200, "application/javascript");
       if (url.pathname === "/static/style.css") return file("style.css", "text/css");
+      if (url.pathname === "/static/theme.js") return file("theme.js", "application/javascript");
+      if (url.pathname === "/static/favicon.svg") return file("favicon.svg", "image/svg+xml");
       if (url.pathname === "/static/oidc-callback.js") return file("oidc-callback.js", "application/javascript");
       if (url.pathname === "/auth/oidc/callback") return file("oidc-callback.html", "text/html");
       if (url.pathname === "/auth/oidc/config") {
@@ -155,7 +157,7 @@ async function main() {
       await page.locator('#reauth-form button[type="submit"]').click();
     };
     fs.mkdirSync(screenshots, {recursive: true});
-    for (const width of [1440, 390]) {
+    for (const width of [1440, 390, 320]) {
       await page.setViewportSize({width, height: width < 600 ? 844 : 1000});
       state = initial();
       await initialize();
@@ -416,6 +418,25 @@ async function main() {
     await page.waitForURL(`${gateway}/`);
     assert.equal(count("/admin/identity-link"), unlinkStarts + 1);
     assert.equal(count("/auth/oidc/reauth/begin"), unlinkProofs + 1, "manual retry reuses the SSO verification window");
+
+    // Callback appearance shares the preference without retaining OAuth data.
+    state = initial(); signedIn = true; completeMode = "confirm";
+    await goCallback(); await preview();
+    assert.match(await page.title(), /水源喵/);
+    for (const theme of ["dark", "light"]) {
+      await page.locator(`[data-theme-choice="${theme}"]`).click();
+      assert.equal(await page.locator("html").getAttribute("data-theme"), theme);
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({width, height: width < 600 ? 844 : 1000});
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${width}px ${theme} callback fits`);
+        await page.screenshot({path: path.join(screenshots, `callback-${theme}-${width}.png`), fullPage: true, animations: "disabled"});
+      }
+    }
+    await page.locator('[data-theme-choice="dark"]').click();
+    await initialize();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark", "callback choice carries into the dashboard");
+    assert.deepEqual(await page.evaluate(() => Object.keys(localStorage)), ["shuiyuan-theme"]);
+    assert.equal(await page.evaluate(() => sessionStorage.length), 0);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: browser.version(), checks: "cross-site HTTPS Strict cookies, URL removal before fetch, no credential storage, desktop/mobile login/security/confirmation/registration/reauth, explicit first-login cancel/bind/create, single-use confirmation/creation, fixed local login guide, SSO-only optional credentials and unlink protection, same-tab reauth return with server refresh and no mutation replay, exact-flow late cancellation, stale sessions, bfcache, center launch, disabled OIDC and storage failure", screenshots}));
   } finally {

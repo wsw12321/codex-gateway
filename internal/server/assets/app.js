@@ -7327,7 +7327,7 @@ function routeFromHash(focusContent = true) {
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
   byId("page-title").textContent = sectionTitles[section];
-  document.title = `${sectionTitles[section]} · Codex Gateway`;
+  document.title = `${sectionTitles[section]} · 水源喵中转站`;
   if (focusContent || navigationDrawerOpen) {
     closeNavigationDrawer(false);
     byId("content").focus({preventScroll: true});
@@ -7412,7 +7412,7 @@ async function configureInvitationView() {
   byId("group-invitation-account").textContent = "";
   setLocalMessage(byId("group-invitation-view"));
   byId("join-eyebrow").textContent = "接受邀请";
-  byId("join-title").textContent = "创建本地身份";
+  byId("join-title").textContent = "加入水源喵";
   byId("join-help").textContent = "设置资料后，选择 Passkey 或密码作为首个登录方式。";
   for (const id of ["join-username", "join-display"]) {
     show(id);

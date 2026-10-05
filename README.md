@@ -1,4 +1,7 @@
-# Personal Codex Gateway
+# 水源喵中转站
+
+基于 Codex Gateway 的 AI 中转站。网页沿用吾水阁账号中心的青绿色视觉风格，
+支持浅色、深色及跟随系统，并记住显示偏好。预览与验证见[水源喵界面验证](docs/shuiyuan-ui-validation.md)。
 
 浏览器身份支持邀请制 Passkey 或“用户名 + 密码”注册与登录。每个用户可持有
 多枚 Passkey 和一个 Argon2id 密码凭据，并可在近期身份验证后添加另一种方式。

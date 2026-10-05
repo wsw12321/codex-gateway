@@ -133,6 +133,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /recover", s.page)
 	s.mux.HandleFunc("GET /static/app.js", s.javascript)
 	s.mux.HandleFunc("GET /static/style.css", s.stylesheet)
+	s.mux.HandleFunc("GET /static/theme.js", s.themeJavascript)
+	s.mux.HandleFunc("GET /static/favicon.svg", s.favicon)
 	s.mux.HandleFunc("GET /setup/configure-client.cjs", s.clientSetup)
 	s.mux.HandleFunc("GET /setup/configure-codex.sh", s.retiredClientSetup)
 	s.mux.HandleFunc("GET /setup/configure-codex.bat", s.retiredClientSetup)

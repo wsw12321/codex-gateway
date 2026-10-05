@@ -34,6 +34,18 @@ func TestDashboardAssetsAreNotCachedAcrossDeployments(t *testing.T) {
 				server.stylesheet(recorder, httptest.NewRequest("GET", "/static/style.css", nil))
 			},
 		},
+		{
+			name: "theme",
+			handler: func(server *Server, recorder *httptest.ResponseRecorder) {
+				server.themeJavascript(recorder, httptest.NewRequest("GET", "/static/theme.js", nil))
+			},
+		},
+		{
+			name: "favicon",
+			handler: func(server *Server, recorder *httptest.ResponseRecorder) {
+				server.favicon(recorder, httptest.NewRequest("GET", "/static/favicon.svg", nil))
+			},
+		},
 	}
 
 	for _, test := range tests {

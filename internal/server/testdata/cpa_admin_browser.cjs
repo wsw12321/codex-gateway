@@ -9,10 +9,10 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 const origin = "http://127.0.0.1:8765";
 const assets = path.join(__dirname, "../assets/cpa");
 const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../../docs/screenshots");
-const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; connect-src 'self'";
+const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'";
 
 (async () => {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 1100 }, locale: "zh-CN" });
     const errors = [], writes = [];
@@ -27,6 +27,8 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin);
       const send = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      if (url.pathname === "/static/theme.js") return route.fulfill({ contentType: "application/javascript", body: fs.readFileSync(path.join(assets, "../theme.js")) });
+      if (url.pathname === "/static/favicon.svg") return route.fulfill({ contentType: "image/svg+xml", body: fs.readFileSync(path.join(assets, "../favicon.svg")) });
       if (url.pathname === "/admin/cpa/") return route.fulfill({ status: 200, contentType: "text/html", headers: { "Content-Security-Policy": csp }, body: fs.readFileSync(path.join(assets, "index.html")) });
       if (url.pathname.startsWith("/admin/cpa/assets/")) {
         const name = path.basename(url.pathname);
@@ -46,6 +48,14 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     });
     await page.goto(origin + "/admin/cpa/");
     await page.getByRole("heading", { name: "Codex 团队账号" }).waitFor();
+    assert.match(await page.title(), /水源喵/);
+    await page.locator('[data-theme-choice="dark"]').click();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    await page.reload();
+    await page.getByRole("heading", { name: "Codex 团队账号" }).waitFor();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    await page.locator('[data-theme-choice="light"]').click();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
     await page.getByRole("button", { name: "Antigravity", exact: true }).click();
     await page.getByRole("heading", { name: "Gemini 团队账号" }).waitFor();
     await page.getByRole("button", { name: "停用", exact: true }).click();
@@ -67,16 +77,24 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
       const uploaded = writes.filter(write => write.path.endsWith("/credentials")).at(-1).body;
       assert.deepEqual(uploaded, { refresh_token: "synthetic-refresh", access_token: "synthetic-access" });
       assert.equal(await page.locator('input[type="file"]').inputValue(), "");
-      assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0);
+      assert.deepEqual(await page.evaluate(() => Object.keys(localStorage)), ["shuiyuan-theme"]);
+      assert.equal(await page.evaluate(() => sessionStorage.length), 0);
       assert.ok(!(await page.locator("body").textContent()).includes("synthetic-refresh"));
     }
     await page.getByRole("button", { name: "查询额度" }).click();
     await page.getByText("gemini-3-flash：剩余 82.0%", { exact: false }).waitFor();
     fs.mkdirSync(screenshots, { recursive: true });
-    await page.screenshot({ path: path.join(screenshots, "cpa-admin-desktop.png"), fullPage: true });
+    await page.screenshot({ path: path.join(screenshots, "cpa-admin-desktop.png"), fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: path.join(screenshots, "cpa-admin-mobile.png"), fullPage: true });
+    await page.screenshot({ path: path.join(screenshots, "cpa-admin-mobile.png"), fullPage: true, animations: "disabled" });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    await page.locator('[data-theme-choice="dark"]').click();
+    await page.screenshot({ path: path.join(screenshots, "cpa-admin-dark-mobile.png"), fullPage: true, animations: "disabled" });
+    await page.setViewportSize({ width: 320, height: 844 });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "CPA dark mode fits at 320px");
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.screenshot({ path: path.join(screenshots, "cpa-admin-dark-desktop.png"), fullPage: true, animations: "disabled" });
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "删除凭据", exact: true }).click();
     await page.getByRole("button", { name: "确认删除", exact: true }).click();
     await page.getByText("暂无已登记账号").waitFor();
