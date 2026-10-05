@@ -28,10 +28,14 @@ func (f oidcHTTPFixture) registrationChoice(t *testing.T) (string, string) {
 	return value["flow_id"].(string), browser
 }
 
+func oidcRegistrationInput(flow string) map[string]string {
+	return map[string]string{"flow_id": flow, "username": "  SSO-Member  ", "display_name": "  新会员  "}
+}
+
 func (f oidcHTTPFixture) register(t *testing.T) (store.Session, string) {
 	t.Helper()
 	flow, browser := f.registrationChoice(t)
-	w := f.request(t, "/auth/oidc/register", "POST", "", browser, map[string]string{"flow_id": flow}, 200)
+	w := f.request(t, "/auth/oidc/register", "POST", "", browser, oidcRegistrationInput(flow), 200)
 	if invitationResponse(t, w)["result"] != "login" {
 		t.Fatal("registration did not log in")
 	}
@@ -66,7 +70,7 @@ func TestOIDCHTTPPostgresRegistrationChoiceAndDefaults(t *testing.T) {
 	}
 	session, cookie := f.register(t)
 	user, err := f.s.store.GetUser(ctx, session.UserID)
-	if err != nil || user.Role != store.UserRoleMember || user.Status != store.StatusActive || user.Username == "" || user.ID == f.owner.ID {
+	if err != nil || user.Role != store.UserRoleMember || user.Status != store.StatusActive || user.Username != "sso-member" || user.DisplayName != "新会员" || user.ID == f.owner.ID {
 		t.Fatalf("registration user %+v %v", user, err)
 	}
 	methods, err := f.s.store.LoginMethods(ctx, user.ID)
@@ -114,7 +118,7 @@ func TestOIDCHTTPPostgresRegistrationRetainsExchangeTime(t *testing.T) {
 	flow.VerifiedAt = verifiedAt
 	f.s.oidcFlows.entries[key] = flow
 	f.s.oidcFlows.mu.Unlock()
-	w := f.request(t, "/auth/oidc/register", "POST", "", browser, map[string]string{"flow_id": flowID}, 200)
+	w := f.request(t, "/auth/oidc/register", "POST", "", browser, oidcRegistrationInput(flowID), 200)
 	cookie := oidcResponseCookie(t, w, sessionCookieName)
 	session, err := f.s.oidcCurrentSession(cookieRequest(cookie))
 	if err != nil || session.RecentlyVerifiedAt == nil || !session.RecentlyVerifiedAt.Equal(verifiedAt) {
@@ -130,7 +134,7 @@ func TestOIDCHTTPPostgresRegistrationRejectsRaceAndChangedBrowser(t *testing.T) 
 			f := newOIDCHTTPFixture(t)
 			flow, browser := f.registrationChoice(t)
 			status := 400
-			input := map[string]string{"flow_id": flow}
+			input := oidcRegistrationInput(flow)
 			switch change {
 			case "local-login":
 				f.setLocalPassword(t)
@@ -162,6 +166,9 @@ func TestOIDCHTTPPostgresRegistrationRejectsRaceAndChangedBrowser(t *testing.T) 
 			}
 			w := f.request(t, "/auth/oidc/register", "POST", "", browser, input, status)
 			assertNoOIDCSessionCookie(t, w)
+			if status == 409 && (!strings.Contains(w.Body.String(), "oidc_registration_conflict") || strings.Contains(w.Body.String(), "flow_id")) {
+				t.Fatalf("binding conflict was offered a username retry: %s", w.Body)
+			}
 			if err := f.s.store.DB().QueryRowContext(context.Background(), `SELECT count(*) FROM users`).Scan(&after); err != nil || after != before {
 				t.Fatalf("failed registration left a user: %d %d %v", before, after, err)
 			}

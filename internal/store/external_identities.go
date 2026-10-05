@@ -46,8 +46,12 @@ type CompleteExternalLoginParams struct {
 
 type CompleteExternalRegistrationParams struct {
 	Issuer, Subject, MaskedEmail string
+	Username, DisplayName        string
 	Session                      CreateSessionParams
 	At, VerifiedAt               time.Time
+	// ExpiresAt is the original authorization deadline, independent of the
+	// later identity proof. Zero is allowed for callers without a ceremony.
+	ExpiresAt time.Time
 }
 
 type CompleteExternalReauthenticationParams struct {

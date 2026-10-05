@@ -22,6 +22,16 @@
           <button id="oidc-register-create" type="button">不绑定，直接创建账号</button>
           <button id="oidc-register-cancel" type="button" class="secondary">取消开通</button>
         </div>
+        <form id="oidc-register-form" class="hidden">
+          <h2>设置个人资料</h2>
+          <label>用户名<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required aria-describedby="oidc-username-help"></label>
+          <p id="oidc-username-help" class="muted">3–32 位，以英文字母开头，仅含字母、数字、_ 或 -，不区分大小写且不能重名。</p>
+          <label>显示名称<input name="display_name" autocomplete="nickname" required aria-describedby="oidc-display-help"></label>
+          <p id="oidc-display-help" class="muted">去除首尾空白后为 1–80 个字符，支持中文，可以重名。</p>
+          <p id="oidc-register-message" class="form-message hidden" role="alert" aria-live="polite"></p>
+          <button id="oidc-register-submit" type="submit">确认创建账号</button>
+        </form>
+        <p id="oidc-registration-expiry" class="muted"></p>
       </div>
       <div id="oidc-preview" class="hidden">
         <p id="oidc-accounts"></p>

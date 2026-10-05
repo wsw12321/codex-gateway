@@ -156,6 +156,71 @@ func TestOIDCCancelOriginalStateAfterChoiceAndVerification(t *testing.T) {
 	}
 }
 
+func TestOIDCRegistrationRetriesPreserveOriginalProofAndCancellation(t *testing.T) {
+	now := time.Now()
+	browser := oidcRandom()
+	flows := newOIDCFlowStore(1)
+	verifiedAt, expires := now.Add(-time.Minute), now.Add(time.Minute)
+	state, _ := flows.put(oidcFlow{Kind: "login", Browser: sha256.Sum256([]byte(browser)),
+		VerifiedAt: verifiedAt, Expires: expires}, now)
+	key := state
+	var flow oidcFlow
+	for i := range 5 {
+		var ok bool
+		flow, ok = flows.take(key, browser, now.Add(time.Duration(i)*time.Second))
+		if !ok || flow.VerifiedAt != verifiedAt || flow.Expires != expires {
+			t.Fatal("retry lost original proof or deadline")
+		}
+		flow.Kind = "register"
+		flow.lifecycle.mu.Lock()
+		next, ok := flows.confirmation(flow, now.Add(time.Duration(i)*time.Second))
+		flow.lifecycle.mu.Unlock()
+		if !ok || next == key || len(flows.entries) != 1 {
+			t.Fatal("retry failed to replace the token within capacity")
+		}
+		if _, ok := flows.take(key, browser, now); ok {
+			t.Fatal("prior token survived retry")
+		}
+		key = next
+	}
+	if _, ok := flows.cancel(state, browser, now); !ok {
+		t.Fatal("original state cannot cancel multiple retry rotations")
+	}
+	if flow.active(now) {
+		t.Fatal("cancellation missed the in-flight retry")
+	}
+	if _, ok := flows.take(key, browser, now); ok {
+		t.Fatal("cancelled retry remained usable")
+	}
+}
+
+func TestOIDCIssuedSessionCancellationRequiresOriginalStateAndExactSession(t *testing.T) {
+	now := time.Now()
+	browser := oidcRandom()
+	flows := newOIDCFlowStore(1)
+	state, _ := flows.put(oidcFlow{Kind: "login", Browser: sha256.Sum256([]byte(browser)), Expires: now.Add(time.Minute)}, now)
+	flow, _ := flows.take(state, browser, now)
+	flow.Kind = "register"
+	flow.lifecycle.mu.Lock()
+	choice, _ := flows.confirmation(flow, now)
+	flow.lifecycle.issuedSessionID = "issued-session"
+	flow.lifecycle.mu.Unlock()
+	for _, input := range []struct{ key, sessionID string }{
+		{state, ""}, {state, "newer-session"}, {oidcRandom(), "issued-session"}, {choice, "issued-session"},
+	} {
+		if _, ok := flows.cancelIssuedSession(input.key, store.Session{ID: input.sessionID}, now); ok {
+			t.Fatal("cancellation accepted a different flow or session")
+		}
+	}
+	if !flow.active(now) {
+		t.Fatal("rejected cancellation changed original lifecycle")
+	}
+	effects, ok := flows.cancelIssuedSession(state, store.Session{ID: "issued-session"}, now)
+	if !ok || effects.issuedSessionID != "issued-session" || flow.active(now) {
+		t.Fatalf("issued session could not cancel its exact handoff: %+v %v", effects, ok)
+	}
+}
+
 func TestOIDCReauthenticationCancellationOutlivesCeremonyDeadline(t *testing.T) {
 	now := time.Now()
 	browser := oidcRandom()

@@ -170,6 +170,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/api-keys/{id}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setAPIKeyStatus))))
 	s.mux.Handle("DELETE /admin/api-keys/{id}", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.deleteAPIKey))))
 	s.mux.Handle("PUT /admin/password", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.putPassword))))
+	s.mux.Handle("PATCH /admin/profile", s.browserOrigin(s.requireSession(http.HandlerFunc(s.patchProfile))))
 	s.mux.Handle("GET /admin/state", s.requireSession(http.HandlerFunc(s.adminState)))
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))

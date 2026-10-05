@@ -631,20 +631,38 @@ func (s *Service) newSessionParams(userID string, sourceIP net.IP, userAgent str
 }
 
 func validateNames(username, displayName string) (string, string, error) {
+	username, err := ValidateUsername(username)
+	if err != nil {
+		return "", "", err
+	}
+	displayName, err = ValidateDisplayName(displayName)
+	if err != nil {
+		return "", "", err
+	}
+	return username, displayName, nil
+}
+
+// ValidateUsername normalizes the login name and applies the registration rules.
+func ValidateUsername(username string) (string, error) {
 	username = strings.ToLower(strings.TrimSpace(username))
 	if len(username) < 3 || len(username) > 32 || username[0] < 'a' || username[0] > 'z' {
-		return "", "", ErrInvalidUsername
+		return "", ErrInvalidUsername
 	}
 	for _, r := range username {
 		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '_' && r != '-' {
-			return "", "", ErrInvalidUsername
+			return "", ErrInvalidUsername
 		}
 	}
+	return username, nil
+}
+
+// ValidateDisplayName trims a public name without requiring it to be unique.
+func ValidateDisplayName(displayName string) (string, error) {
 	displayName = strings.TrimSpace(displayName)
-	if displayName == "" || !utf8.ValidString(displayName) || utf8.RuneCountInString(displayName) > 80 {
-		return "", "", ErrInvalidDisplayName
+	if displayName == "" || !utf8.ValidString(displayName) || strings.ContainsRune(displayName, '\x00') || utf8.RuneCountInString(displayName) > 80 {
+		return "", ErrInvalidDisplayName
 	}
-	return username, displayName, nil
+	return displayName, nil
 }
 
 func validateCredentialNickname(nickname string) (string, error) {

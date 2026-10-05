@@ -43,8 +43,11 @@ Owner 从“邀请管理”创建注册邀请码，或在群组详情选择“�
 | `POST /auth/invitations/join` | 已登录会话及请求体 `invitation_token`；返回 `status` 与申请 |
 
 密码与 Passkey 注册完成响应均包含 `status: pending/approved`、`requires_approval` 和一次性
-`recovery_codes`。待审响应不设置登录 Cookie。账号恢复仍使用 `kind: recovery` 与
-`target_username`，Owner 初始化仍由终端签发，两者保持单次、最长 24 小时且免审核。
+`recovery_codes`。待审响应不设置登录 Cookie。账号恢复使用 `kind: recovery` 与
+`target_user_id`；控制台先搜索并选中用户，编辑搜索内容后必须重新选择。邀请按固定
+用户 ID 绑定，即使目标改名或旧名被其他人注册，也不会转向其他账号。
+兼容调用方可单独提交 `target_username`，服务端在创建时解析为用户 ID；两种目标
+字段不得同时提供。Owner 初始化仍由终端签发，两者保持单次、最长 24 小时且免审核。
 
 ## 迁移与验证
 

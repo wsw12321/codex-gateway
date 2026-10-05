@@ -375,12 +375,13 @@ func (s *Server) deleteAPIKey(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Kind             string     `json:"kind"`
-		TargetUsername   string     `json:"target_username"`
-		ExpiresAt        *time.Time `json:"expires_at"`
-		MaxUses          *int       `json:"max_uses"`
-		RequiresApproval bool       `json:"requires_approval"`
-		GroupID          string     `json:"group_id"`
+		Kind             string         `json:"kind"`
+		TargetUsername   optionalString `json:"target_username"`
+		TargetUserID     optionalString `json:"target_user_id"`
+		ExpiresAt        *time.Time     `json:"expires_at"`
+		MaxUses          *int           `json:"max_uses"`
+		RequiresApproval bool           `json:"requires_approval"`
+		GroupID          string         `json:"group_id"`
 	}
 	if err := decodeJSON(w, r, &input, 32<<10); err != nil {
 		badJSON(w, r, err)
@@ -388,9 +389,23 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := store.InvitationMember
 	targetID := ""
+	targetUsername, targetUserID := input.TargetUsername.value, input.TargetUserID.value
+	if targetUsername != nil && targetUserID != nil {
+		s.invitationError(w, r, "create invitation", store.ErrInvalid)
+		return
+	}
 	if input.Kind == "recovery" {
 		kind = store.InvitationRecovery
-		target, err := s.store.GetUserByUsername(r.Context(), input.TargetUsername)
+		var target store.User
+		var err error
+		switch {
+		case targetUserID != nil && validGroupID(*targetUserID):
+			target, err = s.store.GetUser(r.Context(), *targetUserID)
+		case targetUserID == nil && targetUsername != nil:
+			target, err = s.store.GetUserByUsername(r.Context(), *targetUsername)
+		default:
+			err = store.ErrInvalid
+		}
 		if err != nil || target.Status != store.StatusActive {
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "unknown_recovery_user", "恢复账号不存在")
 			return
@@ -413,7 +428,7 @@ func (s *Server) createInvitation(w http.ResponseWriter, r *http.Request) {
 	if maxUses < 1 || (kind == store.InvitationGroup && !validGroupID(input.GroupID)) ||
 		(kind != store.InvitationGroup && input.GroupID != "") ||
 		(kind == store.InvitationRecovery && (maxUses != 1 || input.RequiresApproval)) ||
-		(kind != store.InvitationRecovery && input.TargetUsername != "") {
+		(kind != store.InvitationRecovery && (targetUsername != nil || targetUserID != nil)) {
 		s.invitationError(w, r, "create invitation", store.ErrInvalid)
 		return
 	}

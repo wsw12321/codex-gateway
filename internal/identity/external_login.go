@@ -32,7 +32,11 @@ func (s *Service) LoginExternalAt(ctx context.Context, external OIDCIdentity, ve
 	return ExternalLoginResult{LoginResult: LoginResult{User: user, SessionToken: token}, SessionID: session.ID}, nil
 }
 
-func (s *Service) RegisterExternal(ctx context.Context, external OIDCIdentity, verifiedAt time.Time, sourceIP net.IP, userAgent string) (ExternalLoginResult, error) {
+func (s *Service) RegisterExternal(ctx context.Context, external OIDCIdentity, username, displayName string, verifiedAt, expiresAt time.Time, sourceIP net.IP, userAgent string) (ExternalLoginResult, error) {
+	username, displayName, err := validateNames(username, displayName)
+	if err != nil {
+		return ExternalLoginResult{}, err
+	}
 	now := s.now().UTC()
 	token, params, err := s.newSessionParams("", sourceIP, userAgent, now)
 	if err != nil {
@@ -40,7 +44,8 @@ func (s *Service) RegisterExternal(ctx context.Context, external OIDCIdentity, v
 	}
 	user, session, err := s.store.CompleteExternalRegistration(ctx, store.CompleteExternalRegistrationParams{
 		Issuer: external.Issuer, Subject: external.Subject, MaskedEmail: external.MaskedEmail,
-		Session: params, At: now, VerifiedAt: verifiedAt,
+		Username: username, DisplayName: displayName,
+		Session: params, At: now, VerifiedAt: verifiedAt, ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return ExternalLoginResult{}, err

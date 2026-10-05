@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func externalVerificationTime(verifiedAt, at time.Time) (time.Time, error) {
@@ -40,8 +42,8 @@ func setExternalLoginVerification(ctx context.Context, tx *sql.Tx, session *Sess
 	return nil
 }
 
-// CompleteExternalRegistration deliberately accepts no username, role, group,
-// balance or local credential. Existing user-insert triggers supply the normal
+// CompleteExternalRegistration accepts chosen profile names, but no role,
+// group, balance or local credential. Existing user-insert triggers supply the normal
 // model defaults and empty billing account. Unique binding indexes arbitrate
 // registration/link races; every artifact rolls back when either insert fails.
 func (s *Store) CompleteExternalRegistration(ctx context.Context, params CompleteExternalRegistrationParams) (User, Session, error) {
@@ -53,7 +55,7 @@ func (s *Store) CompleteExternalRegistration(ctx context.Context, params Complet
 		return User{}, Session{}, err
 	}
 	userParams, err := normalizeCreateUser(CreateUserParams{
-		ID: id, Username: "water5_" + strings.ReplaceAll(id, "-", ""), DisplayName: "吾水阁用户",
+		ID: id, Username: params.Username, DisplayName: params.DisplayName,
 	})
 	if err != nil {
 		return User{}, Session{}, err
@@ -62,15 +64,30 @@ func (s *Store) CompleteExternalRegistration(ctx context.Context, params Complet
 	var session Session
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		at := s.externalIdentityTime(params.At)
+		if !params.ExpiresAt.IsZero() && !params.ExpiresAt.After(at) {
+			return fmt.Errorf("%w: external registration expired", ErrNotFound)
+		}
 		verifiedAt, err := externalLoginVerificationTime(params.VerifiedAt, at)
 		if err != nil {
 			return err
+		}
+		var bound bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM external_identities
+			WHERE issuer=$1 AND subject=$2 AND unlinked_at IS NULL)`, params.Issuer, params.Subject).Scan(&bound); err != nil {
+			return mapDBError("check external registration binding", err)
+		}
+		if bound {
+			return fmt.Errorf("create external registration: %w", ErrConflict)
 		}
 		user, err = scanUser(tx.QueryRowContext(ctx, `INSERT INTO users
 			(id, username, display_name, webauthn_user_id, role, status, last_login_at)
 			VALUES ($1,$2,$3,$4,'member','active',$5) RETURNING `+userColumns,
 			userParams.ID, userParams.Username, userParams.DisplayName, userParams.WebAuthnUserID, at))
 		if err != nil {
+			var postgres *pgconn.PgError
+			if errors.As(err, &postgres) && postgres.Code == "23505" && postgres.ConstraintName == "users_username_lower_key" {
+				return fmt.Errorf("create external user: %w", ErrUsernameTaken)
+			}
 			return mapDBError("create external user", err)
 		}
 		var identityID string
@@ -87,8 +104,29 @@ func (s *Store) CompleteExternalRegistration(ctx context.Context, params Complet
 		if err != nil {
 			return err
 		}
-		return setExternalLoginVerification(ctx, tx, &session, verifiedAt, s.externalIdentityTime(at))
+		if err := setExternalLoginVerification(ctx, tx, &session, verifiedAt, s.externalIdentityTime(at)); err != nil {
+			return err
+		}
+		// An insert may wait on transaction locks. Roll back every artifact
+		// if the original ceremony expired, even when its proof is still fresh.
+		if !params.ExpiresAt.IsZero() && !params.ExpiresAt.After(s.externalIdentityTime(at)) {
+			return fmt.Errorf("%w: external registration expired", ErrNotFound)
+		}
+		return nil
 	})
+	if errors.Is(err, ErrUsernameTaken) {
+		// A concurrent registration of this same identity may have won both
+		// unique indexes. Its binding is visible after our aborted transaction
+		// rolls back; that conflict is terminal, even when the names also match.
+		var bound bool
+		if lookupErr := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM external_identities
+			WHERE issuer=$1 AND subject=$2 AND unlinked_at IS NULL)`, params.Issuer, params.Subject).Scan(&bound); lookupErr != nil {
+			return User{}, Session{}, mapDBError("check conflicting external registration", lookupErr)
+		}
+		if bound {
+			return User{}, Session{}, fmt.Errorf("create external registration: %w", ErrConflict)
+		}
+	}
 	if err != nil {
 		return User{}, Session{}, err
 	}

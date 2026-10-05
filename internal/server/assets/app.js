@@ -55,6 +55,10 @@ let globalRequestSequence = 0;
 let checkingSession = false;
 let loggingOut = false;
 let identityGeneration = 0;
+let profileDraft = null;
+let profileOperation = null;
+let profileRevision = 0;
+let stateRequestSequence = 0;
 let billingDetail = null;
 let billingUsers = [];
 let billingSettings = null;
@@ -629,6 +633,7 @@ async function copyText(value) {
 }
 
 function clearSensitiveDOM() {
+  resetProfile();
   resetBrowserHandoff();
   const dialog = byId("secret-dialog");
   secretAfterClose = null;
@@ -752,6 +757,7 @@ function requireCurrentRequest(current) {
 
 async function api(path, options = {}, current = null) {
   requireCurrentRequest(current);
+  const requestedProfileRevision = profileRevision;
   const headers = {...(options.headers || {})};
   if (options.body != null && !headers["Content-Type"]) headers["Content-Type"] = "application/json";
   let response;
@@ -771,6 +777,11 @@ async function api(path, options = {}, current = null) {
     error.status = response.status;
     error.blockers = Array.isArray(body?.blockers) ? body.blockers : [];
     throw error;
+  }
+  // A state snapshot started before a completed profile write may contain the
+  // old name. Preserve the confirmed fields while accepting its other data.
+  if (path === "/admin/state" && requestedProfileRevision !== profileRevision && body.user?.id === state?.user?.id) {
+    body.user = {...body.user, username: state.user.username, display_name: state.user.display_name};
   }
   return body;
 }
@@ -1921,6 +1932,70 @@ function renderGuide() {
   );
 }
 
+function resetProfile() {
+  profileDraft = null;
+  profileOperation = null;
+  const form = byId("profile-form");
+  if (!form) return;
+  form.reset();
+  setLocalMessage(form);
+  setBusy(form, false);
+}
+
+function renderProfile() {
+  const form = byId("profile-form");
+  if (!form || !state?.user) return;
+  const user = state.user;
+  if (!profileDraft || profileDraft.userID !== user.id || profileDraft.generation !== identityGeneration) {
+    resetProfile();
+    profileDraft = {userID: user.id, generation: identityGeneration};
+  }
+  for (const field of ["username", "display_name"]) {
+    // Refresh untouched fields only. Typed values remain drafts until saved.
+    if (profileDraft[field] == null || form.elements[field].value === profileDraft[field]) form.elements[field].value = user[field] || "";
+    profileDraft[field] = user[field] || "";
+  }
+}
+
+function renderCurrentIdentity() {
+  byId("whoami").textContent = state.user.display_name || state.user.username;
+  byId("role").textContent = `${state.user.username} · ${state.user.role === "owner" ? "Owner" : "Member"}`;
+  renderProfile();
+}
+
+async function saveProfile(event) {
+  const form = event.currentTarget;
+  const identityCurrent = identityLinkCurrent();
+  requireCurrentRequest(identityCurrent);
+  if (profileOperation) return;
+  const submitted = {username: form.elements.username.value, display_name: form.elements.display_name.value};
+  const normalized = {username: submitted.username.trim().toLowerCase(), display_name: submitted.display_name.trim()};
+  const changes = {};
+  for (const field of ["username", "display_name"]) if (normalized[field] !== state.user[field]) changes[field] = normalized[field];
+  if (!Object.keys(changes).length) { setLocalMessage(form, "资料没有变化。", "ok"); return; }
+  if (Object.hasOwn(changes, "username") && !/^[a-z][a-z0-9_-]{2,31}$/.test(changes.username)) throw new Error("用户名须为 3–32 位，以英文字母开头，仅含字母、数字、_ 或 -。");
+  if (Object.hasOwn(changes, "display_name") && (!changes.display_name || [...changes.display_name].length > 80)) throw new Error("显示名称去除首尾空白后须为 1–80 个字符。");
+  const operation = {};
+  profileOperation = operation;
+  const current = () => profileOperation === operation && identityCurrent();
+  try {
+    const write = () => api("/admin/profile", {method: "PATCH", body: JSON.stringify(changes)}, current);
+    const result = Object.hasOwn(changes, "username") ? await sensitiveAction(write, current) : await write();
+    requireCurrentRequest(current);
+    if (result.user?.id !== state.user.id) throw new Error("保存结果的账号信息无效，请刷新后确认。");
+    profileRevision++;
+    state.user = {...state.user, ...result.user};
+    for (const field of ["username", "display_name"]) {
+      // Inputs remain editable while saving. Do not erase edits made after submit.
+      if (form.elements[field].value === submitted[field]) form.elements[field].value = result.user[field];
+    }
+    renderCurrentIdentity();
+    setLocalMessage(form, "个人资料已保存。", "ok");
+  } finally {
+    if (profileOperation === operation) profileOperation = null;
+  }
+}
+
 function renderState(value) {
   const previousUser = state?.user;
   state = {
@@ -1945,6 +2020,8 @@ function renderState(value) {
     resetMonitoring();
     resetInformation();
     identityGeneration++;
+    resetProfile();
+    cancelReauthentication();
     resetGroupManagement();
     resetInvitationManagement();
     billingRequestSequence++;
@@ -1953,11 +2030,11 @@ function renderState(value) {
     resetBillingUserSearch();
     resetModelMultipliers();
     globalUserSearch?.reset();
+    recoveryUserSearch?.reset();
   }
   all(".owner-only").forEach((node) => node.classList.toggle("hidden", !owner));
   if (!owner && byId("global-tab").getAttribute("aria-selected") === "true") showUsageTab("personal");
-  byId("whoami").textContent = state.user.display_name || state.user.username;
-  byId("role").textContent = `${state.user.username} · ${owner ? "Owner" : "Member"}`;
+  renderCurrentIdentity();
   hide("auth");
   hide("login-view");
   show("dashboard");
@@ -1975,8 +2052,12 @@ function renderState(value) {
 }
 
 async function refreshState() {
+  const generation = identityGeneration;
+  const sequence = ++stateRequestSequence;
+  const current = () => !loggingOut && generation === identityGeneration && sequence === stateRequestSequence;
   setConnection("正在同步", "loading");
-  const value = await api("/admin/state");
+  const value = await api("/admin/state", {}, current);
+  requireCurrentRequest(current);
   renderState(value);
   setConnection("已连接", "ok");
 }
@@ -2101,11 +2182,13 @@ function recoveryHintedLink(link) {
   }
 }
 
-async function invite(kind, targetUsername = "") {
-  const current = invitationOwnerCurrent();
+async function invite(kind, targetUserID = "", targetCurrent = null) {
+  const ownerCurrent = invitationOwnerCurrent();
+  const current = () => ownerCurrent() && (!targetCurrent || targetCurrent());
   requireCurrentRequest(current);
+  if (kind === "recovery" && !targetUserID) throw new Error("请从搜索结果中选择待恢复用户。");
   const result = await sensitiveAction(() => api("/admin/invitations", {
-    method: "POST", body: JSON.stringify({kind, target_username: targetUsername}),
+    method: "POST", body: JSON.stringify(kind === "recovery" ? {kind, target_user_id: targetUserID} : {kind}),
   }, current), current);
   requireCurrentRequest(current);
   const link = kind === "recovery" ? recoveryHintedLink(result.link) : result.link;
@@ -3058,6 +3141,8 @@ class UserPicker {
     this.users = [];
     this.matches = [];
     this.activeIndex = -1;
+    this.selectedUserID = "";
+    this.selectedValue = "";
     this.composing = false;
     this.bound = false;
     this.bind();
@@ -3072,8 +3157,8 @@ class UserPicker {
     input.addEventListener("click", () => {
       if (input.getAttribute("aria-expanded") !== "true") this.render();
     });
-    input.addEventListener("input", () => { if (!this.composing) this.render(); });
-    input.addEventListener("compositionstart", () => { this.composing = true; this.close(); });
+    input.addEventListener("input", () => { this.selectedUserID = ""; this.selectedValue = ""; if (!this.composing) this.render(); });
+    input.addEventListener("compositionstart", () => { this.selectedUserID = ""; this.selectedValue = ""; this.composing = true; this.close(); });
     input.addEventListener("compositionend", () => { this.composing = false; this.render(); });
     input.addEventListener("keydown", (event) => this.keydown(event));
     results.addEventListener("mousedown", (event) => {
@@ -3110,6 +3195,8 @@ class UserPicker {
   async choose(user) {
     if (!this.input || this.input.disabled || this.composing || state?.user?.role !== "owner") return;
     this.input.value = user.username || user.display_name || user.id || "";
+    this.selectedUserID = user.id || "";
+    this.selectedValue = this.input.value;
     this.input.focus({preventScroll: true});
     this.close();
     if (this.status) this.status.textContent = `已选择 ${user.display_name || user.username || user.id} (${user.username || user.id})`;
@@ -3170,12 +3257,15 @@ class UserPicker {
 
   setUsers(values) {
     this.users = Array.isArray(values) ? values : [];
+    if (!this.users.some((user) => user.id === this.selectedUserID)) this.selectedUserID = "";
     if (!this.input) return;
     this.input.disabled = false;
     this.render(document.activeElement === this.input);
   }
 
   unavailable(message) {
+    this.selectedUserID = "";
+    this.selectedValue = "";
     this.users = [];
     this.matches = [];
     if (!this.input) return;
@@ -3189,6 +3279,10 @@ class UserPicker {
     if (this.input) this.input.value = "";
     this.composing = false;
     this.unavailable("登录后加载用户");
+  }
+
+  selectedID() {
+    return !this.input?.disabled && this.input?.value === this.selectedValue ? this.selectedUserID : "";
   }
 }
 
@@ -7479,6 +7573,7 @@ function bindUI() {
   bindAsync("key-form", "submit", createKey, "创建中…");
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
   bindAsync("password-form", "submit", setPassword, "保存中…");
+  bindAsync("profile-form", "submit", saveProfile, "保存中…", identityLinkCurrent);
   bindAsync("reauth-form", "submit", submitReauthentication, "验证中…", () => reauthRequestCurrent);
   byId("model-multipliers-refresh").addEventListener("click", () => loadModelMultipliers());
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
@@ -7503,10 +7598,10 @@ function bindUI() {
     bindAsync(`billing-subscription-${tier.id}`, "submit", updateBillingSubscription, "保存中…");
   }
   byId("member-invite").addEventListener("click", () => { location.hash = "invitations"; });
-  bindAsync("recovery-invite-form", "submit", (event) => {
-    const username = String(new FormData(event.currentTarget).get("target_username") || "").trim();
-    return invite("recovery", username);
-  }, "签发中…");
+  bindAsync("recovery-invite-form", "submit", () => {
+    const targetUserID = recoveryUserSearch?.selectedID();
+    return invite("recovery", targetUserID, () => recoveryUserSearch?.selectedID() === targetUserID);
+  }, "签发中…", invitationOwnerCurrent);
   bindAsync("usage-filter", "submit", async (event) => {
     updateCSVLink();
     await loadPersonalUsage(queryFromForm(event.currentTarget), false);

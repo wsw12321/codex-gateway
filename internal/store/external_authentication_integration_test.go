@@ -14,7 +14,12 @@ import (
 
 func externalRegistrationParams(t *testing.T, subject string, at time.Time) CompleteExternalRegistrationParams {
 	t.Helper()
+	id, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	return CompleteExternalRegistrationParams{Issuer: externalIdentityTestIssuer, Subject: subject,
+		Username: "sso_" + strings.ReplaceAll(id, "-", "")[:24], DisplayName: "新会员",
 		MaskedEmail: "u***@example.test", At: at, VerifiedAt: at, Session: externalIdentityTestSession(t, "", at)}
 }
 
@@ -43,7 +48,7 @@ func TestExternalRegistrationPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Role != UserRoleMember || user.Status != StatusActive || !strings.HasPrefix(user.Username, "water5_") ||
+	if user.Role != UserRoleMember || user.Status != StatusActive || user.Username != params.Username || user.DisplayName != params.DisplayName ||
 		user.ID != session.UserID || session.ExternalIdentityID == nil || session.RecentlyVerifiedAt == nil ||
 		!session.RecentlyVerifiedAt.Equal(params.VerifiedAt) || session.RecentlyVerifiedAt.After(at.Add(-5*time.Minute)) {
 		t.Fatalf("wrong registration defaults: user=%+v session=%+v", user, session)
@@ -279,6 +284,58 @@ func TestExternalRegistrationConcurrencyPostgresIntegration(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestExternalRegistrationUsernameConflictPostgresIntegration(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	s := informationIntegrationStore(t, ctx)
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	s.now = func() time.Time { return at }
+	for _, sameIdentity := range []bool{false, true} {
+		t.Run(fmt.Sprintf("same-identity-%t", sameIdentity), func(t *testing.T) {
+			before := externalUserCount(t, ctx, s)
+			start := make(chan struct{})
+			results := make(chan error, 8)
+			username := fmt.Sprintf("contested-name-%t", sameIdentity)
+			for i := range 8 {
+				subject := fmt.Sprintf("contested-subject-%d", i)
+				if sameIdentity {
+					subject = "same-identity-contested-name"
+				}
+				params := externalRegistrationParams(t, subject, at)
+				params.Username = username
+				go func() {
+					<-start
+					_, _, err := s.CompleteExternalRegistration(ctx, params)
+					results <- err
+				}()
+			}
+			close(start)
+			successes := 0
+			for range 8 {
+				err := <-results
+				if err == nil {
+					successes++
+				} else if sameIdentity {
+					if !errors.Is(err, ErrConflict) || errors.Is(err, ErrUsernameTaken) {
+						t.Fatalf("identity collision was offered a profile retry: %v", err)
+					}
+				} else if !errors.Is(err, ErrUsernameTaken) {
+					t.Fatalf("username conflict not distinguished: %v", err)
+				}
+			}
+			if got := externalUserCount(t, ctx, s); successes != 1 || got != before+1 {
+				t.Fatalf("concurrent registration: successes=%d users=%d want=%d", successes, got, before+1)
+			}
+			var bindings, sessions int
+			if err := s.db.QueryRowContext(ctx, `SELECT
+				(SELECT count(*) FROM external_identities e JOIN users u ON u.id=e.user_id WHERE u.username=$1),
+				(SELECT count(*) FROM sessions s JOIN users u ON u.id=s.user_id WHERE u.username=$1)`, username).Scan(&bindings, &sessions); err != nil || bindings != 1 || sessions != 1 {
+				t.Fatalf("registration remnants: bindings=%d sessions=%d err=%v", bindings, sessions, err)
+			}
+		})
+	}
 }
 
 func TestExternalUnlinkReauthenticationConcurrencyPostgresIntegration(t *testing.T) {

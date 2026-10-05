@@ -31,6 +31,8 @@ async function main() {
   const requests = [], errors = [];
   let gateway, center, state = initial(), enabled = true, completeMode = "confirm", confirmFailure = false;
   let signedIn = true, stateFailure = false;
+  let registrationConflict = false;
+  const registrationExpiry = "2099-10-03T10:05:00Z";
   let holdComplete = false, releaseComplete, holdBegin = false, releaseBegin;
   let holdConfig = false, releaseConfig, holdReauth = false, releaseReauth;
   const server = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, async (req, res) => {
@@ -71,9 +73,15 @@ async function main() {
       if (url.pathname === "/auth/oidc/cancel") return send({ok: true});
       if (url.pathname === "/auth/oidc/register/cancel") return send({ok: true});
       if (url.pathname === "/auth/oidc/register") {
+        if (registrationConflict) {
+          registrationConflict = false;
+          return send({error: {code: "username_taken", message: "该用户名已被使用，请选择其他名称。"}, flow_id: "synthetic-registration-retry", expires_at: registrationExpiry}, 409);
+        }
         signedIn = true;
         state = {...initial(), recently_verified: true, login_methods: {password: false, passkey: false, oidc: true},
           external_identity: {enabled: true, linked: true, masked_email: "l***@example.com", linked_at: "2026-10-03T10:00:00Z"}};
+        state.user.username = body.username;
+        state.user.display_name = body.display_name;
         return send({result: "login"});
       }
       if (url.pathname === "/auth/oidc/reauth/begin") {
@@ -86,7 +94,7 @@ async function main() {
         if (body.error) return send({error: {message: "授权已取消，请重新开始。"}}, 400);
         if (!req.headers.cookie?.includes("__Host-cg_oidc=")) return send({error: {message: "授权事务无效，请重新开始。"}}, 400);
         if (completeMode === "login") return send({result: "login"});
-        if (completeMode === "registration") return send({result: "registration_required", flow_id: "synthetic-registration", masked_email: "l***@example.com"});
+        if (completeMode === "registration") return send({result: "registration_required", flow_id: "synthetic-registration", masked_email: "l***@example.com", expires_at: registrationExpiry});
         if (completeMode === "reauthenticated") {state.recently_verified = true; return send({result: "reauthenticated"});}
         return send({result: "confirm", flow_id: "synthetic-preview", user: {username: "lin"}, masked_email: "l***@example.com", expires_at: "2099-10-03T10:05:00Z"});
       }
@@ -302,15 +310,17 @@ async function main() {
     for (const width of [1440, 390]) {
       await page.setViewportSize({width, height: width < 600 ? 844 : 1000});
       signedIn = false; completeMode = "registration";
-      const creates = count("/auth/oidc/register"), cancels = count("/auth/oidc/register/cancel");
+      const creates = count("/auth/oidc/register");
       await goCallback();
       await page.locator("#oidc-registration").waitFor({state: "visible"});
       assert.equal(count("/auth/oidc/register"), creates, "first-login choice does not create an account");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
       await page.screenshot({path: path.join(screenshots, `registration-${width}.png`), fullPage: true});
+      const cancels = count("/auth/oidc/cancel");
       await page.locator("#oidc-register-cancel").click();
       await page.waitForFunction(() => document.getElementById("oidc-message").textContent.includes("未创建本站账号"));
-      assert.equal(count("/auth/oidc/register/cancel"), cancels + 1);
+      assert.equal(count("/auth/oidc/cancel"), cancels + 1);
+      assert.deepEqual(requests.filter((value) => value.path === "/auth/oidc/cancel").at(-1).body, {flow_id: "synthetic-state"});
       await goCallback(); await page.locator("#oidc-register-link").click();
       await page.waitForURL(`${gateway}/?link=water5`);
       await page.evaluate(() => start());
@@ -326,10 +336,23 @@ async function main() {
       assert.match(await page.locator("#notice").textContent(), /重新授权/);
       assert.equal(count("/auth/oidc/register"), creates, "binding choice retains the local account");
 
-      await goCallback(); await page.locator("#oidc-register-create").dblclick();
+      await goCallback(); await page.locator("#oidc-register-create").click();
+      assert.equal(count("/auth/oidc/register"), creates, "opening profile setup does not create an account");
+      await page.locator("#oidc-register-submit").click();
+      assert.equal(count("/auth/oidc/register"), creates, "missing required fields do not create an account");
+      await page.locator('#oidc-register-form input[name="username"]').fill("taken");
+      await page.locator('#oidc-register-form input[name="display_name"]').fill("新会员");
+      registrationConflict = true;
+      await page.locator("#oidc-register-submit").click();
+      await page.locator("#oidc-register-message").waitFor({state: "visible"});
+      assert.equal(await page.locator('#oidc-register-form input[name="display_name"]').inputValue(), "新会员");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+      await page.screenshot({path: path.join(screenshots, `registration-profile-${width}.png`), fullPage: true});
+      await page.locator('#oidc-register-form input[name="username"]').fill("new_member");
+      await page.locator("#oidc-register-submit").dblclick();
       await page.waitForURL(`${gateway}/#overview`);
-      assert.equal(count("/auth/oidc/register"), creates + 1, "creation is single use even on double click");
-      assert.deepEqual(requests.filter((value) => value.path === "/auth/oidc/register").at(-1).body, {flow_id: "synthetic-registration"});
+      assert.equal(count("/auth/oidc/register"), creates + 2, "rotated creation is single use even on double click");
+      assert.deepEqual(requests.filter((value) => value.path === "/auth/oidc/register").at(-1).body, {flow_id: "synthetic-registration-retry", username: "new_member", display_name: "新会员"});
       await initialize();
       assert.equal(await page.locator("#identity-link-unlink").isDisabled(), true, "SSO-only account retains its sole login method");
       assert.equal(await page.locator("#set-password").isEnabled(), true);

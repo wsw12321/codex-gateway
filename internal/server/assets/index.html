@@ -583,9 +583,20 @@
 
           <section class="view hidden" data-section="security" aria-labelledby="security-title">
             <div class="section-head">
-              <div><p class="eyebrow">IDENTITY</p><h2 id="security-title">账号安全</h2><p>管理登录凭证以及一次性邀请。</p></div>
+              <div><p class="eyebrow">IDENTITY</p><h2 id="security-title">账号安全</h2><p>管理个人资料、登录凭证以及一次性邀请。</p></div>
             </div>
             <div class="grid security-grid">
+              <article class="panel" aria-labelledby="profile-title">
+                <div class="panel-heading"><h3 id="profile-title">个人资料</h3></div>
+                <form id="profile-form">
+                  <label>用户名<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required aria-describedby="profile-username-help"></label>
+                  <p id="profile-username-help" class="muted">3–32 位，以英文字母开头，仅含字母、数字、_ 或 -，不区分大小写且不能重名。改名需验证身份；旧名将释放，之后请使用新名登录。</p>
+                  <label>显示名称<input name="display_name" autocomplete="nickname" required aria-describedby="profile-display-help"></label>
+                  <p id="profile-display-help" class="muted">去除首尾空白后为 1–80 个字符，支持中文，可以与他人重名。</p>
+                  <p class="form-message hidden" role="status" aria-live="polite"></p>
+                  <button type="submit">保存个人资料</button>
+                </form>
+              </article>
               <article id="identity-link-panel" class="panel hidden">
                 <div class="panel-heading"><h3>吾水阁账号</h3></div>
                 <p id="identity-link-status"></p>
@@ -618,7 +629,7 @@
                   <label for="recovery-user-search">待恢复用户</label>
                   <div class="user-search">
                     <div class="user-search-control">
-                      <input id="recovery-user-search" name="target_username" type="search" role="combobox" required autocomplete="off" placeholder="用户名、显示名或拼音" aria-autocomplete="list" aria-expanded="false" aria-controls="recovery-user-search-results" aria-describedby="recovery-user-search-status" disabled>
+                      <input id="recovery-user-search" type="search" role="combobox" required autocomplete="off" placeholder="搜索后选择待恢复用户" aria-autocomplete="list" aria-expanded="false" aria-controls="recovery-user-search-results" aria-describedby="recovery-user-search-status" disabled>
                       <div id="recovery-user-search-results" class="user-search-results hidden" role="listbox" aria-label="恢复目标用户搜索结果"></div>
                     </div>
                     <small id="recovery-user-search-status" role="status" aria-live="polite">正在加载用户…</small>

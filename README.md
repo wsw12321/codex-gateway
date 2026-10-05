@@ -72,6 +72,7 @@ sidecar，不进入数据库或备份。
 - 可发现 Passkey 登录、多 Passkey、WebAuthn RP/Origin 校验及 challenge 防重放。
 - API Key 创建、查看、启停、删除以及邀请和恢复等敏感操作要求 5 分钟内再次验证。
 - 每批生成 10 个一次性恢复码；Owner 可签发恢复邀请。
+- Owner 与普通会员可在“账号安全”修改[个人资料](docs/profile.md)；用户名修改要求近期验证，旧名立即释放。SSO 新账号开通时自选用户名和显示名称。
 - 服务端随机会话，12 小时空闲和 7 天绝对过期；Cookie 使用 `Secure`、
   `HttpOnly`、`SameSite=Strict`。
 - 设备 Key 格式为 `cgk_v1_<public-id>_<256-bit-secret>`；数据库保存用于认证的

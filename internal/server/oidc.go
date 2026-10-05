@@ -207,6 +207,34 @@ func (f *oidcFlowStore) cancelSessionReauthentication(key string, session store.
 	return effects
 }
 
+// Login headers clear the transaction cookie before JavaScript receives the
+// body. In that gap, only the exact issued session and original authorization
+// state may cancel the unfinished handoff; a newer session cannot stand in.
+func (f *oidcFlowStore) cancelIssuedSession(key string, session store.Session, now time.Time) (oidcFlowEffects, bool) {
+	if len(key) != 43 || session.ID == "" {
+		return oidcFlowEffects{}, false
+	}
+	digest := sha256.Sum256([]byte(key))
+	f.mu.Lock()
+	var lifecycles []*oidcFlowLifecycle
+	for _, flow := range f.entries {
+		if (flow.Kind == "login" || flow.Kind == "register") && flow.originalKey == digest && flow.retainUntil.After(now) {
+			lifecycles = append(lifecycles, flow.lifecycle)
+		}
+	}
+	f.mu.Unlock()
+	for _, lifecycle := range lifecycles {
+		lifecycle.mu.Lock()
+		if lifecycle.issuedSessionID == session.ID {
+			effects := lifecycle.cancel()
+			lifecycle.mu.Unlock()
+			return effects, true
+		}
+		lifecycle.mu.Unlock()
+	}
+	return oidcFlowEffects{}, false
+}
+
 // Keep cancellation metadata as long as this proof can authorize an action,
 // even when exchange finished near the original ceremony deadline. This never
 // extends the deadline for consuming or completing a flow.
