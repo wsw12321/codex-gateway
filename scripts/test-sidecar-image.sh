@@ -15,6 +15,12 @@ docker run --rm --network none --read-only --cap-drop ALL \
     --tmpfs /run/cliproxy:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001 \
     --tmpfs /tmp:rw,noexec,nosuid,nodev,mode=0700,uid=10001,gid=10001 \
     --entrypoint /bin/sh "$image" -eu -c '
+        # Reject the vulnerable perl-base inherited from the pinned base image.
+        perl_base_version=$(dpkg-query -W -f="\${Version}" perl-base)
+        if ! dpkg --compare-versions "$perl_base_version" ge "5.36.0-7+deb12u4"; then
+            printf "%s\n" "perl-base lacks DLA-4821-1 security fixes" >&2
+            exit 1
+        fi
         umask 077
         export CLIPROXY_API_KEY_FILE=/run/cliproxy/synthetic-key
         printf "%s\n" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > "$CLIPROXY_API_KEY_FILE"

@@ -45,9 +45,11 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
 
 FROM ${RUNTIME_IMAGE}
 COPY --from=expat /out/libexpat1.deb /tmp/libexpat1.deb
+# Explicitly upgrade the inherited Perl package for DLA-4821-1.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends /tmp/libexpat1.deb ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq util-linux \
+    && apt-get install -y --no-install-recommends /tmp/libexpat1.deb ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq perl-base util-linux \
     && test "$(dpkg-query -W -f='${Version}' libexpat1)" = '2.5.0-1+deb12u4' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
     && rm /tmp/libexpat1.deb \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10002 antigravity \
