@@ -3248,12 +3248,7 @@ button:hover, .button:hover, nav a:hover { text-decoration: none; }
 .brand-story h2 { font-family: var(--serif); font-size: clamp(36px, 3.8vw, 52px); font-weight: 500; line-height: 1.6; letter-spacing: 3px; margin: 0 0 18px; }
 .brand-story h2 span { color: var(--accent-text); }
 .story-intro { font-size: 13px; letter-spacing: .6px; line-height: 2; margin: 0; }
-.water-scene { width: 100%; max-height: 240px; margin-top: 15px; color: var(--accent-text); flex-shrink: 0; }
-.water-scene ellipse { stroke: currentColor; stroke-opacity: .3; stroke-width: 1; }
-.water-cat { fill: var(--surface-strong); stroke: currentColor; stroke-width: 2; stroke-linejoin: round; }
-.cat-face, .water-spark { stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
-.water-spark { opacity: .45; }
-.water-point { fill: currentColor; opacity: .4; }
+.brand-logo { display: block; width: 214px; max-width: 100%; height: auto; flex-shrink: 0; align-self: center; margin: 24px 0; border: 1px solid var(--line); border-radius: 18px; background: #fff; }
 .story-caption { display: flex; justify-content: space-between; gap: 1rem; border-top: 1px solid var(--line); margin-top: auto; padding-top: 17px; color: var(--muted); font-size: 9px; letter-spacing: 1px; }
 .auth-forms { display: grid; gap: 1rem; min-width: 0; }
 .auth-card { width: 100%; padding: 35px 38px 27px; border-radius: 18px; box-shadow: 0 16px 45px rgb(23 56 61 / 3%); }
@@ -3329,7 +3324,7 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
   .brand-story { min-height: 0; padding: 18px 5px 28px; }
   .brand-story .eyebrow { font-size: 9px; letter-spacing: 2px; margin-bottom: 13px; }
   .brand-story h2 { font-size: 28px; letter-spacing: 1px; line-height: 1.5; margin: 0; }
-  .brand-story h2 br, .story-intro, .water-scene, .story-caption { display: none; }
+  .brand-story h2 br, .story-intro, .brand-logo, .story-caption { display: none; }
   .brand-story h2 span { display: inline-block; }
   .auth-card { padding: 27px 25px; }
   .auth-card h1 { font-size: 24px; }
