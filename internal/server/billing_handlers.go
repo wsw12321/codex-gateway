@@ -227,6 +227,8 @@ func (s *Server) decodeBillingWrite(w http.ResponseWriter, r *http.Request, dest
 		operation = value.billingOperationInput
 	case *modelMultiplierInput:
 		operation = value.billingOperationInput
+	case *modelPriceInput:
+		operation = value.billingOperationInput
 	case *rechargeUserInput:
 		operation = value.billingOperationInput
 	case *adjustmentInput:

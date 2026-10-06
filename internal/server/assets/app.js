@@ -9,6 +9,7 @@ const sectionTitles = {
   guide: "使用指导",
   billing: "额度与订阅",
   "model-multipliers": "模型倍率",
+  "model-pricing": "模型定价",
   groups: "群组额度",
   invitations: "邀请管理",
   security: "账号安全",
@@ -24,6 +25,7 @@ const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("model-access");
 ownerOnlySections.add("model-multipliers");
+ownerOnlySections.add("model-pricing");
 ownerOnlySections.add("model-identification");
 ownerOnlySections.add("groups");
 ownerOnlySections.add("invitations");
@@ -75,6 +77,11 @@ let modelMultiplierDrafts = new Map();
 let modelMultiplierSequence = 0;
 let modelMultiplierOperation = null;
 let modelMultiplierLoading = false;
+let modelPriceModels = [];
+let modelPriceDrafts = new Map();
+let modelPriceSequence = 0;
+let modelPriceOperation = null;
+let modelPriceLoading = false;
 let billingLedgerOffset = 0;
 let billingLedgerNextOffset = 0;
 let billingRequestSequence = 0;
@@ -720,6 +727,7 @@ function handleUnauthorized() {
   byId("billing-current-rate").textContent = "—";
   resetBillingUserSearch();
   resetModelMultipliers();
+  resetModelPrices();
   globalUserSearch?.reset();
   recoveryUserSearch?.reset();
   byId("billing-ledger-page").textContent = "—";
@@ -2029,6 +2037,7 @@ function renderState(value) {
     globalRequestSequence++;
     resetBillingUserSearch();
     resetModelMultipliers();
+    resetModelPrices();
     globalUserSearch?.reset();
     recoveryUserSearch?.reset();
   }
@@ -2866,6 +2875,7 @@ function billingTypeLabel(type) {
     usage_charge: "用量扣费",
     recharge_rate: "充值汇率调整",
     model_multiplier: "模型倍率调整",
+    model_price: "模型基础定价调整",
     subscription_set: "订阅重开",
     subscription_purchase: "套餐购买并重开",
     plan_purchase: "套餐购买并重开",
@@ -2988,6 +2998,25 @@ function renderBillingLedger(detail) {
       if (subscriptionTier != null) {
         const tier = billingTiers.find((item) => item.id === subscriptionTier);
         description.append(element("small", {text: tier?.label || String(subscriptionTier)}));
+      }
+
+      if (type === "model_price") {
+        const snapshot = field(entry, "transaction_snapshot");
+        const price = snapshot?.model_price;
+        if (price) {
+          description.append(element("small", {text: `${snapshot.action === "restore" ? "恢复配置价" : "保存覆盖价"} · 版本 ${price.version} · 倍率 ${displayModelMultiplier(price.multiplier)} ×`}));
+          const effective = price.effective_price;
+          if (effective) {
+            const details = element("details", {className: "model-price-ledger-details"},
+              element("summary", {text: "基础价格快照 · USD / 百万 tokens"}));
+            for (const item of modelPriceRows(effective)) {
+              const values = modelPriceFields.map(([field, label]) => field === "cache_write_usd_per_million" && effective.cache_write_mode !== "separate"
+                ? "缓存写入包含在输入" : `${label} ${item.value[field]}`);
+              details.append(element("small", {text: `${item.tier} / ${item.context} · ${values.join(" · ")}`}));
+            }
+            description.append(details);
+          }
+        }
       }
 
       const request = element("td", {className: "money-cell"});
@@ -3745,6 +3774,265 @@ async function saveModelMultiplier(model, form) {
     if (current()) {
       modelMultiplierOperation = null;
       syncModelMultiplierControls();
+    }
+  }
+}
+
+const modelPriceFields = [
+  ["input_usd_per_million", "输入"], ["cached_input_usd_per_million", "缓存读取"],
+  ["cache_write_usd_per_million", "缓存写入"], ["output_usd_per_million", "输出"],
+];
+
+function modelPriceMessage(message = "", kind = "error") {
+  const node = byId("model-prices-message");
+  node.textContent = message;
+  node.dataset.kind = kind;
+  node.classList.toggle("hidden", !message);
+}
+
+function resetModelPrices() {
+  modelPriceSequence++;
+  modelPriceModels = [];
+  modelPriceDrafts.clear();
+  modelPriceOperation = null;
+  modelPriceLoading = false;
+  byId("model-price-list")?.replaceChildren(emptyState("登录后加载模型定价。"));
+  if (byId("model-prices-search")) byId("model-prices-search").value = "";
+  hide("model-prices-loading");
+  if (byId("model-prices-message")) modelPriceMessage();
+}
+
+function modelPriceRows(price) {
+  if (!price.service_tiers) return [{tier: "standard", context: "legacy", value: price}];
+  const order = ["standard", "fast", "flex"];
+  return Object.keys(price.service_tiers).sort((a, b) => {
+    const rank = (tier) => order.includes(tier) ? order.indexOf(tier) : order.length;
+    return rank(a) - rank(b) || a.localeCompare(b);
+  }).flatMap((tier) => ["short", "long"].filter((context) => price.service_tiers[tier][context])
+    .map((context) => ({tier, context, value: price.service_tiers[tier][context]})));
+}
+
+function newModelPriceDraft(row) {
+  return {price: JSON.parse(JSON.stringify(row.effective_price || row.configured_price)), reason: "",
+    version: row.version, structureID: row.structure_id, pending: null, dirty: false, stale: false, message: ""};
+}
+
+function syncModelPriceControls() {
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const busy = Boolean(modelPriceOperation);
+  byId("model-prices-refresh").disabled = !owner || busy || modelPriceLoading;
+  for (const form of all(".model-price-form")) {
+    const saving = modelPriceOperation?.model === form.dataset.model;
+    const draft = modelPriceDrafts.get(form.dataset.model);
+    for (const input of all("input", form)) input.disabled = !owner || saving;
+    for (const button of all("button", form)) {
+      button.disabled = !owner || busy || (draft?.stale && button.dataset.action !== "reload");
+      if (button.dataset.action === "save") button.textContent = saving && modelPriceOperation.pending?.payload.action === "save" ? "保存中…" : "保存覆盖价";
+      if (button.dataset.action === "restore") button.textContent = saving && modelPriceOperation.pending?.payload.action === "restore" ? "恢复中…" : "恢复配置价";
+    }
+    form.setAttribute("aria-busy", saving ? "true" : "false");
+  }
+}
+
+function renderModelPriceMatrix(row, draft) {
+  const price = draft?.price || row.effective_price || row.configured_price;
+  const configured = modelPriceRows(row.configured_price);
+  const body = element("tbody");
+  for (const item of modelPriceRows(price)) {
+    const tierLabel = ({standard: "标准", fast: "快速", flex: "弹性"})[item.tier] || item.tier;
+    const contextLabel = ({short: "短上下文", long: "长上下文", legacy: "全部上下文 · 旧版"})[item.context];
+    const configuredRow = configured.find((value) => value.tier === item.tier && value.context === item.context)?.value;
+    const tr = element("tr", {}, element("th", {attributes: {scope: "row"}},
+      element("strong", {text: `${tierLabel} · ${item.tier}`}), element("small", {text: contextLabel})));
+    for (const [field, label] of modelPriceFields) {
+      const cell = element("td", {dataset: {label}});
+      if (field === "cache_write_usd_per_million" && price.cache_write_mode !== "separate") {
+        cell.append(element("span", {className: "model-price-included", text: "包含在输入单价中"}));
+      } else if (draft) {
+        const input = element("input", {type: "text", attributes: {
+          name: `${item.tier}.${item.context}.${field}`, inputmode: "decimal", required: "", autocomplete: "off", maxlength: "31",
+          "aria-label": `${row.model} ${tierLabel} ${contextLabel} ${label} USD / 百万 tokens`,
+        }});
+        input.value = item.value[field];
+        input.addEventListener("input", () => { item.value[field] = input.value; draft.dirty = true; });
+        cell.append(input);
+        if (configuredRow) cell.append(element("small", {className: "model-price-configured", text: `配置：${configuredRow[field]}`}));
+      } else {
+        cell.append(element("span", {className: "model-price-value", text: row.model === "codex-auto-review" ? "0" : item.value[field]}));
+      }
+      tr.append(cell);
+    }
+    body.append(tr);
+  }
+  return element("table", {className: "model-price-matrix"},
+    element("caption", {text: "基础单价 · USD / 百万 tokens"}),
+    element("thead", {}, element("tr", {}, ...["服务层 / 上下文", ...modelPriceFields.map(([, label]) => label)]
+      .map((text) => element("th", {text, attributes: {scope: "col"}})))), body);
+}
+
+function renderModelPrices() {
+  const list = byId("model-price-list");
+  const query = (byId("model-prices-search").value || "").trim().toLowerCase();
+  const rows = modelPriceModels.filter((row) => row.model.toLowerCase().includes(query));
+  if (!rows.length) {
+    list.replaceChildren(emptyState(query ? "没有匹配的模型。" : "当前没有已配置的计价模型。"));
+    syncModelPriceControls();
+    return;
+  }
+  list.replaceChildren(...rows.map((row) => {
+    const editable = row.editable && row.model !== "codex-auto-review";
+    const source = ({config: "部署配置", override: "管理员覆盖", internal: "内部固定零价", conflict: "配置结构冲突"})[row.source] || row.source;
+    const price = row.configured_price;
+    const card = element("article", {className: "panel model-price-card", dataset: {model: row.model}},
+      element("header", {className: "model-price-heading"},
+        element("div", {}, element("h3", {text: row.model}), element("small", {text: row.updated_at ? `更新于 ${formatDateTime(row.updated_at)}` : "尚无管理员修改"})),
+        element("span", {className: `badge${row.conflict ? " model-price-conflict-badge" : ""}`, text: source})),
+      element("p", {className: "model-price-meta", text: price.service_tiers
+        ? `长上下文阈值：${formatInteger(price.long_context_threshold_tokens)} tokens（超过时适用） · 最大输入：${formatInteger(price.max_input_tokens)} tokens · 缓存写入：${price.cache_write_mode === "separate" ? "独立计费" : "包含在输入"}`
+        : "旧版三价配置 · 未设置上下文阈值及最大输入 · 缓存写入包含在输入"}),
+      element("p", {className: "model-price-meta", text: `当前倍率：${displayModelMultiplier(row.multiplier)} × · 最终费用继续按现有倍率计算`}));
+    if (row.conflict) card.append(element("p", {className: "callout model-price-conflict", attributes: {role: "alert"},
+      text: "部署配置的价格结构已改变，该模型的新请求已暂停计费准入。下方按当前配置结构编辑；重新保存完整价格或恢复配置价后解除。"}));
+    if (!editable) {
+      card.append(renderModelPriceMatrix(row, null), element("p", {className: "muted", text: row.model === "codex-auto-review" ? "内部模型固定零价，不可编辑。" : "当前模型不可编辑。"}));
+      return card;
+    }
+    let draft = modelPriceDrafts.get(row.model);
+    if (!draft || !draft.dirty) draft = newModelPriceDraft(row);
+    else if (draft.version !== row.version || draft.structureID !== row.structure_id) draft.stale = true;
+    modelPriceDrafts.set(row.model, draft);
+    const reason = element("input", {type: "text", attributes: {name: "reason", required: "", maxlength: "500",
+      placeholder: "例如：更新上游基础价格", "aria-label": `${row.model} 操作原因`}});
+    reason.value = draft.reason;
+    reason.addEventListener("input", () => { draft.reason = reason.value; draft.dirty = true; });
+    const restore = element("button", {type: "button", className: "secondary", text: "恢复配置价", dataset: {action: "restore"}, attributes: {"aria-label": `恢复 ${row.model} 配置价`}});
+    const reload = element("button", {type: "button", className: "secondary", text: "重新加载此模型", dataset: {action: "reload"}, attributes: {"aria-label": `丢弃草稿并重新加载 ${row.model}`}});
+    const form = element("form", {className: "model-price-form", dataset: {model: row.model}},
+      renderModelPriceMatrix(row, draft),
+      element("div", {className: "model-price-actions"}, element("label", {}, "操作原因（保存和恢复均必填）", reason),
+        element("button", {type: "submit", text: "保存覆盖价", dataset: {action: "save"}, attributes: {"aria-label": `保存 ${row.model} 覆盖价`}}), restore, reload),
+      element("p", {className: "form-message hidden", attributes: {role: "status", "aria-live": "polite"}}));
+    form.addEventListener("submit", (event) => { event.preventDefault(); return saveModelPrice(row.model, form, "save"); });
+    restore.addEventListener("click", () => saveModelPrice(row.model, form, "restore"));
+    reload.addEventListener("click", () => reloadModelPriceDraft(row.model));
+    card.append(form);
+    if (draft.stale) setLocalMessage(form, "价格已被其他操作修改。输入已保留；请点击“重新加载此模型”丢弃此草稿并载入最新价格后再修改。");
+    else if (draft.message) setLocalMessage(form, draft.message);
+    return card;
+  }));
+  syncModelPriceControls();
+}
+
+async function loadModelPrices(operation = null) {
+  const identityCurrent = modelMultiplierIdentityCurrent();
+  if (!identityCurrent() || (modelPriceOperation && operation !== modelPriceOperation)) return false;
+  const sequence = ++modelPriceSequence;
+  const current = () => identityCurrent() && sequence === modelPriceSequence;
+  modelPriceLoading = true;
+  byId("model-price-list").setAttribute("aria-busy", "true");
+  show("model-prices-loading");
+  syncModelPriceControls();
+  try {
+    const result = await api("/admin/billing/model-prices", undefined, current);
+    if (!current()) return false;
+    if (!Array.isArray(result.models)) throw new Error("模型定价响应格式无效。");
+    modelPriceModels = result.models;
+    for (const model of modelPriceDrafts.keys()) {
+      if (!modelPriceModels.some((row) => row.model === model && row.editable)) modelPriceDrafts.delete(model);
+    }
+    renderModelPrices();
+    modelPriceMessage();
+    return true;
+  } catch (error) {
+    if (current()) modelPriceMessage(`价格加载失败：${friendlyError(error)}`);
+    return false;
+  } finally {
+    if (current()) {
+      modelPriceLoading = false;
+      byId("model-price-list").setAttribute("aria-busy", "false");
+      hide("model-prices-loading");
+      syncModelPriceControls();
+    }
+  }
+}
+
+async function reloadModelPriceDraft(model) {
+  const identityCurrent = modelMultiplierIdentityCurrent();
+  if (!identityCurrent() || modelPriceOperation) return;
+  const draft = modelPriceDrafts.get(model);
+  // Freeze writes while the explicit discard/reload is pending, just like a save.
+  const operation = {model};
+  modelPriceOperation = operation;
+  try {
+    if (await loadModelPrices(operation) && identityCurrent() && modelPriceOperation === operation && modelPriceDrafts.get(model) === draft) {
+      modelPriceDrafts.delete(model);
+      renderModelPrices();
+      modelPriceMessage(`${model} 已重新加载，原草稿已丢弃。`, "ok");
+    }
+  } finally {
+    if (identityCurrent() && modelPriceOperation === operation) {
+      modelPriceOperation = null;
+      syncModelPriceControls();
+    }
+  }
+}
+
+async function saveModelPrice(model, form, action) {
+  const identityCurrent = modelMultiplierIdentityCurrent();
+  if (!identityCurrent() || modelPriceOperation || model === "codex-auto-review" ||
+      !modelPriceModels.some((row) => row.model === model && row.editable)) return;
+  const draft = modelPriceDrafts.get(model);
+  if (!draft || draft.stale) return;
+  draft.message = "";
+  setLocalMessage(form);
+  const fail = (message) => { draft.message = message; setLocalMessage(form, message); };
+  const reason = draft.reason.trim();
+  if (!reason) { fail("必须填写操作原因。"); return; }
+  const payload = {action, reason, version: draft.version, structure_id: draft.structureID};
+  if (action === "save") {
+    payload.price = JSON.parse(JSON.stringify(draft.price));
+    for (const item of modelPriceRows(payload.price)) for (const [field] of modelPriceFields) {
+      if (field === "cache_write_usd_per_million" && payload.price.cache_write_mode !== "separate") continue;
+      const value = String(item.value[field] ?? "").trim();
+      if (!/^(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$/.test(value)) {
+        fail("单价必须是大于或等于 0 的十进制数，最多 18 位整数、12 位小数；不支持科学计数法。");
+        return;
+      }
+      item.value[field] = value;
+    }
+  }
+  if (!crypto?.randomUUID) { fail("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。"); return; }
+  const fingerprint = JSON.stringify(payload);
+  if (draft.pending?.fingerprint !== fingerprint) draft.pending = {fingerprint, payload: {...payload, operation_id: crypto.randomUUID()}};
+  const operation = {model, pending: draft.pending};
+  modelPriceOperation = operation;
+  modelPriceSequence++;
+  modelPriceLoading = false;
+  hide("model-prices-loading");
+  byId("model-price-list").setAttribute("aria-busy", "false");
+  const current = () => identityCurrent() && modelPriceOperation === operation;
+  syncModelPriceControls();
+  try {
+    const result = await sensitiveAction(() => api(`/admin/billing/model-prices/${encodeURIComponent(model)}`, {
+      method: "PUT", body: JSON.stringify(operation.pending.payload),
+    }, current), current);
+    if (!current()) return;
+    Object.assign(modelPriceModels.find((row) => row.model === model), result);
+    modelPriceDrafts.delete(model);
+    renderModelPrices();
+    const refreshed = await loadModelPrices(operation);
+    if (current()) modelPriceMessage(`${model} ${action === "restore" ? "已恢复配置价" : "覆盖价已保存"}，仅影响新请求。${refreshed ? "" : "列表刷新失败，请点击“刷新价格”核对。"}`, refreshed ? "ok" : "error");
+  } catch (error) {
+    if (current()) {
+      if (error.status === 409) {
+        draft.stale = true;
+        fail("价格版本或配置结构已改变。输入已保留；请点击“重新加载此模型”载入最新价格后再修改。");
+      } else fail(`操作失败：${friendlyError(error)}。输入已保留，可重试。`);
+    }
+  } finally {
+    if (current()) {
+      modelPriceOperation = null;
+      syncModelPriceControls();
     }
   }
 }
@@ -7341,6 +7629,7 @@ function routeFromHash(focusContent = true) {
   syncVisiblePolling();
   if (section === "overview") loadOverview();
   if (section === "model-multipliers") loadModelMultipliers();
+  if (section === "model-pricing") loadModelPrices();
   if (section === "invitations") {
     const current = invitationOwnerCurrent();
     Promise.all([loadInvitations(invitationOffset), loadInvitationGroups(current)]).catch((error) => {
@@ -7557,6 +7846,7 @@ function bindUI() {
     clearSensitiveDOM();
     resetBillingUserSearch();
     resetModelMultipliers();
+    resetModelPrices();
     globalUserSearch.reset();
     recoveryUserSearch?.reset();
     try {
@@ -7576,6 +7866,8 @@ function bindUI() {
   bindAsync("profile-form", "submit", saveProfile, "保存中…", identityLinkCurrent);
   bindAsync("reauth-form", "submit", submitReauthentication, "验证中…", () => reauthRequestCurrent);
   byId("model-multipliers-refresh").addEventListener("click", () => loadModelMultipliers());
+  byId("model-prices-refresh").addEventListener("click", () => loadModelPrices());
+  byId("model-prices-search").addEventListener("input", renderModelPrices);
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");

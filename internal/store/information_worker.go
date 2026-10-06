@@ -136,7 +136,7 @@ func deleteInformationCandidates(ctx context.Context, tx *sql.Tx, job *Informati
 	}
 	if err := informationDelete(ctx, tx, &job.Report, "audit_events", `DELETE FROM audit_events a
 		WHERE a.occurred_at < $1 AND a.severity='info' AND a.success
-		AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_purchase','billing.plan_renewal')
+		AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_purchase','billing.plan_renewal')
 		AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text)`, job.Cutoff); err != nil {
 		return err
 	}

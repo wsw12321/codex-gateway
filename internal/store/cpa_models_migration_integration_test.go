@@ -62,14 +62,14 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Install the independent funding schema needed by current helpers without
+	// Install the independent funding and model-price schemas needed by current helpers without
 	// applying the CPA catalog migration being tested until after seeding.
 	for _, migration := range migrations {
-		if migration.Name != "0027_group_priority_billing.sql" {
+		if migration.Name != "0027_group_priority_billing.sql" && migration.Name != "0029_model_prices.sql" {
 			continue
 		}
 		if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
-			t.Fatalf("apply funding helper schema: %v", err)
+			t.Fatalf("apply billing helper schema: %v", err)
 		}
 		if _, err := s.db.ExecContext(ctx, `INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)`, migration.Name, migration.Checksum[:]); err != nil {
 			t.Fatal(err)

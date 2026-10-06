@@ -160,6 +160,16 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 	if err != nil || g.UsedUSD != "30.000000000000" || g.Members[0].UsedUSD != "0.000000000000" {
 		t.Fatalf("legacy in-flight must add full group cost without member accounting = %+v %v", g, err)
 	}
+	// Legacy preservation and recovery were verified against the upgraded
+	// funding schema above. Current admissions also require the independent
+	// durable model-price schema, even when no override has been configured.
+	for _, migration := range migrations {
+		if migration.Name == "0029_model_prices.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply model-price helper schema: %v", err)
+			}
+		}
+	}
 	newID := "priority-upgrade-new-" + id
 	newReservation := billingIntegrationReserveAndComplete(t, ctx, s, u, d, k, newID, now, 5000000, "1", "billing-priced-model")
 	if newReservation.FundingRuleVersion != 2 {

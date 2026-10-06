@@ -3343,3 +3343,183 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
   .workspace-header { flex-wrap: wrap; }
   .workspace-header .workspace-tools { margin-left: auto; }
 }
+
+.model-price-list {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.model-price-search {
+  max-width: 32rem;
+  margin: 1.25rem 0;
+}
+
+.model-price-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.model-price-heading > div,
+.model-price-card,
+.model-price-form {
+  min-width: 0;
+}
+
+.model-price-heading h3 {
+  margin: 0 0 .3rem;
+  overflow-wrap: anywhere;
+}
+
+.model-price-heading small,
+.model-price-meta,
+.model-price-help,
+.model-price-configured,
+.model-price-included {
+  color: var(--muted);
+}
+
+.model-price-meta {
+  margin: .65rem 0;
+  font-size: .8rem;
+  overflow-wrap: anywhere;
+}
+
+.model-price-matrix {
+  width: 100%;
+  table-layout: fixed;
+  margin: 1rem 0;
+}
+
+.model-price-matrix caption {
+  text-align: left;
+  padding-bottom: .75rem;
+  font-size: .85rem;
+  font-weight: 600;
+}
+
+.model-price-matrix th,
+.model-price-matrix td {
+  padding: .75rem .5rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-price-matrix th:first-child {
+  width: 21%;
+}
+
+.model-price-matrix th strong,
+.model-price-matrix th small,
+.model-price-configured {
+  display: block;
+}
+
+.model-price-matrix th small,
+.model-price-configured,
+.model-price-included {
+  font-size: .74rem;
+  font-weight: 400;
+  margin-top: .3rem;
+}
+
+.model-price-matrix input {
+  min-width: 0;
+  width: 100%;
+  padding: .6rem .55rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.model-price-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: .7rem;
+}
+
+.model-price-actions label {
+  flex: 1 1 15rem;
+}
+
+.model-price-actions button {
+  flex: 0 0 auto;
+}
+
+.model-price-conflict-badge {
+  color: var(--warning);
+}
+
+#model-prices-message[data-kind="ok"] {
+  color: var(--success);
+}
+
+@media (max-width: 760px) {
+  .model-price-heading {
+    flex-wrap: wrap;
+  }
+
+  .model-price-heading h3 {
+    font-size: 1rem;
+  }
+
+  .model-price-matrix,
+  .model-price-matrix tbody,
+  .model-price-matrix tr,
+  .model-price-matrix th,
+  .model-price-matrix td {
+    display: block;
+    width: 100%;
+  }
+
+  .model-price-matrix thead {
+    display: none;
+  }
+
+  .model-price-matrix caption {
+    display: block;
+  }
+
+  .model-price-matrix tr {
+    border: 1px solid var(--line);
+    border-radius: .65rem;
+    margin-bottom: .8rem;
+    padding: .45rem .7rem;
+  }
+
+  .model-price-matrix th:first-child {
+    width: 100%;
+  }
+
+  .model-price-matrix td {
+    border: 0;
+    padding-top: .45rem;
+    padding-bottom: .45rem;
+  }
+
+  .model-price-matrix td::before {
+    display: block;
+    content: attr(data-label);
+    margin-bottom: .35rem;
+    font-size: .8rem;
+    font-weight: 600;
+  }
+
+  .model-price-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+}
+
+.model-price-ledger-details {
+  margin-top: .4rem;
+  max-width: 32rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.model-price-ledger-details small {
+  display: block;
+  margin-top: .4rem;
+}

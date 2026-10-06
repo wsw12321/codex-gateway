@@ -558,6 +558,9 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		}
 		return BillingReservation{}, &InsufficientFundsError{RetryAfter: retry}
 	}
+	if err := snapshotModelPriceTx(ctx, tx, &params); err != nil {
+		return BillingReservation{}, err
+	}
 	pricingMultiplier, err := snapshotModelMultiplierTx(ctx, tx, params.Model)
 	if err != nil {
 		return BillingReservation{}, err
