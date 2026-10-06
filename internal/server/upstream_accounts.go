@@ -164,21 +164,12 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("upstream account metadata sync failed", "code", code)
 		}
 	} else {
-		snapshots := make([]store.UpstreamAccountSnapshot, 0, len(remoteAccounts))
 		for _, account := range remoteAccounts {
 			known := upstreamAccountSourceStatusKnown(account)
 			manageable[account.ID] = known
 			remoteStatus[account.ID] = account
-			status := store.UpstreamAccountStatusUnavailable
-			if known && account.Status == "available" {
-				status = store.UpstreamAccountStatusAvailable
-			}
-			snapshots = append(snapshots, store.UpstreamAccountSnapshot{
-				ID: account.ID, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail, Plan: account.Plan, Status: status,
-				LastSyncedAt: account.LastSyncedAt,
-			})
 		}
-		if err := s.accountStore(r).SyncUpstreamAccounts(r.Context(), snapshots, time.Now().UTC()); err != nil {
+		if err := s.accountStore(r).SyncUpstreamAccounts(r.Context(), upstreamAccountSnapshots(remoteAccounts), time.Now().UTC()); err != nil {
 			internalError(s, w, r, "sync upstream accounts", err)
 			return
 		}
@@ -264,6 +255,39 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 
 func upstreamAccountSourceStatusKnown(account gatewayproxy.UpstreamAccount) bool {
 	return account.CliproxyStatus != "" && account.GatewayManualStatus != "" && account.GatewayQuotaStatus != ""
+}
+
+// syncUpstreamAccountsLocked requires upstreamAccountSyncMu to be held.
+func (s *Server) syncUpstreamAccountsLocked(ctx context.Context, provider string) error {
+	client := s.upstream
+	if provider == store.UpstreamProviderAntigravity {
+		client = s.antigravity
+	}
+	if client == nil {
+		return errors.New("upstream account client is unavailable")
+	}
+	ctx, cancel := context.WithTimeout(ctx, upstreamAccountSyncTimeout)
+	defer cancel()
+	accounts, err := client.ListUpstreamAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	return s.store.WithUpstreamProvider(provider).SyncUpstreamAccounts(ctx, upstreamAccountSnapshots(accounts), time.Now().UTC())
+}
+
+func upstreamAccountSnapshots(accounts []gatewayproxy.UpstreamAccount) []store.UpstreamAccountSnapshot {
+	snapshots := make([]store.UpstreamAccountSnapshot, 0, len(accounts))
+	for _, account := range accounts {
+		status := store.UpstreamAccountStatusUnavailable
+		if upstreamAccountSourceStatusKnown(account) && account.Status == "available" {
+			status = store.UpstreamAccountStatusAvailable
+		}
+		snapshots = append(snapshots, store.UpstreamAccountSnapshot{
+			ID: account.ID, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail,
+			Plan: account.Plan, Status: status, LastSyncedAt: account.LastSyncedAt,
+		})
+	}
+	return snapshots
 }
 
 func upstreamUsageDTO(row store.UpstreamAccountSummary) upstreamAccountUsageDTO {

@@ -16,6 +16,7 @@ const sectionTitles = {
   usage: "使用统计",
   monitoring: "请求监控",
   "model-access": "模型权限",
+  "user-upstream-access": "账号权限",
   "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
   "antigravity-accounts": "上游账号",
@@ -24,6 +25,7 @@ const sectionTitles = {
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("model-access");
+ownerOnlySections.add("user-upstream-access");
 ownerOnlySections.add("model-multipliers");
 ownerOnlySections.add("model-pricing");
 ownerOnlySections.add("model-identification");
@@ -98,6 +100,15 @@ let billingBatchGeneration = 0;
 let billingBatchRefreshing = false;
 let globalUserSearch = null;
 let recoveryUserSearch = null;
+let userUpstreamSearch = null;
+let userUpstreamUsersReady = false;
+let userUpstreamUsersSequence = 0;
+let userUpstreamSequence = 0;
+let userUpstreamUser = null;
+let userUpstreamLoading = false;
+let userUpstreamProviders = [];
+const userUpstreamDrafts = new Map();
+const userUpstreamOperations = new Map();
 let modelAccessModels = [];
 let modelAccessUsers = [];
 let modelAccessUserEntries = [];
@@ -655,6 +666,7 @@ function clearSensitiveDOM() {
 }
 
 function handleUnauthorized() {
+  resetUserUpstreamAccess();
   hide("identity-link-panel");
   if (byId("identity-link-status")) byId("identity-link-status").textContent = "";
   const preserveGroupInvitation = checkingInvitationSession === invitationContextSequence && invitationKind === "group" && Boolean(invitationToken);
@@ -2017,6 +2029,7 @@ function renderState(value) {
   if (!state.user) throw new Error("管理台状态缺少当前用户信息。");
   const owner = state.user.role === "owner";
   if (previousUser && (previousUser.id !== state.user.id || previousUser.role !== state.user.role)) {
+    resetUserUpstreamAccess();
     resetBrowserHandoff();
     closeNavigationDrawer(false);
     resetOverview();
@@ -3322,6 +3335,238 @@ function createUserSearch(id, onSelect, describe = () => "") {
 /* Kept as a named factory for pages that need a multi-select picker. */
 function createUserPicker(id, onSelect, describe = () => "") {
   return new UserPicker(id, onSelect, describe);
+}
+
+function userUpstreamMessage(message = "", kind = "error") {
+  const node = byId("user-upstream-message");
+  if (!node) return;
+  node.textContent = message;
+  node.dataset.kind = kind;
+  node.classList.toggle("hidden", !message);
+}
+
+function resetUserUpstreamAccess() {
+  userUpstreamUsersSequence++;
+  userUpstreamSequence++;
+  userUpstreamUsersReady = false;
+  userUpstreamUser = null;
+  userUpstreamLoading = false;
+  userUpstreamProviders = [];
+  userUpstreamDrafts.clear();
+  userUpstreamOperations.clear();
+  userUpstreamSearch?.reset();
+  byId("user-upstream-cards")?.replaceChildren(emptyState("选择用户后设置账号权限。"));
+  if (byId("user-upstream-target")) byId("user-upstream-target").textContent = "尚未选择用户";
+  userUpstreamMessage();
+  syncUserUpstreamControls();
+}
+
+function syncUserUpstreamControls() {
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const busy = userUpstreamOperations.size > 0;
+  const search = byId("user-upstream-user-search");
+  if (search) search.disabled = !owner || busy || !userUpstreamUsersReady;
+  const refresh = byId("user-upstream-refresh");
+  if (refresh) refresh.disabled = !owner || busy || userUpstreamLoading;
+  for (const form of all(".user-upstream-form")) {
+    const saving = userUpstreamOperations.has(form.dataset.provider);
+    for (const control of all("input, select, button", form)) control.disabled = !owner || saving || userUpstreamLoading;
+    const save = form.querySelector(".user-upstream-save");
+    save.textContent = saving ? "保存中…" : "保存账号权限";
+    form.setAttribute("aria-busy", String(saving));
+  }
+}
+
+async function loadUserUpstreamUsers() {
+  const identityCurrent = groupIdentityCurrent();
+  if (!identityCurrent() || userUpstreamOperations.size) return;
+  const sequence = ++userUpstreamUsersSequence;
+  const current = () => identityCurrent() && sequence === userUpstreamUsersSequence;
+  userUpstreamUsersReady = false;
+  userUpstreamSearch?.unavailable("正在加载用户…");
+  try {
+    const result = await api("/admin/billing/users", undefined, current);
+    if (!current()) return;
+    if (!Array.isArray(result.users)) throw new Error("用户列表响应格式无效。");
+    userUpstreamUsersReady = true;
+    userUpstreamSearch?.setUsers(result.users.filter((user) => user.status !== "pending"));
+    userUpstreamMessage();
+  } catch (error) {
+    if (current()) {
+      userUpstreamSearch?.unavailable("用户列表加载失败，请刷新重试");
+      userUpstreamMessage(`用户加载失败：${friendlyError(error)}`);
+    }
+  } finally {
+    if (current()) syncUserUpstreamControls();
+  }
+}
+
+async function selectUserUpstreamUser(user) {
+  if (loggingOut || state?.user?.role !== "owner" || userUpstreamOperations.size || !user?.id || user.status === "pending") return;
+  if (userUpstreamUser?.id === user.id) return;
+  userUpstreamSequence++;
+  userUpstreamUser = {...user};
+  userUpstreamDrafts.clear();
+  userUpstreamProviders = [];
+  byId("user-upstream-target").textContent = `${user.display_name || user.username || user.id}（${user.username || user.id}）`;
+  await loadUserUpstreamAccess();
+}
+
+async function loadUserUpstreamAccess() {
+  const identityCurrent = groupIdentityCurrent();
+  const userID = userUpstreamUser?.id;
+  if (!identityCurrent() || !userID || userUpstreamOperations.size) return;
+  const sequence = ++userUpstreamSequence;
+  const current = () => identityCurrent() && sequence === userUpstreamSequence && userUpstreamUser?.id === userID;
+  userUpstreamLoading = true;
+  userUpstreamMessage("正在同步账号并加载权限…", "ok");
+  if (!userUpstreamProviders.length) byId("user-upstream-cards").replaceChildren(emptyState("正在加载账号权限…"));
+  syncUserUpstreamControls();
+  try {
+    const result = await api(`/admin/users/${encodeURIComponent(userID)}/upstream-access`, undefined, current);
+    if (!current()) return;
+    const providers = result.providers;
+    if (result.user_id !== userID || !Array.isArray(providers) || providers.length !== 2 ||
+        !["codex", "antigravity"].every((provider) => providers.filter((row) => row.provider === provider).length === 1) ||
+        providers.some((row) => !["all", "selected"].includes(row.mode) || !Array.isArray(row.account_ids) || !Array.isArray(row.accounts))) {
+      throw new Error("账号权限响应格式无效，请刷新重试。");
+    }
+    userUpstreamProviders = ["codex", "antigravity"].map((provider) => providers.find((row) => row.provider === provider));
+    for (const row of userUpstreamProviders) {
+      const draft = userUpstreamDrafts.get(row.provider);
+      if (!draft?.dirty) userUpstreamDrafts.set(row.provider, {
+        mode: row.mode, selected: new Set(row.account_ids), reason: "", search: draft?.search || "", dirty: false,
+      });
+    }
+    renderUserUpstreamCards();
+    userUpstreamMessage();
+  } catch (error) {
+    if (current()) {
+      userUpstreamMessage(`账号权限加载失败：${friendlyError(error)}；已有输入已保留。`);
+      if (!userUpstreamProviders.length) byId("user-upstream-cards").replaceChildren(emptyState("暂无可编辑的账号权限，请刷新重试。"));
+    }
+  } finally {
+    if (current()) {
+      userUpstreamLoading = false;
+      syncUserUpstreamControls();
+    }
+  }
+}
+
+function updateUserUpstreamCard(form, draft) {
+  const selected = draft.mode === "selected";
+  form.querySelector(".user-upstream-account-picker").classList.toggle("hidden", !selected);
+  const summary = form.querySelector(".user-upstream-selection");
+  summary.textContent = selected ? (draft.selected.size ? `已选 ${draft.selected.size} 个账号；新增账号不会自动加入。` : "该类型全部禁用") : "全部账号（默认）；自动涵盖今后新增的账号。";
+  summary.dataset.empty = String(selected && !draft.selected.size);
+  const query = draft.search.trim().toLocaleLowerCase();
+  const rows = all(".user-upstream-account-choice", form);
+  let visible = 0;
+  for (const row of rows) {
+    const matches = !query || row.dataset.search.includes(query);
+    row.classList.toggle("hidden", !matches);
+    if (matches) visible++;
+  }
+  form.querySelector(".user-upstream-account-empty").classList.toggle("hidden", visible > 0);
+}
+
+function renderUserUpstreamCards() {
+  byId("user-upstream-cards").replaceChildren(...userUpstreamProviders.map((row) => {
+    const draft = userUpstreamDrafts.get(row.provider);
+    const name = row.provider === "codex" ? "Codex" : "Antigravity";
+    const mode = element("select", {attributes: {name: "mode", "aria-label": `${name} 账号范围`}},
+      element("option", {text: "全部账号（默认）", attributes: {value: "all"}}),
+      element("option", {text: "仅指定账号", attributes: {value: "selected"}}));
+    mode.value = draft.mode;
+    const search = element("input", {type: "search", attributes: {placeholder: "名称或脱敏邮箱", autocomplete: "off", "aria-label": `搜索 ${name} 账号`}});
+    search.value = draft.search;
+    const options = row.accounts.map((account) => {
+      const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${account.display_name || account.email_masked || account.id}`}});
+      checkbox.checked = draft.selected.has(account.id);
+      checkbox.addEventListener("change", () => {
+        if (checkbox.checked) draft.selected.add(account.id); else draft.selected.delete(account.id);
+        draft.dirty = true;
+        updateUserUpstreamCard(form, draft);
+      });
+      return element("label", {className: "user-check-row user-upstream-account-choice", dataset: {
+        accountId: account.id, search: [account.display_name, account.email_masked, account.id].filter(Boolean).join(" ").toLocaleLowerCase(),
+      }}, checkbox, element("span", {}, element("strong", {text: account.display_name || account.email_masked || account.id}),
+        element("small", {text: account.email_masked || "未提供脱敏邮箱"}),
+        element("small", {text: upstreamFinalStatusLabels[account.status] || "状态未知"})));
+    });
+    const reason = element("input", {type: "text", attributes: {name: "reason", required: "", maxlength: "500", autocomplete: "off", "aria-label": `${name} 操作原因`}});
+    reason.value = draft.reason;
+    const form = element("form", {className: "user-upstream-form", dataset: {provider: row.provider, userId: userUpstreamUser.id}},
+      element("label", {}, "账号范围", mode),
+      element("p", {className: "user-upstream-selection", attributes: {role: "status", "aria-live": "polite"}}),
+      element("div", {className: "user-upstream-account-picker"}, element("label", {}, "搜索账号", search),
+        element("div", {className: "user-check-list user-upstream-account-list", attributes: {role: "group", "aria-label": `${name} 指定账号`}}, ...options,
+          element("p", {className: "empty user-upstream-account-empty", text: row.accounts.length ? "没有匹配的账号；已有勾选会保留。" : "暂无已登记账号；空名单会禁用该类型。"}))),
+      element("p", {className: "muted", text: "勾选后仍须满足账号专属授权、模型权限、账号状态、额度及并发限制。可选择当前不可用的已登记账号。"}),
+      element("label", {}, "操作原因", reason),
+      element("button", {type: "submit", className: "user-upstream-save", text: "保存账号权限", attributes: {"aria-label": `保存 ${name} 账号权限`}}),
+      element("p", {className: "form-message hidden", attributes: {role: "status", "aria-live": "polite"}}));
+    mode.addEventListener("change", () => { draft.mode = mode.value; draft.dirty = true; updateUserUpstreamCard(form, draft); });
+    search.addEventListener("input", () => { draft.search = search.value; updateUserUpstreamCard(form, draft); });
+    reason.addEventListener("input", () => { draft.reason = reason.value; draft.dirty = true; });
+    form.addEventListener("submit", (event) => { event.preventDefault(); return saveUserUpstreamAccess(row.provider, form); });
+    updateUserUpstreamCard(form, draft);
+    return element("article", {className: "panel user-upstream-card", dataset: {provider: row.provider}},
+      element("div", {className: "panel-heading"}, element("h3", {text: name}), element("span", {className: "badge", text: `${row.accounts.length} 个账号`})),
+      row.sync_warning ? element("p", {className: "callout user-upstream-sync-warning", attributes: {role: "status"}, text: "账号同步失败，当前显示本地快照；仍可保存权限，账号状态可能已变化。"}) : null,
+      form);
+  }));
+  syncUserUpstreamControls();
+}
+
+async function saveUserUpstreamAccess(provider, form) {
+  const identityCurrent = groupIdentityCurrent();
+  const userID = userUpstreamUser?.id;
+  const draft = userUpstreamDrafts.get(provider);
+  if (!identityCurrent() || !userID || form.dataset.userId !== userID || !draft || userUpstreamLoading || userUpstreamOperations.has(provider)) return;
+  if (!["all", "selected"].includes(draft.mode)) { setLocalMessage(form, "请选择有效的账号范围。"); return; }
+  const reason = draft.reason.trim();
+  if (!reason) { setLocalMessage(form, "必须填写操作原因。"); return; }
+  const payload = {mode: draft.mode, account_ids: draft.mode === "selected" ? [...draft.selected].sort() : [], reason};
+  const operation = {userID, provider, payload};
+  const sequence = userUpstreamSequence;
+  const current = () => identityCurrent() && userUpstreamUser?.id === userID && sequence === userUpstreamSequence && userUpstreamOperations.get(provider) === operation;
+  userUpstreamOperations.set(provider, operation);
+  userUpstreamSearch?.close();
+  setLocalMessage(form);
+  syncUserUpstreamControls();
+  try {
+    const result = await sensitiveAction(() => {
+      requireCurrentRequest(current);
+      return api(`/admin/users/${encodeURIComponent(userID)}/upstream-access/${provider}`, {method: "PUT", body: JSON.stringify(payload)}, current);
+    }, current);
+    if (!current()) return;
+    if (result.user_id !== userID || result.provider !== provider || result.mode !== payload.mode ||
+        !Array.isArray(result.account_ids) || JSON.stringify([...result.account_ids].sort()) !== JSON.stringify(payload.account_ids)) {
+      throw new Error("保存结果与提交内容不一致，请刷新后核对。");
+    }
+    Object.assign(userUpstreamProviders.find((row) => row.provider === provider), result);
+    draft.reason = "";
+    draft.dirty = false;
+    form.querySelector('input[name="reason"]').value = "";
+    setLocalMessage(form, "已保存；已有会话的下一次请求使用新权限，正在执行的请求继续完成。", "ok");
+  } catch (error) {
+    if (current()) setLocalMessage(form, `保存未确认：${friendlyError(error)}；输入已保留，请核对后重试。`);
+  } finally {
+    if (current()) {
+      userUpstreamOperations.delete(provider);
+      syncUserUpstreamControls();
+    }
+  }
+}
+
+function bindUserUpstreamAccess() {
+  userUpstreamSearch = createUserSearch("user-upstream-user-search", selectUserUpstreamUser);
+  byId("user-upstream-refresh")?.addEventListener("click", async () => {
+    if (userUpstreamOperations.size) return;
+    if (!userUpstreamUsersReady) await loadUserUpstreamUsers();
+    if (userUpstreamUser) await loadUserUpstreamAccess();
+  });
 }
 
 /* Legacy implementation intentionally removed; see UserPicker above. */
@@ -5708,8 +5953,8 @@ function upstreamAccessBlock(account) {
   button.disabled = !account.id;
   button.addEventListener("click", () => runButton(button, () => openUpstreamAccess(account), "加载用户…"));
   return element("section", {className: "upstream-access"},
-    element("div", {}, element("strong", {text: exclusive ? `专属 · ${(account.authorized_user_ids || []).length} 人` : "共享 · 所有用户可用"}),
-      element("small", {text: exclusive ? "仅授权用户可参与此账号分配" : "所有用户均可参与此账号分配"})), button);
+    element("div", {}, element("strong", {text: exclusive ? `专属 · ${(account.authorized_user_ids || []).length} 人` : "共享 · 受用户账号权限限制"}),
+      element("small", {text: exclusive ? "须同时满足专属名单和用户账号权限" : "须满足用户账号权限、模型权限及其他可用条件"})), button);
 }
 
 async function openUpstreamAccess(account) {
@@ -7603,6 +7848,7 @@ function routeFromHash(focusContent = true) {
   if (!state) return;
   billingUserSearch?.close();
   globalUserSearch?.close();
+  userUpstreamSearch?.close();
   const requested = location.hash.slice(1);
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
   const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
@@ -7630,6 +7876,7 @@ function routeFromHash(focusContent = true) {
   if (section === "overview") loadOverview();
   if (section === "model-multipliers") loadModelMultipliers();
   if (section === "model-pricing") loadModelPrices();
+  if (section === "user-upstream-access" && !userUpstreamUsersReady) loadUserUpstreamUsers();
   if (section === "invitations") {
     const current = invitationOwnerCurrent();
     Promise.all([loadInvitations(invitationOffset), loadInvitationGroups(current)]).catch((error) => {
@@ -7779,6 +8026,7 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  bindUserUpstreamAccess();
   bindBrowserHandoff();
   bindNavigation();
   bindOverview();
@@ -7818,6 +8066,7 @@ function bindUI() {
   bindAsync("recover-form", "submit", recover, "等待 Passkey…");
   bindAsync("logout", "click", async () => {
     loggingOut = true;
+    resetUserUpstreamAccess();
     clearInvitationContext();
     resetInvitationManagement();
     closeNavigationDrawer(false);

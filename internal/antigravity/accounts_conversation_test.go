@@ -39,12 +39,13 @@ func (e *conversationAccountExecutor) Run(ctx context.Context, _, _ string) (Res
 }
 
 type conversationSelector struct {
-	mu         sync.Mutex
-	limits     map[string]int64
-	zeroWeight map[string]bool
-	preferLast bool
-	fail       bool
-	before     func()
+	mu              sync.Mutex
+	limits          map[string]int64
+	zeroWeight      map[string]bool
+	preferLast      bool
+	fail            bool
+	failEligibility bool
+	before          func()
 }
 
 func newConversationSelector(t *testing.T, limits map[string]int64) (*conversationSelector, *httptest.Server) {
@@ -62,6 +63,11 @@ func newConversationSelector(t *testing.T, limits map[string]int64) (*conversati
 		}
 		state.mu.Lock()
 		if strings.HasSuffix(r.URL.Path, "/eligible") {
+			if state.failEligibility {
+				state.mu.Unlock()
+				writeJSON(w, 503, map[string]string{"error": "unavailable"})
+				return
+			}
 			accounts := []map[string]any{}
 			for _, id := range request.IDs {
 				if limit := state.limits[id]; limit > 0 {
@@ -252,7 +258,7 @@ func TestAccountConversationUnidentifiedRequestsStayIndependent(t *testing.T) {
 }
 
 func TestAccountConversationPreferenceRechecksAccountPolicies(t *testing.T) {
-	for _, policy := range []string{"unchanged", "permission revoked", "disabled", "cooldown", "model removed", "zero weight", "all zero", "selector failed"} {
+	for _, policy := range []string{"unchanged", "permission revoked", "all permissions revoked", "eligibility failed", "disabled", "cooldown", "model removed", "zero weight", "all zero", "selector failed"} {
 		t.Run(policy, func(t *testing.T) {
 			state, selector := newConversationSelector(t, map[string]int64{accountID("default"): 1, accountID("work"): 1})
 			state.preferLast = true
@@ -265,6 +271,10 @@ func TestAccountConversationPreferenceRechecksAccountPolicies(t *testing.T) {
 			switch policy {
 			case "permission revoked":
 				delete(state.limits, accountID("work"))
+			case "all permissions revoked":
+				clear(state.limits)
+			case "eligibility failed":
+				state.failEligibility = true
 			case "zero weight", "all zero":
 				state.zeroWeight[accountID("work")] = true
 				state.zeroWeight[accountID("default")] = policy == "all zero"
@@ -282,9 +292,9 @@ func TestAccountConversationPreferenceRechecksAccountPolicies(t *testing.T) {
 				server.manager.accounts[1].models = nil
 			}
 			server.manager.mu.Unlock()
-			if policy == "all zero" || policy == "selector failed" {
+			if policy == "all zero" || policy == "selector failed" || policy == "all permissions revoked" || policy == "eligibility failed" {
 				want := 429
-				if policy == "selector failed" {
+				if policy == "selector failed" || policy == "eligibility failed" {
 					want = 503
 				}
 				if response := postAccountConversation(server, context.Background(), accountConversationA, scope, false); response.Code != want {

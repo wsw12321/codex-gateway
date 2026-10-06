@@ -95,7 +95,8 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 
 // SelectUpstreamAccount uses one PostgreSQL statement/snapshot for preferences
 // and settled costs. The sidecar owns model support and live availability; a
-// never-synchronized candidate therefore has weight one and no historical cost.
+// never-synchronized candidate therefore has weight one and no historical cost,
+// but is denied for users restricted to selected accounts.
 // Selection does not create placeholders, attribution, or reservations.
 func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candidateIDs []string, at time.Time) (string, error) {
 	if !s.validUpstreamProvider() {
@@ -141,7 +142,8 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candid
 		) l ON true
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$3::uuid AND status='active')
 		  AND (a.id IS NULL OR a.provider=`+providerArg+`)
-		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))`, args...)
+		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))
+		  AND `+userUpstreamAccessPredicate("$3", providerArg, "a.id"), args...)
 	if err != nil {
 		return "", mapDBError("read upstream allocation snapshot", err)
 	}

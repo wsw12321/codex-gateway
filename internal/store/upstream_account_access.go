@@ -73,8 +73,11 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 			return mapDBError("read previous upstream users", err)
 		}
 		encoded, _ := json.Marshal(params.UserIDs)
-		// Lock users in stable order, protecting membership validation from deletion.
-		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE status <> 'pending' AND id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded))
+		// Lock users in stable order, protecting validation from deletion and
+		// status changes. No user key is changed here, so NO KEY UPDATE is
+		// sufficient and lets concurrent admin edits audit their Owner FK with
+		// KEY SHARE without an Owner/member lock cycle.
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM users WHERE status <> 'pending' AND id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR NO KEY UPDATE`, string(encoded))
 		if err != nil {
 			return mapDBError("validate upstream authorized users", err)
 		}
@@ -170,7 +173,12 @@ func (s *Store) EligibleUpstreamAccounts(ctx context.Context, userID string, ids
 	}
 	args = append(args, s.upstreamProviderName())
 	providerArg := fmt.Sprintf("$%d", len(args))
-	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`) SELECT c.id FROM candidates c LEFT JOIN upstream_accounts a ON a.id=c.id WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active') AND (a.id IS NULL OR a.provider=`+providerArg+`) AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid)) ORDER BY c.id`, args...)
+	rows, err := s.db.QueryContext(ctx, `WITH candidates(id) AS (VALUES `+strings.Join(values, ",")+`)
+		SELECT c.id FROM candidates c LEFT JOIN upstream_accounts a ON a.id=c.id
+		WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active')
+		AND (a.id IS NULL OR a.provider=`+providerArg+`)
+		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
+		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+` ORDER BY c.id`, args...)
 	if err != nil {
 		return nil, mapDBError("read upstream account eligibility", err)
 	}

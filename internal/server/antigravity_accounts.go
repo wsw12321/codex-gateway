@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/wsw/codex-gateway/internal/httpx"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
@@ -77,22 +76,5 @@ func (s *Server) trySyncAntigravityAccounts(ctx context.Context) error {
 
 // syncAntigravityAccountsLocked requires upstreamAccountSyncMu to be held.
 func (s *Server) syncAntigravityAccountsLocked(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, upstreamAccountSyncTimeout)
-	defer cancel()
-	accounts, err := s.antigravity.ListUpstreamAccounts(ctx)
-	if err != nil {
-		return err
-	}
-	snapshots := make([]store.UpstreamAccountSnapshot, 0, len(accounts))
-	for _, account := range accounts {
-		status := store.UpstreamAccountStatusUnavailable
-		if upstreamAccountSourceStatusKnown(account) && account.Status == "available" {
-			status = store.UpstreamAccountStatusAvailable
-		}
-		snapshots = append(snapshots, store.UpstreamAccountSnapshot{
-			ID: account.ID, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail,
-			Plan: account.Plan, Status: status, LastSyncedAt: account.LastSyncedAt,
-		})
-	}
-	return s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity).SyncUpstreamAccounts(ctx, snapshots, time.Now().UTC())
+	return s.syncUpstreamAccountsLocked(ctx, store.UpstreamProviderAntigravity)
 }

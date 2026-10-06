@@ -2235,6 +2235,21 @@ code {
   margin-bottom: 1rem;
 }
 
+.user-upstream-target-panel { margin-bottom: 1rem; }
+.user-upstream-target { margin: .85rem 0 0; overflow-wrap: anywhere; }
+.user-upstream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 1rem; }
+.user-upstream-card { min-width: 0; }
+.user-upstream-card .panel-heading { margin-bottom: 1rem; }
+.user-upstream-form { display: grid; gap: 1rem; }
+.user-upstream-form > p { margin: 0; }
+.user-upstream-form .muted { font-size: .88rem; line-height: 1.6; }
+.user-upstream-account-picker { display: grid; gap: .75rem; }
+.user-upstream-account-list { max-height: 22rem; overflow-y: auto; }
+.user-upstream-selection { color: var(--muted); font-size: .9rem; }
+.user-upstream-selection[data-empty="true"] { color: var(--danger); font-weight: 600; }
+.user-upstream-sync-warning { margin: 0 0 1rem; font-size: .88rem; }
+@media (max-width: 900px) { .user-upstream-grid { grid-template-columns: minmax(0, 1fr); } }
+
 .model-access-grid {
   display: grid;
   grid-template-columns: minmax(18rem, .38fr) minmax(0, 1fr);

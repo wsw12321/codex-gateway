@@ -176,6 +176,7 @@
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1m5-11h5m-5 11h5"/></svg>上游账号</a>
           <a href="/admin/cpa/" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 3a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2"/></svg>CPA 授权管理</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6q0 6-8 10-8-4-8-10V6Zm-4 9 3 3 5-6"/></svg>模型权限</a>
+          <a href="#user-upstream-access" data-view="user-upstream-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 8a5 5 0 1 1-3-4.6M9 8l10 10m-3-3 3-3m0 6 3-3"/></svg>账号权限</a>
           <a href="#model-identification" data-view="model-identification" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="m15 15 6 6M7 10h6m-3-3v6"/></svg>模型鉴别</a>
           <a href="#information" data-view="information" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14a8 3 0 0 0 16 0V5M4 12a8 3 0 0 0 16 0"/></svg>数据维护</a>
           </div>
@@ -876,6 +877,26 @@
             </div>
           </section>
 
+          <section class="view owner-only hidden" data-section="user-upstream-access" aria-labelledby="user-upstream-title">
+            <div class="section-head">
+              <div><p class="eyebrow">USER ACCOUNT ACCESS</p><h2 id="user-upstream-title">账号权限</h2><p>按用户分别设置 Codex 与 Antigravity 的账号范围，两类独立保存；Owner 的普通模型请求同样受限。</p></div>
+              <button id="user-upstream-refresh" type="button" class="secondary">刷新账号与设置</button>
+            </div>
+            <article class="panel user-upstream-target-panel">
+              <div class="user-search">
+                <label for="user-upstream-user-search">搜索并选择用户</label>
+                <div class="user-search-control">
+                  <input id="user-upstream-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="user-upstream-user-search-results" aria-describedby="user-upstream-user-search-status" disabled>
+                  <div id="user-upstream-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
+                </div>
+                <small id="user-upstream-user-search-status" role="status" aria-live="polite">打开页面后加载用户。</small>
+              </div>
+              <p class="user-upstream-target">当前管理：<strong id="user-upstream-target">尚未选择用户</strong></p>
+            </article>
+            <p id="user-upstream-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <div id="user-upstream-cards" class="user-upstream-grid"><p class="empty">选择用户后设置账号权限。</p></div>
+          </section>
+
           <section class="view owner-only hidden" data-section="model-access" aria-labelledby="model-access-title">
             <div class="section-head">
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="model-access-title">模型权限</h2><p>控制每位用户可调用的定价目录模型，以及新用户注册时获得的默认权限。</p></div>
@@ -1263,13 +1284,13 @@
   <dialog id="upstream-access-dialog" aria-labelledby="upstream-access-title">
     <form id="upstream-access-form">
       <div class="dialog-heading"><p class="eyebrow">ACCOUNT ACCESS</p><h2 id="upstream-access-title">账号使用权限</h2><p id="upstream-access-account">—</p></div>
-      <label>使用范围<select name="mode"><option value="shared">共享 · 所有用户可用</option><option value="exclusive">专属 · 仅指定用户可用</option></select></label>
+      <label>使用范围<select name="mode"><option value="shared">共享 · 受用户账号权限限制</option><option value="exclusive">专属 · 仅指定用户可用</option></select></label>
       <div id="upstream-access-users" class="hidden">
         <label>搜索用户<input id="upstream-access-search" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
         <div class="button-group"><button id="upstream-access-select-visible" type="button" class="secondary">选择搜索结果</button><button id="upstream-access-clear" type="button" class="secondary">清空选择</button><span id="upstream-access-selected" class="badge">已选 0 人</span></div>
         <div id="upstream-access-user-list" class="user-check-list" aria-live="polite"></div>
       </div>
-      <p class="muted">专属至少选择一人。名单外用户的旧会话将在下一次请求时重新分配账号；进行中的请求正常完成。授权用户仍可使用其他共享账号。</p>
+      <p class="muted">专属至少选择一人。名单外用户的旧会话将在下一次请求时重新分配账号；进行中的请求正常完成。共享与专属账号都须同时满足“账号权限”页面的用户名单、模型权限及其他可用条件。</p>
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存使用权限</button></div>

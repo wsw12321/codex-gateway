@@ -82,7 +82,8 @@ func (s *Store) SetUpstreamAccountConcurrentLimit(ctx context.Context, params Se
 
 // EligibleUpstreamAccountLimits returns the accounts authorized for userID and
 // their Gateway-owned admission limits. Unknown accounts retain the default
-// limit of one until synchronized metadata is persisted.
+// limit of one until synchronized metadata is persisted, but are ineligible
+// when the user is restricted to selected accounts.
 func (s *Store) EligibleUpstreamAccountLimits(ctx context.Context, userID string, ids []string) ([]UpstreamAccountEligibility, error) {
 	if !s.validUpstreamProvider() {
 		return nil, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
@@ -100,6 +101,7 @@ func (s *Store) EligibleUpstreamAccountLimits(ctx context.Context, userID string
 		AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(
 			SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
+		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+`
 		ORDER BY c.id`, args...)
 	if err != nil {
 		return nil, mapDBError("read upstream account eligibility limits", err)
