@@ -199,12 +199,11 @@ jobs:
           set -eu
           sudo apt-get update
           sudo apt-get install --yes jq skopeo python3
-      - name: Resolve and verify image locks
+      - name: Verify committed image locks
         shell: bash
         run: |
           set -eu
-          ./scripts/lock-images.sh
-          git diff --exit-code -- deploy/images.lock.env
+          ./scripts/lock-images.sh --check
       - name: Create non-production CI configuration
         shell: bash
         run: |

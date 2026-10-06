@@ -119,8 +119,18 @@ func TestModelPricesPostgresIntegration(t *testing.T) {
 		t.Fatalf("owner ledger did not show save and restore: %+v", actions)
 	}
 	replayed, err := s.SetModelPrice(ctx, params)
-	if err != nil || !reflect.DeepEqual(replayed, saved) {
-		t.Fatalf("first response replay changed: %+v %+v %v", replayed, saved, err)
+	if err != nil {
+		t.Fatalf("replay first model price response: %v", err)
+	}
+	if replayed.UpdatedAt == nil || saved.UpdatedAt == nil || !replayed.UpdatedAt.Equal(*saved.UpdatedAt) {
+		t.Fatalf("first response replay changed update time: got=%v want=%v", replayed.UpdatedAt, saved.UpdatedAt)
+	}
+	// Database scans and JSON replay can use different locations for the same
+	// instant. Compare the timestamp semantically, then every remaining field.
+	replayedFields, savedFields := replayed, saved
+	replayedFields.UpdatedAt, savedFields.UpdatedAt = nil, nil
+	if !reflect.DeepEqual(replayedFields, savedFields) {
+		t.Fatalf("first response replay changed: %+v %+v", replayed, saved)
 	}
 	if got := get(); got.Version != 2 || got.Source != "config" {
 		t.Fatalf("replay rewrote newer config: %+v", got)

@@ -193,7 +193,10 @@ Ultrafast、税费和基础设施成本均不在范围内。Codex 价格及缓�
 
 `deploy/images.sources` 保存人工审阅的具体版本标签，
 `deploy/images.lock.env` 保存仓库返回的不可变 manifest digest。正常部署
-直接使用已提交的 lock 文件。只有升级时才重新解析：
+直接使用已提交的 lock 文件。具体版本标签也可能因上游重新构建而指向新的
+digest；CI 使用 `./scripts/lock-images.sh --check` 检查来源与锁文件的一一对应关系，
+并按已提交的 digest 验证镜像仍可获取，不会重新解析标签或改写锁文件。
+只有升级时才重新解析：
 
 ```sh
 ./scripts/lock-images.sh

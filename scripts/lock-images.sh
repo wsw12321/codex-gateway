@@ -3,10 +3,35 @@ set -eu
 umask 077
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+check=false
+if test "${1:-}" = --check; then
+    check=true
+    shift
+fi
+test "$#" -le 2 || {
+    printf '%s\n' 'usage: lock-images.sh [--check] [sources [lock-file]]' >&2
+    exit 1
+}
 sources=${1:-"$root/deploy/images.sources"}
 output=${2:-"$root/deploy/images.lock.env"}
 tmp=${output}.tmp.$$
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
+
+fail() {
+    printf '%s\n' "lock-images: $*" >&2
+    exit 1
+}
+
+valid_digest() {
+    case "$1" in
+        sha256:*) hex=${1#sha256:} ;;
+        *) return 1 ;;
+    esac
+    case "$hex" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    test "${#hex}" -eq 64
+}
 
 if command -v skopeo >/dev/null 2>&1; then
     resolver=skopeo
@@ -15,17 +40,19 @@ elif command -v crane >/dev/null 2>&1; then
 elif docker buildx version >/dev/null 2>&1; then
     resolver=buildx
 else
-    printf '%s\n' 'lock-images: install skopeo/crane or enable docker buildx' >&2
-    exit 1
+    fail 'install skopeo/crane or enable docker buildx'
 fi
 
 resolve_digest() {
     ref=$1
+    # All three resolvers return the top-level manifest/index digest.
     case "$resolver" in
         skopeo) skopeo inspect --format '{{.Digest}}' "docker://$ref" ;;
         crane) crane digest "$ref" ;;
         buildx)
-            docker buildx imagetools inspect "$ref" | \
+            # Preserve inspection failures instead of masking them in a pipeline.
+            inspection=$(docker buildx imagetools inspect "$ref") || return $?
+            printf '%s\n' "$inspection" | \
                 sed -n 's/^Digest:[[:space:]]*//p' | sed -n '1p'
             ;;
     esac
@@ -36,32 +63,64 @@ resolve_digest() {
     printf '%s\n' '# Review and commit source-tag changes in deploy/images.sources.'
 } > "$tmp"
 
-while IFS='|' read -r name ref; do
+names='|'
+while IFS='|' read -r name ref || test -n "$name$ref"; do
     case "$name" in
         ''|'#'*) continue ;;
     esac
     case "$name" in
-        *[!A-Z0-9_]*)
-            printf '%s\n' "lock-images: invalid variable name in $sources" >&2
-            exit 1
-            ;;
+        [0-9]*|*[!A-Z0-9_]*) fail "invalid variable name in $sources" ;;
     esac
-    test -n "$ref" || {
-        printf '%s\n' "lock-images: missing image reference for $name" >&2
-        exit 1
-    }
+    case "$names" in
+        *"|$name|"*) fail "duplicate source entry for $name" ;;
+    esac
+    names="$names$name|"
+    test -n "$ref" || fail "missing image reference for $name"
+    case "$ref" in
+        *'@'*|*'|'*|*[[:space:]]*) fail "invalid source image reference for $name" ;;
+    esac
+    case "${ref##*/}" in
+        ?*:?*) ;;
+        *) fail "source image reference for $name must include a version tag" ;;
+    esac
 
-    digest=$(resolve_digest "$ref")
-    case "$digest" in
-        sha256:????????????????????????????????????????????????????????????????) ;;
-        *)
-            printf '%s\n' "lock-images: registry returned an invalid digest for $ref" >&2
-            exit 1
-            ;;
-    esac
+    if "$check"; then
+        # Read the generated data without evaluating it as shell commands.
+        locked_ref=$(sed -n "s/^$name=//p" "$output")
+        case "$locked_ref" in
+            "$ref"@*) digest=${locked_ref#"$ref"@} ;;
+            *) fail "missing or mismatched lock for $name; run scripts/lock-images.sh and review the changes" ;;
+        esac
+        valid_digest "$digest" || fail "invalid or duplicate locked digest for $name"
+    else
+        digest=$(resolve_digest "$ref") || fail "could not resolve $ref"
+        valid_digest "$digest" || fail "registry returned an invalid digest for $ref"
+    fi
     printf '%s=%s@%s\n' "$name" "$ref" "$digest" >> "$tmp"
-    printf '%s\n' "locked $name ($ref)" >&2
+    if ! "$check"; then
+        printf '%s\n' "locked $name ($ref)" >&2
+    fi
 done < "$sources"
+
+if "$check"; then
+    cmp -s "$tmp" "$output" || fail "lock entries differ from $sources; regenerate and review the lock file"
+    # Validate the entire local lock before contacting the registry. Query only
+    # committed digests: version tags can move when upstream rebuilds an image.
+    while IFS='=' read -r name locked_ref; do
+        case "$name" in
+            ''|'#'*) continue ;;
+        esac
+        digest=${locked_ref##*@}
+        source_ref=${locked_ref%@*}
+        # Skopeo does not accept references containing both a tag and a digest.
+        pinned_ref="${source_ref%:*}@$digest"
+        actual=$(resolve_digest "$pinned_ref") || fail "could not verify $name ($pinned_ref)"
+        test "$actual" = "$digest" || fail "registry digest mismatch for $name ($pinned_ref)"
+        printf '%s\n' "verified $name ($pinned_ref)" >&2
+    done < "$tmp"
+    printf '%s\n' "verified $output"
+    exit 0
+fi
 
 chmod 0644 "$tmp"
 mv -f "$tmp" "$output"
