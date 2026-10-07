@@ -468,7 +468,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		return BillingReservation{}, err
 	}
 	var groupID, groupPeriodID any
-	if group != nil && !params.Now.Before(group.PeriodStartsAt) && billingPositive(group.RemainingUSD) {
+	if groupPeriodActive(group, params.Now) && billingPositive(group.RemainingUSD) {
 		memberRemaining, err := groupMemberRemainingTx(ctx, tx, group.PeriodID, params.UserID, group.MemberLimitUSD)
 		if err != nil {
 			return BillingReservation{}, err
@@ -548,11 +548,14 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		}
 		if group != nil && billingPositive(group.LimitUSD) &&
 			(group.MemberLimitUSD == nil || billingPositive(*group.MemberLimitUSD)) {
-			groupRenewal := group.PeriodEndsAt
+			var groupRenewal time.Time
 			if params.Now.Before(group.PeriodStartsAt) {
 				groupRenewal = group.PeriodStartsAt
+			} else if groupHasNextPeriod(group) {
+				groupRenewal = group.PeriodEndsAt
 			}
-			if groupRenewal.After(params.Now) && (retry == 0 || groupRenewal.Sub(params.Now) < retry) {
+			if groupRenewal.After(params.Now) && (group.ExpiresAt == nil || groupRenewal.Before(*group.ExpiresAt)) &&
+				(retry == 0 || groupRenewal.Sub(params.Now) < retry) {
 				retry = groupRenewal.Sub(params.Now)
 			}
 		}

@@ -55,7 +55,7 @@ function dashboard() {
   const nodes = new Map();
   const node = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
   const form = node("group-form");
-  form.elements = Object.fromEntries(["group_id", "name", "limit_usd", "member_limit_usd", "period", "custom_days", "starts_at", "reason"].map((name) => [name, new Element("input")]));
+  form.elements = Object.fromEntries(["group_id", "name", "limit_usd", "member_limit_usd", "period", "period_count", "custom_days", "starts_at", "reason"].map((name) => [name, new Element("input")]));
   form.reset = () => Object.values(form.elements).forEach((input) => { input.value = ""; });
   node("group-dialog").close = () => {};
   const context = vm.createContext({document: {getElementById: node, createElement: (tag) => new Element(tag), querySelectorAll: () => []},
@@ -67,6 +67,7 @@ function dashboard() {
   const calls = [];
   context.groupMutation = async (_host, url, method, payload) => { calls.push({url, method, payload}); return {id: "group"}; };
   const group = {id: "group", name: "预算组", period: "week", custom_days: 0, limit_usd: "1000", used_usd: "400", remaining_usd: "600", member_limit_usd: "100",
+    period_count: 3, current_period_number: 2, expires_at: "2026-10-15T00:00:00Z",
     period_starts_at: "2026-10-01T00:00:00Z", period_ends_at: "2026-10-08T00:00:00Z"};
   const edit = (cap = "100") => {
     run(`openGroupEditor(${JSON.stringify({...group, member_limit_usd: cap})})`);
@@ -106,6 +107,59 @@ test("invalid member caps never submit a group operation", async () => {
     await assert.rejects(ui.save(), /成员上限必须/, value);
   }
   assert.equal(ui.calls.length, 0);
+});
+
+test("group period count defaults to one and preserves finite or unlimited edits", async () => {
+  const ui = dashboard();
+  ui.run("openGroupEditor()");
+  assert.equal(ui.form.elements.period_count.value, "1");
+  ui.form.elements.name.value = "新群组";
+  ui.form.elements.limit_usd.value = "100";
+  ui.form.elements.reason.value = "新建";
+  await ui.save();
+  assert.equal(ui.calls.at(-1).payload.period_count, 1);
+  ui.edit();
+  assert.equal(ui.form.elements.period_count.value, "3");
+  await ui.save();
+  assert.equal(ui.calls.at(-1).payload.period_count, 3);
+  ui.run(`openGroupEditor(${JSON.stringify({...ui.group, period_count: 0, expires_at: null})})`);
+  assert.equal(ui.form.elements.period_count.value, "0");
+  ui.form.elements.reason.value = "无限期";
+  await ui.save();
+  assert.equal(ui.calls.at(-1).payload.period_count, 0);
+});
+
+test("invalid group period counts and totals below the current period cannot submit", async () => {
+  const ui = dashboard(); ui.edit();
+  for (const value of ["", "-1", "100", "1.5", "1e1", "01", "Infinity"]) {
+    ui.form.elements.period_count.value = value;
+    await assert.rejects(ui.save(), /周期数必须/, value);
+  }
+  ui.run(`managedGroup = ${JSON.stringify(ui.group)}`);
+  ui.form.elements.period_count.value = "1";
+  await assert.rejects(ui.save(), /不得小于当前第 2 期/);
+  assert.equal(ui.calls.length, 0);
+  ui.form.elements.period.value = "day";
+  await ui.save();
+  assert.equal(ui.calls.at(-1).payload.period_count, 1, "an explicit period restart permits a lower total");
+});
+
+test("group period display includes final expiry and keeps legacy snapshots finite", () => {
+  const ui = dashboard();
+  ui.run("Date.now = () => new Date('2026-10-07T00:00:00Z').getTime()");
+  ui.run(`renderBillingGroup(${JSON.stringify(ui.group)})`);
+  assert.match(ui.node("billing-group").textContent, /生效中.*第 2\/3 期.*最终到期：/);
+  ui.run(`managedGroups = [${JSON.stringify({...ui.group, expires_at: "2026-10-07T00:00:00Z"})}]; renderGroupList()`);
+  assert.match(ui.node("group-list").textContent, /已到期.*第 2\/3 期.*最终到期：/);
+  ui.run(`renderBillingGroup(${JSON.stringify({...ui.group, period_count: 0, expires_at: null})})`);
+  assert.match(ui.node("billing-group").textContent, /生效中.*第 2 期 · 无限期.*最终到期：无限期/);
+  ui.run(`renderBillingGroup(${JSON.stringify({...ui.group, period_starts_at: "2026-10-08T00:00:00Z"})})`);
+  assert.match(ui.node("billing-group").textContent, /待开始/);
+  const legacy = {...ui.group, period_ends_at: "2026-10-06T00:00:00Z"};
+  delete legacy.period_count; delete legacy.current_period_number; delete legacy.expires_at;
+  ui.run(`renderBillingGroup(${JSON.stringify(legacy)})`);
+  assert.match(ui.node("billing-group").textContent, /已到期.*第 1\/1 期.*最终到期：/);
+  assert.doesNotMatch(ui.node("billing-group").textContent, /无限期/);
 });
 
 test("personal group summary uses the selected user's independent counters", () => {

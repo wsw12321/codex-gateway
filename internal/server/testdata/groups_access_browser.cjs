@@ -18,8 +18,15 @@ const users = [
   {id: "carol", username: "carol", display_name: "研发组 · Carol", group_id: "engineering"},
 ];
 const groups = [{id: "design", name: "产品设计团队", period: "month", custom_days: 0, limit_usd: "100.000000000000", used_usd: "42.500000000000", remaining_usd: "57.500000000000", member_count: 1,
-  member_limit_usd: "100.000000000000",
-  starts_at: "2026-09-01T08:00:00Z", period_starts_at: "2026-09-01T08:00:00Z", period_ends_at: "2026-10-02T08:00:00Z", members: []}];
+  member_limit_usd: "100.000000000000", period_count: 3, current_period_number: 2, expires_at: "2026-11-02T08:00:00Z",
+  starts_at: "2026-08-01T08:00:00Z", period_starts_at: "2026-09-01T08:00:00Z", period_ends_at: "2026-10-02T08:00:00Z", members: []},
+  {id: "engineering", name: "研发历史团队", period: "custom", custom_days: 14, limit_usd: "80", used_usd: "30", remaining_usd: "50", member_count: 1,
+    member_limit_usd: null, period_count: 1, current_period_number: 1, expires_at: "2026-09-20T08:00:00Z",
+    starts_at: "2026-09-06T08:00:00Z", period_starts_at: "2026-09-06T08:00:00Z", period_ends_at: "2026-09-20T08:00:00Z", members: []}];
+const periodMilliseconds = (group) => (({day: 1, week: 7, month: 31})[group.period] || group.custom_days) * 86400000;
+const updateExpiry = (group) => {
+  group.expires_at = group.period_count === 0 ? null : new Date(new Date(group.period_ends_at).getTime() + (group.period_count - group.current_period_number) * periodMilliseconds(group)).toISOString();
+};
 const account = {id: "a1b2c3d4e5f60718", email_masked: "a***@example.test", plan: "Pro", status: "available", can_manage: true,
   access_mode: "exclusive", authorized_user_ids: ["alice"], allocation_weight: 1, rolling_cost_usd: "42.5", rolling_cost_share: "1", target_share: "1"};
 
@@ -28,6 +35,7 @@ async function main() {
   const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
   try {
     const page = await browser.newPage({viewport: {width: 1440, height: 1080}, locale: "zh-CN"});
+    await page.addInitScript(() => { Date.now = () => new Date("2026-09-21T08:00:00Z").getTime(); });
     const errors = [], writes = [], idempotency = new Map();
     let failCreateOnce = false, failAccounts = false, delayNextGroupRead = false, releaseGroupRead;
     let delayOldList = false, releaseOldList;
@@ -87,7 +95,10 @@ async function main() {
           group.member_count = users.filter((u) => u.group_id === group.id).length;
           result = detail(group);
         } else if (request.method() === "POST") {
-          const created = {...groups[0], ...body, id: "new-team", used_usd: "0", remaining_usd: body.limit_usd, member_count: 0, members: []};
+          const created = {...groups[0], ...body, id: "new-team", used_usd: "0", remaining_usd: body.limit_usd, member_count: 0, members: [], current_period_number: 1,
+            starts_at: "2026-09-21T08:00:00Z", period_starts_at: "2026-09-21T08:00:00Z"};
+          created.period_ends_at = new Date(new Date(created.period_starts_at).getTime() + periodMilliseconds(created)).toISOString();
+          updateExpiry(created);
           groups.push(created); result = detail(created);
         } else if (request.method() === "DELETE") {
           group.archived_at = "2026-09-21T08:00:00Z"; result = detail(group);
@@ -95,11 +106,13 @@ async function main() {
           const resets = body.period !== group.period || body.custom_days !== group.custom_days || body.starts_at;
           Object.assign(group, body);
           if (resets) {
+            group.current_period_number = 1;
             group.used_usd = "0";
             memberUsage[group.id] = {};
             group.period_starts_at = "2026-09-21T08:00:00Z";
             group.period_ends_at = "2026-10-05T08:00:00Z";
           }
+          updateExpiry(group);
           group.remaining_usd = Math.max(0, Number(group.limit_usd) - Number(group.used_usd)).toFixed(12);
           result = detail(group);
         }
@@ -111,6 +124,8 @@ async function main() {
     });
     await page.goto("http://127.0.0.1:8765/#groups");
     await page.evaluate(async (value) => { bindUI(); initializeDateFilters(); renderState(value); await loadGroups(); }, initialState);
+    assert.match(await page.locator("#group-detail-period").textContent(), /第 2\/3 期 · 生效中.*最终到期：/);
+    assert.match(await page.locator("#group-list").textContent(), /研发历史团队.*已到期.*第 1\/1 期/);
     assert.match(await page.locator("#group-member-list").textContent(), /本期群组已用 US\$12\.50.*上限剩余 US\$87\.50/);
     await page.getByLabel("选择用户 alice", {exact: true}).check();
     await page.locator("#group-member-search").fill("bob");
@@ -125,6 +140,7 @@ async function main() {
     assert.equal(await page.locator("#group-archive").isDisabled(), true);
 
     await page.locator("#group-edit").click();
+    assert.equal(await page.locator("#group-form input[name=period_count]").inputValue(), "3");
     assert.equal(await page.locator("#group-form input[name=member_limit_usd]").inputValue(), "100");
     await page.locator("#group-form input[name=reason]").fill("调整团队预算");
     await page.locator("#group-form input[name=member_limit_usd]").fill("-1");
@@ -133,16 +149,25 @@ async function main() {
     assert.equal(writes.length, beforeInvalidCap);
     assert.match(await page.locator("#group-form .form-message").textContent(), /成员上限必须/);
     await page.locator("#group-form input[name=member_limit_usd]").fill("50");
+    await page.locator("#group-form input[name=period_count]").fill("1");
+    await page.locator("#group-form button[type=submit]").click();
+    assert.equal(writes.length, beforeInvalidCap);
+    assert.match(await page.locator("#group-form .form-message").textContent(), /不得小于当前第 2 期/);
+    await page.locator("#group-form input[name=period_count]").fill("5");
     await page.locator("#group-form input[name=limit_usd]").fill("125.50");
     await page.locator("#group-form input[name=reason]").fill("调整团队预算");
     await page.locator("#group-form button[type=submit]").click();
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.limit_usd, "125.50");
     assert.equal(writes.at(-1).body.member_limit_usd, "50");
+    assert.equal(writes.at(-1).body.period_count, 5);
     assert.equal("starts_at" in writes.at(-1).body, false);
     assert.equal(groups[0].used_usd, "42.500000000000");
+    assert.equal(groups[0].current_period_number, 2);
+    assert.equal(groups[0].period_ends_at, "2026-10-02T08:00:00Z");
     await page.waitForFunction(() => managedGroup?.id === "design" && managedGroup.member_limit_usd === "50");
     assert.match(await page.locator("#group-member-list").textContent(), /本期群组已用 US\$12\.50.*上限剩余 US\$37\.50/);
+    assert.match(await page.locator("#group-detail-period").textContent(), /第 2\/5 期/);
 
     await page.locator("#group-edit").click();
     await page.locator("#group-form input[name=member_limit_usd]").fill("");
@@ -158,6 +183,7 @@ async function main() {
 
     failCreateOnce = true;
     await page.locator("#group-create").click();
+    assert.equal(await page.locator("#group-form input[name=period_count]").inputValue(), "1");
     await page.locator("#group-form input[name=name]").fill("新项目团队");
     await page.locator("#group-form input[name=limit_usd]").fill("200");
     await page.locator("#group-form input[name=reason]").fill("新项目预算");
@@ -170,17 +196,21 @@ async function main() {
     assert.equal(writes.at(-1).body.operation_id, operationID);
     assert.equal(groups.filter((g) => g.id === "new-team").length, 1);
     assert.equal(writes.at(-1).body.member_limit_usd, null);
+    assert.equal(writes.at(-1).body.period_count, 1);
 
     await page.waitForFunction(() => managedGroup?.id === "new-team");
     await page.locator("#group-edit").click();
     await page.locator("#group-form input[name=limit_usd]").fill("0");
     await page.locator("#group-form input[name=member_limit_usd]").fill("0");
+    await page.locator("#group-form input[name=period_count]").fill("0");
     await page.locator("#group-form input[name=reason]").fill("暂停新团队用量");
     await page.locator("#group-form button[type=submit]").click();
     await page.waitForFunction(() => !byId("group-dialog").open);
     assert.equal(writes.at(-1).body.limit_usd, "0");
     assert.equal(writes.at(-1).body.member_limit_usd, "0");
+    assert.equal(writes.at(-1).body.period_count, 0);
     await page.waitForFunction(() => managedGroup?.id === "new-team" && managedGroup.limit_usd === "0" && managedGroup.member_limit_usd === "0");
+    assert.match(await page.locator("#group-detail-period").textContent(), /第 1 期 · 无限期.*最终到期：无限期/);
 
     await page.evaluate(async () => { await loadGroups("design"); });
     delayNextGroupRead = true;
@@ -205,11 +235,13 @@ async function main() {
     await page.setViewportSize({width: 1440, height: 1080});
     await page.locator("#group-edit").click();
     assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").inputValue(), "100");
-    await page.screenshot({path: path.join(screenshots, "groups-form-desktop.png"), fullPage: true});
+    assert.equal(await page.getByLabel("总周期数（0 表示无限期）").inputValue(), "5");
+    await page.screenshot({path: path.join(screenshots, "groups-form-desktop.png")});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").isVisible(), true);
+    assert.equal(await page.getByLabel("总周期数（0 表示无限期）").isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
-    await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png"), fullPage: true});
+    await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png")});
     await page.locator("#group-form [data-close]").click();
 
     await page.evaluate(() => {
@@ -222,6 +254,7 @@ async function main() {
         ]});
     });
     assert.match(await page.locator("#billing-group").textContent(), /本用户本期群组已用US\$95\.00.*本用户本期上限剩余US\$5\.00/);
+    assert.match(await page.locator("#billing-group").textContent(), /第 1\/5 期.*最终到期：/);
     assert.match(await page.locator(".billing-order-card").textContent(), /群组 → 个人日 → 周 → 月 → 现金/);
     await page.locator("#billing-ledger-rows .record-details > summary").first().click();
     assert.match(await page.locator("#billing-ledger-rows tr").first().textContent(), /群组支付：US\$5\.00.*个人支付：US\$13\.00.*未覆盖：US\$2\.00/);
@@ -285,7 +318,7 @@ async function main() {
     assert.equal(await page.locator("#group-member-list").textContent(), "");
     assert.equal(await page.locator("#upstream-access-user-list").textContent(), "");
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, nullable/zero/invalid member caps, independent member usage, split ledger, idempotent retry, membership, period reset, exclusivity, refresh failure, desktop/mobile forms, logout", errors}));
+    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, finite/unlimited/expired periods, default and invalid period counts, preserved usage on count change, nullable/zero/invalid member caps, independent member usage, split ledger, idempotent retry, membership, period reset, exclusivity, refresh failure, desktop/mobile forms, logout", errors}));
   } finally { await browser.close(); }
 }
 

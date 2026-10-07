@@ -856,7 +856,7 @@
               <div><p class="eyebrow">SHARED LIMITS</p><h2 id="groups-title">群组额度</h2><p>为成员提供共同的美元支付额度，并设置统一的单个成员周期上限。</p></div>
               <div class="button-group"><button id="group-create" type="button">创建群组</button><button id="groups-refresh" type="button" class="secondary">刷新</button></div>
             </div>
-            <p class="callout">群组优先支付，金额不超过群组剩余额度及成员本期剩余上限；余下费用使用个人额度。群组耗尽、额度为零、成员达到上限或周期未开始时回退个人；所有来源均不可用时拒绝新请求。固定周期自动重置，剩余额度不结转。</p>
+            <p class="callout">群组优先支付，金额不超过群组剩余额度及成员本期剩余上限；余下费用使用个人额度。群组到期、耗尽、额度为零、成员达到上限或周期未开始时回退个人；所有来源均不可用时拒绝新请求。在总周期数内自动换期，剩余额度不结转；0 期表示无限期。</p>
             <p id="groups-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <div class="groups-layout">
               <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
@@ -1273,8 +1273,10 @@
       <label>单个成员周期用量上限（USD）<input name="member_limit_usd" inputmode="decimal" autocomplete="off" placeholder="留空表示不限，0 表示不使用群组额度"></label>
       <label>周期<select name="period"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
       <label id="group-custom-days-label" class="hidden">自定义天数<input name="custom_days" type="number" min="1" max="106751" step="1" value="14"></label>
+      <label>总周期数（0 表示无限期）<input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off"></label>
       <label>周期起点（本地时间，可留空）<input name="starts_at" type="datetime-local" step="1"></label>
-      <p class="muted">成员上限与群组共用周期，留空表示不限，0 表示不使用群组额度。周期起点创建时留空立即开始，编辑时留空保留。仅修改额度或成员上限保留累计；修改周期或起点关闭旧期、建立新期，成员计数随新周期归零。</p>
+      <p class="muted">周期数为 0–99 的整数，新建默认 1 期；有限总期数不得小于当前期号。仅修改数量保留当前周期和用量，并沿原时间轴调整到期时间；延长后的期限覆盖当前时间才恢复。到期后保留群组和成员，并回退个人额度。</p>
+      <p class="muted">成员上限与群组共用周期，留空表示不限，0 表示不使用群组额度。周期起点创建时留空立即开始，编辑时留空保留。仅修改额度或成员上限保留累计；修改周期或起点关闭旧期、从第 1 期重开，过去起点选择包含当前时刻的周期作为第 1 期，成员计数随新周期归零。</p>
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存群组</button></div>

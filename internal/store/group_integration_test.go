@@ -32,8 +32,9 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 	suffix := fmt.Sprint(now.UnixNano())
 	actor := globalUsageIntegrationUser(t, ctx, s, "group-actor-"+suffix, UserRoleMember)
 	write := func() BillingWriteParams { return billingIntegrationWrite(t, actor.ID, "group integration test", now) }
+	unlimitedPeriods := 0
 	create := func(name, limit string) Group {
-		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: name, LimitUSD: limit, Period: "day"})
+		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: name, LimitUSD: limit, Period: "day", PeriodCount: &unlimitedPeriods})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,7 +196,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		originalNow := now
 		defer func() { now = originalNow }()
 		cap := "5"
-		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Member cap", LimitUSD: "50", MemberLimitUSD: &cap, Period: "day"})
+		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Member cap", LimitUSD: "50", MemberLimitUSD: &cap, Period: "day", PeriodCount: &unlimitedPeriods})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -357,7 +358,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 
 	t.Run("future start and exact renewal boundary", func(t *testing.T) {
 		future := now.Add(time.Hour)
-		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Future", LimitUSD: "1", Period: "custom", CustomDays: 2, StartsAt: &future})
+		g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Future", LimitUSD: "1", Period: "custom", CustomDays: 2, StartsAt: &future, PeriodCount: &unlimitedPeriods})
 		if err != nil {
 			t.Fatal(err)
 		}

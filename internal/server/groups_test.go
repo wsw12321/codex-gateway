@@ -280,6 +280,95 @@ func TestGroupMemberLimitInputDistinguishesAbsentNullAndAmount(t *testing.T) {
 
 func groupTestString(v string) *string { return &v }
 
+func TestGroupPeriodCountInputPreservesOmissionAndExplicitValues(t *testing.T) {
+	for _, e := range groupHandlerWriteEndpoints()[:2] {
+		for _, count := range []int{-1, 0, 1, 99} {
+			t.Run(fmt.Sprintf("%s/%d", e.name, count), func(t *testing.T) {
+				now := time.Now()
+				s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+				repo := &fakeGroupRepository{}
+				s.groupRepo = repo
+				if count < 0 {
+					delete(e.body, "period_count")
+				} else {
+					e.body["period_count"] = count
+				}
+				r := groupHandlerRequest(t, e)
+				addBillingSourceTestSession(t, r)
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				if w.Code != http.StatusOK || repo.put == nil {
+					t.Fatalf("status=%d body=%s put=%+v", w.Code, w.Body.String(), repo.put)
+				}
+				if count < 0 {
+					if repo.put.PeriodCount != nil {
+						t.Fatalf("omitted count must remain absent for defaults and legacy fingerprints: %+v", repo.put)
+					}
+				} else if repo.put.PeriodCount == nil || *repo.put.PeriodCount != count {
+					t.Fatalf("explicit count not forwarded: %+v", repo.put)
+				}
+			})
+		}
+	}
+}
+
+func TestGroupPeriodCountRejectsNullNonIntegersAndOutOfRange(t *testing.T) {
+	for _, e := range groupHandlerWriteEndpoints()[:2] {
+		for _, value := range []string{"null", "-1", "100", "1.5", "1.0", "1e1", `"1"`, "true", "[]", "{}", "9223372036854775808"} {
+			t.Run(e.name+"/"+value, func(t *testing.T) {
+				now := time.Now()
+				s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+				repo := &fakeGroupRepository{}
+				s.groupRepo = repo
+				e.body["period_count"] = json.RawMessage(value)
+				r := groupHandlerRequest(t, e)
+				addBillingSourceTestSession(t, r)
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid_group_operation") || repo.calls != 0 {
+					t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), repo.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestGroupReadResponsesExposePeriodCountAndExpiry(t *testing.T) {
+	for _, finite := range []bool{false, true} {
+		group := store.GroupSummary{ID: groupHandlerTestID, PeriodCount: 0, CurrentPeriodNumber: 4}
+		if finite {
+			expires := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+			group.PeriodCount, group.ExpiresAt = 9, &expires
+		}
+		for _, path := range []string{"/admin/groups", "/admin/groups/" + groupHandlerTestID} {
+			t.Run(fmt.Sprintf("finite=%t%s", finite, path), func(t *testing.T) {
+				now := time.Now()
+				s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+				s.groupRepo = &fakeGroupRepository{groups: []store.GroupSummary{group}, group: store.Group{GroupSummary: group}}
+				r := groupHandlerRequest(t, groupHandlerEndpoint{method: http.MethodGet, path: path})
+				addBillingSourceTestSession(t, r)
+				w := httptest.NewRecorder()
+				s.Handler().ServeHTTP(w, r)
+				var response map[string]any
+				if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || w.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s error=%v", w.Code, w.Body.String(), err)
+				}
+				if path == "/admin/groups" {
+					response = response["groups"].([]any)[0].(map[string]any)
+				}
+				var wantExpiry any
+				if group.ExpiresAt != nil {
+					wantExpiry = group.ExpiresAt.Format(time.RFC3339)
+				}
+				value, exists := response["expires_at"]
+				if response["period_count"] != float64(group.PeriodCount) || response["current_period_number"] != float64(group.CurrentPeriodNumber) || !exists || value != wantExpiry {
+					t.Fatalf("missing period limits: %+v", response)
+				}
+			})
+		}
+	}
+}
+
 func TestGroupMemberLimitRejectsInvalidAmountsAndTypes(t *testing.T) {
 	for _, value := range []any{"", " ", "-1", "+1", "1e3", "01", "0.1234567", "1000000000000000000", " 1", "1 ", 0, 1.2, true, []any{}, map[string]any{}} {
 		t.Run(fmt.Sprintf("%T/%v", value, value), func(t *testing.T) {
@@ -406,7 +495,8 @@ func TestGroupRoutesRejectMalformedResourceAndMemberRequests(t *testing.T) {
 }
 
 func TestBillingStateResponseIncludesOnlyGroupSummary(t *testing.T) {
-	g := store.GroupSummary{ID: groupHandlerTestID, Name: "Research", LimitUSD: "10.000000000000", MemberLimitUSD: groupTestString("3.000000000000"), UsedUSD: "2.000000000000", RemainingUSD: "8.000000000000", Period: "month", MemberCount: 2}
+	expires := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	g := store.GroupSummary{ID: groupHandlerTestID, Name: "Research", LimitUSD: "10.000000000000", MemberLimitUSD: groupTestString("3.000000000000"), UsedUSD: "2.000000000000", RemainingUSD: "8.000000000000", Period: "month", MemberCount: 2, PeriodCount: 3, CurrentPeriodNumber: 2, ExpiresAt: &expires}
 	encoded, err := json.Marshal(billingStateResponse(store.BillingState{UserID: "self", Group: &g, GroupMemberUsedUSD: groupTestString("1.000000000000"), GroupMemberRemainingUSD: groupTestString("2.000000000000")}, 10, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -421,6 +511,9 @@ func TestBillingStateResponseIncludesOnlyGroupSummary(t *testing.T) {
 	}
 	if response.Group["id"] != g.ID || response.Group["used_usd"] != g.UsedUSD || response.Group["remaining_usd"] != g.RemainingUSD || response.Group["period"] != "month" || response.Group["member_limit_usd"] != *g.MemberLimitUSD || response.MemberUsed == nil || *response.MemberUsed != "1.000000000000" || response.MemberRemaining == nil || *response.MemberRemaining != "2.000000000000" {
 		t.Fatalf("group summary: %s", encoded)
+	}
+	if response.Group["period_count"] != float64(3) || response.Group["current_period_number"] != float64(2) || response.Group["expires_at"] != expires.Format(time.RFC3339) {
+		t.Fatalf("missing personal group period limits: %s", encoded)
 	}
 	for _, key := range []string{"members", "user_ids", "member_usage", "ledger"} {
 		if _, ok := response.Group[key]; ok {

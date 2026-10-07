@@ -132,6 +132,15 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	// Current group readers also require the period-limit metadata. Applying
+	// this independent upgrade preserves the legacy period and funding rows.
+	for _, migration := range migrations {
+		if migration.Name == "0031_group_period_limits.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply group period metadata: %v", err)
+			}
+		}
+	}
 	g, err := s.GetGroup(ctx, groupID)
 	if err != nil || g.PeriodID != groupPeriodID || g.UsedUSD != "10.000000000000" || !g.PeriodStartsAt.Equal(start) || !g.PeriodEndsAt.Equal(end) ||
 		g.MemberLimitUSD != nil || len(g.Members) != 1 || g.Members[0].UsedUSD != "0.000000000000" {

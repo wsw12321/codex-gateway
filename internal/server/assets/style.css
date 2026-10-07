@@ -2773,6 +2773,9 @@ dialog form {
 #upstream-access-users { display: grid; gap: .75rem; }
 #upstream-access-users.hidden { display: none; }
 #billing-group { margin-bottom: 1rem; }
+#group-detail > .panel-heading { flex-wrap: wrap; }
+#group-detail > .panel-heading > div:first-child { flex: 1 1 20rem; }
+#group-detail > .panel-heading > .button-group { flex-shrink: 0; }
 #group-detail .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .model-access-model-list { display: grid; gap: .35rem; max-height: 20rem; overflow: auto; padding: .5rem; border: 1px solid var(--line); border-radius: .5rem; }
 .model-access-model-choice { display: flex; align-items: center; gap: .65rem; padding: .35rem; cursor: pointer; overflow-wrap: anywhere; }

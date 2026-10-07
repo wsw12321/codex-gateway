@@ -5712,6 +5712,33 @@ function groupPeriodLabel(group) {
   return ({day: "日 · 24 小时", week: "周 · 7 天", month: "月 · 31 天"})[group?.period] || `每 ${group?.custom_days || "—"} 天`;
 }
 
+function groupPeriodInfo(group) {
+  // Responses saved before period limits were introduced describe a single period.
+  const count = group.period_count ?? 1;
+  const current = group.current_period_number ?? 1;
+  const expiresAt = count === 0 ? null : group.expires_at ?? (count === 1 ? group.period_ends_at : null);
+  return {count, current, expiresAt};
+}
+
+function groupPeriodProgress(group) {
+  const {count, current} = groupPeriodInfo(group);
+  return count === 0 ? `第 ${current} 期 · 无限期` : `第 ${current}/${count} 期`;
+}
+
+function groupExpiryLabel(group) {
+  const {count, expiresAt} = groupPeriodInfo(group);
+  return `最终到期：${count === 0 ? "无限期" : formatDateTime(expiresAt, "数据不可用")}`;
+}
+
+function groupPeriodStatus(group) {
+  if (group.archived_at) return "已归档";
+  const {expiresAt} = groupPeriodInfo(group);
+  const now = Date.now();
+  if (expiresAt && new Date(expiresAt).getTime() <= now) return "已到期";
+  if (new Date(group.period_starts_at).getTime() > now) return "待开始";
+  return "生效中";
+}
+
 function groupMetrics(group) {
   return [
     ["周期额度", group.limit_usd], ["群组已用", group.used_usd], ["群组剩余", group.remaining_usd],
@@ -5724,13 +5751,14 @@ function renderBillingGroup(group, detail = {}) {
   host.classList.toggle("hidden", !group);
   host.replaceChildren();
   if (!group) return;
-  host.append(element("h3", {text: `群组额度 · ${group.name}`}),
+  host.append(element("h3", {text: `群组额度 · ${group.name} · ${groupPeriodStatus(group)}`}),
+    element("p", {className: "muted", text: `${groupPeriodProgress(group)} · ${groupExpiryLabel(group)}`}),
     element("div", {className: "metrics compact"}, ...groupMetrics(group)),
     element("div", {className: "metrics compact"},
       element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(detail.group_member_used_usd, "数据不可用")})),
       element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(detail.group_member_remaining_usd, "数据不可用")})),
     ),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按允许扣费的个人日、周、月额度及现金结算。群组耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按允许扣费的个人日、周、月额度及现金结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
   );
 }
 
@@ -5746,7 +5774,8 @@ function renderGroupList() {
   const cards = managedGroups.map((group) => {
     const button = element("button", {type: "button", className: "group-select secondary", attributes: {"aria-pressed": String(managedGroup?.id === group.id)}},
       element("strong", {text: group.name}),
-      element("span", {text: group.archived_at ? "已归档" : `${group.member_count} 人 · ${groupPeriodLabel(group)}`}),
+      element("span", {text: `${group.member_count} 人 · ${groupPeriodLabel(group)} · ${groupPeriodStatus(group)}`}),
+      element("small", {text: `${groupPeriodProgress(group)} · ${groupExpiryLabel(group)}`}),
       element("small", {text: `剩余 ${formatUSD(group.remaining_usd)} / ${formatUSD(group.limit_usd)}`}),
     );
     button.disabled = groupOperation;
@@ -5789,7 +5818,7 @@ async function loadGroupDetail(id) {
   if (managedGroup?.id !== id) groupSelectedUsers.clear();
   managedGroup = group;
   byId("group-detail-name").textContent = group.name;
-  byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}${group.archived_at ? " · 已归档" : ""}`;
+  byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${groupPeriodProgress(group)} · ${groupPeriodStatus(group)}。本期 ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}；${groupExpiryLabel(group)}`;
   byId("group-metrics").replaceChildren(...groupMetrics(group));
   show("group-detail");
   renderGroupList();
@@ -5851,6 +5880,7 @@ function openGroupEditor(group = null) {
   form.elements.limit_usd.value = group ? String(group.limit_usd).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") : "";
   form.elements.member_limit_usd.value = group?.member_limit_usd == null ? "" : String(group.member_limit_usd).replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   form.elements.period.value = group?.period || "month";
+  form.elements.period_count.value = String(group?.period_count ?? 1);
   form.elements.custom_days.value = String(group?.custom_days || 14);
   byId("group-dialog-title").textContent = group ? "编辑群组额度" : "创建群组";
   syncGroupPeriodInput();
@@ -5910,13 +5940,16 @@ async function saveGroup(event) {
   if (memberLimit && !/^(0|[1-9][0-9]{0,17})(\.[0-9]{1,6})?$/.test(memberLimit)) {
     throw new Error("成员上限必须大于或等于 0，最多 18 位整数和 6 位小数；留空表示不限。");
   }
-  const payload = {name: form.elements.name.value.trim(), limit_usd: amount, member_limit_usd: memberLimit || null, period: form.elements.period.value,
+  const payload = {name: form.elements.name.value.trim(), limit_usd: amount, member_limit_usd: memberLimit || null, period: form.elements.period.value, period_count: billingPeriodCount(form),
     custom_days: form.elements.period.value === "custom" ? Number(form.elements.custom_days.value) : 0,
     reason: billingReason(form)};
   if (form.elements.starts_at.value) payload.starts_at = new Date(form.elements.starts_at.value).toISOString();
   const current = managedGroup?.id === id ? managedGroup : null;
-  if (current && (payload.period !== current.period || payload.custom_days !== current.custom_days || payload.starts_at) &&
-      !window.confirm("修改周期或起点会立即关闭旧期并建立新期；已接收的请求仍记入旧期。确认修改？")) return;
+  const resetsPeriod = current && (payload.period !== current.period || payload.custom_days !== current.custom_days || payload.starts_at);
+  if (current && !resetsPeriod && payload.period_count > 0 && payload.period_count < groupPeriodInfo(current).current) {
+    throw new Error(`总周期数不得小于当前第 ${groupPeriodInfo(current).current} 期；0 表示无限期。`);
+  }
+  if (resetsPeriod && !window.confirm("修改周期或起点会立即关闭旧期并从第 1 期重开；过去起点选择包含当前时刻的周期作为第 1 期，已接收的请求仍记入旧期。确认修改？")) return;
   const group = await groupMutation(form, id ? `/admin/groups/${encodeURIComponent(id)}` : "/admin/groups", id ? "PUT" : "POST", payload);
   if (!group) return;
   byId("group-dialog").close();

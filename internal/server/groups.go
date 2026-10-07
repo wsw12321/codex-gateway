@@ -28,6 +28,7 @@ type groupInput struct {
 	LimitUSD       string          `json:"limit_usd"`
 	MemberLimitUSD json.RawMessage `json:"member_limit_usd"`
 	Period         string          `json:"period"`
+	PeriodCount    json.RawMessage `json:"period_count"`
 	CustomDays     int             `json:"custom_days"`
 	StartsAt       *time.Time      `json:"starts_at"`
 }
@@ -113,6 +114,13 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		}
 		memberLimit = &amount
 	}
+	var periodCount *int
+	if len(input.PeriodCount) != 0 {
+		if json.Unmarshal(input.PeriodCount, &periodCount) != nil || periodCount == nil || *periodCount < 0 || *periodCount > 99 {
+			s.groupStoreError(w, r, "update group", store.ErrInvalid)
+			return
+		}
+	}
 	repository := s.groupStorage()
 	if repository == nil {
 		internalError(s, w, r, "update group", errors.New("group repository unavailable"))
@@ -122,7 +130,7 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
 		GroupID:            id, Name: input.Name, LimitUSD: input.LimitUSD,
 		MemberLimitUSD: memberLimit, MemberLimitSet: memberLimitSet,
-		Period: input.Period, CustomDays: input.CustomDays, StartsAt: input.StartsAt,
+		Period: input.Period, PeriodCount: periodCount, CustomDays: input.CustomDays, StartsAt: input.StartsAt,
 	})
 	if err != nil {
 		s.groupStoreError(w, r, "update group", err)
