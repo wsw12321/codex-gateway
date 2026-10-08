@@ -85,8 +85,9 @@ sed -i \
 
 ## 5. 手动更新服务
 
-沿用 [部署与运维手册](operations.md) 和 [兼容层升级规程](compatibility-upgrades.md)
-完成备份及数据库迁移准备，然后执行：
+沿用 [部署与运维手册](operations.md) 和 [CPA v8 升级流程](cpa-v8-cutover.md)
+完成备份、排空和版本对应的迁移准备，然后执行。已有 v8.0.4 升至 v8.0.20 无需新增
+数据库或凭据迁移，具体范围见该文档的补丁升级步骤。
 
 ```sh
 ./scripts/validate-compose.sh
@@ -99,11 +100,9 @@ sed -i \
 名称；上述命令要求基础设施镜像已经存在。本流程针对已有部署，首次部署仍须先按
 运维手册准备基础镜像、配置和 secret。
 
-如果已启用 Antigravity，再执行：
-
-```sh
-./scripts/compose.sh up -d --no-build --pull never antigravity-bridge
-```
+默认 CPA v8 已处理 Antigravity，不需要启动 `antigravity-bridge`。只有按
+[回滚流程](cpa-v8-cutover.md#回滚)选择 legacy bridge 时，才使用对应 override 和 profile
+启动 bridge，并确保同一凭据只有一个刷新进程。
 
 检查 Gateway 的 `/readyz`，按升级规程完成真实 OAuth 冒烟。需要回退时，使用上次
 保存的清单、对应 Git 提交和版本配置重新拉取；涉及数据库变更时遵循其回退约束。

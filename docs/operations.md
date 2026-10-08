@@ -204,10 +204,12 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ```
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
-`latest`。CLIProxyAPI 的构建证明 `v8.0.4` 的 peeled commit 正是
-`d33f63f8e3d98428440ebca5a5b6a981a61ff71e`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.4-d33f63f8-7d5eceed9f551bf1-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`latest`。CLIProxyAPI 的构建证明 `v8.0.20` 的 peeled commit 正是
+`0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
+`v8.0.20-0f96f568-e731b9a15e9c6f2f-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次切换、九个模型的一次性迁移和兼容回滚见 [CPA v8 操作流程](cpa-v8-cutover.md)。
+v8.0.20 仅更新 CPA 源码和补丁，不新增迁移或改变公开模型授权、价格；
+本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.20-validation.md)。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥

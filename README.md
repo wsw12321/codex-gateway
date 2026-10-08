@@ -41,7 +41,7 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v8.0.4
+  CLIProxyAPI v8.0.20
       │ HTTP(S)_PROXY；无直接互联网路由
       ▼
   Squid 域名白名单出口
@@ -247,6 +247,9 @@ Ultrafast、税费或基础设施成本。Gemini 使用对应 API 家族的 Stan
 
 ### 已验证
 
+以下为既有部署的历史验证；本次 CPA v8.0.20 的源码检查与待完成的 CI、镜像和真实账号验收
+单独记录在 [升级验证记录](docs/cpa-v8.0.20-validation.md)。
+
 - `go test ./...`、`go test -race ./...`、`go vet ./...` 和格式检查通过。
 - PostgreSQL 17 真实集成测试已覆盖迁移、配额、usage、日/月聚合、审计和告警，
   并已加入使用锁定 PostgreSQL digest 的 CI service。
@@ -361,11 +364,12 @@ connector token 以精确 `0640` 保存为
 CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v8.0.4` / commit
-`d33f63f8e3d98428440ebca5a5b6a981a61ff71e`。CPA 补丁和本地构建产物另行记录 SHA-256；
+锁定；CLIProxyAPI 固定为 `v8.0.20` / commit
+`0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`。CPA 补丁和本地构建产物另行记录 SHA-256；
 镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
-此次版本升级交付仓库改动和本地构建验证；生产切换及真实 OAuth 账号验收
+此次版本升级交付仓库改动和本地源码验证，不在本机构建或更新镜像；
+具体结果见 [v8.0.20 验证记录](docs/cpa-v8.0.20-validation.md)。生产切换及真实 OAuth 账号验收
 按 [CPA v8 切换与回滚](docs/cpa-v8-cutover.md) 执行。
 
 ```sh
@@ -413,7 +417,7 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-CPA 固定为 **v8.0.4**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
+CPA 固定为 **v8.0.20**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
 `legacy-bridge` profile。Owner 在 `/admin/cpa/` 进行 OAuth、导入、重新授权、刷新、删除
 和额度查询，复用 Gateway 会话；权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。
 管理面板使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。
@@ -426,7 +430,8 @@ CPA 固定为 **v8.0.4**，同时执行 Codex 和 Antigravity；独立 bridge �
 升级须先执行维护窗口内的凭据转换及验收，不能仅替换镜像标签。参见
 [切换与回滚](docs/cpa-v8-cutover.md)、[凭据迁移](docs/cpa-credentials-migration.md)、
 [模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
-[本地验证记录](docs/cpa-v8-validation.md)。
+[v8.0.20 验证记录](docs/cpa-v8.0.20-validation.md)。首次 v8 切换的
+[历史验证记录](docs/cpa-v8-validation.md)仍保留。
 
 ### 5. 初始化 Owner
 

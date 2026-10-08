@@ -1,6 +1,6 @@
 # CPA v8 切换、演练与回滚
 
-本次固定 CPA **v8.0.4 / d33f63f8e3d98428440ebca5a5b6a981a61ff71e**，
+本次固定 CPA **v8.0.20 / 0f96f568e4dbf6f84ad7399a74b78344c5eac7e6**，
 管理面板 **v1.25.0 / b87b9487f63e08ad97b1fb4e7c17b4adb811b922**。
 CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；面板固定源码组件、
 依赖锁和同源资源摘要见 `deploy/cpa-panel/`。面板是去除配置、代理、权重、插件、任意请求
@@ -9,6 +9,28 @@ CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；�
 默认链路：客户端 → Gateway → 同一 CPA → Codex / Antigravity。
 Gateway 管身份、模型和账号权限、权重、并发、限额、价格、账单及审计；CPA 管 OAuth、
 供应商协议、凭据状态和刷新。`antigravity-bridge` 只在 `legacy-bridge` profile 中运行。
+
+## 已运行 v8.0.4 的补丁升级
+
+从 CPA v8.0.4 升至 v8.0.20 **不新增数据库迁移，不调整现有价格或业务配置，
+不需要转换凭据或让所有账号重新登录**。下文维护窗口中的管理密钥增补、Keyring 正向转换、
+九模型价格合并及 `0025` 步骤属于首次 v7/bridge → v8 切换，已完成的部署不要重复执行。
+
+1. 等本次提交的 CI 测试、race/CGO、镜像构建及运行冒烟通过后，使用对应发布清单拉取镜像。
+   按 [CI 镜像部署流程](ci-image-deployment.md)更新时，将 `.env` 的
+   `GATEWAY_IMAGE_TAG`、`GATEWAY_VERSION`、`GATEWAY_REVISION` 同步为该提交 SHA；
+   其他现有参数、secret、授权及定价保持原值。
+2. 保留旧镜像 digest 和备份，暂停新推理及账号变更，排空活动请求和待结算预约。
+   停止旧 CPA 后用新镜像重建 `codex-compat`，继续挂载原 `codex_oauth` 卷；
+   保留 OAuth 文件、身份映射和 `.gateway-account-state`，不要使用 `down -v`，
+   不要同时运行两个刷新进程，也不要额外启动 legacy bridge。
+3. 验证 CPA 健康及真实 Gateway Key 的模型列表、JSON/SSE、工具续聊、刷新后重启、
+   权限和账单归因，再恢复流量。Gateway `/readyz` 只检查数据库，不能代替上游生成验收。
+   重新授权功能可选受控账号验证，凭据失效账号再单独重新登录。
+
+CPA 重启会清空进程内缓存。依赖旧 Claude thread 工具状态的续聊可能返回
+`thread_not_found`，需新建会话；这不表示需要重新授权账号。
+本次本地通过项及 CI、真实账号待验收项见 [v8.0.20 验证记录](cpa-v8.0.20-validation.md)。
 
 ## 构建与上线前演练
 
@@ -31,7 +53,10 @@ TEST_DATABASE_URL="$DISPOSABLE_DATABASE_URL" \
   go test -count=1 -p 1 -tags=integration ./internal/store ./internal/server
 ```
 
-本地记录见 [验证记录](cpa-v8-validation.md)。本地合成凭据、HTTP stub 和测试数据库的成功，
+v8.0.20 的本地源码检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.20-validation.md)；
+此前构建与切换演练保存在 [v8 历史验证记录](cpa-v8-validation.md)。本次升级不在本机构建、
+更新镜像或部署服务，以上构建和运行命令用于后续 CI 与部署验收。
+本地合成凭据、HTTP stub 和测试数据库的成功，
 不能代替真实账号的刷新及 Gateway 生成验收。CI 发布后必须记录应用镜像的 registry digest；
 Docker 本地 image ID 是本地内容标识，不应冒充 registry manifest digest。
 

@@ -5,7 +5,7 @@
 单元测试中的合成凭据不构成真实账号验收。
 
 工具使用运行时私密文件提供的 Google OAuth 客户端强制刷新，即使旧 access token 尚未过期。
-客户端必须与固定 CPA v8.0.4 的 Antigravity 客户端一致；不要换用任意自建 OAuth 客户端。
+客户端必须与固定 CPA v8.0.20 的 Antigravity 客户端一致；不要换用任意自建 OAuth 客户端。
 刷新成功后先把新 token 保存到 Keyring 和受保护恢复文件，再验证 Google `verified_email`
 及稳定 subject、`loadCodeAssist` 项目、`fetchAvailableModels` 的原生 Gemini 模型和额度。
 错误只输出固定诊断；令牌不出现在日志、命令参数或浏览器中。

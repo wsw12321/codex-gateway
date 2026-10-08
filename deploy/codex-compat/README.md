@@ -1,16 +1,18 @@
 # Pinned CPA build
 
-The default image builds CPA `v8.0.4` at
-`d33f63f8e3d98428440ebca5a5b6a981a61ff71e`. The Dockerfile verifies the peeled
+The default image builds CPA `v8.0.20` at
+`0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`. The Dockerfile verifies the peeled
 release tag, the full commit and `CLIPROXY_PATCH_SHA256` before applying
-`cliproxy-v8.0.4-gateway.patch`. Go 1.26.8 and the security dependency updates
+`cliproxy-v8.0.20-gateway.patch`. Go 1.26.8 and the security dependency updates
 from the prior build are retained. The old v7 patch is retained only for the
 controlled compatibility rollback described in the operations documentation.
 
-The local catalog receives only `gpt-6.1-sol` from
-`router-for-me/models@690c37fdbe62dc05f609f3a3e609d07ea4d16bf1` (`models.json`
-SHA256 `35efe922ff4061d959e6d8632bd34bbe2fdca18804e0b338f9d7ec2a3aa40b81`).
-Its CPA catalog context is 272000 tokens; larger channel capacity requires
+The local catalog is the unchanged `internal/registry/models/models.json` from
+the same pinned CPA commit (SHA256
+`3a97eea65c1df3ea8ad4edac838b37f7714868d1e784b3723d0650b6e848aa9a`).
+It already contains `gpt-6.1-sol` for Codex plus/pro/team with a 272000-token
+context, so the three local additions have been removed. Gateway's public model
+authorization and pricing remain unchanged. Larger channel capacity requires
 separate real-account validation. `-local-model` disables catalog downloads.
 The management panel and provider/plugin discovery auto-updates remain disabled.
 
@@ -42,12 +44,16 @@ is account-specific and permits only the eight reviewed Gemini IDs. Google
 requests use the configured egress proxy, fixed hosts, and no redirects.
 
 The Docker build runs the full affected API, authentication, watcher, session,
-management, cache and protocol packages, the Gateway race regressions, and the
-explicit prior Codex transport/quota regression list. Run
+management, configuration, cache, thinking and protocol packages, the Gateway
+credential and Claude cache race regressions, and the explicit prior Codex
+transport/quota regression list. Run
 `scripts/test-sidecar-image.sh IMAGE` afterward for synthetic, networkless
 runtime checks, including credential permissions, provider capabilities,
 management-key separation and exclusive refresh locking. These checks do not
 replace the maintenance-window tests with real accounts and a Gateway key.
+The v8.0.20 upgrade delivers source and configuration changes only; local checks
+and pending CI and real-account acceptance are recorded in
+[`cpa-v8.0.20-validation.md`](../../docs/cpa-v8.0.20-validation.md).
 
 Claude subscriptions use Gateway provider `anthropic`; the adapter maps it to
 CPA executor `claude` and OAuth flow `anthropic`. The independent mode-0600

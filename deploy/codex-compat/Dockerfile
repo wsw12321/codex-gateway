@@ -33,17 +33,24 @@ RUN git init \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
 ARG CLIPROXY_PATCH_SHA256
-COPY deploy/codex-compat/cliproxy-v8.0.4-gateway.patch /tmp/cliproxy-multi-account.patch
+COPY deploy/codex-compat/cliproxy-v8.0.20-gateway.patch /tmp/cliproxy-multi-account.patch
 RUN printf "%s  /tmp/cliproxy-multi-account.patch\n" "$CLIPROXY_PATCH_SHA256" | sha256sum -c - \
     && git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
+RUN printf '%s  internal/registry/models/models.json\n' \
+    '3a97eea65c1df3ea8ad4edac838b37f7714868d1e784b3723d0650b6e848aa9a' | sha256sum -c -
 
 COPY deploy/codex-compat/legacy-credentials.test.txt /src/internal/watcher/synthesizer/gateway_legacy_credentials_test.go
+COPY deploy/codex-compat/entrypoint.sh /tmp/gateway-entrypoint.sh
+# Parse the deployed YAML template, and fail if its reviewed test fixture drifted.
+RUN cmp /tmp/gateway-entrypoint.sh /src/internal/config/testdata/gateway-entrypoint.sh
 
 # The reviewed patch carries its security regression tests. A context mismatch
 # or semantic regression therefore fails the immutable image build closed.
 RUN go test -count=1 \
+    ./internal/config \
+    ./internal/cache \
     ./internal/api \
     ./internal/api/middleware \
     ./internal/auth/codex \
@@ -51,8 +58,8 @@ RUN go test -count=1 \
     ./internal/auth/claude \
     ./internal/api/handlers/management \
     ./internal/runtime/executor/helps \
-    ./internal/translator/gemini/openai/responses \
-    ./internal/translator/antigravity/openai/responses \
+    ./internal/thinking/... \
+    ./internal/translator/... \
     ./internal/logging \
     ./internal/util \
     ./internal/watcher \
@@ -68,7 +75,31 @@ RUN go test -count=1 \
 # Concurrency is part of the selection contract: the reverse callback must not
 # hold manager locks, and simultaneous first requests must share one binding.
 # Watcher revisions must also preserve canonical account identity under updates.
-RUN go test -race -count=1 -run '^Test(Gateway|ConversationRoot)' ./sdk/cliproxy/auth ./internal/watcher
+RUN go test -race -count=1 -run '^Test(Gateway|ConversationRoot)' ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy
+RUN go test -list '^TestGateway' ./sdk/cliproxy/auth > /tmp/credential-regression-tests \
+    && for test_name in \
+        TestGatewayRefreshConcurrentCredentialAndControlChanges \
+        TestGatewayControlChangeDuringCredentialSave \
+        TestGatewayRefreshFailureWaitsForReauthorizationSave \
+        TestGatewayLateExecutionResultsRespectAllVersions \
+        TestGatewayCatalogPublicationSerializesCredentialMutation \
+        TestGatewayLateUnauthorizedDoesNotRefreshReplacement \
+        TestGatewayExecutionRequestUsesTrustedCallerAndAccountScope; do \
+        grep -Fxq "$test_name" /tmp/credential-regression-tests; \
+    done
+RUN go test -list '^TestGatewayCatalog' ./sdk/cliproxy > /tmp/catalog-regression-tests \
+    && for test_name in \
+        TestGatewayCatalogCredentialsAndEgress \
+        TestGatewayCatalogPublicationRejectsStaleSnapshots \
+        TestGatewayCatalogPublicationPreservesAdmissionAndEmptyResults \
+        TestGatewayCatalogDisabledSnapshotCannotRemoveReenabledCatalog \
+        TestGatewayCatalogControlKeepsModelCapability \
+        TestGatewayCatalogInitialSuccessSurvivesControlChanges \
+        TestGatewayCatalogInvalidIdentitySkipsProbeAndRevokesOnlyCurrentSnapshot \
+        TestGatewayCatalogExpiredEntitlementsFailClosed \
+        TestGatewayCatalogRejectsRedirectAndDirectFallback; do \
+        grep -Fxq "$test_name" /tmp/catalog-regression-tests; \
+    done
 
 RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/executor > /tmp/codex-regression-tests \
     && for test_name in \
@@ -76,6 +107,7 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         TestCodexHttpRequestDoesNotFollowRedirect \
         TestCodexImageHTTPClientDoesNotFollowRedirect \
         TestCodexInternalAndOAuthHeadersAreProtectedOnAllTransports \
+        TestCodexCountTokensDoesNotSendPrivateHeaders \
         TestCodexAstraUpgradeHTTPTransports \
         TestCodexDiagnosticProbeIsolatedRequestAndNoUsage \
         TestCodexDiagnosticProbeResponsesLiteContract \
@@ -98,10 +130,20 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         grep -Fxq "$test_name" /tmp/codex-regression-tests; \
     done \
     && go test -count=1 \
-        -run '^(TestCodex(DiagnosticProbe.*|RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
+        -run '^(TestCodex(DiagnosticProbe.*|RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|CountTokensDoesNotSendPrivateHeaders|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
-RUN go test -count=1 -run '^(TestClaude|TestGatewayAnthropic)' ./internal/runtime/executor
+RUN go test -list '^TestGateway(Claude|Anthropic)' ./internal/runtime/executor > /tmp/claude-cache-regression-tests \
+    && for test_name in \
+        TestGatewayClaudeToolAliasesIsolateCallerProviderAndAccount \
+        TestGatewayClaudeToolAliasesSurviveExecuteAndStreamingContinuation \
+        TestGatewayClaudeToolAliasesDoNotPersistInterruptedOrCancelledStreams \
+        TestGatewayClaudeToolAliasesMissingStateDoesNotRotateAccounts \
+        TestGatewayAnthropicNativeAndCloakedHeaderBoundaries; do \
+        grep -Fxq "$test_name" /tmp/claude-cache-regression-tests; \
+    done \
+    && go test -count=1 -run '^(TestClaude|TestGatewayAnthropic|TestGatewayClaude)' ./internal/runtime/executor
+RUN go test -race -count=1 -run '^TestGatewayClaude' ./internal/runtime/executor
 
 WORKDIR /src
 RUN CGO_ENABLED=1 CC=gcc GOOS=linux go build \
