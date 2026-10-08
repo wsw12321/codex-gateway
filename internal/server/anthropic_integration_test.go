@@ -47,7 +47,9 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var interruptStream atomic.Bool
+	var upstreamCalls atomic.Int64
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") != "Bearer internal-cpa" {
 			t.Error("missing internal credentials")
@@ -110,23 +112,48 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 	if err := repo.DB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_requests WHERE request_id=$1 AND endpoint='messages.count_tokens' AND state='completed' AND input_tokens=0 AND output_tokens=0),(SELECT count(*) FROM billing_reservations WHERE request_id=$1),(SELECT count(*) FROM concurrency_leases WHERE request_id=$1)`, requestID).Scan(&counts, &charges, &leases); err != nil || counts != 1 || charges != 0 || leases != 0 {
 		t.Fatalf("count settlement %d %d %d %v", counts, charges, leases, err)
 	}
+	// Speed changes generation billing only. Counting must remain free.
+	w = send("/v1/messages/count_tokens", `{"model":"claude-test","speed":"fast","messages":[]}`)
+	if w.Code != 200 || w.Body.String() != `{"input_tokens":60}` {
+		t.Fatalf("count with speed %d %s", w.Code, w.Body)
+	}
+	if err := repo.DB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM billing_reservations WHERE request_id=$1),(SELECT count(*) FROM billing_ledger_entries WHERE request_id=$1)`, w.Header().Get(httpx.RequestIDHeader)).Scan(&charges, &counts); err != nil || charges != 0 || counts != 0 {
+		t.Fatalf("count with speed charges=%d ledger=%d: %v", charges, counts, err)
+	}
+	for _, stream := range []bool{false, true} {
+		for _, speed := range []string{"fast", "turbo"} {
+			before := upstreamCalls.Load()
+			w = send("/v1/messages", fmt.Sprintf(`{"model":"claude-test","max_tokens":100,"stream":%t,"speed":%q,"messages":[]}`, stream, speed))
+			if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"service_tier_not_supported"`) {
+				t.Fatalf("unsupported speed=%s stream=%t: %d %s", speed, stream, w.Code, w.Body)
+			}
+			if upstreamCalls.Load() != before {
+				t.Fatal("unsupported speed reached upstream")
+			}
+			if err := repo.DB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_requests WHERE request_id=$1),(SELECT count(*) FROM billing_reservations WHERE request_id=$1),(SELECT count(*) FROM concurrency_leases WHERE request_id=$1)`, w.Header().Get(httpx.RequestIDHeader)).Scan(&counts, &charges, &leases); err != nil || counts != 0 || charges != 0 || leases != 0 {
+				t.Fatalf("unsupported speed usage=%d reservations=%d leases=%d: %v", counts, charges, leases, err)
+			}
+		}
+	}
 	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: f.owner.ID, Reason: "Test Claude"}, UserID: f.owner.ID, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, stream := range []bool{false, true} {
-		w = send("/v1/messages?beta=true", fmt.Sprintf(`{"model":"claude-test","max_tokens":100,"stream":%t,"messages":[{"role":"user","content":"hello"}]}`, stream))
-		if w.Code != 200 {
-			t.Fatalf("messages %d %s", w.Code, w.Body)
-		}
-		var input, short, long, output int64
-		var provider, mode, state string
-		err := repo.DB().QueryRowContext(ctx, `SELECT u.input_tokens,u.cache_write_5m_tokens,u.cache_write_1h_tokens,u.output_tokens,a.provider,b.billing_mode,u.state FROM usage_requests u JOIN upstream_accounts a ON a.id=u.upstream_account_id JOIN billing_reservations b USING(request_id) WHERE request_id=$1`, w.Header().Get(httpx.RequestIDHeader)).Scan(&input, &short, &long, &output, &provider, &mode, &state)
-		wantOutput := int64(7)
-		if stream {
-			wantOutput = 9
-		}
-		if err != nil || input != 60 || short != 12 || long != 18 || output != wantOutput || provider != "anthropic" || mode != store.BillingModeAnthropicAPIEquivalent || state != "completed" {
-			t.Fatalf("billing %d %d %d %d %s %s %s %v", input, short, long, output, provider, mode, state, err)
+		for _, fields := range []string{"", `"speed":"standard",`, `"metadata":{"speed":"fast"},`, `"speed":"standard","service_tier":"standard_only",`} {
+			w = send("/v1/messages?beta=true", fmt.Sprintf(`{"model":"claude-test","max_tokens":100,"stream":%t,%s"messages":[{"role":"user","content":"hello"}]}`, stream, fields))
+			if w.Code != 200 {
+				t.Fatalf("messages fields=%s stream=%t: %d %s", fields, stream, w.Code, w.Body)
+			}
+			var input, short, long, output int64
+			var provider, mode, state string
+			err := repo.DB().QueryRowContext(ctx, `SELECT u.input_tokens,u.cache_write_5m_tokens,u.cache_write_1h_tokens,u.output_tokens,a.provider,b.billing_mode,u.state FROM usage_requests u JOIN upstream_accounts a ON a.id=u.upstream_account_id JOIN billing_reservations b USING(request_id) WHERE request_id=$1`, w.Header().Get(httpx.RequestIDHeader)).Scan(&input, &short, &long, &output, &provider, &mode, &state)
+			wantOutput := int64(7)
+			if stream {
+				wantOutput = 9
+			}
+			if err != nil || input != 60 || short != 12 || long != 18 || output != wantOutput || provider != "anthropic" || mode != store.BillingModeAnthropicAPIEquivalent || state != "completed" {
+				t.Fatalf("billing %d %d %d %d %s %s %s %v", input, short, long, output, provider, mode, state, err)
+			}
 		}
 	}
 	// Transport truncation after a validated cumulative usage frame must

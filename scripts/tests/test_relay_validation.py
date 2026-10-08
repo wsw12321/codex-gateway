@@ -300,6 +300,8 @@ else:
             "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
             "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
             "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gpt-6.1-sol",
+            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5",
+            "claude-haiku-4-5-20251001",
         }
         codex = {
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",

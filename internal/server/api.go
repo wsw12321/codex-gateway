@@ -99,6 +99,13 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Claude 模型必须通过 Messages 接口调用")
 			return
 		}
+		// Anthropic speed is independent of service_tier. Fast generation has
+		// separate rates, so never admit it under a standard pricing snapshot.
+		if prepared.anthropic && !prepared.countTokens && routing.Speed != "" && routing.Speed != "standard" {
+			_ = parsedBody.Close()
+			writeServiceTierNotSupported(w, r)
+			return
+		}
 		if s.config.UsesCPAAntigravity() && config.IsAntigravityModel(routing.Model) {
 			data, readErr := io.ReadAll(io.LimitReader(parsedBody, (1<<20)+1))
 			_ = parsedBody.Close()

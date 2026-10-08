@@ -1,12 +1,39 @@
 package httpx
 
 import (
+	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestAnthropicErrorPreservesGatewayCode(t *testing.T) {
+	for _, path := range []string{"/v1/messages", "/v1/messages/count_tokens"} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, path, nil)
+			request = request.WithContext(context.WithValue(request.Context(), requestIDKey, "request-id"))
+			recorder := httptest.NewRecorder()
+			WriteError(recorder, request, http.StatusBadRequest, "invalid_request_error", "service_tier_not_supported", "Unsupported speed")
+			var body struct {
+				Type      string      `json:"type"`
+				Error     ErrorDetail `json:"error"`
+				RequestID string      `json:"request_id"`
+			}
+			if err := json.Unmarshal(recorder.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			if recorder.Code != http.StatusBadRequest || body.Type != "error" || body.Error.Type != "invalid_request_error" || body.Error.Code != "service_tier_not_supported" || body.Error.Message != "Unsupported speed" || body.RequestID != "request-id" {
+				t.Fatalf("response %d %s", recorder.Code, recorder.Body)
+			}
+			if recorder.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("error response must not be cached")
+			}
+		})
+	}
+}
 
 func TestSecurityHeadersAllowOnlySameOriginBrandImages(t *testing.T) {
 	recorder := httptest.NewRecorder()

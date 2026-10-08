@@ -382,6 +382,15 @@ pricing_validator='
     (.input_usd_per_million | positive_price) and
     (.cached_input_usd_per_million | positive_price) and
     (.output_usd_per_million | positive_price);
+  def ttl_price:
+    exact_keys([
+      "cache_write_5m_usd_per_million",
+      "cache_write_1h_usd_per_million",
+      "cached_input_usd_per_million",
+      "input_usd_per_million",
+      "output_usd_per_million"
+    ]) and
+    all(.[]; positive_price);
   def zero_included_price:
     exact_keys([
       "cached_input_usd_per_million",
@@ -481,6 +490,19 @@ pricing_validator='
     (.service_tiers |
       exact_keys(["standard"]) and
       (.standard | exact_keys(["short"]) and (.short | zero_included_price)));
+  def claude_model($context_limit):
+    exact_keys([
+      "cache_write_mode",
+      "long_context_threshold_tokens",
+      "max_input_tokens",
+      "service_tiers"
+    ]) and
+    .cache_write_mode == "separate_by_ttl" and
+    .max_input_tokens == $context_limit and
+    .long_context_threshold_tokens == $context_limit and
+    (.service_tiers |
+      exact_keys(["standard"]) and
+      (.standard | exact_keys(["short"]) and (.short | ttl_price)));
   exact_keys([
     "catalog_as_of",
     "fallback_policy",
@@ -504,6 +526,10 @@ pricing_validator='
     .missing_cache_write_tokens == "all_uncached_as_write") and
   (.models |
     exact_keys([
+      "claude-fable-5-1",
+      "claude-opus-5-5",
+      "claude-sonnet-5-5",
+      "claude-haiku-4-5-20251001",
       "codex-auto-review",
       "gemini-pro-agent",
       "gemini-3.1-pro-low",
@@ -524,6 +550,10 @@ pricing_validator='
       "gpt-6-sol",
       "gpt-6.1-sol"
     ]) and
+    (.["claude-fable-5-1"] | claude_model(1000000)) and
+    (.["claude-opus-5-5"] | claude_model(1000000)) and
+    (.["claude-sonnet-5-5"] | claude_model(1000000)) and
+    (.["claude-haiku-4-5-20251001"] | claude_model(200000)) and
     (.["gpt-6-astra"] | separate_long_model) and
     (.["gpt-6-sol"] | separate_long_model) and
     (.["gpt-6.1-sol"] | separate_long_model) and
@@ -614,6 +644,27 @@ reject_pricing_mutation \
 reject_pricing_mutation \
     '.models["gemini-3.8-flash-medium"] = .models["gemini-3.8-flash-high"]' \
     'a retired Gemini Medium model'
+reject_pricing_mutation \
+    'del(.models["claude-fable-5-1"])' \
+    'a missing Claude model'
+reject_pricing_mutation \
+    'del(.models["claude-opus-5-5"].service_tiers.standard.short.cache_write_5m_usd_per_million)' \
+    'a missing Claude 5-minute cache-write price'
+reject_pricing_mutation \
+    'del(.models["claude-sonnet-5-5"].service_tiers.standard.short.cache_write_1h_usd_per_million)' \
+    'a missing Claude 1-hour cache-write price'
+reject_pricing_mutation \
+    '.models["claude-opus-5-5"].service_tiers.standard.short.cache_write_usd_per_million = "5"' \
+    'a legacy cache-write price mixed into Claude TTL prices'
+reject_pricing_mutation \
+    '.models["claude-haiku-4-5-20251001"].service_tiers.standard.short.cache_write_1h_usd_per_million = "-2"' \
+    'an invalid Claude TTL price'
+reject_pricing_mutation \
+    '.models["claude-fable-5-1"].service_tiers.fast = .models["claude-fable-5-1"].service_tiers.standard' \
+    'an unconfigured Claude Fast tier'
+reject_pricing_mutation \
+    '.models["claude-haiku-4-5-20251001"].max_input_tokens = 1000000' \
+    'an incorrect Claude Haiku input limit'
 unset pricing_json pricing_mutation pricing_rejection
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a

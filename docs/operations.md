@@ -65,12 +65,16 @@ chmod 0600 .env
 
 `GATEWAY_USAGE_PRICING_JSON` 是必填的非 secret 部署配置。Gateway 不在运行时
 联网抓取价格或汇率；操作者必须在启动前从
-[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 人工核对所有
+[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 和对应供应商的官方定价人工核对所有
 允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
 完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
 `deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
 `.env` 中的 JSON 必须保持一行。模板中的 GPT-5.6 Sol 按部署要求采用降价前
 历史价格，来源和恢复日期见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+Claude 标准价格于 2026-10-08 核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)，
+覆盖 `claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5` 和
+`claude-haiku-4-5-20251001`；五价、上下文限制和仅合并这四条价格的命令见
+[Claude 定价与目录升级](claude-code.md#标准-api-定价与目录升级)。
 数据库中的模型覆盖价优先于此配置；未覆盖或已恢复的模型使用部署配置。Owner 可在
 “模型定价”修改完整基础价格矩阵，操作和升级要求见[模型定价迁移与升级](#模型定价迁移与升级)。
 v2 的结构如下（片段不能单独部署）：
@@ -78,7 +82,7 @@ v2 的结构如下（片段不能单独部署）：
 ```json
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-09-16",
+  "catalog_as_of": "2026-10-08",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -112,9 +116,9 @@ v2 的结构如下（片段不能单独部署）：
 }
 ```
 
-完整模板覆盖 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
+完整模板还覆盖 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
 `gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
-`codex-auto-review`。GPT-5.2 等不在目录
+`codex-auto-review`，以及 [Gemini 价格目录](gemini-pro.md)。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
 用户模型权限、API Key 白名单逐一核对。
@@ -130,6 +134,9 @@ reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的�
 
 服务层和上下文选择规则如下：
 
+- Claude Messages 只支持标准速度；顶层 `speed` 缺省或为 `standard` 时准入，
+  `fast` 和未知速度在转发、费用预留前返回 `400 service_tier_not_supported`。
+  四款 Claude 使用各自最大上下文内统一的 `standard.short` 五价。
 - 请求或响应 `default`/`standard` 对应 Standard，`flex` 对应 Flex，
   `priority`/`fast` 对应 Fast。显式请求 Ultrafast 或其他未配置层级会在转发前
   返回 `service_tier_not_supported`。
@@ -176,13 +183,13 @@ cost = (ordinary * input_price
 准入事务内从数据库读取模型覆盖价和倍率，并把有效的完整 v2 规则和目录日期保存在
 reservation；价格读取失败或覆盖价结构与配置冲突时拒绝新请求。结算后把实际
 模型、请求/实际/最终计价服务层、上下文档位、cache-write 模式和 Token、最终应用
-四价及兜底原因写入不可变 `billing_ledger_entries`。全员报表的 USD 金额汇总该
+单价（Claude 包含两种 TTL 写入价）及兜底原因写入不可变 `billing_ledger_entries`。全员报表的 USD 金额汇总该
 ledger，修改当前价格 JSON 或管理页面覆盖价不会改变历史 USD；Token 数量继续来自 usage 明细和
 日/月聚合。接口中的 `estimated_usd` 是 `actual_cost_usd` 的兼容别名，另有
 `charged_usd` 和 `uncovered_usd`。CNY 只按当前配置的固定汇率换算 ledger USD。
 
 界面和接口中的金额称为“API Token 等价成本”，按对应供应商 API 价格计算。
-上游使用 ChatGPT Plus/Pro OAuth 或 Antigravity 订阅，等价成本不代表实际订阅账单；
+上游使用 ChatGPT Plus/Pro OAuth、Antigravity 或 Claude 订阅，等价成本不代表实际订阅账单；
 `codex-auto-review` 零价与保守兜底属于本地策略。订阅费、工具、区域、Batch、
 Ultrafast、税费和基础设施成本均不在范围内。Codex 价格及缓存语义见
 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)，Gemini 使用

@@ -27,6 +27,7 @@ var errRequestBodySpoolBusy = errors.New("request body spool capacity exhausted"
 type requestRouting struct {
 	Model       string
 	ServiceTier string
+	Speed       string
 }
 
 type countingBody struct {
@@ -113,7 +114,7 @@ func (s *Server) prepareModelBody(w http.ResponseWriter, r *http.Request, limit 
 		cleanup()
 		return requestRouting{}, nil, fmt.Errorf("%w: rewind temporary file: %v", errRequestBodySpool, err)
 	}
-	routing, err := scanTopLevelRouting(file)
+	routing, err := scanTopLevelRouting(file, r.URL.Path == "/v1/messages")
 	if err != nil {
 		cleanup()
 		return requestRouting{}, nil, err
@@ -158,15 +159,15 @@ func extractTopLevelModel(raw []byte) (string, error) {
 }
 
 // extractTopLevelRouting scans the complete JSON object and extracts only
-// string-valued model and service_tier members at object depth one, so prompt
+// string-valued model, service_tier and speed members at object depth one, so prompt
 // text cannot impersonate routing fields.
 func extractTopLevelRouting(raw []byte) (requestRouting, error) {
-	return scanTopLevelRouting(bytes.NewReader(raw))
+	return scanTopLevelRouting(bytes.NewReader(raw), true)
 }
 
-func scanTopLevelRouting(source io.Reader) (requestRouting, error) {
+func scanTopLevelRouting(source io.Reader, includeSpeed bool) (requestRouting, error) {
 	var routing requestRouting
-	seenModel, seenServiceTier := false, false
+	seenModel, seenServiceTier, seenSpeed := false, false, false
 	reader := bufio.NewReaderSize(source, 64<<10)
 	character, err := nextNonSpaceByte(reader)
 	if err != nil || character != '{' {
@@ -187,8 +188,9 @@ func scanTopLevelRouting(source io.Reader) (requestRouting, error) {
 		if err != nil || escaped {
 			return routing, errModelNotFound
 		}
-		if !truncated && key != "model" && key != "service_tier" &&
-			(strings.EqualFold(key, "model") || strings.EqualFold(key, "service_tier")) {
+		if !truncated && ((key != "model" && strings.EqualFold(key, "model")) ||
+			(key != "service_tier" && strings.EqualFold(key, "service_tier")) ||
+			(includeSpeed && key != "speed" && strings.EqualFold(key, "speed"))) {
 			return routing, errModelNotFound
 		}
 		character, err = nextNonSpaceByte(reader)
@@ -217,6 +219,15 @@ func scanTopLevelRouting(source io.Reader) (requestRouting, error) {
 				return routing, errModelNotFound
 			}
 			routing.ServiceTier, seenServiceTier = serviceTier, true
+		} else if includeSpeed && key == "speed" {
+			if character != '"' {
+				return routing, errModelNotFound
+			}
+			speed, escaped, truncated, err := readStreamingJSONString(reader, 33)
+			if err != nil || escaped || truncated || !validServiceTier(speed) || seenSpeed {
+				return routing, errModelNotFound
+			}
+			routing.Speed, seenSpeed = speed, true
 		} else {
 			if err := skipStreamingJSONValue(reader, character); err != nil {
 				return routing, errModelNotFound

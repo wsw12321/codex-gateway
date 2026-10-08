@@ -86,32 +86,39 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 
 截图：[Claude 账号桌面](screenshots/anthropic-accounts-desktop.png)、[Claude 账号手机](screenshots/anthropic-accounts-mobile.png)、[配置指导手机](screenshots/claude-guide-mobile.png)、[CPA 桌面](screenshots/cpa-anthropic-desktop.png)、[CPA 手机](screenshots/cpa-anthropic-mobile.png)。
 
-## 定价配置示例
+## 标准 API 定价与目录升级
 
-将下面的**模型条目**合并到现有 `GATEWAY_USAGE_PRICING_JSON.models`，保留现有 `schema_version: 2`、其他模型、汇率和兜底策略。`claude-example-exact-id`、上下文限制与全部单价均为演示值，不能直接作为生产模型或官方报价；替换为已核实的精确模型 ID、限制和价格，再按现有部署流程加载。最大输入等于长上下文阈值时只需 `short`；如模型支持超过阈值的上下文，另行配置 `long` 完整五价。
+默认目录 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json) 和两份环境变量示例已包含以下四款精确模型 ID。价格于 **2026-10-08** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)，单位为美元／百万 tokens：
 
-```json
-{
-  "claude-example-exact-id": {
-    "cache_write_mode": "separate_by_ttl",
-    "max_input_tokens": 200000,
-    "long_context_threshold_tokens": 200000,
-    "service_tiers": {
-      "standard": {
-        "short": {
-          "input_usd_per_million": "3",
-          "cached_input_usd_per_million": "0.3",
-          "cache_write_5m_usd_per_million": "3.75",
-          "cache_write_1h_usd_per_million": "6",
-          "output_usd_per_million": "15"
-        }
-      }
-    }
-  }
-}
+| 精确模型 ID | 输入 | 输出 | 缓存读取 | 5 分钟缓存写入 | 1 小时缓存写入 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `claude-fable-5-1` | 10 | 50 | 0.25 | 12.50 | 20 |
+| `claude-opus-5-5` | 4 | 20 | 0.20 | 5 | 8 |
+| `claude-sonnet-5-5` | 2 | 10 | 0.10 | 2.50 | 4 |
+| `claude-haiku-4-5-20251001` | 1 | 5 | 0.10 | 1.25 | 2 |
+
+模型 ID 和上下文限制对应当前 [CPA 来源锁](../deploy/codex-compat/source.lock.json) 中的 `v8.0.20` 目录（commit `0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`）。Haiku 5.5 尚未进入该锁定目录，本次不加入，也不使用别名或相近型号价格代替。
+
+四款均使用 `cache_write_mode=separate_by_ttl` 和 `service_tiers.standard.short`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。前三款的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 均为 `200000`。前三款按官方规则在完整 1M 上下文内使用统一单价，无需另设 `long`。缓存 TTL 缺失时继续按价格快照中较高的写入价结算，分项数量保持未知；`/v1/messages/count_tokens` 仍不收取 Token 费用。
+
+本目录只覆盖标准 API Token 价格，不支持 Claude Fast、Batch 或地区附加费。普通和流式 `/v1/messages` 请求省略顶层 `speed` 或设置 `"speed":"standard"` 时按标准模式准入；`"speed":"fast"` 及其他未知速度在转发和费用预留前返回 `400 service_tier_not_supported`。重复顶层键、非字符串值等非法形式按请求校验规则拒绝；消息、工具参数等嵌套内容中的 `speed` 不控制服务速度。
+
+已有部署可先将当前 `GATEWAY_USAGE_PRICING_JSON` 的 JSON 值保存为 `pricing-current.json`，再在仓库根目录运行以下命令，生成待审阅的单行配置。命令仅合并这四条模型价格并更新目录日期，保留其他模型、固定汇率、汇率日期和兜底策略：
+
+```sh
+jq -ce --slurpfile catalog deploy/pricing-v2.example.json '
+  ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5",
+   "claude-haiku-4-5-20251001"] as $ids |
+  if .schema_version != 2 or (.models | type) != "object" then
+    error("current pricing must use schema_version 2 with a models object")
+  else
+    .models += ($catalog[0].models | with_entries(select(.key as $id | $ids | index($id)))) |
+    .catalog_as_of = $catalog[0].catalog_as_of
+  end
+' pricing-current.json > pricing-claude.json
 ```
 
-`separate_by_ttl` 不同时设置旧的 `cache_write_usd_per_million`。此条目进入部署价格目录后，Owner 才能在“模型定价”保存数据库覆盖价；“模型倍率”继续对最终请求费用统一应用倍率。
+核对 `pricing-claude.json` 后，用其单行内容替换 `.env` 的 `GATEWAY_USAGE_PRICING_JSON`，再按现有部署流程校验并重新加载 Gateway。示例文件更新不会自动改变实际部署价格。数据库覆盖价仍优先于部署目录，“模型倍率”继续作用于最终费用；已有覆盖价的模型需在“模型定价”中核对有效价格。此次补目录无需新增数据库迁移，历史请求和账单继续使用原价格快照。
 
 ## 上线与回退
 

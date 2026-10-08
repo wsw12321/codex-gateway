@@ -54,7 +54,7 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, typ, code, m
 		default:
 			typ = "api_error"
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": map[string]string{"type": typ, "message": message}, "request_id": RequestID(r.Context())})
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": map[string]string{"type": typ, "message": message, "code": code}, "request_id": RequestID(r.Context())})
 		return
 	}
 	if enabled, _ := r.Context().Value(geminiErrorsKey).(bool); enabled {
