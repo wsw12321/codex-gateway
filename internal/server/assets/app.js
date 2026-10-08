@@ -20,10 +20,12 @@ const sectionTitles = {
   "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
   "antigravity-accounts": "上游账号",
+  "anthropic-accounts": "Claude 账号",
   information: "数据维护",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("antigravity-accounts");
+ownerOnlySections.add("anthropic-accounts");
 ownerOnlySections.add("model-access");
 ownerOnlySections.add("user-upstream-access");
 ownerOnlySections.add("model-multipliers");
@@ -310,15 +312,15 @@ const upstreamFinalStatusLabels = {
 };
 
 function upstreamAccountAPI(path) {
-  return upstreamAccountProvider === "antigravity" ? path.replace("/admin/upstream-accounts", "/admin/antigravity-accounts") : path;
+  return upstreamAccountProvider === "codex" ? path : path.replace("/admin/upstream-accounts", `/admin/${upstreamAccountProvider}-accounts`);
 }
 
 function upstreamAccountSection() {
-  return upstreamAccountProvider === "antigravity" ? "antigravity-accounts" : "upstream-accounts";
+  return upstreamAccountProvider === "codex" ? "upstream-accounts" : `${upstreamAccountProvider}-accounts`;
 }
 
-function upstreamAccountLanguage(codex, antigravity) {
-  return upstreamAccountProvider === "antigravity" ? antigravity : codex;
+function upstreamAccountLanguage(codex, antigravity, anthropic = antigravity) {
+  return upstreamAccountProvider === "anthropic" ? anthropic : upstreamAccountProvider === "antigravity" ? antigravity : codex;
 }
 
 function upstreamQuotaStatusLabels() {
@@ -327,7 +329,7 @@ function upstreamQuotaStatusLabels() {
 
 function upstreamAccountManuallyBlocked(account) {
   return account.gateway_manual_status === "manual_disabled" ||
-    (upstreamAccountProvider !== "antigravity" && account.gateway_quota_status === "quota_exhausted");
+    (upstreamAccountProvider === "codex" && account.gateway_quota_status === "quota_exhausted");
 }
 
 function upstreamAccountUIState(provider = upstreamAccountProvider) {
@@ -462,8 +464,8 @@ function bindUpstreamAccountUI() {
 // Both provider pages use the same manager, including guarded writes and reauthentication.
 // Invalidate every pending read/write before moving it to another provider's page.
 function selectUpstreamAccountProvider(section) {
-  if (!["upstream-accounts", "antigravity-accounts"].includes(section)) return false;
-  const provider = section === "antigravity-accounts" ? "antigravity" : "codex";
+  if (!["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) return false;
+  const provider = section === "upstream-accounts" ? "codex" : section.replace("-accounts", "");
   const manager = byId("upstream-account-manager");
   if (!upstreamAccountHelp) {
     upstreamAccountHelp = new Map(["upstream-account-control-help", "upstream-allocation-help", "upstream-concurrency-limit-help", "upstream-quota-warning"]
@@ -495,7 +497,7 @@ function selectUpstreamAccountProvider(section) {
     syncUpstreamAccountRange();
   }
   restoreUpstreamAccountFilters();
-  const host = provider === "antigravity" ? byId("antigravity-account-manager-host") : document.querySelector('[data-section="upstream-accounts"]');
+  const host = provider === "codex" ? document.querySelector('[data-section="upstream-accounts"]') : byId(`${provider}-account-manager-host`);
   host.append(manager);
   for (const [id, nodes] of upstreamAccountHelp) byId(id).replaceChildren(...nodes.map((node) => node.cloneNode(true)));
   if (provider === "antigravity") {
@@ -503,6 +505,12 @@ function selectUpstreamAccountProvider(section) {
     byId("upstream-allocation-help").textContent = "请求轮换：按近 24 小时已结算费用逐步接近系数比例，默认系数为 1。设为 0 后停止接收新请求，已开始的请求继续执行。参考目标按当前启用账号计算；实际分配会根据当前模型、使用权限和实时可用账号重算。费用包含请求模型倍率，跨用户、跨模型汇总，不计进行中请求。";
     byId("upstream-concurrency-limit-help").textContent = "并发对话数量：每个账号默认上限为 1。同一 API Key、同一对话的重叠请求在同一账号共享一个名额，最后一个请求结束后立即释放。根据 AGY Gemini 请求中的对话标记识别；标题等无法识别对话的请求各占一个名额。不同 API Key 分别计数。所有可用账号都无法接收新对话时返回 429。降低上限不会中断已开始的请求，活跃对话仍可追加请求；停用账号或将系数设为 0 后停止接收后续请求。Gateway 自身的请求级并发仍按每个请求计数。";
     byId("upstream-quota-warning").textContent = "额度说明：Antigravity 暂不提供精确的剩余额度百分比或额度重置时间，当前不支持即时额度查询。本地请求、Token、费用统计及限流冷却状态仍可查看；限流冷却结束后自动重试，若上游仍限流则再次冷却。";
+  }
+  if (provider === "anthropic") {
+    byId("upstream-account-control-help").textContent = "手动禁用后停止接收新请求，已开始的请求继续执行。Claude 限流后按上游窗口进入冷却并自动恢复；重新启用不会跳过冷却或修复凭据。";
+    byId("upstream-allocation-help").textContent = "按近 24 小时已结算费用逐步接近权重比例。设为 0 后停止接收新请求，已开始的请求继续执行。实际分配同时检查模型、用户授权和账号可用状态。";
+    byId("upstream-concurrency-limit-help").textContent = "同一 API Key 的同一会话及其子代理按会话亲和调度。同会话重叠请求共享账号名额；无法识别会话的请求独占名额。降低上限不会中断已开始的请求。";
+    byId("upstream-quota-warning").textContent = "显示 CPA 从 Claude 响应观测到的五小时、七天额度窗口和冷却状态，并标明观测时间。刷新状态只读取最新快照；未观测到的额度、重置时间和套餐显示未知。冷却后按上游逻辑自动恢复。";
   }
   setUpstreamAccountMessage("upstream-account-action-message");
   setUpstreamAccountMessage("upstream-account-refresh-message");
@@ -540,7 +548,7 @@ function upstreamAccountStatusBadges(account) {
   const final = upstreamFinalStatus(account);
   const finalBadge = upstreamStatusBadge("最终分流", final, upstreamFinalStatusLabels, "upstream-account-status");
   return [
-    upstreamStatusBadge(upstreamAccountLanguage("CLIProxyAPI", "Antigravity"), account?.cliproxy_status, upstreamCliproxyStatusLabels, "upstream-account-cliproxy-status"),
+    upstreamStatusBadge(upstreamAccountLanguage("CLIProxyAPI", "Antigravity", "Claude"), account?.cliproxy_status, upstreamCliproxyStatusLabels, "upstream-account-cliproxy-status"),
     upstreamStatusBadge("Gateway手动", account?.gateway_manual_status, upstreamGatewayManualStatusLabels, "upstream-account-manual-status"),
     upstreamStatusBadge(upstreamAccountLanguage("Gateway额度", "限流状态"), account?.gateway_quota_status, upstreamQuotaStatusLabels(), "upstream-account-quota-status"),
     finalBadge,
@@ -1329,7 +1337,7 @@ function resetOverview() {
   for (const id of ["overview-cash", "metric-requests", "metric-tokens", "metric-errors", "metric-global-tokens", "metric-global-cost"]) {
     byId(id).textContent = "—";
   }
-  for (const id of ["overview-subscriptions", "overview-recent-requests", "overview-codex-accounts", "overview-antigravity-accounts", "global-overview", "alert-summary"]) {
+  for (const id of ["overview-subscriptions", "overview-recent-requests", "overview-codex-accounts", "overview-antigravity-accounts", "overview-anthropic-accounts", "global-overview", "alert-summary"]) {
     byId(id).replaceChildren();
     byId(id).setAttribute("aria-busy", "false");
   }
@@ -1379,12 +1387,12 @@ function renderOverviewUsage(result) {
 }
 
 function renderOverviewAccounts(provider, result) {
-  const name = provider === "codex" ? "Codex" : "Antigravity";
+  const name = {codex: "Codex", antigravity: "Antigravity", anthropic: "Claude"}[provider];
   if (!Array.isArray(result.accounts)) throw new Error("账号快照数据不可用");
   const accounts = result.accounts;
   const counts = {available: 0, unavailable: 0, unknown: 0};
   for (const account of accounts) counts[result.sync_warning ? "unknown" : upstreamFinalStatus(account)]++;
-  const link = element("a", {className: "subtle-link", text: name, attributes: {href: provider === "codex" ? "#upstream-accounts" : "#antigravity-accounts"}});
+  const link = element("a", {className: "subtle-link", text: name, attributes: {href: provider === "codex" ? "#upstream-accounts" : `#${provider}-accounts`}});
   byId(`overview-${provider}-accounts`).replaceChildren(
     element("div", {className: "overview-provider-heading"}, link, element("small", {text: overviewUpdated()})),
     result.sync_warning ? element("p", {className: "overview-snapshot-error", text: "同步失败，账号可用情况未知；请进入上游账号刷新。"}) :
@@ -1459,11 +1467,11 @@ async function loadOverview() {
       byId("overview-global-updated").textContent = "全员本月数据不可用";
       byId("global-overview").replaceChildren(emptyState(friendlyError(error)));
     }));
-    for (const [provider, path] of [["codex", "/admin/upstream-accounts"], ["antigravity", "/admin/antigravity-accounts"]]) {
-      const name = provider === "codex" ? "Codex" : "Antigravity";
+    for (const [provider, path] of [["codex", "/admin/upstream-accounts"], ["antigravity", "/admin/antigravity-accounts"], ["anthropic", "/admin/anthropic-accounts"]]) {
+      const name = {codex: "Codex", antigravity: "Antigravity", anthropic: "Claude"}[provider];
       byId(`overview-${provider}-accounts`).textContent = `正在刷新 ${name}…`;
       tasks.push(snapshot(provider, path, `overview-${provider}-accounts`, (result) => renderOverviewAccounts(provider, result), (error) => {
-        byId(`overview-${provider}-accounts`).replaceChildren(element("strong", {text: name}), element("p", {className: "overview-snapshot-error", text: `加载失败：${friendlyError(error)}`}), element("a", {className: "subtle-link", text: "查看账号", attributes: {href: provider === "codex" ? "#upstream-accounts" : "#antigravity-accounts"}}));
+        byId(`overview-${provider}-accounts`).replaceChildren(element("strong", {text: name}), element("p", {className: "overview-snapshot-error", text: `加载失败：${friendlyError(error)}`}), element("a", {className: "subtle-link", text: "查看账号", attributes: {href: provider === "codex" ? "#upstream-accounts" : `#${provider}-accounts`}}));
       }));
     }
     tasks.push(snapshot("alerts", "/admin/alerts?status=open", "alert-summary", renderOverviewAlerts, (error) => {
@@ -1936,6 +1944,7 @@ function renderGuide() {
   byId("guide-base-url").textContent = location.origin;
   byId("guide-codex-configure-code").textContent = clientSetupCommand("codex");
   byId("guide-agy-configure-code").textContent = clientSetupCommand("agy");
+  byId("guide-claude-configure-code").textContent = clientSetupCommand("claude");
 
   if (!state) return;
   const activeDevices = state.devices.filter((item) => item.status === "active").length;
@@ -3023,7 +3032,7 @@ function renderBillingLedger(detail) {
             const details = element("details", {className: "model-price-ledger-details"},
               element("summary", {text: "基础价格快照 · USD / 百万 tokens"}));
             for (const item of modelPriceRows(effective)) {
-              const values = modelPriceFields.map(([field, label]) => field === "cache_write_usd_per_million" && effective.cache_write_mode !== "separate"
+              const values = priceFields(effective).map(([field, label]) => field === "cache_write_usd_per_million" && effective.cache_write_mode !== "separate"
                 ? "缓存写入包含在输入" : `${label} ${item.value[field]}`);
               details.append(element("small", {text: `${item.tier} / ${item.context} · ${values.join(" · ")}`}));
             }
@@ -3039,7 +3048,7 @@ function renderBillingLedger(detail) {
       if (model) request.append(element("small", {text: String(model)}));
       if (requestID) request.append(element("small", {text: `请求倍率：${displayModelMultiplier(field(entry, "pricing_multiplier") || "1")}`}));
       const tokenParts = [];
-      for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存读取"], ["cache_write_tokens", "缓存写入"], ["output_tokens", "输出"]]) {
+      for (const [name, label] of [["input_tokens", "输入"], ["cached_input_tokens", "缓存读取"], ["cache_write_tokens", "缓存写入"], ["cache_write_5m_tokens", "缓存写入 5 分钟"], ["cache_write_1h_tokens", "缓存写入 1 小时"], ["output_tokens", "输出"]]) {
         const value = field(entry, name);
         if (value != null) tokenParts.push(`${label} ${String(value)}`);
       }
@@ -3050,7 +3059,7 @@ function renderBillingLedger(detail) {
         if (value) pricingParts.push(`${label} ${String(value)}`);
       }
       const fallback = field(entry, "pricing_fallback_reason");
-      if (fallback) pricingParts.push(`兜底 ${String(fallback)}`);
+      if (fallback) pricingParts.push(`兜底 ${fallback === "missing_cache_write_ttl" ? "缓存 TTL 分项缺失，按快照较高写入价结算" : String(fallback)}`);
       if (pricingParts.length) request.append(element("small", {text: pricingParts.join(" · ")}));
 
       const label = billingTypeLabel(type);
@@ -3426,12 +3435,12 @@ async function loadUserUpstreamAccess() {
     const result = await api(`/admin/users/${encodeURIComponent(userID)}/upstream-access`, undefined, current);
     if (!current()) return;
     const providers = result.providers;
-    if (result.user_id !== userID || !Array.isArray(providers) || providers.length !== 2 ||
-        !["codex", "antigravity"].every((provider) => providers.filter((row) => row.provider === provider).length === 1) ||
+    if (result.user_id !== userID || !Array.isArray(providers) || providers.length !== 3 ||
+        !["codex", "antigravity", "anthropic"].every((provider) => providers.filter((row) => row.provider === provider).length === 1) ||
         providers.some((row) => !["all", "selected"].includes(row.mode) || !Array.isArray(row.account_ids) || !Array.isArray(row.accounts))) {
       throw new Error("账号权限响应格式无效，请刷新重试。");
     }
-    userUpstreamProviders = ["codex", "antigravity"].map((provider) => providers.find((row) => row.provider === provider));
+    userUpstreamProviders = ["codex", "antigravity", "anthropic"].map((provider) => providers.find((row) => row.provider === provider));
     for (const row of userUpstreamProviders) {
       const draft = userUpstreamDrafts.get(row.provider);
       if (!draft?.dirty) userUpstreamDrafts.set(row.provider, {
@@ -3473,7 +3482,7 @@ function updateUserUpstreamCard(form, draft) {
 function renderUserUpstreamCards() {
   byId("user-upstream-cards").replaceChildren(...userUpstreamProviders.map((row) => {
     const draft = userUpstreamDrafts.get(row.provider);
-    const name = row.provider === "codex" ? "Codex" : "Antigravity";
+    const name = {codex: "Codex", antigravity: "Antigravity", anthropic: "Claude"}[row.provider];
     const mode = element("select", {attributes: {name: "mode", "aria-label": `${name} 账号范围`}},
       element("option", {text: "全部账号（默认）", attributes: {value: "all"}}),
       element("option", {text: "仅指定账号", attributes: {value: "selected"}}));
@@ -4027,6 +4036,16 @@ const modelPriceFields = [
   ["input_usd_per_million", "输入"], ["cached_input_usd_per_million", "缓存读取"],
   ["cache_write_usd_per_million", "缓存写入"], ["output_usd_per_million", "输出"],
 ];
+const modelPriceTTLFields = [
+  ["cache_write_5m_usd_per_million", "缓存写入 · 5 分钟"],
+  ["cache_write_1h_usd_per_million", "缓存写入 · 1 小时"],
+];
+function priceFields(price) {
+  return price?.cache_write_mode === "separate_by_ttl"
+    ? modelPriceFields.flatMap(field => field[0] === "cache_write_usd_per_million" ? modelPriceTTLFields : [field])
+    : modelPriceFields;
+}
+
 
 function modelPriceMessage(message = "", kind = "error") {
   const node = byId("model-prices-message");
@@ -4089,7 +4108,7 @@ function renderModelPriceMatrix(row, draft) {
     const configuredRow = configured.find((value) => value.tier === item.tier && value.context === item.context)?.value;
     const tr = element("tr", {}, element("th", {attributes: {scope: "row"}},
       element("strong", {text: `${tierLabel} · ${item.tier}`}), element("small", {text: contextLabel})));
-    for (const [field, label] of modelPriceFields) {
+    for (const [field, label] of priceFields(price)) {
       const cell = element("td", {dataset: {label}});
       if (field === "cache_write_usd_per_million" && price.cache_write_mode !== "separate") {
         cell.append(element("span", {className: "model-price-included", text: "包含在输入单价中"}));
@@ -4111,7 +4130,7 @@ function renderModelPriceMatrix(row, draft) {
   }
   return element("table", {className: "model-price-matrix"},
     element("caption", {text: "基础单价 · USD / 百万 tokens"}),
-    element("thead", {}, element("tr", {}, ...["服务层 / 上下文", ...modelPriceFields.map(([, label]) => label)]
+    element("thead", {}, element("tr", {}, ...["服务层 / 上下文", ...priceFields(price).map(([, label]) => label)]
       .map((text) => element("th", {text, attributes: {scope: "col"}})))), body);
 }
 
@@ -4133,7 +4152,7 @@ function renderModelPrices() {
         element("div", {}, element("h3", {text: row.model}), element("small", {text: row.updated_at ? `更新于 ${formatDateTime(row.updated_at)}` : "尚无管理员修改"})),
         element("span", {className: `badge${row.conflict ? " model-price-conflict-badge" : ""}`, text: source})),
       element("p", {className: "model-price-meta", text: price.service_tiers
-        ? `长上下文阈值：${formatInteger(price.long_context_threshold_tokens)} tokens（超过时适用） · 最大输入：${formatInteger(price.max_input_tokens)} tokens · 缓存写入：${price.cache_write_mode === "separate" ? "独立计费" : "包含在输入"}`
+        ? `长上下文阈值：${formatInteger(price.long_context_threshold_tokens)} tokens（超过时适用） · 最大输入：${formatInteger(price.max_input_tokens)} tokens · 缓存写入：${price.cache_write_mode === "separate_by_ttl" ? "按 5 分钟 / 1 小时独立计费" : price.cache_write_mode === "separate" ? "独立计费" : "包含在输入"}`
         : "旧版三价配置 · 未设置上下文阈值及最大输入 · 缓存写入包含在输入"}),
       element("p", {className: "model-price-meta", text: `当前倍率：${displayModelMultiplier(row.multiplier)} × · 最终费用继续按现有倍率计算`}));
     if (row.conflict) card.append(element("p", {className: "callout model-price-conflict", attributes: {role: "alert"},
@@ -4236,7 +4255,7 @@ async function saveModelPrice(model, form, action) {
   const payload = {action, reason, version: draft.version, structure_id: draft.structureID};
   if (action === "save") {
     payload.price = JSON.parse(JSON.stringify(draft.price));
-    for (const item of modelPriceRows(payload.price)) for (const [field] of modelPriceFields) {
+    for (const item of modelPriceRows(payload.price)) for (const [field] of priceFields(payload.price)) {
       if (field === "cache_write_usd_per_million" && payload.price.cache_write_mode !== "separate") continue;
       const value = String(item.value[field] ?? "").trim();
       if (!/^(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{1,12})?$/.test(value)) {
@@ -5399,6 +5418,9 @@ function renderPersonalUsage(result, updateOverview) {
   byId("usage-charged-usd").textContent = formatMoney(summary.charged_usd, "USD");
   byId("metric-cache").textContent = formatPercent(summary.cache_rate);
   byId("metric-cache-write").textContent = formatInteger(summary.cache_write_tokens);
+  const cacheDetail = byId("metric-cache-write-detail");
+  if (cacheDetail) cacheDetail.textContent = `已观测分项：5 分钟 ${formatInteger(summary.cache_write_5m_tokens)} · 1 小时 ${formatInteger(summary.cache_write_1h_tokens)}；缺失分项不推算`;
+
   byId("metric-ttft").textContent = summary.p95_ttft_ms == null ? "—" : `${formatInteger(summary.p95_ttft_ms)} ms`;
   byId("metric-duration").textContent = summary.p95_duration_ms == null ? "—" : `${formatInteger(summary.p95_duration_ms)} ms`;
   renderCleanedHistory(result.cleaned_before);
@@ -5436,7 +5458,10 @@ function renderPersonalUsage(result, updateOverview) {
       ),
       element("td", {}, statusBadge(requestState)),
       element("td", {text: field(request, "http_status", "HTTPStatus") ?? "—"}),
-      element("td", {text: formatInteger(inputTokens + outputTokens)}),
+      element("td", {}, element("span", {text: formatInteger(inputTokens + outputTokens)}),
+        ...(String(field(request, "model", "Model") || "").startsWith("claude-") ? [element("small", {text: field(request, "cache_write_ttl_present", "CacheWriteTTLPresent") === true
+          ? `缓存写入：5 分钟 ${formatInteger(field(request, "cache_write_5m_tokens", "CacheWrite5mTokens"))} · 1 小时 ${formatInteger(field(request, "cache_write_1h_tokens", "CacheWrite1hTokens"))}`
+          : "缓存写入 TTL 分项：未知"})] : [])),
     );
     if (state?.user?.role === "owner") tr.append(requestUpstreamCell(request));
     return responsiveRecordRow(tr, [0, 4, 5], ["时间", "设备", "Key", "项目", "模型", "状态", "HTTP", "Token", "上游账号"]);
@@ -5557,7 +5582,7 @@ function renderGlobalUsage(result) {
   const breakdownNode = byId("pricing-breakdown");
   const formatDimension = (title, values) => {
     const rows = Array.isArray(values) ? values : [];
-    return element("p", {text: `${title}：${rows.length ? rows.map((item) => `${item.value} ${formatInteger(item.requests)} 次 / 写入 ${formatInteger(item.cache_write_tokens)} Token / ${formatMoney(item.actual_cost_usd, "USD")}`).join("；") : "无"}`});
+    return element("p", {text: `${title}：${rows.length ? rows.map((item) => `${item.value} ${formatInteger(item.requests)} 次 / 写入 ${formatInteger(item.cache_write_tokens)} Token（已观测 5 分钟 ${formatInteger(item.cache_write_5m_tokens)} / 1 小时 ${formatInteger(item.cache_write_1h_tokens)}） / ${formatMoney(item.actual_cost_usd, "USD")}`).join("；") : "无"}`});
   };
   breakdownNode.replaceChildren(
     formatDimension("服务层", breakdown.service_tiers),
@@ -6111,6 +6136,7 @@ function upstreamAccountStats(account) {
     upstreamAccountStat("输入 Token", formatInteger(account?.input_tokens)),
     upstreamAccountStat("缓存输入", formatInteger(account?.cached_input_tokens), "输入 Token 的子集"),
     upstreamAccountStat("缓存写入", formatInteger(account?.cache_write_tokens)),
+    ...(upstreamAccountProvider === "anthropic" ? [upstreamAccountStat("缓存写入 · 5 分钟", account?.cache_write_5m_tokens == null ? "未知" : formatInteger(account.cache_write_5m_tokens)), upstreamAccountStat("缓存写入 · 1 小时", account?.cache_write_1h_tokens == null ? "未知" : formatInteger(account.cache_write_1h_tokens))] : []),
     upstreamAccountStat("输出 Token", formatInteger(account?.output_tokens)),
     upstreamAccountStat("推理 Token", formatInteger(account?.reasoning_tokens), "输出 Token 的子集"),
     upstreamAccountStat("计费成本", formatMoney(account?.equivalent_cost_usd, "USD"), "已结算 · 包含模型倍率"),
@@ -6202,6 +6228,7 @@ function scheduleUpstreamQuotaStale(accountID, container, receivedAt) {
 }
 
 function renderUpstreamQuota(account, container, result, receivedAt) {
+  if (upstreamAccountProvider === "anthropic") { renderAnthropicQuota(container, result); return; }
   const freshness = statusBadge("ok");
   freshness.classList.add("upstream-quota-freshness");
   freshness.textContent = "刚刚查询";
@@ -6220,6 +6247,27 @@ function renderUpstreamQuota(account, container, result, receivedAt) {
   scheduleUpstreamQuotaStale(account.id, container, receivedAt);
 }
 
+function renderAnthropicQuota(container, result) {
+  const windows = Array.isArray(result?.windows) ? result.windows : [];
+  container.dataset.state = "observed";
+  container.setAttribute("aria-busy", "false");
+  container.replaceChildren(
+    element("p", {text: `观测时间：${formatDateTime(result?.observed_at, "未知")} · 套餐：未知`}),
+    element("p", {text: `冷却至：${formatDateTime(result?.cooldown_until, "无观测")}`}),
+    element("div", {className: "upstream-quota-windows"}, ...["five_hour", "seven_day"].map(name => {
+      const value = windows.find(item => item.window === name);
+      const used = value?.used_percent;
+      return element("article", {className: "upstream-quota-window"},
+        element("strong", {text: name === "five_hour" ? "五小时窗口" : "七天窗口"}),
+        element("span", {text: Number.isFinite(used) && used >= 0 && used <= 100 ? `已用 ${used}% · 剩余 ${100 - used}%` : "额度：未知"}),
+        element("small", {text: `重置：${formatDateTime(value?.reset_at, "未知")}`}),
+        element("small", {text: `状态：${({allowed: "可用", allowed_warning: "接近限额", rejected: "达到限额", unknown: "未知"})[value?.status] || "未知"}`}),
+      );
+    })),
+    element("p", {className: "muted", text: "仅展示 CPA 最新观测快照；没有新的上游响应时观测时间不会改变。"}),
+  );
+}
+
 async function loadUpstreamQuota(account, quotaBlock, container) {
   if (upstreamAccountProvider === "antigravity") return;
   const provider = upstreamAccountProvider;
@@ -6231,9 +6279,18 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
   clearUpstreamQuotaTimer(account.id);
   container.dataset.state = "loading";
   container.setAttribute("aria-busy", "true");
-  container.replaceChildren(element("p", {className: "upstream-quota-state", text: "正在实时查询官方额度…"}));
+  container.replaceChildren(element("p", {className: "upstream-quota-state", text: provider === "anthropic" ? "正在读取 CPA 最新状态…" : "正在实时查询官方额度…"}));
   try {
-    const response = await api(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`, {method: "POST", body: upstreamQuotaRequestBody}, current);
+    const request = () => api(provider === "anthropic" ? `/admin/cpa/api/anthropic/accounts/${encodeURIComponent(account.id)}/quota` : upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`), {method: "POST", body: provider === "anthropic" ? "{}" : upstreamQuotaRequestBody}, current);
+    const response = provider === "anthropic" ? await sensitiveAction(request, current) : await request();
+    if (provider === "anthropic") {
+      if (!current()) return;
+      if (!response || !Array.isArray(response.windows)) throw new Error("Claude 状态快照格式异常。");
+      upstreamAccountRowState(account.id, provider).quota = {result: response, receivedAt: new Date()};
+      renderAnthropicQuota(container, response);
+      announce("Claude 状态快照已刷新。");
+      return;
+    }
     const receivedAt = new Date();
     if (response?.id !== 6 || !response.result || typeof response.result !== "object" || Array.isArray(response.result)) {
       throw new Error("官方额度响应格式异常，请稍后重试。");
@@ -6287,7 +6344,7 @@ function syncUpstreamAccountControls() {
     if (cliproxyBadge) {
       const value = upstreamCliproxyStatusLabels[account.cliproxy_status] ? account.cliproxy_status : "unknown";
       cliproxyBadge.dataset.status = value;
-      cliproxyBadge.textContent = `${upstreamAccountLanguage("CLIProxyAPI", "Antigravity")}：${upstreamCliproxyStatusLabels[value]}`;
+      cliproxyBadge.textContent = `${upstreamAccountLanguage("CLIProxyAPI", "Antigravity", "Claude")}：${upstreamCliproxyStatusLabels[value]}`;
     }
     if (manualBadge) {
       const value = upstreamGatewayManualStatusLabels[account.gateway_manual_status] ? account.gateway_manual_status : "unknown";
@@ -6797,9 +6854,9 @@ function upstreamAccountCard(account) {
     className: "upstream-quota-result",
     dataset: {state: "idle"},
     attributes: {"aria-live": "polite", "aria-busy": "false"},
-  }, element("p", {className: "upstream-quota-state", text: "尚未查询官方额度。"}));
+  }, element("p", {className: "upstream-quota-state", text: upstreamAccountProvider === "anthropic" ? "额度未知；刷新状态以读取最新观测。" : "尚未查询官方额度。"}));
   const button = element("button", {
-    type: "button", className: "secondary", text: "查询官方额度",
+    type: "button", className: "secondary", text: upstreamAccountProvider === "anthropic" ? "刷新状态" : "查询官方额度",
     attributes: {"aria-describedby": "upstream-quota-warning"},
   });
   if (!account.id) {
@@ -6808,7 +6865,7 @@ function upstreamAccountCard(account) {
   }
   const quotaBlock = element("section", {className: "upstream-quota tool-block"},
     element("div", {className: "upstream-quota-heading"},
-      element("div", {}, element("h4", {text: "官方即时额度"}), element("small", {text: "每次点击都会实时查询上游"})),
+      element("div", {}, element("h4", {text: upstreamAccountProvider === "anthropic" ? "Claude 观测额度" : "官方即时额度"}), element("small", {text: upstreamAccountProvider === "anthropic" ? "读取 CPA 最新快照" : "每次点击都会实时查询上游"})),
       button,
     ),
     quotaResult,
@@ -6902,7 +6959,7 @@ function renderUpstreamAccounts(result, query) {
   const container = byId("upstream-account-list");
   container.setAttribute("aria-busy", "false");
   if (cards.length) container.replaceChildren(...cards);
-  else container.replaceChildren(emptyState(upstreamAccountLanguage("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。", "尚未同步任何 Antigravity 账号。请展开添加账号说明，通过 SSH 登录脚本添加后刷新。")));
+  else container.replaceChildren(emptyState(upstreamAccountLanguage("尚未同步任何上游账号。请通过 SSH 设备登录脚本添加账号。", "尚未同步任何 Antigravity 账号。请展开添加账号说明，通过 SSH 登录脚本添加后刷新。", "尚未添加 Claude 账号。请在 CPA 账号管理中授权或导入，再刷新列表。")));
   const unattributed = byId("upstream-account-unattributed");
   if (unattributed) {
     unattributed.replaceChildren(...(result?.unattributed && typeof result.unattributed === "object" ? [unattributedAccountCard(result.unattributed)] : []));
@@ -6911,10 +6968,10 @@ function renderUpstreamAccounts(result, query) {
   for (const card of cards) {
     const account = accounts.find((item) => item.id === card.dataset.accountId);
     const quota = upstreamAccountRowState(account.id).quota;
-    if (upstreamAccountProvider === "codex" && quota) renderUpstreamQuota(account, card.querySelector(".upstream-quota-result"), quota.result, quota.receivedAt);
+    if (upstreamAccountProvider !== "antigravity" && quota) renderUpstreamQuota(account, card.querySelector(".upstream-quota-result"), quota.result, quota.receivedAt);
   }
   const warning = result?.sync_warning ? " · 上游状态同步失败，当前展示最后已知的本地记录" : "";
-  byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个${upstreamAccountLanguage("上游", "Antigravity")}账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
+  byId("upstream-account-period").textContent = `${formatInteger(accounts.length)} 个${upstreamAccountLanguage("上游", "Antigravity", "Claude")}账号 · 本地统计区间：${upstreamAccountPeriod(result, query)}${warning}`;
   const allocationWindow = result?.allocation_from && result?.allocation_until ?
     `近 24 小时：${formatDateTime(result.allocation_from)} 至 ${formatDateTime(result.allocation_until)} · ` : "";
   byId("upstream-allocation-period").textContent = `${allocationWindow}独立于历史统计筛选；费用占比以所有已归因账号费用为分母。`;
@@ -7889,7 +7946,7 @@ function routeFromHash(focusContent = true) {
   if (requested !== section) history.replaceState(null, "", `#${section}`);
   all(".view").forEach((view) => view.classList.toggle("hidden", view.dataset.section !== section));
   all("#sidebar [data-view]").forEach((link) => {
-    const active = link.dataset.view === section || (link.dataset.view === "upstream-accounts" && section === "antigravity-accounts");
+    const active = link.dataset.view === section || (link.dataset.view === "upstream-accounts" && ["antigravity-accounts", "anthropic-accounts"].includes(section));
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
@@ -7900,7 +7957,7 @@ function routeFromHash(focusContent = true) {
     byId("content").focus({preventScroll: true});
   }
   const providerChanged = selectUpstreamAccountProvider(section);
-  if (providerChanged || (["upstream-accounts", "antigravity-accounts"].includes(section) && !upstreamAccounts.length && !upstreamAccountListLoading)) {
+  if (providerChanged || (["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section) && !upstreamAccounts.length && !upstreamAccountListLoading)) {
     loadUpstreamAccounts(upstreamAccountQueryFromForm()).catch((error) => {
       setLocalMessage(byId("upstream-account-filter"), friendlyError(error));
     });

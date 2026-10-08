@@ -104,6 +104,9 @@ type Usage struct {
 	CachedTokens            int64
 	CacheWriteTokens        int64
 	CacheWriteTokensPresent bool
+	CacheWrite5mTokens      int64
+	CacheWrite1hTokens      int64
+	CacheWriteTTLPresent    bool
 	OutputTokens            int64
 	ReasoningTokens         int64
 }
@@ -153,6 +156,7 @@ type Client struct {
 	diagnosticHTTP *http.Client
 	antigravity    bool
 	cpaNative      bool
+	anthropic      bool
 }
 
 type ForwardOptions struct {

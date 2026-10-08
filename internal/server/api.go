@@ -44,6 +44,14 @@ func (s *Server) proxyCompact(w http.ResponseWriter, r *http.Request) {
 	s.proxyCodex(w, r, "/v1/responses/compact", "responses.compact", "")
 }
 
+func (s *Server) proxyMessages(w http.ResponseWriter, r *http.Request) {
+	s.proxyCodex(w, r, "/v1/messages", "messages", "")
+}
+
+func (s *Server) proxyMessagesCountTokens(w http.ResponseWriter, r *http.Request) {
+	s.proxyCodex(w, r, "/v1/messages/count_tokens", "messages.count_tokens", "")
+}
+
 // preparedAPIRequest carries protocol-specific parsing into the shared admission,
 // forwarding and settlement lifecycle. All generation protocols use this path.
 type preparedAPIRequest struct {
@@ -53,10 +61,18 @@ type preparedAPIRequest struct {
 	serviceTier  string
 	body         *countingBody
 	gemini       bool
+	anthropic    bool
+	countTokens  bool
 }
 
 func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath, endpoint, fixedModel string) {
 	prepared := preparedAPIRequest{upstreamPath: upstreamPath, endpoint: endpoint, model: fixedModel}
+	prepared.anthropic = upstreamPath == "/v1/messages" || upstreamPath == "/v1/messages/count_tokens"
+	prepared.countTokens = upstreamPath == "/v1/messages/count_tokens"
+	if prepared.anthropic && !gatewayproxy.ValidAnthropicQuery(r.URL.RawQuery) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_query", "仅支持 beta=true 查询参数")
+		return
+	}
 	if r.Method == http.MethodPost {
 		routing, parsedBody, err := s.prepareModelBody(w, r, s.config.BodyLimit)
 		if err != nil {
@@ -75,6 +91,14 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			return
 		}
 		prepared.model, prepared.serviceTier, prepared.body = routing.Model, routing.ServiceTier, parsedBody
+		if prepared.anthropic && (prepared.serviceTier == "auto" || prepared.serviceTier == "standard_only") {
+			prepared.serviceTier = "standard"
+		}
+		if prepared.anthropic != strings.HasPrefix(routing.Model, "claude-") {
+			_ = parsedBody.Close()
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Claude 模型必须通过 Messages 接口调用")
+			return
+		}
 		if s.config.UsesCPAAntigravity() && config.IsAntigravityModel(routing.Model) {
 			data, readErr := io.ReadAll(io.LimitReader(parsedBody, (1<<20)+1))
 			_ = parsedBody.Close()
@@ -163,6 +187,8 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			billingMode = store.BillingModeOpenAIAPIEquivalent
 			if upstreams.IsAntigravityModel(model) {
 				billingMode = store.BillingModeGeminiAPIEquivalent
+			} else if prepared.anthropic {
+				billingMode = store.BillingModeAnthropicAPIEquivalent
 			} else if model == "codex-auto-review" {
 				billingMode = store.BillingModeInternalZero
 			}
@@ -189,7 +215,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		requestBytes = r.ContentLength
 	}
 	var billingReservation *store.BillingReservationParams
-	if r.Method == http.MethodPost {
+	if r.Method == http.MethodPost && !prepared.countTokens {
 		billingReservation = &store.BillingReservationParams{
 			RequestID: requestID, UserID: key.UserID, APIKeyID: key.ID, Model: model,
 			InputUSDPerMillion:       modelPricingInput,
@@ -262,6 +288,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if upstreams.IsAntigravityModel(model) {
 		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
 	}
+	if prepared.anthropic {
+		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
+	}
 	forwardingStarted := false
 	// Upstream account attribution arrives with the response headers, which can
 	// be substantially earlier than the terminal usage write for a streaming
@@ -270,7 +299,13 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	// single-account final/last-attempt contract.
 	defer s.clearActiveAttribution(requestID)
 	defer s.clearActiveConversation(requestID)
+	var anthropicAccountIDs map[string]struct{}
 	onUpstreamAccount := func(accountID string) {
+		if prepared.anthropic {
+			if _, ok := anthropicAccountIDs[accountID]; !ok {
+				return
+			}
+		}
 		s.rememberActiveAttribution(requestID, accountID)
 	}
 	onConversation := func(conversationHash string) {
@@ -290,6 +325,21 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	forwardingStarted = true
 	var result gatewayproxy.Result
 	var failure *gatewayproxy.Failure
+	if prepared.anthropic {
+		if err := s.syncAnthropicAccounts(r.Context()); err != nil {
+			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "upstream_unavailable", Message: "Claude 账号暂不可用"}
+		} else {
+			accounts, err := usageStore.ListUpstreamAccounts(r.Context())
+			if err != nil {
+				failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "upstream_unavailable", Message: "Claude 账号暂不可用"}
+			} else {
+				anthropicAccountIDs = make(map[string]struct{}, len(accounts))
+				for _, account := range accounts {
+					anthropicAccountIDs[account.ID] = struct{}{}
+				}
+			}
+		}
+	}
 	if upstreams.IsAntigravityModel(model) && s.antigravity != nil {
 		if err := s.syncAntigravityAccounts(r.Context()); err != nil {
 			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_unavailable", Message: "Antigravity 账号暂不可用"}
@@ -298,6 +348,29 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if failure != nil {
 		// Settle the reserved request below using the same failure path as forwarding.
 	} else if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
+		// Claude discovery uses the same CPA catalog and per-user eligibility.
+		// A failed metadata sync hides Claude until its scope can be verified.
+		if s.anthropic != nil {
+			catalogCtx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			if s.upstreamAccountSyncMu.TryLock() {
+				err := s.syncUpstreamAccountsLocked(catalogCtx, store.UpstreamProviderAnthropic)
+				s.upstreamAccountSyncMu.Unlock()
+				if err != nil {
+					for name := range allowedModels {
+						if strings.HasPrefix(name, "claude-") {
+							delete(allowedModels, name)
+						}
+					}
+				}
+			} else {
+				for name := range allowedModels {
+					if strings.HasPrefix(name, "claude-") {
+						delete(allowedModels, name)
+					}
+				}
+			}
+			cancel()
+		}
 		// Account-scoped catalogs need registered account metadata before the
 		// bridge's eligibility callback. An unavailable bridge only hides Gemini.
 		if s.antigravity != nil && len(s.config.AntigravityModelRoutes) > 0 {
@@ -313,6 +386,11 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			UserID:            key.UserID,
 			OnUpstreamAccount: onUpstreamAccount,
 			OnConversation:    onConversation,
+		})
+	} else if prepared.anthropic {
+		result, failure = s.anthropic.ForwardMessages(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
+			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID,
+			OnUpstreamAccount: onUpstreamAccount, OnConversation: onConversation,
 		})
 	} else if prepared.gemini {
 		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
@@ -372,6 +450,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		InputTokens: result.Usage.InputTokens, CachedInputTokens: result.Usage.CachedTokens,
 		CacheWriteTokens:        result.Usage.CacheWriteTokens,
 		CacheWriteTokensPresent: result.Usage.CacheWriteTokensPresent,
+		CacheWrite5mTokens:      result.Usage.CacheWrite5mTokens,
+		CacheWrite1hTokens:      result.Usage.CacheWrite1hTokens,
+		CacheWriteTTLPresent:    result.Usage.CacheWriteTTLPresent,
 		OutputTokens:            result.Usage.OutputTokens, ReasoningTokens: result.Usage.ReasoningTokens,
 		RequestBytes: actualRequestBytes, ResponseBytes: result.BytesOut, UpstreamRequestID: result.UpstreamRequestID,
 		UpstreamAccountID: result.UpstreamAccountID,

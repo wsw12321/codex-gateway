@@ -337,3 +337,56 @@ test('real installed Codex validates TOML and persists a synthetic key in isolat
     assert.equal(read(authFile), auth);
   }
 });
+
+test('Claude user settings merge preserves unrelated values and backs up credentials privately', t => {
+  const context = workspace(t), model = 'claude-sonnet-4-5-20250929';
+  const filename = path.join(context.home, '.claude', 'settings.json');
+  const original = JSON.stringify({permissions: {allow: ['Read']}, env: {CUSTOM_SETTING: 'keep'}, model: 'old-alias'});
+  put(filename, original);
+  const result = configureClient('claude', origin, key, {...context, model, models: [model]});
+  const settings = JSON.parse(read(filename));
+  assert.deepEqual(settings.permissions, {allow: ['Read']});
+  assert.deepEqual(settings.env, {CUSTOM_SETTING: 'keep', ANTHROPIC_BASE_URL: origin, ANTHROPIC_AUTH_TOKEN: key});
+  assert.equal(settings.model, model);
+  assert.equal(result.length, 1);
+  assert.equal(read(result[0]), original);
+  assert.equal(fs.statSync(result[0]).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
+  assert.deepEqual(configureClient('claude', origin, key, {...context, model, models: [model]}), []);
+});
+
+test('Claude rejects conflicting auth, providers, malformed settings and unlisted model IDs before writes', t => {
+  const model = 'claude-sonnet-4-5-20250929';
+  for (const setting of [{apiKeyHelper: 'read-key'}, {env: {ANTHROPIC_API_KEY: 'other-secret'}}, {env: {CLAUDE_CODE_OAUTH_TOKEN: 'oauth-secret'}}, {env: {CLAUDE_CODE_USE_BEDROCK: '1'}}, {env: {ANTHROPIC_DEFAULT_HAIKU_MODEL: 'alias'}}]) {
+    const context = workspace(t), filename = path.join(context.home, '.claude', 'settings.json'), original = JSON.stringify(setting);
+    put(filename, original);
+    assert.throws(() => configureClient('claude', origin, key, {...context, model, models: [model]}), error => /冲突/.test(error.message) && !/other-secret|oauth-secret/.test(error.message));
+    assert.equal(read(filename), original);
+    assert.equal(backups(filename).length, 0);
+  }
+  const context = workspace(t);
+  assert.throws(() => configureClient('claude', origin, key, {...context, model: 'sonnet', models: ['sonnet']}), /精确模型/);
+  assert.throws(() => configureClient('claude', origin, key, {...context, model, models: []}), /精确模型/);
+  assert.throws(() => configureClient('claude', origin, key, {...context, model, models: [model], env: {...context.env, ANTHROPIC_AUTH_TOKEN: 'other'}}), /冲突/);
+  assert.deepEqual(fs.readdirSync(context.home), []);
+  const filename = path.join(context.home, '.claude', 'settings.json');
+  for (const invalid of ['{invalid', '[]', '{"env":[]}']) {
+    put(filename, invalid);
+    assert.throws(() => configureClient('claude', origin, key, {...context, model, models: [model]}), /解析|JSON 对象/);
+    assert.equal(read(filename), invalid);
+  }
+});
+
+test('Claude catalog sends only Gateway auth, rejects redirects and excludes other providers', async () => {
+  const {claudeModels} = require('../assets/configure-client.cjs');
+  const models = await claudeModels(origin, key, async (url, options) => {
+    assert.equal(url, origin + '/v1/models');
+    assert.deepEqual(options.headers, {Authorization: 'Bearer ' + key});
+    assert.equal(options.redirect, 'error');
+    return {ok: true, json: async () => ({data: [{id: 'claude-sonnet-exact', owned_by: 'anthropic'}, {id: 'claude-opus-exact', owned_by: 'claude'}, {id: 'gpt-other'}, {id: 'claude-other-provider', owned_by: 'antigravity'}, {id: 'claude-unsafe\nvalue'}]})};
+  });
+  assert.deepEqual(models, ['claude-opus-exact', 'claude-sonnet-exact']);
+  await assert.rejects(claudeModels(origin, key, async () => {throw new Error(key);}), error => !error.message.includes(key));
+  await assert.rejects(claudeModels(origin, key, async () => ({ok: false, status: 403})), /HTTP 403/);
+  await assert.rejects(claudeModels(origin, key, async () => ({ok: true, json: async () => ({data: []})})), /没有可用/);
+});

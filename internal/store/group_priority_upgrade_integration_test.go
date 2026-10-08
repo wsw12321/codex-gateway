@@ -135,7 +135,7 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 	// Current group readers also require the period-limit metadata. Applying
 	// this independent upgrade preserves the legacy period and funding rows.
 	for _, migration := range migrations {
-		if migration.Name == "0031_group_period_limits.sql" {
+		if migration.Name == "0031_group_period_limits.sql" || migration.Name == "0033_anthropic_billing.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply group period metadata: %v", err)
 			}

@@ -17,6 +17,7 @@ const users = [
   initialState.user,
 ];
 const providers = [
+  {provider: "anthropic", mode: "all", account_ids: [], accounts: [{id: "h1", display_name: "Claude 团队账号", email_masked: "cl***@example.test", status: "available"}]},
   {provider: "codex", mode: "all", account_ids: [], accounts: [
     {id: "c1", display_name: "团队主账号", email_masked: "al***@example.test", status: "available"},
     {id: "c2", display_name: "团队备用账号", email_masked: "be***@example.test", status: "unavailable"},
@@ -48,7 +49,7 @@ async function main() {
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/users") return send({users});
       if (url.pathname === "/auth/password/reauth") { events.push("verified"); return send({ok: true}); }
-      const match = url.pathname.match(/^\/admin\/users\/([^/]+)\/upstream-access(?:\/(codex|antigravity))?$/);
+      const match = url.pathname.match(/^\/admin\/users\/([^/]+)\/upstream-access(?:\/(codex|antigravity|anthropic))?$/);
       if (match && request.method() === "GET") return send({user_id: match[1], providers});
       if (match && request.method() === "PUT") {
         const body = request.postDataJSON(), provider = providers.find((row) => row.provider === match[2]);
@@ -66,7 +67,7 @@ async function main() {
     await picker.fill("zs");
     assert.equal(await page.locator('#user-upstream-user-search-results [role="option"]').count(), 1);
     await page.locator('#user-upstream-user-search-results [role="option"]').click();
-    await page.waitForFunction(() => !userUpstreamLoading && userUpstreamProviders.length === 2);
+    await page.waitForFunction(() => !userUpstreamLoading && userUpstreamProviders.length === 3);
     const card = (provider) => page.locator(`.user-upstream-card[data-provider="${provider}"]`);
     const codex = card("codex"), agy = card("antigravity");
     assert.match(await page.locator("#user-upstream-target").textContent(), /张三/);

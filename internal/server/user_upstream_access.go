@@ -35,7 +35,7 @@ func validUserUpstreamAccessTarget(userID string) bool {
 }
 
 func validUserUpstreamAccessProvider(provider string) bool {
-	return provider == store.UpstreamProviderCodex || provider == store.UpstreamProviderAntigravity
+	return provider == store.UpstreamProviderCodex || provider == store.UpstreamProviderAntigravity || provider == store.UpstreamProviderAnthropic
 }
 
 func (s *Server) userUpstreamAccessJSON(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func (s *Server) userUpstreamAccessJSON(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	response := userUpstreamAccessResponse{UserID: userID, Providers: make([]userUpstreamAccessProvider, 0, 2)}
-	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity} {
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
 		access, err := s.store.WithUpstreamProvider(provider).GetUserUpstreamAccess(r.Context(), userID)
 		if err != nil {
 			s.storeWriteError(w, r, "read user upstream access", err)

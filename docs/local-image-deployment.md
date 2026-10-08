@@ -25,7 +25,7 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 \
 gateway_tag=<完整Git-SHA或正式版本>
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
-  "codex-gateway-compat:v8.0.4-d33f63f8-8d605cc62e3da445-cpa" \
+  "codex-gateway-compat:v8.0.4-d33f63f8-7d5eceed9f551bf1-cpa" \
   "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'

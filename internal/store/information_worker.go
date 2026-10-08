@@ -201,10 +201,10 @@ func rebuildInformationMonthTx(ctx context.Context, tx *sql.Tx, cutoff time.Time
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO usage_monthly (
 		usage_month,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,status_class,error_code,
-		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,
+		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,
 		request_bytes,response_bytes,p95_ttft_ms,p95_duration_ms)
 		SELECT $1::date,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,status_class,error_code,
-		sum(request_count),sum(error_count),sum(input_tokens),sum(cached_input_tokens),sum(cache_write_tokens),sum(output_tokens),sum(reasoning_tokens),
+		sum(request_count),sum(error_count),sum(input_tokens),sum(cached_input_tokens),sum(cache_write_tokens),sum(cache_write_5m_tokens),sum(cache_write_1h_tokens),sum(output_tokens),sum(reasoning_tokens),
 		sum(request_bytes),sum(response_bytes),NULL,NULL
 		FROM usage_daily WHERE usage_day >= $2::date AND usage_day >= $1::date AND usage_day < ($1::date+interval '1 month')::date
 		GROUP BY user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,status_class,error_code`, month, cutoff)
@@ -247,7 +247,7 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 		COALESCE(http_status/100,0)::smallint status_class,error_code,count(*)::bigint request_count,
 		count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
 		sum(input_tokens)::bigint input_tokens,sum(cached_input_tokens)::bigint cached_input_tokens,
-		sum(cache_write_tokens)::bigint cache_write_tokens,sum(output_tokens)::bigint output_tokens,
+		sum(cache_write_tokens)::bigint cache_write_tokens,sum(cache_write_5m_tokens)::bigint cache_write_5m_tokens,sum(cache_write_1h_tokens)::bigint cache_write_1h_tokens,sum(output_tokens)::bigint output_tokens,
 		sum(reasoning_tokens)::bigint reasoning_tokens,sum(request_bytes)::bigint request_bytes,sum(response_bytes)::bigint response_bytes,
 		count(ttft_ms)::bigint ttft_count,COALESCE(sum(ttft_ms),0)::numeric ttft_sum_ms,
 		ROUND(percentile_cont(0.95) WITHIN GROUP (ORDER BY ttft_ms))::bigint p95_ttft_ms,
@@ -259,7 +259,7 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 		SELECT snapshot_id,count(*)::bigint request_count,
 		count(*) FILTER (WHERE state IN ('failed', 'cancelled') OR http_status>=400 OR error_code IS NOT NULL)::bigint error_count,
 		sum(input_tokens)::bigint input_tokens,sum(cached_input_tokens)::bigint cached_input_tokens,
-		sum(cache_write_tokens)::bigint cache_write_tokens,sum(output_tokens)::bigint output_tokens,
+		sum(cache_write_tokens)::bigint cache_write_tokens,sum(cache_write_5m_tokens)::bigint cache_write_5m_tokens,sum(cache_write_1h_tokens)::bigint cache_write_1h_tokens,sum(output_tokens)::bigint output_tokens,
 		sum(reasoning_tokens)::bigint reasoning_tokens,sum(request_bytes)::bigint request_bytes,sum(response_bytes)::bigint response_bytes,
 		count(ttft_ms)::bigint ttft_count,COALESCE(sum(ttft_ms),0)::numeric ttft_sum_ms,
 		count(duration_ms)::bigint duration_count,COALESCE(sum(duration_ms),0)::numeric duration_sum_ms,max(completed_at) completed_through
@@ -268,6 +268,7 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 		SELECT d.usage_day,d.user_id,d.device_id,d.api_key_id,d.project_id,d.upstream_account_id,d.model,d.endpoint,d.status_class,d.error_code,
 		d.request_count+COALESCE(l.request_count,0) request_count,d.error_count+COALESCE(l.error_count,0) error_count,d.input_tokens+COALESCE(l.input_tokens,0) input_tokens,
 		d.cached_input_tokens+COALESCE(l.cached_input_tokens,0) cached_input_tokens,d.cache_write_tokens+COALESCE(l.cache_write_tokens,0) cache_write_tokens,
+		d.cache_write_5m_tokens+COALESCE(l.cache_write_5m_tokens,0) cache_write_5m_tokens,d.cache_write_1h_tokens+COALESCE(l.cache_write_1h_tokens,0) cache_write_1h_tokens,
 		d.output_tokens+COALESCE(l.output_tokens,0) output_tokens,d.reasoning_tokens+COALESCE(l.reasoning_tokens,0) reasoning_tokens,
 		d.request_bytes+COALESCE(l.request_bytes,0) request_bytes,d.response_bytes+COALESCE(l.response_bytes,0) response_bytes,
 		d.ttft_count+COALESCE(l.ttft_count,0) ttft_count,d.ttft_sum_ms+COALESCE(l.ttft_sum_ms,0) ttft_sum_ms,
@@ -283,14 +284,14 @@ func persistInformationMonthDaysTx(ctx context.Context, tx *sql.Tx, cutoff time.
 		ORDER BY request_count DESC,preference DESC) selected FROM candidates
 	) INSERT INTO usage_daily (
 		usage_day,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,status_class,error_code,
-		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,request_bytes,response_bytes,
+		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,request_bytes,response_bytes,
 		ttft_count,ttft_sum_ms,p95_ttft_ms,duration_count,duration_sum_ms,p95_duration_ms,updated_at)
 		SELECT usage_day,user_id,device_id,api_key_id,project_id,upstream_account_id,model,endpoint,status_class,error_code,
-		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,output_tokens,reasoning_tokens,request_bytes,response_bytes,
+		request_count,error_count,input_tokens,cached_input_tokens,cache_write_tokens,cache_write_5m_tokens,cache_write_1h_tokens,output_tokens,reasoning_tokens,request_bytes,response_bytes,
 		ttft_count,ttft_sum_ms,p95_ttft_ms,duration_count,duration_sum_ms,p95_duration_ms,updated_at FROM retained WHERE selected=1
 		ON CONFLICT ON CONSTRAINT usage_daily_dimensions_key DO UPDATE SET
 		request_count=EXCLUDED.request_count,error_count=EXCLUDED.error_count,input_tokens=EXCLUDED.input_tokens,
-		cached_input_tokens=EXCLUDED.cached_input_tokens,cache_write_tokens=EXCLUDED.cache_write_tokens,output_tokens=EXCLUDED.output_tokens,
+		cached_input_tokens=EXCLUDED.cached_input_tokens,cache_write_tokens=EXCLUDED.cache_write_tokens,cache_write_5m_tokens=EXCLUDED.cache_write_5m_tokens,cache_write_1h_tokens=EXCLUDED.cache_write_1h_tokens,output_tokens=EXCLUDED.output_tokens,
 		reasoning_tokens=EXCLUDED.reasoning_tokens,request_bytes=EXCLUDED.request_bytes,response_bytes=EXCLUDED.response_bytes,
 		ttft_count=EXCLUDED.ttft_count,ttft_sum_ms=EXCLUDED.ttft_sum_ms,p95_ttft_ms=EXCLUDED.p95_ttft_ms,
 		duration_count=EXCLUDED.duration_count,duration_sum_ms=EXCLUDED.duration_sum_ms,p95_duration_ms=EXCLUDED.p95_duration_ms,updated_at=EXCLUDED.updated_at`,

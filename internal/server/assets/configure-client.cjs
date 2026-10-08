@@ -323,22 +323,89 @@ function configureAgy(key, origin, context) {
   return commitFiles(changes);
 }
 
+const claudeConflictNames = [
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+  'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
+  'ANTHROPIC_CUSTOM_HEADERS', 'ANTHROPIC_AUTH_TOKEN_FILE_DESCRIPTOR', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST',
+];
+
+function configureClaude(key, origin, context) {
+  const directory = path.resolve(context.env.CLAUDE_CONFIG_DIR || path.join(context.home, '.claude'));
+  const filename = path.join(directory, 'settings.json');
+  const original = readOptional(filename);
+  let settings = {};
+  if (original !== null) {
+    try { settings = JSON.parse(utf8Text(original)); } catch { throw new Error('Claude settings.json 解析失败，未修改任何配置。'); }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('Claude settings.json 必须是 JSON 对象，未修改任何配置。');
+  }
+  if (settings.env !== undefined && (!settings.env || typeof settings.env !== 'object' || Array.isArray(settings.env))) throw new Error('Claude settings.json 的 env 必须是 JSON 对象，未修改任何配置。');
+  const existingEnv = settings.env || {};
+  const conflicts = claudeConflictNames.filter(name => [context.env[name], existingEnv[name]].some(value => value !== undefined && value !== null && value !== '' && value !== '0' && value !== false));
+  if (settings.apiKeyHelper) conflicts.push('apiKeyHelper');
+  // Inherited environment and model aliases can override the saved user settings.
+  for (const [name, expected] of [['ANTHROPIC_BASE_URL', origin], ['ANTHROPIC_AUTH_TOKEN', key]]) {
+    if (context.env[name] && context.env[name] !== expected) conflicts.push(name);
+  }
+  for (const name of ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL']) {
+    if ([context.env[name], existingEnv[name]].some(value => value && value !== context.model)) conflicts.push(name);
+  }
+  if (conflicts.length) throw new Error('检测到冲突的 Claude 认证或模型设置：' + [...new Set(conflicts)].join('、') + '。请移除冲突设置后重试；未修改任何文件。');
+  if (typeof context.model !== 'string' || !/^claude-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(context.model) || !Array.isArray(context.models) || !context.models.includes(context.model)) {
+    throw new Error('请选择 Gateway 模型目录中已授权的 Claude 精确模型 ID，未修改任何配置。');
+  }
+  settings.env = {...existingEnv, ANTHROPIC_BASE_URL: origin, ANTHROPIC_AUTH_TOKEN: key};
+  settings.model = context.model;
+  return commitFiles([{filename, data: JSON.stringify(settings, null, 2) + '\n', private: true}]);
+}
+
+async function claudeModels(origin, key, request = fetch) {
+  let response;
+  try { response = await request(origin + '/v1/models', {headers: {Authorization: 'Bearer ' + key}, redirect: 'error', signal: AbortSignal.timeout(30000)}); }
+  catch { throw new Error('无法读取 Gateway 模型目录，未保存配置。'); }
+  if (!response.ok) throw new Error('Gateway 模型目录请求失败（HTTP ' + response.status + '），请检查 Key 和模型权限。');
+  let payload;
+  try { payload = await response.json(); } catch { throw new Error('Gateway 模型目录格式无效。'); }
+  if (!Array.isArray(payload?.data)) throw new Error('Gateway 模型目录格式无效。');
+  const models = [...new Set(payload.data.filter(value => value && typeof value.id === 'string' && /^claude-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value.id) && (!value.owned_by || ['anthropic', 'claude'].includes(value.owned_by))).map(value => value.id))].sort();
+  if (!models.length) throw new Error('当前 Key 没有可用的 Claude 模型，请管理员检查账号、价格和权限。');
+  return models;
+}
+
+async function selectClaudeModel(models) {
+  process.stdout.write('\n可用 Claude 模型：\n' + models.map((model, index) => `  ${index + 1}. ${model}`).join('\n') + '\n');
+  if (models.length === 1) return models[0];
+  if (!process.stdin.isTTY) throw new Error('非交互模式请通过第三个参数指定上述精确模型 ID。');
+  const reader = readline.createInterface({input: process.stdin, output: process.stdout});
+  try {
+    const answer = await new Promise(resolve => reader.question('请选择模型编号或精确 ID：', resolve));
+    const value = answer.trim();
+    const model = /^[1-9][0-9]*$/.test(value) ? models[Number(value) - 1] : value;
+    if (!models.includes(model)) throw new Error('所选模型不在 Gateway 目录中，未保存配置。');
+    return model;
+  } finally { reader.close(); }
+}
+
 function configureClient(client, rawOrigin, rawKey, options = {}) {
-  if (!['codex', 'agy'].includes(client)) throw new Error('客户端参数必须为 codex 或 agy。');
+  if (!['codex', 'agy', 'claude'].includes(client)) throw new Error('客户端参数必须为 codex、agy 或 claude。');
   const origin = originURL(rawOrigin), key = secretValue(rawKey);
   const context = { home: os.homedir(), temp: os.tmpdir(), env: process.env, platform: process.platform, run: spawnSync, ...options };
-  return client === 'codex' ? configureCodex(key, origin, context) : configureAgy(key, origin, context);
+  return client === 'codex' ? configureCodex(key, origin, context) : client === 'claude' ? configureClaude(key, origin, context) : configureAgy(key, origin, context);
 }
 
 async function main() {
   try {
-    const [client, origin, ...extra] = process.argv.slice(2);
-    if (!['codex', 'agy'].includes(client) || !origin || extra.length) throw new Error('用法：node configure-client.cjs <codex|agy> <Gateway origin>');
+    const [client, origin, requestedModel, ...extra] = process.argv.slice(2);
+    if (!['codex', 'agy', 'claude'].includes(client) || !origin || extra.length || (requestedModel && client !== 'claude')) throw new Error('用法：node configure-client.cjs <codex|agy|claude> <Gateway origin> [Claude 精确模型 ID]');
     originURL(origin);
     const key = await readSecret();
-    const backups = configureClient(client, origin, key);
+    const options = {};
+    if (client === 'claude') {
+      options.models = await claudeModels(originURL(origin), secretValue(key));
+      options.model = requestedModel || await selectClaudeModel(options.models);
+    }
+    const backups = configureClient(client, origin, key, options);
     process.stdout.write(`\n${client} 配置和 API Key 已保存。${backups.length ? `已创建 ${backups.length} 个 .bak 备份文件。` : ''}\n`);
-    process.stdout.write(`请完全退出并重新打开终端${process.platform === 'win32' ? '（包括 Windows Terminal / VS Code；若仍读取旧环境变量，请注销并重新登录 Windows）' : ''}，然后运行 ${client === 'codex' ? 'codex' : 'agy --model gemini-pro-agent'} 验证。\n`);
+    process.stdout.write(`请完全退出并重新打开终端${process.platform === 'win32' ? '（包括 Windows Terminal / VS Code；若仍读取旧环境变量，请注销并重新登录 Windows）' : ''}，然后运行 ${client === 'codex' ? 'codex' : client === 'claude' ? 'claude' : 'agy --model gemini-pro-agent'} 验证。\n`);
     if (client === 'agy') process.stdout.write('客户端必须原样发送已授权的 CPA 原生模型 ID；Gateway 不改写旧别名。推理档位通过请求参数设置。旧 CLI 会话缺少签名时请新建会话。\n');
   } catch (error) {
     process.stderr.write(`配置失败：${error.message}\n`);
@@ -346,5 +413,5 @@ async function main() {
   }
 }
 
-module.exports = { configureClient, codexConfig, sourceCredentials, readSecret, originURL, commitFiles };
+module.exports = { configureClient, codexConfig, sourceCredentials, readSecret, originURL, commitFiles, claudeModels };
 if (require.main === module) main();

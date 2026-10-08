@@ -58,6 +58,7 @@ function fixture(pathname) {
   if (url.pathname === "/admin/usage/global") return {summary: {usage: {requests: 107, tokens: 17000, actual_cost_usd: "10.123456789123", unpriced_tokens: 0}, active_users: 2, total_users: 4, pricing_coverage: "1"}};
   if (url.pathname === "/admin/upstream-accounts") return {accounts: [available]};
   if (url.pathname === "/admin/antigravity-accounts") return {accounts: [{...available, status: "unavailable", gateway_manual_status: "manual_disabled"}]};
+  if (url.pathname === "/admin/anthropic-accounts") return {accounts: [available]};
   if (url.pathname === "/admin/alerts") return {alerts: [{Severity: "critical"}]};
   throw new Error(`Unexpected API ${pathname}`);
 }
@@ -98,7 +99,8 @@ test("overview uses independent self and monthly snapshots despite other-user fi
   assert.equal(ui.run("billingUserID"), "another-user");
   assert.equal(ui.run("billingDetail.cash_balance_usd"), "999999");
   assert.equal(ui.run("upstreamAccounts[0].id"), "editing-account");
-  assert.equal(ui.calls.length, 6);
+  assert.equal(ui.calls.length, 7);
+  assert.match(ui.node("overview-anthropic-accounts").textContent, /1 可用 \/ 1 个账号/);
   for (const {pathname, current} of ui.calls) {
     assert.equal(typeof current, "function");
     assert.equal(current(), true);

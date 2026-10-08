@@ -233,3 +233,50 @@ func scaledIntegerString(value *big.Int, scale int) string {
 	}
 	return formatted
 }
+
+// CalculateCostV2TTLWithMultiplier prices cache creation by its observed TTL.
+// inputTokens includes ordinary input, cache reads, and aggregate cache writes.
+// Without a complete TTL breakdown the aggregate is charged at the higher
+// captured write price; no synthetic TTL quantities are assigned.
+func CalculateCostV2TTLWithMultiplier(
+	inputTokens, cachedInputTokens, cacheWriteTokens, cacheWrite5mTokens, cacheWrite1hTokens, outputTokens int64,
+	cacheWriteTTLPresent bool,
+	inputPrice, cachedPrice, cacheWrite5mPrice, cacheWrite1hPrice, outputPrice, multiplier string,
+) (string, error) {
+	if inputTokens < 0 || cachedInputTokens < 0 || cacheWriteTokens < 0 ||
+		cacheWrite5mTokens < 0 || cacheWrite1hTokens < 0 || outputTokens < 0 ||
+		cachedInputTokens > inputTokens || cacheWriteTokens > inputTokens-cachedInputTokens {
+		return "", fmt.Errorf("invalid token counts: %w", ErrInvalidDecimal)
+	}
+	if cacheWriteTTLPresent {
+		if cacheWrite5mTokens > cacheWriteTokens || cacheWrite1hTokens != cacheWriteTokens-cacheWrite5mTokens {
+			return "", fmt.Errorf("invalid cache write TTL totals: %w", ErrInvalidDecimal)
+		}
+	} else if cacheWrite5mTokens != 0 || cacheWrite1hTokens != 0 {
+		return "", fmt.Errorf("unobserved cache write TTL counts: %w", ErrInvalidDecimal)
+	}
+	values := []string{inputPrice, cachedPrice, cacheWrite5mPrice, cacheWrite1hPrice, outputPrice}
+	prices := make([]*big.Rat, len(values))
+	for index, value := range values {
+		canonical, err := ParsePrice(value)
+		if err != nil {
+			return "", fmt.Errorf("invalid price: %w", err)
+		}
+		prices[index], _ = new(big.Rat).SetString(canonical)
+	}
+	total := new(big.Rat).Mul(big.NewRat(inputTokens-cachedInputTokens-cacheWriteTokens, 1), prices[0])
+	total.Add(total, new(big.Rat).Mul(big.NewRat(cachedInputTokens, 1), prices[1]))
+	if cacheWriteTTLPresent {
+		total.Add(total, new(big.Rat).Mul(big.NewRat(cacheWrite5mTokens, 1), prices[2]))
+		total.Add(total, new(big.Rat).Mul(big.NewRat(cacheWrite1hTokens, 1), prices[3]))
+	} else {
+		maximum := prices[2]
+		if prices[3].Cmp(maximum) > 0 {
+			maximum = prices[3]
+		}
+		total.Add(total, new(big.Rat).Mul(big.NewRat(cacheWriteTokens, 1), maximum))
+	}
+	total.Add(total, new(big.Rat).Mul(big.NewRat(outputTokens, 1), prices[4]))
+	total.Quo(total, big.NewRat(1_000_000, 1))
+	return multiplyCostAndRound(total, multiplier)
+}

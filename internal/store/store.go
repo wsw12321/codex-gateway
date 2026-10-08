@@ -47,6 +47,7 @@ type Store struct {
 const (
 	UpstreamProviderCodex       = "codex"
 	UpstreamProviderAntigravity = "antigravity"
+	UpstreamProviderAnthropic   = "anthropic"
 )
 
 // WithUpstreamProvider shares the database pool while isolating upstream
@@ -68,7 +69,7 @@ func (s *Store) upstreamProviderName() string {
 
 func (s *Store) validUpstreamProvider() bool {
 	switch s.upstreamProviderName() {
-	case UpstreamProviderCodex, UpstreamProviderAntigravity:
+	case UpstreamProviderCodex, UpstreamProviderAntigravity, UpstreamProviderAnthropic:
 		return true
 	default:
 		return false

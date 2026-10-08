@@ -232,7 +232,7 @@
               </div>
               <div id="global-overview" class="summary-list overview-global-summary" aria-live="polite" aria-busy="true">正在加载全员统计…</div>
               <div class="overview-grid">
-                <article class="panel"><div class="panel-heading"><h3>上游账号可用情况</h3></div><div id="overview-codex-accounts" class="overview-provider" aria-live="polite">正在加载 Codex…</div><div id="overview-antigravity-accounts" class="overview-provider" aria-live="polite">正在加载 Antigravity…</div></article>
+                <article class="panel"><div class="panel-heading"><h3>上游账号可用情况</h3></div><div id="overview-codex-accounts" class="overview-provider" aria-live="polite">正在加载 Codex…</div><div id="overview-antigravity-accounts" class="overview-provider" aria-live="polite">正在加载 Antigravity…</div><div id="overview-anthropic-accounts" class="overview-provider" aria-live="polite">正在加载 Claude…</div></article>
                 <article class="panel"><div class="panel-heading"><h3>开放告警</h3><a href="#security" class="subtle-link">安全工具</a></div><div id="alert-summary" class="summary-list" aria-live="polite" aria-busy="true">正在加载告警…</div><p id="overview-alerts-updated" class="overview-updated"></p></article>
               </div>
             </section>
@@ -275,7 +275,7 @@
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
-              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">开始使用 Codex CLI 或 agy CLI</h2><p>先完成公共准备，再按所选客户端的安装、配置、启动步骤操作。复制的配置命令已使用当前站点地址。</p></div>
+              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">开始使用 Codex CLI、agy CLI 或 Claude Code</h2><p>先完成公共准备，再按所选客户端的安装、配置、启动步骤操作。复制的配置命令已使用当前站点地址。</p></div>
               <div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button></div>
             </div>
 
@@ -327,6 +327,19 @@
                       <pre><code id="guide-codex-start-code">codex</code></pre>
                     </div>
                   </li>
+                </ol>
+              </div>
+            </article>
+
+            <article id="guide-claude" class="guide-client panel" aria-labelledby="guide-claude-title">
+              <div class="guide-step-body">
+                <div class="guide-step-title"><div><p class="eyebrow">CLAUDE</p><h3 id="guide-claude-title">Claude Code</h3></div><a href="https://code.claude.com/docs/en/setup" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                <ol class="guide-steps guide-client-steps">
+                  <li><h4>1. 安装 Claude Code</h4><p>按官方说明安装，运行 <code>claude --version</code> 确认客户端可用。管理员需先配置 Claude 账号、模型价格与权限。</p></li>
+                  <li><h4>2. 保存 Gateway 地址、Key 和模型</h4><p>执行下面的一整行命令，在终端输入 Gateway Key，再从中转站模型目录选择精确模型 ID。Key 不会出现在命令历史中。</p>
+                    <div class="code-card"><div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-configure-code">复制配置命令</button></div><pre><code id="guide-claude-configure-code">正在生成…</code></pre></div>
+                    <p class="guide-note">配置器备份并原子合并用户级 <code>~/.claude/settings.json</code>，保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p></li>
+                  <li><h4>3. 启动验证</h4><p>退出已有 Claude Code 会话，重新运行 <code>claude</code> 并发送“请回复 OK”。在“使用统计”查看请求及缓存账单。更换模型时从中转站目录选择已授权的精确 ID。</p></li>
                 </ol>
               </div>
             </article>
@@ -749,7 +762,7 @@
                 <article><span>Token</span><strong id="usage-tokens">—</strong><small>输入 + 输出</small></article>
                 <article><span>实际扣款</span><strong id="usage-charged-usd">—</strong><small>已结算费用，包含模型倍率</small></article>
                 <article><span>缓存率</span><strong id="metric-cache">—</strong></article>
-                <article><span>缓存写入 Token</span><strong id="metric-cache-write">—</strong></article>
+                <article><span>缓存写入 Token</span><strong id="metric-cache-write">—</strong><small id="metric-cache-write-detail">已观测缓存写入 TTL 分项</small></article>
                 <article><span>p95 TTFT</span><strong id="metric-ttft">—</strong></article>
                 <article><span>p95 耗时</span><strong id="metric-duration">—</strong></article>
               </div>
@@ -1047,6 +1060,7 @@
             <div class="upstream-provider-switch" aria-label="上游服务商">
               <a href="#upstream-accounts" data-upstream-provider="codex" aria-current="page">Codex</a>
               <a href="#antigravity-accounts" data-upstream-provider="antigravity">Antigravity</a>
+              <a href="#anthropic-accounts" data-upstream-provider="anthropic">Claude 账号</a>
             </div>
             <div class="upstream-account-toolbar">
               <label>搜索账号<input id="upstream-account-search" type="search" placeholder="名称或脱敏邮箱" autocomplete="off"></label>
@@ -1089,6 +1103,11 @@
             </div>
             <div id="upstream-account-unattributed" class="hidden"></div>
             </div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="anthropic-accounts" aria-labelledby="anthropic-accounts-title">
+            <div class="section-head"><div><h2 id="anthropic-accounts-title">Claude 账号</h2><p>管理 Claude 订阅账号的调度、权限与用量。</p></div><a class="button secondary" href="/admin/cpa/">授权与凭据管理 ↗</a></div>
+            <div id="anthropic-account-manager-host"></div>
           </section>
 
           <section class="view owner-only hidden" data-section="antigravity-accounts" aria-labelledby="antigravity-accounts-title">

@@ -1617,6 +1617,11 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	if _, err := connection.ExecContext(ctx, byName["0027_group_priority_billing.sql"]); err != nil {
 		t.Fatalf("apply isolated 0027: %v", err)
 	}
+	// Current settlement readers include independent nullable TTL metadata;
+	// installing it must preserve these pre-v2 rows and in-flight requests.
+	if _, err := connection.ExecContext(ctx, byName["0033_anthropic_billing.sql"]); err != nil {
+		t.Fatalf("apply isolated Anthropic billing metadata: %v", err)
+	}
 	var migratedReservationMultiplier, migratedLedgerMultiplier string
 	if err := connection.QueryRowContext(ctx, `SELECT
 		(SELECT pricing_multiplier::text FROM billing_reservations WHERE request_id = $1),

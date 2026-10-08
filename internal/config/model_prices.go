@@ -48,6 +48,14 @@ func modelPriceStructure(rule ModelPricing) ModelPricing {
 					empty := ""
 					value.CacheWriteUSDPerMillion = &empty
 				}
+				if price.CacheWrite5mUSDPerMillion != nil {
+					empty := ""
+					value.CacheWrite5mUSDPerMillion = &empty
+				}
+				if price.CacheWrite1hUSDPerMillion != nil {
+					empty := ""
+					value.CacheWrite1hUSDPerMillion = &empty
+				}
 				return value
 			}
 			result.ServiceTiers[tier] = ServiceTierPricing{Short: copyContext(contexts.Short), Long: copyContext(contexts.Long)}
@@ -91,6 +99,14 @@ func NormalizeModelPrice(schema int, model string, rule ModelPricing) (ModelPric
 			if value.CacheWriteUSDPerMillion != nil {
 				cache := canonical(*value.CacheWriteUSDPerMillion)
 				value.CacheWriteUSDPerMillion = &cache
+			}
+			if value.CacheWrite5mUSDPerMillion != nil {
+				cache := canonical(*value.CacheWrite5mUSDPerMillion)
+				value.CacheWrite5mUSDPerMillion = &cache
+			}
+			if value.CacheWrite1hUSDPerMillion != nil {
+				cache := canonical(*value.CacheWrite1hUSDPerMillion)
+				value.CacheWrite1hUSDPerMillion = &cache
 			}
 			return &value
 		}

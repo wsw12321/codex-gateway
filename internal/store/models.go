@@ -218,7 +218,10 @@ type UsageRequest struct {
 	InputTokens             int64
 	CachedInputTokens       int64
 	CacheWriteTokens        int64
+	CacheWrite5mTokens      int64
+	CacheWrite1hTokens      int64
 	CacheWriteTokensPresent bool
+	CacheWriteTTLPresent    bool
 	OutputTokens            int64
 	ReasoningTokens         int64
 	RequestBytes            int64
@@ -236,99 +239,109 @@ type UsageRequest struct {
 func (u UsageRequest) TotalTokens() int64 { return u.InputTokens + u.OutputTokens }
 
 type DailyUsage struct {
-	Day               time.Time
-	UserID            string
-	DeviceID          string
-	APIKeyID          string
-	ProjectID         *string
-	UpstreamAccountID *string `json:"-"`
-	Model             string
-	Endpoint          string
-	StatusClass       int
-	ErrorCode         *string
-	RequestCount      int64
-	ErrorCount        int64
-	InputTokens       int64
-	CachedInputTokens int64
-	CacheWriteTokens  int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	RequestBytes      int64
-	ResponseBytes     int64
-	TTFTCount         int64
-	TTFTSumMillis     int64
-	P95TTFTMillis     *int64
-	DurationCount     int64
-	DurationSumMillis int64
-	P95DurationMillis *int64
-	UpdatedAt         time.Time
+	Day                time.Time
+	UserID             string
+	DeviceID           string
+	APIKeyID           string
+	ProjectID          *string
+	UpstreamAccountID  *string `json:"-"`
+	Model              string
+	Endpoint           string
+	StatusClass        int
+	ErrorCode          *string
+	RequestCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	RequestBytes       int64
+	ResponseBytes      int64
+	TTFTCount          int64
+	TTFTSumMillis      int64
+	P95TTFTMillis      *int64
+	DurationCount      int64
+	DurationSumMillis  int64
+	P95DurationMillis  *int64
+	UpdatedAt          time.Time
 }
 
 // MonthlyUsage is a long-lived metadata aggregate. Month is always the first
 // calendar day in the configured aggregation timezone.
 type MonthlyUsage struct {
-	Month             time.Time
-	UserID            string
-	DeviceID          string
-	APIKeyID          string
-	ProjectID         *string
-	UpstreamAccountID *string `json:"-"`
-	Model             string
-	Endpoint          string
-	StatusClass       int
-	ErrorCode         *string
-	RequestCount      int64
-	ErrorCount        int64
-	InputTokens       int64
-	CachedInputTokens int64
-	CacheWriteTokens  int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	RequestBytes      int64
-	ResponseBytes     int64
-	P95TTFTMillis     *int64
-	P95DurationMillis *int64
-	UpdatedAt         time.Time
+	Month              time.Time
+	UserID             string
+	DeviceID           string
+	APIKeyID           string
+	ProjectID          *string
+	UpstreamAccountID  *string `json:"-"`
+	Model              string
+	Endpoint           string
+	StatusClass        int
+	ErrorCode          *string
+	RequestCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	RequestBytes       int64
+	ResponseBytes      int64
+	P95TTFTMillis      *int64
+	P95DurationMillis  *int64
+	UpdatedAt          time.Time
 }
 
 type UsageSummary struct {
-	RequestCount      int64
-	ErrorCount        int64
-	InputTokens       int64
-	CachedInputTokens int64
-	CacheWriteTokens  int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	RequestBytes      int64
-	ResponseBytes     int64
-	P95TTFTMillis     int64
-	P95DurationMillis int64
-	ChargedUSD        string
+	RequestCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	RequestBytes       int64
+	ResponseBytes      int64
+	P95TTFTMillis      int64
+	P95DurationMillis  int64
+	ChargedUSD         string
 }
 
 type GlobalUsageRow struct {
-	UserID            string
-	Username          string
-	DisplayName       string
-	Model             string
-	RequestCount      int64
-	InputTokens       int64
-	CachedInputTokens int64
-	CacheWriteTokens  int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	ActualCostUSD     string
-	ChargedUSD        string
-	UncoveredUSD      string
-	LedgerTokens      int64
+	UserID             string
+	Username           string
+	DisplayName        string
+	Model              string
+	RequestCount       int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	ActualCostUSD      string
+	ChargedUSD         string
+	UncoveredUSD       string
+	LedgerTokens       int64
 }
 
 type GlobalPricingBreakdownRow struct {
-	Dimension        string
-	Value            string
-	RequestCount     int64
-	CacheWriteTokens int64
-	ActualCostUSD    string
+	Dimension          string
+	Value              string
+	RequestCount       int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	ActualCostUSD      string
 }
 
 // UpstreamAccount contains only non-secret metadata supplied by the isolated
@@ -362,21 +375,23 @@ type UpstreamAccountSnapshot struct {
 // AccountID is nil for the synthetic unattributed row. EquivalentCostUSD is
 // read from immutable usage-charge ledger entries rather than recalculated.
 type UpstreamAccountSummary struct {
-	AccountID         *string
-	DisplayName       string
-	MaskedEmail       string
-	Plan              string
-	Status            string
-	ConcurrentLimit   int
-	LastSyncedAt      *time.Time
-	RequestCount      int64
-	ErrorCount        int64
-	InputTokens       int64
-	CachedInputTokens int64
-	CacheWriteTokens  int64
-	OutputTokens      int64
-	ReasoningTokens   int64
-	EquivalentCostUSD string
+	AccountID          *string
+	DisplayName        string
+	MaskedEmail        string
+	Plan               string
+	Status             string
+	ConcurrentLimit    int
+	LastSyncedAt       *time.Time
+	RequestCount       int64
+	ErrorCount         int64
+	InputTokens        int64
+	CachedInputTokens  int64
+	CacheWriteTokens   int64
+	CacheWrite5mTokens int64
+	CacheWrite1hTokens int64
+	OutputTokens       int64
+	ReasoningTokens    int64
+	EquivalentCostUSD  string
 }
 
 // UpstreamAccountSummaryFilter follows the same retention split used by

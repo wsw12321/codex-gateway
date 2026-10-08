@@ -26,11 +26,13 @@ def upstream_hosts(acl):
 
 CPA_GOOGLE_HOSTS = upstream_hosts("cpa_google_upstreams")
 ANTIGRAVITY_HOSTS = upstream_hosts("antigravity_upstreams")
-CPA_HOSTS = (*CODEX_HOSTS, *CPA_GOOGLE_HOSTS)
+CPA_ANTHROPIC_HOSTS = upstream_hosts("cpa_anthropic_upstreams")
+CPA_HOSTS = (*CODEX_HOSTS, *CPA_GOOGLE_HOSTS, *CPA_ANTHROPIC_HOSTS)
 ALL_HOSTS = tuple(dict.fromkeys((*CPA_HOSTS, *ANTIGRAVITY_HOSTS)))
 CLIENTS = (
     ("Codex", "127.0.0.2", "chatgpt.com"),
     ("CPA Google", "127.0.0.2", "daily-cloudcode-pa.sandbox.googleapis.com"),
+    ("CPA Anthropic", "127.0.0.2", "api.anthropic.com"),
     ("Antigravity", "127.0.0.3", "cloudcode-pa.googleapis.com"),
 )
 

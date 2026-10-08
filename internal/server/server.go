@@ -25,6 +25,7 @@ type Server struct {
 	identity              *identity.Service
 	upstream              *gatewayproxy.Client
 	antigravity           *gatewayproxy.Client
+	anthropic             *gatewayproxy.Client
 	cpaAdmin              *cpaAdminState
 	logger                *slog.Logger
 	mux                   *http.ServeMux
@@ -100,6 +101,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	s.oidcFlows = newOIDCFlowStore(maxOIDCFlows)
 	s.identificationContext, s.identificationCancel = context.WithCancel(context.Background())
+	s.anthropic = gatewayproxy.NewCPAAnthropic(cfg.SidecarURL, cfg.SidecarToken)
 	if cfg.UsesCPAAntigravity() {
 		s.antigravity = gatewayproxy.NewCPAAntigravity(cfg.SidecarURL, cfg.SidecarToken)
 	} else if cfg.AntigravityBridgeURL != nil {
@@ -128,6 +130,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/select", s.selectUpstreamAccount)
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/eligible", s.eligibleUpstreamAccounts)
 	s.antigravityAccountRoutes()
+	s.anthropicAccountRoutes()
 	s.cpaAdminRoutes()
 	s.mux.HandleFunc("GET /", s.page)
 	s.mux.HandleFunc("GET /join", s.page)
@@ -233,6 +236,8 @@ func (s *Server) routes() {
 	s.browserPOST("/admin/upstream-accounts/{id}/quota", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountQuota))))
 
 	s.mux.Handle("GET /v1/models", s.requireAPIKey(http.HandlerFunc(s.proxyModels)))
+	s.mux.Handle("POST /v1/messages", s.requireAPIKey(http.HandlerFunc(s.proxyMessages)))
+	s.mux.Handle("POST /v1/messages/count_tokens", s.requireAPIKey(http.HandlerFunc(s.proxyMessagesCountTokens)))
 	s.mux.Handle("GET /v1/responses", s.requireAPIKey(http.HandlerFunc(s.responsesWebSocketUnsupported)))
 	s.mux.Handle("POST /v1/responses", s.requireAPIKey(http.HandlerFunc(s.proxyResponses)))
 	s.mux.Handle("POST /v1/responses/compact", s.requireAPIKey(http.HandlerFunc(s.proxyCompact)))

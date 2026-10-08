@@ -107,14 +107,23 @@ func (s *Store) EnsureUpstreamAccount(ctx context.Context, id string, at time.Ti
 	return mapDBError("ensure upstream account", err)
 }
 
-// Usage attribution is shared across providers. Existing opaque IDs already
-// have an owner; only new placeholders inherit the completion store's scope.
+// Generic historical completion/replay accepts an existing account's owner.
+// Explicit protocol scopes must never attribute usage to a different provider.
 func (s *Store) ensureUsageUpstreamAccount(ctx context.Context, id string, at time.Time) error {
 	var exists bool
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1)`, id).Scan(&exists); err != nil {
 		return mapDBError("find usage upstream account", err)
 	}
 	if exists {
+		if s.upstreamProvider != "" {
+			var provider string
+			if err := s.db.QueryRowContext(ctx, `SELECT provider FROM upstream_accounts WHERE id=$1`, id).Scan(&provider); err != nil {
+				return mapDBError("verify usage upstream provider", err)
+			}
+			if provider != s.upstreamProviderName() {
+				return fmt.Errorf("%w: usage account belongs to another provider", ErrConflict)
+			}
+		}
 		return nil
 	}
 	return s.EnsureUpstreamAccount(ctx, id, at)
@@ -288,12 +297,12 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		}
 		usageSource = `
 			SELECT upstream_account_id, request_count, error_count, input_tokens,
-				cached_input_tokens, cache_write_tokens, output_tokens, reasoning_tokens
+				cached_input_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens, output_tokens, reasoning_tokens
 			FROM usage_monthly WHERE usage_month < $1::date
 			UNION ALL
 			SELECT upstream_account_id, 1::bigint,
 				CASE WHEN state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint,
-				input_tokens, cached_input_tokens, cache_write_tokens,
+				input_tokens, cached_input_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
 				output_tokens, reasoning_tokens
 			FROM usage_requests
 			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
@@ -307,7 +316,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		usageSource = `
 			SELECT upstream_account_id, 1::bigint AS request_count,
 				CASE WHEN state IN ('failed', 'cancelled') OR http_status >= 400 OR error_code IS NOT NULL THEN 1 ELSE 0 END::bigint AS error_count,
-				input_tokens, cached_input_tokens, cache_write_tokens,
+				input_tokens, cached_input_tokens, cache_write_tokens, cache_write_5m_tokens, cache_write_1h_tokens,
 				output_tokens, reasoning_tokens
 			FROM usage_requests
 			WHERE state <> 'in_progress' AND completed_at IS NOT NULL
@@ -327,6 +336,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 			sum(error_count)::bigint error_count, sum(input_tokens)::bigint input_tokens,
 			sum(cached_input_tokens)::bigint cached_input_tokens,
 			sum(cache_write_tokens)::bigint cache_write_tokens,
+			sum(cache_write_5m_tokens)::bigint cache_write_5m_tokens, sum(cache_write_1h_tokens)::bigint cache_write_1h_tokens,
 			sum(output_tokens)::bigint output_tokens,
 			sum(reasoning_tokens)::bigint reasoning_tokens
 		FROM usage_source GROUP BY upstream_account_id
@@ -345,7 +355,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		COALESCE(a.plan, 'unknown'), COALESCE(a.status, 'unattributed'),
 		COALESCE(a.concurrent_limit, 1), a.last_synced_at, COALESCE(u.request_count, 0), COALESCE(u.error_count, 0),
 		COALESCE(u.input_tokens, 0), COALESCE(u.cached_input_tokens, 0),
-		COALESCE(u.cache_write_tokens, 0), COALESCE(u.output_tokens, 0),
+		COALESCE(u.cache_write_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.output_tokens, 0),
 		COALESCE(u.reasoning_tokens, 0), COALESCE(l.equivalent_cost_usd, '0')
 	FROM dimensions d
 	LEFT JOIN upstream_accounts a ON a.id = d.upstream_account_id
@@ -367,7 +377,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		var lastSynced sql.NullTime
 		if err := rows.Scan(&accountID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 			&value.ConcurrentLimit, &lastSynced, &value.RequestCount, &value.ErrorCount, &value.InputTokens,
-			&value.CachedInputTokens, &value.CacheWriteTokens, &value.OutputTokens,
+			&value.CachedInputTokens, &value.CacheWriteTokens, &value.CacheWrite5mTokens, &value.CacheWrite1hTokens, &value.OutputTokens,
 			&value.ReasoningTokens, &value.EquivalentCostUSD); err != nil {
 			return nil, fmt.Errorf("scan upstream account summary: %w", err)
 		}

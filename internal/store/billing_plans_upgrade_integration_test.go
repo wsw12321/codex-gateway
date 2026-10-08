@@ -65,7 +65,7 @@ func TestBillingPlanMigrationPreservesLegacyPostgresIntegration(t *testing.T) {
 	// Current billing readers require the independent funding metadata while
 	// this test keeps the subscription-plan migration unapplied for its fixture.
 	for _, migration := range migrations {
-		if migration.Name == "0027_group_priority_billing.sql" {
+		if migration.Name == "0027_group_priority_billing.sql" || migration.Name == "0033_anthropic_billing.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply funding helper schema: %v", err)
 			}

@@ -6,16 +6,18 @@ Owner 登录 Gateway 后，从“CPA 授权管理”进入 `/admin/cpa/`。该�
 
 ## 授权与导入
 
-1. 选择 Codex 或 Antigravity，点击“新增 / 重新授权”。
+1. 选择 Codex、Antigravity 或 Claude 账号，点击“新增 / 重新授权”。
 2. 打开供应商授权页面，完成登录。供应商回调使用其已注册的本地地址；网页可能显示本地连接失败，复制地址栏中的完整回调 URL 即可。
 3. 在原 Gateway 会话中粘贴回调地址并提交。每次流程有效期为 5 分钟，回调只接受一次，不开放额外公网回调端口。Gateway 或 CPA 重启后应重新发起授权。
 4. 刷新账号列表，检查供应商状态，再使用 Gateway API Key 完成真实生成验收。
 
-JSON 文件导入仅接受 `refresh_token` 及可选的 `access_token`、`id_token`。页面只向后端发送这三个字段，文件内容不写入浏览器存储，提交后清空文件输入，成功或失败都会清除持有的凭据对象。CPA 对新导入凭据实际执行刷新；Antigravity 还核对真实 Google 身份、项目和 Gemini 额度。不能仅因 access token 尚未过期就视为迁移成功。批量旧 Keyring 迁移应使用[服务端迁移工具](cpa-credentials-migration.md)，不要通过浏览器搬运迁移令牌。
+Codex / Antigravity JSON 导入仅接受 `refresh_token` 及可选的 `access_token`、`id_token`；Claude 导入仅提取刷新令牌和访问令牌，也支持 Claude Code 的 `claudeAiOauth` 格式。页面只向后端发送这些必要字段，文件内容不写入浏览器存储，提交后清空文件输入，成功或失败都会清除持有的凭据对象。CPA 对提供刷新令牌的新凭据实际执行刷新；Claude 也支持仅访问令牌导入并实时验证身份，但到期后不能自动刷新，需重新授权或导入有效凭据。Antigravity 还核对真实 Google 身份、项目和 Gemini 额度。不能仅因 access token 尚未过期就视为迁移成功。批量旧 Keyring 迁移应使用[服务端迁移工具](cpa-credentials-migration.md)，不要通过浏览器搬运迁移令牌。
 
 账号启停使用与 Gateway 原有账号页面相同的业务状态。删除会先持久停用，等账号活动请求结束后移除凭据，保留稳定身份映射、控制状态和历史账单。如果排空超时或并发状态无法确认，删除失败，账号继续停用；稍后重试即可。
 
 使用 `legacy-bridge` 回滚链路期间，CPA 面板的 Antigravity 凭据操作会被拒绝，避免两个进程刷新同一 Google 凭据。此时通过 Gateway 原账号页面管理旧链路的业务状态，恢复 CPA 后再维护凭据。
+
+Claude 五小时/七天额度以 CPA 的被动观测快照展示，刷新状态不会主动消耗生成额度；无观测数据或未验证套餐显示未知。客户端配置与验收见 [Claude Code 接入](claude-code.md)。
 
 ## 管理边界
 

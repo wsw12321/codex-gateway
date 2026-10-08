@@ -13,18 +13,20 @@ import (
 )
 
 type usageSummary struct {
-	Requests          int64   `json:"requests"`
-	Tokens            int64   `json:"tokens"`
-	ChargedUSD        string  `json:"charged_usd"`
-	InputTokens       int64   `json:"input_tokens"`
-	CachedInputTokens int64   `json:"cached_input_tokens"`
-	CacheWriteTokens  int64   `json:"cache_write_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	ReasoningTokens   int64   `json:"reasoning_tokens"`
-	CacheRate         float64 `json:"cache_rate"`
-	ErrorRate         float64 `json:"error_rate"`
-	P95TTFTMillis     int64   `json:"p95_ttft_ms"`
-	P95DurationMillis int64   `json:"p95_duration_ms"`
+	Requests           int64   `json:"requests"`
+	Tokens             int64   `json:"tokens"`
+	ChargedUSD         string  `json:"charged_usd"`
+	InputTokens        int64   `json:"input_tokens"`
+	CachedInputTokens  int64   `json:"cached_input_tokens"`
+	CacheWriteTokens   int64   `json:"cache_write_tokens"`
+	CacheWrite5mTokens int64   `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens int64   `json:"cache_write_1h_tokens"`
+	OutputTokens       int64   `json:"output_tokens"`
+	ReasoningTokens    int64   `json:"reasoning_tokens"`
+	CacheRate          float64 `json:"cache_rate"`
+	ErrorRate          float64 `json:"error_rate"`
+	P95TTFTMillis      int64   `json:"p95_ttft_ms"`
+	P95DurationMillis  int64   `json:"p95_duration_ms"`
 }
 
 func (s *Server) usageJSON(w http.ResponseWriter, r *http.Request) {
@@ -88,7 +90,7 @@ func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner b
 		"requested_service_tier", "actual_service_tier", "pricing_service_tier", "context_class",
 		"pricing_rule_version", "pricing_fallback_reason", "endpoint",
 		"state", "http_status", "error_code", "requested_at", "ttft_ms", "duration_ms",
-		"input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_tokens_present",
+		"input_tokens", "cached_input_tokens", "cache_write_tokens", "cache_write_tokens_present", "cache_write_5m_tokens", "cache_write_1h_tokens", "cache_write_ttl_present",
 		"output_tokens", "reasoning_tokens",
 		"request_bytes", "response_bytes", "upstream_request_id",
 	}
@@ -107,6 +109,7 @@ func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner b
 			request.RequestedAt.Format(time.RFC3339Nano), int64Pointer(request.TTFTMillis), int64Pointer(request.DurationMillis),
 			strconv.FormatInt(request.InputTokens, 10), strconv.FormatInt(request.CachedInputTokens, 10),
 			strconv.FormatInt(request.CacheWriteTokens, 10), strconv.FormatBool(request.CacheWriteTokensPresent),
+			strconv.FormatInt(request.CacheWrite5mTokens, 10), strconv.FormatInt(request.CacheWrite1hTokens, 10), strconv.FormatBool(request.CacheWriteTTLPresent),
 			strconv.FormatInt(request.OutputTokens, 10), strconv.FormatInt(request.ReasoningTokens, 10),
 			strconv.FormatInt(request.RequestBytes, 10), strconv.FormatInt(request.ResponseBytes, 10),
 			stringPointer(request.UpstreamRequestID),
@@ -191,6 +194,8 @@ func summarizeUsage(requests []store.UsageRequest) usageSummary {
 		summary.InputTokens += request.InputTokens
 		summary.CachedInputTokens += request.CachedInputTokens
 		summary.CacheWriteTokens += request.CacheWriteTokens
+		summary.CacheWrite5mTokens += request.CacheWrite5mTokens
+		summary.CacheWrite1hTokens += request.CacheWrite1hTokens
 		summary.OutputTokens += request.OutputTokens
 		summary.ReasoningTokens += request.ReasoningTokens
 		if (request.State == "failed" || request.State == "cancelled") || (request.HTTPStatus != nil && *request.HTTPStatus >= 400) || request.ErrorCode != nil {
@@ -220,9 +225,9 @@ func summaryFromStore(value store.UsageSummary) usageSummary {
 		Requests: value.RequestCount, ChargedUSD: value.ChargedUSD,
 		InputTokens:       value.InputTokens,
 		CachedInputTokens: value.CachedInputTokens, OutputTokens: value.OutputTokens,
-		CacheWriteTokens: value.CacheWriteTokens,
-		ReasoningTokens:  value.ReasoningTokens,
-		P95TTFTMillis:    value.P95TTFTMillis, P95DurationMillis: value.P95DurationMillis,
+		CacheWriteTokens: value.CacheWriteTokens, CacheWrite5mTokens: value.CacheWrite5mTokens, CacheWrite1hTokens: value.CacheWrite1hTokens,
+		ReasoningTokens: value.ReasoningTokens,
+		P95TTFTMillis:   value.P95TTFTMillis, P95DurationMillis: value.P95DurationMillis,
 	}
 	summary.Tokens = summary.InputTokens + summary.OutputTokens
 	if summary.InputTokens > 0 {

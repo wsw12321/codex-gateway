@@ -22,7 +22,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
       if (event.type() === "error" && event.text() !== "Failed to load resource: the server responded with a status of 502 (Bad Gateway)") errors.push(event.text());
     });
     const state = "a".repeat(32);
-    const account = provider => ({ id: "0123456789abcdef", display_name: provider === "codex" ? "Codex 团队账号" : "Gemini 团队账号", email_masked: "te***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available" });
+    const account = provider => ({ id: "0123456789abcdef", display_name: ({codex: "Codex 团队账号", antigravity: "Gemini 团队账号", anthropic: "Claude 团队账号"})[provider], email_masked: "te***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available" });
     await page.route("**/*", async route => {
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin);
@@ -35,12 +35,13 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
         assert.ok(["panel.js", "panel.css"].includes(name));
         return route.fulfill({ status: 200, contentType: name.endsWith("js") ? "application/javascript" : "text/css", body: fs.readFileSync(path.join(assets, name)) });
       }
-      if (/\/api\/(codex|antigravity)\/accounts$/.test(url.pathname)) return send({ accounts: deleted ? [] : [account(url.pathname.includes("/codex/") ? "codex" : "antigravity")] });
+      if (/\/api\/(codex|antigravity|anthropic)\/accounts$/.test(url.pathname)) return send({ accounts: deleted ? [] : [account(url.pathname.split("/")[4])] });
       if (request.method() !== "GET") writes.push({ path: url.pathname, method: request.method(), body: request.postDataJSON() });
-      if (url.pathname.endsWith("/oauth")) return send({ id: "flow-one", url: `https://accounts.google.com/o/oauth2/auth?state=${state}`, expires_in: 300 });
+      if (url.pathname.endsWith("/oauth")) return send({ id: "flow-one", url: `https://${url.pathname.includes("/anthropic/") ? "claude.ai" : "accounts.google.com"}/oauth/authorize?state=${state}`, expires_in: 300 });
       if (url.pathname === "/admin/cpa/api/oauth/flow-one/status") return send({ status: oauthDone ? "ok" : "wait" });
       if (url.pathname === "/admin/cpa/api/oauth/flow-one/callback") { oauthDone = true; return send({ status: "submitted" }); }
       if (url.pathname.endsWith("/credentials")) return importFails ? send({ error: { message: "凭据验证未完成" } }, 502) : send({ status: "ok" });
+      if (url.pathname.includes("/anthropic/") && url.pathname.endsWith("/quota")) return send({status: "ok", quota: [], observed_at: "2026-10-08T04:01:00Z", windows: [{window: "five_hour", used_percent: 37, reset_at: "2026-10-08T09:00:00Z", status: "allowed"}]});
       if (url.pathname.endsWith("/quota")) return send({ status: "ok", quota: [{ model: "gemini-3-flash", remaining_fraction: 0.82, reset_time: "2026-10-01T00:00:00Z" }] });
       if (url.pathname.endsWith("/refresh") || url.pathname.endsWith("/status")) return send({ status: "ok" });
       if (request.method() === "DELETE" && url.pathname.endsWith("/accounts/0123456789abcdef")) { deleted = true; return send({ status: "deleted" }); }
@@ -95,6 +96,26 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.screenshot({ path: path.join(screenshots, "cpa-admin-dark-desktop.png"), fullPage: true, animations: "disabled" });
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: "Claude 账号", exact: true }).click();
+    await page.getByRole("heading", { name: "Claude 团队账号" }).waitFor();
+    importFails = false;
+    await page.locator('input[type="file"]').setInputFiles({name: 'claude.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({claudeAiOauth: {refreshToken: 'claude-refresh', accessToken: 'claude-access', subscriptionType: 'forged-max', scopes: ['ignored']}, arbitrary: 'ignored'}))});
+    await page.getByRole('status').filter({hasText: '操作完成'}).waitFor();
+    assert.deepEqual(writes.filter(write => write.path.endsWith('/credentials')).at(-1).body, {refresh_token: 'claude-refresh', access_token: 'claude-access'});
+    assert.ok(!(await page.locator('body').textContent()).includes('claude-refresh'));
+    await page.locator('input[type="file"]').setInputFiles({name: 'claude-access-only.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({claudeAiOauth: {accessToken: 'claude-access-only', subscriptionType: 'ignored'}}))});
+    await page.getByRole('status').filter({hasText: '操作完成'}).waitFor();
+    assert.deepEqual(writes.filter(write => write.path.endsWith('/credentials')).at(-1).body, {access_token: 'claude-access-only'});
+    assert.ok(!(await page.locator('body').textContent()).includes('claude-access-only'));
+
+    await page.getByRole('button', {name: '新增 / 重新授权'}).click();
+    assert.match(await page.getByRole('link', {name: '打开供应商授权页面 ↗'}).getAttribute('href'), /^https:\/\/claude\.ai\//);
+    await page.getByRole('button', {name: '刷新状态', exact: true}).click();
+    await page.getByText('五小时窗口：已用 37%', {exact: false}).waitFor();
+    assert.match(await page.locator('body').textContent(), /七天窗口：额度未知/);
+    await page.screenshot({path: path.join(screenshots, 'cpa-anthropic-mobile.png'), fullPage: true, animations: 'disabled'});
+    await page.setViewportSize({width: 1440, height: 1100});
+    await page.screenshot({path: path.join(screenshots, 'cpa-anthropic-desktop.png'), fullPage: true, animations: 'disabled'});
     await page.getByRole("button", { name: "删除凭据", exact: true }).click();
     await page.getByRole("button", { name: "确认删除", exact: true }).click();
     await page.getByText("暂无已登记账号").waitFor();

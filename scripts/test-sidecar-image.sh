@@ -69,6 +69,20 @@ docker run --rm --network none --read-only --cap-drop ALL \
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities
         grep -Fq "upstream_account_access_v1" /run/cliproxy/capabilities
         {
+            printf "GET /internal/anthropic-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-capabilities
+        grep -Fq "200 OK" /run/cliproxy/anthropic-capabilities
+        grep -Fq "anthropic_messages_v1" /run/cliproxy/anthropic-capabilities
+        {
+            printf "GET /internal/anthropic-accounts HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-accounts
+        grep -Fq "200 OK" /run/cliproxy/anthropic-accounts
+        grep -Fq "accounts" /run/cliproxy/anthropic-accounts
+        {
+            printf "GET /internal/anthropic-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nConnection: close\r\n\r\n"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-unauthorized
+        grep -Fq "401 Unauthorized" /run/cliproxy/anthropic-unauthorized
+        {
             printf "GET /internal/model-identification/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/diagnostic-capabilities
         grep -Fq "200 OK" /run/cliproxy/diagnostic-capabilities
@@ -105,10 +119,18 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "POST /internal/gateway-management/antigravity/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/management-invalid-import
         grep -Fq "400 Bad Request" /run/cliproxy/management-invalid-import
+        {
+            printf "POST /internal/gateway-management/anthropic/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-management-wrong-key
+        grep -Fq "401 Unauthorized" /run/cliproxy/anthropic-management-wrong-key
+        {
+            printf "POST /internal/gateway-management/anthropic/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+        } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-management-invalid-import
+        grep -Fq "400 Bad Request" /run/cliproxy/anthropic-management-invalid-import
         if /usr/local/bin/sidecar-entrypoint --version > /run/cliproxy/second-process.log 2>&1; then
             printf "%s\n" "A second OAuth refresh process acquired the credential store" >&2
             exit 1
         fi
         grep -Fq "OAuth store is owned by another refresh process" /run/cliproxy/second-process.log
-        printf "%s\n" "CPA OAuth permissions, both provider capabilities, diagnostics, concurrency, separate management authentication, exclusive refresh locking and Gateway-independent startup checks passed"
+        printf "%s\n" "CPA OAuth permissions, all three provider capabilities, diagnostics, concurrency, separate management authentication, exclusive refresh locking and Gateway-independent startup checks passed"
     '

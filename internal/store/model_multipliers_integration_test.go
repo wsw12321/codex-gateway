@@ -589,6 +589,15 @@ func TestModelMultiplierMigrationPostgresIntegration(t *testing.T) {
 	if multiplierMigration.Name == "" {
 		t.Fatal("model multiplier migration missing")
 	}
+	// Independent nullable TTL metadata lets current usage readers seed the
+	// legacy multiplier fixture without applying the migration under test.
+	for _, migration := range migrations {
+		if migration.Name == "0033_anthropic_billing.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply TTL helper schema: %v", err)
+			}
+		}
+	}
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "multiplier-legacy")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	requestID := "multiplier-legacy-settled-request"

@@ -26,14 +26,18 @@ func TestUserUpstreamAccessHTTPPostgresIntegration(t *testing.T) {
 	path := "/admin/users/" + member.ID + "/upstream-access"
 	const codexID = "0123456789abcdef"
 	const agyID = "fedcba9876543210"
+	const anthropicID = "aaaabbbbccccdddd"
 	const unavailableID = "aaaaaaaaaaaaaaaa"
 	base, _ := url.Parse("http://sidecar.internal")
 	remoteCalls := make(map[string]int)
 	remoteFailed := false
-	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity} {
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
 		id := codexID
 		if provider == store.UpstreamProviderAntigravity {
 			id = agyID
+		}
+		if provider == store.UpstreamProviderAnthropic {
+			id = anthropicID
 		}
 		client := gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			remoteCalls[provider]++
@@ -45,6 +49,8 @@ func TestUserUpstreamAccessHTTPPostgresIntegration(t *testing.T) {
 		})})
 		if provider == store.UpstreamProviderCodex {
 			f.s.upstream = client
+		} else if provider == store.UpstreamProviderAnthropic {
+			f.s.anthropic = client
 		} else {
 			f.s.antigravity = client
 		}
@@ -56,7 +62,7 @@ func TestUserUpstreamAccessHTTPPostgresIntegration(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if response.UserID != member.ID || len(response.Providers) != 2 || strings.Contains(w.Body.String(), "secret-canary") {
+		if response.UserID != member.ID || len(response.Providers) != 3 || strings.Contains(w.Body.String(), "secret-canary") {
 			t.Fatalf("invalid read response: %s", w.Body)
 		}
 		return response
@@ -76,7 +82,7 @@ func TestUserUpstreamAccessHTTPPostgresIntegration(t *testing.T) {
 		return access
 	}
 	initial := read()
-	for i, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity} {
+	for i, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
 		entry := initial.Providers[i]
 		if entry.Provider != provider || entry.Mode != "all" || entry.AccountIDs == nil || len(entry.AccountIDs) != 0 || entry.SyncWarning != "" || len(entry.Accounts) != 1 || entry.Accounts[0].EmailMasked != "u***@example.com" || entry.Accounts[0].DisplayName != provider+"-account" || entry.Accounts[0].Status != store.UpstreamAccountStatusAvailable {
 			t.Fatalf("default %s entry=%+v", provider, entry)

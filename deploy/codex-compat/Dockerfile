@@ -48,6 +48,7 @@ RUN go test -count=1 \
     ./internal/api/middleware \
     ./internal/auth/codex \
     ./internal/auth/antigravity \
+    ./internal/auth/claude \
     ./internal/api/handlers/management \
     ./internal/runtime/executor/helps \
     ./internal/translator/gemini/openai/responses \
@@ -58,6 +59,7 @@ RUN go test -count=1 \
     ./internal/watcher/synthesizer \
     ./sdk/api/handlers \
     ./sdk/api/handlers/openai \
+    ./sdk/api/handlers/claude \
     ./sdk/auth \
     ./sdk/cliproxy/auth \
     ./sdk/cliproxy/session \
@@ -98,6 +100,8 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
     && go test -count=1 \
         -run '^(TestCodex(DiagnosticProbe.*|RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
+
+RUN go test -count=1 -run '^(TestClaude|TestGatewayAnthropic)' ./internal/runtime/executor
 
 WORKDIR /src
 RUN CGO_ENABLED=1 CC=gcc GOOS=linux go build \

@@ -37,6 +37,26 @@ func WriteError(w http.ResponseWriter, r *http.Request, status int, typ, code, m
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
+	if r.URL.Path == "/v1/messages" || r.URL.Path == "/v1/messages/count_tokens" {
+		switch status {
+		case 400, 413:
+			typ = "invalid_request_error"
+		case 401:
+			typ = "authentication_error"
+		case 403:
+			typ = "permission_error"
+		case 404:
+			typ = "not_found_error"
+		case 429:
+			typ = "rate_limit_error"
+		case 529:
+			typ = "overloaded_error"
+		default:
+			typ = "api_error"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "error", "error": map[string]string{"type": typ, "message": message}, "request_id": RequestID(r.Context())})
+		return
+	}
 	if enabled, _ := r.Context().Value(geminiErrorsKey).(bool); enabled {
 		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
 			"code": status, "message": message, "status": geminiErrorStatus(status),

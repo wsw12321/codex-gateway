@@ -54,6 +54,7 @@ const snapshot = (id = "member") => ({user_id: id, providers: [
   ]},
   {provider: "antigravity", mode: "selected", account_ids: [], sync_warning: "upstream_account_sync_unavailable",
     accounts: [{id: "a1", display_name: "Gemini 账号", email_masked: "ge***@example.test", status: "unknown"}]},
+  {provider: "anthropic", mode: "all", account_ids: [], accounts: [{id: "h1", display_name: "Claude 账号", email_masked: "cl***@example.test", status: "available"}]},
 ]});
 
 function dashboard() {
@@ -229,4 +230,14 @@ test("save failures retain input and a sync warning does not block saving a loca
   assert.equal(ui.form("antigravity").querySelector('input[name="reason"]').value, "retain");
   ui.context.api = original; await ui.submit("antigravity");
   assert.equal(ui.writes().length, 1);
+});
+
+test('Claude account scope starts with all and independently persists an empty selected deny list', async () => {
+  const ui = dashboard(); await ui.load();
+  assert.match(ui.card('anthropic').textContent, /Claude/);
+  assert.equal(ui.form('anthropic').querySelector('select').value, 'all');
+  ui.edit('mode', 'selected', 'anthropic'); ui.edit('reason', 'restrict Claude', 'anthropic');
+  await ui.submit('anthropic');
+  assert.match(ui.writes().at(-1).url, /\/upstream-access\/anthropic$/);
+  assert.deepEqual(JSON.parse(ui.writes().at(-1).options.body), {mode: 'selected', account_ids: [], reason: 'restrict Claude'});
 });

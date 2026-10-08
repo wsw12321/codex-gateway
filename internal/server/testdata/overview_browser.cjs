@@ -55,12 +55,13 @@ async function main() {
       if (url.pathname === "/admin/usage/global") return send({summary: {usage: {tokens: 9012345, requests: 2010, actual_cost_usd: "128.123456789", unpriced_tokens: 45}, pricing_coverage: "0.99", active_users: 7, total_users: 12}});
       if (url.pathname === "/admin/upstream-accounts") return send({accounts: [account, {...account, status: "unavailable"}]});
       if (url.pathname === "/admin/antigravity-accounts") return failAGY ? send({error: {message: "模拟 Antigravity 加载失败"}}, 503) : send({accounts: [account]});
+      if (url.pathname === "/admin/anthropic-accounts") return send({accounts: [account]});
       if (url.pathname === "/admin/alerts") return send({alerts: [{Severity: "warning"}]});
       throw new Error(`Unexpected request ${url.pathname}`);
     });
     await page.goto("http://127.0.0.1:8765/#overview");
     await page.evaluate((value) => { bindUI(); initializeDateFilters(); renderState(value); setConnection("已连接", "ok"); }, initial);
-    await page.waitForFunction(() => Object.values(overviewSnapshots).filter(Boolean).length === 6);
+    await page.waitForFunction(() => Object.values(overviewSnapshots).filter(Boolean).length === 7);
     assert.equal(await page.locator("#overview-cash").textContent(), "US$123.456789123456");
     assert.equal(await page.locator("#overview-recent-requests .overview-request-row").count(), 5);
     assert.equal(await page.locator("#onboarding-complete").isVisible(), true);

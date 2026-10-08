@@ -438,6 +438,7 @@ else:
 
     def test_a_keeps_provider_destination_rules_separate(self):
         for client, destinations in (("codex_clients", "codex_upstreams"),
+                                     ("codex_clients", "cpa_anthropic_upstreams"),
                                      ("antigravity_clients", "antigravity_upstreams")):
             with self.subTest(client=client):
                 self.egress_config.write_text(self.egress_baseline.replace(
@@ -449,7 +450,7 @@ else:
                 self.assertEqual(self.run_log.read_text(), "")
 
     def test_a_must_not_authorize_literal_ips_via_reverse_dns(self):
-        for destinations in ("codex_upstreams", "antigravity_upstreams"):
+        for destinations in ("codex_upstreams", "cpa_anthropic_upstreams", "antigravity_upstreams"):
             with self.subTest(destinations=destinations):
                 self.egress_config.write_text(self.egress_baseline.replace(
                     f"acl {destinations} dstdomain -n ",
@@ -462,6 +463,7 @@ else:
     def test_b_must_match_both_exact_destination_lists_without_reverse_dns(self):
         for original, replacement in (
             ("auth.openai.com chatgpt.com", ".openai.com .chatgpt.com"),
+            ("platform.claude.com api.anthropic.com", ".claude.com .anthropic.com"),
             ("accounts.google.com", ".google.com"),
             ("cloudcode-pa.googleapis.com ", ".googleapis.com "),
             ("oauth2.googleapis.com ", ""),

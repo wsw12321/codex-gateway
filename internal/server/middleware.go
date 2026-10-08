@@ -160,7 +160,7 @@ func apiKeyFrom(ctx context.Context) store.APIKey {
 
 func (s *Server) requireAPIKey(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, ok := bearerToken(r.Header)
+		raw, ok := gatewayAPIKey(r)
 		if !ok {
 			s.rejectAPIKey(w, r, "missing_or_invalid_bearer")
 			return
@@ -219,6 +219,32 @@ func (s *Server) rejectAPIKey(w http.ResponseWriter, r *http.Request, reason str
 		SourceIP: ip, RequestID: httpx.RequestID(r.Context()), Metadata: map[string]any{"reason": reason},
 	})
 	httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "invalid_api_key", "API Key 无效或已过期")
+}
+
+// gatewayAPIKey accepts the native Anthropic API key spelling only on its
+// endpoints and model discovery. Any duplicate or simultaneous credentials
+// are ambiguous, even when their values happen to be equal.
+func gatewayAPIKey(r *http.Request) (string, bool) {
+	var authorization, apiKeys []string
+	for name, values := range r.Header {
+		if strings.EqualFold(name, "Authorization") {
+			authorization = append(authorization, values...)
+		}
+		if strings.EqualFold(name, "X-Api-Key") {
+			apiKeys = append(apiKeys, values...)
+		}
+	}
+	if len(apiKeys) > 0 {
+		if len(authorization) != 0 || len(apiKeys) != 1 || (r.URL.Path != "/v1/messages" && r.URL.Path != "/v1/messages/count_tokens" && r.URL.Path != "/v1/models") {
+			return "", false
+		}
+		key := apiKeys[0]
+		return key, key != "" && strings.TrimSpace(key) == key && !strings.ContainsAny(key, ", \t\r\n")
+	}
+	if len(authorization) != 1 {
+		return "", false
+	}
+	return bearerToken(http.Header{"Authorization": authorization})
 }
 
 func bearerToken(header http.Header) (string, bool) {

@@ -17,6 +17,9 @@ func isAntigravityAccountRequest(r *http.Request) bool {
 }
 
 func (s *Server) accountStore(r *http.Request) *store.Store {
+	if isAnthropicAccountRequest(r) {
+		return s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
+	}
 	if isAntigravityAccountRequest(r) {
 		return s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
 	}
@@ -24,6 +27,9 @@ func (s *Server) accountStore(r *http.Request) *store.Store {
 }
 
 func (s *Server) accountClient(r *http.Request) *gatewayproxy.Client {
+	if isAnthropicAccountRequest(r) {
+		return s.anthropic
+	}
 	if isAntigravityAccountRequest(r) {
 		return s.antigravity
 	}

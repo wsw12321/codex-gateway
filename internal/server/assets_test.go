@@ -121,6 +121,7 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 		`id="guide-codex-install-code"`, `id="guide-codex-configure-code"`, `id="guide-codex-start-code"`,
 		`id="guide-agy-install-windows-code"`, `id="guide-agy-install-unix-code"`,
 		`id="guide-agy-configure-code"`, `id="guide-agy-start-code"`,
+		`id="guide-claude"`, `id="guide-claude-configure-code"`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
 		`npm install -g @openai/codex`, `gemini-pro-agent`, `Gateway 不再改写旧模型别名`, `Win+R`, `cmd`,
 	} {
 		if !strings.Contains(html, required) {
@@ -277,7 +278,7 @@ func TestUpstreamAccountsDashboardIsOwnerOnlyAndHandlesLiveQuota(t *testing.T) {
 		`/admin/upstream-accounts${querySuffix(query)}`,
 		`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`,
 		`const upstreamQuotaRequestBody = '{"method":"account/rateLimits/read","id":6}'`,
-		`{method: "POST", body: upstreamQuotaRequestBody}`,
+		`{method: "POST", body: provider === "anthropic" ? "{}" : upstreamQuotaRequestBody}`,
 		`response?.id !== 6`, `response.result`, `const receivedAt = new Date()`,
 		`account.email_masked`, `account?.request_count`, `account?.error_count`,
 		`account?.input_tokens`, `account?.cached_input_tokens`, `account?.output_tokens`,

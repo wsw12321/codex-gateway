@@ -14,8 +14,9 @@ Its CPA catalog context is 272000 tokens; larger channel capacity requires
 separate real-account validation. `-local-model` disables catalog downloads.
 The management panel and provider/plugin discovery auto-updates remain disabled.
 
-Gateway selects accounts for both providers. The internal account interfaces
-are `/internal/upstream-accounts/*` and `/internal/antigravity-accounts/*`.
+Gateway selects accounts for all three providers. The internal account interfaces
+are `/internal/upstream-accounts/*`, `/internal/antigravity-accounts/*`, and
+`/internal/anthropic-accounts/*`.
 Candidate providers determine the corresponding Gateway callback; request
 headers cannot override the provider. Eligibility is rechecked before affinity
 reuse. The Gateway selector limits one request to two credentials, with no
@@ -47,3 +48,28 @@ explicit prior Codex transport/quota regression list. Run
 runtime checks, including credential permissions, provider capabilities,
 management-key separation and exclusive refresh locking. These checks do not
 replace the maintenance-window tests with real accounts and a Gateway key.
+
+Claude subscriptions use Gateway provider `anthropic`; the adapter maps it to
+CPA executor `claude` and OAuth flow `anthropic`. The independent mode-0600
+`.gateway-anthropic-identities` registry accepts only account UUID + organization
+UUID pairs verified by the fixed upstream OAuth profile endpoint. Imports rotate
+the refresh token when present and re-verify the profile; access-only exports
+also require a fresh profile verification. Uploaded policy, plan and identity
+fields are ignored. Reauthorization keeps the existing account ID and filename.
+Duplicates are quarantined. A changed or unavailable profile after token rotation
+persists the rotated credential disabled, requiring verified reauthorization.
+
+Native `/v1/messages` and `/v1/messages/count_tokens` requests cannot select a
+non-Claude executor in gateway-allocation mode. Native SSE ordering, tool inputs,
+thinking/signatures and protocol headers retain CPA's tested upstream behavior.
+Claude transport overrides are removed; OAuth and inference use only the fixed
+`platform.claude.com` and `api.anthropic.com` authorities through the configured
+proxy, with redirects rejected. Account quota refresh reads the latest observed
+five-hour/seven-day headers and their observation time. Missing percentages and
+subscription plans remain unknown; native timed cooldown recovery stays enabled.
+
+The Anthropic capability endpoint returns both `upstream_account_access_v1` and
+`anthropic_messages_v1`. Run real-account acceptance only after database,
+Gateway, and this CPA image are upgraded. Cover reauthorization, refresh then
+restart, streaming tool continuation and billing attribution. Before rollback,
+drain Claude traffic and pending settlements; retain the identity/control files.

@@ -13,13 +13,17 @@ func (c *Client) requireAccountAccessCapability(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	var response struct {
-		Protocol string `json:"protocol"`
+		Protocol          string `json:"protocol"`
+		AnthropicMessages string `json:"anthropic_messages,omitempty"`
 	}
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
 		return err
 	}
 	if response.Protocol != "upstream_account_access_v1" {
 		return errors.New("sidecar account access protocol unavailable")
+	}
+	if c.anthropic && response.AnthropicMessages != "anthropic_messages_v1" {
+		return errors.New("sidecar Anthropic protocol unavailable")
 	}
 	return nil
 }

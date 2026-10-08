@@ -81,8 +81,10 @@ func modelPriceValue(pricing config.UsagePricing, model, multiplier string, stor
 						continue
 					}
 					price.InputUSDPerMillion, price.CachedInputUSDPerMillion, price.OutputUSDPerMillion = "0", "0", "0"
-					if price.CacheWriteUSDPerMillion != nil {
-						*price.CacheWriteUSDPerMillion = "0"
+					for _, cachePrice := range []*string{price.CacheWriteUSDPerMillion, price.CacheWrite5mUSDPerMillion, price.CacheWrite1hUSDPerMillion} {
+						if cachePrice != nil {
+							*cachePrice = "0"
+						}
 					}
 				}
 			}

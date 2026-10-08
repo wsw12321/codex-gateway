@@ -86,14 +86,16 @@ func (l *upstreamQuotaLimiter) begin(accountID string, now time.Time) (func(), i
 }
 
 type upstreamAccountUsageDTO struct {
-	RequestCount      int64  `json:"request_count"`
-	ErrorCount        int64  `json:"error_count"`
-	InputTokens       int64  `json:"input_tokens"`
-	CachedInputTokens int64  `json:"cached_input_tokens"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	ReasoningTokens   int64  `json:"reasoning_tokens"`
-	EquivalentCostUSD string `json:"equivalent_cost_usd"`
+	RequestCount       int64  `json:"request_count"`
+	ErrorCount         int64  `json:"error_count"`
+	InputTokens        int64  `json:"input_tokens"`
+	CachedInputTokens  int64  `json:"cached_input_tokens"`
+	CacheWriteTokens   int64  `json:"cache_write_tokens"`
+	CacheWrite5mTokens int64  `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens int64  `json:"cache_write_1h_tokens"`
+	OutputTokens       int64  `json:"output_tokens"`
+	ReasoningTokens    int64  `json:"reasoning_tokens"`
+	EquivalentCostUSD  string `json:"equivalent_cost_usd"`
 }
 
 type upstreamAccountDTO struct {
@@ -112,6 +114,8 @@ type upstreamAccountDTO struct {
 	InputTokens         int64      `json:"input_tokens"`
 	CachedInputTokens   int64      `json:"cached_input_tokens"`
 	CacheWriteTokens    int64      `json:"cache_write_tokens"`
+	CacheWrite5mTokens  int64      `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens  int64      `json:"cache_write_1h_tokens"`
 	OutputTokens        int64      `json:"output_tokens"`
 	ReasoningTokens     int64      `json:"reasoning_tokens"`
 	EquivalentCostUSD   string     `json:"equivalent_cost_usd"`
@@ -246,7 +250,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			GatewayQuotaStatus: gatewayQuotaStatus, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,
 			InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
-			CacheWriteTokens: usage.CacheWriteTokens, OutputTokens: usage.OutputTokens,
+			CacheWriteTokens: usage.CacheWriteTokens, CacheWrite5mTokens: usage.CacheWrite5mTokens, CacheWrite1hTokens: usage.CacheWrite1hTokens, OutputTokens: usage.OutputTokens,
 			ReasoningTokens: usage.ReasoningTokens, EquivalentCostUSD: usage.EquivalentCostUSD,
 		})
 	}
@@ -262,6 +266,9 @@ func (s *Server) syncUpstreamAccountsLocked(ctx context.Context, provider string
 	client := s.upstream
 	if provider == store.UpstreamProviderAntigravity {
 		client = s.antigravity
+	}
+	if provider == store.UpstreamProviderAnthropic {
+		client = s.anthropic
 	}
 	if client == nil {
 		return errors.New("upstream account client is unavailable")
@@ -294,7 +301,7 @@ func upstreamUsageDTO(row store.UpstreamAccountSummary) upstreamAccountUsageDTO 
 	return upstreamAccountUsageDTO{
 		RequestCount: row.RequestCount, ErrorCount: row.ErrorCount,
 		InputTokens: row.InputTokens, CachedInputTokens: row.CachedInputTokens,
-		CacheWriteTokens: row.CacheWriteTokens, OutputTokens: row.OutputTokens,
+		CacheWriteTokens: row.CacheWriteTokens, CacheWrite5mTokens: row.CacheWrite5mTokens, CacheWrite1hTokens: row.CacheWrite1hTokens, OutputTokens: row.OutputTokens,
 		ReasoningTokens: row.ReasoningTokens, EquivalentCostUSD: row.EquivalentCostUSD,
 	}
 }

@@ -19,6 +19,7 @@ const (
 	PricingSchemaV2 = 2
 
 	CacheWriteSeparate        = "separate"
+	CacheWriteSeparateByTTL   = "separate_by_ttl"
 	CacheWriteIncludedInInput = "included_in_input"
 
 	PricingTierStandard     = "standard"
@@ -33,6 +34,7 @@ const (
 	FallbackMissingServiceTier      = "missing_service_tier"
 	FallbackMissingPriceCombination = "missing_price_combination"
 	FallbackMissingCacheWriteTokens = "missing_cache_write_tokens"
+	FallbackMissingCacheWriteTTL    = "missing_cache_write_ttl"
 
 	FallbackMaxPublished       = "max_published"
 	FallbackAllUncachedAsWrite = "all_uncached_as_write"
@@ -78,10 +80,12 @@ type ServiceTierPricing struct {
 }
 
 type TokenPricing struct {
-	InputUSDPerMillion       string  `json:"input_usd_per_million"`
-	CachedInputUSDPerMillion string  `json:"cached_input_usd_per_million"`
-	CacheWriteUSDPerMillion  *string `json:"cache_write_usd_per_million,omitempty"`
-	OutputUSDPerMillion      string  `json:"output_usd_per_million"`
+	InputUSDPerMillion        string  `json:"input_usd_per_million"`
+	CachedInputUSDPerMillion  string  `json:"cached_input_usd_per_million"`
+	CacheWriteUSDPerMillion   *string `json:"cache_write_usd_per_million,omitempty"`
+	CacheWrite5mUSDPerMillion *string `json:"cache_write_5m_usd_per_million,omitempty"`
+	CacheWrite1hUSDPerMillion *string `json:"cache_write_1h_usd_per_million,omitempty"`
+	OutputUSDPerMillion       string  `json:"output_usd_per_million"`
 }
 
 // PricingSnapshot is persisted in billing_reservations for v2. It is kept
@@ -95,13 +99,15 @@ type PricingSnapshot struct {
 }
 
 type PricingDecision struct {
-	PricingServiceTier       string
-	ContextClass             string
-	InputUSDPerMillion       string
-	CachedInputUSDPerMillion string
-	CacheWriteUSDPerMillion  string
-	OutputUSDPerMillion      string
-	FallbackReason           string
+	PricingServiceTier        string
+	ContextClass              string
+	InputUSDPerMillion        string
+	CachedInputUSDPerMillion  string
+	CacheWriteUSDPerMillion   string
+	CacheWrite5mUSDPerMillion string
+	CacheWrite1hUSDPerMillion string
+	OutputUSDPerMillion       string
+	FallbackReason            string
 }
 
 func ParseUsagePricing(raw string) (UsagePricing, error) {
@@ -230,7 +236,7 @@ func validateV2ModelPricing(model string, price ModelPricing) error {
 	if price.InputUSDPerMillion != "" || price.CachedInputUSDPerMillion != "" || price.OutputUSDPerMillion != "" {
 		return fmt.Errorf("pricing v2 model %q must not mix v1 price fields", model)
 	}
-	if price.CacheWriteMode != CacheWriteSeparate && price.CacheWriteMode != CacheWriteIncludedInInput {
+	if price.CacheWriteMode != CacheWriteSeparate && price.CacheWriteMode != CacheWriteSeparateByTTL && price.CacheWriteMode != CacheWriteIncludedInInput {
 		return fmt.Errorf("pricing v2 model %q has invalid cache_write_mode", model)
 	}
 	if price.MaxInputTokens <= 0 || price.LongContextThresholdTokens <= 0 ||
@@ -281,6 +287,21 @@ func validateTokenPricing(model, tier, contextClass, cacheWriteMode string, pric
 		}
 	} else if price.CacheWriteUSDPerMillion != nil {
 		return fmt.Errorf("pricing v2 model %q tier %q context %q must omit cache_write_usd_per_million", model, tier, contextClass)
+	}
+	if cacheWriteMode == CacheWriteSeparateByTTL {
+		for field, value := range map[string]*string{
+			"cache_write_5m_usd_per_million": price.CacheWrite5mUSDPerMillion,
+			"cache_write_1h_usd_per_million": price.CacheWrite1hUSDPerMillion,
+		} {
+			if value == nil {
+				return fmt.Errorf("pricing v2 model %q tier %q context %q requires %s", model, tier, contextClass, field)
+			}
+			if _, err := billing.ParsePrice(*value); err != nil {
+				return fmt.Errorf("pricing v2 model %q tier %q context %q %s: %w", model, tier, contextClass, field, err)
+			}
+		}
+	} else if price.CacheWrite5mUSDPerMillion != nil || price.CacheWrite1hUSDPerMillion != nil {
+		return fmt.Errorf("pricing v2 model %q tier %q context %q must omit TTL cache write prices", model, tier, contextClass)
 	}
 	return nil
 }
@@ -434,6 +455,13 @@ func (s PricingSnapshot) Select(actualServiceTier string, inputTokens int64) (Pr
 	if selected.CacheWriteUSDPerMillion != nil {
 		decision.CacheWriteUSDPerMillion = *selected.CacheWriteUSDPerMillion
 	}
+	if s.Rule.CacheWriteMode == CacheWriteSeparateByTTL {
+		decision.CacheWrite5mUSDPerMillion = *selected.CacheWrite5mUSDPerMillion
+		decision.CacheWrite1hUSDPerMillion = *selected.CacheWrite1hUSDPerMillion
+		// The aggregate applied write price remains available for auditing the
+		// conservative charge when an upstream omits the TTL breakdown.
+		decision.CacheWriteUSDPerMillion = maxDecimal(decision.CacheWrite5mUSDPerMillion, decision.CacheWrite1hUSDPerMillion)
+	}
 	return decision, nil
 }
 
@@ -474,7 +502,7 @@ func componentMaximum(values []TokenPricing, cacheWriteMode string) (*TokenPrici
 	maximum := TokenPricing{
 		InputUSDPerMillion: "0", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0",
 	}
-	cacheWrite := "0"
+	cacheWrite, cacheWrite5m, cacheWrite1h := "0", "0", "0"
 	for _, value := range values {
 		maximum.InputUSDPerMillion = maxDecimal(maximum.InputUSDPerMillion, value.InputUSDPerMillion)
 		maximum.CachedInputUSDPerMillion = maxDecimal(maximum.CachedInputUSDPerMillion, value.CachedInputUSDPerMillion)
@@ -482,9 +510,18 @@ func componentMaximum(values []TokenPricing, cacheWriteMode string) (*TokenPrici
 		if value.CacheWriteUSDPerMillion != nil {
 			cacheWrite = maxDecimal(cacheWrite, *value.CacheWriteUSDPerMillion)
 		}
+		if value.CacheWrite5mUSDPerMillion != nil {
+			cacheWrite5m = maxDecimal(cacheWrite5m, *value.CacheWrite5mUSDPerMillion)
+		}
+		if value.CacheWrite1hUSDPerMillion != nil {
+			cacheWrite1h = maxDecimal(cacheWrite1h, *value.CacheWrite1hUSDPerMillion)
+		}
 	}
 	if cacheWriteMode == CacheWriteSeparate {
 		maximum.CacheWriteUSDPerMillion = &cacheWrite
+	}
+	if cacheWriteMode == CacheWriteSeparateByTTL {
+		maximum.CacheWrite5mUSDPerMillion, maximum.CacheWrite1hUSDPerMillion = &cacheWrite5m, &cacheWrite1h
 	}
 	return &maximum, true
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
@@ -34,6 +35,9 @@ type usageRequestDTO struct {
 	CachedInputTokens       int64
 	CacheWriteTokens        int64
 	CacheWriteTokensPresent bool
+	CacheWrite5mTokens      int64
+	CacheWrite1hTokens      int64
+	CacheWriteTTLPresent    bool
 	OutputTokens            int64
 	ReasoningTokens         int64
 	RequestBytes            int64
@@ -77,15 +81,16 @@ func personalUsageDTO(row store.UsageRequest) usageRequestDTO {
 		CachedInputTokens:       row.CachedInputTokens,
 		CacheWriteTokens:        row.CacheWriteTokens,
 		CacheWriteTokensPresent: row.CacheWriteTokensPresent,
-		OutputTokens:            row.OutputTokens,
-		ReasoningTokens:         row.ReasoningTokens,
-		RequestBytes:            row.RequestBytes,
-		ResponseBytes:           row.ResponseBytes,
-		UpstreamRequestID:       row.UpstreamRequestID,
-		PricingRuleVersion:      row.PricingRuleVersion,
-		PricingServiceTier:      row.PricingServiceTier,
-		ContextClass:            row.ContextClass,
-		PricingFallbackReason:   row.PricingFallbackReason,
+		CacheWrite5mTokens:      row.CacheWrite5mTokens, CacheWrite1hTokens: row.CacheWrite1hTokens, CacheWriteTTLPresent: row.CacheWriteTTLPresent,
+		OutputTokens:          row.OutputTokens,
+		ReasoningTokens:       row.ReasoningTokens,
+		RequestBytes:          row.RequestBytes,
+		ResponseBytes:         row.ResponseBytes,
+		UpstreamRequestID:     row.UpstreamRequestID,
+		PricingRuleVersion:    row.PricingRuleVersion,
+		PricingServiceTier:    row.PricingServiceTier,
+		ContextClass:          row.ContextClass,
+		PricingFallbackReason: row.PricingFallbackReason,
 	}
 }
 
@@ -104,12 +109,14 @@ func (s *Server) usageAccountEmails(ctx context.Context, rows []store.UsageReque
 	if !hasAttribution {
 		return result, nil
 	}
-	accounts, err := s.store.ListUpstreamAccounts(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, account := range accounts {
-		result[account.ID] = account.MaskedEmail
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
+		accounts, err := s.store.WithUpstreamProvider(provider).ListUpstreamAccounts(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, account := range accounts {
+			result[account.ID] = account.MaskedEmail
+		}
 	}
 	s.completeUsageAccountEmails(ctx, rows, result)
 	return result, nil
@@ -119,9 +126,6 @@ func (s *Server) usageAccountEmails(ctx context.Context, rows []store.UsageReque
 // missing display metadata without modifying account settings or inventing an
 // attribution for old requests. A sidecar failure preserves the durable ID.
 func (s *Server) completeUsageAccountEmails(ctx context.Context, rows []store.UsageRequest, emails map[string]string) {
-	if s.upstream == nil {
-		return
-	}
 	missing := make(map[string]bool)
 	for _, row := range rows {
 		if row.UpstreamAccountID != nil && validUpstreamAccountID(*row.UpstreamAccountID) && emails[*row.UpstreamAccountID] == "" {
@@ -133,13 +137,19 @@ func (s *Server) completeUsageAccountEmails(ctx context.Context, rows []store.Us
 	}
 	ctx, cancel := context.WithTimeout(ctx, upstreamAccountSyncTimeout)
 	defer cancel()
-	accounts, err := s.upstream.ListUpstreamAccounts(ctx)
-	if err != nil {
-		return
-	}
-	for _, account := range accounts {
-		if missing[account.ID] {
-			emails[account.ID] = account.MaskedEmail
+	for _, client := range []*gatewayproxy.Client{s.upstream, s.antigravity, s.anthropic} {
+		if client == nil || len(missing) == 0 {
+			continue
+		}
+		accounts, err := client.ListUpstreamAccounts(ctx)
+		if err != nil {
+			continue
+		}
+		for _, account := range accounts {
+			if missing[account.ID] {
+				emails[account.ID] = account.MaskedEmail
+				delete(missing, account.ID)
+			}
 		}
 	}
 }

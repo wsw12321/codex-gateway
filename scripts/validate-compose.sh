@@ -27,11 +27,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.4-gateway.patch
-compat_patch_sha256=8d605cc62e3da445753adf0a4d09f902836c2ccc825fb0e7b2a62c63ef491e95
+compat_patch_sha256=7d5eceed9f551bf11d82d179a92c61542ad55cb8766fea81e52000b7a7801a50
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.4-d33f63f8-8d605cc62e3da445-cpa
+compat_image=codex-gateway-compat:v8.0.4-d33f63f8-7d5eceed9f551bf1-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -87,19 +87,21 @@ grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
     grep -Fxq 'http_access deny all' "$egress_config" && \
     grep -Fxq 'request_header_access Forwarded deny all' "$egress_config" || \
     fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
-test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "gateway_oidc_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
+test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "gateway_oidc_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "cpa_anthropic_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
     "$(printf '%s\n' \
         'acl codex_clients src 172.28.30.3/32' \
         'acl antigravity_clients src 172.28.40.3/32' \
         'acl gateway_oidc_clients src 172.28.30.2/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
         'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
+        'acl cpa_anthropic_upstreams dstdomain -n platform.claude.com api.anthropic.com' \
         'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
         'http_access allow CONNECT codex_clients codex_upstreams' \
         'http_access allow CONNECT codex_clients cpa_google_upstreams' \
+        'http_access allow CONNECT codex_clients cpa_anthropic_upstreams' \
         'http_access allow CONNECT antigravity_clients antigravity_upstreams' 'http_access deny all')" || \
     fail 'egress must separate Codex and Antigravity destination rules'
 # The generated fragment is the only place permitted to select an upstream or
@@ -159,11 +161,13 @@ test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cac
         'acl relay_clients src 10.77.0.1/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
         'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
+        'acl cpa_anthropic_upstreams dstdomain -n platform.claude.com api.anthropic.com' \
         'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net' \
         'http_access deny !CONNECT' \
         'http_access deny !TLS_port' \
         'http_access allow CONNECT relay_clients codex_upstreams' \
         'http_access allow CONNECT relay_clients cpa_google_upstreams' \
+        'http_access allow CONNECT relay_clients cpa_anthropic_upstreams' \
         'http_access allow CONNECT relay_clients antigravity_upstreams' \
         'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex and Antigravity HTTPS destinations'
 test "$(awk '$1 == "cache_mem" { print }' "$relay_config")" = 'cache_mem 0 MB' || \

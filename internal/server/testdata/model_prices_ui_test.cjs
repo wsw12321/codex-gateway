@@ -274,3 +274,23 @@ test("ledger displays immutable model price action, version and full matrix", ()
   ui.run('renderBillingLedger({ledger_entries: [{entry_type:"model_price", transaction_snapshot:ledgerSnapshot}]})');
   assert.match(ui.nodes.get("billing-ledger-rows").textContent, /恢复配置价/);
 });
+
+test('Claude TTL prices expose and preserve distinct five-minute and one-hour values', async () => {
+  const ui = dashboard();
+  const {row} = require('./model_prices_fixtures.cjs');
+  const model = 'claude-sonnet-exact';
+  const price = {cache_write_mode: 'separate_by_ttl', max_input_tokens: 200000, long_context_threshold_tokens: 100000,
+    service_tiers: {standard: {short: {input_usd_per_million: '3', cached_input_usd_per_million: '0.3', cache_write_5m_usd_per_million: '3.75', cache_write_1h_usd_per_million: '6', output_usd_per_million: '15'}}}};
+  ui.rows.push(row(model, price));
+  await ui.run('loadModelPrices()');
+  assert.match(ui.card(model).textContent, /5 分钟 \/ 1 小时独立计费/);
+  assert.equal(ui.input('standard.short.cache_write_5m_usd_per_million', model).value, '3.75');
+  assert.equal(ui.input('standard.short.cache_write_1h_usd_per_million', model).value, '6');
+  assert.equal(ui.input('standard.short.cache_write_usd_per_million', model), undefined);
+  ui.edit('standard.short.cache_write_5m_usd_per_million', '4.1', model);
+  ui.edit('standard.short.cache_write_1h_usd_per_million', '6.2', model);
+  ui.edit('reason', 'adjust TTL prices', model); await ui.submit(model);
+  const saved = JSON.parse(ui.calls.find(call => call.options).options.body).price.service_tiers.standard.short;
+  assert.equal(saved.cache_write_5m_usd_per_million, '4.1'); assert.equal(saved.cache_write_1h_usd_per_million, '6.2');
+  assert.equal(saved.cache_write_usd_per_million, undefined);
+});

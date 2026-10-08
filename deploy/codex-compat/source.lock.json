@@ -3,7 +3,7 @@
   "tag": "v8.0.4",
   "commit": "d33f63f8e3d98428440ebca5a5b6a981a61ff71e",
   "patch": "cliproxy-v8.0.4-gateway.patch",
-  "patch_sha256": "8d605cc62e3da445753adf0a4d09f902836c2ccc825fb0e7b2a62c63ef491e95",
+  "patch_sha256": "7d5eceed9f551bf11d82d179a92c61542ad55cb8766fea81e52000b7a7801a50",
   "go_version": "1.26.8",
   "model_catalog": {
     "repository": "https://github.com/router-for-me/models",

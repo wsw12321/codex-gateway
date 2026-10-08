@@ -97,12 +97,204 @@ index 5b69fa62..00381a1b 100644
  golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
  golang.org/x/time v0.14.0/go.mod h1:eL/Oa2bBBK0TkX57Fyni+NgnyQQN4LitPmob2Hjnqw4=
  golang.org/x/tools v0.0.0-20180917221912-90fa682c2a6e/go.mod h1:n7NCudcB/nEzxVGmLbDWY5pfWTLqBcC2KZ6jyYvM4mQ=
+diff --git a/internal/api/anthropic_gateway_internal.go b/internal/api/anthropic_gateway_internal.go
+new file mode 100644
+index 00000000..4e81af01
+--- /dev/null
++++ b/internal/api/anthropic_gateway_internal.go
+@@ -0,0 +1,68 @@
++package api
++
++import (
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"math"
++	"net/http"
++	"time"
++)
++
++func (s *Server) registerGatewayAnthropicRoutes() {
++	group := s.engine.Group("/internal/anthropic-accounts")
++	group.Use(internalAccountAuthMiddleware(s.accessManager))
++	group.GET("", s.listUpstreamAccounts)
++	group.GET("/concurrency", s.getUpstreamConcurrency)
++	group.PUT("/:id/status", s.setUpstreamAccountStatus)
++	group.GET("/capabilities", func(c *gin.Context) {
++		if s.handlers == nil || s.handlers.AuthManager == nil {
++			c.Status(http.StatusServiceUnavailable)
++			return
++		}
++		if _, ok := s.handlers.AuthManager.Selector().(*auth.GatewayAllocationSelector); !ok {
++			c.Status(http.StatusServiceUnavailable)
++			return
++		}
++		c.JSON(200, gin.H{"protocol": "upstream_account_access_v1", "anthropic_messages": "anthropic_messages_v1"})
++	})
++	group.POST("/:id/quota", s.getAnthropicAccountQuota)
++}
++func (s *Server) getAnthropicAccountQuota(c *gin.Context) {
++	c.Header("Cache-Control", "no-store")
++	if s.handlers == nil || s.handlers.AuthManager == nil {
++		c.Status(503)
++		return
++	}
++	rpc, err := decodeQuotaRPCRequest(c.Request.Body)
++	if err != nil {
++		c.JSON(400, gin.H{"error": "quota_request_invalid"})
++		return
++	}
++	candidate := findGatewayRouteAccount(c, s.handlers.AuthManager.List(), c.Param("id"))
++	if candidate == nil {
++		c.JSON(404, gin.H{"error": "upstream_account_not_found"})
++		return
++	}
++	snapshot := auth.GatewayAnthropicQuota(candidate)
++	limit := quotaRateLimitView{LimitID: "anthropic"}
++	for _, window := range snapshot.Windows {
++		if window.UsedPercent == nil {
++			continue
++		}
++		mins := int64(300)
++		if window.Window == "seven_day" {
++			mins = 10080
++		}
++		view := &quotaWindowView{UsedPercent: int(math.Round(*window.UsedPercent)), WindowDurationMins: &mins}
++		if reset, err := time.Parse(time.RFC3339, window.ResetAt); err == nil {
++			unix := reset.Unix()
++			view.ResetsAt = &unix
++		}
++		if window.Window == "five_hour" {
++			limit.Primary = view
++		} else {
++			limit.Secondary = view
++		}
++	}
++	c.JSON(200, quotaRPCResponse{ID: rpc.ID, Result: quotaRateLimitsResult{RateLimits: limit, RateLimitsByLimitID: map[string]quotaRateLimitView{"anthropic": limit}}})
++}
+diff --git a/internal/api/anthropic_gateway_native_test.go b/internal/api/anthropic_gateway_native_test.go
+new file mode 100644
+index 00000000..9caa2386
+--- /dev/null
++++ b/internal/api/anthropic_gateway_native_test.go
+@@ -0,0 +1,112 @@
++package api
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++type gatewayClaudeCapture struct {
++	codexSearchCaptureExecutor
++	t     *testing.T
++	calls int
++}
++
++func (e *gatewayClaudeCapture) Identifier() string { return "claude" }
++func (e *gatewayClaudeCapture) record(req coreexecutor.Request, opts coreexecutor.Options) {
++	e.t.Helper()
++	e.calls++
++	if opts.Metadata[coreexecutor.GatewayUserIDMetadataKey] != "00000000-0000-0000-0000-000000000001" || opts.Metadata[coreexecutor.CallerScopeMetadataKey] == "" || req.Metadata[coreexecutor.UpstreamAccountIndexMetadataKey] == "" {
++		e.t.Fatal("trusted attribution missing")
++	}
++	if opts.SourceFormat.String() != "claude" {
++		e.t.Fatalf("protocol %s", opts.SourceFormat)
++	}
++	for _, text := range []string{"signature-preserved", "cache_control", "image", "thinking", "tools"} {
++		if !strings.Contains(string(req.Payload), text) {
++			e.t.Fatalf("lost native field %s", text)
++		}
++	}
++	if opts.Headers.Get("Anthropic-Version") != "2023-06-01" || opts.Headers.Get("Anthropic-Beta") != "test-beta" {
++		e.t.Fatal("Anthropic headers lost")
++	}
++}
++func (e *gatewayClaudeCapture) Execute(_ context.Context, _ *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
++	e.record(req, opts)
++	return coreexecutor.Response{Payload: []byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)}, nil
++}
++func (e *gatewayClaudeCapture) CountTokens(_ context.Context, _ *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (coreexecutor.Response, error) {
++	e.record(req, opts)
++	return coreexecutor.Response{Payload: []byte(`{"input_tokens":4}`)}, nil
++}
++
++const gatewayClaudeSSE = "event: ping\ndata: {\"type\":\"ping\"}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
++
++func (e *gatewayClaudeCapture) ExecuteStream(_ context.Context, _ *auth.Auth, req coreexecutor.Request, opts coreexecutor.Options) (*coreexecutor.StreamResult, error) {
++	e.record(req, opts)
++	ch := make(chan coreexecutor.StreamChunk, 1)
++	ch <- coreexecutor.StreamChunk{Payload: []byte(gatewayClaudeSSE)}
++	close(ch)
++	return &coreexecutor.StreamResult{Chunks: ch}, nil
++}
++func TestGatewayAnthropicNativeMessagesAndCount(t *testing.T) {
++	s := newTestServer(t)
++	m := s.handlers.AuthManager
++	if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++		t.Fatal(err)
++	}
++	account, organization := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
++	subject := auth.AnthropicIdentitySubject(account, organization)
++	id, err := m.RegisterAnthropicIdentity(subject)
++	if err != nil {
++		t.Fatal(err)
++	}
++	a := &auth.Auth{ID: "claude-native.json", FileName: "claude-native.json", Provider: "claude", Status: auth.StatusActive, Metadata: map[string]any{"type": "claude", "account_uuid": account, "organization_uuid": organization, "gateway_anthropic_subject": subject, "access_token": "synthetic"}}
++	if _, err := m.Register(context.Background(), a); err != nil {
++		t.Fatal(err)
++	}
++	registry.GetGlobalRegistry().RegisterClient(a.ID, "claude", []*registry.ModelInfo{{ID: "claude-test", Object: "model", OwnedBy: "anthropic", Type: "claude"}})
++	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient(a.ID) })
++	executor := &gatewayClaudeCapture{t: t}
++	m.RegisterExecutor(executor)
++	for _, mode := range []string{"message", "stream", "count"} {
++		path := "/v1/messages?beta=true"
++		stream := "false"
++		if mode == "stream" {
++			stream = "true"
++		}
++		if mode == "count" {
++			path = "/v1/messages/count_tokens?beta=true"
++		}
++		body := `{"model":"claude-test","stream":` + stream + `,"max_tokens":10,"messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"thought","signature":"signature-preserved"}]},{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"hello","cache_control":{"type":"ephemeral"}}]}],"tools":[{"name":"tool","input_schema":{"type":"object"}}]}`
++		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
++		request.Header.Set("Authorization", "Bearer test-key")
++		request.Header.Set("Content-Type", "application/json")
++		request.Header.Set("Anthropic-Version", "2023-06-01")
++		request.Header.Set("Anthropic-Beta", "test-beta")
++		request.Header.Set(handlers.GatewayUserHeader, "00000000-0000-0000-0000-000000000001")
++		request.Header.Set(handlers.GatewayAffinityHeader, strings.Repeat("A", 43))
++		request.Header.Set("X-Provider", "antigravity")
++		response := httptest.NewRecorder()
++		s.engine.ServeHTTP(response, request)
++		if response.Code != 200 {
++			t.Fatalf("%s: %d %s", mode, response.Code, response.Body.String())
++		}
++		if response.Header().Get("X-Codex-Upstream-Account") != id {
++			t.Fatalf("%s missing attribution", mode)
++		}
++		if mode == "stream" && response.Body.String() != gatewayClaudeSSE {
++			t.Fatalf("SSE changed: %q", response.Body.String())
++		}
++	}
++	if executor.calls != 3 {
++		t.Fatal(executor.calls)
++	}
++}
 diff --git a/internal/api/antigravity_gateway_internal.go b/internal/api/antigravity_gateway_internal.go
 new file mode 100644
-index 00000000..02d0b265
+index 00000000..63ec5caf
 --- /dev/null
 +++ b/internal/api/antigravity_gateway_internal.go
-@@ -0,0 +1,149 @@
+@@ -0,0 +1,152 @@
 +package api
 +
 +import (
@@ -123,6 +315,9 @@ index 00000000..02d0b265
 +	provider := "codex"
 +	if c != nil && c.Request != nil && strings.HasPrefix(c.Request.URL.Path, "/internal/antigravity-accounts") {
 +		provider = "antigravity"
++	}
++	if c != nil && c.Request != nil && strings.HasPrefix(c.Request.URL.Path, "/internal/anthropic-accounts") {
++		provider = "claude"
 +	}
 +	return candidate != nil && strings.EqualFold(strings.TrimSpace(candidate.Provider), provider) && candidate.AuthKind() == auth.AuthKindOAuth
 +}
@@ -2732,10 +2927,10 @@ index 00000000..17183967
 +}
 diff --git a/internal/api/gateway_management.go b/internal/api/gateway_management.go
 new file mode 100644
-index 00000000..2a926f89
+index 00000000..affb90f1
 --- /dev/null
 +++ b/internal/api/gateway_management.go
-@@ -0,0 +1,212 @@
+@@ -0,0 +1,219 @@
 +package api
 +
 +import (
@@ -2763,7 +2958,7 @@ index 00000000..2a926f89
 +			c.AbortWithStatus(503)
 +			return
 +		}
-+		if provider := c.Param("provider"); provider != "codex" && provider != "antigravity" {
++		if provider := c.Param("provider"); provider != "codex" && provider != "antigravity" && provider != "anthropic" {
 +			c.AbortWithStatus(404)
 +			return
 +		}
@@ -2846,6 +3041,9 @@ index 00000000..2a926f89
 +func (s *Server) gatewayOAuthBegin(c *gin.Context) {
 +	provider := c.Param("provider")
 +	handler := s.mgmt.RequestCodexToken
++	if provider == "anthropic" {
++		handler = s.mgmt.RequestAnthropicToken
++	}
 +	if provider == "antigravity" {
 +		handler = s.mgmt.RequestAntigravityToken
 +	}
@@ -2912,6 +3110,10 @@ index 00000000..2a926f89
 +}
 +
 +func (s *Server) gatewayCredentialQuota(c *gin.Context) {
++	if c.Param("provider") == "anthropic" {
++		s.mgmt.GatewayAnthropicQuota(c)
++		return
++	}
 +	if c.Param("provider") == "antigravity" {
 +		s.mgmt.GatewayCredentialQuota(c)
 +		return
@@ -3019,10 +3221,23 @@ index 00000000..dff51df1
 +	}
 +}
 diff --git a/internal/api/handlers/management/auth_files_provider_oauth.go b/internal/api/handlers/management/auth_files_provider_oauth.go
-index 48fc4ef4..f35834cd 100644
+index 48fc4ef4..9ea6fe42 100644
 --- a/internal/api/handlers/management/auth_files_provider_oauth.go
 +++ b/internal/api/handlers/management/auth_files_provider_oauth.go
-@@ -449,7 +449,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -174,6 +174,12 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 			Storage:  tokenStorage,
+ 			Metadata: metadata,
+ 		}
++		if h.cfg.Routing.Strategy == "gateway-allocation" {
++			if err := h.gatewayVerifyAnthropic(ctx, record, tokenStorage.AccessToken); err != nil {
++				SetOAuthSessionError(state, "Claude identity verification failed")
++				return
++			}
++		}
+ 		if errGuard := guardOAuthSessionPendingForSave(state, "anthropic"); errGuard != nil {
+ 			return
+ 		}
+@@ -449,7 +455,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  			return
  		}
  
@@ -3031,7 +3246,7 @@ index 48fc4ef4..f35834cd 100644
  		if errInfo != nil {
  			log.Errorf("Failed to fetch user info: %v", errInfo)
  			SetOAuthSessionError(state, "Failed to fetch user info")
-@@ -475,12 +475,13 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -475,12 +481,13 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  
  		now := time.Now()
  		metadata := map[string]any{
@@ -3051,7 +3266,7 @@ index 48fc4ef4..f35834cd 100644
  		}
  		if email != "" {
  			metadata["email"] = email
-@@ -505,6 +506,22 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -505,6 +512,22 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  		if errGuard := guardOAuthSessionPendingForSave(state, "antigravity"); errGuard != nil {
  			return
  		}
@@ -3074,12 +3289,189 @@ index 48fc4ef4..f35834cd 100644
  		savedPath, errSave := h.saveTokenRecord(ctx, record)
  		if errSave != nil {
  			log.Errorf("Failed to save token to file: %v", errSave)
+diff --git a/internal/api/handlers/management/gateway_anthropic.go b/internal/api/handlers/management/gateway_anthropic.go
+new file mode 100644
+index 00000000..29cc4c23
+--- /dev/null
++++ b/internal/api/handlers/management/gateway_anthropic.go
+@@ -0,0 +1,120 @@
++package management
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"strings"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++// A profile fetched with the new access token is the sole identity authority.
++// Uploaded account IDs, organization IDs, plan labels and policy are discarded.
++func (h *Handler) gatewayVerifyAnthropic(ctx context.Context, a *coreauth.Auth, token string) error {
++	if h.authManager == nil || h.cfg == nil {
++		return errors.New("unavailable")
++	}
++	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
++	defer cancel()
++	profile, err := claude.NewClaudeAuth(h.cfg).FetchOAuthProfile(ctx, token)
++	if err != nil || profile == nil {
++		return errors.New("identity unavailable")
++	}
++	subject := coreauth.AnthropicIdentitySubject(profile.Account.UUID, profile.Organization.UUID)
++	if subject == "" {
++		return errors.New("identity invalid")
++	}
++	id, err := h.authManager.RegisterAnthropicIdentity(subject)
++	if err != nil {
++		return err
++	}
++	if a.Metadata == nil {
++		a.Metadata = map[string]any{}
++	}
++	a.Metadata["account_uuid"], a.Metadata["organization_uuid"] = profile.Account.UUID, profile.Organization.UUID
++	a.Metadata["gateway_anthropic_subject"], a.Metadata["email"] = subject, profile.Account.Email
++	a.Metadata["gateway_identity_conflict"] = false
++	a.Metadata["disabled"] = false
++	a.Provider = "claude"
++	a.ID, a.FileName = "gateway-anthropic-"+id+".json", "gateway-anthropic-"+id+".json"
++	found := false
++	for _, existing := range h.authManager.List() {
++		if existing.Provider != "claude" || existing.Metadata["gateway_anthropic_subject"] != subject {
++			continue
++		}
++		if found {
++			return errors.New("duplicate identity")
++		}
++		found = true
++		a.ID, a.FileName = existing.ID, existing.FileName
++	}
++	if !coreauth.ApplyGatewayOAuthAccountIdentity(a, a.Metadata) {
++		return errors.New("identity rejected")
++	}
++	return nil
++}
++
++func (h *Handler) gatewayImportAnthropic(c *gin.Context) {
++	if h.cfg == nil || h.authManager == nil {
++		gatewayCredentialError(c, 503)
++		return
++	}
++	var input struct {
++		RefreshToken string `json:"refresh_token"`
++		AccessToken  string `json:"access_token,omitempty"`
++		IDToken      string `json:"id_token,omitempty"`
++	}
++	if DecodeGatewayJSON(c, &input, 128<<10, "refresh_token", "access_token", "id_token") != nil || (strings.TrimSpace(input.RefreshToken) == "" && strings.TrimSpace(input.AccessToken) == "") || len(input.RefreshToken) > 32768 || len(input.AccessToken) > 32768 {
++		gatewayCredentialError(c, 400)
++		return
++	}
++	// Rotate when a refresh token is present, even if the access token works.
++	// Access-only exports still require a fresh upstream profile verification.
++	a := &coreauth.Auth{Provider: "claude", Metadata: map[string]any{"type": "claude", "refresh_token": input.RefreshToken, "access_token": input.AccessToken}}
++	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
++	defer cancel()
++	var err error
++	if strings.TrimSpace(input.RefreshToken) != "" {
++		a, err = executor.NewClaudeExecutor(h.cfg).Refresh(ctx, a)
++	}
++	if err != nil || a == nil {
++		gatewayCredentialError(c, 502)
++		return
++	}
++	token, _ := a.Metadata["access_token"].(string)
++	if h.gatewayVerifyAnthropic(ctx, a, token) != nil {
++		gatewayCredentialError(c, 409)
++		return
++	}
++	if _, err = h.saveTokenRecord(ctx, a); err != nil {
++		gatewayCredentialError(c, 503)
++		return
++	}
++	if err = h.upsertAuthRecord(ctx, a); err != nil {
++		gatewayCredentialError(c, 503)
++		return
++	}
++	c.JSON(http.StatusOK, gin.H{"status": "ok"})
++}
++
++func (h *Handler) GatewayAnthropicQuota(c *gin.Context) {
++	a, err := h.gatewayCredential(c)
++	if err != nil || a.Provider != "claude" {
++		gatewayCredentialError(c, 404)
++		return
++	}
++	snapshot := coreauth.GatewayAnthropicQuota(a)
++	out := gin.H{"status": "ok", "quota": []any{}, "windows": snapshot.Windows}
++	if snapshot.ObservedAt != "" {
++		out["observed_at"] = snapshot.ObservedAt
++	}
++	if snapshot.CooldownUntil != "" {
++		out["cooldown_until"] = snapshot.CooldownUntil
++	}
++	c.JSON(200, out)
++}
+diff --git a/internal/api/handlers/management/gateway_anthropic_test.go b/internal/api/handlers/management/gateway_anthropic_test.go
+new file mode 100644
+index 00000000..fe6ccbfb
+--- /dev/null
++++ b/internal/api/handlers/management/gateway_anthropic_test.go
+@@ -0,0 +1,45 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"github.com/gin-gonic/gin"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"net/http/httptest"
++	"testing"
++)
++
++func TestGatewayAnthropicQuotaUnknownOmitsObservationTimes(t *testing.T) {
++	m := coreauth.NewManager(nil, nil, nil)
++	if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++		t.Fatal(err)
++	}
++	account, org := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
++	subject := coreauth.AnthropicIdentitySubject(account, org)
++	id, err := m.RegisterAnthropicIdentity(subject)
++	if err != nil {
++		t.Fatal(err)
++	}
++	a := &coreauth.Auth{ID: "quota.json", Provider: "claude", Status: coreauth.StatusActive, Metadata: map[string]any{"type": "claude", "account_uuid": account, "organization_uuid": org, "gateway_anthropic_subject": subject, "access_token": "secret-never-in-response"}}
++	if _, err = m.Register(context.Background(), a); err != nil {
++		t.Fatal(err)
++	}
++	h := &Handler{authManager: m}
++	w := httptest.NewRecorder()
++	c, _ := gin.CreateTestContext(w)
++	c.Request = httptest.NewRequest("POST", "/", nil)
++	c.Params = gin.Params{{Key: "provider", Value: "anthropic"}, {Key: "id", Value: id}}
++	h.GatewayAnthropicQuota(c)
++	var out map[string]json.RawMessage
++	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil {
++		t.Fatalf("%d %s", w.Code, w.Body.String())
++	}
++	for _, field := range []string{"observed_at", "cooldown_until", "access_token"} {
++		if _, ok := out[field]; ok {
++			t.Fatalf("unexpected %s", field)
++		}
++	}
++	if string(out["windows"]) != "[]" {
++		t.Fatalf("unknown windows %s", out["windows"])
++	}
++}
 diff --git a/internal/api/handlers/management/gateway_credentials.go b/internal/api/handlers/management/gateway_credentials.go
 new file mode 100644
-index 00000000..95bc4b96
+index 00000000..0f310431
 --- /dev/null
 +++ b/internal/api/handlers/management/gateway_credentials.go
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,273 @@
 +package management
 +
 +import (
@@ -3150,7 +3542,11 @@ index 00000000..95bc4b96
 +		return
 +	}
 +	provider := c.Param("provider")
-+	if provider != "codex" && provider != "antigravity" {
++	if provider == "anthropic" {
++		h.gatewayImportAnthropic(c)
++		return
++	}
++	if provider != "codex" && provider != "antigravity" && provider != "claude" {
 +		gatewayCredentialError(c, 404)
 +		return
 +	}
@@ -3236,7 +3632,10 @@ index 00000000..95bc4b96
 +		return nil, errors.New("unavailable")
 +	}
 +	provider, id := c.Param("provider"), c.Param("id")
-+	if provider != "codex" && provider != "antigravity" {
++	if provider == "anthropic" {
++		provider = "claude"
++	}
++	if provider != "codex" && provider != "antigravity" && provider != "claude" {
 +		return nil, errors.New("provider")
 +	}
 +	var found *coreauth.Auth
@@ -3263,6 +3662,10 @@ index 00000000..95bc4b96
 +	refreshed, err := h.authManager.ForceRefreshAuth(c.Request.Context(), a.ID)
 +	if err != nil || refreshed == nil {
 +		gatewayCredentialError(c, 502)
++		return
++	}
++	if a.Provider == "claude" && refreshed.Metadata["gateway_identity_conflict"] == true {
++		gatewayCredentialError(c, 409)
 +		return
 +	}
 +	if a.Provider == "antigravity" {
@@ -3408,10 +3811,10 @@ index 3cd910b8..35a35536 100644
  		engine.Use(mw)
  	}
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index 7d02db2b..92e93469 100644
+index 7d02db2b..e72e5f94 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
-@@ -117,6 +117,56 @@ func (s *Server) setupRoutes() {
+@@ -117,6 +117,57 @@ func (s *Server) setupRoutes() {
  		codexDirect.POST("/alpha/search", s.codexAlphaSearch)
  	}
  
@@ -3455,6 +3858,7 @@ index 7d02db2b..92e93469 100644
 +	})
 +	agyAccounts.POST("/:id/quota", s.getAntigravityAccountQuota)
 +	agyAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
++	s.registerGatewayAnthropicRoutes()
 +	s.registerGatewayManagementRoutes()
 +
 +	// Dedicated management-only diagnostics. Ordinary /v1 metadata cannot select
@@ -3680,6 +4084,112 @@ index 00000000..b878e733
 +	}
 +	if called {
 +		t.Fatal("foreign request reached transport")
++	}
++}
+diff --git a/internal/auth/claude/anthropic_auth.go b/internal/auth/claude/anthropic_auth.go
+index 284db717..62761962 100644
+--- a/internal/auth/claude/anthropic_auth.go
++++ b/internal/auth/claude/anthropic_auth.go
+@@ -203,9 +203,12 @@ func NewClaudeAuthWithProxyURL(cfg *config.Config, proxyURL string) *ClaudeAuth
+ 
+ 	// Use custom HTTP client with Firefox TLS fingerprint to bypass
+ 	// Cloudflare's bot detection on Anthropic domains.
+-	return &ClaudeAuth{
+-		httpClient: NewAnthropicHttpClient(sdkCfg),
++	client := NewAnthropicHttpClient(sdkCfg)
++	if cfg != nil && cfg.Routing.Strategy == "gateway-allocation" {
++		client = GatewayHTTPClient(NewAnthropicHttpClient(&cfg.SDKConfig), cfg.ProxyURL)
++		client.Timeout = 30 * time.Second
+ 	}
++	return &ClaudeAuth{httpClient: client}
+ }
+ 
+ func applyClaudeOAuthAxiosHeaders(req *http.Request) {
+diff --git a/internal/auth/claude/gateway_transport.go b/internal/auth/claude/gateway_transport.go
+new file mode 100644
+index 00000000..45cf47d9
+--- /dev/null
++++ b/internal/auth/claude/gateway_transport.go
+@@ -0,0 +1,39 @@
++package claude
++
++import (
++	"errors"
++	"net/http"
++	"net/url"
++)
++
++// GatewayTransport pins authenticated requests to reviewed provider authorities.
++// Redirects are separately rejected so credentials never follow an upstream Location.
++type GatewayTransport struct {
++	Base     http.RoundTripper
++	ProxyURL string
++}
++
++func (t GatewayTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	proxy, err := url.Parse(t.ProxyURL)
++	if err != nil || proxy.Hostname() == "" || (proxy.Scheme != "http" && proxy.Scheme != "https" && proxy.Scheme != "socks5" && proxy.Scheme != "socks5h") {
++		return nil, errors.New("gateway Anthropic proxy unavailable")
++	}
++	if req == nil || req.URL == nil || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Port() != "" && req.URL.Port() != "443" || req.Host != "" && req.Host != req.URL.Host {
++		return nil, errors.New("gateway Anthropic endpoint rejected")
++	}
++	switch req.URL.Hostname() {
++	case "platform.claude.com", "api.anthropic.com":
++	default:
++		return nil, errors.New("gateway Anthropic endpoint rejected")
++	}
++	if t.Base == nil {
++		return nil, errors.New("gateway Anthropic transport unavailable")
++	}
++	return t.Base.RoundTrip(req)
++}
++func GatewayHTTPClient(client *http.Client, proxy string) *http.Client {
++	copy := *client
++	copy.Transport = GatewayTransport{Base: copy.Transport, ProxyURL: proxy}
++	copy.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	return &copy
++}
+diff --git a/internal/auth/claude/gateway_transport_test.go b/internal/auth/claude/gateway_transport_test.go
+new file mode 100644
+index 00000000..8cb04add
+--- /dev/null
++++ b/internal/auth/claude/gateway_transport_test.go
+@@ -0,0 +1,36 @@
++package claude
++
++import (
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++)
++
++type gatewayAnthropicRoundTripper func(*http.Request) (*http.Response, error)
++
++func (f gatewayAnthropicRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++func TestGatewayAnthropicTransportPinsAuthoritiesAndRejectsRedirect(t *testing.T) {
++	calls := 0
++	base := gatewayAnthropicRoundTripper(func(r *http.Request) (*http.Response, error) {
++		calls++
++		return &http.Response{StatusCode: 302, Header: http.Header{"Location": {"https://evil.invalid/steal"}}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
++	})
++	client := GatewayHTTPClient(&http.Client{Transport: base}, "http://egress-allowlist:3128")
++	for _, target := range []string{"http://api.anthropic.com/v1/messages", "https://api.anthropic.com.evil.invalid/v1/messages", "https://api.anthropic.com:444/v1/messages", "https://user:pass@api.anthropic.com/v1/messages", "https://127.0.0.1/v1/messages"} {
++		if _, err := client.Get(target); err == nil {
++			t.Fatalf("accepted %s", target)
++		}
++	}
++	if calls != 0 {
++		t.Fatal("unreviewed destination reached transport")
++	}
++	response, err := client.Get("https://api.anthropic.com/v1/messages")
++	if err != nil || response.StatusCode != 302 || calls != 1 {
++		t.Fatal("redirect followed", err, calls)
++	}
++	bad := GatewayHTTPClient(&http.Client{Transport: base}, "direct")
++	if _, err := bad.Get("https://platform.claude.com/v1/oauth/token"); err == nil || calls != 1 {
++		t.Fatal("invalid proxy did not fail closed")
 +	}
 +}
 diff --git a/internal/auth/codex/openai_auth.go b/internal/auth/codex/openai_auth.go
@@ -4733,6 +5243,213 @@ index 2bf053e8..a269dc0f 100644
  	// Prefer an explicit downstream session over a provider sessionId synthesized
  	// from request text. This keeps identical prompts in separate client sessions
  	// from sharing an opaque Gemini reasoning chain.
+diff --git a/internal/runtime/executor/claude_executor.go b/internal/runtime/executor/claude_executor.go
+index 5d85b159..204798dc 100644
+--- a/internal/runtime/executor/claude_executor.go
++++ b/internal/runtime/executor/claude_executor.go
+@@ -235,11 +235,13 @@ func (e *ClaudeExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Au
+ 		attrs = auth.Attributes
+ 	}
+ 	util.ApplyCustomHeadersFromAttrs(req, attrs)
++	protectGatewayClaudeHeaders(req, e.cfg, auth, apiKey)
+ 	return nil
+ }
+ 
+ // HttpRequest injects Claude credentials into the request and executes it.
+ func (e *ClaudeExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth, req *http.Request) (*http.Response, error) {
++	auth = gatewayClaudeAuth(e.cfg, auth)
+ 	if req == nil {
+ 		return nil, fmt.Errorf("claude executor: request is nil")
+ 	}
+diff --git a/internal/runtime/executor/claude_executor_auth.go b/internal/runtime/executor/claude_executor_auth.go
+index bffc428c..cda2ded5 100644
+--- a/internal/runtime/executor/claude_executor_auth.go
++++ b/internal/runtime/executor/claude_executor_auth.go
+@@ -159,6 +159,16 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
+ 		refreshToken = claudeauth.ReadMetadataString(&auth.Metadata, "refreshToken")
+ 	}
+ 	if refreshToken == "" {
++		if subject, _ := auth.Metadata["gateway_anthropic_subject"].(string); subject != "" {
++			token, _ := auth.Metadata["access_token"].(string)
++			profile, profileErr := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthProfile(ctx, token)
++			if profileErr != nil || profile == nil || cliproxyauth.AnthropicIdentitySubject(profile.Account.UUID, profile.Organization.UUID) != subject {
++				auth.Metadata["gateway_identity_conflict"] = true
++				auth.Disabled = true
++				auth.Status = cliproxyauth.StatusDisabled
++				auth.GatewayAccountBlocked = true
++			}
++		}
+ 		return auth, nil
+ 	}
+ 	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
+@@ -167,6 +177,22 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
+ 		return nil, err
+ 	}
+ 	claudeauth.EnsureMetadataMap(&auth.Metadata)
++	if subject, _ := auth.Metadata["gateway_anthropic_subject"].(string); subject != "" {
++		profile, profileErr := svc.FetchOAuthProfile(ctx, td.AccessToken)
++		if profileErr != nil || profile == nil || cliproxyauth.AnthropicIdentitySubject(profile.Account.UUID, profile.Organization.UUID) != subject {
++			auth.Metadata["gateway_identity_conflict"] = true
++			auth.Disabled = true
++			auth.Status = cliproxyauth.StatusDisabled
++			auth.GatewayAccountBlocked = true
++			// Persist rotated credentials under the original identity, disabled. A
++			// refresh failure must never leave an unverified new identity schedulable.
++			claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", td.AccessToken)
++			claudeauth.StoreMetadataString(&auth.Metadata, "refresh_token", td.RefreshToken)
++			claudeauth.StoreMetadataValue(&auth.Metadata, "expired", td.Expire)
++			return auth, nil
++		}
++		td.AccountUUID, td.OrganizationUUID, td.Email = profile.Account.UUID, profile.Organization.UUID, profile.Account.Email
++	}
+ 	claudeauth.StoreMetadataValue(&auth.Metadata, "access_token", td.AccessToken)
+ 	claudeauth.StoreMetadataString(&auth.Metadata, "refresh_token", td.RefreshToken)
+ 	// Profile fields are optional when token rotation succeeds but the follow-up
+diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
+index 9c302a25..b287fd7e 100644
+--- a/internal/runtime/executor/claude_executor_execute.go
++++ b/internal/runtime/executor/claude_executor_execute.go
+@@ -18,6 +18,7 @@ import (
+ )
+ 
+ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
++	auth = gatewayClaudeAuth(e.cfg, auth)
+ 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+ 	if opts.Alt == "responses/compact" {
+ 		return resp, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
+diff --git a/internal/runtime/executor/claude_executor_request.go b/internal/runtime/executor/claude_executor_request.go
+index 414b788c..9e55dd8a 100644
+--- a/internal/runtime/executor/claude_executor_request.go
++++ b/internal/runtime/executor/claude_executor_request.go
+@@ -1293,6 +1293,7 @@ func applyClaudeHeadersWithNativeProfile(
+ 			attrs = auth.Attributes
+ 		}
+ 		util.ApplyCustomHeadersFromAttrs(r, attrs, incomingHeaders)
++		protectGatewayClaudeHeaders(r, cfg, auth, apiKey)
+ 		// Scope the custom-header escape hatch exactly like the CLI path below, which
+ 		// claws overrides back on api.anthropic.com (an operator Anthropic-Beta reaches
+ 		// a first-party API that rejects unknown values) and on any streaming request
+@@ -1445,6 +1446,7 @@ func applyClaudeHeadersWithNativeProfile(
+ 		attrs = auth.Attributes
+ 	}
+ 	util.ApplyCustomHeadersFromAttrs(r, attrs, incomingHeaders)
++	protectGatewayClaudeHeaders(r, cfg, auth, apiKey)
+ 	// Custom credential headers are a configuration escape hatch for third-party
+ 	// gateways, so they keep the last word there. On api.anthropic.com they must
+ 	// not rewrite the reconstructed identity: an overridden Anthropic-Beta yields a
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+index 893eab94..579a6bd0 100644
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -20,6 +20,7 @@ import (
+ )
+ 
+ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (_ *cliproxyexecutor.StreamResult, err error) {
++	auth = gatewayClaudeAuth(e.cfg, auth)
+ 	ctx = helps.EnsureSessionContext(ctx, opts, req.Payload)
+ 	if opts.Alt == "responses/compact" {
+ 		return nil, statusErr{code: http.StatusNotImplemented, msg: "/responses/compact not supported"}
+diff --git a/internal/runtime/executor/claude_executor_tokens.go b/internal/runtime/executor/claude_executor_tokens.go
+index 8e95d91c..075ca084 100644
+--- a/internal/runtime/executor/claude_executor_tokens.go
++++ b/internal/runtime/executor/claude_executor_tokens.go
+@@ -20,6 +20,7 @@ import (
+ )
+ 
+ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	auth = gatewayClaudeAuth(e.cfg, auth)
+ 	apiKey, baseURL := claudeCreds(auth)
+ 	if baseURL == "" {
+ 		baseURL = "https://api.anthropic.com"
+diff --git a/internal/runtime/executor/claude_gateway.go b/internal/runtime/executor/claude_gateway.go
+new file mode 100644
+index 00000000..8b4f61c8
+--- /dev/null
++++ b/internal/runtime/executor/claude_gateway.go
+@@ -0,0 +1,44 @@
++package executor
++
++import (
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"net/http"
++	"strings"
++)
++
++func gatewayClaudeAuth(cfg *config.Config, auth *cliproxyauth.Auth) *cliproxyauth.Auth {
++	if cfg == nil || cfg.Routing.Strategy != "gateway-allocation" || auth == nil {
++		return auth
++	}
++	copy := auth.Clone()
++	copy.ProxyURL = ""
++	for key := range copy.Attributes {
++		if strings.HasPrefix(strings.ToLower(key), "header:") || key == "base_url" || key == "api_key" {
++			delete(copy.Attributes, key)
++		}
++	}
++	return copy
++}
++
++func protectGatewayClaudeHeaders(r *http.Request, cfg *config.Config, auth *cliproxyauth.Auth, token string) {
++	if cfg == nil || cfg.Routing.Strategy != "gateway-allocation" {
++		return
++	}
++	sessionID := r.Header.Get("X-Claude-Code-Session-Id")
++	util.RemoveCodexInternalHeaders(r.Header)
++	// CPA derives this native protocol identity from the canonical request body.
++	// Keep it aligned with metadata.user_id; parent/attribution hints remain private.
++	if sessionID != "" {
++		r.Header.Set("X-Claude-Code-Session-Id", sessionID)
++	}
++	for name := range r.Header {
++		switch strings.ToLower(name) {
++		case "authorization", "x-api-key", "cookie", "proxy-authorization", "host":
++			delete(r.Header, name)
++		}
++	}
++	r.Host = ""
++	r.Header.Set("Authorization", "Bearer "+token)
++}
+diff --git a/internal/runtime/executor/claude_gateway_test.go b/internal/runtime/executor/claude_gateway_test.go
+new file mode 100644
+index 00000000..44f04744
+--- /dev/null
++++ b/internal/runtime/executor/claude_gateway_test.go
+@@ -0,0 +1,33 @@
++package executor
++
++import (
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	"net/http"
++	"testing"
++)
++
++func TestGatewayAnthropicHeadersAndCredentialOverrides(t *testing.T) {
++	cfg := &config.Config{}
++	cfg.Routing.Strategy = "gateway-allocation"
++	original := &cliproxyauth.Auth{Provider: "claude", ProxyURL: "http://untrusted.invalid", Attributes: map[string]string{"base_url": "https://untrusted.invalid", "api_key": "uploaded", "header:Authorization": "Bearer uploaded", "header:Host": "untrusted.invalid"}, Metadata: map[string]any{"access_token": "upstream-oauth-token"}}
++	sanitized := gatewayClaudeAuth(cfg, original)
++	if sanitized.ProxyURL != "" || sanitized.Attributes["base_url"] != "" || sanitized.Attributes["header:Authorization"] != "" || original.ProxyURL == "" {
++		t.Fatal("credential transport overrides survived or original mutated")
++	}
++	req, _ := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", nil)
++	req.Host = "untrusted.invalid"
++	req.Header = http.Header{"Authorization": {"Bearer gateway-key"}, "X-Api-Key": {"gateway-key"}, "Cookie": {"session=secret"}, "Proxy-Authorization": {"secret"}, "X-Codex-Gateway-User": {"private-user"}, "X-Codex-Gateway-Affinity": {"private-scope"}, "X-Claude-Code-Parent-Agent-Id": {"private-parent"}, "Anthropic-Version": {"2023-06-01"}, "Anthropic-Beta": {"caller-beta"}}
++	protectGatewayClaudeHeaders(req, cfg, sanitized, "upstream-oauth-token")
++	if req.Host != "" || req.Header.Get("Authorization") != "Bearer upstream-oauth-token" {
++		t.Fatal("upstream identity not protected")
++	}
++	for _, name := range []string{"X-Api-Key", "Cookie", "Proxy-Authorization", "X-Codex-Gateway-User", "X-Codex-Gateway-Affinity", "X-Claude-Code-Parent-Agent-Id"} {
++		if req.Header.Get(name) != "" {
++			t.Fatalf("leaked %s", name)
++		}
++	}
++	if req.Header.Get("Anthropic-Version") != "2023-06-01" || req.Header.Get("Anthropic-Beta") != "caller-beta" {
++		t.Fatal("protocol headers stripped")
++	}
++}
 diff --git a/internal/runtime/executor/codex_astra_upgrade_test.go b/internal/runtime/executor/codex_astra_upgrade_test.go
 new file mode 100644
 index 00000000..2a75b1a9
@@ -7174,6 +7891,37 @@ index 00000000..974446c0
 +		t.Fatal(err)
 +	}
 +}
+diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
+index 4857bac7..3e7c57ff 100644
+--- a/internal/runtime/executor/helps/utls_client.go
++++ b/internal/runtime/executor/helps/utls_client.go
+@@ -12,6 +12,7 @@ import (
+ 	"time"
+ 
+ 	tls "github.com/refraction-networking/utls"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
+ 	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
+@@ -368,6 +369,9 @@ func (f *fallbackRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
+ // fallback for other hosts.
+ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) *http.Client {
+ 	proxyURL := effectiveProxyURL(ctx, cfg, auth)
++	if cfg != nil && cfg.Routing.Strategy == "gateway-allocation" && auth != nil && auth.Provider == "claude" {
++		proxyURL = cfg.ProxyURL
++	}
+ 
+ 	var ctxRoundTripper http.RoundTripper
+ 	if ctx != nil {
+@@ -397,5 +401,8 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	if timeout > 0 {
+ 		client.Timeout = timeout
+ 	}
++	if cfg != nil && cfg.Routing.Strategy == "gateway-allocation" && auth != nil && auth.Provider == "claude" {
++		client = claude.GatewayHTTPClient(client, cfg.ProxyURL)
++	}
+ 	return client
+ }
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
 index 3c79ab90..976c1789 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
@@ -8321,10 +9069,20 @@ index b4fc423d..94ffdb61 100644
  	if meta == nil {
  		return
 diff --git a/sdk/api/handlers/handlers_execution.go b/sdk/api/handlers/handlers_execution.go
-index 225cbe65..ce789ff2 100644
+index 225cbe65..082e3386 100644
 --- a/sdk/api/handlers/handlers_execution.go
 +++ b/sdk/api/handlers/handlers_execution.go
-@@ -58,6 +58,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
+@@ -44,6 +44,9 @@ func (h *BaseAPIHandler) executeWithAuthManager(ctx context.Context, handlerType
+ 
+ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+ 	originalRequestedModel := modelName
++	if entryProtocol == "claude" && h.gatewayNativeClaude() {
++		execOptions.ForcedProvider = "claude"
++	}
+ 	routeDecision := h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, false, execOptions)
+ 	responseProtocol := modelExecutionResponseProtocol(entryProtocol, exitProtocol)
+ 	if errMsg := validateNativeInteractionsExecution(entryProtocol, execOptions, routeDecision); errMsg != nil {
+@@ -58,6 +61,12 @@ func (h *BaseAPIHandler) executeWithAuthManagerFormats(ctx context.Context, entr
  	}
  	providers = adjustExecutionProvidersForEntryProtocol(entryProtocol, providers)
  	reqMeta := requestExecutionMetadata(ctx)
@@ -8337,6 +9095,16 @@ index 225cbe65..ce789ff2 100644
  	reqMeta[coreexecutor.RequestedModelMetadataKey] = originalRequestedModel
  	addAuthSelectionModelMetadata(reqMeta, execOptions.AuthSelectionModel)
  	addModelExecutionSourceMetadata(reqMeta, execOptions.InternalSource)
+@@ -120,6 +129,9 @@ func (h *BaseAPIHandler) ExecuteCountWithAuthManager(ctx context.Context, handle
+ 
+ func (h *BaseAPIHandler) executeCountWithAuthManager(ctx context.Context, handlerType, modelName string, rawJSON []byte, alt string, execOptions modelExecutionOptions) ([]byte, http.Header, *interfaces.ErrorMessage) {
+ 	originalRequestedModel := modelName
++	if handlerType == "claude" && h.gatewayNativeClaude() {
++		execOptions.ForcedProvider = "claude"
++	}
+ 	routeDecision := h.applyModelRouter(ctx, handlerType, modelName, rawJSON, false, execOptions)
+ 	if routeDecision.ExecutorPluginID != "" {
+ 		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
 index 7aab0889..4a366e9e 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
@@ -8485,6 +9253,44 @@ index 7aab0889..4a366e9e 100644
 +		}
 +	}
 +}
+diff --git a/sdk/api/handlers/handlers_routing.go b/sdk/api/handlers/handlers_routing.go
+index e7297704..3256b1d7 100644
+--- a/sdk/api/handlers/handlers_routing.go
++++ b/sdk/api/handlers/handlers_routing.go
+@@ -12,6 +12,7 @@ import (
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
+ 	"golang.org/x/net/context"
+@@ -352,3 +353,11 @@ func (h *BaseAPIHandler) applyModelRouter(ctx context.Context, handlerType, mode
+ 	}
+ 	return decision
+ }
++
++func (h *BaseAPIHandler) gatewayNativeClaude() bool {
++	if h == nil || h.AuthManager == nil {
++		return false
++	}
++	_, ok := h.AuthManager.Selector().(*coreauth.GatewayAllocationSelector)
++	return ok
++}
+diff --git a/sdk/api/handlers/handlers_stream.go b/sdk/api/handlers/handlers_stream.go
+index 935b00c8..8286e0eb 100644
+--- a/sdk/api/handlers/handlers_stream.go
++++ b/sdk/api/handlers/handlers_stream.go
+@@ -296,6 +296,9 @@ func (h *BaseAPIHandler) executeStreamWithAuthManager(ctx context.Context, handl
+ 
+ func (h *BaseAPIHandler) executeStreamWithAuthManagerFormats(ctx context.Context, entryProtocol, exitProtocol, modelName string, rawJSON []byte, alt string, allowImageModel bool, execOptions modelExecutionOptions) (<-chan []byte, http.Header, <-chan *interfaces.ErrorMessage) {
+ 	originalRequestedModel := modelName
++	if entryProtocol == "claude" && h.gatewayNativeClaude() {
++		execOptions.ForcedProvider = "claude"
++	}
+ 	routeDecision, preparedRoute := preparedModelRouteFromContext(ctx, execOptions.SkipRouterPluginID)
+ 	if !preparedRoute {
+ 		routeDecision = h.applyModelRouter(ctx, entryProtocol, modelName, rawJSON, true, execOptions)
 diff --git a/sdk/api/handlers/handlers_stream_bootstrap_test.go b/sdk/api/handlers/handlers_stream_bootstrap_test.go
 index 4cd081e8..ae442de3 100644
 --- a/sdk/api/handlers/handlers_stream_bootstrap_test.go
@@ -9085,10 +9891,10 @@ index cdb40066..18322b06 100644
 +}
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe.go b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 new file mode 100644
-index 00000000..9fa73646
+index 00000000..902e96f8
 --- /dev/null
 +++ b/sdk/cliproxy/auth/codex_oauth_dedupe.go
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,350 @@
 +package auth
 +
 +import (
@@ -9379,6 +10185,7 @@ index 00000000..9fa73646
 +// non-file credentials retain their original order and multiplicity.
 +func DeduplicateCodexOAuthAuths(auths []*Auth) []*Auth {
 +	quarantineDuplicateAntigravityIdentities(auths)
++	quarantineDuplicateAnthropicIdentities(auths)
 +	if len(auths) < 2 {
 +		return auths
 +	}
@@ -9911,7 +10718,7 @@ index 27702959..7a9526a5 100644
  	case isExplicitModelNotFoundError(err, ""):
  		if resultErr.Code == "" || resultErr.Code == requestScopedErrorCode {
 diff --git a/sdk/cliproxy/auth/conductor_execution.go b/sdk/cliproxy/auth/conductor_execution.go
-index d84071d4..e1b991b5 100644
+index d84071d4..65327069 100644
 --- a/sdk/cliproxy/auth/conductor_execution.go
 +++ b/sdk/cliproxy/auth/conductor_execution.go
 @@ -3,10 +3,14 @@ package auth
@@ -10432,7 +11239,7 @@ index d84071d4..e1b991b5 100644
  			lastErr = errStream
  			if homeMode {
  				roundTiming.Observe(lastErr)
-@@ -1264,6 +1395,94 @@ func cloneRequestMetadata(src map[string]any) map[string]any {
+@@ -1264,6 +1395,98 @@ func cloneRequestMetadata(src map[string]any) map[string]any {
  	return dst
  }
  
@@ -10449,8 +11256,12 @@ index d84071d4..e1b991b5 100644
 +	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
 +		return true
 +	}
++	if ctx == nil {
++		return false
++	}
 +	enabled, _ := ctx.Value(gatewayManagedRequestKey{}).(bool)
-+	return enabled && strings.EqualFold(strings.TrimSpace(provider), "antigravity")
++	provider = strings.ToLower(strings.TrimSpace(provider))
++	return enabled && (provider == "antigravity" || provider == "claude")
 +}
 +
 +func homeWebsocketTransportFallbackEligible(ctx context.Context, selection *HomeDispatchSelection, err error) bool {
@@ -10527,7 +11338,7 @@ index d84071d4..e1b991b5 100644
  func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
  	opts.Metadata = cloneRequestMetadata(opts.Metadata)
  	requestedModel = strings.TrimSpace(requestedModel)
-@@ -1510,7 +1729,17 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
+@@ -1510,7 +1733,17 @@ func (m *Manager) prepareHomeAuthSnapshot(ctx context.Context, executor Provider
  	return prepare()
  }
  
@@ -10546,7 +11357,7 @@ index d84071d4..e1b991b5 100644
  	if m == nil || executor == nil || auth == nil {
  		return auth, nil
  	}
-@@ -1700,6 +1929,11 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
+@@ -1700,6 +1933,11 @@ func pinnedAuthIDFromMetadata(meta map[string]any) string {
  	}
  }
  
@@ -10558,7 +11369,7 @@ index d84071d4..e1b991b5 100644
  func disallowFreeAuthFromMetadata(meta map[string]any) bool {
  	if len(meta) == 0 {
  		return false
-@@ -1748,6 +1982,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
+@@ -1748,6 +1986,15 @@ func publishSelectedAuthMetadata(meta map[string]any, auth *Auth) {
  			callback(authIndex)
  		}
  	}
@@ -10574,7 +11385,7 @@ index d84071d4..e1b991b5 100644
  }
  
  func (m *Manager) executorFor(provider string) ProviderExecutor {
-@@ -2069,21 +2312,64 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
+@@ -2069,21 +2316,64 @@ func (m *Manager) HttpRequest(ctx context.Context, auth *Auth, req *http.Request
  }
  
  func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {
@@ -11159,7 +11970,7 @@ index 1b8f2338..765b673c 100644
  			if okAction {
  				if isRequestScopedStop(action, okAction) {
 diff --git a/sdk/cliproxy/auth/conductor_lifecycle.go b/sdk/cliproxy/auth/conductor_lifecycle.go
-index 1fdcfc56..1fb82906 100644
+index 1fdcfc56..423d3404 100644
 --- a/sdk/cliproxy/auth/conductor_lifecycle.go
 +++ b/sdk/cliproxy/auth/conductor_lifecycle.go
 @@ -81,6 +81,7 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
@@ -11174,7 +11985,7 @@ index 1fdcfc56..1fb82906 100644
  	}
  	auth.EnsureIndex()
  	m.mu.Lock()
-+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") {
++	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") || strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
 +		if index, ok := GatewayOAuthAccountIndex(auth); ok {
 +			for _, existing := range m.auths {
 +				other, valid := GatewayOAuthAccountIndex(existing)
@@ -12604,10 +13415,10 @@ index 39449b41..85ed9aac 100644
  		t.Fatalf("unexpected error fields: %#v", err)
 diff --git a/sdk/cliproxy/auth/gateway_account_state.go b/sdk/cliproxy/auth/gateway_account_state.go
 new file mode 100644
-index 00000000..fd716feb
+index 00000000..9611139d
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_account_state.go
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,448 @@
 +package auth
 +
 +import (
@@ -12648,7 +13459,7 @@ index 00000000..fd716feb
 +// IsGatewayAccountStateFile also excludes temporary files used for atomic replacement.
 +func IsGatewayAccountStateFile(name string) bool {
 +	name = filepath.Base(name)
-+	return name == GatewayAccountStateFile || strings.HasPrefix(name, GatewayAccountStateFile+".") || name == GatewayAntigravityIdentityFile || strings.HasPrefix(name, GatewayAntigravityIdentityFile+".")
++	return name == GatewayAnthropicIdentityFile || strings.HasPrefix(name, GatewayAnthropicIdentityFile+".") || name == GatewayAccountStateFile || strings.HasPrefix(name, GatewayAccountStateFile+".") || name == GatewayAntigravityIdentityFile || strings.HasPrefix(name, GatewayAntigravityIdentityFile+".")
 +}
 +
 +// GatewayAccountAvailable reports the persistent control and credential identity gates.
@@ -12686,6 +13497,9 @@ index 00000000..fd716feb
 +func (m *Manager) LoadGatewayAccountState(authDir string) error {
 +	if m == nil || strings.TrimSpace(authDir) == "" {
 +		return ErrGatewayAccountStateUnavailable
++	}
++	if err := loadGatewayAnthropicIdentities(authDir); err != nil {
++		return err
 +	}
 +	if err := loadGatewayAntigravityIdentities(authDir); err != nil {
 +		return err
@@ -12939,6 +13753,10 @@ index 00000000..fd716feb
 +// markGatewayQuotaExhaustedLocked acts only on explicit generation failures;
 +// the quota query endpoint never calls this result-processing path.
 +func (m *Manager) markGatewayQuotaExhaustedLocked(auth *Auth) {
++	// Anthropic retains its native time-based automatic cooldown recovery.
++	if auth != nil && auth.Provider == "claude" {
++		return
++	}
 +	index, valid := GatewayOAuthAccountIndex(auth)
 +	if !valid {
 +		return
@@ -13475,10 +14293,10 @@ index 00000000..f03cb79d
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 00000000..c63ceec8
+index 00000000..86ec8a44
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,400 @@
 +package auth
 +
 +import (
@@ -13860,13 +14678,16 @@ index 00000000..c63ceec8
 +			return ""
 +		}
 +		current := strings.ToLower(strings.TrimSpace(candidate.Provider))
-+		if current != "codex" && current != "antigravity" {
++		if current != "codex" && current != "antigravity" && current != "claude" {
 +			return ""
 +		}
 +		if provider != "" && provider != current {
 +			return ""
 +		}
 +		provider = current
++	}
++	if provider == "claude" {
++		return "http://gateway:8080/internal/anthropic-accounts/" + action
 +	}
 +	if provider == "antigravity" {
 +		return "http://gateway:8080/internal/antigravity-accounts/" + action
@@ -14418,12 +15239,487 @@ index 00000000..c16981eb
 +		assertAllocation503(t, err)
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/gateway_anthropic_identity.go b/sdk/cliproxy/auth/gateway_anthropic_identity.go
+new file mode 100644
+index 00000000..db89c173
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_anthropic_identity.go
+@@ -0,0 +1,249 @@
++package auth
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++)
++
++const GatewayAnthropicIdentityFile = ".gateway-anthropic-identities"
++
++type gatewayAnthropicIdentityDocument struct {
++	Version  int               `json:"version"`
++	Accounts map[string]string `json:"accounts"`
++}
++
++// Identity mappings are independent of filenames, OAuth refreshes and credentials.
++// The server has one auth directory. Imports can only add verified Anthropic account and organization UUIDs.
++var gatewayAnthropicIdentities = struct {
++	sync.RWMutex
++	path     string
++	accounts map[string]string
++}{}
++
++func validAnthropicSubject(subject string) bool {
++	parts := strings.Split(subject, ":")
++	if len(parts) != 2 {
++		return false
++	}
++	for _, part := range parts {
++		if len(part) != 36 || part[8] != '-' || part[13] != '-' || part[18] != '-' || part[23] != '-' {
++			return false
++		}
++		if !isLowerHexString(strings.ReplaceAll(part, "-", "")) {
++			return false
++		}
++	}
++	return true
++}
++
++func AnthropicIdentitySubject(account, organization string) string {
++	subject := strings.ToLower(strings.TrimSpace(account)) + ":" + strings.ToLower(strings.TrimSpace(organization))
++	if !validAnthropicSubject(subject) {
++		return ""
++	}
++	return subject
++}
++
++func loadGatewayAnthropicIdentities(authDir string) error {
++	path := filepath.Join(authDir, GatewayAnthropicIdentityFile)
++	doc := gatewayAnthropicIdentityDocument{Version: 1, Accounts: map[string]string{}}
++	info, err := os.Lstat(path)
++	if err == nil {
++		if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 || info.Size() > 4<<20 {
++			return ErrGatewayAccountIdentityInvalid
++		}
++		data, readErr := os.ReadFile(path)
++		if readErr != nil {
++			return ErrGatewayAccountStateUnavailable
++		}
++		fields, decodeErr := decodeGatewayObject(data, "version", "accounts")
++		if decodeErr != nil || json.Unmarshal(fields["version"], &doc.Version) != nil || doc.Version != 1 {
++			return ErrGatewayAccountIdentityInvalid
++		}
++		rawAccounts, decodeErr := decodeGatewayObject(fields["accounts"])
++		if decodeErr != nil {
++			return ErrGatewayAccountIdentityInvalid
++		}
++		seen := map[string]bool{}
++		for subject, value := range rawAccounts {
++			var id string
++			if !validAnthropicSubject(subject) || json.Unmarshal(value, &id) != nil || len(id) != 16 || !isLowerHexString(id) || seen[id] {
++				return ErrGatewayAccountIdentityInvalid
++			}
++			doc.Accounts[subject] = id
++			seen[id] = true
++		}
++	} else if !errors.Is(err, os.ErrNotExist) {
++		return ErrGatewayAccountStateUnavailable
++	}
++	gatewayAnthropicIdentities.Lock()
++	defer gatewayAnthropicIdentities.Unlock()
++	gatewayAnthropicIdentities.path = path
++	gatewayAnthropicIdentities.accounts = doc.Accounts
++	return nil
++}
++
++// RegisterAnthropicIdentity accepts only a subject verified with Anthropic's
++// fixed userinfo endpoint by the server-side OAuth/import flow.
++func (m *Manager) RegisterAnthropicIdentity(subject string) (string, error) {
++	if m == nil || !validAnthropicSubject(subject) {
++		return "", ErrGatewayAccountIdentityInvalid
++	}
++	gatewayAnthropicIdentities.Lock()
++	defer gatewayAnthropicIdentities.Unlock()
++	if gatewayAnthropicIdentities.path == "" {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	if id := gatewayAnthropicIdentities.accounts[subject]; id != "" {
++		return id, nil
++	}
++	sum := sha256.Sum256([]byte("codex-gateway-anthropic-account-organization:\x00" + subject))
++	id := hex.EncodeToString(sum[:8])
++	for _, existing := range gatewayAnthropicIdentities.accounts {
++		if existing == id {
++			return "", ErrGatewayAccountIdentityInvalid
++		}
++	}
++	next := make(map[string]string, len(gatewayAnthropicIdentities.accounts)+1)
++	for subject, id := range gatewayAnthropicIdentities.accounts {
++		next[subject] = id
++	}
++	next[subject] = id
++	data, err := json.Marshal(gatewayAnthropicIdentityDocument{Version: 1, Accounts: next})
++	if err != nil {
++		return "", err
++	}
++	dir := filepath.Dir(gatewayAnthropicIdentities.path)
++	file, err := os.CreateTemp(dir, GatewayAnthropicIdentityFile+".")
++	if err != nil {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	name := file.Name()
++	defer os.Remove(name)
++	if err = file.Chmod(0600); err == nil {
++		_, err = file.Write(data)
++	}
++	if err == nil {
++		err = file.Sync()
++	}
++	closeErr := file.Close()
++	if err != nil || closeErr != nil {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	if err = os.Rename(name, gatewayAnthropicIdentities.path); err != nil {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	d, err := os.Open(dir)
++	if err != nil {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	err = d.Sync()
++	_ = d.Close()
++	if err != nil {
++		return "", ErrGatewayAccountStateUnavailable
++	}
++	gatewayAnthropicIdentities.accounts = next
++	return id, nil
++}
++
++func anthropicOAuthAccountIndex(candidate *Auth) (string, bool) {
++	if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") || candidate.AuthKind() != AuthKindOAuth {
++		return "", false
++	}
++	if strings.EqualFold(strings.TrimSpace(os.Getenv("CPA_ANTIGRAVITY_ENABLED")), "false") || candidate.Attributes["gateway_provider_disabled"] == "true" || candidate.Attributes["gateway_identity_conflict"] == "true" || candidate.Metadata["gateway_identity_conflict"] == true {
++		return "", false
++	}
++	subject, _ := candidate.Metadata["gateway_anthropic_subject"].(string)
++	account, _ := candidate.Metadata["account_uuid"].(string)
++	organization, _ := candidate.Metadata["organization_uuid"].(string)
++	if !validAnthropicSubject(subject) || subject != AnthropicIdentitySubject(account, organization) {
++		return "", false
++	}
++	gatewayAnthropicIdentities.RLock()
++	id := gatewayAnthropicIdentities.accounts[subject]
++	gatewayAnthropicIdentities.RUnlock()
++	if len(id) != 16 || !isLowerHexString(id) {
++		return "", false
++	}
++	return id, true
++}
++
++func applyAnthropicOAuthAccountIdentity(candidate *Auth, metadata map[string]any) bool {
++	if candidate == nil {
++		return false
++	}
++	if !strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
++		return false
++	}
++	if strings.EqualFold(strings.TrimSpace(os.Getenv("CPA_ANTHROPIC_ENABLED")), "false") {
++		if candidate.Attributes == nil {
++			candidate.Attributes = map[string]string{}
++		}
++		candidate.Attributes["gateway_provider_disabled"] = "true"
++		candidate.Disabled = true
++		candidate.Status = StatusDisabled
++		candidate.GatewayAccountBlocked = true
++		return false
++	}
++	// Unmapped legacy credentials have no Gateway account index. The Gateway
++	// selector and registry filter reject them, while standalone CPA retains
++	// upstream provider behavior outside the gateway-allocation deployment.
++	if subject, _ := metadata["gateway_anthropic_subject"].(string); subject == "" {
++		return false
++	}
++	if metadata["gateway_identity_conflict"] == true {
++		candidate.Disabled = true
++		candidate.Status = StatusDisabled
++		candidate.GatewayAccountBlocked = true
++		return false
++	}
++	if candidate.Attributes == nil {
++		candidate.Attributes = map[string]string{}
++	}
++	candidate.Attributes[AttributeAuthKind] = AuthKindOAuth
++	id, ok := anthropicOAuthAccountIndex(candidate)
++	if !ok {
++		candidate.GatewayAccountBlocked = true
++		candidate.Disabled = true
++		candidate.Status = StatusDisabled
++		candidate.Index = ""
++		candidate.indexAssigned = false
++		return false
++	}
++	candidate.Index = id
++	candidate.indexAssigned = true
++	return true
++}
++
++func quarantineDuplicateAnthropicIdentities(auths []*Auth) {
++	groups := map[string][]*Auth{}
++	for _, candidate := range auths {
++		if candidate == nil || !strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
++			continue
++		}
++		subject, _ := candidate.Metadata["gateway_anthropic_subject"].(string)
++		if subject != "" {
++			groups[subject] = append(groups[subject], candidate)
++		}
++	}
++	for _, group := range groups {
++		if len(group) < 2 {
++			continue
++		}
++		for _, candidate := range group {
++			if candidate.Attributes == nil {
++				candidate.Attributes = map[string]string{}
++			}
++			candidate.Attributes["gateway_identity_conflict"] = "true"
++			candidate.Disabled = true
++			candidate.Status = StatusDisabled
++			candidate.GatewayAccountBlocked = true
++		}
++	}
++}
+diff --git a/sdk/cliproxy/auth/gateway_anthropic_identity_test.go b/sdk/cliproxy/auth/gateway_anthropic_identity_test.go
+new file mode 100644
+index 00000000..d0451d15
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_anthropic_identity_test.go
+@@ -0,0 +1,137 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++)
++
++const gatewayAnthropicAccount = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
++const gatewayAnthropicOrganization = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
++
++func gatewayAnthropicTestAuth(t *testing.T, m *Manager, id, organization string) *Auth {
++	t.Helper()
++	subject := AnthropicIdentitySubject(gatewayAnthropicAccount, organization)
++	if _, err := m.RegisterAnthropicIdentity(subject); err != nil {
++		t.Fatal(err)
++	}
++	a := &Auth{ID: id, FileName: id, Provider: "claude", Status: StatusActive, Metadata: map[string]any{"type": "claude", "access_token": "synthetic", "account_uuid": gatewayAnthropicAccount, "organization_uuid": organization, "gateway_anthropic_subject": subject}}
++	if !ApplyGatewayOAuthAccountIdentity(a, a.Metadata) {
++		t.Fatal("verified identity rejected")
++	}
++	return a
++}
++func TestGatewayAnthropicIdentityStableAndOrganizationScoped(t *testing.T) {
++	m := NewManager(nil, nil, nil)
++	dir := t.TempDir()
++	if err := m.LoadGatewayAccountState(dir); err != nil {
++		t.Fatal(err)
++	}
++	a := gatewayAnthropicTestAuth(t, m, "first.json", gatewayAnthropicOrganization)
++	first, _ := GatewayOAuthAccountIndex(a)
++	a.ID = "renamed.json"
++	a.Metadata["access_token"] = "rotated"
++	a.Metadata["email"] = "changed@example.com"
++	if got, _ := GatewayOAuthAccountIndex(a); got != first {
++		t.Fatal("identity changed after token rotation")
++	}
++	second := gatewayAnthropicTestAuth(t, m, "second.json", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
++	if got, _ := GatewayOAuthAccountIndex(second); got == first {
++		t.Fatal("organizations share identity")
++	}
++	if err := loadGatewayAnthropicIdentities(dir); err != nil {
++		t.Fatal(err)
++	}
++	if got, _ := GatewayOAuthAccountIndex(a); got != first {
++		t.Fatal("identity changed after restart")
++	}
++	info, err := os.Stat(filepath.Join(dir, GatewayAnthropicIdentityFile))
++	if err != nil || info.Mode().Perm() != 0600 {
++		t.Fatal("identity file permissions")
++	}
++	a.Metadata["organization_uuid"] = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
++	if ApplyGatewayOAuthAccountIdentity(a, a.Metadata) || GatewayAccountAvailable(a) {
++		t.Fatal("changed identity remained routable")
++	}
++}
++func TestGatewayAnthropicDuplicateAndUnverifiedFailClosed(t *testing.T) {
++	m := NewManager(nil, nil, nil)
++	if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++		t.Fatal(err)
++	}
++	a := gatewayAnthropicTestAuth(t, m, "first.json", gatewayAnthropicOrganization)
++	b := gatewayAnthropicTestAuth(t, m, "second.json", gatewayAnthropicOrganization)
++	DeduplicateCodexOAuthAuths([]*Auth{a, b})
++	for _, candidate := range []*Auth{a, b} {
++		if _, ok := GatewayOAuthAccountIndex(candidate); ok || GatewayAccountAvailable(candidate) {
++			t.Fatal("duplicate identity routable")
++		}
++	}
++	unverified := &Auth{Provider: "claude", Metadata: map[string]any{"account_uuid": gatewayAnthropicAccount, "organization_uuid": gatewayAnthropicOrganization}}
++	if ApplyGatewayOAuthAccountIdentity(unverified, unverified.Metadata) {
++		t.Fatal("uploaded identity accepted")
++	}
++}
++func TestGatewayAnthropicProviderAllocationAndCooldown(t *testing.T) {
++	m := NewManager(nil, nil, nil)
++	if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++		t.Fatal(err)
++	}
++	a := gatewayAnthropicTestAuth(t, m, "one.json", gatewayAnthropicOrganization)
++	if got := gatewayAllocationEndpoint([]*Auth{a}, "select"); got != "http://gateway:8080/internal/anthropic-accounts/select" {
++		t.Fatal(got)
++	}
++	if got := gatewayAllocationEndpoint([]*Auth{a, {Provider: "codex"}}, "select"); got != "" {
++		t.Fatal("mixed providers accepted")
++	}
++	if _, err := m.Register(context.Background(), a); err != nil {
++		t.Fatal(err)
++	}
++	id, _ := GatewayOAuthAccountIndex(a)
++	m.markGatewayQuotaExhaustedLocked(a)
++	_, quota, _ := m.GatewayAccountStatuses(id)
++	if quota != "available" {
++		t.Fatal("native recovery replaced with permanent lock")
++	}
++}
++func TestGatewayAnthropicQuotaUsesOnlyObservedSignals(t *testing.T) {
++	a := &Auth{Provider: "claude"}
++	if got := GatewayAnthropicQuota(a); got.ObservedAt != "" || len(got.Windows) != 0 {
++		t.Fatal("invented unknown quota")
++	}
++	now := time.Now().UTC().Truncate(time.Second)
++	a.Quota.ObserveResponseHeadersForProvider("claude", http.Header{"Anthropic-Ratelimit-Unified-5h-Utilization": {"0.35"}, "Anthropic-Ratelimit-Unified-5h-Status": {"allowed"}, "Anthropic-Ratelimit-Unified-7d-Utilization": {"NaN"}, "Anthropic-Ratelimit-Unified-7d-Status": {"rejected"}}, now)
++	a.NextRetryAfter = now.Add(time.Hour)
++	got := GatewayAnthropicQuota(a)
++	if got.ObservedAt != now.Format(time.RFC3339) || len(got.Windows) != 2 || got.Windows[0].UsedPercent == nil || *got.Windows[0].UsedPercent != 35 || got.Windows[1].UsedPercent != nil || got.CooldownUntil == "" {
++		t.Fatalf("snapshot=%+v", got)
++	}
++	if !a.NextRetryAfter.Equal(now.Add(time.Hour)) {
++		t.Fatal("quota snapshot changed cooldown")
++	}
++}
++
++func TestGatewayAnthropicUsesSharedRetryPolicy(t *testing.T) {
++	ctx := context.WithValue(context.Background(), gatewayManagedRequestKey{}, true)
++	if !isGatewayProvider("claude", ctx) || isGatewayProvider("claude", context.Background()) {
++		t.Fatal("gateway provider classification")
++	}
++	for _, status := range []int{400, 404, 409, 422} {
++		if credentialSwitchEligible("claude", &Error{HTTPStatus: status}, ctx) {
++			t.Fatalf("client failure %d permitted replay", status)
++		}
++	}
++	for _, status := range []int{401, 402, 403, 429, 500, 502, 503} {
++		if !credentialSwitchEligible("claude", &Error{HTTPStatus: status}, ctx) {
++			t.Fatalf("retryable %d rejected", status)
++		}
++	}
++	cancelled, cancel := context.WithCancel(ctx)
++	cancel()
++	if credentialSwitchEligible("claude", &Error{HTTPStatus: 502}, cancelled) {
++		t.Fatal("cancelled request replayed")
++	}
++}
+diff --git a/sdk/cliproxy/auth/gateway_anthropic_quota.go b/sdk/cliproxy/auth/gateway_anthropic_quota.go
+new file mode 100644
+index 00000000..0f7a0338
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_anthropic_quota.go
+@@ -0,0 +1,71 @@
++package auth
++
++import (
++	"math"
++	"net/http"
++	"strconv"
++	"time"
++)
++
++type GatewayAnthropicWindow struct {
++	Window      string   `json:"window"`
++	UsedPercent *float64 `json:"used_percent,omitempty"`
++	ResetAt     string   `json:"reset_at,omitempty"`
++	Status      string   `json:"status"`
++}
++type GatewayAnthropicSnapshot struct {
++	ObservedAt    string                   `json:"observed_at,omitempty"`
++	CooldownUntil string                   `json:"cooldown_until,omitempty"`
++	Windows       []GatewayAnthropicWindow `json:"windows"`
++}
++
++// GatewayAnthropicQuota is a projection of CPA's passive observations. It never
++// issues an upstream call, guesses a subscription plan or mutates cooldown.
++func GatewayAnthropicQuota(a *Auth) GatewayAnthropicSnapshot {
++	out := GatewayAnthropicSnapshot{Windows: []GatewayAnthropicWindow{}}
++	if a == nil || a.Provider != "claude" {
++		return out
++	}
++	quota := a.Quota
++	for _, state := range a.ModelStates {
++		if state != nil && state.Quota.ObservedAt.After(quota.ObservedAt) {
++			quota = state.Quota
++		}
++	}
++	cooldown := a.NextRetryAfter
++	if a.Quota.NextRecoverAt.After(cooldown) {
++		cooldown = a.Quota.NextRecoverAt
++	}
++	for _, state := range a.ModelStates {
++		if state != nil && state.NextRetryAfter.After(cooldown) {
++			cooldown = state.NextRetryAfter
++		}
++	}
++	if cooldown.After(time.Now()) {
++		out.CooldownUntil = cooldown.UTC().Format(time.RFC3339)
++	}
++	if quota.ObservedAt.IsZero() {
++		return out
++	}
++	out.ObservedAt = quota.ObservedAt.UTC().Format(time.RFC3339)
++	for _, pair := range [][2]string{{"5h", "five_hour"}, {"7d", "seven_day"}} {
++		prefix := "Anthropic-Ratelimit-Unified-" + pair[0] + "-"
++		read := func(suffix string) string { return quota.Signals[http.CanonicalHeaderKey(prefix+suffix)] }
++		window := GatewayAnthropicWindow{Window: pair[1], Status: "unknown"}
++		switch status := read("Status"); status {
++		case "allowed", "allowed_warning", "rejected":
++			window.Status = status
++		}
++		if value, err := strconv.ParseFloat(read("Utilization"), 64); err == nil && !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0 && value <= 1 {
++			value *= 100
++			window.UsedPercent = &value
++		}
++		if value, err := strconv.ParseInt(read("Reset"), 10, 64); err == nil && value >= 946684800 && value <= 4102444800 {
++			window.ResetAt = time.Unix(value, 0).UTC().Format(time.RFC3339)
++		}
++		if window.Status != "unknown" || window.UsedPercent != nil || window.ResetAt != "" {
++			out.Windows = append(out.Windows, window)
++		}
++	}
++	return out
++}
 diff --git a/sdk/cliproxy/auth/gateway_antigravity_identity.go b/sdk/cliproxy/auth/gateway_antigravity_identity.go
 new file mode 100644
-index 00000000..1bdc16c6
+index 00000000..e7308f3f
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_antigravity_identity.go
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,242 @@
 +package auth
 +
 +import (
@@ -14587,6 +15883,9 @@ index 00000000..1bdc16c6
 +}
 +
 +func GatewayOAuthAccountIndex(candidate *Auth) (string, bool) {
++	if candidate != nil && strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
++		return anthropicOAuthAccountIndex(candidate)
++	}
 +	if candidate != nil && strings.EqualFold(strings.TrimSpace(candidate.Provider), "antigravity") {
 +		return antigravityOAuthAccountIndex(candidate)
 +	}
@@ -14594,6 +15893,9 @@ index 00000000..1bdc16c6
 +}
 +
 +func ApplyGatewayOAuthAccountIdentity(candidate *Auth, metadata map[string]any) bool {
++	if candidate != nil && strings.EqualFold(strings.TrimSpace(candidate.Provider), "claude") {
++		return applyAnthropicOAuthAccountIdentity(candidate, metadata)
++	}
 +	if candidate == nil {
 +		return false
 +	}

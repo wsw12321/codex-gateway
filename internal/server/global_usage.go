@@ -20,20 +20,22 @@ const (
 )
 
 type pricedUsage struct {
-	Requests          int64  `json:"requests"`
-	Tokens            int64  `json:"tokens"`
-	InputTokens       int64  `json:"input_tokens"`
-	CachedInputTokens int64  `json:"cached_input_tokens"`
-	CacheWriteTokens  int64  `json:"cache_write_tokens"`
-	OutputTokens      int64  `json:"output_tokens"`
-	ReasoningTokens   int64  `json:"reasoning_tokens"`
-	PricedTokens      int64  `json:"priced_tokens"`
-	UnpricedTokens    int64  `json:"unpriced_tokens"`
-	EstimatedUSD      string `json:"estimated_usd"`
-	EstimatedCNY      string `json:"estimated_cny"`
-	ActualCostUSD     string `json:"actual_cost_usd"`
-	ChargedUSD        string `json:"charged_usd"`
-	UncoveredUSD      string `json:"uncovered_usd"`
+	Requests           int64  `json:"requests"`
+	Tokens             int64  `json:"tokens"`
+	InputTokens        int64  `json:"input_tokens"`
+	CachedInputTokens  int64  `json:"cached_input_tokens"`
+	CacheWriteTokens   int64  `json:"cache_write_tokens"`
+	CacheWrite5mTokens int64  `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens int64  `json:"cache_write_1h_tokens"`
+	OutputTokens       int64  `json:"output_tokens"`
+	ReasoningTokens    int64  `json:"reasoning_tokens"`
+	PricedTokens       int64  `json:"priced_tokens"`
+	UnpricedTokens     int64  `json:"unpriced_tokens"`
+	EstimatedUSD       string `json:"estimated_usd"`
+	EstimatedCNY       string `json:"estimated_cny"`
+	ActualCostUSD      string `json:"actual_cost_usd"`
+	ChargedUSD         string `json:"charged_usd"`
+	UncoveredUSD       string `json:"uncovered_usd"`
 }
 
 type globalUserUsage struct {
@@ -74,10 +76,12 @@ type globalUsageResponse struct {
 }
 
 type globalPricingDimension struct {
-	Value            string `json:"value"`
-	Requests         int64  `json:"requests"`
-	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	ActualCostUSD    string `json:"actual_cost_usd"`
+	Value              string `json:"value"`
+	Requests           int64  `json:"requests"`
+	CacheWriteTokens   int64  `json:"cache_write_tokens"`
+	CacheWrite5mTokens int64  `json:"cache_write_5m_tokens"`
+	CacheWrite1hTokens int64  `json:"cache_write_1h_tokens"`
+	ActualCostUSD      string `json:"actual_cost_usd"`
 }
 
 type globalPricingBreakdown struct {
@@ -169,7 +173,7 @@ func formatGlobalPricingBreakdown(rows []store.GlobalPricingBreakdownRow) global
 	for _, row := range rows {
 		value := globalPricingDimension{
 			Value: row.Value, Requests: row.RequestCount,
-			CacheWriteTokens: row.CacheWriteTokens, ActualCostUSD: row.ActualCostUSD,
+			CacheWriteTokens: row.CacheWriteTokens, CacheWrite5mTokens: row.CacheWrite5mTokens, CacheWrite1hTokens: row.CacheWrite1hTokens, ActualCostUSD: row.ActualCostUSD,
 		}
 		switch row.Dimension {
 		case "service_tier":
@@ -421,6 +425,12 @@ func addUsageRow(
 		return err
 	}
 	if err := addUsageMetric(&destination.usage.CachedInputTokens, row.CachedInputTokens); err != nil {
+		return err
+	}
+	if err := addUsageMetric(&destination.usage.CacheWrite5mTokens, row.CacheWrite5mTokens); err != nil {
+		return err
+	}
+	if err := addUsageMetric(&destination.usage.CacheWrite1hTokens, row.CacheWrite1hTokens); err != nil {
 		return err
 	}
 	if err := addUsageMetric(&destination.usage.CacheWriteTokens, row.CacheWriteTokens); err != nil {

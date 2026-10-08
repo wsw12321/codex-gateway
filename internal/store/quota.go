@@ -88,11 +88,11 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 		return RequestAdmission{}, fmt.Errorf("%w: inconsistent request admission", ErrInvalid)
 	}
 	switch usage.Endpoint {
-	case "models":
+	case "models", "messages.count_tokens":
 		if params.Billing != nil {
 			return RequestAdmission{}, fmt.Errorf("%w: models endpoint cannot be billed", ErrInvalid)
 		}
-	case "responses", "responses.compact", "gemini.generateContent", "gemini.streamGenerateContent":
+	case "responses", "responses.compact", "gemini.generateContent", "gemini.streamGenerateContent", "messages":
 		if params.Billing == nil {
 			return RequestAdmission{}, fmt.Errorf("%w: generation endpoint requires billing", ErrInvalid)
 		}
@@ -568,7 +568,7 @@ func (s *Store) SettleRequest(ctx context.Context, requestID string, at time.Tim
 		if err := settleQuotaTx(ctx, tx, requestID, inputTokens+outputTokens, at); err != nil {
 			return err
 		}
-		if endpoint != "models" {
+		if endpoint != "models" && endpoint != "messages.count_tokens" {
 			if _, err := settleBillingTx(ctx, tx, requestID, at); err != nil {
 				return err
 			}
@@ -703,7 +703,7 @@ func (s *Store) ReleaseRequest(ctx context.Context, requestID string, at time.Ti
 		if err := releaseQuotaTx(ctx, tx, requestID, at); err != nil {
 			return err
 		}
-		if endpoint != "models" {
+		if endpoint != "models" && endpoint != "messages.count_tokens" {
 			if err := releaseBillingTx(ctx, tx, requestID, at); err != nil {
 				return err
 			}

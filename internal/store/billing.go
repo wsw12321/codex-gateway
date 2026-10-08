@@ -21,10 +21,11 @@ const (
 	BillingTierWeek  = "week"
 	BillingTierMonth = "month"
 
-	BillingModeLegacy              = "legacy"
-	BillingModeOpenAIAPIEquivalent = "openai_api_token_equivalent"
-	BillingModeGeminiAPIEquivalent = "gemini_api_token_equivalent"
-	BillingModeInternalZero        = "internal_zero"
+	BillingModeLegacy                 = "legacy"
+	BillingModeOpenAIAPIEquivalent    = "openai_api_token_equivalent"
+	BillingModeGeminiAPIEquivalent    = "gemini_api_token_equivalent"
+	BillingModeAnthropicAPIEquivalent = "anthropic_api_token_equivalent"
+	BillingModeInternalZero           = "internal_zero"
 )
 
 // InsufficientFundsError is returned when a billed endpoint has no positive
@@ -70,50 +71,55 @@ type BillingSubscriptionState struct {
 }
 
 type BillingLedgerEntry struct {
-	TransactionSnapshot             json.RawMessage `json:"transaction_snapshot,omitempty"`
-	GroupID                         *string         `json:"group_id,omitempty"`
-	GroupPeriodID                   *string         `json:"group_period_id,omitempty"`
-	ID                              int64           `json:"id"`
-	UserID                          *string         `json:"user_id,omitempty"`
-	OperationID                     *string         `json:"operation_id,omitempty"`
-	EntryType                       string          `json:"entry_type"`
-	AmountUSD                       string          `json:"amount_usd"`
-	CashDeltaUSD                    string          `json:"cash_delta_usd"`
-	BalanceAfterUSD                 *string         `json:"balance_after_usd,omitempty"`
-	CNYAmount                       *string         `json:"cny_amount,omitempty"`
-	USDPerCNYSnapshot               *string         `json:"usd_per_cny_snapshot,omitempty"`
-	SubscriptionTier                *string         `json:"subscription_tier,omitempty"`
-	SubscriptionPeriodID            *string         `json:"subscription_period_id,omitempty"`
-	RequestID                       *string         `json:"request_id,omitempty"`
-	UpstreamAccountID               *string         `json:"-"`
-	Model                           *string         `json:"model,omitempty"`
-	ActualModel                     *string         `json:"actual_model,omitempty"`
-	InputTokens                     *int64          `json:"input_tokens,omitempty"`
-	CachedInputTokens               *int64          `json:"cached_input_tokens,omitempty"`
-	CacheWriteTokens                *int64          `json:"cache_write_tokens,omitempty"`
-	OutputTokens                    *int64          `json:"output_tokens,omitempty"`
-	CacheWriteMode                  *string         `json:"cache_write_mode,omitempty"`
-	RequestedServiceTier            *string         `json:"requested_service_tier,omitempty"`
-	ActualServiceTier               *string         `json:"actual_service_tier,omitempty"`
-	PricingServiceTier              *string         `json:"pricing_service_tier,omitempty"`
-	ContextClass                    *string         `json:"context_class,omitempty"`
-	PricingRuleVersion              int             `json:"pricing_rule_version"`
-	PricingMultiplier               string          `json:"pricing_multiplier"`
-	PricingCatalogAsOf              *string         `json:"pricing_catalog_as_of,omitempty"`
-	AppliedInputUSDPerMillion       *string         `json:"applied_input_usd_per_million,omitempty"`
-	AppliedCachedInputUSDPerMillion *string         `json:"applied_cached_input_usd_per_million,omitempty"`
-	AppliedCacheWriteUSDPerMillion  *string         `json:"applied_cache_write_usd_per_million,omitempty"`
-	AppliedOutputUSDPerMillion      *string         `json:"applied_output_usd_per_million,omitempty"`
-	PricingFallbackReason           *string         `json:"pricing_fallback_reason,omitempty"`
-	UsageRequestedAt                *time.Time      `json:"usage_requested_at,omitempty"`
-	ActualCostUSD                   *string         `json:"actual_cost_usd,omitempty"`
-	ChargedUSD                      *string         `json:"charged_usd,omitempty"`
-	GroupChargedUSD                 *string         `json:"group_charged_usd,omitempty"`
-	PersonalChargedUSD              *string         `json:"personal_charged_usd,omitempty"`
-	UncoveredUSD                    *string         `json:"uncovered_usd,omitempty"`
-	Reason                          string          `json:"reason"`
-	ActorUserID                     *string         `json:"actor_user_id,omitempty"`
-	CreatedAt                       time.Time       `json:"created_at"`
+	TransactionSnapshot              json.RawMessage `json:"transaction_snapshot,omitempty"`
+	GroupID                          *string         `json:"group_id,omitempty"`
+	GroupPeriodID                    *string         `json:"group_period_id,omitempty"`
+	ID                               int64           `json:"id"`
+	UserID                           *string         `json:"user_id,omitempty"`
+	OperationID                      *string         `json:"operation_id,omitempty"`
+	EntryType                        string          `json:"entry_type"`
+	AmountUSD                        string          `json:"amount_usd"`
+	CashDeltaUSD                     string          `json:"cash_delta_usd"`
+	BalanceAfterUSD                  *string         `json:"balance_after_usd,omitempty"`
+	CNYAmount                        *string         `json:"cny_amount,omitempty"`
+	USDPerCNYSnapshot                *string         `json:"usd_per_cny_snapshot,omitempty"`
+	SubscriptionTier                 *string         `json:"subscription_tier,omitempty"`
+	SubscriptionPeriodID             *string         `json:"subscription_period_id,omitempty"`
+	RequestID                        *string         `json:"request_id,omitempty"`
+	UpstreamAccountID                *string         `json:"-"`
+	Model                            *string         `json:"model,omitempty"`
+	ActualModel                      *string         `json:"actual_model,omitempty"`
+	InputTokens                      *int64          `json:"input_tokens,omitempty"`
+	CachedInputTokens                *int64          `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens                 *int64          `json:"cache_write_tokens,omitempty"`
+	CacheWrite5mTokens               *int64          `json:"cache_write_5m_tokens,omitempty"`
+	CacheWrite1hTokens               *int64          `json:"cache_write_1h_tokens,omitempty"`
+	CacheWriteTTLPresent             *bool           `json:"cache_write_ttl_present,omitempty"`
+	OutputTokens                     *int64          `json:"output_tokens,omitempty"`
+	CacheWriteMode                   *string         `json:"cache_write_mode,omitempty"`
+	RequestedServiceTier             *string         `json:"requested_service_tier,omitempty"`
+	ActualServiceTier                *string         `json:"actual_service_tier,omitempty"`
+	PricingServiceTier               *string         `json:"pricing_service_tier,omitempty"`
+	ContextClass                     *string         `json:"context_class,omitempty"`
+	PricingRuleVersion               int             `json:"pricing_rule_version"`
+	PricingMultiplier                string          `json:"pricing_multiplier"`
+	PricingCatalogAsOf               *string         `json:"pricing_catalog_as_of,omitempty"`
+	AppliedInputUSDPerMillion        *string         `json:"applied_input_usd_per_million,omitempty"`
+	AppliedCachedInputUSDPerMillion  *string         `json:"applied_cached_input_usd_per_million,omitempty"`
+	AppliedCacheWriteUSDPerMillion   *string         `json:"applied_cache_write_usd_per_million,omitempty"`
+	AppliedCacheWrite5mUSDPerMillion *string         `json:"applied_cache_write_5m_usd_per_million,omitempty"`
+	AppliedCacheWrite1hUSDPerMillion *string         `json:"applied_cache_write_1h_usd_per_million,omitempty"`
+	AppliedOutputUSDPerMillion       *string         `json:"applied_output_usd_per_million,omitempty"`
+	PricingFallbackReason            *string         `json:"pricing_fallback_reason,omitempty"`
+	UsageRequestedAt                 *time.Time      `json:"usage_requested_at,omitempty"`
+	ActualCostUSD                    *string         `json:"actual_cost_usd,omitempty"`
+	ChargedUSD                       *string         `json:"charged_usd,omitempty"`
+	GroupChargedUSD                  *string         `json:"group_charged_usd,omitempty"`
+	PersonalChargedUSD               *string         `json:"personal_charged_usd,omitempty"`
+	UncoveredUSD                     *string         `json:"uncovered_usd,omitempty"`
+	Reason                           string          `json:"reason"`
+	ActorUserID                      *string         `json:"actor_user_id,omitempty"`
+	CreatedAt                        time.Time       `json:"created_at"`
 }
 
 type BillingState struct {
@@ -161,49 +167,54 @@ type BillingReservationParams struct {
 }
 
 type BillingReservation struct {
-	FundingRuleVersion              int             `json:"funding_rule_version"`
-	GroupID                         *string         `json:"group_id,omitempty"`
-	GroupPeriodID                   *string         `json:"group_period_id,omitempty"`
-	RequestID                       string          `json:"request_id"`
-	UserID                          string          `json:"user_id"`
-	APIKeyID                        string          `json:"api_key_id"`
-	Model                           string          `json:"model"`
-	InputUSDPerMillion              string          `json:"input_usd_per_million"`
-	CachedInputUSDPerMillion        string          `json:"cached_input_usd_per_million"`
-	OutputUSDPerMillion             string          `json:"output_usd_per_million"`
-	PricingRuleVersion              int             `json:"pricing_rule_version"`
-	PricingMultiplier               string          `json:"pricing_multiplier"`
-	BillingMode                     string          `json:"billing_mode"`
-	PricingCatalogAsOf              *string         `json:"pricing_catalog_as_of,omitempty"`
-	PricingModel                    *string         `json:"pricing_model,omitempty"`
-	PricingSnapshot                 json.RawMessage `json:"pricing_snapshot,omitempty"`
-	CacheWriteMode                  *string         `json:"cache_write_mode,omitempty"`
-	RequestedServiceTier            *string         `json:"requested_service_tier,omitempty"`
-	ActualServiceTier               *string         `json:"actual_service_tier,omitempty"`
-	PricingServiceTier              *string         `json:"pricing_service_tier,omitempty"`
-	ActualModel                     *string         `json:"actual_model,omitempty"`
-	ContextClass                    *string         `json:"context_class,omitempty"`
-	ActualCacheWriteTokens          *int64          `json:"actual_cache_write_tokens,omitempty"`
-	AppliedInputUSDPerMillion       *string         `json:"applied_input_usd_per_million,omitempty"`
-	AppliedCachedInputUSDPerMillion *string         `json:"applied_cached_input_usd_per_million,omitempty"`
-	AppliedCacheWriteUSDPerMillion  *string         `json:"applied_cache_write_usd_per_million,omitempty"`
-	AppliedOutputUSDPerMillion      *string         `json:"applied_output_usd_per_million,omitempty"`
-	PricingFallbackReason           *string         `json:"pricing_fallback_reason,omitempty"`
-	DayPeriodID                     *string         `json:"day_period_id,omitempty"`
-	WeekPeriodID                    *string         `json:"week_period_id,omitempty"`
-	MonthPeriodID                   *string         `json:"month_period_id,omitempty"`
-	CashLotCutoff                   *int64          `json:"cash_lot_cutoff,omitempty"`
-	State                           string          `json:"state"`
-	ActualInputTokens               *int64          `json:"actual_input_tokens,omitempty"`
-	ActualCachedInputTokens         *int64          `json:"actual_cached_input_tokens,omitempty"`
-	ActualOutputTokens              *int64          `json:"actual_output_tokens,omitempty"`
-	ActualCostUSD                   *string         `json:"actual_cost_usd,omitempty"`
-	ChargedUSD                      *string         `json:"charged_usd,omitempty"`
-	GroupChargedUSD                 *string         `json:"group_charged_usd,omitempty"`
-	PersonalChargedUSD              *string         `json:"personal_charged_usd,omitempty"`
-	UncoveredUSD                    *string         `json:"uncovered_usd,omitempty"`
-	CreatedAt                       time.Time       `json:"created_at"`
-	SettledAt                       *time.Time      `json:"settled_at,omitempty"`
+	FundingRuleVersion               int             `json:"funding_rule_version"`
+	GroupID                          *string         `json:"group_id,omitempty"`
+	GroupPeriodID                    *string         `json:"group_period_id,omitempty"`
+	RequestID                        string          `json:"request_id"`
+	UserID                           string          `json:"user_id"`
+	APIKeyID                         string          `json:"api_key_id"`
+	Model                            string          `json:"model"`
+	InputUSDPerMillion               string          `json:"input_usd_per_million"`
+	CachedInputUSDPerMillion         string          `json:"cached_input_usd_per_million"`
+	OutputUSDPerMillion              string          `json:"output_usd_per_million"`
+	PricingRuleVersion               int             `json:"pricing_rule_version"`
+	PricingMultiplier                string          `json:"pricing_multiplier"`
+	BillingMode                      string          `json:"billing_mode"`
+	PricingCatalogAsOf               *string         `json:"pricing_catalog_as_of,omitempty"`
+	PricingModel                     *string         `json:"pricing_model,omitempty"`
+	PricingSnapshot                  json.RawMessage `json:"pricing_snapshot,omitempty"`
+	CacheWriteMode                   *string         `json:"cache_write_mode,omitempty"`
+	RequestedServiceTier             *string         `json:"requested_service_tier,omitempty"`
+	ActualServiceTier                *string         `json:"actual_service_tier,omitempty"`
+	PricingServiceTier               *string         `json:"pricing_service_tier,omitempty"`
+	ActualModel                      *string         `json:"actual_model,omitempty"`
+	ContextClass                     *string         `json:"context_class,omitempty"`
+	ActualCacheWriteTokens           *int64          `json:"actual_cache_write_tokens,omitempty"`
+	ActualCacheWrite5mTokens         *int64          `json:"actual_cache_write_5m_tokens,omitempty"`
+	ActualCacheWrite1hTokens         *int64          `json:"actual_cache_write_1h_tokens,omitempty"`
+	ActualCacheWriteTTLPresent       *bool           `json:"actual_cache_write_ttl_present,omitempty"`
+	AppliedInputUSDPerMillion        *string         `json:"applied_input_usd_per_million,omitempty"`
+	AppliedCachedInputUSDPerMillion  *string         `json:"applied_cached_input_usd_per_million,omitempty"`
+	AppliedCacheWriteUSDPerMillion   *string         `json:"applied_cache_write_usd_per_million,omitempty"`
+	AppliedCacheWrite5mUSDPerMillion *string         `json:"applied_cache_write_5m_usd_per_million,omitempty"`
+	AppliedCacheWrite1hUSDPerMillion *string         `json:"applied_cache_write_1h_usd_per_million,omitempty"`
+	AppliedOutputUSDPerMillion       *string         `json:"applied_output_usd_per_million,omitempty"`
+	PricingFallbackReason            *string         `json:"pricing_fallback_reason,omitempty"`
+	DayPeriodID                      *string         `json:"day_period_id,omitempty"`
+	WeekPeriodID                     *string         `json:"week_period_id,omitempty"`
+	MonthPeriodID                    *string         `json:"month_period_id,omitempty"`
+	CashLotCutoff                    *int64          `json:"cash_lot_cutoff,omitempty"`
+	State                            string          `json:"state"`
+	ActualInputTokens                *int64          `json:"actual_input_tokens,omitempty"`
+	ActualCachedInputTokens          *int64          `json:"actual_cached_input_tokens,omitempty"`
+	ActualOutputTokens               *int64          `json:"actual_output_tokens,omitempty"`
+	ActualCostUSD                    *string         `json:"actual_cost_usd,omitempty"`
+	ChargedUSD                       *string         `json:"charged_usd,omitempty"`
+	GroupChargedUSD                  *string         `json:"group_charged_usd,omitempty"`
+	PersonalChargedUSD               *string         `json:"personal_charged_usd,omitempty"`
+	UncoveredUSD                     *string         `json:"uncovered_usd,omitempty"`
+	CreatedAt                        time.Time       `json:"created_at"`
+	SettledAt                        *time.Time      `json:"settled_at,omitempty"`
 }
 
 type BillingWriteParams struct {
@@ -334,7 +345,9 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 		&appliedOutput, &fallbackReason, &day, &week, &month, &cutoff,
 		&value.State, &inputTokens, &cachedTokens,
 		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt, &groupID, &groupPeriodID, &value.PricingMultiplier,
-		&value.FundingRuleVersion, &groupCharged, &personalCharged)
+		&value.FundingRuleVersion, &groupCharged, &personalCharged,
+		&value.ActualCacheWrite5mTokens, &value.ActualCacheWrite1hTokens, &value.ActualCacheWriteTTLPresent,
+		&value.AppliedCacheWrite5mUSDPerMillion, &value.AppliedCacheWrite1hUSDPerMillion)
 	value.InputUSDPerMillion, value.CachedInputUSDPerMillion = inputPrice.String, cachedPrice.String
 	value.OutputUSDPerMillion = outputPrice.String
 	value.PricingCatalogAsOf, value.PricingModel = nullableString(catalog), nullableString(pricingModel)
@@ -372,7 +385,9 @@ const billingReservationColumns = `request_id, user_id, api_key_id, requested_mo
 	actual_input_tokens, actual_cached_input_tokens,
 	actual_output_tokens, actual_cost_usd::text, charged_usd::text,
 	uncovered_usd::text, created_at, settled_at, group_id, group_period_id, pricing_multiplier::text,
-	funding_rule_version, group_charged_usd::text, personal_charged_usd::text`
+	funding_rule_version, group_charged_usd::text, personal_charged_usd::text,
+	actual_cache_write_5m_tokens, actual_cache_write_1h_tokens, actual_cache_write_ttl_present,
+	applied_cache_write_5m_usd_per_million::text, applied_cache_write_1h_usd_per_million::text`
 
 func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationParams) (BillingReservation, error) {
 	if params.Now.IsZero() {
@@ -424,7 +439,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			*price = value
 		}
 	case config.PricingSchemaV2:
-		if params.BillingMode != BillingModeOpenAIAPIEquivalent && params.BillingMode != BillingModeGeminiAPIEquivalent && params.BillingMode != BillingModeInternalZero {
+		if params.BillingMode != BillingModeOpenAIAPIEquivalent && params.BillingMode != BillingModeGeminiAPIEquivalent && params.BillingMode != BillingModeAnthropicAPIEquivalent && params.BillingMode != BillingModeInternalZero {
 			return BillingReservation{}, fmt.Errorf("%w: invalid v2 billing mode", ErrInvalid)
 		}
 		if params.InputUSDPerMillion != "" || params.CachedInputUSDPerMillion != "" || params.OutputUSDPerMillion != "" ||
@@ -595,8 +610,10 @@ func pricingRuleIsZero(rule config.ModelPricing) bool {
 				continue
 			}
 			values := []string{price.InputUSDPerMillion, price.CachedInputUSDPerMillion, price.OutputUSDPerMillion}
-			if price.CacheWriteUSDPerMillion != nil {
-				values = append(values, *price.CacheWriteUSDPerMillion)
+			for _, cachePrice := range []*string{price.CacheWriteUSDPerMillion, price.CacheWrite5mUSDPerMillion, price.CacheWrite1hUSDPerMillion} {
+				if cachePrice != nil {
+					values = append(values, *cachePrice)
+				}
 			}
 			for _, value := range values {
 				canonical, err := decimal.ParsePrice(value)
@@ -846,7 +863,9 @@ const billingLedgerColumns = `id, user_id, operation_id, entry_type,
 	applied_input_usd_per_million::text, applied_cached_input_usd_per_million::text,
 	applied_cache_write_usd_per_million::text, applied_output_usd_per_million::text,
 	pricing_fallback_reason, group_id, group_period_id, pricing_multiplier::text, transaction_snapshot,
-	group_charged_usd::text, personal_charged_usd::text`
+	group_charged_usd::text, personal_charged_usd::text,
+	cache_write_5m_tokens, cache_write_1h_tokens, cache_write_ttl_present,
+	applied_cache_write_5m_usd_per_million::text, applied_cache_write_1h_usd_per_million::text`
 
 func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	var value BillingLedgerEntry
@@ -867,7 +886,9 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 		&requestedTier, &actualTier, &pricingTier, &contextClass,
 		&value.PricingRuleVersion, &pricingCatalog, &appliedInput, &appliedCached,
 		&appliedCacheWrite, &appliedOutput, &fallbackReason, &groupID, &groupPeriodID, &value.PricingMultiplier, &transactionSnapshot,
-		&groupCharged, &personalCharged)
+		&groupCharged, &personalCharged,
+		&value.CacheWrite5mTokens, &value.CacheWrite1hTokens, &value.CacheWriteTTLPresent,
+		&value.AppliedCacheWrite5mUSDPerMillion, &value.AppliedCacheWrite1hUSDPerMillion)
 	value.TransactionSnapshot = json.RawMessage(transactionSnapshot)
 	value.GroupID, value.GroupPeriodID = nullableString(groupID), nullableString(groupPeriodID)
 	value.UserID, value.OperationID = nullableString(userID), nullableString(operationID)
@@ -1866,15 +1887,16 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	var actualServiceTier sql.NullString
 	var upstreamAccountID sql.NullString
 	var inputTokens, cachedTokens, cacheWriteTokens, outputTokens int64
-	var cacheWriteTokensPresent bool
+	var cacheWriteTokensPresent, cacheWriteTTLPresent bool
+	var cacheWrite5mTokens, cacheWrite1hTokens int64
 	if err := tx.QueryRowContext(ctx, `
 		SELECT requested_at, model, actual_service_tier, input_tokens,
 			cached_input_tokens, cache_write_tokens, cache_write_tokens_present,
-			output_tokens, upstream_account_id
+			output_tokens, upstream_account_id, cache_write_5m_tokens, cache_write_1h_tokens, cache_write_ttl_present
 		FROM usage_requests WHERE request_id = $1 AND state <> 'in_progress'
 		FOR UPDATE`, requestID).Scan(&usageRequestedAt, &actualModel, &actualServiceTier,
 		&inputTokens, &cachedTokens, &cacheWriteTokens, &cacheWriteTokensPresent,
-		&outputTokens, &upstreamAccountID); err != nil {
+		&outputTokens, &upstreamAccountID, &cacheWrite5mTokens, &cacheWrite1hTokens, &cacheWriteTTLPresent); err != nil {
 		return BillingReservation{}, mapDBError("read terminal usage for billing", err)
 	}
 	var decision config.PricingDecision
@@ -1894,19 +1916,31 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			selectionTier = "default"
 		}
 		decision, err = snapshot.Select(selectionTier, inputTokens)
-		if err == nil && snapshot.Rule.CacheWriteMode == config.CacheWriteSeparate && !cacheWriteTokensPresent {
+		if err == nil && (snapshot.Rule.CacheWriteMode == config.CacheWriteSeparate || snapshot.Rule.CacheWriteMode == config.CacheWriteSeparateByTTL) && !cacheWriteTokensPresent {
 			cacheWriteTokens = inputTokens - cachedTokens
 			decision.FallbackReason = config.AppendFallbackReason(
 				decision.FallbackReason, config.FallbackMissingCacheWriteTokens,
 			)
 		}
 		if err == nil {
-			cost, err = decimal.CalculateCostV2WithMultiplier(
-				inputTokens, cachedTokens, cacheWriteTokens, outputTokens,
-				snapshot.Rule.CacheWriteMode, decision.InputUSDPerMillion,
-				decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion,
-				decision.OutputUSDPerMillion, reservation.PricingMultiplier,
-			)
+			if snapshot.Rule.CacheWriteMode == config.CacheWriteSeparateByTTL {
+				if !cacheWriteTTLPresent && cacheWriteTokens > 0 {
+					decision.FallbackReason = config.AppendFallbackReason(decision.FallbackReason, config.FallbackMissingCacheWriteTTL)
+				}
+				cost, err = decimal.CalculateCostV2TTLWithMultiplier(
+					inputTokens, cachedTokens, cacheWriteTokens, cacheWrite5mTokens, cacheWrite1hTokens, outputTokens,
+					cacheWriteTTLPresent, decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion,
+					decision.CacheWrite5mUSDPerMillion, decision.CacheWrite1hUSDPerMillion,
+					decision.OutputUSDPerMillion, reservation.PricingMultiplier,
+				)
+			} else {
+				cost, err = decimal.CalculateCostV2WithMultiplier(
+					inputTokens, cachedTokens, cacheWriteTokens, outputTokens,
+					snapshot.Rule.CacheWriteMode, decision.InputUSDPerMillion,
+					decision.CachedInputUSDPerMillion, decision.CacheWriteUSDPerMillion,
+					decision.OutputUSDPerMillion, reservation.PricingMultiplier,
+				)
+			}
 			pricingFallbackReason = decision.FallbackReason
 		}
 	}
@@ -2101,6 +2135,14 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	var ledgerPricingTier, ledgerContextClass, ledgerCatalog any
 	var ledgerAppliedInput, ledgerAppliedCached, ledgerAppliedCacheWrite, ledgerAppliedOutput any
 	var ledgerFallback any
+	var observedWrite5m, observedWrite1h, observedTTL, appliedWrite5m, appliedWrite1h any
+	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
+		observedTTL = cacheWriteTTLPresent
+		if cacheWriteTTLPresent {
+			observedWrite5m, observedWrite1h = cacheWrite5mTokens, cacheWrite1hTokens
+		}
+		appliedWrite5m, appliedWrite1h = valueOrNil(decision.CacheWrite5mUSDPerMillion), valueOrNil(decision.CacheWrite1hUSDPerMillion)
+	}
 	ledgerRequestedAt = usageRequestedAt
 	if reservation.PricingRuleVersion == config.PricingSchemaV2 {
 		ledgerActualModel = actualModel
@@ -2128,11 +2170,13 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			 applied_input_usd_per_million, applied_cached_input_usd_per_million,
 			 applied_cache_write_usd_per_million, applied_output_usd_per_million,
 			 pricing_fallback_reason, upstream_account_id, group_id, group_period_id, pricing_multiplier,
-			 group_charged_usd, personal_charged_usd)
+			 group_charged_usd, personal_charged_usd,
+			 cache_write_5m_tokens, cache_write_1h_tokens, cache_write_ttl_present,
+			 applied_cache_write_5m_usd_per_million, applied_cache_write_1h_usd_per_million)
 		VALUES ($1,'usage_charge',$2::numeric,-$3::numeric,$4::numeric,$5,$6,$7,$8,$9,
 			$2::numeric,$10::numeric,$11::numeric,'request usage charge',$12,
 			$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::date,$23::numeric,$24::numeric,
-			$25::numeric,$26::numeric,$27,$28,$29,$30,$31::numeric,$32::numeric,$33::numeric)`,
+			$25::numeric,$26::numeric,$27,$28,$29,$30,$31::numeric,$32::numeric,$33::numeric,$34,$35,$36,$37::numeric,$38::numeric)`,
 		reservation.UserID, cost, cashCharged, balanceAfter, requestID, reservation.Model,
 		inputTokens, cachedTokens, outputTokens, charged, remaining, at,
 		ledgerRequestedAt, ledgerActualModel, ledgerCacheWriteTokens, ledgerCacheWriteMode,
@@ -2140,7 +2184,7 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 		reservation.PricingRuleVersion, ledgerCatalog, ledgerAppliedInput, ledgerAppliedCached,
 		ledgerAppliedCacheWrite, ledgerAppliedOutput, ledgerFallback,
 		valueOrNil(upstreamAccountID.String), reservation.GroupID, reservation.GroupPeriodID, reservation.PricingMultiplier,
-		groupCharged, personalCharged); err != nil {
+		groupCharged, personalCharged, observedWrite5m, observedWrite1h, observedTTL, appliedWrite5m, appliedWrite1h); err != nil {
 		return BillingReservation{}, mapDBError("record usage billing ledger", err)
 	}
 	if reservation.FundingRuleVersion == 1 && reservation.GroupPeriodID != nil {
@@ -2175,12 +2219,17 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			applied_cache_write_usd_per_million = $16::numeric,
 			applied_output_usd_per_million = $17::numeric,
 			pricing_fallback_reason = $18,
-			group_charged_usd = $19::numeric, personal_charged_usd = $20::numeric
+			group_charged_usd = $19::numeric, personal_charged_usd = $20::numeric,
+			actual_cache_write_5m_tokens = $21, actual_cache_write_1h_tokens = $22,
+			actual_cache_write_ttl_present = $23,
+			applied_cache_write_5m_usd_per_million = $24::numeric,
+			applied_cache_write_1h_usd_per_million = $25::numeric
 		WHERE request_id = $1 RETURNING `+billingReservationColumns,
 		requestID, inputTokens, cachedTokens, outputTokens, cost, charged, remaining, at,
 		settledCacheWrite, settledActualTier, settledPricingTier, settledActualModel,
 		settledContext, settledAppliedInput, settledAppliedCached, settledAppliedCacheWrite,
-		settledAppliedOutput, settledFallback, groupCharged, personalCharged))
+		settledAppliedOutput, settledFallback, groupCharged, personalCharged,
+		observedWrite5m, observedWrite1h, observedTTL, appliedWrite5m, appliedWrite1h))
 	return reservation, mapDBError("settle billing reservation", err)
 }
 

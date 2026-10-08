@@ -250,7 +250,7 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 			}
 		}
 		if !upstreamAccountPattern.MatchString(account.ID) ||
-			(!safeMaskedEmail(account.MaskedEmail) && !(c.antigravity && account.MaskedEmail == "" && account.DisplayName != "")) ||
+			(!safeMaskedEmail(account.MaskedEmail) && !((c.antigravity || c.anthropic) && account.MaskedEmail == "" && account.DisplayName != "")) ||
 			!validUpstreamPlan(account.Plan) ||
 			!validAccountStatus(account.Status) || account.LastSyncedAt.IsZero() {
 			return nil, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
@@ -315,7 +315,11 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 		!isJSONNull(wire.Result.RateLimitResetCredits) {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	rateLimits, ok := normalizedRateLimitSnapshot(*wire.Result.RateLimits, "codex")
+	provider := "codex"
+	if c.anthropic {
+		provider = "anthropic"
+	}
+	rateLimits, ok := normalizedRateLimitSnapshot(*wire.Result.RateLimits, provider)
 	if !ok {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
@@ -334,7 +338,7 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 		}
 		byLimitID[limitID] = snapshot
 	}
-	if codex, exists := byLimitID["codex"]; !exists || !equalRateLimitSnapshot(rateLimits, codex) {
+	if primary, exists := byLimitID[provider]; !exists || !equalRateLimitSnapshot(rateLimits, primary) {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
 	return UpstreamQuota{
@@ -354,6 +358,9 @@ func (c *Client) internalJSONBody(ctx context.Context, method, path, body string
 }
 
 func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, body string, headers http.Header, destination any) error {
+	if c.anthropic && strings.HasPrefix(path, "/internal/upstream-accounts") {
+		path = "/internal/anthropic-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
+	}
 	if c.cpaNative && strings.HasPrefix(path, "/internal/upstream-accounts") {
 		path = "/internal/antigravity-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
 	}

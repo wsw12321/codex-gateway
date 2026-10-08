@@ -129,11 +129,13 @@ func (s *Server) cpaAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-func cpaProvider(provider string) bool { return provider == "codex" || provider == "antigravity" }
+func cpaProvider(provider string) bool {
+	return provider == "codex" || provider == "antigravity" || provider == "anthropic"
+}
 
 func (s *Server) cpaAccountRequest(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	provider := r.PathValue("provider")
-	if !cpaProvider(provider) || (provider == "antigravity" && s.antigravity == nil) {
+	if !cpaProvider(provider) || (provider == "antigravity" && s.antigravity == nil) || (provider == "anthropic" && s.anthropic == nil) {
 		http.NotFound(w, r)
 		return nil, false
 	}
@@ -147,6 +149,9 @@ func (s *Server) cpaAccountRequest(w http.ResponseWriter, r *http.Request) (*htt
 	request.URL.Path = "/admin/upstream-accounts"
 	if provider == "antigravity" {
 		request.URL.Path = "/admin/antigravity-accounts"
+	}
+	if provider == "anthropic" {
+		request.URL.Path = "/admin/anthropic-accounts"
 	}
 	return request, true
 }
@@ -306,7 +311,7 @@ func validCPAOAuthURL(provider, raw, state string) bool {
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Fragment != "" || u.Port() != "" || u.Query().Get("state") != state {
 		return false
 	}
-	return (provider == "codex" && u.Host == "auth.openai.com") || (provider == "antigravity" && u.Host == "accounts.google.com")
+	return (provider == "codex" && u.Host == "auth.openai.com") || (provider == "antigravity" && u.Host == "accounts.google.com") || (provider == "anthropic" && u.Host == "claude.ai")
 }
 
 func (s *cpaAdminState) oauthAttempt(id, sessionID string, consume bool, now time.Time) (cpaOAuthAttempt, bool) {
@@ -372,7 +377,7 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 // Explicit fields reject CPA per-file proxy, priority, prefix and API-key
 // metadata that could bypass the Gateway's allocation and routing policy.
 type cpaCredentialImport struct {
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
 	AccessToken  string `json:"access_token,omitempty"`
 	IDToken      string `json:"id_token,omitempty"`
 }
@@ -384,10 +389,25 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input cpaCredentialImport
-	if !cpaJSON(w, r, &input, 128<<10, "refresh_token", "access_token", "id_token") {
-		return
+	if provider == "anthropic" {
+		if !strictJSONRequest(r) {
+			badJSON(w, r, errors.New("credential import requires JSON without query parameters"))
+			return
+		}
+		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 128<<10))
+		if err == nil {
+			input, err = anthropicCredentialImport(data)
+		}
+		if err != nil {
+			badJSON(w, r, errors.New("invalid Claude OAuth credentials"))
+			return
+		}
+	} else {
+		if !cpaJSON(w, r, &input, 128<<10, "refresh_token", "access_token", "id_token") {
+			return
+		}
 	}
-	if strings.TrimSpace(input.RefreshToken) == "" || len(input.RefreshToken) > 32768 || len(input.AccessToken) > 32768 || len(input.IDToken) > 32768 {
+	if (strings.TrimSpace(input.RefreshToken) == "" && (provider != "anthropic" || strings.TrimSpace(input.AccessToken) == "")) || len(input.RefreshToken) > 32768 || len(input.AccessToken) > 32768 || len(input.IDToken) > 32768 {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_cpa_credential", "必须提供可刷新的 OAuth 凭据")
 		return
 	}
@@ -396,6 +416,40 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// The import is a data projection, never a CPA auth record upload. Discard
+// supplied identity, endpoints, headers, plan and expiry; CPA verifies the token.
+func anthropicCredentialImport(data []byte) (cpaCredentialImport, error) {
+	fields, err := cpaprotocol.Object(data)
+	if err != nil {
+		return cpaCredentialImport{}, err
+	}
+	refresh, access := "refresh_token", "access_token"
+	if nested, ok := fields["claudeAiOauth"]; ok {
+		if fields[refresh] != nil || fields[access] != nil {
+			return cpaCredentialImport{}, errors.New("ambiguous credential format")
+		}
+		fields, err = cpaprotocol.Object(nested)
+		if err != nil {
+			return cpaCredentialImport{}, err
+		}
+		refresh, access = "refreshToken", "accessToken"
+	}
+	var input cpaCredentialImport
+	for key, target := range map[string]*string{refresh: &input.RefreshToken, access: &input.AccessToken} {
+		if raw, ok := fields[key]; ok {
+			var value *string
+			if json.Unmarshal(raw, &value) != nil || value == nil || len(*value) > 32768 || strings.TrimSpace(*value) != *value || strings.ContainsAny(*value, "\r\n\t ") {
+				return cpaCredentialImport{}, errors.New("invalid credential value")
+			}
+			*target = *value
+		}
+	}
+	if input.RefreshToken == "" && input.AccessToken == "" {
+		return input, errors.New("missing credentials")
+	}
+	return input, nil
 }
 
 func (s *Server) cpaRefresh(w http.ResponseWriter, r *http.Request) {
@@ -418,14 +472,30 @@ func (s *Server) cpaAccountOperation(w http.ResponseWriter, r *http.Request, ope
 	// The facade returns only a fixed normalized schema, never raw provider
 	// responses or the auth record returned by CPA's stock refresh handler.
 	var result struct {
-		Status string           `json:"status"`
-		Quota  []cpaQuotaWindow `json:"quota,omitempty"`
+		Status        string              `json:"status"`
+		Quota         []cpaQuotaWindow    `json:"quota,omitempty"`
+		ObservedAt    *time.Time          `json:"observed_at,omitempty"`
+		CooldownUntil *time.Time          `json:"cooldown_until,omitempty"`
+		Windows       []cpaObservedWindow `json:"windows"`
 	}
 	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/accounts/"+id+"/"+operation, input, &result); err != nil {
 		cpaError(w, r)
 		return
 	}
+	for _, window := range result.Windows {
+		if (window.Window != "five_hour" && window.Window != "seven_day") || (window.Status != "allowed" && window.Status != "allowed_warning" && window.Status != "rejected" && window.Status != "unknown") || (window.UsedPercent != nil && (*window.UsedPercent < 0 || *window.UsedPercent > 100)) {
+			cpaError(w, r)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+type cpaObservedWindow struct {
+	Window      string     `json:"window"`
+	UsedPercent *float64   `json:"used_percent,omitempty"`
+	ResetAt     *time.Time `json:"reset_at,omitempty"`
+	Status      string     `json:"status"`
 }
 
 type cpaQuotaWindow struct {
