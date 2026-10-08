@@ -6,11 +6,15 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 compose_cmd=$root/scripts/compose.sh
 provider=${1:-}
 case "$provider" in
+    claude)
+        test "$#" -eq 1 || { printf '%s\n' 'usage: oauth-login.sh claude' >&2; exit 1; }
+        exec "$root/scripts/claude-login.sh"
+        ;;
     codex)
         test "$#" -eq 1 || { printf '%s\n' 'usage: oauth-login.sh codex' >&2; exit 1; }
         set -- --codex-device-login
         ;;
-    *) printf '%s\n' 'usage: oauth-login.sh codex (Antigravity: scripts/antigravity-login.sh)' >&2; exit 1 ;;
+    *) printf '%s\n' 'usage: oauth-login.sh codex|claude (Antigravity: scripts/antigravity-login.sh)' >&2; exit 1 ;;
 esac
 lock_file=$root/.device-login.lock
 sidecar_needs_stop=0
