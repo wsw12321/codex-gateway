@@ -161,7 +161,7 @@ func rollBillingEntitlementsTx(ctx context.Context, tx *sql.Tx, userID string, a
 	for rows.Next() {
 		var value stale
 		if err := rows.Scan(&value.id, &value.periodID, &value.end, &value.expiry); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return 0, err
 		}
 		values = append(values, value)

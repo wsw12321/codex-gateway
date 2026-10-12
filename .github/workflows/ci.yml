@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.8'
+  GO_VERSION: '1.26.9'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -54,7 +54,7 @@ jobs:
           locked_go_image=$(sed -n 's/^GOLANG_IMAGE=//p' deploy/images.lock.env)
           test "${locked_go_image%@sha256:*}" = "$go_image"
           test "$(sed -n 's/^CLIPROXY_GOLANG_IMAGE=//p' deploy/images.lock.env)" = "$locked_go_image"
-          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/antigravity-bridge/Dockerfile; do
+          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/antigravity-bridge/Dockerfile deploy/codex-compat/legacy.Dockerfile deploy/cpa-migrate/Dockerfile; do
             grep -Fxq "ARG GOLANG_IMAGE=$locked_go_image" "$dockerfile"
           done
       - name: Install locked Go toolchain

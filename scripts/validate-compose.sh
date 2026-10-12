@@ -27,11 +27,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.20-gateway.patch
-compat_patch_sha256=e731b9a15e9c6f2fa2d3409b79615811e5fc3e2d34cb2a97c6d5152e5bf63d9f
+compat_patch_sha256=a7b560e1df265647c230b932c49d1719327b3d022488b742bb8a578d909d6fc6
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.20-0f96f568-e731b9a15e9c6f2f-cpa
+compat_image=codex-gateway-compat:v8.0.20-0f96f568-a7b560e1df265647-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -59,7 +59,7 @@ jq -e --arg patch "$compat_patch_sha256" '
     .tag == "v8.0.20" and
     .commit == "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" and
     .patch == "cliproxy-v8.0.20-gateway.patch" and
-    .patch_sha256 == $patch and .go_version == "1.26.8" and
+    .patch_sha256 == $patch and .go_version == "1.26.9" and
     .automatic_updates == false and
     .model_catalog.repository == "https://github.com/router-for-me/CLIProxyAPI" and
     .model_catalog.commit == "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" and

@@ -3,8 +3,8 @@
 The default image builds CPA `v8.0.20` at
 `0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`. The Dockerfile verifies the peeled
 release tag, the full commit and `CLIPROXY_PATCH_SHA256` before applying
-`cliproxy-v8.0.20-gateway.patch`. Go 1.26.8 and the security dependency updates
-from the prior build are retained. The old v7 patch is retained only for the
+`cliproxy-v8.0.20-gateway.patch`. The build uses Go 1.26.9 and retains the security
+dependency updates from the prior build. The old v7 patch is retained only for the
 controlled compatibility rollback described in the operations documentation.
 
 The local catalog is the unchanged `internal/registry/models/models.json` from

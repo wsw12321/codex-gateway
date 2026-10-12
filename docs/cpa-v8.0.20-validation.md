@@ -4,6 +4,14 @@
 更新或运行应用镜像，没有部署服务，也没有使用站点凭据或真实 OAuth 账号。
 Go 保持 1.26.8，本机源码测试使用 `CGO_ENABLED=0`。
 
+> 2026-10-12 补充：当前构建工具链已更新为 Go 1.26.9，CPA 补丁中的
+> `golang.org/x/net` 已更新为 `v0.60.0`，修复 `CVE-2026-78669`。
+> 以下 2026-10-08 的版本、补丁摘要及验证结果保留为历史记录；当前补丁摘要以
+> [source.lock.json](../deploy/codex-compat/source.lock.json) 为准。
+> 本次安全更新已通过固定上游提交的干净补丁回放、`go mod verify`、实际 CPA
+> 镜像构建及其安全/竞态测试、`scripts/test-sidecar-image.sh`；使用仓库锁定的
+> Trivy 执行 `--ignore-unfixed --severity HIGH,CRITICAL`，系统包和 Go 二进制均为 0 项。
+
 ## 固定来源与兼容范围
 
 - 上游：[v8.0.20](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v8.0.20)，

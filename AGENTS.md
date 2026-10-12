@@ -8,7 +8,7 @@ Place executable migrations in `internal/store/migrations`; top-level `migration
 
 ## Build, Test, and Development Commands
 
-Use Go 1.26.8, matching `go.mod` and CI.
+Use Go 1.26.9, matching `go.mod` and CI.
 
 - `go build ./cmd/gateway` builds the gateway binary.
 - `go run ./cmd/gateway serve` starts the gateway after configuring a development database and required secrets; see `docs/operations.md`.
