@@ -29,6 +29,12 @@ Current migrations:
   usage requests marked `degraded` when the upstream selected a different model.
 - `internal/store/migrations/0031_group_period_limits.sql` — finite or unlimited
   group cycles; existing groups retain their saved period and usage as cycle 1/1.
+- `internal/store/migrations/0034_multi_subscriptions.sql` — independent
+  subscriptions, purchased entitlement segments, explicit model scopes,
+  personal spending priorities and versioned admission-time funding snapshots.
+  Detaches legacy plans once; requires model initialization after catalog sync
+  and before serving. See the multi-subscription upgrade procedure in
+  `docs/operations.md`.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

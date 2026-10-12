@@ -16,6 +16,7 @@ type billingPlanRepository interface {
 	ListBillingPlans(context.Context, bool) ([]store.BillingPlan, error)
 	CreateBillingPlan(context.Context, store.CreateBillingPlanParams) (store.BillingPlan, error)
 	UpdateBillingPlan(context.Context, store.UpdateBillingPlanParams) (store.BillingPlan, error)
+	DeleteBillingPlan(context.Context, store.DeleteBillingPlanParams) (store.BillingPlan, error)
 	PurchaseBillingPlan(context.Context, store.PurchaseBillingPlanParams) (store.BillingPlanTransaction, error)
 	RenewBillingSubscription(context.Context, store.RenewBillingSubscriptionParams) (store.BillingPlanTransaction, error)
 }
@@ -79,6 +80,8 @@ type billingPlanInput struct {
 	Name           string
 	PriceUSD       string
 	Tier           string
+	PeriodDays     int
+	ModelIDs       []string
 	AllowanceUSD   string
 	MinPeriodCount *int
 	Active         *bool
@@ -91,6 +94,7 @@ func (s *Server) decodeBillingPlan(w http.ResponseWriter, r *http.Request, updat
 		"operation_id": &input.OperationID, "reason": &input.Reason,
 		"name": &input.Name, "price_usd": &input.PriceUSD,
 		"tier": &input.Tier, "allowance_usd": &input.AllowanceUSD,
+		"period_days": &input.PeriodDays, "model_ids": &input.ModelIDs,
 		"min_period_count": &input.MinPeriodCount, "active": &input.Active,
 	}
 	if updating {
@@ -105,7 +109,7 @@ func (s *Server) decodeBillingPlan(w http.ResponseWriter, r *http.Request, updat
 		s.billingInputError(w, r)
 		return input, false
 	}
-	if _, err := parseBillingTier(input.Tier); err != nil {
+	if !validBillingPeriod(input.Tier, input.PeriodDays) || !s.validBillingModels(input.ModelIDs) {
 		s.billingInputError(w, r)
 		return input, false
 	}
@@ -127,6 +131,7 @@ func (s *Server) createBillingPlan(w http.ResponseWriter, r *http.Request) {
 	plan, err := s.billingPlanStorage().CreateBillingPlan(r.Context(), store.CreateBillingPlanParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
 		Name:               input.Name, PriceUSD: input.PriceUSD, Tier: input.Tier, AllowanceUSD: input.AllowanceUSD,
+		PeriodDays: input.PeriodDays, ModelIDs: input.ModelIDs,
 		MinPeriodCount: minPeriodCount, Active: active,
 	})
 	if err != nil {
@@ -145,6 +150,7 @@ func (s *Server) updateBillingPlan(w http.ResponseWriter, r *http.Request) {
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
 		PlanID:             r.PathValue("plan_id"), Version: *input.Version,
 		Name: input.Name, PriceUSD: input.PriceUSD, Tier: input.Tier, AllowanceUSD: input.AllowanceUSD,
+		PeriodDays: input.PeriodDays, ModelIDs: input.ModelIDs,
 		MinPeriodCount: *input.MinPeriodCount, Active: *input.Active,
 	})
 	if err != nil {
@@ -152,6 +158,29 @@ func (s *Server) updateBillingPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, plan)
+}
+
+func (s *Server) deleteBillingPlan(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		OperationID string
+		Reason      string
+		Version     *int64
+	}
+	if !s.decodeBillingPlanFields(w, r, map[string]any{"operation_id": &input.OperationID, "reason": &input.Reason, "version": &input.Version}) {
+		return
+	}
+	if validateBillingOperation(input.OperationID, input.Reason) != nil || input.Version == nil || *input.Version < 1 {
+		s.billingInputError(w, r)
+		return
+	}
+	value, err := s.billingPlanStorage().DeleteBillingPlan(r.Context(), store.DeleteBillingPlanParams{
+		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason), PlanID: r.PathValue("plan_id"), Version: *input.Version,
+	})
+	if err != nil {
+		s.billingStoreError(w, r, "delete billing plan", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, value)
 }
 
 type billingPlanTransactionInput struct {
@@ -166,18 +195,19 @@ func (s *Server) decodeBillingPlanTransaction(w http.ResponseWriter, r *http.Req
 	var input billingPlanTransactionInput
 	fields := map[string]any{
 		"operation_id": &input.OperationID, "plan_version": &input.PlanVersion,
-		"subscription_config_version": &input.SubscriptionConfigVersion, "period_count": &input.PeriodCount,
+		"period_count": &input.PeriodCount,
 	}
 	if purchasing {
 		fields["plan_id"] = &input.PlanID
+	} else {
+		fields["subscription_config_version"] = &input.SubscriptionConfigVersion
 	}
 	if !s.decodeBillingPlanFields(w, r, fields) {
 		return input, false
 	}
 	if validateBillingOperation(input.OperationID, "套餐交易") != nil ||
 		input.PlanVersion == nil || *input.PlanVersion < 1 ||
-		input.SubscriptionConfigVersion == nil || *input.SubscriptionConfigVersion < 0 ||
-		(!purchasing && *input.SubscriptionConfigVersion == 0) ||
+		(!purchasing && (input.SubscriptionConfigVersion == nil || *input.SubscriptionConfigVersion < 1)) ||
 		input.PeriodCount == nil || *input.PeriodCount < 1 || *input.PeriodCount > 99 ||
 		(purchasing && input.PlanID == "") {
 		s.billingInputError(w, r)
@@ -192,9 +222,9 @@ func (s *Server) purchaseBillingPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := s.billingPlanStorage().PurchaseBillingPlan(r.Context(), store.PurchaseBillingPlanParams{
-		BillingWriteParams: s.billingWriteParams(r, input.OperationID, "用户购买套餐并重开订阅"),
+		BillingWriteParams: s.billingWriteParams(r, input.OperationID, "用户购买套餐并新增订阅"),
 		UserID:             userFrom(r.Context()).ID, PlanID: input.PlanID, PlanVersion: *input.PlanVersion,
-		SubscriptionConfigVersion: *input.SubscriptionConfigVersion, PeriodCount: *input.PeriodCount,
+		PeriodCount: *input.PeriodCount,
 	})
 	if err != nil {
 		s.billingStoreError(w, r, "purchase billing plan", err)
@@ -204,8 +234,8 @@ func (s *Server) purchaseBillingPlan(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renewBillingSubscription(w http.ResponseWriter, r *http.Request) {
-	tier, err := parseBillingTier(r.PathValue("tier"))
-	if err != nil {
+	subscriptionID := r.PathValue("subscription_id")
+	if !validBillingResourceID(subscriptionID) {
 		s.billingInputError(w, r)
 		return
 	}
@@ -215,7 +245,7 @@ func (s *Server) renewBillingSubscription(w http.ResponseWriter, r *http.Request
 	}
 	result, err := s.billingPlanStorage().RenewBillingSubscription(r.Context(), store.RenewBillingSubscriptionParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, "用户续费已绑定套餐"),
-		UserID:             userFrom(r.Context()).ID, Tier: tier, PlanVersion: *input.PlanVersion,
+		UserID:             userFrom(r.Context()).ID, SubscriptionID: subscriptionID, PlanVersion: *input.PlanVersion,
 		SubscriptionConfigVersion: *input.SubscriptionConfigVersion, PeriodCount: *input.PeriodCount,
 	})
 	if err != nil {

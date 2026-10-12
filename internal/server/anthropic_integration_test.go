@@ -135,7 +135,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			}
 		}
 	}
-	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: f.owner.ID, Reason: "Test Claude"}, UserID: f.owner.ID, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
+	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: f.owner.ID, Reason: "Test Claude"}, UserID: f.owner.ID, Name: "Claude test", ModelIDs: []string{"claude-test"}, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, stream := range []bool{false, true} {

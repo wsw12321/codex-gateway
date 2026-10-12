@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
@@ -192,14 +193,18 @@ func TestOIDCHTTPPostgresSSOOnlySensitiveActions(t *testing.T) {
 		t.Fatal("SSO key reveal mismatch")
 	}
 	f.request(t, "/admin/browser-handoffs", "POST", cookie, "", map[string]any{"api_key_id": key["id"]}, 201)
+	f.s.config.UsagePricing = config.UsagePricing{Models: map[string]config.ModelPricing{"gpt-test": {}}}
+	if err := f.s.store.SyncModelAccessCatalog(context.Background(), f.s.config.UsagePricing.ManageableModelNames()); err != nil {
+		t.Fatal(err)
+	}
 	planResponse := f.request(t, "/admin/billing/plans", "POST", f.cookie, "", map[string]any{
-		"operation_id": uuid.NewString(), "reason": "SSO regression", "name": "SSO daily", "price_usd": "1", "tier": "day", "allowance_usd": "5", "min_period_count": 1, "active": true,
+		"operation_id": uuid.NewString(), "reason": "SSO regression", "model_ids": f.s.config.UsagePricing.ManageableModelNames(), "name": "SSO daily", "price_usd": "1", "tier": "day", "allowance_usd": "5", "min_period_count": 1, "active": true,
 	}, 200)
 	var plan store.BillingPlan
 	if err := json.Unmarshal(planResponse.Body.Bytes(), &plan); err != nil {
 		t.Fatal(err)
 	}
-	purchase := map[string]any{"operation_id": uuid.NewString(), "plan_id": plan.ID, "plan_version": plan.Version, "subscription_config_version": 0, "period_count": 1}
+	purchase := map[string]any{"operation_id": uuid.NewString(), "plan_id": plan.ID, "plan_version": plan.Version, "period_count": 1}
 	w := f.request(t, "/admin/billing/me/purchases", "POST", cookie, "", purchase, 400)
 	if !strings.Contains(w.Body.String(), "insufficient_balance") {
 		t.Fatalf("SSO failed authentication or default billing: %s", w.Body)

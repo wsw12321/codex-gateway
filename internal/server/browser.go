@@ -236,12 +236,30 @@ func (s *Server) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		DefaultProjectID string   `json:"default_project_id"`
 		ExpiresDays      int      `json:"expires_days"`
 		Models           []string `json:"models"`
+		ModelScope       string   `json:"model_scope"`
 	}
 	if err := decodeJSON(w, r, &input, 64<<10); err != nil {
 		badJSON(w, r, err)
 		return
 	}
+	if !validAPIKeyModelScope(input.ModelScope, input.Models) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_model_allowlist", "限制模式至少选择一个模型，不额外限制模式不能包含模型")
+		return
+	}
 	user := userFrom(r.Context())
+	if input.ModelScope == "restricted" {
+		allowed, err := s.allowedModelsForAPIKey(r.Context(), store.APIKey{UserID: user.ID})
+		if err != nil {
+			internalError(s, w, r, "validate API key models", err)
+			return
+		}
+		for _, model := range input.Models {
+			if _, ok := allowed[model]; !ok {
+				httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_model_allowlist", "模型不在当前可选目录中")
+				return
+			}
+		}
+	}
 	device, err := s.store.GetDevice(r.Context(), user.ID, input.DeviceID)
 	if err != nil || device.Status != store.StatusActive {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_device", "设备无效")
@@ -718,4 +736,26 @@ func (s *Server) audit(r *http.Request, userID, sessionID, eventType string, suc
 
 func publicUser(user store.User) map[string]any {
 	return map[string]any{"id": user.ID, "username": user.Username, "display_name": user.DisplayName, "role": user.Role}
+}
+
+func validAPIKeyModelScope(scope string, models []string) bool {
+	switch scope {
+	case "": // Preserve existing API clients; the dashboard always sends a scope.
+	case "unrestricted":
+		return len(models) == 0
+	case "restricted":
+		if len(models) == 0 {
+			return false
+		}
+	default:
+		return false
+	}
+	seen := make(map[string]bool, len(models))
+	for _, model := range models {
+		if !validModel(model) || seen[model] {
+			return false
+		}
+		seen[model] = true
+	}
+	return true
 }

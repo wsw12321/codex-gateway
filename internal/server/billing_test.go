@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
@@ -67,11 +68,11 @@ func TestDecodeBillingSubscriptionRequiresIntegerPeriodCount(t *testing.T) {
 		{name: "unlimited", periodJSON: `,"period_count":0`, wantOK: true, wantPeriodCount: 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			body := `{"operation_id":"` + operationID + `","reason":"required","quota_usd":"1"` + test.periodJSON + `}`
-			request := httptest.NewRequest(http.MethodPut, "/admin/billing/users/user/subscriptions/day", strings.NewReader(body))
+			body := `{"operation_id":"` + operationID + `","reason":"required","quota_usd":"1","name":"Test","tier":"day","model_ids":["gpt-test"]` + test.periodJSON + `}`
+			request := billingPlanTestRequest(http.MethodPost, "/admin/billing/users/user/subscriptions", body)
 			response := httptest.NewRecorder()
 			var input subscriptionInput
-			ok := (&Server{}).decodeBillingWrite(response, request, &input)
+			ok := (&Server{config: config.Config{UsagePricing: config.UsagePricing{Models: map[string]config.ModelPricing{"gpt-test": {}}}}}).decodeBillingWrite(response, request, &input)
 			if ok != test.wantOK {
 				t.Fatalf("decode ok = %v, want %v; status=%d body=%s", ok, test.wantOK, response.Code, response.Body.String())
 			}

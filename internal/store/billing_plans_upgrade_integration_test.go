@@ -49,138 +49,93 @@ func TestBillingPlanMigrationPreservesLegacyPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var planMigration Migration
+
+	var upgrade Migration
 	for _, migration := range migrations {
-		if migration.Name == "0024_subscription_plans.sql" {
-			planMigration = migration
+		if migration.Name == "0034_multi_subscriptions.sql" {
+			upgrade = migration
 			break
 		}
 		if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
-			t.Fatalf("apply legacy %s: %v", migration.Name, err)
-		}
-	}
-	if planMigration.Name == "" {
-		t.Fatal("plan migration missing")
-	}
-	// Current billing readers require the independent funding metadata while
-	// this test keeps the subscription-plan migration unapplied for its fixture.
-	for _, migration := range migrations {
-		if migration.Name == "0027_group_priority_billing.sql" || migration.Name == "0033_anthropic_billing.sql" {
-			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
-				t.Fatalf("apply funding helper schema: %v", err)
-			}
+			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
-	user := globalUsageIntegrationUser(t, ctx, s, "plan-legacy", UserRoleMember)
+	user := globalUsageIntegrationUser(t, ctx, s, "multi-legacy", UserRoleMember)
 	start := now.Add(-time.Hour)
-	var legacyDayID, legacyDayPeriod string
-	for _, fixture := range []struct {
-		tier    string
-		count   int
-		enabled bool
-	}{
-		{BillingTierDay, 5, true},
-		{BillingTierWeek, 0, true},
-		{BillingTierMonth, 2, false},
-	} {
-		subscriptionID, err := newUUID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		duration, err := billingPeriodDuration(fixture.tier)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var expiry, disabledAt any
-		if fixture.count > 0 {
-			expiry = start.Add(time.Duration(fixture.count) * duration)
-		}
-		if !fixture.enabled {
-			disabledAt = now
-		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO billing_subscriptions
-			(id,user_id,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,disabled_at)
-			VALUES ($1,$2,$3,$4,10,$5,1,$6,$7,$7,$8)`, subscriptionID, user.ID, fixture.tier, fixture.enabled, fixture.count, expiry, start, disabledAt); err != nil {
-			t.Fatal(err)
-		}
-		if !fixture.enabled {
-			continue
-		}
-		periodID, err := newUUID()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO billing_subscription_periods
-			(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,period_number,period_count,created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,10,6,1,$7,$5)`, periodID, subscriptionID, user.ID, fixture.tier, start, start.Add(duration), fixture.count); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE billing_subscriptions SET current_period_id=$2 WHERE id=$1`, subscriptionID, periodID); err != nil {
-			t.Fatal(err)
-		}
-		if fixture.tier == BillingTierDay {
-			legacyDayID, legacyDayPeriod = subscriptionID, periodID
-		}
+	subscriptionID, _ := newUUID()
+	periodID, _ := newUUID()
+	var planID string
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO billing_plans(name,price_usd,tier,allowance_usd,active,updated_by_user_id) VALUES('Legacy plan',2,'day',10,true,$1) RETURNING id`, user.ID).Scan(&planID); err != nil {
+		t.Fatal(err)
 	}
-	params := PutSubscriptionParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "legacy day subscription", start),
-		UserID: user.ID, Tier: BillingTierDay, AllowanceUSD: "10", PeriodCount: 5}
-	fingerprint := billingOperationFingerprint("subscription_set", user.ID, user.ID, BillingTierDay, params.Reason, "10", "5")
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO billing_operations
-		(operation_id,operation_type,actor_user_id,target_user_id,reason,request_fingerprint,created_at)
-		VALUES ($1,'subscription_set',$2,$2,$3,$4,$5)`, params.OperationID, user.ID, params.Reason, fingerprint, start); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,tier,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,plan_id,plan_version) VALUES($1,$2,'day',10,5,1,$3,$4,$4,$5,1)`, subscriptionID, user.ID, start.Add(5*24*time.Hour), start, planID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO billing_subscription_periods(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,period_number,period_count) VALUES($1,$2,$3,'day',$4,$5,10,6,1,5)`, periodID, subscriptionID, user.ID, start, start.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE billing_subscriptions SET current_period_id=$2 WHERE id=$1`, subscriptionID, periodID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE billing_accounts SET day_source_disabled=true WHERE user_id=$1`, user.ID); err != nil {
 		t.Fatal(err)
 	}
 	var ledgerID int64
-	if err := s.db.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries
-		(user_id,operation_id,entry_type,amount_usd,subscription_tier,subscription_period_id,reason,actor_user_id,created_at)
-		VALUES ($1,$2,'subscription_set',10,'day',$3,$4,$1,$5) RETURNING id`, user.ID, params.OperationID, legacyDayPeriod, params.Reason, start).Scan(&ledgerID); err != nil {
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries(user_id,entry_type,reason,transaction_snapshot) VALUES($1,'plan_purchase','legacy immutable snapshot','{"plan":{"id":"legacy","name":"Original sale"}}') RETURNING id`, user.ID).Scan(&ledgerID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE billing_operations SET result_ledger_entry_id=$2 WHERE operation_id=$1`, params.OperationID, ledgerID); err != nil {
-		t.Fatal(err)
-	}
-	readLegacy := func() string {
-		t.Helper()
-		var rows string
-		if err := s.db.QueryRowContext(ctx, `SELECT jsonb_build_object(
-			'subscriptions',(SELECT jsonb_agg(to_jsonb(s)-'plan_id'-'plan_version'-'config_version' ORDER BY tier) FROM billing_subscriptions s),
-			'periods',(SELECT jsonb_agg(to_jsonb(p) ORDER BY tier) FROM billing_subscription_periods p),
-			'ledger',(SELECT jsonb_agg(to_jsonb(l)-'transaction_snapshot' ORDER BY id) FROM billing_ledger_entries l),
-			'operations',(SELECT jsonb_agg(to_jsonb(o) ORDER BY operation_id) FROM billing_operations o))::text`).Scan(&rows); err != nil {
+	readHistory := func() string {
+		var value string
+		if err := s.db.QueryRowContext(ctx, `SELECT to_jsonb(l)::text FROM billing_ledger_entries l WHERE id=$1`, ledgerID).Scan(&value); err != nil {
 			t.Fatal(err)
 		}
-		return rows
+		return value
 	}
-	before := readLegacy()
-	if _, err := s.db.ExecContext(ctx, planMigration.SQL); err != nil {
-		t.Fatalf("apply plan migration: %v", err)
+	originalHistory := readHistory()
+	if _, err := s.db.ExecContext(ctx, upgrade.SQL); err != nil {
+		t.Fatal(err)
 	}
-	if after := readLegacy(); after != before {
-		t.Fatalf("migration changed existing rights or history:\nbefore=%s\nafter=%s", before, after)
+	if err := s.InitializeBillingSubscriptionModels(ctx); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty catalog initialization=%v", err)
+	}
+	if err := s.SyncModelAccessCatalog(ctx, []string{"gpt-old", "gemini-old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InitializeBillingSubscriptionModels(ctx); err != nil {
+		t.Fatal(err)
 	}
 	state, err := s.GetBillingState(ctx, user.ID, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	versions := map[int64]bool{}
-	for _, sub := range state.Subscriptions {
-		if sub.Plan != nil || sub.CanRenew || sub.ConfigVersion <= 0 || versions[sub.ConfigVersion] {
-			t.Fatalf("invalid migrated binding or configuration version: %+v", sub)
-		}
-		versions[sub.ConfigVersion] = true
+	if len(state.Subscriptions) != 1 {
+		t.Fatalf("subscriptions=%+v", state.Subscriptions)
 	}
-	replay, err := s.PutSubscription(ctx, params)
+	sub := state.Subscriptions[0]
+	if sub.ID != subscriptionID || sub.PeriodID == nil || *sub.PeriodID != periodID || sub.Plan != nil || sub.CanRenew || sub.ChargeEnabled || sub.Priority != 1 || state.CashPreferences.Priority != 100 || len(sub.ModelIDs) != 2 || len(sub.Entitlements) != 1 || !equalAllocationDecimal(sub.RemainingUSD, "6") || !sub.PeriodStartsAt.Equal(start) || !sub.ExpiresAt.Equal(start.Add(5*24*time.Hour)) {
+		t.Fatalf("migration changed rights: %+v", sub)
+	}
+	plans, err := s.ListBillingPlans(ctx, true)
+	if err != nil || len(plans) != 0 {
+		t.Fatalf("legacy catalog retained: %v %v", plans, err)
+	}
+	if err := s.SyncModelAccessCatalog(ctx, []string{"gpt-old", "gemini-old", "claude-new"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InitializeBillingSubscriptionModels(ctx); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.GetBillingState(ctx, user.ID, 1, 0)
 	if err != nil {
-		t.Fatalf("replay legacy subscription operation: %v", err)
+		t.Fatal(err)
 	}
-	if replay.ID != legacyDayID || replay.PeriodID == nil || *replay.PeriodID != legacyDayPeriod ||
-		replay.PeriodCount != 5 || !equalAllocationDecimal(replay.RemainingUSD, "10") || replay.Plan != nil || replay.CanRenew {
-		t.Fatalf("legacy operation replay changed: %+v", replay)
+	if len(again.Subscriptions[0].ModelIDs) != 2 {
+		t.Fatal("new catalog model expanded migrated scope")
 	}
-	if after := readLegacy(); after != before {
-		t.Fatal("read or replay changed legacy history")
+	if got := readHistory(); got != originalHistory {
+		t.Fatalf("migration rewrote history: %s", got)
 	}
 }
 

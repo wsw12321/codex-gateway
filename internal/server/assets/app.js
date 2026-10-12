@@ -8,6 +8,7 @@ const sectionTitles = {
   keys: "API Keys",
   guide: "使用指导",
   billing: "额度与订阅",
+  plans: "套餐",
   "model-multipliers": "模型倍率",
   "model-pricing": "模型定价",
   groups: "群组额度",
@@ -184,7 +185,143 @@ const billingTiers = [
   {id: "day", label: "日订阅", duration: "24 小时"},
   {id: "week", label: "周订阅", duration: "7 天"},
   {id: "month", label: "月订阅", duration: "31 天"},
+  {id: "custom", label: "自定义订阅", duration: "自定义天数"},
 ];
+
+// A single native-control picker is shared by permissions, scopes, plans,
+// subscriptions, usage and identification. Selections always contain explicit IDs.
+let modelPickerCounter = 0;
+const modelCatalogRequests = new Map();
+
+function renderModelPicker(host, candidates, options = {}) {
+  const single = options.single === true;
+  const models = [...new Map(candidates.filter((item) => item && typeof item.id === "string" && item.id)
+    .map((item) => [item.id, item])).values()];
+  const available = new Set(models.map((item) => item.id));
+  const selected = new Set((options.selected || []).filter((id) => available.has(id)).slice(0, single ? 1 : undefined));
+  const name = `_model_picker_${++modelPickerCounter}`;
+  const search = element("input", {type: "search", className: "model-picker-search", attributes: {placeholder: "搜索模型", "aria-label": "搜索候选模型", autocomplete: "off"}});
+  const count = element("small", {className: "model-picker-count", attributes: {"aria-live": "polite"}});
+  const clear = element("button", {type: "button", className: "secondary", text: single ? "清除选择" : "清空"});
+  const selectAll = element("input", {type: "checkbox", attributes: {"aria-label": "全选当前目录模型"}});
+  const rows = [], groups = [];
+  const sync = () => {
+    count.textContent = `已选 ${selected.size} / ${models.length}`;
+    selectAll.checked = models.length > 0 && selected.size === models.length;
+    selectAll.indeterminate = selected.size > 0 && selected.size < models.length;
+    selectAll.disabled = models.length === 0;
+    selectAll.setAttribute("aria-checked", selectAll.indeterminate ? "mixed" : String(selectAll.checked));
+    for (const row of rows) row.input.checked = selected.has(row.id);
+    for (const group of groups) {
+      const n = group.ids.filter((id) => selected.has(id)).length;
+      group.toggle.checked = n > 0 && n === group.ids.length;
+      group.toggle.indeterminate = n > 0 && n < group.ids.length;
+      group.toggle.disabled = group.ids.length === 0;
+      group.toggle.setAttribute("aria-checked", group.toggle.indeterminate ? "mixed" : String(group.toggle.checked));
+    }
+  };
+  const changed = () => { sync(); options.onChange?.([...selected]); };
+  const controls = element("div", {className: "model-picker-toolbar"}, search,
+    single ? null : element("label", {className: "model-picker-select-all"}, selectAll, element("span", {text: "全选"})), clear, count);
+  clear.addEventListener("click", () => { selected.clear(); changed(); });
+  selectAll.addEventListener("change", () => { selected.clear(); if (selectAll.checked) models.forEach((item) => selected.add(item.id)); changed(); });
+  const groupNames = ["GPT", "Gemini", "Claude"];
+  if (models.some((item) => !groupNames.includes(item.group))) groupNames.push("其他");
+  const sections = groupNames.map((brand) => {
+    const members = models.filter((item) => (groupNames.includes(item.group) ? item.group : "其他") === brand);
+    const toggle = element("input", {type: "checkbox", attributes: {"aria-label": `全选 ${brand} 模型`}});
+    const children = members.map((item) => {
+      const input = element("input", {type: single ? "radio" : "checkbox", className: "model-picker-checkbox", attributes: {value: item.id, ...(single ? {name} : {})}});
+      const label = element("label", {className: "model-picker-choice", dataset: {model: item.id}}, input, element("span", {text: item.id}));
+      input.addEventListener("change", () => {
+        if (single) selected.clear();
+        if (input.checked) selected.add(item.id); else selected.delete(item.id);
+        changed();
+      });
+      rows.push({id: item.id, input, label, brand});
+      return label;
+    });
+    const section = element("details", {className: "model-picker-brand", dataset: {brand}},
+      element("summary", {text: `${brand} · ${members.length}`}),
+      single ? null : element("label", {className: "model-picker-select-all"}, toggle, element("span", {text: `${brand} 全选`})),
+      element("div", {className: "model-picker-options", attributes: {role: single ? "radiogroup" : "group", "aria-label": `${brand} 模型`}}, ...children));
+    section.open = members.length > 0;
+    toggle.addEventListener("change", () => { members.forEach((item) => { if (toggle.checked) selected.add(item.id); else selected.delete(item.id); }); changed(); });
+    groups.push({ids: members.map((item) => item.id), toggle, section, brand});
+    return section;
+  });
+  search.addEventListener("input", () => {
+    const query = search.value.trim().toLowerCase();
+    rows.forEach((row) => { row.label.hidden = !row.id.toLowerCase().includes(query) && !row.brand.toLowerCase().includes(query); });
+    groups.forEach((group) => {
+      group.section.hidden = Boolean(query) && !rows.some((row) => row.brand === group.brand && !row.label.hidden);
+      if (query && !group.section.hidden) group.section.open = true;
+    });
+  });
+  host.classList.add("model-picker");
+  host.setAttribute("aria-busy", "false");
+  host.replaceChildren(controls, ...sections, ...(models.length ? [] : [element("p", {text: "没有可选模型。"})]));
+  host.modelPicker = {values: () => [...selected], set: (values) => { selected.clear(); values.filter((id) => available.has(id)).slice(0, single ? 1 : undefined).forEach((id) => selected.add(id)); sync(); }, filter: (value) => { search.value = value; search.dispatchEvent(new Event("input")); }};
+  sync();
+  return host.modelPicker;
+}
+
+function selectedPickerModels(id) {
+  const selected = byId(id)?.modelPicker?.values();
+  if (!selected?.length) throw new Error("请至少选择一个适用模型；目录加载失败时请重试。");
+  return selected;
+}
+
+async function modelCatalog(scope) {
+  const key = `${identityGeneration}:${state?.user?.id}:${scope}`;
+  if (!modelCatalogRequests.has(key)) {
+    const generation = identityGeneration, actor = state?.user?.id;
+    const current = () => !loggingOut && generation === identityGeneration && actor === state?.user?.id;
+    const promise = api(`/admin/model-catalog?scope=${encodeURIComponent(scope)}`, {}, current).then((result) => {
+      requireCurrentRequest(current);
+      if (!Array.isArray(result?.models)) throw new Error("模型目录格式无效。");
+      modelCatalogRequests.delete(key);
+      return result.models;
+    }).catch((error) => { modelCatalogRequests.delete(key); throw error; });
+    modelCatalogRequests.set(key, promise);
+  }
+  return modelCatalogRequests.get(key);
+}
+
+async function loadFormModelPicker(id, scope, selected = [], options = {}) {
+  const host = byId(id);
+  if (!host || !state) return;
+  const token = {}, generation = identityGeneration, actor = state.user.id;
+  host.modelPickerRequest = token;
+  host.modelPicker = null;
+  host.setAttribute("aria-busy", "true");
+  host.replaceChildren(element("p", {text: "正在加载模型…", attributes: {role: "status"}}));
+  const current = () => !loggingOut && host.modelPickerRequest === token && generation === identityGeneration && actor === state?.user?.id;
+  try {
+    const models = await modelCatalog(scope);
+    if (current()) renderModelPicker(host, models, {...options, selected});
+  } catch (error) {
+    if (!current()) return;
+    host.setAttribute("aria-busy", "false");
+    const retry = element("button", {type: "button", className: "secondary", text: "重新加载模型"});
+    retry.addEventListener("click", () => loadFormModelPicker(id, scope, selected, options));
+    host.replaceChildren(element("p", {text: `模型加载失败：${friendlyError(error)}`, attributes: {role: "alert"}}), retry);
+  }
+}
+
+function syncKeyModelScope() {
+  const limited = byId("key-model-scope").value === "restricted";
+  byId("key-model-picker").classList.toggle("hidden", !limited);
+  if (limited && !byId("key-model-picker").modelPicker) loadFormModelPicker("key-model-picker", "api_key");
+}
+
+function loadUsageModelPickers() {
+  for (const [id, formID, scope] of [["usage-model-picker", "usage-filter", "usage"], ["global-model-picker", "global-filter", "global_usage"]]) {
+    if (scope === "global_usage" && state?.user?.role !== "owner") continue;
+    const input = byId(formID).elements.model;
+    loadFormModelPicker(id, scope, input.value ? [input.value] : [], {single: true, onChange: (models) => { input.value = models[0] || ""; updateCSVLink(); }});
+  }
+}
 
 function show(target) {
   const element = typeof target === "string" ? byId(target) : target;
@@ -659,6 +796,8 @@ async function copyText(value) {
 }
 
 function clearSensitiveDOM() {
+  modelCatalogRequests.clear();
+  all(".model-picker").forEach((host) => { host.modelPickerRequest = null; host.modelPicker = null; host.replaceChildren(); });
   resetProfile();
   resetBrowserHandoff();
   const dialog = byId("secret-dialog");
@@ -754,7 +893,6 @@ function handleUnauthorized() {
   byId("billing-ledger-prev").disabled = true;
   byId("billing-ledger-next").disabled = true;
   byId("model-access-model-select").replaceChildren(element("p", {text: "登录后加载模型"}));
-  byId("model-access-model-search").value = "";
   byId("model-access-user-search").value = "";
   byId("model-access-model-count").textContent = "已选 0 个模型";
   byId("model-access-default-state").textContent = "请选择要管理的模型。";
@@ -1266,6 +1404,7 @@ function openDialog(id) {
   if (!dialog || dialog.open) return;
   setLocalMessage(dialog);
   dialog.showModal();
+  if (id === "key-dialog") syncKeyModelScope();
 }
 
 function renderResourceSummary() {
@@ -1348,18 +1487,11 @@ function resetOverview() {
 
 function renderOverviewBilling(detail) {
   byId("overview-cash").textContent = formatUSD(detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd);
-  const active = [];
-  let unknown = false;
-  byId("overview-subscriptions").replaceChildren(...billingTiers.map((tier) => {
-    const display = billingSubscriptionDisplay(detail, tier.id);
-    if (display.enabled) active.push(display);
-    if (display.status === "数据不可用") unknown = true;
-    return element("div", {}, element("span", {text: tier.label}), element("b", {text: display.remaining}));
-  }));
-  const expiries = active.map((display) => display.subscription.expires_at).filter((value) => value && Number.isFinite(new Date(value).getTime())).sort((left, right) => new Date(left) - new Date(right));
-  const missingExpiry = unknown || active.some((display) => display.expires === "数据不可用");
-  byId("overview-next-expiry").textContent = expiries.length ? `最近到期：${formatDateTime(expiries[0])}${missingExpiry ? " · 部分到期信息不可用" : ""}` :
-    missingExpiry ? "到期时间：数据不可用" : active.length ? "有效订阅均为无限期" : "当前没有有效订阅";
+  const active = billingSubscriptions(detail).filter(billingSubscriptionEnabled);
+  byId("overview-subscriptions").replaceChildren(...(active.length ? active.map((subscription) =>
+    element("div", {}, element("span", {text: subscription.name || "订阅"}), element("b", {text: formatUSD(subscription.remaining_usd, "数据不可用")}))) : [element("small", {text: "当前没有有效订阅"})]));
+  const expiries = active.map((subscription) => subscription.expires_at).filter(Boolean).sort((a, b) => new Date(a) - new Date(b));
+  byId("overview-next-expiry").textContent = expiries.length ? `最近到期：${formatDateTime(expiries[0])}` : active.some((subscription) => subscription.period_count !== 0 && !subscription.expires_at) ? "到期时间：数据不可用" : active.length ? "有效订阅均为无限期" : "当前没有有效订阅";
   byId("overview-billing-updated").textContent = `本人余额 · ${overviewUpdated()}`;
 }
 
@@ -1591,7 +1723,7 @@ function renderAPIKeys() {
     const remove = element("button", {type: "button", className: "danger", text: "删除"});
     remove.addEventListener("click", () => runButton(remove, () => deleteKey(key), "删除中…"));
     actions.append(status, remove);
-    const allowlist = Array.isArray(key.model_allowlist) && key.model_allowlist.length ? key.model_allowlist.join(", ") : "全部模型";
+    const allowlist = Array.isArray(key.model_allowlist) && key.model_allowlist.length ? key.model_allowlist.join(", ") : "不额外限制模型";
     const detail = element("div", {className: "list-detail"},
       element("span", {text: `设备：${devices.get(key.device_id) || key.device_id}`}),
       element("span", {text: `默认项目：${key.default_project_id ? (projects.get(key.default_project_id) || key.default_project_id) : "未分配"}`}),
@@ -1865,7 +1997,7 @@ async function submitBrowserHandoff(event) {
       requireCurrentRequest(current);
       if (!draft.deviceID) await createBrowserHandoffResource(draft, "devices", {name: browserHandoffDeviceName()});
       requireCurrentRequest(current);
-      await createBrowserHandoffResource(draft, "api-keys", {name, device_id: draft.deviceID, expires_days: days, models: []});
+      await createBrowserHandoffResource(draft, "api-keys", {name, device_id: draft.deviceID, expires_days: days, model_scope: "unrestricted", models: []});
     }
     requireCurrentRequest(current);
     if (!browserHandoffKeys().some((key) => key.id === draft.keyID)) throw new Error("该密钥已不可用，请刷新资源后重新选择。");
@@ -2112,14 +2244,24 @@ async function submitResource(event, path, successMessage) {
   await refreshAfterMutation();
 }
 
+function modelSelectionIdentityCurrent() {
+  const generation = identityGeneration, actor = state?.user?.id;
+  return () => Boolean(actor) && !loggingOut && generation === identityGeneration && actor === state?.user?.id;
+}
+
 async function createKey(event) {
+  const current = modelSelectionIdentityCurrent();
   const form = event.currentTarget;
   const data = Object.fromEntries(new FormData(form));
   data.expires_days = Number(data.expires_days);
-  data.models = String(data.models || "").split(",").map((value) => value.trim()).filter(Boolean);
-  const result = await sensitiveAction(() => api("/admin/api-keys", {method: "POST", body: JSON.stringify(data)}));
+  data.model_scope = form.elements.model_scope.value;
+  data.models = data.model_scope === "restricted" ? selectedPickerModels("key-model-picker") : [];
+  const result = await sensitiveAction(() => api("/admin/api-keys", {method: "POST", body: JSON.stringify(data)}, current), current);
+  if (!current()) return;
   form.reset();
   form.elements.expires_days.value = "90";
+  byId("key-model-picker").modelPicker = null;
+  syncKeyModelScope();
   form.closest("dialog")?.close();
   showSecret(
     "保存 API Key",
@@ -2679,7 +2821,7 @@ function queryFromForm(form) {
   const query = new URLSearchParams();
   for (const [name, value] of new FormData(form)) {
     const normalized = String(value).trim();
-    if (!normalized) continue;
+    if (!normalized || name.startsWith("_model_picker_")) continue;
     if (name === "from") query.set(name, localDateBoundary(normalized));
     else if (name === "until") query.set(name, localDateBoundary(normalized, true));
     else query.set(name, normalized);
@@ -2729,24 +2871,26 @@ function billingUserForDetail(detail = billingDetail) {
 }
 
 function billingSubscriptions(detail = billingDetail) {
-  const source = detail?.subscriptions || detail?.account?.subscriptions || {};
-  if (Array.isArray(source)) {
-    return Object.fromEntries(source.map((item) => [field(item, "tier", "kind"), item]));
-  }
-  return source && typeof source === "object" ? source : {};
+  const source = detail?.subscriptions ?? detail?.account?.subscriptions;
+  return Array.isArray(source) ? source : [];
 }
 
-function billingSubscription(detail, tier) {
-  const subscription = billingSubscriptions(detail)[tier];
-  return subscription && typeof subscription === "object" ? subscription : null;
+function billingSubscription(detail, id) {
+  return billingSubscriptions(detail).find((subscription) => subscription.id === id) || null;
 }
 
 function billingSubscriptionEnabled(subscription) {
-  if (!subscription) return false;
-  if (subscription.enabled != null) return subscription.enabled === true;
-  if (subscription.status) return subscription.status === "active";
-  return Boolean(subscription.period_ends_at);
+  if (!subscription || subscription.enabled === false || subscription.status === "disabled") return false;
+  const expiry = subscription.expires_at ? new Date(subscription.expires_at).getTime() : null;
+  return (subscription.enabled === true || subscription.status === "active" || Boolean(subscription.period_ends_at)) &&
+    (expiry == null || Number.isFinite(expiry) && expiry > Date.now());
 }
+
+function billingPeriodDays(value) {
+  return {day: 1, week: 7, month: 31}[value?.tier] || Number(value?.period_days);
+}
+
+function billingModels(value) { return Array.isArray(value?.model_ids) ? value.model_ids : []; }
 
 function billingSubscriptionPeriod(subscription) {
   const count = Number(subscription?.period_count);
@@ -2778,7 +2922,13 @@ function billingCashBalance(detail = billingDetail) {
 }
 
 function billingSourceDisabled(source, detail = billingDetail) {
-  return (detail?.source_disabled ?? detail?.account?.source_disabled)?.[source] === true;
+  return source === "cash" ? (detail?.cash_preferences?.charge_enabled ?? detail?.account?.cash_preferences?.charge_enabled) === false :
+    billingSubscription(detail, source)?.charge_enabled === false;
+}
+
+function billingSourcePriority(source, detail = billingDetail) {
+  return source === "cash" ? Number(detail?.cash_preferences?.priority ?? detail?.account?.cash_preferences?.priority ?? 100) :
+    Number(billingSubscription(detail, source)?.priority ?? 1);
 }
 
 function billingSourceReady() {
@@ -2787,16 +2937,20 @@ function billingSourceReady() {
 }
 
 function billingSourceLabel(source) {
-  return source === "cash" ? "现金余额" : billingTiers.find((tier) => tier.id === source)?.label;
+  return source === "cash" ? "现金余额" : billingSubscription(billingDetail, source)?.name;
 }
 
 function billingSourceControl(source) {
   const button = element("button", {type: "button", className: "secondary billing-source-button", dataset: {billingSource: source}});
   button.disabled = true;
   button.addEventListener("click", () => changeBillingSource(source));
+  const priority = element("input", {type: "number", attributes: {min: 1, max: 100, step: 1, "aria-label": `${billingSourceLabel(source)}优先级`}, dataset: {billingPriority: source}});
+  priority.value = String(billingSourcePriority(source));
+  const save = element("button", {type: "button", className: "secondary", text: "保存优先级", dataset: {billingPrioritySave: source}});
+  save.addEventListener("click", () => changeBillingSource(source, priority.value));
   return element("div", {className: "billing-source-control"},
     element("small", {className: "billing-source-state", dataset: {billingSourceState: source}}), button,
-  );
+    element("label", {className: "billing-priority-label", text: "优先级（1–100）"}, priority), save);
 }
 
 function setBillingSourceMessage(message = "", error = false) {
@@ -2831,6 +2985,10 @@ function syncBillingSourceControls() {
     node.textContent = billingDetailLoading ? "等待额度加载" : !billingDetail ? "数据不可用" : disabled ? "已禁用扣费" : "允许扣费";
     node.dataset.disabled = String(Boolean(billingDetail) && !billingDetailLoading && disabled);
   });
+  all("[data-billing-priority], [data-billing-priority-save]").forEach((control) => {
+    control.disabled = !ready || Boolean(billingSourceOperation);
+    if (control.dataset.billingPrioritySave) control.classList.toggle("hidden", !self);
+  });
   byId("billing-source-readonly").classList.toggle("hidden", self || !state);
 }
 
@@ -2839,9 +2997,13 @@ function billingSourceOperationCurrent(operation) {
     !loggingOut && state?.user?.id === operation.userID && selectedBillingUserID() === operation.userID;
 }
 
-async function changeBillingSource(source) {
+async function changeBillingSource(source, newPriority = null) {
   if (!billingSourceLabel(source) || !billingSourceReady() || billingSourceOperation) return;
-  const operation = {source, userID: state.user.id, generation: billingSourceGeneration, disabled: !billingSourceDisabled(source)};
+  const rawPriority = newPriority == null ? String(billingSourcePriority(source)) : String(newPriority).trim();
+  const priority = Number(rawPriority);
+  if (!/^(?:[1-9][0-9]?|100)$/.test(rawPriority) || !Number.isInteger(priority)) { setBillingSourceMessage("优先级须为 1–100 的整数。", true); return; }
+  const operation = {source, userID: state.user.id, generation: billingSourceGeneration, priority,
+    disabled: newPriority == null ? !billingSourceDisabled(source) : billingSourceDisabled(source), operationID: crypto.randomUUID()};
   const current = () => billingSourceOperationCurrent(operation);
   billingSourceOperation = operation;
   setBillingSourceMessage();
@@ -2852,12 +3014,12 @@ async function changeBillingSource(source) {
     try {
       const result = await sensitiveAction(() => {
         if (!billingSourceOperationCurrent(operation)) throw new Error("登录身份或查看的用户已变化，操作已停止。");
-        return api(`/admin/billing/me/sources/${source}/status`, {
-          method: "PUT", body: JSON.stringify({disabled: operation.disabled}),
+        return api(source === "cash" ? "/admin/billing/me/cash/preferences" : `/admin/billing/me/subscriptions/${encodeURIComponent(source)}/preferences`, {
+          method: "PUT", body: JSON.stringify({operation_id: operation.operationID, priority, charge_enabled: !operation.disabled}),
         }, current);
       }, current);
       if (!billingSourceOperationCurrent(operation)) return;
-      if (result?.source !== source || result?.disabled !== operation.disabled) throw new Error("服务器返回的扣费设置不一致。");
+      if (result?.priority !== operation.priority || result?.charge_enabled !== !operation.disabled) throw new Error("服务器返回的扣费设置不一致。");
       saved = true;
     } catch (error) {
       if (!billingSourceOperationCurrent(operation)) return;
@@ -2871,7 +3033,7 @@ async function changeBillingSource(source) {
     }
     if (!billingSourceOperationCurrent(operation)) return;
     const message = saved
-      ? `${billingSourceLabel(source)}已${operation.disabled ? "禁用" : "恢复"}扣费；仅影响新请求。`
+      ? `${billingSourceLabel(source)}已保存：优先级 ${operation.priority}，${operation.disabled ? "禁用" : "允许"}扣费；仅影响新请求。`
       : `保存未确认：${friendlyError(saveError)}。${refreshError ? "" : "已重新加载服务器设置。"}`;
     setBillingSourceMessage(`${message}${refreshError ? ` 额度刷新失败：${friendlyError(refreshError)}，请刷新页面后重试。` : ""}`, !saved || Boolean(refreshError));
   } finally {
@@ -2899,8 +3061,8 @@ function billingTypeLabel(type) {
     model_multiplier: "模型倍率调整",
     model_price: "模型基础定价调整",
     subscription_set: "订阅重开",
-    subscription_purchase: "套餐购买并重开",
-    plan_purchase: "套餐购买并重开",
+    subscription_purchase: "购买订阅",
+    plan_purchase: "购买订阅",
     plan_renewal: "套餐续费",
     plan_create: "创建套餐",
     plan_update: "更新套餐",
@@ -2913,8 +3075,8 @@ function billingTypeLabel(type) {
   })[type] || type || "账务记录";
 }
 
-function billingSubscriptionDisplay(detail, tier) {
-  const subscription = billingSubscription(detail, tier);
+function billingSubscriptionDisplay(detail, id) {
+  const subscription = billingSubscription(detail, id);
   const source = detail?.subscriptions ?? detail?.account?.subscriptions;
   const known = Boolean(source && typeof source === "object") && (!subscription ||
     typeof subscription.enabled === "boolean" || Boolean(subscription.status) || Boolean(subscription.period_ends_at));
@@ -2940,36 +3102,30 @@ function renderBillingSubscriptions(detail) {
   const container = byId("billing-subscriptions");
   container.classList.remove("loading");
   container.setAttribute("aria-busy", "false");
-  const cards = billingTiers.map((tier) => {
-    const display = billingSubscriptionDisplay(detail, tier.id);
-    const {subscription, enabled, ratio} = display;
-    const header = element("header", {},
-      element("strong", {text: tier.label}),
-      element("span", {className: "status-badge", text: display.status, dataset: {status: enabled ? "active" : display.status === "未启用" ? "disabled" : "unknown"}}),
-    );
-    const progress = ratio == null ? null : element("progress", {className: "subscription-progress", attributes: {
-      value: ratio, max: 100, "aria-label": `${tier.label}剩余额度比例`, "aria-valuetext": `${ratio.toFixed(1)}%`,
-    }});
-    const periods = element("details", {className: "subscription-period-details"},
-      element("summary", {text: "周期详情"}),
-      element("small", {text: `固定 ${tier.duration}滚动周期 · 剩余额度不结转`}),
-      element("small", {text: enabled ? billingPeriodProgress(subscription) : "Owner 可配置周期数 1–99 或 0（无限期）"}),
-      enabled ? element("small", {text: `本周期开始：${formatDateTime(subscription?.period_started_at, "数据不可用")}`}) : null,
-    );
-    return element("div", {className: "subscription-card", dataset: {subscriptionTier: tier.id}},
-      header,
-      element("small", {text: "剩余额度"}),
-      element("strong", {className: "subscription-remaining", text: display.remaining}),
-      element("small", {text: `周期额度：${display.quota}${ratio == null ? "" : ` · 剩余 ${ratio.toFixed(1)}%`}`}),
-      progress,
+  const cards = billingSubscriptions(detail).filter(billingSubscriptionEnabled).map((subscription) => {
+    const display = billingSubscriptionDisplay(detail, subscription.id);
+    const {ratio} = display;
+    const name = subscription.name || "订阅";
+    const card = element("article", {className: "subscription-card", dataset: {subscriptionId: subscription.id}},
+      element("header", {}, element("strong", {text: name}), element("span", {className: "status-badge", text: "订阅有效", dataset: {status: "active"}})),
+      element("small", {text: "本周期剩余额度"}), element("strong", {className: "subscription-remaining", text: display.remaining}),
+      element("small", {text: `每 ${billingPeriodDays(subscription)} 天 · 周期额度 ${display.quota}`}),
+      ratio == null ? null : element("progress", {className: "subscription-progress", attributes: {value: ratio, max: 100, "aria-label": `${name}剩余额度比例`}}),
       element("small", {text: `${billingPeriodEndLabel(subscription)}：${display.ends}`}),
       element("small", {text: `最终到期：${display.expires}`}),
-      billingPlanBinding(subscription, tier.id),
-      billingSourceControl(tier.id),
-      periods,
-    );
+      element("small", {className: "subscription-models", text: `适用模型：${billingModels(subscription).join("、") || "无"}`}),
+      billingPlanBinding(subscription), billingSourceControl(subscription.id),
+      element("details", {className: "subscription-period-details"}, element("summary", {text: "已购权益详情"}),
+        element("small", {text: `${billingPeriodProgress(subscription)} · 额度不结转`}),
+        ...(subscription.entitlements || []).map((segment) => element("small", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"} · 每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)} · ${billingModels(segment).join("、")}`}))));
+    if (state?.user?.role === "owner") {
+      const edit = element("button", {type: "button", className: "secondary", text: "重开或停用", dataset: {subscriptionManage: subscription.id}});
+      edit.addEventListener("click", () => openBillingSubscriptionEditor(subscription));
+      card.append(edit);
+    }
+    return card;
   });
-  container.replaceChildren(...cards);
+  container.replaceChildren(...(cards.length ? cards : [emptyState("当前没有有效订阅。可前往套餐页面购买。") ]));
 }
 
 function renderBillingLedger(detail) {
@@ -3100,23 +3256,8 @@ function renderBillingLedger(detail) {
   byId("billing-ledger-next").dataset.offset = String(billingLedgerNextOffset);
 }
 
-function renderBillingAdminValues(detail) {
+function renderBillingAdminValues() {
   if (state?.user?.role !== "owner") return;
-  for (const tier of billingTiers) {
-    const subscription = billingSubscription(detail, tier.id);
-    const form = byId(`billing-subscription-${tier.id}`);
-    if (document.activeElement !== form.elements.quota_usd) {
-      form.elements.quota_usd.value = subscription?.quota_usd == null ? "" : String(subscription.quota_usd);
-    }
-    if (document.activeElement !== form.elements.period_count) {
-      const count = subscription?.id ? Number(subscription.period_count ?? 1) : 1;
-      // A renewal may accumulate more than 99 periods. Reopening is a new
-      // purchase length, so ask the administrator to choose it explicitly.
-      form.elements.period_count.value = count > 99 ? "" : String(count);
-      form.elements.period_count.placeholder = count > 99 ? `现累计 ${count} 期；请输入重开期数 0–99` : "1";
-    }
-    form.querySelector("[data-disable-subscription]").disabled = !billingSubscriptionEnabled(subscription);
-  }
   syncBillingUserControls();
 }
 
@@ -3753,6 +3894,7 @@ function syncBillingUserControls() {
   syncBillingSourceControls();
   syncBillingPlanControls();
   const ready = billingUserReady();
+  if (byId("billing-subscription-create")) byId("billing-subscription-create").disabled = !ready;
   all("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form").forEach((form) => {
     const busy = form.dataset.busy === "true";
     all("input, button", form).forEach((control) => {
@@ -3773,7 +3915,7 @@ function billingWriteUserID() {
 }
 
 async function selectBillingUser(user) {
-  if (user.id !== selectedBillingUserID()) resetBillingSourceState();
+  if (user.id !== selectedBillingUserID()) { resetBillingSourceState(); billingSubscriptionEdit = null; if (byId("billing-subscription-models")) byId("billing-subscription-models").modelPickerRequest = null; if (byId("billing-subscription-dialog")?.open) byId("billing-subscription-dialog").close(); }
   if (user.id !== state?.user?.id && byId("billing-purchase-dialog")?.open) byId("billing-purchase-dialog").close();
   billingUserID = user.id;
   all(".billing-form, .billing-subscription-form").forEach((form) => setLocalMessage(form));
@@ -4325,6 +4467,8 @@ function billingPlanMessage(message = "", error = true) {
 
 function resetBillingPlans() {
   billingPlansSequence++;
+  billingSubscriptionEdit = null;
+  if (byId("billing-subscription-dialog")?.open) byId("billing-subscription-dialog").close();
   billingPlans = [];
   billingPlansLoading = false;
   billingPurchaseDraft = null;
@@ -4338,14 +4482,14 @@ function resetBillingPlans() {
   syncBillingPlanControls();
 }
 
-function billingPlanBinding(subscription, tier) {
+function billingPlanBinding(subscription) {
   const plan = subscription?.plan;
   const host = element("div", {className: "billing-plan-binding"},
     element("small", {text: plan ? `绑定套餐：${plan.name}` : "未绑定套餐，无法续费"}));
   if (plan && subscription.can_renew === true && selectedBillingUserID() === state?.user?.id) {
-    const button = element("button", {type: "button", className: "secondary", text: "续费", dataset: {billingRenew: tier}});
+    const button = element("button", {type: "button", className: "secondary", text: "续费", dataset: {billingRenew: subscription.id}});
     button.disabled = !billingSourceReady() || Boolean(billingPlanOperation);
-    button.addEventListener("click", () => openBillingPurchase(plan, "renewal"));
+    button.addEventListener("click", () => openBillingPurchase(plan, "renewal", subscription));
     host.append(button);
   } else if (plan) host.append(element("small", {text: subscription.can_renew === true
     ? "套餐绑定有效，仅本人可续费。" : "当前订阅不能续费；到期后请重新购买。"}));
@@ -4377,8 +4521,8 @@ function syncBillingPlanControls() {
     if (!button) continue;
     button.disabled = Boolean(pending?.busy) || Boolean(pending && !matches) || (kind === "plan" ? !owner : !billingSourceReady());
     button.textContent = matches ? pending.busy ? "正在确认结果…" : "重试原操作" : kind === "plan"
-      ? billingPlanEdit ? "保存套餐" : "创建套餐"
-      : billingPurchaseDraft?.kind === "renewal" ? "确认续费" : "确认购买并重开";
+      ? billingPlanEdit?.delete ? "确认删除" : billingPlanEdit ? "保存套餐" : "创建套餐"
+      : billingPurchaseDraft?.kind === "renewal" ? "确认续费" : "确认购买";
   }
 }
 
@@ -4391,17 +4535,16 @@ function renderBillingPlans() {
     return;
   }
   host.replaceChildren(...billingPlans.map((plan) => {
-    const tier = billingTiers.find((item) => item.id === plan.tier);
-    const card = element("article", {className: "billing-plan-card", dataset: {planID: plan.id}},
+      const card = element("article", {className: "billing-plan-card", dataset: {planID: plan.id}},
       element("header", {}, element("h4", {text: plan.name}),
         element("span", {className: "status-badge", text: plan.active ? "已上架" : "已下架", dataset: {status: plan.active ? "active" : "disabled"}})),
       element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
-      element("p", {text: `${tier?.label || plan.tier} · 每期 ${tier?.duration || "—"}`}),
+      element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModels(plan).join("、")}`}),
       element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
       element("small", {text: "每次购买或续费最多 99 期，续费累计不限 99 期。"}));
     const actions = element("div", {className: "actions"});
     if (plan.active && selectedBillingUserID() === state?.user?.id) {
-      const buy = element("button", {type: "button", text: "购买并重开", dataset: {billingBuy: plan.id}});
+      const buy = element("button", {type: "button", text: "购买订阅", dataset: {billingBuy: plan.id}});
       buy.addEventListener("click", () => openBillingPurchase(plan, "purchase"));
       actions.append(buy);
     }
@@ -4409,6 +4552,9 @@ function renderBillingPlans() {
       const edit = element("button", {type: "button", className: "secondary", text: "编辑套餐", dataset: {billingPlanEdit: plan.id}});
       edit.addEventListener("click", () => openBillingPlanEditor(plan));
       actions.append(edit);
+      const remove = element("button", {type: "button", className: "danger", text: "删除", dataset: {billingPlanEdit: plan.id}});
+      remove.addEventListener("click", () => deleteBillingPlan(plan));
+      actions.append(remove);
     }
     card.append(actions);
     return card;
@@ -4452,17 +4598,16 @@ function billingPlanTotal(price, count) {
   return scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}` : digits;
 }
 
-function billingRenewalExpiry(subscription, tier, count) {
-  const days = {day: 1, week: 7, month: 31}[tier];
+function billingRenewalExpiry(subscription, plan, count) {
+  const days = typeof plan === "string" ? billingPeriodDays({tier: plan}) : billingPeriodDays(plan);
   const expiry = new Date(subscription?.expires_at).getTime();
   const next = new Date(expiry + days * count * 86400000);
   if (!days || !Number.isFinite(expiry) || Number.isNaN(next.getTime()) || next.getUTCFullYear() > 9999) throw new Error("续费到期时间超出支持范围。");
   return next.toISOString();
 }
 
-function openBillingPurchase(plan, kind = "purchase") {
-  if (!billingSourceReady() || billingPlanOperation || !plan?.active) return;
-  const subscription = billingSubscription(billingDetail, plan.tier);
+function openBillingPurchase(plan, kind = "purchase", subscription = null) {
+  if (!billingSourceReady() || billingPlanOperation || !plan || kind === "purchase" && !plan.active) return;
   if (kind === "renewal" && (!subscription?.can_renew || subscription.plan?.id !== plan.id)) return;
   const version = subscription?.config_version ?? 0;
   if (!Number.isSafeInteger(version) || !Number.isSafeInteger(plan.version)) {
@@ -4476,7 +4621,7 @@ function openBillingPurchase(plan, kind = "purchase") {
   form.elements.period_count.min = String(plan.min_period_count);
   form.elements.period_count.value = String(plan.min_period_count);
   form.elements.confirmed.checked = false;
-  byId("billing-purchase-title").textContent = kind === "renewal" ? "续费当前套餐" : "购买并重开";
+  byId("billing-purchase-title").textContent = kind === "renewal" ? "续费当前套餐" : "购买订阅";
   byId("billing-purchase-plan").textContent = `${plan.name} · 每期 ${formatUSD(plan.price_usd)}`;
   byId("billing-purchase-minimum").textContent = `本次最低 ${plan.min_period_count} 期，最多 99 期。总价由服务端按单价 × 本次数量计算。`;
   setLocalMessage(form);
@@ -4490,23 +4635,21 @@ function updateBillingPurchaseSummary() {
   if (!draft || billingPlanOperation) return;
   const {plan, subscription, kind} = draft;
   const host = byId("billing-purchase-summary");
-  const tier = billingTiers.find((item) => item.id === plan.tier);
   try {
     const count = billingPlanPeriodCount(byId("billing-purchase-form").elements.period_count.value, plan.min_period_count);
     const total = billingPlanTotal(plan.price_usd, count);
     const lines = [`本次金额：${formatUSD(plan.price_usd)} × ${count} 期 = ${formatUSD(total)}`,
-      `每期额度：${formatUSD(plan.allowance_usd)} · 每期 ${tier.duration}`];
+      `每期额度：${formatUSD(plan.allowance_usd)} · 每期 ${billingPeriodDays(plan)} 天`,
+      `适用模型：${billingModels(plan).join("、")}`];
     if (kind === "renewal") {
-      lines.push(`追加 ${count} 期；新到期时间：${formatDateTime(billingRenewalExpiry(subscription, plan.tier, count))}`);
+      lines.push(`追加权益生效：${formatDateTime(subscription.expires_at)}；追加 ${count} 期；新到期时间：${formatDateTime(billingRenewalExpiry(subscription, plan, count))}`);
       lines.push(`当前第 ${subscription.current_period_number} 期，剩余额度 ${formatUSD(subscription.remaining_usd)}；续费保留本周期和剩余额度。`);
     } else lines.push(`成交后从当前时刻、第 1 期开始，共 ${count} 期，首期补满 ${formatUSD(plan.allowance_usd)}。`);
     host.replaceChildren(...lines.map((text) => element("p", {text})));
   } catch (error) { host.replaceChildren(element("p", {text: friendlyError(error)})); }
   byId("billing-purchase-warning").textContent = kind === "renewal"
-    ? "续费从原到期时间追加周期。每期额度仍不结转；到期后需要重新购买。"
-    : subscription?.id || subscription?.config_version > 0 || billingSubscriptionEnabled(subscription)
-      ? `将覆盖已有${tier.label}（${subscription?.plan?.name || "未绑定套餐"}）。旧订阅剩余额度 ${formatUSD(subscription?.remaining_usd || "0")} 及未到期权益不结转、不自动退款。购买后重新计时并绑定新套餐。`
-      : "购买后立即开始计时，每期剩余额度不结转。再次购买同周期套餐会覆盖本次订阅。";
+    ? "续费按本次套餐配置，在全部已购权益结束后生效。当前周期及待生效权益保持不变，每期额度不结转。"
+    : "购买会新增独立订阅，立即开始计时。可重复购买相同套餐，每期剩余额度不结转。";
 }
 
 function openBillingPlanEditor(plan = null) {
@@ -4516,12 +4659,14 @@ function openBillingPlanEditor(plan = null) {
   form.reset();
   for (const [name, value] of Object.entries({name: plan?.name || "", price_usd: plan?.price_usd || "",
     tier: plan?.tier || "day", allowance_usd: plan?.allowance_usd || "", min_period_count: plan?.min_period_count || 1,
-    active: String(plan?.active === true), reason: ""})) form.elements[name].value = String(value);
+    active: String(plan?.active === true), period_days: plan?.period_days || 1, reason: ""})) form.elements[name].value = String(value);
   byId("billing-plan-dialog-title").textContent = plan ? "编辑套餐" : "创建套餐";
   byId("billing-plan-edit-warning").classList.toggle("hidden", !plan);
+  byId("billing-plan-edit-warning").textContent = "修改配置保留已有绑定。新配置用于之后的购买与续费，已购权益保持不变；下架后已有订阅仍可续费。";
   setLocalMessage(form);
   syncBillingPlanControls();
   byId("billing-plan-dialog").showModal();
+  loadFormModelPicker("billing-plan-models", "manageable", billingModels(plan));
 }
 
 function billingPlanOperationCurrent(operation) {
@@ -4545,10 +4690,11 @@ async function submitBillingPurchase() {
   if (!form.elements.confirmed.checked) throw new Error("请先核对并确认权益变化。");
   const count = billingPlanPeriodCount(form.elements.period_count.value, draft.plan.min_period_count);
   billingPlanTotal(draft.plan.price_usd, count);
-  if (draft.kind === "renewal") billingRenewalExpiry(draft.subscription, draft.plan.tier, count);
-  const payload = {plan_version: draft.plan.version, subscription_config_version: draft.configVersion, period_count: count};
+  if (draft.kind === "renewal") billingRenewalExpiry(draft.subscription, draft.plan, count);
+  const payload = {plan_version: draft.plan.version, period_count: count};
   if (draft.kind === "purchase") payload.plan_id = draft.plan.id;
-  const path = draft.kind === "purchase" ? "/admin/billing/me/purchases" : `/admin/billing/me/subscriptions/${draft.plan.tier}/renewals`;
+  else payload.subscription_config_version = draft.configVersion;
+  const path = draft.kind === "purchase" ? "/admin/billing/me/purchases" : `/admin/billing/me/subscriptions/${encodeURIComponent(draft.subscription.id)}/renewals`;
   billingPlanOperation = makeBillingPlanOperation(draft.kind, path, "POST", payload);
   await executeBillingPlanOperation(billingPlanOperation);
 }
@@ -4560,13 +4706,19 @@ async function submitBillingPlan() {
   }
   if (state?.user?.role !== "owner" || loggingOut) return;
   const form = byId("billing-plan-form"), data = new FormData(form);
+  if (billingPlanEdit?.delete) {
+    billingPlanOperation = makeBillingPlanOperation("plan", `/admin/billing/plans/${encodeURIComponent(billingPlanEdit.id)}`, "DELETE", {version: billingPlanEdit.version, reason: billingReason(form)});
+    await executeBillingPlanOperation(billingPlanOperation);
+    return;
+  }
   const payload = {name: String(data.get("name") || "").trim(), price_usd: String(data.get("price_usd") || "").trim(),
     tier: String(data.get("tier") || ""), allowance_usd: String(data.get("allowance_usd") || "").trim(),
+    period_days: billingFormPeriodDays(form), model_ids: selectedPickerModels("billing-plan-models"),
     min_period_count: billingPlanPeriodCount(data.get("min_period_count")), active: data.get("active") === "true", reason: billingReason(form)};
   if (!payload.name) throw new Error("请输入套餐名称。");
   billingPlanTotal(payload.price_usd, 1);
   billingPlanTotal(payload.allowance_usd, 1);
-  if (billingPlanEdit && !window.confirm("此操作将解除已有订阅的套餐绑定，已购权益保持有效。重新上架或恢复旧配置不会恢复旧绑定。确认保存？")) return;
+
   if (billingPlanEdit) payload.version = billingPlanEdit.version;
   billingPlanOperation = makeBillingPlanOperation("plan", `/admin/billing/plans${billingPlanEdit ? `/${encodeURIComponent(billingPlanEdit.id)}` : ""}`,
     billingPlanEdit ? "PUT" : "POST", payload);
@@ -4596,13 +4748,13 @@ async function executeBillingPlanOperation(operation) {
     }, allowed);
     if (!billingPlanOperationCurrent(operation)) return;
     const plan = result?.plan || (operation.kind === "plan" ? result : null);
-    if (!plan?.id || (operation.kind !== "plan" && (!result?.subscription || typeof result.total_usd !== "string" || typeof result.balance_usd !== "string"))) {
+    if (operation.method !== "DELETE" && (!plan?.id || (operation.kind !== "plan" && (!result?.subscription || typeof result.total_usd !== "string" || typeof result.balance_usd !== "string")))) {
       throw new Error("返回结果不完整，无法确认操作是否成功。");
     }
     billingPlanOperation = null;
     byId(operation.kind === "plan" ? "billing-plan-dialog" : "billing-purchase-dialog").close();
     const message = operation.kind === "plan" ? "套餐已保存。已有订阅权益保持有效。"
-      : `${operation.kind === "renewal" ? "续费" : "购买并重开"}成功，已扣款 ${formatUSD(result.total_usd)}，现金余额 ${formatUSD(result.balance_usd)}。`;
+      : `${operation.kind === "renewal" ? "续费" : "购买订阅"}成功，已扣款 ${formatUSD(result.total_usd)}，现金余额 ${formatUSD(result.balance_usd)}。`;
     const refreshed = await refreshBillingPlanData();
     if (state?.user?.id === operation.userID && identityGeneration === operation.generation) billingPlanMessage(message + (refreshed ? "" : " 部分数据刷新失败，请刷新核对，已完成的操作无需重复提交。"), !refreshed);
   } catch (error) {
@@ -4806,7 +4958,8 @@ function prepareBillingBatch(event, kind) {
   } else if (kind === "subscription") {
     tier = String(data.get("tier") || "");
     if (!billingTiers.some((item) => item.id === tier)) throw new Error("订阅档位无效。");
-    payload = {quota_usd: billingBatchAmount(data.get("quota_usd")), period_count: billingPeriodCount(form), reason};
+    payload = {name: String(data.get("name") || "").trim(), tier, period_days: billingFormPeriodDays(form), model_ids: selectedPickerModels("billing-batch-models"), quota_usd: billingBatchAmount(data.get("quota_usd")), period_count: billingPeriodCount(form), reason};
+    if (!payload.name) throw new Error("请输入订阅名称。");
   } else throw new Error("批量操作类型无效。");
   billingBatch = {
     kind, tier, payload: Object.freeze(payload), actorUserID: state.user.id,
@@ -4841,7 +4994,7 @@ function renderBillingBatchResult() {
   const action = batch.kind === "recharge" ? "批量充值" : "批量开通订阅";
   const specification = batch.kind === "recharge"
     ? `每人 ${batch.payload.cny_amount} CNY，合计 ${billingBatchTotal(batch.payload.cny_amount, count)} CNY。各笔充值按入账时的汇率换算。`
-    : `${billingTiers.find((tier) => tier.id === batch.tier).label}：每人每周期 ${batch.payload.quota_usd} USD，${batch.payload.period_count === 0 ? "无限期" : `共 ${batch.payload.period_count} 个周期`}。\n已有同档位订阅将立即关闭旧周期，按新配置从第 1 期重开，旧周期剩余额度不会结转。`;
+    : `${billingTiers.find((tier) => tier.id === batch.tier).label}：每人每周期 ${batch.payload.quota_usd} USD，${batch.payload.period_count === 0 ? "无限期" : `共 ${batch.payload.period_count} 个周期`}。\n为每位用户新增一个独立订阅，已有订阅继续有效。`;
   byId("billing-batch-summary").textContent = `${action} · ${count} 位用户\n${specification}\n操作原因：${batch.payload.reason}`;
   const counts = {pending: 0, running: 0, success: 0, failed: 0, unknown: 0};
   const labels = {pending: "待处理", running: "处理中", success: "成功", failed: "失败", unknown: "结果待确认"};
@@ -4889,16 +5042,16 @@ async function executeBillingBatch(batch) {
       item.status = "running";
       item.message = "";
       renderBillingBatchResult();
-      const path = `/admin/billing/users/${encodeURIComponent(item.user.id)}/${batch.kind === "recharge" ? "recharges" : `subscriptions/${batch.tier}`}`;
+      const path = `/admin/billing/users/${encodeURIComponent(item.user.id)}/${batch.kind === "recharge" ? "recharges" : "subscriptions"}`;
       try {
-        await billingMutation(path, batch.kind === "recharge" ? "POST" : "PUT", batch.payload, item.operationID, () => {
+        await billingMutation(path, "POST", batch.payload, item.operationID, () => {
           // Recheck after every authentication await, including verification-expiry retries.
           if (!billingBatchIsCurrent(batch)) throw new Error("当前批次已停止。");
           attempted = true;
         });
         if (!billingBatchIsCurrent(batch)) return;
         item.status = "success";
-        item.message = batch.kind === "recharge" ? "充值已入账。" : "订阅已按新配置从第 1 期重开。";
+        item.message = batch.kind === "recharge" ? "充值已入账。" : "独立订阅已新增。";
       } catch (error) {
         if (!billingBatchIsCurrent(batch)) return;
         if (error.code === "owner_required" || error.code === "user_disabled") {
@@ -5011,6 +5164,7 @@ async function billingMutation(path, method, payload, operationID = "", beforeSe
   if (state?.user?.role !== "owner") throw new Error("仅 Owner 可执行此账务操作。");
   if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
   const actorUserID = state.user.id;
+  const current = modelSelectionIdentityCurrent();
   const input = {...payload, operation_id: operationID || crypto.randomUUID()};
   const body = JSON.stringify(input);
   return sensitiveAction(() => {
@@ -5018,8 +5172,8 @@ async function billingMutation(path, method, payload, operationID = "", beforeSe
       throw new Error("登录身份已变化，账务操作已停止。");
     }
     beforeSend?.();
-    return api(path, {method, body});
-  });
+    return api(path, {method, body}, current);
+  }, current);
 }
 
 async function refreshManagedBilling(userID = selectedBillingUserID()) {
@@ -5075,32 +5229,72 @@ async function adjustBillingUser(event) {
   reportBillingMutation(form, "余额调整已记入不可变账务流水。", refreshed);
 }
 
-async function updateBillingSubscription(event) {
-  const form = event.currentTarget;
-  const tier = form.dataset.tier;
-  if (!billingTiers.some((item) => item.id === tier)) throw new Error("订阅档位无效。");
-  const userID = billingWriteUserID();
-  const data = new FormData(form);
-  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "PUT", {
-    quota_usd: String(data.get("quota_usd") || "").trim(),
-    period_count: billingPeriodCount(form),
-    reason: billingReason(form),
-  });
-  if (userID === selectedBillingUserID()) form.elements.reason.value = "";
-  const refreshed = await refreshManagedBilling(userID);
-  reportBillingMutation(form, `${billingTiers.find((item) => item.id === tier).label}已从当前时刻重开。`, refreshed);
+let billingSubscriptionEdit = null;
+
+function billingFormPeriodDays(form) {
+  const tier = form.elements.tier.value;
+  const raw = tier === "custom" ? String(form.elements.period_days.value).trim() : String({day: 1, week: 7, month: 31}[tier]);
+  if (!/^[1-9][0-9]*$/.test(raw) || Number(raw) > 3650) throw new Error("周期天数须为 1–3650 的整数。");
+  return Number(raw);
 }
 
-async function disableBillingSubscription(button) {
-  const tier = button.dataset.disableSubscription;
-  const form = button.closest("form");
+function openBillingSubscriptionEditor(subscription = null) {
+  if (!billingUserReady()) return;
+  const form = byId("billing-subscription-form");
+  billingSubscriptionEdit = {subscription, userID: selectedBillingUserID(), generation: identityGeneration};
+  form.reset();
+  for (const [name, value] of Object.entries({name: subscription?.name || "", tier: subscription?.tier || "day",
+    period_days: subscription?.period_days || 1, quota_usd: subscription?.quota_usd || "", period_count: "1", reason: ""})) form.elements[name].value = String(value);
+  byId("billing-subscription-title").textContent = subscription ? `重开或停用：${subscription.name}` : "新增独立订阅";
+  byId("billing-subscription-replace").textContent = subscription ? `重开将立即替换当前权益（余额 ${formatUSD(subscription.remaining_usd)}，本周期结束 ${formatDateTime(subscription.period_ends_at)}）及全部待生效权益（最终到期 ${subscription.expires_at ? formatDateTime(subscription.expires_at) : "无限期"}）。解除套餐绑定并从第 1 期重新计时。` : "新增订阅不绑定套餐，用户不能续费。周期数 0 表示无限期。";
+  byId("billing-subscription-entitlements").replaceChildren(...(subscription?.entitlements || []).map((segment) => element("p", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"}：每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)}，${billingModels(segment).join("、")}`})));
+  byId("billing-subscription-disable").classList.toggle("hidden", !subscription);
+  byId("billing-subscription-save").textContent = subscription ? "确认重开" : "新增订阅";
+  setLocalMessage(form);
+  byId("billing-subscription-dialog").showModal();
+  loadFormModelPicker("billing-subscription-models", "manageable", billingModels(subscription));
+}
+
+function billingSubscriptionEditCurrent(draft) {
+  return draft === billingSubscriptionEdit && !loggingOut && state?.user?.role === "owner" &&
+    draft.generation === identityGeneration && draft.userID === selectedBillingUserID() && billingUserReady();
+}
+
+async function updateBillingSubscription(event) {
+  const form = event.currentTarget, draft = billingSubscriptionEdit;
+  if (!draft || !billingSubscriptionEditCurrent(draft)) throw new Error("所选用户已变化，请重新打开订阅表单。");
+  const data = new FormData(form), id = draft.subscription?.id;
+  if (id && !window.confirm(byId("billing-subscription-replace").textContent + "\n" + byId("billing-subscription-entitlements").textContent + "\n确认替换这些权益？")) return;
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(draft.userID)}/subscriptions${id ? `/${encodeURIComponent(id)}` : ""}`, id ? "PUT" : "POST", {
+    name: String(data.get("name") || "").trim(), tier: data.get("tier"), period_days: billingFormPeriodDays(form),
+    model_ids: selectedPickerModels("billing-subscription-models"), quota_usd: String(data.get("quota_usd") || "").trim(),
+    period_count: billingPeriodCount(form), reason: billingReason(form),
+  }, undefined, () => { if (!billingSubscriptionEditCurrent(draft)) throw new Error("所选用户已变化，操作已停止。"); });
+  if (!billingSubscriptionEditCurrent(draft)) return;
+  byId("billing-subscription-dialog").close();
+  const refreshed = await refreshManagedBilling(draft.userID);
+  reportBillingMutation(form, id ? "订阅已重开。" : "独立订阅已新增。", refreshed);
+}
+
+async function disableBillingSubscription() {
+  const draft = billingSubscriptionEdit, form = byId("billing-subscription-form");
+  if (!draft?.subscription || !billingSubscriptionEditCurrent(draft)) return;
   const reason = billingReason(form);
-  if (!window.confirm(`停用${billingTiers.find((item) => item.id === tier)?.label || "订阅"}后，新请求将立即无法使用当前周期。确定继续？`)) return;
-  const userID = billingWriteUserID();
-  await billingMutation(`/admin/billing/users/${encodeURIComponent(userID)}/subscriptions/${tier}`, "DELETE", {reason});
-  if (userID === selectedBillingUserID()) form.elements.reason.value = "";
-  const refreshed = await refreshManagedBilling(userID);
-  reportBillingMutation(form, "订阅已立即停用。", refreshed);
+  if (!window.confirm(`立即停用“${draft.subscription.name}”将终止当前及待生效权益。确认停用？`)) return;
+  await billingMutation(`/admin/billing/users/${encodeURIComponent(draft.userID)}/subscriptions/${encodeURIComponent(draft.subscription.id)}`, "DELETE", {reason}, undefined,
+    () => { if (!billingSubscriptionEditCurrent(draft)) throw new Error("所选用户已变化，操作已停止。"); });
+  if (!billingSubscriptionEditCurrent(draft)) return;
+  byId("billing-subscription-dialog").close();
+  reportBillingMutation(form, "订阅已立即停用。", await refreshManagedBilling(draft.userID));
+}
+
+async function deleteBillingPlan(plan) {
+  if (state?.user?.role !== "owner" || billingPlanOperation || !window.confirm(`删除“${plan.name}”将取消全部关联订阅的续费资格。已购权益继续有效。确认删除？`)) return;
+  openBillingPlanEditor(plan);
+  byId("billing-plan-dialog-title").textContent = `删除套餐：${plan.name}`;
+  billingPlanEdit.delete = true;
+  byId("billing-plan-submit").textContent = "确认删除";
+  byId("billing-plan-edit-warning").textContent = "删除后立即取消续费资格，已购权益及历史交易保持有效。填写原因后确认删除。";
 }
 
 async function changeBillingLedgerPage(offset) {
@@ -5225,13 +5419,6 @@ function filterModelAccessUsers() {
   renderModelAccessUsers({users: modelAccessUserEntries});
 }
 
-function filterModelAccessModels() {
-  const query = byId("model-access-model-search").value.trim().toLowerCase();
-  all(".model-access-model-choice", byId("model-access-model-select")).forEach((label) => {
-    label.hidden = !label.dataset.model.toLowerCase().includes(query);
-  });
-}
-
 function renderModelAccessModels(result) {
   if (!Array.isArray(result?.models)) throw new Error("模型权限目录响应格式无效。");
   modelAccessModels = result.models.filter((item) => item && typeof item.model === "string" && item.model);
@@ -5241,18 +5428,16 @@ function renderModelAccessModels(result) {
     modelAccessSelectedModels.add(modelAccessModels[0].model);
     modelAccessSelectionInitialized = true;
   }
-  const choices = modelAccessModels.map((item) => {
-    const input = element("input", {type: "checkbox", className: "model-access-checkbox model-access-model-checkbox", attributes: {value: item.model}});
-    input.checked = modelAccessSelectedModels.has(item.model);
-    return element("label", {className: "model-access-model-choice", dataset: {model: item.model}}, input, element("span", {text: item.model}));
+  renderModelPicker(byId("model-access-model-select"), modelAccessModels.map((item) => ({id: item.model, group: item.group})), {
+    selected: [...modelAccessSelectedModels], onChange: (values) => { modelAccessSelectedModels = new Set(values); changedModelAccessSelection(); },
   });
-  byId("model-access-model-select").replaceChildren(...(choices.length ? choices : [element("p", {text: "没有可管理的模型"})]));
-  filterModelAccessModels();
   renderModelAccessSummary();
 }
 
 async function loadModelAccessUsers() {
+  const identityCurrent = modelSelectionIdentityCurrent();
   const sequence = ++modelAccessUsersRequestSequence;
+  const current = () => identityCurrent() && sequence === modelAccessUsersRequestSequence;
   const models = selectedModelAccessModels();
   const tableWrap = byId("model-access-user-rows").closest("table").parentElement;
   if (!models.length) {
@@ -5267,33 +5452,38 @@ async function loadModelAccessUsers() {
   try {
     const query = new URLSearchParams();
     models.forEach((model) => query.append("models", model));
-    const result = await api(`/admin/model-access/users?${query}`);
-    if (sequence !== modelAccessUsersRequestSequence || JSON.stringify(models) !== JSON.stringify(selectedModelAccessModels())) return;
+    const result = await api(`/admin/model-access/users?${query}`, {}, current);
+    if (!current() || JSON.stringify(models) !== JSON.stringify(selectedModelAccessModels())) return;
     renderModelAccessUsers(result);
   } catch (error) {
-    if (sequence === modelAccessUsersRequestSequence) {
+    if (current()) {
       tableWrap.setAttribute("aria-busy", "false");
       byId("model-access-user-rows").replaceChildren(tableMessage(5, friendlyError(error)));
       syncModelAccessSelection();
+      throw error;
     }
-    throw error;
   }
 }
 
 async function loadModelAccess() {
+  const current = modelSelectionIdentityCurrent();
   const sequence = ++modelAccessModelsRequestSequence;
   show("model-access-loading");
   try {
-    const result = await api("/admin/model-access/models");
-    if (sequence !== modelAccessModelsRequestSequence) return;
-    renderModelAccessModels(result);
+    const [result, catalog] = await Promise.all([api("/admin/model-access/models", {}, current), modelCatalog("manageable")]);
+    if (!current() || sequence !== modelAccessModelsRequestSequence) return;
+    const groups = new Map(catalog.map((item) => [item.id, item.group]));
+    renderModelAccessModels({models: result.models.map((item) => ({...item, group: groups.get(item.model)}))});
     await loadModelAccessUsers();
+  } catch (error) {
+    if (current()) throw error;
   } finally {
-    if (sequence === modelAccessModelsRequestSequence) hide("model-access-loading");
+    if (current() && sequence === modelAccessModelsRequestSequence) hide("model-access-loading");
   }
 }
 
 async function updateModelAccessDefault(event) {
+  const current = modelSelectionIdentityCurrent();
   const form = event.currentTarget;
   const models = selectedModelAccessModels();
   const reason = String(form.elements.reason.value || "").trim();
@@ -5303,17 +5493,18 @@ async function updateModelAccessDefault(event) {
   try {
     const result = await sensitiveAction(() => api("/admin/model-access/defaults", {
       method: "PUT", body: JSON.stringify({models, enabled, reason}),
-    }));
+    }, current), current);
+    if (!current()) return;
     form.elements.reason.value = "";
     notice(`已更新 ${formatInteger(models.length)} 个模型的新用户默认权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
     await loadModelAccess();
   } catch (error) {
-    renderModelAccessSummary();
-    throw error;
+    if (current()) { renderModelAccessSummary(); throw error; }
   }
 }
 
 async function mutateUserModelAccess(enabled, scope, userIDs = []) {
+  const current = modelSelectionIdentityCurrent();
   const models = selectedModelAccessModels();
   if (!models.length) throw new Error("请先选择模型。");
   if (scope === "selected" && (userIDs.length < 1 || userIDs.length > 5000)) throw new Error("请选择 1–5000 个用户。");
@@ -5321,17 +5512,19 @@ async function mutateUserModelAccess(enabled, scope, userIDs = []) {
   if (scope === "selected") payload.user_ids = [...new Set(userIDs)];
   const result = await sensitiveAction(() => api("/admin/model-access/users", {
     method: "PUT", body: JSON.stringify(payload),
-  }));
+  }, current), current);
+  if (!current()) return;
   byId("model-access-users-form").elements.reason.value = "";
   notice(`${enabled ? "已启用" : "已禁用"} ${formatInteger(models.length)} 个模型的 ${formatInteger(result.target_count)} 项用户权限；实际变更 ${formatInteger(result.changed_count)} 项。`, "ok");
   await loadModelAccess();
 }
 
 async function mutateSelectedModelAccess(enabled) {
+  const current = modelSelectionIdentityCurrent();
   try {
     await mutateUserModelAccess(enabled, "selected", selectedModelAccessUserIDs());
   } finally {
-    window.setTimeout(syncModelAccessSelection, 0);
+    window.setTimeout(() => { if (current()) syncModelAccessSelection(); }, 0);
   }
 }
 
@@ -5783,7 +5976,7 @@ function renderBillingGroup(group, detail = {}) {
       element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(detail.group_member_used_usd, "数据不可用")})),
       element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(detail.group_member_remaining_usd, "数据不可用")})),
     ),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按允许扣费的个人日、周、月额度及现金结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按个人来源优先级和模型范围结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
   );
 }
 
@@ -7030,7 +7223,7 @@ async function loadUpstreamAccounts(query, {afterOperation = false} = {}) {
 const informationCountLabels = {
   usage_requests: "请求明细", billing_reservations: "资金预留", quota_reservations: "额度预留",
   billing_charge_allocations: "消费分摊", billing_ledger_entries: "账务流水", billing_operations: "账务操作快照",
-  billing_cash_credit_lots: "资金批次", billing_subscription_periods: "订阅周期", billing_subscriptions: "订阅历史",
+  billing_cash_credit_lots: "资金批次", billing_subscription_entitlements: "订阅权益", billing_subscription_periods: "订阅周期", billing_subscriptions: "订阅历史",
   usage_daily: "日汇总", usage_monthly: "月汇总", audit_events: "审计明细", concurrency_leases: "请求并发记录",
   billing_subscription_operation_snapshots: "订阅操作快照",
 };
@@ -7042,7 +7235,7 @@ const informationReasonLabels = {
   request_history: "仍有请求历史", usage_history: "仍有用量明细或汇总", billing_history: "仍有账务历史",
   running_requests: "请求仍在运行", unsettled_billing: "资金预留尚未结算", unsettled_quota: "额度预留尚未结算",
   available_cash: "支撑当前可用余额", referenced_history: "被当前资金或其他保留记录引用",
-  balance: "余额不为零", subscriptions: "仍有订阅记录", requests: "仍有请求历史", usage_summaries: "仍有用量汇总",
+  balance: "余额不为零", subscriptions: "仍有订阅记录", subscription_entitlements: "仍有订阅权益记录", requests: "仍有请求历史", usage_summaries: "仍有用量汇总",
   ledger: "仍有账务流水", billing_operations: "仍有账务操作记录", cash_lots: "仍有资金批次",
   reservations: "仍有资金或额度预留", management_history: "仍有管理操作关联", not_found: "用户已不存在",
 };
@@ -7383,6 +7576,7 @@ function resetModelIdentification() {
   account.replaceChildren(element("option", {text: "登录后加载账号", attributes: {value: ""}}));
   model.replaceChildren(element("option", {text: "先选择账号", attributes: {value: ""}}));
   model.disabled = true;
+  byId("identification-model-picker")?.replaceChildren();
   byId("model-identification-version").textContent = "—";
   byId("model-identification-run-status").textContent = "尚无运行记录";
   byId("model-identification-progress").value = 0;
@@ -7450,6 +7644,7 @@ async function loadModelIdentificationOptions() {
   if (select.value) await loadModelIdentificationModels();
   else {
     byId("model-identification-model").replaceChildren(element("option", {text: "先选择账号", attributes: {value: ""}}));
+    byId("identification-model-picker")?.replaceChildren(element("p", {text: "先选择账号"}));
     syncModelIdentificationControls();
   }
 }
@@ -7460,6 +7655,7 @@ async function loadModelIdentificationModels() {
   const accountID = byId("model-identification-account").value;
   const select = byId("model-identification-model");
   const selected = select.value;
+  byId("identification-model-picker")?.replaceChildren(element("p", {text: accountID ? "正在查询可尝试模型…" : "先选择账号"}));
   select.disabled = true;
   select.replaceChildren(element("option", {text: accountID ? "正在查询可尝试模型…" : "先选择账号", attributes: {value: ""}}));
   syncModelIdentificationControls();
@@ -7473,11 +7669,13 @@ async function loadModelIdentificationModels() {
     select.replaceChildren(element("option", {text: models.length ? "请选择可尝试模型" : "该账号没有可尝试的已配置模型", attributes: {value: ""}}),
       ...models.map((model) => element("option", {text: model, attributes: {value: model}})));
     select.value = models.includes(selected) ? selected : "";
+    renderModelPicker(byId("identification-model-picker"), response.model_catalog || models.map((id) => ({id})), {single: true, selected: select.value ? [select.value] : [], onChange: (ids) => { select.value = ids[0] || ""; syncModelIdentificationControls(); }});
     byId("model-identification-version").textContent = response.reference_version || "—";
   } catch (error) {
     if (!current()) return;
     if (error.code === "model_identification_protocol_unsupported") modelIdentificationProtocolSupported = false;
     select.replaceChildren(element("option", {text: "模型查询失败", attributes: {value: ""}}));
+    byId("identification-model-picker")?.replaceChildren(element("p", {text: "模型查询失败，请刷新后重试。", attributes: {role: "alert"}}));
     setLocalMessage(byId("model-identification-form"), modelIdentificationFailureLabels[error.code] || friendlyError(error));
   }
   syncModelIdentificationControls();
@@ -7964,6 +8162,10 @@ function routeFromHash(focusContent = true) {
   }
   syncVisiblePolling();
   if (section === "overview") loadOverview();
+  if (section === "plans") {
+    if (selectedBillingUserID() !== state?.user?.id) selectBillingUser(state.user).catch((error) => billingPlanMessage(friendlyError(error)));
+    loadBillingPlans().catch((error) => billingPlanMessage(friendlyError(error)));
+  }
   if (section === "model-multipliers") loadModelMultipliers();
   if (section === "model-pricing") loadModelPrices();
   if (section === "user-upstream-access" && !userUpstreamUsersReady) loadUserUpstreamUsers();
@@ -7986,6 +8188,8 @@ function routeFromHash(focusContent = true) {
 
 async function loadDashboard() {
   await refreshState();
+  loadUsageModelPickers();
+  if (state.user.role === "owner") loadFormModelPicker("billing-batch-models", "manageable");
   const personalQuery = queryFromForm(byId("usage-filter"));
   const tasks = [
     loadPersonalUsage(personalQuery).catch((error) => {
@@ -8199,7 +8403,8 @@ function bindUI() {
   }, "正在退出…");
   bindAsync("device-form", "submit", (event) => submitResource(event, "/admin/devices", "设备已添加。"), "添加中…");
   bindAsync("project-form", "submit", (event) => submitResource(event, "/admin/projects", "项目已添加。"), "添加中…");
-  bindAsync("key-form", "submit", createKey, "创建中…");
+  bindAsync("key-form", "submit", createKey, "创建中…", modelSelectionIdentityCurrent);
+  byId("key-model-scope").addEventListener("change", syncKeyModelScope);
   bindAsync("passkey-form", "submit", addPasskey, "等待 Passkey…");
   bindAsync("password-form", "submit", setPassword, "保存中…");
   bindAsync("profile-form", "submit", saveProfile, "保存中…", identityLinkCurrent);
@@ -8210,24 +8415,23 @@ function bindUI() {
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
-  bindAsync("model-access-default-form", "submit", async (event) => {
-    try { await updateModelAccessDefault(event); } finally { window.setTimeout(renderModelAccessSummary, 0); }
-  }, "保存中…");
-  bindAsync("model-access-enable-selected", "click", async () => {
-    try { await mutateSelectedModelAccess(true); } finally { window.setTimeout(syncModelAccessSelection, 0); }
-  }, "启用中…");
-  bindAsync("model-access-disable-selected", "click", async () => {
-    try { await mutateSelectedModelAccess(false); } finally { window.setTimeout(syncModelAccessSelection, 0); }
-  }, "禁用中…");
-  bindAsync("model-access-enable-all", "click", async () => {
-    try { await mutateAllModelAccess(true); } finally { window.setTimeout(renderModelAccessSummary, 0); }
-  }, "启用中…");
-  bindAsync("model-access-disable-all", "click", async () => {
-    try { await mutateAllModelAccess(false); } finally { window.setTimeout(renderModelAccessSummary, 0); }
-  }, "禁用中…");
-  for (const tier of billingTiers) {
-    bindAsync(`billing-subscription-${tier.id}`, "submit", updateBillingSubscription, "保存中…");
-  }
+  for (const [id, eventName, action, label] of [
+    ["model-access-default-form", "submit", updateModelAccessDefault, "保存中…"],
+    ["model-access-enable-selected", "click", () => mutateSelectedModelAccess(true), "启用中…"],
+    ["model-access-disable-selected", "click", () => mutateSelectedModelAccess(false), "禁用中…"],
+    ["model-access-enable-all", "click", () => mutateAllModelAccess(true), "启用中…"],
+    ["model-access-disable-all", "click", () => mutateAllModelAccess(false), "禁用中…"],
+  ]) bindAsync(id, eventName, async (event) => {
+    const current = modelSelectionIdentityCurrent();
+    try { await action(event); } finally { window.setTimeout(() => { if (current()) renderModelAccessSummary(); }, 0); }
+  }, label, modelSelectionIdentityCurrent);
+  const subscriptionEditorCurrent = () => {
+    const draft = billingSubscriptionEdit;
+    return () => draft && billingSubscriptionEditCurrent(draft);
+  };
+  bindAsync("billing-subscription-form", "submit", updateBillingSubscription, "保存中…", subscriptionEditorCurrent);
+  byId("billing-subscription-create").addEventListener("click", () => openBillingSubscriptionEditor());
+  bindAsync("billing-subscription-disable", "click", disableBillingSubscription, "停用中…", subscriptionEditorCurrent);
   byId("member-invite").addEventListener("click", () => { location.hash = "invitations"; });
   bindAsync("recovery-invite-form", "submit", () => {
     const targetUserID = recoveryUserSearch?.selectedID();
@@ -8307,25 +8511,7 @@ function bindUI() {
   byId("usage-filter").addEventListener("change", updateCSVLink);
   byId("global-filter").elements.range.addEventListener("change", syncGlobalRange);
   byId("upstream-account-filter").elements.range.addEventListener("change", syncUpstreamAccountRange);
-  byId("model-access-model-select").addEventListener("change", (event) => {
-    const input = event.target;
-    if (!input.matches(".model-access-model-checkbox")) return;
-    if (input.checked) modelAccessSelectedModels.add(input.value);
-    else modelAccessSelectedModels.delete(input.value);
-    changedModelAccessSelection();
-  });
-  byId("model-access-model-search").addEventListener("input", filterModelAccessModels);
   byId("model-access-user-search").addEventListener("input", filterModelAccessUsers);
-  byId("model-access-model-all").addEventListener("click", () => {
-    modelAccessSelectedModels = new Set(modelAccessModels.map((item) => item.model));
-    all(".model-access-model-checkbox").forEach((input) => { input.checked = true; });
-    changedModelAccessSelection();
-  });
-  byId("model-access-model-clear").addEventListener("click", () => {
-    modelAccessSelectedModels.clear();
-    all(".model-access-model-checkbox").forEach((input) => { input.checked = false; });
-    changedModelAccessSelection();
-  });
   byId("model-access-select-all").addEventListener("change", (event) => {
     all(".model-access-user-select", byId("model-access-user-rows")).forEach((input) => {
       input.checked = event.currentTarget.checked;

@@ -15,15 +15,16 @@ import (
 )
 
 const planTestOperationID = "550e8400-e29b-41d4-a716-446655440000"
-const planTestPurchase = `{"operation_id":"` + planTestOperationID + `","plan_id":"plan-1","plan_version":2,"subscription_config_version":0,"period_count":3}`
+const planTestPurchase = `{"operation_id":"` + planTestOperationID + `","plan_id":"plan-1","plan_version":2,"period_count":3}`
 const planTestRenewal = `{"operation_id":"` + planTestOperationID + `","plan_version":2,"subscription_config_version":7,"period_count":3}`
-const planTestCreate = `{"operation_id":"` + planTestOperationID + `","reason":"Launch offer","name":"Daily","price_usd":"1.234567","tier":"day","allowance_usd":"8.765432"}`
+const planTestCreate = `{"operation_id":"` + planTestOperationID + `","reason":"Launch offer","name":"Daily","price_usd":"1.234567","tier":"day","allowance_usd":"8.765432","model_ids":["gpt-test"]}`
 
 type billingPlanTestRepository struct {
 	plans           []store.BillingPlan
 	includeInactive []bool
 	creates         []store.CreateBillingPlanParams
 	updates         []store.UpdateBillingPlanParams
+	deletes         []store.DeleteBillingPlanParams
 	purchases       []store.PurchaseBillingPlanParams
 	renewals        []store.RenewBillingSubscriptionParams
 	transaction     store.BillingPlanTransaction
@@ -43,6 +44,11 @@ func (r *billingPlanTestRepository) CreateBillingPlan(_ context.Context, p store
 func (r *billingPlanTestRepository) UpdateBillingPlan(_ context.Context, p store.UpdateBillingPlanParams) (store.BillingPlan, error) {
 	r.updates = append(r.updates, p)
 	return store.BillingPlan{ID: p.PlanID, Name: p.Name, PriceUSD: p.PriceUSD, Tier: p.Tier, AllowanceUSD: p.AllowanceUSD, MinPeriodCount: p.MinPeriodCount, Active: p.Active, Version: p.Version + 1}, r.err
+}
+
+func (r *billingPlanTestRepository) DeleteBillingPlan(_ context.Context, p store.DeleteBillingPlanParams) (store.BillingPlan, error) {
+	r.deletes = append(r.deletes, p)
+	return store.BillingPlan{ID: p.PlanID, Version: p.Version + 1}, r.err
 }
 
 func (r *billingPlanTestRepository) PurchaseBillingPlan(_ context.Context, p store.PurchaseBillingPlanParams) (store.BillingPlanTransaction, error) {
@@ -69,8 +75,14 @@ func TestBillingPlanWriteRoutesEnforceBrowserSessionRecentVerificationAndOwner(t
 	}{
 		{http.MethodPost, "/admin/billing/plans", true},
 		{http.MethodPut, "/admin/billing/plans/plan-1", true},
+		{http.MethodDelete, "/admin/billing/plans/plan-1", true},
+		{http.MethodPost, "/admin/billing/users/other/subscriptions", true},
+		{http.MethodPut, "/admin/billing/users/other/subscriptions/550e8400-e29b-41d4-a716-446655440001", true},
+		{http.MethodDelete, "/admin/billing/users/other/subscriptions/550e8400-e29b-41d4-a716-446655440001", true},
+		{http.MethodPut, "/admin/billing/me/subscriptions/550e8400-e29b-41d4-a716-446655440001/preferences", false},
+		{http.MethodPut, "/admin/billing/me/cash/preferences", false},
 		{http.MethodPost, "/admin/billing/me/purchases", false},
-		{http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", false},
+		{http.MethodPost, "/admin/billing/me/subscriptions/550e8400-e29b-41d4-a716-446655440001/renewals", false},
 	} {
 		for _, test := range []struct {
 			name, origin, site, role, code string
@@ -188,7 +200,7 @@ func TestBillingPlanTransactionsRejectIdentityAmountAndConfirmationOverrides(t *
 		} {
 			// Negative zero has the same integer value as zero and is valid for
 			// a purchase with no previous subscription.
-			if purchasing && strings.Contains(invalid, `"subscription_config_version":-0`) {
+			if purchasing && invalid == body {
 				continue
 			}
 			t.Run(invalid, func(t *testing.T) {
@@ -277,7 +289,7 @@ func TestBillingPlanTransactionsUseOnlySessionIdentityAndReturnExactSnapshot(t *
 				Subscription: store.BillingSubscriptionState{Tier: "day", PeriodCount: 102, CurrentPeriodNumber: 98, ConfigVersion: 8},
 			}}
 			s.billingPlanRepo = repo
-			path, body := "/admin/billing/me/subscriptions/day/renewals", planTestRenewal
+			path, body := "/admin/billing/me/subscriptions/550e8400-e29b-41d4-a716-446655440001/renewals", planTestRenewal
 			if purchasing {
 				path, body = "/admin/billing/me/purchases", planTestPurchase
 			}
@@ -305,7 +317,7 @@ func TestBillingPlanTransactionsUseOnlySessionIdentityAndReturnExactSnapshot(t *
 					t.Fatalf("renewal calls: %+v", repo.renewals)
 				}
 				p := repo.renewals[0]
-				if p.UserID != "self-1" || p.ActorUserID != "self-1" || p.ActorSessionID != "session-1" || p.Tier != "day" || p.PlanVersion != 2 || p.SubscriptionConfigVersion != 7 || p.PeriodCount != 3 || p.OperationID != planTestOperationID {
+				if p.UserID != "self-1" || p.ActorUserID != "self-1" || p.ActorSessionID != "session-1" || p.SubscriptionID != "550e8400-e29b-41d4-a716-446655440001" || p.PlanVersion != 2 || p.SubscriptionConfigVersion != 7 || p.PeriodCount != 3 || p.OperationID != planTestOperationID {
 					t.Fatalf("renewal parameters: %+v", p)
 				}
 			}
@@ -345,11 +357,19 @@ func TestBillingSubscriptionResponseIncludesBindingsAndUnboundedTotals(t *testin
 		{Tier: "day", PeriodCount: 135, CurrentPeriodNumber: 120, ConfigVersion: 7, Plan: plan, CanRenew: true},
 		{Tier: "month", ConfigVersion: 2},
 	})
-	if values["day"]["period_count"] != 135 || values["day"]["current_period_number"] != 120 || values["day"]["plan"] != plan || values["day"]["config_version"] != int64(7) || values["day"]["can_renew"] != true {
-		t.Fatalf("bound state: %+v", values["day"])
+	if values[0]["period_count"] != 135 || values[0]["current_period_number"] != 120 || values[0]["plan"] != plan || values[0]["config_version"] != int64(7) || values[0]["can_renew"] != true {
+		t.Fatalf("bound state: %+v", values[0])
 	}
-	body, err := json.Marshal(values["month"])
+	body, err := json.Marshal(values[1])
 	if err != nil || !strings.Contains(string(body), `"plan":null`) || !strings.Contains(string(body), `"can_renew":false`) {
 		t.Fatalf("unbound state: %s %v", body, err)
+	}
+}
+
+func TestBillingPurchaseRejectsRetiredSubscriptionVersion(t *testing.T) {
+	body := strings.TrimSuffix(planTestPurchase, "}") + `,"subscription_config_version":0}`
+	w := httptest.NewRecorder()
+	if _, ok := (&Server{}).decodeBillingPlanTransaction(w, billingPlanTestRequest(http.MethodPost, "/", body), true); ok || w.Code != 400 {
+		t.Fatalf("retired replacement version accepted: %d %s", w.Code, w.Body)
 	}
 }

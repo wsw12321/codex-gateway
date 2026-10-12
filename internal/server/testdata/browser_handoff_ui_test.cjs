@@ -78,7 +78,7 @@ test("create defaults inherit models and newest device; issuance failure retries
   await ui.run("openBrowserHandoff()"); await ui.submit();
   assert.equal(result.api_key, ""); assert.equal(ui.run("browserHandoffDraft.keyID"), "new-key"); assert.equal(ui.run("browserHandoffDraft.create"), false);
   const create = ui.calls.find(c => c.pathname === "/admin/api-keys");
-  assert.deepEqual(JSON.parse(create.options.body), {name: "网页工作台", device_id: "new-device", expires_days: 90, models: []});
+  assert.deepEqual(JSON.parse(create.options.body), {name: "网页工作台", device_id: "new-device", expires_days: 90, model_scope: "unrestricted", models: []});
   await ui.submit(); assert.equal(ui.calls.filter(c => c.pathname === "/admin/api-keys").length, 1); assert.equal(ui.navigation.length, 1);
 });
 

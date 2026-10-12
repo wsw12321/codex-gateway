@@ -48,7 +48,7 @@ func testNativeAGYCLI(t *testing.T, handler http.Handler, repository *store.Stor
 	}
 	if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
 		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: userID, Reason: "real AGY CLI synthetic protocol test"},
-		UserID:             userID, Tier: store.BillingTierDay, AllowanceUSD: "1",
+		UserID:             userID, Name: "AGY CLI test", ModelIDs: []string{config.LegacyAntigravityPublicModel}, Tier: store.BillingTierDay, AllowanceUSD: "1",
 	}); err != nil {
 		t.Fatal(err)
 	}

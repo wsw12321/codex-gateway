@@ -47,6 +47,8 @@ type Server struct {
 	modelMultiplierRepo     modelMultiplierRepository
 	modelPriceRepo          modelPriceRepository
 	billingPlanRepo         billingPlanRepository
+	billingSubscriptionRepo billingSubscriptionRepository
+	modelCatalogRepo        modelCatalogRepository
 	modelIdentificationRepo modelIdentificationRepository
 	identificationContext   context.Context
 	identificationCancel    context.CancelFunc
@@ -197,13 +199,16 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/concurrent-limit", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountConcurrentLimit)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
+	s.mux.Handle("GET /admin/model-catalog", s.requireSession(http.HandlerFunc(s.sessionModelCatalog)))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("GET /admin/billing/plans", s.requireSession(http.HandlerFunc(s.billingPlans)))
 	s.mux.Handle("POST /admin/billing/plans", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createBillingPlan)))))
 	s.mux.Handle("PUT /admin/billing/plans/{plan_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateBillingPlan)))))
+	s.mux.Handle("DELETE /admin/billing/plans/{plan_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingPlan)))))
 	s.mux.Handle("POST /admin/billing/me/purchases", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.purchaseBillingPlan))))
-	s.mux.Handle("POST /admin/billing/me/subscriptions/{tier}/renewals", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.renewBillingSubscription))))
-	s.mux.Handle("PUT /admin/billing/me/sources/{source}/status", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSourceStatus))))
+	s.mux.Handle("POST /admin/billing/me/subscriptions/{subscription_id}/renewals", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.renewBillingSubscription))))
+	s.mux.Handle("PUT /admin/billing/me/subscriptions/{subscription_id}/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSubscriptionPreferences))))
+	s.mux.Handle("PUT /admin/billing/me/cash/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingCashPreferences))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("GET /admin/billing/model-multipliers", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelMultipliers))))
 	s.mux.Handle("GET /admin/billing/model-prices", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelPrices))))
@@ -229,8 +234,9 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/billing/model-prices/{model}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelPrice)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/recharges", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.rechargeBillingUser)))))
 	s.mux.Handle("POST /admin/billing/users/{user_id}/adjustments", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.adjustBillingUser)))))
-	s.mux.Handle("PUT /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))
-	s.mux.Handle("DELETE /admin/billing/users/{user_id}/subscriptions/{tier}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingSubscription)))))
+	s.mux.Handle("POST /admin/billing/users/{user_id}/subscriptions", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))
+	s.mux.Handle("PUT /admin/billing/users/{user_id}/subscriptions/{subscription_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putBillingSubscription)))))
+	s.mux.Handle("DELETE /admin/billing/users/{user_id}/subscriptions/{subscription_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingSubscription)))))
 	s.mux.Handle("PUT /admin/model-access/models/{model}/default", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateModelAccessDefault)))))
 	s.mux.Handle("PUT /admin/model-access/models/{model}/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateUserModelAccess)))))
 	s.browserPOST("/admin/upstream-accounts/{id}/quota", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountQuota))))

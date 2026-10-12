@@ -39,16 +39,29 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 
 	setSource := func(t *testing.T, userID, source string, disabled bool, at time.Time) {
 		t.Helper()
-		if err := repository.SetBillingSourceDisabled(ctx, SetBillingSourceDisabledParams{
-			UserID: userID, Source: source, Disabled: disabled, At: at,
-		}); err != nil {
-			t.Fatalf("SetBillingSourceDisabled(%s, %t): %v", source, disabled, err)
+		write := billingIntegrationWrite(t, userID, "update funding preference", at)
+		if source == "cash" {
+			if _, err := repository.SetBillingCashPreferences(ctx, SetBillingCashPreferencesParams{BillingWriteParams: write, UserID: userID, Priority: 100, ChargeEnabled: !disabled}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		var id string
+		if err := repository.db.QueryRowContext(ctx, `SELECT id FROM billing_subscriptions WHERE user_id=$1 AND tier=$2 AND enabled`, userID, source).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.SetBillingSubscriptionPreferences(ctx, SetBillingSubscriptionPreferencesParams{BillingWriteParams: write, UserID: userID, SubscriptionID: id, Priority: 1, ChargeEnabled: !disabled}); err != nil {
+			t.Fatal(err)
 		}
 	}
 	fund := func(t *testing.T, userID string, tiers []string, allowance, cash string, periodCount int) {
 		t.Helper()
 		for _, tier := range tiers {
-			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			var id string
+			if err := repository.db.QueryRowContext(ctx, `SELECT id FROM billing_subscriptions WHERE user_id=$1 AND tier=$2 AND enabled`, userID, tier).Scan(&id); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				t.Fatal(err)
+			}
+			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{SubscriptionID: id, Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 				BillingWriteParams: billingIntegrationWrite(t, actor.ID, "source preference test", base),
 				UserID:             userID, Tier: tier, AllowanceUSD: allowance, PeriodCount: periodCount,
 			}); err != nil {
@@ -75,13 +88,13 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 			t.Run(fmt.Sprintf("disabled_%04b", mask), func(t *testing.T) {
 				user, device, key := billingIntegrationPrincipal(t, ctx, repository,
 					fmt.Sprintf("source-mask-%d-%s", mask, suffix))
-				// A user can set preferences before a subscription or cash credit exists.
+				fund(t, user.ID, sources[:3], "1", "1", 2)
+				// Each independent subscription owns its own preferences.
 				for index, source := range sources {
 					if mask&(1<<index) != 0 {
 						setSource(t, user.ID, source, true, base)
 					}
 				}
-				fund(t, user.ID, sources[:3], "1", "1", 2)
 				wantDisabled := BillingSourceDisabled{
 					Day: mask&1 != 0, Week: mask&2 != 0, Month: mask&4 != 0, Cash: mask&8 != 0,
 				}
@@ -134,6 +147,9 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 				var wantSources, wantAmounts []string
 				for index, source := range sources {
 					if mask&(1<<index) == 0 {
+						if source != "cash" {
+							source = "subscription"
+						}
 						wantSources = append(wantSources, source)
 						wantAmounts = append(wantAmounts, "1.000000000000")
 					}
@@ -165,7 +181,7 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		billingIntegrationAssertAllocations(t, ctx, repository, reservation.RequestID,
-			sources, []string{"1.000000000000", "1.000000000000", "1.000000000000", "1.000000000000"})
+			[]string{"subscription", "subscription", "subscription", "cash"}, []string{"1.000000000000", "1.000000000000", "1.000000000000", "1.000000000000"})
 	})
 
 	t.Run("retry time ignores disabled subscriptions", func(t *testing.T) {
@@ -202,7 +218,7 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 		setSource(t, user.ID, BillingTierDay, false, base.Add(4*time.Second))
 		state := billingSourcePreferenceAssertState(t, ctx, repository, user.ID, BillingSourceDisabled{})
 		day := state.Subscriptions[0]
-		if day.PeriodID == nil || used.DayPeriodID == nil || *day.PeriodID != *used.DayPeriodID ||
+		if day.PeriodID == nil || len(used.OrderedFundingSources) == 0 || *day.PeriodID != used.OrderedFundingSources[0].PeriodID ||
 			day.RemainingUSD != "1.000000000000" || day.PeriodStartsAt == nil || !day.PeriodStartsAt.Equal(base) {
 			t.Fatalf("restoring reopened the subscription or credited spent funds: %+v", day)
 		}
@@ -215,26 +231,29 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 		state = billingSourcePreferenceAssertState(t, ctx, renewalReader, user.ID, BillingSourceDisabled{Day: true})
 		day = state.Subscriptions[0]
 		if !day.Enabled || day.CurrentPeriodNumber != 2 || day.RemainingUSD != "2.000000000000" ||
-			day.PeriodID == nil || *day.PeriodID == *used.DayPeriodID || day.PeriodStartsAt == nil ||
+			day.PeriodID == nil || *day.PeriodID == used.OrderedFundingSources[0].PeriodID || day.PeriodStartsAt == nil ||
 			!day.PeriodStartsAt.Equal(base.Add(24*time.Hour)) {
 			t.Fatalf("disabled subscription did not renew normally: %+v", day)
 		}
 		setSource(t, user.ID, BillingTierDay, false, base.Add(25*time.Hour))
 		renewed, err := reserve(user, key, "source-period-restored", base.Add(25*time.Hour))
-		if err != nil || renewed.DayPeriodID == nil || *renewed.DayPeriodID != *day.PeriodID {
+		if err != nil || len(renewed.OrderedFundingSources) == 0 || renewed.OrderedFundingSources[0].PeriodID != *day.PeriodID {
 			t.Fatalf("restored subscription lost its renewed period: %+v, %v", renewed, err)
 		}
 		setSource(t, user.ID, BillingTierDay, true, base.Add(26*time.Hour))
 		_, err = reserve(user, key, "source-period-expired", base.Add(48*time.Hour))
 		billingSourcePreferenceAssertInsufficient(t, err, 0)
-		setSource(t, user.ID, BillingTierDay, false, base.Add(49*time.Hour))
-		state = billingSourcePreferenceAssertState(t, ctx, repository, user.ID, BillingSourceDisabled{})
-		day = state.Subscriptions[0]
-		if day.Enabled || day.ExpiresAt == nil || !day.ExpiresAt.Equal(base.Add(48*time.Hour)) {
-			t.Fatalf("restoring revived an expired subscription: %+v", day)
+		expiredReader := &Store{db: repository.db, now: func() time.Time { return base.Add(49 * time.Hour) }}
+		expiredState, err := expiredReader.GetBillingState(ctx, user.ID, 1, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(expiredState.Subscriptions) != 0 {
+			t.Fatalf("expired subscription visible: %+v", expiredState.Subscriptions)
 		}
 		_, err = reserve(user, key, "source-period-expired-restored", base.Add(49*time.Hour))
 		billingSourcePreferenceAssertInsufficient(t, err, 0)
+
 	})
 
 	t.Run("recharge and administrator reopen preserve preferences", func(t *testing.T) {
@@ -269,66 +288,48 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 		t.Fatal("billing summary omitted user")
 	})
 
-	t.Run("preference audit is atomic and creates no financial entry", func(t *testing.T) {
+	t.Run("preference audit is atomic and priorities validated", func(t *testing.T) {
 		user, _, _ := billingIntegrationPrincipal(t, ctx, repository, "source-audit-"+suffix)
-		digest := sha256.Sum256([]byte("source-session-" + suffix))
-		session, err := repository.CreateSession(ctx, CreateSessionParams{
-			UserID: user.ID, TokenHash: digest[:], CSRFSecret: digest[:], CreatedAt: base,
-			IdleExpiresAt: base.Add(time.Hour), AbsoluteExpiresAt: base.Add(24 * time.Hour),
-		})
-		if err != nil {
+		fund(t, user.ID, []string{BillingTierDay}, "1", "1", 2)
+		var id string
+		if err := repository.db.QueryRowContext(ctx, `SELECT id FROM billing_subscriptions WHERE user_id=$1`, user.ID).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
-		requestID := billingIntegrationRequestID(suffix, "source-audit", 1)
-		params := SetBillingSourceDisabledParams{
-			UserID: user.ID, Source: BillingTierDay, Disabled: true,
-			ActorSessionID: session.ID, RequestID: requestID, SourceIP: "127.0.0.1", At: base,
-		}
-		if err := repository.SetBillingSourceDisabled(ctx, params); err != nil {
-			t.Fatal(err)
-		}
-		var auditActor, auditSession, sourceIP, subjectType, subjectID, source string
-		var disabled, previousDisabled, success bool
-		var occurredAt time.Time
-		if err := repository.db.QueryRowContext(ctx, `SELECT actor_user_id, actor_session_id,
-			host(source_ip), subject_type, subject_id, metadata->>'source',
-			(metadata->>'disabled')::boolean, (metadata->>'previous_disabled')::boolean,
-			success, occurred_at FROM audit_events
-			WHERE event_type = 'billing.source_status_changed' AND request_id = $1`, requestID,
-		).Scan(&auditActor, &auditSession, &sourceIP, &subjectType, &subjectID, &source,
-			&disabled, &previousDisabled, &success, &occurredAt); err != nil {
-			t.Fatalf("read source preference audit: %v", err)
-		}
-		if auditActor != user.ID || auditSession != session.ID || sourceIP != "127.0.0.1" ||
-			subjectType != "billing_account" || subjectID != user.ID || source != BillingTierDay ||
-			!disabled || previousDisabled || !success || !occurredAt.Equal(base) {
-			t.Fatalf("incorrect source preference audit: actor=%s session=%s source_ip=%s subject=%s/%s source=%s disabled=%t previous=%t success=%t at=%v",
-				auditActor, auditSession, sourceIP, subjectType, subjectID, source, disabled, previousDisabled, success, occurredAt)
-		}
-		// Explicit assignment can be replayed without an operation ID or reason.
-		if err := repository.SetBillingSourceDisabled(ctx, params); err != nil {
-			t.Fatalf("repeat source preference: %v", err)
-		}
-		billingSourcePreferenceAssertState(t, ctx, repository, user.ID, BillingSourceDisabled{Day: true})
-		missingSession, err := newUUID()
-		if err != nil {
-			t.Fatal(err)
-		}
+		missingSession, _ := newUUID()
+		params := SetBillingSubscriptionPreferencesParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "audit rollback", base), UserID: user.ID, SubscriptionID: id, Priority: 50, ChargeEnabled: false}
 		params.ActorSessionID = missingSession
-		params.Source = "cash"
-		if err := repository.SetBillingSourceDisabled(ctx, params); err == nil {
-			t.Fatal("invalid audit session unexpectedly succeeded")
+		if _, err := repository.SetBillingSubscriptionPreferences(ctx, params); err == nil {
+			t.Fatal("invalid audit session succeeded")
 		}
-		billingSourcePreferenceAssertState(t, ctx, repository, user.ID, BillingSourceDisabled{Day: true})
-		var financialRows int
-		if err := repository.db.QueryRowContext(ctx, `SELECT
-			(SELECT count(*) FROM billing_ledger_entries WHERE user_id = $1) +
-			(SELECT count(*) FROM billing_operations WHERE target_user_id = $1)`, user.ID).Scan(&financialRows); err != nil {
+		state, err := repository.GetBillingState(ctx, user.ID, 1, 0)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if financialRows != 0 {
-			t.Fatalf("preference changes created %d financial rows", financialRows)
+		if state.Subscriptions[0].Priority != 1 || !state.Subscriptions[0].ChargeEnabled {
+			t.Fatal("audit failure did not roll back preference")
 		}
+		params.ActorSessionID = ""
+		for _, priority := range []int{0, -1, 101} {
+			params.Priority = priority
+			if _, err := repository.SetBillingSubscriptionPreferences(ctx, params); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("priority %d: %v", priority, err)
+			}
+		}
+		params.Priority = 50
+		params.ActorUserID = actor.ID
+		if _, err := repository.SetBillingSubscriptionPreferences(ctx, params); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("other actor altered preference: %v", err)
+		}
+		params.ActorUserID = user.ID
+		first, err := repository.SetBillingSubscriptionPreferences(ctx, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		replay, err := repository.SetBillingSubscriptionPreferences(ctx, params)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertBillingPlanReplay(t, first, replay)
 	})
 
 	t.Run("internal zero requests remain admissible with all sources disabled", func(t *testing.T) {
@@ -452,15 +453,42 @@ func billingSourcePreferenceAssertState(t *testing.T, ctx context.Context, repos
 	if err != nil {
 		t.Fatalf("GetBillingState: %v", err)
 	}
-	if state.SourceDisabled != want {
-		t.Fatalf("source preferences = %+v, want %+v", state.SourceDisabled, want)
+	actual := state.SourceDisabled
+	for _, sub := range state.Subscriptions {
+		switch sub.Tier {
+		case BillingTierDay:
+			actual.Day = !sub.ChargeEnabled
+		case BillingTierWeek:
+			actual.Week = !sub.ChargeEnabled
+		case BillingTierMonth:
+			actual.Month = !sub.ChargeEnabled
+		}
 	}
+	if actual != want {
+		t.Fatalf("source preferences=%+v want=%+v", actual, want)
+	}
+
 	return state
 }
 
 func billingSourcePreferenceAssertBindings(t *testing.T, value BillingReservation, disabledMask int) {
 	t.Helper()
-	bound := []bool{value.DayPeriodID != nil, value.WeekPeriodID != nil, value.MonthPeriodID != nil, value.CashLotCutoff != nil}
+	bound := []bool{false, false, false, false}
+	for _, source := range value.OrderedFundingSources {
+		if source.SourceType == "cash" {
+			bound[3] = true
+			continue
+		}
+		switch source.PeriodDays {
+		case 1:
+			bound[0] = true
+		case 7:
+			bound[1] = true
+		case 31:
+			bound[2] = true
+		}
+	}
+
 	for index, present := range bound {
 		if present != (disabledMask&(1<<index) == 0) {
 			t.Fatalf("reservation bindings = %v, disabled mask = %04b", bound, disabledMask)

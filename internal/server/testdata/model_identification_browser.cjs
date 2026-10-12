@@ -56,7 +56,7 @@ class Element {
 }
 
 function dashboard() {
-  const ids = ["model-identification-form", "model-identification-account", "model-identification-model",
+  const ids = ["identification-model-picker", "model-identification-form", "model-identification-account", "model-identification-model",
     "model-identification-run", "model-identification-refresh", "model-identification-version",
     "model-identification-run-status", "model-identification-progress", "model-identification-results", "model-identification-message"];
   const nodes = new Map(ids.map((id) => [id, new Element()]));

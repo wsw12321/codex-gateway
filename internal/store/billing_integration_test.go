@@ -61,7 +61,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		write := billingIntegrationWrite(t, owner.ID, "missing target", now)
-		_, err = repository.PutSubscription(ctx, PutSubscriptionParams{
+		_, err = repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: write, UserID: missingUserID,
 			Tier: BillingTierDay, AllowanceUSD: "1",
 		})
@@ -193,7 +193,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("subscription update reopens immediately and delete disables", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "subscription-"+suffix)
 		firstAt := now.Add(10 * time.Second)
-		first, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		first, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "start day plan", firstAt),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5", PeriodCount: 5,
 		})
@@ -201,7 +201,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatalf("PutSubscription(first): %v", err)
 		}
 		secondAt := firstAt.Add(time.Hour)
-		secondParams := PutSubscriptionParams{
+		secondParams := PutSubscriptionParams{SubscriptionID: first.ID, Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "change day plan", secondAt),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "7", PeriodCount: 2,
 		}
@@ -247,8 +247,8 @@ func TestBillingPostgresIntegration(t *testing.T) {
 
 		deleteAt := secondAt.Add(time.Minute)
 		deleteParams := DeleteSubscriptionParams{
-			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "stop day plan", deleteAt),
-			UserID:             user.ID, Tier: BillingTierDay,
+			SubscriptionID: second.ID, BillingWriteParams: billingIntegrationWrite(t, owner.ID, "stop day plan", deleteAt),
+			UserID: user.ID, Tier: BillingTierDay,
 		}
 		deleted, err := repository.DeleteSubscription(ctx, deleteParams)
 		if err != nil {
@@ -305,8 +305,8 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetBillingState(disabled): %v", err)
 		}
-		if state.Subscriptions[0].Enabled || state.Subscriptions[0].RemainingUSD != "0.000000000000" {
-			t.Fatalf("disabled subscription exposes unusable quota: %+v", state.Subscriptions[0])
+		if len(state.Subscriptions) != 0 {
+			t.Fatalf("disabled subscription visible: %+v", state.Subscriptions)
 		}
 	})
 
@@ -320,15 +320,15 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		}
 		if _, err := repository.db.ExecContext(ctx, `INSERT INTO billing_subscriptions
 			(id,user_id,tier,enabled,allowance_usd,period_count,current_period_number,
-			 expires_at,created_at,updated_at,disabled_at)
-			VALUES ($1,$2,'month',false,5,1,1,$3,$4,$4,$3)`, subscriptionID,
+			 expires_at,created_at,updated_at,disabled_at,period_days)
+			VALUES ($1,$2,'month',false,5,1,1,$3,$4,$4,$3,31)`, subscriptionID,
 			user.ID, legacyExpiry, base.Add(-2*time.Hour)); err != nil {
 			t.Fatalf("create periodless legacy subscription: %v", err)
 		}
 
 		deleteParams := DeleteSubscriptionParams{
-			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "replay periodless disable", base),
-			UserID:             user.ID, Tier: BillingTierMonth,
+			SubscriptionID: subscriptionID, BillingWriteParams: billingIntegrationWrite(t, owner.ID, "replay periodless disable", base),
+			UserID: user.ID, Tier: BillingTierMonth,
 		}
 		first, err := repository.DeleteSubscription(ctx, deleteParams)
 		if err != nil {
@@ -339,9 +339,9 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatalf("periodless disable response = %+v", first)
 		}
 
-		reopened, err := repository.PutSubscription(ctx, PutSubscriptionParams{
-			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "reopen periodless subscription", base.Add(time.Hour)),
-			UserID:             user.ID, Tier: BillingTierMonth, AllowanceUSD: "9", PeriodCount: 3,
+		reopened, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
+			SubscriptionID: subscriptionID, BillingWriteParams: billingIntegrationWrite(t, owner.ID, "reopen periodless subscription", base.Add(time.Hour)),
+			UserID: user.ID, Tier: BillingTierMonth, AllowanceUSD: "9", PeriodCount: 3,
 		})
 		if err != nil {
 			t.Fatalf("PutSubscription(after periodless disable): %v", err)
@@ -366,7 +366,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		user := globalUsageIntegrationUser(t, ctx, repository, "bill-legacy-set-"+suffix, UserRoleMember)
 		base := now.Add(6 * time.Hour)
 		write := billingIntegrationWrite(t, owner.ID, "replay legacy subscription set", base)
-		params := PutSubscriptionParams{
+		params := PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: write,
 			UserID:             user.ID, Tier: BillingTierWeek, AllowanceUSD: "7", PeriodCount: 1,
 		}
@@ -382,10 +382,19 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatalf("simulate pre-0004 subscription fingerprint: %v", err)
 		}
 
-		replay, err := repository.PutSubscription(ctx, params)
+		var replay BillingSubscriptionState
+		err = repository.withTx(ctx, nil, func(tx *sql.Tx) error {
+			entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `SELECT `+billingLedgerColumns+` FROM billing_ledger_entries WHERE operation_id=$1`, params.OperationID))
+			if err != nil {
+				return err
+			}
+			replay, err = subscriptionOperationStateTx(ctx, tx, entry, true)
+			return err
+		})
 		if err != nil {
-			t.Fatalf("PutSubscription(legacy replay): %v", err)
+			t.Fatalf("read legacy immutable operation response: %v", err)
 		}
+
 		if replay.ID != first.ID || replay.PeriodCount != 1 || replay.CurrentPeriodNumber != 1 ||
 			replay.PeriodID == nil || first.PeriodID == nil || *replay.PeriodID != *first.PeriodID ||
 			replay.ExpiresAt == nil || first.ExpiresAt == nil || !replay.ExpiresAt.Equal(*first.ExpiresAt) {
@@ -410,7 +419,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("one finite period expires at its original boundary and bound work settles", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "finite-one-"+suffix)
 		base := now.Add(10 * 24 * time.Hour)
-		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "one finite day", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 1,
 		})
@@ -480,7 +489,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("failed admission rolls back quota and converges finite expiry", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "finite-admission-"+suffix)
 		base := now.Add(15 * 24 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "one finite admission day", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 1,
 		}); err != nil {
@@ -524,7 +533,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("finite periods renew exactly to their configured limit", func(t *testing.T) {
 		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-three-"+suffix)
 		base := now.Add(20 * 24 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "three finite days", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "1", PeriodCount: 3,
 		}); err != nil {
@@ -575,7 +584,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("idle periods advance the sequence without changing final expiry", func(t *testing.T) {
 		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-idle-"+suffix)
 		base := now.Add(30 * 24 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "five finite days", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "4", PeriodCount: 5,
 		}); err != nil {
@@ -614,7 +623,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("zero period count remains unlimited across idle periods", func(t *testing.T) {
 		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "unlimited-"+suffix)
 		base := now.Add(40 * 24 * time.Hour)
-		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		created, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "unlimited day", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "3", PeriodCount: 0,
 		})
@@ -652,7 +661,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("concurrent boundaries do not duplicate renewal or cross the limit", func(t *testing.T) {
 		user, _, key := billingIntegrationPrincipal(t, ctx, repository, "finite-concurrent-"+suffix)
 		base := now.Add(50 * 24 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "two concurrent days", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "2", PeriodCount: 2,
 		}); err != nil {
@@ -711,7 +720,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("maintenance converges untouched finite subscriptions at planned expiry", func(t *testing.T) {
 		user := globalUsageIntegrationUser(t, ctx, repository, "bill-maintenance-"+suffix, UserRoleMember)
 		base := now.Add(60 * 24 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "four untouched days", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "6", PeriodCount: 4,
 		}); err != nil {
@@ -746,14 +755,14 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		}
 	})
 
-	t.Run("settlement drains day week month then cash and is idempotent", func(t *testing.T) {
+	t.Run("settlement drains longest periods then cash and is idempotent", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "split-"+suffix)
 		base := now.Add(24 * time.Hour)
 		billingIntegrationSetRate(t, ctx, repository, owner.ID, "2", base)
 		billingIntegrationRecharge(t, ctx, repository, owner.ID, user.ID, "5", base.Add(time.Second))
 		for index, tier := range []string{BillingTierDay, BillingTierWeek, BillingTierMonth} {
 			allowance := strconv.Itoa(index + 1)
-			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 				BillingWriteParams: billingIntegrationWrite(t, owner.ID, "create "+tier+" plan", base.Add(time.Duration(index+2)*time.Second)),
 				UserID:             user.ID, Tier: tier, AllowanceUSD: allowance,
 			}); err != nil {
@@ -778,8 +787,8 @@ func TestBillingPostgresIntegration(t *testing.T) {
 			t.Fatalf("unexpected settlement/replay: settled=%+v replay=%+v", settled, replayed)
 		}
 		billingIntegrationAssertAllocations(t, ctx, repository, requestID,
-			[]string{"day", "week", "month", "cash"},
-			[]string{"1.000000000000", "2.000000000000", "3.000000000000", "2.000000000000"})
+			[]string{"subscription", "subscription", "subscription", "cash"},
+			[]string{"3.000000000000", "2.000000000000", "1.000000000000", "2.000000000000"})
 		state, err := repository.GetBillingState(ctx, user.ID, 50, 0)
 		if err != nil {
 			t.Fatalf("GetBillingState(after split): %v", err)
@@ -807,7 +816,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("single request can exceed its bound subscription", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "uncovered-"+suffix)
 		base := now.Add(48 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "small day plan", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "1",
 		}); err != nil {
@@ -1136,7 +1145,10 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	t.Run("v2 fallback persists applied prices through usage retention", func(t *testing.T) {
 		user, device, key := billingIntegrationPrincipal(t, ctx, repository, "v2-fallback-"+suffix)
 		base := now.Add(144 * time.Hour)
-		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+		if err := repository.SyncModelAccessCatalog(ctx, []string{"gpt-v2-priced", "billing-priced-model"}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, repository),
 			BillingWriteParams: billingIntegrationWrite(t, owner.ID, "fund v2 fallback test", base),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5",
 		}); err != nil {
@@ -1178,7 +1190,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 		if _, err := repository.AdmitRequest(ctx, params); err != nil {
 			t.Fatalf("AdmitRequest(v2 fallback): %v", err)
 		}
-		actualModel := "gpt-v2-upstream"
+		actualModel := "gpt-v2-upstream-" + suffix
 		completedAt := base.Add(2 * time.Second)
 		if _, err := repository.CompleteUsageRequest(ctx, CompleteUsageRequestParams{
 			RequestID: requestID, State: "completed", HTTPStatus: 200,
@@ -1622,6 +1634,12 @@ func billingIntegrationAccountMigration(t *testing.T, ctx context.Context, repos
 	if _, err := connection.ExecContext(ctx, byName["0033_anthropic_billing.sql"]); err != nil {
 		t.Fatalf("apply isolated Anthropic billing metadata: %v", err)
 	}
+	for _, name := range []string{"0010_billing_source_preferences.sql", "0024_subscription_plans.sql", "0034_multi_subscriptions.sql"} {
+		if _, err := connection.ExecContext(ctx, byName[name]); err != nil {
+			t.Fatalf("apply compatibility %s: %v", name, err)
+		}
+	}
+
 	var migratedReservationMultiplier, migratedLedgerMultiplier string
 	if err := connection.QueryRowContext(ctx, `SELECT
 		(SELECT pricing_multiplier::text FROM billing_reservations WHERE request_id = $1),
@@ -1940,4 +1958,29 @@ func billingIntegrationAssertAllocations(
 	if fmt.Sprint(sources) != fmt.Sprint(wantSources) || fmt.Sprint(amounts) != fmt.Sprint(wantAmounts) {
 		t.Fatalf("allocations = %v %v, want %v %v", sources, amounts, wantSources, wantAmounts)
 	}
+}
+
+// billingIntegrationSubscriptionModels establishes an explicit test catalog
+// when the fixture does not exercise catalog synchronization itself.
+func billingIntegrationSubscriptionModels(t *testing.T, ctx context.Context, repository *Store) []string {
+	t.Helper()
+	values, err := repository.ListModelAccessModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make([]string, 0, len(values)+1)
+	found := false
+	for _, value := range values {
+		result = append(result, value.Model)
+		if value.Model == "billing-priced-model" {
+			found = true
+		}
+	}
+	if !found {
+		result = append(result, "billing-priced-model")
+		if err := repository.SyncModelAccessCatalog(ctx, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return result
 }

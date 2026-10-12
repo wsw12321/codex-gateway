@@ -62,11 +62,9 @@ function deferred() {
 }
 
 function detail(id = "member", disabled = {}) {
-  return {user: {id, username: id}, cash_balance_usd: "123.45",
-    source_disabled: {day: false, week: false, month: false, cash: false, ...disabled},
-    subscriptions: {day: {enabled: true, remaining_usd: "8.50", quota_usd: "10", period_count: 3,
-      current_period_number: 1, period_started_at: "2026-09-20T00:00:00Z", period_ends_at: "2026-09-21T00:00:00Z",
-      expires_at: "2026-09-23T00:00:00Z"}}, ledger_entries: []};
+  return {user: {id, username: id}, cash_balance_usd: "123.45", cash_preferences: {priority: 100, charge_enabled: !disabled.cash},
+    subscriptions: ["day", "week", "month"].map((source) => ({id: source, name: source, tier: "day", period_days: 1, priority: 1, charge_enabled: !disabled[source], enabled: true, remaining_usd: "8.50", quota_usd: "10", period_count: 3,
+      current_period_number: 1, period_started_at: "2099-09-20T00:00:00Z", period_ends_at: "2099-09-21T00:00:00Z", expires_at: "2099-09-23T00:00:00Z"})), ledger_entries: []};
 }
 
 function dashboard(role = "member", initial = detail()) {
@@ -80,13 +78,13 @@ function dashboard(role = "member", initial = detail()) {
   let snapshot = initial;
   const context = vm.createContext({
     document: {getElementById: getNode, createElement: (tag) => new Element(tag), querySelectorAll: (selector) => root.querySelectorAll(selector)},
-    URLSearchParams, initial, role,
+    URLSearchParams, initial, role, crypto: {randomUUID: () => "operation-id"},
     request: async (pathname, options) => {
       calls.push({pathname, options});
       if (options?.method === "PUT") {
-        const source = pathname.split("/").at(-2), {disabled} = JSON.parse(options.body);
-        snapshot = {...snapshot, source_disabled: {...snapshot.source_disabled, [source]: disabled}};
-        return {source, disabled};
+        const source = pathname.split("/").at(-2), {charge_enabled, priority} = JSON.parse(options.body);
+        snapshot = {...snapshot, cash_preferences: source === "cash" ? {priority, charge_enabled} : snapshot.cash_preferences, subscriptions: snapshot.subscriptions.map((sub) => sub.id === source ? {...sub, charge_enabled, priority} : sub)};
+        return {priority, charge_enabled};
       }
       return snapshot;
     },
@@ -105,7 +103,7 @@ function dashboard(role = "member", initial = detail()) {
   `);
   const buttons = () => root.querySelectorAll("[data-billing-source]");
   return {run, calls, context, node: getNode, buttons,
-    card: (tier) => root.querySelectorAll(".subscription-card").find((node) => node.dataset.subscriptionTier === tier),
+    card: (tier) => root.querySelectorAll(".subscription-card").find((node) => node.dataset.subscriptionId === tier),
     button: (source) => buttons().find((node) => node.dataset.billingSource === source),
     label: (source) => root.querySelectorAll("[data-billing-source-state]").find((node) => node.dataset.billingSourceState === source),
     change: (source) => run(`changeBillingSource(${JSON.stringify(source)})`),
@@ -113,7 +111,7 @@ function dashboard(role = "member", initial = detail()) {
   };
 }
 
-test("members and owners can disable and restore every own source, including unopened subscriptions", async (t) => {
+test("members and owners can disable and restore every own source, including multiple subscriptions of the same period", async (t) => {
   for (const role of ["member", "owner"]) {
     await t.test(role, async () => {
       const ui = dashboard(role);
@@ -127,14 +125,14 @@ test("members and owners can disable and restore every own source, including uno
         assert.equal(ui.button(source).textContent, "禁用扣费");
         assert.equal(ui.label(source).textContent, "允许扣费");
         assert.deepEqual(ui.calls.filter(({options}) => options?.method === "PUT").slice(-2).map(({pathname, options}) => ({pathname, body: JSON.parse(options.body)})), [
-          {pathname: `/admin/billing/me/sources/${source}/status`, body: {disabled: true}},
-          {pathname: `/admin/billing/me/sources/${source}/status`, body: {disabled: false}},
+          {pathname: source === "cash" ? "/admin/billing/me/cash/preferences" : `/admin/billing/me/subscriptions/${source}/preferences`, body: {operation_id: "operation-id", priority: source === "cash" ? 100 : 1, charge_enabled: false}},
+          {pathname: source === "cash" ? "/admin/billing/me/cash/preferences" : `/admin/billing/me/subscriptions/${source}/preferences`, body: {operation_id: "operation-id", priority: source === "cash" ? 100 : 1, charge_enabled: true}},
         ]);
       }
       assert.equal(ui.node("billing-cash-balance").textContent, "US$123.45");
       assert.equal(ui.card("day").querySelector(".subscription-remaining").textContent, "US$8.50");
       assert.equal(ui.card("day").querySelector("progress").attributes.value, "85");
-      assert.equal(ui.card("week").querySelector(".subscription-remaining").textContent, "未启用");
+      assert.equal(ui.card("week").querySelector(".subscription-remaining").textContent, "US$8.50");
       assert.equal(ui.calls.filter(({options}) => !options).every(({pathname}) => pathname.startsWith("/admin/billing/me?")), true);
     });
   }
@@ -178,7 +176,7 @@ test("saving and the following refresh block duplicate clicks across all sources
   assert.equal(ui.buttons().every((button) => button.disabled), true);
   await ui.change("cash"); await ui.change("day");
   assert.equal(ui.calls.length, 1);
-  write.resolve({source: "cash", disabled: true});
+  write.resolve({priority: 100, charge_enabled: false});
   await new Promise(setImmediate);
   assert.equal(ui.buttons().every((button) => button.disabled), true);
   await ui.change("cash");
@@ -197,7 +195,7 @@ test("selecting self again during a save keeps duplicate submissions blocked", a
   await ui.change("cash");
   assert.equal(ui.calls.filter(({options}) => options?.method === "PUT").length, 1);
   assert.equal(ui.buttons().every((button) => button.disabled), true);
-  write.resolve({source: "cash", disabled: true}); await saving;
+  write.resolve({priority: 100, charge_enabled: false}); await saving;
 });
 
 test("failed or unconfirmed writes reload the server state without optimistic changes", async (t) => {
@@ -222,7 +220,7 @@ test("refresh failure after a successful or failed write leaves controls disable
     await t.test(`write succeeded: ${saved}`, async () => {
       const ui = dashboard();
       ui.api(async (pathname, options) => {
-        if (options && saved) return {source: "cash", disabled: true};
+        if (options && saved) return {priority: 100, charge_enabled: false};
         throw new Error(options ? "write failed" : "read failed");
       });
       await ui.change("cash");
@@ -257,7 +255,7 @@ test("stale write completions after target, logout, or identity changes cannot s
       if (change === "logout") ui.run("loggingOut = true; resetBillingUserSearch()");
       if (change === "identity") ui.run('state.user = {id: "new-login", role: "member"}; resetBillingUserSearch()');
       const count = ui.calls.length;
-      write.resolve({source: "cash", disabled: true}); await saving;
+      write.resolve({priority: 100, charge_enabled: false}); await saving;
       assert.equal(ui.calls.length, count);
       assert.equal(ui.node("billing-source-message").textContent, "");
       if (change === "target") assert.equal(ui.run("billingDetail.user.id"), "other");
@@ -268,7 +266,7 @@ test("stale write completions after target, logout, or identity changes cannot s
 
 test("a stale refresh cannot overwrite another user's preferences", async () => {
   const ui = dashboard("owner"), read = deferred();
-  ui.api(async (pathname, options) => options ? {source: "cash", disabled: true}
+  ui.api(async (pathname, options) => options ? {priority: 100, charge_enabled: false}
     : pathname.includes("/me?") ? read.promise : detail("other", {week: true}));
   const saving = ui.change("cash");
   await new Promise(setImmediate);
@@ -291,10 +289,10 @@ test("an old operation cannot unlock a new operation after leaving and returning
   await ui.run('selectBillingUser({id: "other", username: "other"})');
   await ui.run('selectBillingUser({id: "member", username: "member"})');
   const current = ui.change("day");
-  oldWrite.resolve({source: "cash", disabled: true}); await old;
+  oldWrite.resolve({priority: 100, charge_enabled: false}); await old;
   assert.equal(ui.buttons().every((button) => button.disabled), true);
   assert.equal(ui.run("billingSourceOperation.source"), "day");
-  newWrite.resolve({source: "day", disabled: true}); await current;
+  newWrite.resolve({priority: 1, charge_enabled: false}); await current;
   assert.equal(ui.run("billingSourceOperation"), null);
 });
 
@@ -372,7 +370,7 @@ test("password and passkey verification responses cannot affect a replacement id
         ui.context.fetch = async (pathname, options) => {
           if (pathname === "/auth/reauth/begin") return {ok: true, status: 200, json: async () => ({flow_id: "synthetic-flow"})};
           if (pathname === "/auth/password/reauth" || pathname === "/auth/reauth/finish") return ++authRequests === 1 ? oldResponse.promise : newResponse.promise;
-          if (options.method === "PUT") { writes++; return {ok: true, status: 200, json: async () => ({source: "cash", disabled: true})}; }
+          if (options.method === "PUT") { writes++; return {ok: true, status: 200, json: async () => ({priority: 100, charge_enabled: false})}; }
           return {ok: true, status: 200, json: async () => detail("new-login", {cash: true})};
         };
         ui.context.invalidated = () => { invalidations++; };
@@ -476,21 +474,21 @@ test("old billing user lists and settings cannot render or invalidate a replacem
 
 test("subscription cards separate validity from charging permission and preserve exact amounts", () => {
   const input = detail("member", {day: true});
-  input.subscriptions.day.quota_usd = "999999999999999999.123456789012";
-  input.subscriptions.day.remaining_usd = "999999999999999998.123456789012";
+  input.subscriptions[0].quota_usd = "999999999999999999.123456789012";
+  input.subscriptions[0].remaining_usd = "999999999999999998.123456789012";
   const ui = dashboard("member", input);
   assert.equal(ui.card("day").querySelector(".status-badge").textContent, "订阅有效");
   assert.equal(ui.label("day").textContent, "已禁用扣费");
   assert.equal(ui.card("day").querySelector(".subscription-remaining").textContent, "US$999,999,999,999,999,998.123456789012");
   assert.equal(ui.card("day").querySelector("details").open, undefined, "period details start collapsed");
-  assert.equal(ui.node("billing-subscriptions").children.length, 3, "one card per subscription tier");
+  assert.equal(ui.node("billing-subscriptions").children.length, 3, "one card per independent subscription");
 });
 
 test("subscription progress clamps to zero through one hundred and only renders usable quotas", () => {
   const ui = dashboard();
   for (const [quota, remaining, expected] of [["10", "20", 100], ["10", "-2", 0], ["0", "0", null],
     ["-1", "1", null], [null, "1", null], ["10", null, null], ["bad", "1", null]]) {
-    ui.context.input = {subscriptions: {day: {enabled: true, quota_usd: quota, remaining_usd: remaining, period_count: 1}}};
+    ui.context.input = {subscriptions: [{id: "day", enabled: true, quota_usd: quota, remaining_usd: remaining, period_count: 1}]};
     ui.run("renderBillingSubscriptions(input)");
     const progress = ui.card("day").querySelector("progress");
     assert.equal(progress?.attributes.value ?? null, expected == null ? null : String(expected), `quota=${quota}, remaining=${remaining}`);
@@ -502,18 +500,18 @@ test("subscription display distinguishes unopened, indefinite, finite, and unava
   const ui = dashboard();
   for (const [input, status, expires] of [
     [{subscriptions: {}}, "未启用", "—"],
-    [{subscriptions: {day: {enabled: false}}}, "未启用", "—"],
-    [{subscriptions: {day: {enabled: true, period_count: 0}}}, "订阅有效", "无限期"],
-    [{subscriptions: {day: {enabled: true, period_count: 3}}}, "订阅有效", "数据不可用"],
-    [{subscriptions: {day: {enabled: true}}}, "订阅有效", "数据不可用"],
+    [{subscriptions: [{id: "day", enabled: false}]}, "未启用", "—"],
+    [{subscriptions: [{id: "day", enabled: true, period_count: 0}]}, "订阅有效", "无限期"],
+    [{subscriptions: [{id: "day", enabled: true, period_count: 3}]}, "订阅有效", "数据不可用"],
+    [{subscriptions: [{id: "day", enabled: true}]}, "订阅有效", "数据不可用"],
     [{}, "数据不可用", "—"],
-    [{subscriptions: {day: {}}}, "数据不可用", "—"],
+    [{subscriptions: [{id: "day"}]}, "数据不可用", "—"],
   ]) {
     ui.context.input = input;
     assert.equal(ui.run('billingSubscriptionDisplay(input, "day").status'), status);
     assert.equal(ui.run('billingSubscriptionDisplay(input, "day").expires'), expires);
   }
-  ui.context.input = {subscriptions: {day: {enabled: true, period_count: 2, expires_at: "2026-10-02T00:00:00Z"}}};
+  ui.context.input = {subscriptions: [{id: "day", enabled: true, period_count: 2, expires_at: "2099-10-02T00:00:00Z"}]};
   assert.notEqual(ui.run('billingSubscriptionDisplay(input, "day").expires'), "无限期");
   assert.equal(ui.run('billingSubscriptionDisplay(input, "day").remaining'), "数据不可用");
 });
@@ -531,4 +529,17 @@ test("managed billing refresh failures remain independent of a successful mutati
   ui.context.form.append(message);
   ui.run('reportBillingMutation(form, "充值已入账。", false)');
   assert.match(message.textContent, /充值已入账.*刷新失败.*无需重复提交/);
+});
+
+test("priority preferences validate exact integers and preserve the charging switch", async () => {
+  const ui = dashboard("member", detail("member", {cash: true}));
+  for (const value of ["0", "101", "1.5", "1e2", "", "-1"]) {
+    ui.context.priority = value;
+    await ui.run('changeBillingSource("cash", priority)');
+  }
+  assert.equal(ui.calls.length, 0);
+  await ui.run('changeBillingSource("cash", "2")');
+  assert.deepEqual(JSON.parse(ui.calls[0].options.body), {operation_id: "operation-id", priority: 2, charge_enabled: false});
+  assert.equal(ui.run('billingSourcePriority("cash")'), 2);
+  assert.equal(ui.label("cash").textContent, "已禁用扣费");
 });

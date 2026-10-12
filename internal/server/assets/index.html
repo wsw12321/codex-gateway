@@ -165,6 +165,7 @@
           <p id="nav-billing" class="nav-group-title">用量与账务</p>
           <a href="#usage" data-view="usage"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3v18h17M8 16v-4m5 4V7m5 9V4"/></svg>使用统计</a>
           <a href="#billing" data-view="billing"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="M3 9h18m-5 6h2"/></svg>额度与订阅</a>
+          <a href="#plans" data-view="plans"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM4 9h16M9 9v11"/></svg>套餐</a>
           <a href="#model-pricing" data-view="model-pricing" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4zM4 10h16M10 5v14M15 10v9"/></svg>模型定价</a>
           <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>模型倍率</a>
           <a href="#groups" data-view="groups" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 12 0v4M16 4a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5v2"/></svg>群组额度</a>
@@ -398,6 +399,18 @@
             </article>
           </section>
 
+          <section class="view hidden" data-section="plans" aria-labelledby="plans-title">
+            <div class="section-head"><div><h2 id="plans-title">套餐</h2><p>选购独立订阅。已有订阅可在额度与订阅页面续费。</p></div><a href="#billing" class="button secondary">额度与订阅</a></div>
+            <article id="billing-plans-panel" class="panel billing-plans-panel" aria-labelledby="billing-plans-title">
+              <div class="panel-heading"><div><h3 id="billing-plans-title">套餐目录</h3><p>使用现金余额购买。周期为日／周／月或自定义 1–3650 天，每周期额度不结转。购买始终新增独立订阅。</p></div><div class="actions"><button id="billing-plans-refresh" type="button" class="secondary">刷新套餐</button><button id="billing-plan-create" type="button" class="owner-only hidden">创建套餐</button></div></div>
+              <p id="billing-plan-message" class="form-message hidden" role="status" aria-live="polite"></p>
+              <p id="billing-plan-pending" class="billing-plan-pending hidden" role="status">有一笔操作结果待确认。请保留本页，仅重试原操作。<button id="billing-plan-resume" type="button" class="secondary">查看原操作</button></p>
+              <p id="billing-plan-readonly" class="muted hidden">正在查看其他用户，购买和续费仅供本人操作。</p>
+              <div id="billing-plans" class="billing-plan-list" aria-live="polite">正在加载套餐…</div>
+            </article>
+
+          </section>
+
           <section class="view hidden" data-section="billing" aria-labelledby="billing-title">
             <div class="section-head">
               <div><h2 id="billing-title">额度与订阅</h2><p>查看现金余额、订阅状态和实际结算流水。</p></div>
@@ -416,11 +429,11 @@
             </div>
             <div class="metrics billing-metrics">
               <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
-              <article class="billing-order-card"><span>扣费顺序</span><strong>群组 → 个人日 → 周 → 月 → 现金</strong><small>群组在剩余额度和成员本期上限内优先支付；剩余费用使用允许扣费的个人来源。实际分摊以结算流水为准。</small></article>
+              <article class="billing-order-card"><span>扣费顺序</span><strong>群组 → 个人来源优先级</strong><small>群组在剩余额度和成员本期上限内优先支付；剩余费用使用允许扣费的个人来源。实际分摊以结算流水为准。</small></article>
             </div>
 
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
-            <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；尚未开通的订阅也可预先设置。剩余周期额度仍不结转。</p>
+            <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；优先级数字越小越先扣费；同优先级订阅优先于余额，再按周期天数、剩余额度降序排列。剩余周期额度不结转。</p>
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
             <p id="billing-source-message" class="form-message billing-source-message hidden" role="status" aria-live="polite"></p>
             <article class="panel billing-period-panel">
@@ -428,13 +441,6 @@
               <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
             </article>
 
-            <article id="billing-plans-panel" class="panel billing-plans-panel" aria-labelledby="billing-plans-title">
-              <div class="panel-heading"><div><h3 id="billing-plans-title">套餐目录</h3><p>使用现金余额购买。日／周／月分别为 24 小时／7 天／31 天，每周期额度不结转。</p></div><div class="actions"><button id="billing-plans-refresh" type="button" class="secondary">刷新套餐</button><button id="billing-plan-create" type="button" class="owner-only hidden">创建套餐</button></div></div>
-              <p id="billing-plan-message" class="form-message hidden" role="status" aria-live="polite"></p>
-              <p id="billing-plan-pending" class="billing-plan-pending hidden" role="status">有一笔操作结果待确认。请保留本页，仅重试原操作。<button id="billing-plan-resume" type="button" class="secondary">查看原操作</button></p>
-              <p id="billing-plan-readonly" class="muted hidden">正在查看其他用户，购买和续费仅供本人操作。</p>
-              <div id="billing-plans" class="billing-plan-list" aria-live="polite">正在加载套餐…</div>
-            </article>
 
             <div class="owner-only hidden billing-owner-tools">
               <details id="billing-batch-panel" class="panel billing-batch-panel" aria-labelledby="billing-batch-title">
@@ -474,15 +480,18 @@
                     <button type="submit" disabled>预览批量充值</button>
                   </form>
                   <form id="billing-batch-subscription-form" class="billing-batch-form">
-                    <div><h4>批量开通订阅</h4><p>已有同档位订阅会立即关闭旧周期，按新配置从第 1 期重开。</p></div>
+                    <div><h4>批量开通订阅</h4><p>为每位用户新增独立订阅，已有订阅继续有效。</p></div>
+                    <label>订阅名称<input name="name" required maxlength="120" autocomplete="off"></label>
                     <div class="billing-batch-subscription-fields">
                       <label>订阅档位
-                        <select name="tier" required><option value="day">日订阅 · 24 小时</option><option value="week">周订阅 · 7 天</option><option value="month">月订阅 · 31 天</option></select>
+                        <select name="tier" required><option value="day">日订阅 · 24 小时</option><option value="week">周订阅 · 7 天</option><option value="month">月订阅 · 31 天</option><option value="custom">自定义天数</option></select>
                       </label>
                       <label>每人周期额度（USD）
                         <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]{0,17})([.][0-9]{1,6})?" maxlength="25" autocomplete="off" placeholder="10.00">
                       </label>
                     </div>
+                    <label>自定义周期天数<input name="period_days" type="number" min="1" max="3650" step="1" value="1"></label>
+                    <div id="billing-batch-models" aria-label="订阅适用模型"></div>
                     <label>周期数（0 表示无限期）
                       <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
                     </label>
@@ -561,54 +570,9 @@
                 </details>
               </div>
 
-              <details class="panel billing-subscription-admin">
-                <summary>配置所选用户的订阅</summary>
-                <div class="panel-heading"><div><p>保存会立即关闭旧周期并从当前时刻的第 1 个周期重开；周期数 1–99 会在最后一期结束时自动失效，0 表示无限期。管理员“立即停用”会终止订阅；用户“禁用扣费”仅跳过该资金来源，订阅期限照常运行。</p></div></div>
-                <div class="billing-subscription-forms">
-                  <form id="billing-subscription-day" class="billing-subscription-form" data-tier="day">
-                    <div><h4>日订阅</h4><small>固定 24 小时</small></div>
-                    <label>周期额度（USD）
-                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="10.00">
-                    </label>
-                    <label>周期数（0 表示无限期）
-                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
-                    </label>
-                    <label>操作原因
-                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
-                    </label>
-                    <p class="form-message hidden" role="alert"></p>
-                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="day">立即停用</button></div>
-                  </form>
-                  <form id="billing-subscription-week" class="billing-subscription-form" data-tier="week">
-                    <div><h4>周订阅</h4><small>固定 7 天</small></div>
-                    <label>周期额度（USD）
-                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="50.00">
-                    </label>
-                    <label>周期数（0 表示无限期）
-                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
-                    </label>
-                    <label>操作原因
-                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
-                    </label>
-                    <p class="form-message hidden" role="alert"></p>
-                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="week">立即停用</button></div>
-                  </form>
-                  <form id="billing-subscription-month" class="billing-subscription-form" data-tier="month">
-                    <div><h4>月订阅</h4><small>固定 31 天</small></div>
-                    <label>周期额度（USD）
-                      <input name="quota_usd" required inputmode="decimal" pattern="(0|[1-9][0-9]*)([.][0-9]{1,6})?" autocomplete="off" placeholder="200.00">
-                    </label>
-                    <label>周期数（0 表示无限期）
-                      <input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off">
-                    </label>
-                    <label>操作原因
-                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明配置原因">
-                    </label>
-                    <p class="form-message hidden" role="alert"></p>
-                    <div class="actions"><button type="submit">保存并重开</button><button type="button" class="danger" data-disable-subscription="month">立即停用</button></div>
-                  </form>
-                </div>
-              </details>
+              <article class="panel billing-subscription-admin">
+                <div class="panel-heading"><div><h3>管理所选用户的订阅</h3><p>新增订阅不绑定套餐。重开或停用请从对应订阅卡操作。</p></div><button type="button" id="billing-subscription-create">新增独立订阅</button></div>
+              </article>
             </div>
 
             <article class="panel billing-ledger-panel">
@@ -742,7 +706,8 @@
                   <select name="project_id"><option value="">全部项目</option></select>
                 </label>
                 <label>模型
-                  <input name="model" placeholder="精确模型名">
+                  <input name="model" placeholder="也可输入历史模型 ID" aria-label="查询模型 ID">
+                  <div id="usage-model-picker" class="usage-model-picker"></div>
                 </label>
                 <label>请求状态
                   <select name="state"><option value="">全部状态</option><option value="completed">completed</option><option value="degraded">degraded（被降智）</option><option value="failed">failed</option><option value="cancelled">cancelled</option><option value="in_progress">in_progress</option></select>
@@ -797,7 +762,8 @@
                   <input name="until" type="date">
                 </label>
                 <label>模型
-                  <input name="model" placeholder="精确模型名">
+                  <input name="model" placeholder="也可输入历史模型 ID" aria-label="查询模型 ID">
+                  <div id="global-model-picker" class="usage-model-picker"></div>
                 </label>
                 <div class="filter-actions"><button type="submit">应用筛选</button></div>
                 <p class="form-message hidden" role="alert"></p>
@@ -919,13 +885,6 @@
             <div class="model-access-grid">
               <article class="panel model-access-settings">
                 <div class="panel-heading"><div><p class="eyebrow">MODEL DEFAULT</p><h3>模型与新用户默认值</h3></div></div>
-                <label for="model-access-model-search">搜索模型
-                  <input id="model-access-model-search" type="search" autocomplete="off" placeholder="输入模型名称">
-                </label>
-                <div class="button-group">
-                  <button id="model-access-model-all" type="button" class="secondary">全选模型</button>
-                  <button id="model-access-model-clear" type="button" class="secondary">清空模型</button>
-                </div>
                 <p id="model-access-model-count" role="status">已选 0 个模型</p>
                 <div id="model-access-model-select" class="model-access-model-list" role="group" aria-label="管理模型（多选）"><p>正在加载模型…</p></div>
                 <div class="metrics compact model-access-metrics">
@@ -1038,7 +997,7 @@
                   <select id="model-identification-account" name="account_id" required><option value="">正在加载…</option></select>
                 </label>
                 <label>可尝试模型
-                  <select id="model-identification-model" name="model" required disabled><option value="">先选择账号</option></select>
+                  <select id="model-identification-model" name="model" class="hidden" required disabled><option value="">先选择账号</option></select><div id="identification-model-picker"></div>
                 </label>
               </div>
               <div class="actions"><button id="model-identification-run" type="submit">开始鉴别</button><button id="model-identification-refresh" class="secondary" type="button">刷新状态</button></div>
@@ -1179,14 +1138,31 @@
 
   <dialog id="billing-purchase-dialog" aria-labelledby="billing-purchase-title">
     <form id="billing-purchase-form">
-      <div class="dialog-heading"><p class="eyebrow">SUBSCRIPTION</p><h2 id="billing-purchase-title">购买并重开</h2><p id="billing-purchase-plan"></p></div>
+      <div class="dialog-heading"><p class="eyebrow">SUBSCRIPTION</p><h2 id="billing-purchase-title">购买订阅</h2><p id="billing-purchase-plan"></p></div>
       <label>本次周期数<input name="period_count" type="number" min="1" max="99" step="1" required value="1"></label>
       <p id="billing-purchase-minimum" class="muted"></p>
       <div id="billing-purchase-summary" class="billing-purchase-summary" aria-live="polite"></div>
       <p id="billing-purchase-warning" class="billing-purchase-warning"></p>
       <label class="billing-purchase-confirm"><input name="confirmed" type="checkbox" required><span>我已核对金额、周期及以上权益变化，确认从本人现金余额扣款。</span></label>
       <p class="form-message hidden" role="alert"></p>
-      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-purchase-submit" type="submit">确认购买并重开</button></div>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-purchase-submit" type="submit">确认购买订阅</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="billing-subscription-dialog" aria-labelledby="billing-subscription-title">
+    <form id="billing-subscription-form" class="billing-subscription-form">
+      <div class="dialog-heading"><h2 id="billing-subscription-title">新增独立订阅</h2></div>
+      <p id="billing-subscription-replace" class="billing-purchase-warning"></p>
+      <div id="billing-subscription-entitlements"></div>
+      <label>订阅名称<input name="name" required maxlength="120" autocomplete="off"></label>
+      <label>周期<select name="tier"><option value="day">日 · 1 天</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
+      <label>自定义周期天数<input name="period_days" type="number" min="1" max="3650" step="1" value="1"></label>
+      <label>每周期额度（USD）<input name="quota_usd" required inputmode="decimal" autocomplete="off"></label>
+      <label>周期数（0 表示无限期）<input name="period_count" required type="number" min="0" max="99" step="1" value="1"></label>
+      <div id="billing-subscription-models" aria-label="订阅适用模型"></div>
+      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button type="button" id="billing-subscription-disable" class="danger hidden">立即停用</button><button type="submit" id="billing-subscription-save">新增订阅</button></div>
     </form>
   </dialog>
 
@@ -1195,11 +1171,13 @@
       <div class="dialog-heading"><p class="eyebrow">PLAN</p><h2 id="billing-plan-dialog-title">创建套餐</h2></div>
       <label>套餐名称<input name="name" required maxlength="120" autocomplete="off"></label>
       <label>每周期价格（USD）<input name="price_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 10.00"></label>
-      <label>周期<select name="tier"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option></select></label>
+      <label>周期<select name="tier"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
+      <label>自定义周期天数<input name="period_days" type="number" min="1" max="3650" step="1" value="1"></label>
+      <div id="billing-plan-models" aria-label="套餐适用模型"></div>
       <label>每周期额度（USD）<input name="allowance_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 25.00"></label>
       <label>最低购买周期数<input name="min_period_count" type="number" required min="1" max="99" step="1" value="1"></label>
       <label>上架状态<select name="active"><option value="false">下架</option><option value="true">上架</option></select></label>
-      <p id="billing-plan-edit-warning" class="billing-purchase-warning hidden">此操作将解除已有订阅的套餐绑定，已购权益保持有效。重新上架或恢复旧配置不会恢复旧绑定。</p>
+      <p id="billing-plan-edit-warning" class="billing-purchase-warning hidden">修改保留已有绑定。新配置仅用于之后的购买和续费，已购权益保持不变。</p>
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-submit" type="submit">创建套餐</button></div>
@@ -1235,9 +1213,8 @@
       <label>有效天数
         <input name="expires_days" type="number" min="1" max="365" value="90">
       </label>
-      <label>模型范围
-        <input name="models" autocomplete="off" placeholder="逗号分隔；留空允许全部">
-      </label>
+      <label>模型范围<select name="model_scope" id="key-model-scope"><option value="unrestricted">不额外限制模型</option><option value="restricted">仅允许所选模型</option></select></label>
+      <div id="key-model-picker" class="hidden" aria-label="API Key 模型范围"></div>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">创建 Key</button></div>
     </form>

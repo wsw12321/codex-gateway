@@ -47,11 +47,11 @@ func TestPendingUserBusinessGuardsPostgresIntegration(t *testing.T) {
 			return err
 		}},
 		{"subscription", func() error {
-			_, err := s.PutSubscription(ctx, PutSubscriptionParams{BillingWriteParams: write(), UserID: u.ID, Tier: BillingTierDay, AllowanceUSD: "1"})
+			_, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: []string{"test-model"}, BillingWriteParams: write(), UserID: u.ID, Tier: BillingTierDay, AllowanceUSD: "1"})
 			return err
 		}},
 		{"subscription deletion", func() error {
-			_, err := s.DeleteSubscription(ctx, DeleteSubscriptionParams{BillingWriteParams: write(), UserID: u.ID, Tier: BillingTierDay})
+			_, err := s.DeleteSubscription(ctx, DeleteSubscriptionParams{BillingWriteParams: write(), UserID: u.ID, SubscriptionID: u.ID})
 			return err
 		}},
 		{"group membership", func() error {

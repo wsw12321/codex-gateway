@@ -194,7 +194,7 @@ func TestInformationSubscriptionAndGroupPostgresIntegration(t *testing.T) {
 	actor := globalUsageIntegrationUser(t, ctx, s, "information-sub-actor", UserRoleMember)
 	active, device, key := billingIntegrationPrincipal(t, ctx, s, "information-sub-active")
 	ended, _, _ := billingIntegrationPrincipal(t, ctx, s, "information-sub-ended")
-	sub, err := s.PutSubscription(ctx, PutSubscriptionParams{
+	sub, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, s),
 		BillingWriteParams: billingIntegrationWrite(t, actor.ID, "active monthly subscription", old),
 		UserID:             active.ID, Tier: BillingTierMonth, AllowanceUSD: "10", PeriodCount: 1,
 	})
@@ -220,13 +220,14 @@ func TestInformationSubscriptionAndGroupPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	setWrite := billingIntegrationWrite(t, actor.ID, "ended subscription", old.AddDate(0, 0, -3))
-	if _, err := s.PutSubscription(ctx, PutSubscriptionParams{BillingWriteParams: setWrite,
-		UserID: ended.ID, Tier: BillingTierDay, AllowanceUSD: "1", PeriodCount: 1}); err != nil {
+	endedSub, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, s), BillingWriteParams: setWrite,
+		UserID: ended.ID, Tier: BillingTierDay, AllowanceUSD: "1", PeriodCount: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.DeleteSubscription(ctx, DeleteSubscriptionParams{
 		BillingWriteParams: billingIntegrationWrite(t, actor.ID, "disable old subscription", old.AddDate(0, 0, -2)),
-		UserID:             ended.ID, Tier: BillingTierDay,
+		UserID:             ended.ID, SubscriptionID: endedSub.ID,
 	}); err != nil {
 		t.Fatal(err)
 	}

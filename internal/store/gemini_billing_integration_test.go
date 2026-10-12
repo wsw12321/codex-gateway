@@ -37,6 +37,9 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := repository.SyncModelAccessCatalog(ctx, pricing.ManageableModelNames()); err != nil {
+		t.Fatal(err)
+	}
 	const model = "gemini-pro-agent"
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	actor := globalUsageIntegrationUser(t, ctx, repository, "gemini-actor-"+suffix, UserRoleMember)
@@ -85,7 +88,7 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{
+			if _, err := repository.PutSubscription(ctx, PutSubscriptionParams{Name: "Gemini subscription", ModelIDs: []string{model},
 				BillingWriteParams: billingIntegrationWrite(t, actor.ID, "fund Gemini billing regression", now),
 				UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "5",
 			}); err != nil {

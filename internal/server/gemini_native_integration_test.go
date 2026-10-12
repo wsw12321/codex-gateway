@@ -128,7 +128,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	}
 	if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
 		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "native lifecycle test"},
-		UserID:             user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1",
+		UserID:             user.ID, Name: "Gemini test", ModelIDs: []string{config.LegacyAntigravityPublicModel}, Tier: store.BillingTierDay, AllowanceUSD: "1",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -439,9 +439,13 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	if usageState != "cancelled" || reservationState != "settled" {
 		t.Fatalf("cancellation leaked lease: %s %s", usageState, reservationState)
 	}
+	stateForDisable, err := repository.GetBillingState(ctx, user.ID, 10, 0)
+	if err != nil || len(stateForDisable.Subscriptions) != 1 {
+		t.Fatalf("funding subscriptions: %+v %v", stateForDisable, err)
+	}
 	if _, err := repository.DeleteSubscription(ctx, store.DeleteSubscriptionParams{
 		BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "test exhausted funding"},
-		UserID:             user.ID, Tier: store.BillingTierDay,
+		UserID:             user.ID, SubscriptionID: stateForDisable.Subscriptions[0].ID,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +466,7 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		defer func() { executor.failure = nil }()
 		if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
 			BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "stream failure settlement"},
-			UserID:             user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1",
+			UserID:             user.ID, Name: "Gemini test", ModelIDs: []string{config.LegacyAntigravityPublicModel}, Tier: store.BillingTierDay, AllowanceUSD: "1",
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -492,13 +496,13 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 	})
 	t.Run("Flash client presets", func(t *testing.T) {
 		executor.started, executor.failure, executor.response = nil, nil, "OK"
-		if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
-			BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "Flash preset test"},
-			UserID:             user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1",
-		}); err != nil {
+		if err := repository.SyncModelAccessCatalog(ctx, config.LegacyAntigravityModels()); err != nil {
 			t.Fatal(err)
 		}
-		if err := repository.SyncModelAccessCatalog(ctx, config.LegacyAntigravityModels()); err != nil {
+		if _, err := repository.PutSubscription(ctx, store.PutSubscriptionParams{
+			BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "Flash preset test"},
+			UserID:             user.ID, Name: "Gemini test", ModelIDs: config.LegacyAntigravityModels(), Tier: store.BillingTierDay, AllowanceUSD: "1",
+		}); err != nil {
 			t.Fatal(err)
 		}
 		for _, preset := range []struct{ model, body string }{

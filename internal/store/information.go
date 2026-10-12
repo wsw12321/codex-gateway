@@ -199,6 +199,7 @@ func prepareInformationCandidates(ctx context.Context, tx *sql.Tx, cutoff time.T
 		 WHERE l.created_at < $1 AND l.remaining_usd=0
 		 AND NOT EXISTS (SELECT 1 FROM billing_charge_allocations a WHERE a.cash_credit_lot_id=l.id AND NOT EXISTS (SELECT 1 FROM info_requests r WHERE r.request_id=a.request_id))
 		 AND NOT EXISTS (SELECT 1 FROM billing_reservations b WHERE b.user_id=l.user_id AND b.state='reserved' AND b.cash_lot_cutoff >= l.lot_sequence)
+		 AND NOT EXISTS (SELECT 1 FROM billing_reservation_sources f JOIN billing_reservations b USING(request_id) WHERE f.user_id=l.user_id AND b.state='reserved' AND f.cash_lot_cutoff>=l.lot_sequence)
 		 ORDER BY l.id LIMIT $2`,
 		`CREATE TEMP TABLE info_ledger ON COMMIT DROP AS SELECT l.id FROM billing_ledger_entries l
 		 WHERE ((l.request_id IS NULL AND l.created_at < $1) OR EXISTS (SELECT 1 FROM info_requests r WHERE r.request_id=l.request_id))
@@ -210,6 +211,7 @@ func prepareInformationCandidates(ctx context.Context, tx *sql.Tx, cutoff time.T
 		 WHERE p.ends_at < $1 AND p.closed_at IS NOT NULL
 		 AND NOT EXISTS (SELECT 1 FROM billing_subscriptions s WHERE s.enabled AND s.current_period_id=p.id)
 		 AND NOT EXISTS (SELECT 1 FROM billing_reservations b WHERE p.id IN (b.day_period_id,b.week_period_id,b.month_period_id) AND NOT EXISTS (SELECT 1 FROM info_requests r WHERE r.request_id=b.request_id))
+		 AND NOT EXISTS (SELECT 1 FROM billing_reservation_sources f WHERE f.subscription_period_id=p.id AND NOT EXISTS (SELECT 1 FROM info_requests r WHERE r.request_id=f.request_id))
 		 AND NOT EXISTS (SELECT 1 FROM billing_charge_allocations a WHERE a.subscription_period_id=p.id AND NOT EXISTS (SELECT 1 FROM info_requests r WHERE r.request_id=a.request_id))
 		 AND NOT EXISTS (SELECT 1 FROM billing_ledger_entries l WHERE l.subscription_period_id=p.id AND NOT EXISTS (SELECT 1 FROM info_ledger x WHERE x.id=l.id))
 		 ORDER BY p.id LIMIT $2`,
@@ -257,7 +259,7 @@ func informationReportTx(ctx context.Context, tx *sql.Tx, cutoff time.Time, repo
 	for table, query := range map[string]string{
 		"usage_daily":   `SELECT count(*) FROM usage_daily WHERE usage_day < $1::date`,
 		"usage_monthly": `SELECT count(*) FROM usage_monthly WHERE usage_month < date_trunc('month',$1::timestamptz AT TIME ZONE 'UTC')::date`,
-		"audit_events":  `SELECT count(*) FROM audit_events a WHERE a.occurred_at < $1 AND a.severity='info' AND a.success AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_purchase','billing.plan_renewal') AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text)`,
+		"audit_events":  `SELECT count(*) FROM audit_events a WHERE a.occurred_at < $1 AND a.severity='info' AND a.success AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_delete','billing.plan_purchase','billing.plan_renewal','billing.subscription_preferences','billing.cash_preferences') AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text)`,
 	} {
 		var count int64
 		if err := tx.QueryRowContext(ctx, query, cutoff).Scan(&count); err != nil {
@@ -276,7 +278,7 @@ func informationReportTx(ctx context.Context, tx *sql.Tx, cutoff time.Time, repo
 		"billing_operations":                       `SELECT count(*) FROM billing_operations WHERE created_at < $1 AND (result_ledger_entry_id IS NULL OR result_ledger_entry_id NOT IN (SELECT id FROM info_ledger))`,
 		"billing_subscription_operation_snapshots": `SELECT count(*) FROM billing_subscription_operation_snapshots o JOIN billing_ledger_entries l ON l.id=o.ledger_entry_id WHERE l.created_at < $1 AND l.id NOT IN (SELECT id FROM info_ledger)`,
 		"billing_charge_allocations":               `SELECT count(*) FROM billing_charge_allocations a JOIN billing_reservations b USING(request_id) WHERE b.created_at < $1 AND a.request_id NOT IN (SELECT request_id FROM info_requests)`,
-		"audit_events":                             `SELECT count(*) FROM audit_events a WHERE a.occurred_at < $1 AND NOT (a.severity='info' AND a.success AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_purchase','billing.plan_renewal') AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text))`,
+		"audit_events":                             `SELECT count(*) FROM audit_events a WHERE a.occurred_at < $1 AND NOT (a.severity='info' AND a.success AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_delete','billing.plan_purchase','billing.plan_renewal','billing.subscription_preferences','billing.cash_preferences') AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text))`,
 	} {
 		var count int64
 		if err := tx.QueryRowContext(ctx, query, cutoff).Scan(&count); err != nil {

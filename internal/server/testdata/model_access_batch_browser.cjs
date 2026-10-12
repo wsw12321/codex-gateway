@@ -36,6 +36,7 @@ async function main() {
       if (url.pathname === "/static/favicon.svg") return send(fs.readFileSync(path.join(assets, "favicon.svg"), "utf8"), 200, "image/svg+xml");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
+      if (url.pathname === "/admin/model-catalog") return send({models: models.map((id) => ({id, group: "GPT"}))});
       if (url.pathname === "/admin/model-access/models") return send({models: models.map((model) => ({model, default_enabled: defaults.get(model), enabled_user_count: users.filter((user) => permissions.get(`${model}/${user.user_id}`)).length, disabled_user_count: users.filter((user) => !permissions.get(`${model}/${user.user_id}`)).length}))});
       if (url.pathname === "/admin/model-access/users" && request.method() === "GET") {
         const selected = url.searchParams.getAll("models");
@@ -65,25 +66,25 @@ async function main() {
     const userCheck = (id) => page.locator(`#model-access-user-rows input[value="${id}"]`);
     const ready = () => page.waitForFunction(() => byId("model-access-user-rows").closest("table").parentElement.getAttribute("aria-busy") === "false");
     await userCheck("user-1").check();
-    await page.locator('.model-access-model-checkbox[value="gpt-beta"]').check(); await ready();
+    await page.locator('#model-access-model-select .model-picker-checkbox[value="gpt-beta"]').check(); await ready();
     assert.equal(await userCheck("user-1").isChecked(), true, "model changes preserve users");
     assert.match(await row("user-1").textContent(), /部分启用/);
     assert.match(await page.locator("#model-access-selected-count").textContent(), /2 个模型 × 1 位用户.*2 项权限/);
     assert.equal(await page.locator("#model-access-default-enabled").evaluate((input) => input.indeterminate), true);
-    await page.locator("#model-access-model-search").fill("gamma");
-    assert.equal(await page.locator(".model-access-model-choice:visible").count(), 1);
+    await page.locator('#model-access-model-select input[type="search"]').fill("gamma");
+    assert.equal(await page.locator("#model-access-model-select .model-picker-choice:visible").count(), 1);
     assert.match(await page.locator("#model-access-model-count").textContent(), /已选 2/);
-    await page.locator("#model-access-model-search").fill("");
+    await page.locator('#model-access-model-select input[type="search"]').fill("");
     await page.locator('#model-access-users-form input[name="reason"]').fill("Enable selected pairs");
     await page.locator("#model-access-enable-selected").click();
     await page.waitForFunction(() => !byId("model-access-users-form").elements.reason.value); await ready();
     assert.deepEqual(writes[0].body, {models: ["gpt-alpha", "gpt-beta"], enabled: true, scope: "selected", reason: "Enable selected pairs", user_ids: ["user-1"]});
     assert.equal(permissions.get("gpt-beta/user-2"), false, "unselected users are unaffected");
     assert.equal(await userCheck("user-1").isChecked(), true, "successful refresh preserves users");
-    assert.equal(await page.locator(".model-access-model-checkbox:checked").count(), 2);
-    await page.locator("#model-access-model-clear").click(); await ready();
+    assert.equal(await page.locator("#model-access-model-select .model-picker-checkbox:checked").count(), 2);
+    await page.locator("#model-access-model-select button", {hasText: "清空"}).click(); await ready();
     assert.equal(await page.locator("#model-access-enable-selected").isDisabled(), true);
-    await page.locator("#model-access-model-all").click(); await ready();
+    await page.getByLabel("全选当前目录模型", {exact: true}).check(); await ready();
     assert.equal(await userCheck("user-1").isChecked(), true, "clearing models preserves users");
     await page.locator('#model-access-users-form input[name="reason"]').fill("Disable all selected models");
     page.once("dialog", (dialog) => dialog.accept());
@@ -104,7 +105,7 @@ async function main() {
     await page.locator("#model-access-enable-selected").click();
     await page.waitForFunction(() => !byId("model-access-enable-selected").disabled);
     assert.equal(await userCheck("user-1").isChecked(), true);
-    assert.equal(await page.locator(".model-access-model-checkbox:checked").count(), 3);
+    assert.equal(await page.locator("#model-access-model-select .model-picker-checkbox:checked").count(), 3);
     assert.match(await row("user-1").textContent(), /全部禁用/);
     await page.evaluate(async () => {
       await loadModelAccess();

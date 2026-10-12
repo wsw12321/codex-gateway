@@ -125,7 +125,7 @@ function app(respond = () => ({}), readRespond = null) {
     return form;
   };
   const rechargeForm = makeForm("billing-batch-recharge-form", {cny_amount: " 1000000000.123456 ", reason: " 团队充值 "});
-  const subscriptionForm = makeForm("billing-batch-subscription-form", {tier: "day", quota_usd: " 25.123456 ", period_count: "1", reason: " 团队订阅 "});
+  const subscriptionForm = makeForm("billing-batch-subscription-form", {name: "团队额度", period_days: "1", tier: "day", quota_usd: " 25.123456 ", period_count: "1", reason: " 团队订阅 "});
   const searchInput = getNode("billing-batch-search");
   searchInput.tagName = "INPUT";
   const selectAll = getNode("billing-batch-select-all");
@@ -163,6 +163,7 @@ function app(respond = () => ({}), readRespond = null) {
     captureNotice: (...values) => notices.push(values),
   });
   vm.runInContext(application, context, {filename: "assets/app.js"});
+  vm.runInContext('selectedPickerModels = () => ["gpt-a"]', context);
   const run = (code) => vm.runInContext(code, context);
   run(`
     state = {user: {id: "owner", username: "owner", role: "owner"}, recently_verified: true};
@@ -312,10 +313,13 @@ test("each subscription tier forwards a shared quota and finite or unlimited per
         await harness.run("startBillingBatch()");
         assert.equal(harness.writes().length, 2);
         for (const {pathname, options} of harness.writes()) {
-          assert.ok(pathname.endsWith(`/subscriptions/${tier}`));
-          assert.equal(options.method, "PUT");
+          assert.ok(pathname.endsWith("/subscriptions"));
+          assert.equal(options.method, "POST");
           const payload = JSON.parse(options.body);
           assert.equal(payload.quota_usd, "25.123456");
+          assert.equal(payload.name, "团队额度");
+          assert.equal(payload.tier, tier);
+          assert.deepEqual(payload.model_ids, ["gpt-a"]);
           assert.equal(payload.period_count, count);
           assert.equal(payload.reason, "团队订阅");
         }

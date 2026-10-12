@@ -3541,3 +3541,33 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
   display: block;
   margin-top: .4rem;
 }
+
+/* Explicit model sets, shared across selection contexts. */
+.model-picker { min-width: 0; width: 100%; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+.model-picker-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.model-picker-search { flex: 1 1 160px; min-width: 0; }
+.model-picker-toolbar button { padding: 8px 12px; }
+.model-picker-select-all, .model-picker-choice { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.model-picker input[type=checkbox], .model-picker input[type=radio] { width: 18px; height: 18px; min-width: 18px; margin: 0; }
+.model-picker-brand { border-top: 1px solid var(--line); padding: 10px 0; }
+.model-picker-brand summary { cursor: pointer; font-weight: 600; }
+.model-picker-brand > .model-picker-select-all { padding-top: 10px; }
+.model-picker-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 8px; padding-top: 10px; }
+.model-picker-choice { min-height: 36px; padding: 6px; border-radius: 6px; overflow-wrap: anywhere; }
+.model-picker-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-picker-choice[hidden], .model-picker-brand[hidden] { display: none; }
+.usage-model-picker { margin-top: 8px; }
+.usage-model-picker .model-picker-options { grid-template-columns: 1fr; }
+.usage-model-picker .model-picker-toolbar { align-items: stretch; }
+.billing-priority-label { display: grid; gap: 5px; margin-top: 8px; }
+.billing-priority-label input { max-width: 120px; }
+.subscription-models, .subscription-period-details small { overflow-wrap: anywhere; }
+#billing-subscription-dialog { width: min(720px, calc(100vw - 32px)); }
+#billing-subscription-entitlements { max-height: 200px; overflow: auto; }
+@media (max-width: 680px) {
+  .model-picker-toolbar { gap: 8px; }
+  .model-picker-search { flex-basis: 100%; }
+  .model-picker-options { grid-template-columns: 1fr; }
+  .billing-source-control { align-items: stretch; }
+  .subscription-list, .billing-plan-list { grid-template-columns: 1fr; }
+}

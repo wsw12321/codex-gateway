@@ -65,7 +65,7 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	// Current billing helpers need the unrelated plan, funding and price schemas while
 	// this test leaves the Gemini migration unapplied until after seeding.
 	for _, migration := range migrations {
-		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" || migration.Name == "0029_model_prices.sql" || migration.Name == "0033_anthropic_billing.sql" {
+		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" || migration.Name == "0029_model_prices.sql" || migration.Name == "0033_anthropic_billing.sql" || migration.Name == "0034_multi_subscriptions.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply billing helper schema: %v", err)
 			}
@@ -97,7 +97,7 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PutSubscription(ctx, PutSubscriptionParams{
+	if _, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Migration subscription", ModelIDs: []string{oldModel},
 		BillingWriteParams: billingIntegrationWrite(t, user.ID, "fund legacy Gemini", now),
 		UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "10",
 	}); err != nil {

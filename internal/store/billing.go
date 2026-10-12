@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	BillingTierDay   = "day"
-	BillingTierWeek  = "week"
-	BillingTierMonth = "month"
+	BillingTierDay    = "day"
+	BillingTierWeek   = "week"
+	BillingTierMonth  = "month"
+	BillingTierCustom = "custom"
 
 	BillingModeLegacy                 = "legacy"
 	BillingModeOpenAIAPIEquivalent    = "openai_api_token_equivalent"
@@ -53,21 +54,27 @@ type BillingSourceDisabled struct {
 }
 
 type BillingSubscriptionState struct {
-	Plan                *BillingPlan `json:"plan"`
-	CanRenew            bool         `json:"can_renew"`
-	ConfigVersion       int64        `json:"config_version"`
-	ID                  string       `json:"id,omitempty"`
-	Tier                string       `json:"tier"`
-	Enabled             bool         `json:"enabled"`
-	AllowanceUSD        string       `json:"allowance_usd"`
-	RemainingUSD        string       `json:"remaining_usd"`
-	PeriodCount         int          `json:"period_count"`
-	CurrentPeriodNumber int          `json:"current_period_number"`
-	ExpiresAt           *time.Time   `json:"expires_at"`
-	PeriodID            *string      `json:"period_id,omitempty"`
-	PeriodStartsAt      *time.Time   `json:"period_starts_at,omitempty"`
-	PeriodEndsAt        *time.Time   `json:"period_ends_at,omitempty"`
-	UpdatedAt           *time.Time   `json:"updated_at,omitempty"`
+	Name                string                           `json:"name"`
+	PeriodDays          int                              `json:"period_days"`
+	ModelIDs            []string                         `json:"model_ids"`
+	Priority            int                              `json:"priority"`
+	ChargeEnabled       bool                             `json:"charge_enabled"`
+	Entitlements        []BillingSubscriptionEntitlement `json:"entitlements"`
+	Plan                *BillingPlan                     `json:"plan"`
+	CanRenew            bool                             `json:"can_renew"`
+	ConfigVersion       int64                            `json:"config_version"`
+	ID                  string                           `json:"id,omitempty"`
+	Tier                string                           `json:"tier"`
+	Enabled             bool                             `json:"enabled"`
+	AllowanceUSD        string                           `json:"allowance_usd"`
+	RemainingUSD        string                           `json:"remaining_usd"`
+	PeriodCount         int                              `json:"period_count"`
+	CurrentPeriodNumber int                              `json:"current_period_number"`
+	ExpiresAt           *time.Time                       `json:"expires_at"`
+	PeriodID            *string                          `json:"period_id,omitempty"`
+	PeriodStartsAt      *time.Time                       `json:"period_starts_at,omitempty"`
+	PeriodEndsAt        *time.Time                       `json:"period_ends_at,omitempty"`
+	UpdatedAt           *time.Time                       `json:"updated_at,omitempty"`
 }
 
 type BillingLedgerEntry struct {
@@ -123,6 +130,7 @@ type BillingLedgerEntry struct {
 }
 
 type BillingState struct {
+	CashPreferences         BillingCashPreferences     `json:"cash_preferences"`
 	Group                   *GroupSummary              `json:"group,omitempty"`
 	GroupMemberUsedUSD      *string                    `json:"group_member_used_usd"`
 	GroupMemberRemainingUSD *string                    `json:"group_member_remaining_usd"`
@@ -137,15 +145,16 @@ type BillingState struct {
 }
 
 type BillingUserSummary struct {
-	GroupID        *string                    `json:"group_id,omitempty"`
-	UserID         string                     `json:"user_id"`
-	Username       string                     `json:"username"`
-	DisplayName    string                     `json:"display_name"`
-	Role           string                     `json:"role"`
-	Status         string                     `json:"status"`
-	BalanceUSD     string                     `json:"balance_usd"`
-	SourceDisabled BillingSourceDisabled      `json:"source_disabled"`
-	Subscriptions  []BillingSubscriptionState `json:"subscriptions"`
+	CashPreferences BillingCashPreferences     `json:"cash_preferences"`
+	GroupID         *string                    `json:"group_id,omitempty"`
+	UserID          string                     `json:"user_id"`
+	Username        string                     `json:"username"`
+	DisplayName     string                     `json:"display_name"`
+	Role            string                     `json:"role"`
+	Status          string                     `json:"status"`
+	BalanceUSD      string                     `json:"balance_usd"`
+	SourceDisabled  BillingSourceDisabled      `json:"source_disabled"`
+	Subscriptions   []BillingSubscriptionState `json:"subscriptions"`
 }
 
 type BillingReservationParams struct {
@@ -167,54 +176,55 @@ type BillingReservationParams struct {
 }
 
 type BillingReservation struct {
-	FundingRuleVersion               int             `json:"funding_rule_version"`
-	GroupID                          *string         `json:"group_id,omitempty"`
-	GroupPeriodID                    *string         `json:"group_period_id,omitempty"`
-	RequestID                        string          `json:"request_id"`
-	UserID                           string          `json:"user_id"`
-	APIKeyID                         string          `json:"api_key_id"`
-	Model                            string          `json:"model"`
-	InputUSDPerMillion               string          `json:"input_usd_per_million"`
-	CachedInputUSDPerMillion         string          `json:"cached_input_usd_per_million"`
-	OutputUSDPerMillion              string          `json:"output_usd_per_million"`
-	PricingRuleVersion               int             `json:"pricing_rule_version"`
-	PricingMultiplier                string          `json:"pricing_multiplier"`
-	BillingMode                      string          `json:"billing_mode"`
-	PricingCatalogAsOf               *string         `json:"pricing_catalog_as_of,omitempty"`
-	PricingModel                     *string         `json:"pricing_model,omitempty"`
-	PricingSnapshot                  json.RawMessage `json:"pricing_snapshot,omitempty"`
-	CacheWriteMode                   *string         `json:"cache_write_mode,omitempty"`
-	RequestedServiceTier             *string         `json:"requested_service_tier,omitempty"`
-	ActualServiceTier                *string         `json:"actual_service_tier,omitempty"`
-	PricingServiceTier               *string         `json:"pricing_service_tier,omitempty"`
-	ActualModel                      *string         `json:"actual_model,omitempty"`
-	ContextClass                     *string         `json:"context_class,omitempty"`
-	ActualCacheWriteTokens           *int64          `json:"actual_cache_write_tokens,omitempty"`
-	ActualCacheWrite5mTokens         *int64          `json:"actual_cache_write_5m_tokens,omitempty"`
-	ActualCacheWrite1hTokens         *int64          `json:"actual_cache_write_1h_tokens,omitempty"`
-	ActualCacheWriteTTLPresent       *bool           `json:"actual_cache_write_ttl_present,omitempty"`
-	AppliedInputUSDPerMillion        *string         `json:"applied_input_usd_per_million,omitempty"`
-	AppliedCachedInputUSDPerMillion  *string         `json:"applied_cached_input_usd_per_million,omitempty"`
-	AppliedCacheWriteUSDPerMillion   *string         `json:"applied_cache_write_usd_per_million,omitempty"`
-	AppliedCacheWrite5mUSDPerMillion *string         `json:"applied_cache_write_5m_usd_per_million,omitempty"`
-	AppliedCacheWrite1hUSDPerMillion *string         `json:"applied_cache_write_1h_usd_per_million,omitempty"`
-	AppliedOutputUSDPerMillion       *string         `json:"applied_output_usd_per_million,omitempty"`
-	PricingFallbackReason            *string         `json:"pricing_fallback_reason,omitempty"`
-	DayPeriodID                      *string         `json:"day_period_id,omitempty"`
-	WeekPeriodID                     *string         `json:"week_period_id,omitempty"`
-	MonthPeriodID                    *string         `json:"month_period_id,omitempty"`
-	CashLotCutoff                    *int64          `json:"cash_lot_cutoff,omitempty"`
-	State                            string          `json:"state"`
-	ActualInputTokens                *int64          `json:"actual_input_tokens,omitempty"`
-	ActualCachedInputTokens          *int64          `json:"actual_cached_input_tokens,omitempty"`
-	ActualOutputTokens               *int64          `json:"actual_output_tokens,omitempty"`
-	ActualCostUSD                    *string         `json:"actual_cost_usd,omitempty"`
-	ChargedUSD                       *string         `json:"charged_usd,omitempty"`
-	GroupChargedUSD                  *string         `json:"group_charged_usd,omitempty"`
-	PersonalChargedUSD               *string         `json:"personal_charged_usd,omitempty"`
-	UncoveredUSD                     *string         `json:"uncovered_usd,omitempty"`
-	CreatedAt                        time.Time       `json:"created_at"`
-	SettledAt                        *time.Time      `json:"settled_at,omitempty"`
+	OrderedFundingSources            []BillingFundingSource `json:"ordered_funding_sources"`
+	FundingRuleVersion               int                    `json:"funding_rule_version"`
+	GroupID                          *string                `json:"group_id,omitempty"`
+	GroupPeriodID                    *string                `json:"group_period_id,omitempty"`
+	RequestID                        string                 `json:"request_id"`
+	UserID                           string                 `json:"user_id"`
+	APIKeyID                         string                 `json:"api_key_id"`
+	Model                            string                 `json:"model"`
+	InputUSDPerMillion               string                 `json:"input_usd_per_million"`
+	CachedInputUSDPerMillion         string                 `json:"cached_input_usd_per_million"`
+	OutputUSDPerMillion              string                 `json:"output_usd_per_million"`
+	PricingRuleVersion               int                    `json:"pricing_rule_version"`
+	PricingMultiplier                string                 `json:"pricing_multiplier"`
+	BillingMode                      string                 `json:"billing_mode"`
+	PricingCatalogAsOf               *string                `json:"pricing_catalog_as_of,omitempty"`
+	PricingModel                     *string                `json:"pricing_model,omitempty"`
+	PricingSnapshot                  json.RawMessage        `json:"pricing_snapshot,omitempty"`
+	CacheWriteMode                   *string                `json:"cache_write_mode,omitempty"`
+	RequestedServiceTier             *string                `json:"requested_service_tier,omitempty"`
+	ActualServiceTier                *string                `json:"actual_service_tier,omitempty"`
+	PricingServiceTier               *string                `json:"pricing_service_tier,omitempty"`
+	ActualModel                      *string                `json:"actual_model,omitempty"`
+	ContextClass                     *string                `json:"context_class,omitempty"`
+	ActualCacheWriteTokens           *int64                 `json:"actual_cache_write_tokens,omitempty"`
+	ActualCacheWrite5mTokens         *int64                 `json:"actual_cache_write_5m_tokens,omitempty"`
+	ActualCacheWrite1hTokens         *int64                 `json:"actual_cache_write_1h_tokens,omitempty"`
+	ActualCacheWriteTTLPresent       *bool                  `json:"actual_cache_write_ttl_present,omitempty"`
+	AppliedInputUSDPerMillion        *string                `json:"applied_input_usd_per_million,omitempty"`
+	AppliedCachedInputUSDPerMillion  *string                `json:"applied_cached_input_usd_per_million,omitempty"`
+	AppliedCacheWriteUSDPerMillion   *string                `json:"applied_cache_write_usd_per_million,omitempty"`
+	AppliedCacheWrite5mUSDPerMillion *string                `json:"applied_cache_write_5m_usd_per_million,omitempty"`
+	AppliedCacheWrite1hUSDPerMillion *string                `json:"applied_cache_write_1h_usd_per_million,omitempty"`
+	AppliedOutputUSDPerMillion       *string                `json:"applied_output_usd_per_million,omitempty"`
+	PricingFallbackReason            *string                `json:"pricing_fallback_reason,omitempty"`
+	DayPeriodID                      *string                `json:"day_period_id,omitempty"`
+	WeekPeriodID                     *string                `json:"week_period_id,omitempty"`
+	MonthPeriodID                    *string                `json:"month_period_id,omitempty"`
+	CashLotCutoff                    *int64                 `json:"cash_lot_cutoff,omitempty"`
+	State                            string                 `json:"state"`
+	ActualInputTokens                *int64                 `json:"actual_input_tokens,omitempty"`
+	ActualCachedInputTokens          *int64                 `json:"actual_cached_input_tokens,omitempty"`
+	ActualOutputTokens               *int64                 `json:"actual_output_tokens,omitempty"`
+	ActualCostUSD                    *string                `json:"actual_cost_usd,omitempty"`
+	ChargedUSD                       *string                `json:"charged_usd,omitempty"`
+	GroupChargedUSD                  *string                `json:"group_charged_usd,omitempty"`
+	PersonalChargedUSD               *string                `json:"personal_charged_usd,omitempty"`
+	UncoveredUSD                     *string                `json:"uncovered_usd,omitempty"`
+	CreatedAt                        time.Time              `json:"created_at"`
+	SettledAt                        *time.Time             `json:"settled_at,omitempty"`
 }
 
 type BillingWriteParams struct {
@@ -246,16 +256,21 @@ type AdjustUserBalanceParams struct {
 
 type PutSubscriptionParams struct {
 	BillingWriteParams
-	UserID       string
-	Tier         string
-	AllowanceUSD string
-	PeriodCount  int
+	SubscriptionID string
+	Name           string
+	PeriodDays     int
+	ModelIDs       []string
+	UserID         string
+	Tier           string
+	AllowanceUSD   string
+	PeriodCount    int
 }
 
 type DeleteSubscriptionParams struct {
 	BillingWriteParams
-	UserID string
-	Tier   string
+	SubscriptionID string
+	UserID         string
+	Tier           string
 }
 
 type SetBillingSourceDisabledParams struct {
@@ -336,7 +351,7 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 	var inputTokens, cachedTokens, cacheWriteTokens, outputTokens sql.NullInt64
 	var appliedInput, appliedCached, appliedCacheWrite, appliedOutput sql.NullString
 	var actualCost, charged, uncovered, groupCharged, personalCharged sql.NullString
-	var snapshot []byte
+	var snapshot, fundingSnapshot []byte
 	err := row.Scan(&value.RequestID, &value.UserID, &value.APIKeyID, &value.Model,
 		&inputPrice, &cachedPrice, &outputPrice, &value.PricingRuleVersion,
 		&value.BillingMode, &catalog, &pricingModel, &snapshot, &cacheWriteMode,
@@ -347,7 +362,10 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 		&outputTokens, &actualCost, &charged, &uncovered, &value.CreatedAt, &value.SettledAt, &groupID, &groupPeriodID, &value.PricingMultiplier,
 		&value.FundingRuleVersion, &groupCharged, &personalCharged,
 		&value.ActualCacheWrite5mTokens, &value.ActualCacheWrite1hTokens, &value.ActualCacheWriteTTLPresent,
-		&value.AppliedCacheWrite5mUSDPerMillion, &value.AppliedCacheWrite1hUSDPerMillion)
+		&value.AppliedCacheWrite5mUSDPerMillion, &value.AppliedCacheWrite1hUSDPerMillion, &fundingSnapshot)
+	if err == nil {
+		value.OrderedFundingSources, err = decodeBillingFundingSources(fundingSnapshot)
+	}
 	value.InputUSDPerMillion, value.CachedInputUSDPerMillion = inputPrice.String, cachedPrice.String
 	value.OutputUSDPerMillion = outputPrice.String
 	value.PricingCatalogAsOf, value.PricingModel = nullableString(catalog), nullableString(pricingModel)
@@ -387,7 +405,7 @@ const billingReservationColumns = `request_id, user_id, api_key_id, requested_mo
 	uncovered_usd::text, created_at, settled_at, group_id, group_period_id, pricing_multiplier::text,
 	funding_rule_version, group_charged_usd::text, personal_charged_usd::text,
 	actual_cache_write_5m_tokens, actual_cache_write_1h_tokens, actual_cache_write_ttl_present,
-	applied_cache_write_5m_usd_per_million::text, applied_cache_write_1h_usd_per_million::text`
+	applied_cache_write_5m_usd_per_million::text, applied_cache_write_1h_usd_per_million::text, ordered_funding_sources`
 
 func (s *Store) ReserveBilling(ctx context.Context, params BillingReservationParams) (BillingReservation, error) {
 	if params.Now.IsZero() {
@@ -470,12 +488,13 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	}
 	var balance string
 	var nextSequence int64
+	var cashPriority int
 	var disabled BillingSourceDisabled
 	if err := tx.QueryRowContext(ctx, `
 		SELECT balance_usd::text, next_cash_lot_sequence,
-			day_source_disabled, week_source_disabled, month_source_disabled, cash_source_disabled
+			day_source_disabled, week_source_disabled, month_source_disabled, cash_source_disabled, cash_priority
 		FROM billing_accounts WHERE user_id = $1 FOR UPDATE`, params.UserID,
-	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash); err != nil {
+	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash, &cashPriority); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
 	group, err := userGroupTx(ctx, tx, params.UserID, params.Now)
@@ -495,42 +514,6 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	if _, err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
 		return BillingReservation{}, err
 	}
-	periods := map[string]*string{BillingTierDay: nil, BillingTierWeek: nil, BillingTierMonth: nil}
-	var earliestEnd *time.Time
-	rows, err := tx.QueryContext(ctx, `
-		SELECT s.tier, p.id, p.ends_at
-		FROM billing_subscriptions s
-		JOIN billing_subscription_periods p ON p.id = s.current_period_id
-		WHERE s.user_id = $1 AND s.enabled
-		  AND ((s.tier = 'day' AND NOT $3) OR (s.tier = 'week' AND NOT $4)
-		       OR (s.tier = 'month' AND NOT $5))
-		  AND p.closed_at IS NULL AND p.starts_at <= $2 AND p.ends_at > $2
-		  AND p.remaining_usd > 0
-		ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END
-		FOR UPDATE OF s, p`, params.UserID, params.Now, disabled.Day, disabled.Week, disabled.Month)
-	if err != nil {
-		return BillingReservation{}, mapDBError("read billing sources", err)
-	}
-	for rows.Next() {
-		var tier, id string
-		var ends time.Time
-		if err := rows.Scan(&tier, &id, &ends); err != nil {
-			_ = rows.Close()
-			return BillingReservation{}, fmt.Errorf("scan billing source: %w", err)
-		}
-		periodID := id
-		periods[tier] = &periodID
-		if earliestEnd == nil || ends.Before(*earliestEnd) {
-			copy := ends
-			earliestEnd = &copy
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return BillingReservation{}, fmt.Errorf("close billing sources: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return BillingReservation{}, fmt.Errorf("iterate billing sources: %w", err)
-	}
 	var cashCutoff *int64
 	if !disabled.Cash && billingPositive(balance) {
 		cutoff := nextSequence - 1
@@ -538,28 +521,14 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			cashCutoff = &cutoff
 		}
 	}
-	if params.BillingMode != BillingModeInternalZero &&
-		periods[BillingTierDay] == nil && periods[BillingTierWeek] == nil &&
-		periods[BillingTierMonth] == nil && cashCutoff == nil && groupPeriodID == nil {
-		retry := time.Duration(0)
-		var renewal sql.NullTime
-		err := tx.QueryRowContext(ctx, `
-			SELECT min(p.ends_at)
-			FROM billing_subscriptions s
-			JOIN billing_subscription_periods p ON p.id = s.current_period_id
-			WHERE s.user_id = $1 AND s.enabled AND p.ends_at > $2
-			  AND ((s.tier = 'day' AND NOT $3) OR (s.tier = 'week' AND NOT $4)
-			       OR (s.tier = 'month' AND NOT $5))
-			  AND (s.period_count = 0 OR s.current_period_number < s.period_count)`,
-			params.UserID, params.Now, disabled.Day, disabled.Week, disabled.Month,
-		).Scan(&renewal)
+	sources, err := snapshotBillingFundingTx(ctx, tx, params.UserID, params.Model, params.Now, balance, cashPriority, cashCutoff)
+	if err != nil {
+		return BillingReservation{}, err
+	}
+	if params.BillingMode != BillingModeInternalZero && len(sources) == 0 && groupPeriodID == nil {
+		retry, err := billingFundingRetryTx(ctx, tx, params.UserID, params.Model, params.Now)
 		if err != nil {
-			return BillingReservation{}, mapDBError("read billing retry time", err)
-		}
-		if renewal.Valid && renewal.Time.After(params.Now) {
-			retry = renewal.Time.Sub(params.Now)
-		} else if earliestEnd != nil && earliestEnd.After(params.Now) {
-			retry = earliestEnd.Sub(params.Now)
+			return BillingReservation{}, err
 		}
 		if group != nil && billingPositive(group.LimitUSD) &&
 			(group.MemberLimitUSD == nil || billingPositive(*group.MemberLimitUSD)) {
@@ -583,24 +552,34 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	if err != nil {
 		return BillingReservation{}, err
 	}
+	fundingSnapshot, err := json.Marshal(sources)
+	if err != nil {
+		return BillingReservation{}, err
+	}
 	reservation, err := scanBillingReservation(tx.QueryRowContext(ctx, `
 		INSERT INTO billing_reservations
 			(request_id, user_id, api_key_id, requested_model,
 			 input_usd_per_million, cached_input_usd_per_million, output_usd_per_million,
 			 pricing_rule_version, billing_mode, pricing_catalog_as_of, pricing_model,
 			 pricing_snapshot, cache_write_mode, requested_service_tier,
-			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id, pricing_multiplier, funding_rule_version)
+			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id, pricing_multiplier, funding_rule_version, ordered_funding_sources)
 		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
-			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,2)
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,3,$23::jsonb)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
 		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
 		valueOrNil(params.OutputUSDPerMillion), params.PricingRuleVersion, params.BillingMode,
 		valueOrNil(params.PricingCatalogAsOf), valueOrNil(params.PricingModel),
 		valueOrNil(string(params.PricingSnapshot)), valueOrNil(params.CacheWriteMode),
-		valueOrNil(params.RequestedServiceTier), periods[BillingTierDay], periods[BillingTierWeek],
-		periods[BillingTierMonth], cashCutoff, params.Now, groupID, groupPeriodID, pricingMultiplier))
-	return reservation, mapDBError("insert billing reservation", err)
+		valueOrNil(params.RequestedServiceTier), nil, nil,
+		nil, cashCutoff, params.Now, groupID, groupPeriodID, pricingMultiplier, fundingSnapshot))
+	if err != nil {
+		return BillingReservation{}, mapDBError("insert billing reservation", err)
+	}
+	if err := recordBillingFundingSourcesTx(ctx, tx, reservation); err != nil {
+		return BillingReservation{}, err
+	}
+	return reservation, nil
 }
 
 func pricingRuleIsZero(rule config.ModelPricing) bool {
@@ -627,114 +606,7 @@ func pricingRuleIsZero(rule config.ModelPricing) bool {
 }
 
 func rollBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (int, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT s.id, s.tier, s.allowance_usd::text, s.period_count,
-			s.current_period_number, s.expires_at, p.id, p.ends_at
-		FROM billing_subscriptions s
-		JOIN billing_subscription_periods p ON p.id = s.current_period_id
-		WHERE s.user_id = $1 AND s.enabled
-		ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END
-		FOR UPDATE OF s, p`, userID)
-	if err != nil {
-		return 0, mapDBError("lock billing subscriptions", err)
-	}
-	type expired struct {
-		subscriptionID, tier, allowance, periodID string
-		periodCount, periodNumber                 int
-		expiresAt                                 sql.NullTime
-		end                                       time.Time
-	}
-	var values []expired
-	for rows.Next() {
-		var value expired
-		var periodID sql.NullString
-		var end sql.NullTime
-		if err := rows.Scan(&value.subscriptionID, &value.tier, &value.allowance,
-			&value.periodCount, &value.periodNumber, &value.expiresAt, &periodID, &end); err != nil {
-			_ = rows.Close()
-			return 0, fmt.Errorf("scan billing subscription: %w", err)
-		}
-		if !periodID.Valid || !end.Valid || !end.Time.After(at) {
-			value.periodID = periodID.String
-			value.end = end.Time
-			values = append(values, value)
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return 0, fmt.Errorf("close billing subscriptions: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, fmt.Errorf("iterate billing subscriptions: %w", err)
-	}
-	disabled := 0
-	for _, value := range values {
-		if value.periodCount > 0 && value.expiresAt.Valid && !value.expiresAt.Time.After(at) {
-			if value.periodID != "" {
-				closedAt := value.end
-				if closedAt.IsZero() || closedAt.After(value.expiresAt.Time) {
-					closedAt = value.expiresAt.Time
-				}
-				if _, err := tx.ExecContext(ctx, `
-					UPDATE billing_subscription_periods
-					SET closed_at = $2, close_reason = 'expired'
-					WHERE id = $1 AND closed_at IS NULL`, value.periodID, closedAt); err != nil {
-					return disabled, mapDBError("close expired finite billing period", err)
-				}
-			}
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE billing_subscriptions
-				SET enabled = false, disabled_at = expires_at, updated_at = $2
-				WHERE id = $1 AND enabled`, value.subscriptionID, at); err != nil {
-				return disabled, mapDBError("expire finite billing subscription", err)
-			}
-			disabled++
-			continue
-		}
-		if value.periodID != "" {
-			if _, err := tx.ExecContext(ctx, `
-				UPDATE billing_subscription_periods
-				SET closed_at = $2, close_reason = 'expired'
-				WHERE id = $1 AND closed_at IS NULL`, value.periodID, value.end); err != nil {
-				return disabled, mapDBError("close expired billing period", err)
-			}
-		}
-		periodStart, periodEnd, periodNumber, err := advanceBillingPeriod(value.end, at, value.tier, value.periodNumber)
-		if err != nil {
-			return disabled, err
-		}
-		if value.periodCount > 0 && periodNumber > value.periodCount {
-			return disabled, fmt.Errorf("subscription advanced past configured period count: %w", ErrConflict)
-		}
-		periodID, err := newUUID()
-		if err != nil {
-			return disabled, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO billing_subscription_periods
-				(id, subscription_id, user_id, tier, starts_at, ends_at,
-				 allowance_usd, remaining_usd, period_number, period_count, created_at)
-			VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,$8,$9,$10)`,
-			periodID, value.subscriptionID, userID, value.tier,
-			periodStart, periodEnd, value.allowance,
-			periodNumber, value.periodCount, at); err != nil {
-			return disabled, mapDBError("create renewed billing period", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE billing_subscriptions
-			SET current_period_id = $2, current_period_number = $3, updated_at = $4
-			WHERE id = $1`, value.subscriptionID, periodID, periodNumber, at); err != nil {
-			return disabled, mapDBError("activate renewed billing period", err)
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO billing_ledger_entries
-				(user_id, entry_type, amount_usd, subscription_tier,
-				 subscription_period_id, reason, created_at)
-			VALUES ($1,'subscription_renewal',$2::numeric,$3,$4,'automatic renewal',$5)`,
-			userID, value.allowance, value.tier, periodID, at); err != nil {
-			return disabled, mapDBError("record subscription renewal", err)
-		}
-	}
-	return disabled, nil
+	return rollBillingEntitlementsTx(ctx, tx, userID, at)
 }
 
 func expireBillingSubscriptionsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (int, error) {
@@ -1358,10 +1230,10 @@ func subscriptionStateFromPeriodRow(row rowScanner) (BillingSubscriptionState, e
 	var startsAt, endsAt, expiresAt sql.NullTime
 	var remaining sql.NullString
 	var updatedAt time.Time
-	var planSnapshot []byte
+	var planSnapshot, modelsSnapshot, entitlementsSnapshot []byte
 	err := row.Scan(&value.ID, &value.Tier, &value.Enabled, &value.AllowanceUSD,
 		&value.PeriodCount, &value.CurrentPeriodNumber, &expiresAt,
-		&periodID, &startsAt, &endsAt, &remaining, &updatedAt, &value.ConfigVersion, &planSnapshot)
+		&periodID, &startsAt, &endsAt, &remaining, &updatedAt, &value.ConfigVersion, &planSnapshot, &value.Name, &value.PeriodDays, &modelsSnapshot, &value.Priority, &value.ChargeEnabled, &entitlementsSnapshot)
 	if expiresAt.Valid {
 		value.ExpiresAt = &expiresAt.Time
 	}
@@ -1380,6 +1252,12 @@ func subscriptionStateFromPeriodRow(row rowScanner) (BillingSubscriptionState, e
 	value.UpdatedAt = &updatedAt
 	if err == nil && len(planSnapshot) > 0 {
 		err = json.Unmarshal(planSnapshot, &value.Plan)
+	}
+	if err == nil {
+		err = json.Unmarshal(modelsSnapshot, &value.ModelIDs)
+	}
+	if err == nil {
+		err = json.Unmarshal(entitlementsSnapshot, &value.Entitlements)
 	}
 	return value, err
 }
@@ -1463,15 +1341,24 @@ func subscriptionOperationStateTx(ctx context.Context, tx *sql.Tx, entry Billing
 
 func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParams) (BillingSubscriptionState, error) {
 	var state BillingSubscriptionState
+	var err error
 	if err := validateBillingWrite(params.BillingWriteParams); err != nil || params.UserID == "" {
 		if err != nil {
 			return state, err
 		}
 		return state, fmt.Errorf("%w: subscription user is required", ErrInvalid)
 	}
-	_, err := billingPeriodDuration(params.Tier)
+	params.PeriodDays, err = normalizeBillingPeriodDays(params.Tier, params.PeriodDays)
 	if err != nil {
 		return state, err
+	}
+	params.ModelIDs, err = normalizeBillingModels(params.ModelIDs)
+	if err != nil {
+		return state, err
+	}
+	params.Name = strings.TrimSpace(params.Name)
+	if len([]rune(params.Name)) < 1 || len([]rune(params.Name)) > 100 {
+		return state, fmt.Errorf("%w: subscription name must contain 1 to 100 characters", ErrInvalid)
 	}
 	if err := validateBillingPeriodCount(params.PeriodCount); err != nil {
 		return state, err
@@ -1483,22 +1370,13 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 	params.At = normalizedBillingTime(params.At, s.now)
 	params.Reason = strings.TrimSpace(params.Reason)
 	fingerprint := billingOperationFingerprint("subscription_set", params.ActorUserID,
-		params.UserID, params.Tier, params.Reason, allowance, fmt.Sprintf("%d", params.PeriodCount))
-	var compatibleFingerprints [][]byte
-	if params.PeriodCount == 1 {
-		// Before finite-period subscriptions, subscription_set fingerprints did
-		// not include a period count. Existing subscriptions migrate to 1/1, so
-		// accept that exact legacy request only when the caller explicitly sends
-		// the migrated one-period configuration.
-		compatibleFingerprints = append(compatibleFingerprints, billingOperationFingerprint(
-			"subscription_set", params.ActorUserID, params.UserID, params.Tier, params.Reason, allowance))
-	}
+		params.UserID, params.SubscriptionID, params.Name, params.Tier, fmt.Sprint(params.PeriodDays), strings.Join(params.ModelIDs, ","), params.Reason, allowance, fmt.Sprintf("%d", params.PeriodCount))
 	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := lockBillingAccountTx(ctx, tx, params.UserID); err != nil {
 			return err
 		}
 		created, replayID, err := claimBillingOperationTx(ctx, tx, params.BillingWriteParams,
-			"subscription_set", params.UserID, fingerprint, compatibleFingerprints...)
+			"subscription_set", params.UserID, fingerprint)
 		if err != nil {
 			return err
 		}
@@ -1532,7 +1410,7 @@ func (s *Store) PutSubscription(ctx context.Context, params PutSubscriptionParam
 			return err
 		}
 		if err := appendBillingAuditTx(ctx, tx, params.BillingWriteParams,
-			"billing.subscription_updated", "subscription", params.UserID+":"+params.Tier,
+			"billing.subscription_updated", "subscription", state.ID,
 			map[string]any{"operation_id": params.OperationID, "tier": params.Tier,
 				"allowance_usd": allowance, "period_count": params.PeriodCount}); err != nil {
 			return err
@@ -1551,13 +1429,13 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 		}
 		return state, fmt.Errorf("%w: subscription user is required", ErrInvalid)
 	}
-	if _, err := billingPeriodDuration(params.Tier); err != nil {
-		return state, err
+	if params.SubscriptionID == "" {
+		return state, fmt.Errorf("%w: subscription ID required", ErrInvalid)
 	}
 	params.At = normalizedBillingTime(params.At, s.now)
 	params.Reason = strings.TrimSpace(params.Reason)
 	fingerprint := billingOperationFingerprint("subscription_disable", params.ActorUserID,
-		params.UserID, params.Tier, params.Reason)
+		params.UserID, params.SubscriptionID, params.Reason)
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := lockBillingAccountTx(ctx, tx, params.UserID); err != nil {
 			return err
@@ -1580,11 +1458,11 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 		var expiresAt sql.NullTime
 		var periodCount, periodNumber int
 		var enabled bool
-		if err := tx.QueryRowContext(ctx, `SELECT id, allowance_usd::text,
+		if err := tx.QueryRowContext(ctx, `SELECT id, tier, allowance_usd::text,
 			enabled, current_period_id, period_count, current_period_number, expires_at
 			FROM billing_subscriptions
-			WHERE user_id = $1 AND tier = $2 FOR UPDATE`, params.UserID, params.Tier,
-		).Scan(&subscriptionID, &allowance, &enabled, &periodID, &periodCount,
+			WHERE user_id = $1 AND id = $2 FOR UPDATE`, params.UserID, params.SubscriptionID,
+		).Scan(&subscriptionID, &params.Tier, &allowance, &enabled, &periodID, &periodCount,
 			&periodNumber, &expiresAt); err != nil {
 			return mapDBError("lock subscription for disable", err)
 		}
@@ -1604,7 +1482,7 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 			updated_at = $2, plan_id=NULL,plan_version=NULL,config_version=nextval('billing_subscription_config_versions') WHERE id = $1`, subscriptionID, params.At); err != nil {
 			return mapDBError("disable billing subscription", err)
 		}
-		state, err = readBillingSubscriptionStateTx(ctx, tx, params.UserID, params.Tier, params.At)
+		state, err = readBillingSubscriptionStateTx(ctx, tx, params.UserID, params.SubscriptionID, params.At)
 		if err != nil {
 			return err
 		}
@@ -1634,7 +1512,7 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 			return err
 		}
 		if err := appendBillingAuditTx(ctx, tx, params.BillingWriteParams,
-			"billing.subscription_disabled", "subscription", params.UserID+":"+params.Tier,
+			"billing.subscription_disabled", "subscription", subscriptionID,
 			map[string]any{"operation_id": params.OperationID, "tier": params.Tier}); err != nil {
 			return err
 		}
@@ -1655,14 +1533,15 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := tx.QueryRowContext(ctx, `
 			SELECT u.id, u.username, u.display_name, a.balance_usd::text,
-				a.day_source_disabled, a.week_source_disabled, a.month_source_disabled, a.cash_source_disabled
+				a.day_source_disabled, a.week_source_disabled, a.month_source_disabled, a.cash_source_disabled, a.cash_priority
 			FROM users u JOIN billing_accounts a ON a.user_id = u.id
 			WHERE u.id = $1 AND u.status <> 'pending' FOR UPDATE OF a`, userID).Scan(
 			&state.UserID, &state.Username, &state.DisplayName, &state.BalanceUSD,
 			&state.SourceDisabled.Day, &state.SourceDisabled.Week,
-			&state.SourceDisabled.Month, &state.SourceDisabled.Cash); err != nil {
+			&state.SourceDisabled.Month, &state.SourceDisabled.Cash, &state.CashPreferences.Priority); err != nil {
 			return mapDBError("lock billing state account", err)
 		}
+		state.CashPreferences.ChargeEnabled = !state.SourceDisabled.Cash
 		group, err := userGroupTx(ctx, tx, userID, s.now().UTC())
 		if err != nil {
 			return err
@@ -1683,16 +1562,12 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 			return err
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT `+billingSubscriptionStateColumns+billingSubscriptionStateJoins+`
-			WHERE s.user_id = $1
-			ORDER BY CASE s.tier WHEN 'day' THEN 1 WHEN 'week' THEN 2 ELSE 3 END`, userID)
+			WHERE s.user_id = $1 AND s.enabled
+			ORDER BY s.priority,s.period_days DESC,p.remaining_usd DESC,s.id`, userID)
 		if err != nil {
 			return mapDBError("list billing subscriptions", err)
 		}
-		byTier := map[string]BillingSubscriptionState{
-			BillingTierDay:   {Tier: BillingTierDay, AllowanceUSD: "0.000000000000", RemainingUSD: "0.000000000000"},
-			BillingTierWeek:  {Tier: BillingTierWeek, AllowanceUSD: "0.000000000000", RemainingUSD: "0.000000000000"},
-			BillingTierMonth: {Tier: BillingTierMonth, AllowanceUSD: "0.000000000000", RemainingUSD: "0.000000000000"},
-		}
+		state.Subscriptions = make([]BillingSubscriptionState, 0)
 		for rows.Next() {
 			value, err := subscriptionStateFromPeriodRow(rows)
 			if err != nil {
@@ -1700,16 +1575,13 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 				return fmt.Errorf("scan billing subscription state: %w", err)
 			}
 			value.CanRenew = value.Plan != nil && value.Enabled && value.ExpiresAt != nil && value.ExpiresAt.After(s.now().UTC())
-			byTier[value.Tier] = value
+			state.Subscriptions = append(state.Subscriptions, value)
 		}
 		if err := rows.Close(); err != nil {
 			return fmt.Errorf("close billing subscriptions: %w", err)
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("iterate billing subscriptions: %w", err)
-		}
-		state.Subscriptions = []BillingSubscriptionState{
-			byTier[BillingTierDay], byTier[BillingTierWeek], byTier[BillingTierMonth],
 		}
 		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM billing_ledger_entries
 			WHERE user_id = $1`, userID).Scan(&state.LedgerTotal); err != nil {
@@ -1775,7 +1647,7 @@ func (s *Store) ListBillingUsers(ctx context.Context) ([]BillingUserSummary, err
 		}
 		result = append(result, BillingUserSummary{GroupID: groupID, UserID: user.id, Username: user.username,
 			DisplayName: user.displayName, Role: user.role, Status: user.status,
-			BalanceUSD: state.BalanceUSD, SourceDisabled: state.SourceDisabled, Subscriptions: state.Subscriptions})
+			BalanceUSD: state.BalanceUSD, CashPreferences: state.CashPreferences, SourceDisabled: state.SourceDisabled, Subscriptions: state.Subscriptions})
 	}
 	return result, nil
 }
@@ -1961,7 +1833,7 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	remaining, charged := cost, "0.000000000000"
 	groupCharged := "0.000000000000"
 	allocationOrder := 0
-	if reservation.FundingRuleVersion == 2 && reservation.GroupPeriodID != nil && billingPositive(remaining) {
+	if reservation.FundingRuleVersion >= 2 && reservation.GroupPeriodID != nil && billingPositive(remaining) {
 		var available string
 		var memberLimit sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT GREATEST(limit_usd-used_usd,0)::numeric(30,12)::text,
@@ -2007,60 +1879,58 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			charged = groupCharged
 		}
 	}
-	type periodSource struct {
-		tier string
-		id   *string
-	}
-	for _, source := range []periodSource{
-		{BillingTierDay, reservation.DayPeriodID},
-		{BillingTierWeek, reservation.WeekPeriodID},
-		{BillingTierMonth, reservation.MonthPeriodID},
-	} {
-		if source.id == nil || !billingPositive(remaining) {
-			continue
-		}
-		var available string
-		err := tx.QueryRowContext(ctx, `
-			SELECT remaining_usd::text FROM billing_subscription_periods
-			WHERE id = $1 AND user_id = $2 AND tier = $3 FOR UPDATE`, *source.id, reservation.UserID, source.tier,
-		).Scan(&available)
-		if err != nil {
-			return BillingReservation{}, mapDBError("lock bound subscription period", err)
-		}
-		amount, err := billingMin(available, remaining)
-		if err != nil {
-			return BillingReservation{}, err
-		}
-		if !billingPositive(amount) {
-			continue
-		}
-		if _, err := tx.ExecContext(ctx, `
-			UPDATE billing_subscription_periods
-			SET remaining_usd = remaining_usd - $2::numeric WHERE id = $1`, *source.id, amount); err != nil {
-			return BillingReservation{}, mapDBError("charge bound subscription period", err)
-		}
-		allocationOrder++
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO billing_charge_allocations
-				(request_id, allocation_order, source_type, subscription_period_id, amount_usd, created_at)
-			VALUES ($1,$2,$3,$4,$5::numeric,$6)`, requestID, allocationOrder, source.tier, *source.id, amount, at); err != nil {
-			return BillingReservation{}, mapDBError("record subscription charge allocation", err)
-		}
-		remaining, err = billingSubtract(remaining, amount)
-		if err != nil {
-			return BillingReservation{}, err
-		}
-		charged, err = billingAdd(charged, amount)
-		if err != nil {
-			return BillingReservation{}, err
-		}
+	sources, err := billingSettlementSources(reservation)
+	if err != nil {
+		return BillingReservation{}, err
 	}
 	cashCharged := "0.000000000000"
-	if reservation.CashLotCutoff != nil && billingPositive(remaining) {
+	for _, source := range sources {
+		if !billingPositive(remaining) {
+			break
+		}
+		if source.SourceType != "cash" {
+			var available string
+			err := tx.QueryRowContext(ctx, `
+			SELECT remaining_usd::text FROM billing_subscription_periods
+			WHERE id = $1 AND user_id = $2
+			AND (($3='subscription' AND subscription_id=$4::uuid) OR tier=$3) FOR UPDATE`, source.PeriodID, reservation.UserID, source.SourceType, valueOrNil(source.SubscriptionID),
+			).Scan(&available)
+			if err != nil {
+				return BillingReservation{}, mapDBError("lock bound subscription period", err)
+			}
+			amount, err := billingMin(available, remaining)
+			if err != nil {
+				return BillingReservation{}, err
+			}
+			if !billingPositive(amount) {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `
+			UPDATE billing_subscription_periods
+			SET remaining_usd = remaining_usd - $2::numeric WHERE id = $1`, source.PeriodID, amount); err != nil {
+				return BillingReservation{}, mapDBError("charge bound subscription period", err)
+			}
+			allocationOrder++
+			if _, err := tx.ExecContext(ctx, `
+			INSERT INTO billing_charge_allocations
+				(request_id, allocation_order, source_type, subscription_period_id, amount_usd, created_at)
+			VALUES ($1,$2,$3,$4,$5::numeric,$6)`, requestID, allocationOrder, source.SourceType, source.PeriodID, amount, at); err != nil {
+				return BillingReservation{}, mapDBError("record subscription charge allocation", err)
+			}
+			remaining, err = billingSubtract(remaining, amount)
+			if err != nil {
+				return BillingReservation{}, err
+			}
+			charged, err = billingAdd(charged, amount)
+			if err != nil {
+				return BillingReservation{}, err
+			}
+			continue
+		}
 		rows, err := tx.QueryContext(ctx, `
 			SELECT id, remaining_usd::text FROM billing_cash_credit_lots
 			WHERE user_id = $1 AND lot_sequence <= $2 AND remaining_usd > 0
-			ORDER BY lot_sequence FOR UPDATE`, reservation.UserID, *reservation.CashLotCutoff)
+			ORDER BY lot_sequence FOR UPDATE`, reservation.UserID, source.CashLotCutoff)
 		if err != nil {
 			return BillingReservation{}, mapDBError("lock bound cash lots", err)
 		}

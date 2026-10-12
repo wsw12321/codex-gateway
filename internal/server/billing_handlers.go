@@ -3,7 +3,9 @@ package server
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/wsw/codex-gateway/internal/httpx"
 	"github.com/wsw/codex-gateway/internal/store"
@@ -31,8 +33,12 @@ type adjustmentInput struct {
 
 type subscriptionInput struct {
 	billingOperationInput
-	QuotaUSD    string `json:"quota_usd"`
-	PeriodCount *int   `json:"period_count"`
+	Name        string   `json:"name"`
+	Tier        string   `json:"tier"`
+	PeriodDays  int      `json:"period_days"`
+	ModelIDs    []string `json:"model_ids"`
+	QuotaUSD    string   `json:"quota_usd"`
+	PeriodCount *int     `json:"period_count"`
 }
 
 func (s *Server) billingMe(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +71,7 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 		},
 		"cash_balance_usd":           state.BalanceUSD,
 		"source_disabled":            state.SourceDisabled,
+		"cash_preferences":           state.CashPreferences,
 		"group":                      state.Group,
 		"group_member_used_usd":      state.GroupMemberUsedUSD,
 		"group_member_remaining_usd": state.GroupMemberRemainingUSD,
@@ -77,18 +84,20 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 	}
 }
 
-func billingSubscriptionsResponse(values []store.BillingSubscriptionState) map[string]map[string]any {
-	result := make(map[string]map[string]any, 3)
+func billingSubscriptionsResponse(values []store.BillingSubscriptionState) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
 	for _, value := range values {
-		result[value.Tier] = map[string]any{
+		result = append(result, map[string]any{
 			"id": value.ID, "tier": value.Tier, "enabled": value.Enabled,
+			"name": value.Name, "period_days": value.PeriodDays, "model_ids": value.ModelIDs,
+			"priority": value.Priority, "charge_enabled": value.ChargeEnabled, "entitlements": value.Entitlements,
 			"quota_usd": value.AllowanceUSD, "remaining_usd": value.RemainingUSD,
 			"period_count": value.PeriodCount, "current_period_number": value.CurrentPeriodNumber,
 			"expires_at": value.ExpiresAt,
 			"period_id":  value.PeriodID, "period_started_at": value.PeriodStartsAt,
 			"period_ends_at": value.PeriodEndsAt, "updated_at": value.UpdatedAt,
 			"plan": value.Plan, "can_renew": value.CanRenew, "config_version": value.ConfigVersion,
-		}
+		})
 	}
 	return result
 }
@@ -113,9 +122,10 @@ func (s *Server) billingUsers(w http.ResponseWriter, r *http.Request) {
 		item := map[string]any{
 			"id": user.UserID, "username": user.Username, "display_name": user.DisplayName,
 			"role": user.Role, "status": user.Status, "cash_balance_usd": user.BalanceUSD,
-			"group_id":        user.GroupID,
-			"subscriptions":   billingSubscriptionsResponse(user.Subscriptions),
-			"source_disabled": user.SourceDisabled,
+			"group_id":         user.GroupID,
+			"subscriptions":    billingSubscriptionsResponse(user.Subscriptions),
+			"source_disabled":  user.SourceDisabled,
+			"cash_preferences": user.CashPreferences,
 		}
 		addUserSearchFields(item, user.Username, user.DisplayName)
 		items = append(items, item)
@@ -176,15 +186,15 @@ func (s *Server) putBillingSubscription(w http.ResponseWriter, r *http.Request) 
 	if !s.decodeBillingWrite(w, r, &input) {
 		return
 	}
-	tier, err := parseBillingTier(r.PathValue("tier"))
-	if err != nil {
+	subscriptionID := r.PathValue("subscription_id")
+	if r.Method == http.MethodPut && !validBillingResourceID(subscriptionID) {
 		s.billingInputError(w, r)
 		return
 	}
-	value, err := s.store.PutSubscription(r.Context(), store.PutSubscriptionParams{
+	value, err := s.billingSubscriptionStorage().PutSubscription(r.Context(), store.PutSubscriptionParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
-		UserID:             r.PathValue("user_id"), Tier: tier, AllowanceUSD: input.QuotaUSD,
-		PeriodCount: *input.PeriodCount,
+		UserID:             r.PathValue("user_id"), SubscriptionID: subscriptionID,
+		Name: input.Name, Tier: input.Tier, PeriodDays: input.PeriodDays, ModelIDs: input.ModelIDs, AllowanceUSD: input.QuotaUSD, PeriodCount: *input.PeriodCount,
 	})
 	if err != nil {
 		s.billingStoreError(w, r, "put billing subscription", err)
@@ -195,17 +205,21 @@ func (s *Server) putBillingSubscription(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) deleteBillingSubscription(w http.ResponseWriter, r *http.Request) {
 	var input billingOperationInput
-	if !s.decodeBillingWrite(w, r, &input) {
+	if !s.decodeBillingPlanFields(w, r, map[string]any{"operation_id": &input.OperationID, "reason": &input.Reason}) {
 		return
 	}
-	tier, err := parseBillingTier(r.PathValue("tier"))
-	if err != nil {
+	if validateBillingOperation(input.OperationID, input.Reason) != nil {
 		s.billingInputError(w, r)
 		return
 	}
-	value, err := s.store.DeleteSubscription(r.Context(), store.DeleteSubscriptionParams{
+	subscriptionID := r.PathValue("subscription_id")
+	if !validBillingResourceID(subscriptionID) {
+		s.billingInputError(w, r)
+		return
+	}
+	value, err := s.billingSubscriptionStorage().DeleteSubscription(r.Context(), store.DeleteSubscriptionParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
-		UserID:             r.PathValue("user_id"), Tier: tier,
+		UserID:             r.PathValue("user_id"), SubscriptionID: subscriptionID,
 	})
 	if err != nil {
 		s.billingStoreError(w, r, "delete billing subscription", err)
@@ -215,7 +229,11 @@ func (s *Server) deleteBillingSubscription(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *Server) decodeBillingWrite(w http.ResponseWriter, r *http.Request, destination any) bool {
-	if err := decodeJSON(w, r, destination, 32<<10); err != nil {
+	if value, ok := destination.(*subscriptionInput); ok {
+		if !s.decodeBillingPlanFields(w, r, map[string]any{"operation_id": &value.OperationID, "reason": &value.Reason, "name": &value.Name, "tier": &value.Tier, "period_days": &value.PeriodDays, "model_ids": &value.ModelIDs, "quota_usd": &value.QuotaUSD, "period_count": &value.PeriodCount}) {
+			return false
+		}
+	} else if err := decodeJSON(w, r, destination, 32<<10); err != nil {
 		badJSON(w, r, err)
 		return false
 	}
@@ -235,7 +253,9 @@ func (s *Server) decodeBillingWrite(w http.ResponseWriter, r *http.Request, dest
 		operation = value.billingOperationInput
 	case *subscriptionInput:
 		operation = value.billingOperationInput
-		if value.PeriodCount == nil || *value.PeriodCount < 0 || *value.PeriodCount > 99 {
+		if value.PeriodCount == nil || *value.PeriodCount < 0 || *value.PeriodCount > 99 ||
+			strings.TrimSpace(value.Name) == "" || utf8.RuneCountInString(strings.TrimSpace(value.Name)) > 100 ||
+			!validBillingPeriod(value.Tier, value.PeriodDays) || !s.validBillingModels(value.ModelIDs) {
 			s.billingInputError(w, r)
 			return false
 		}

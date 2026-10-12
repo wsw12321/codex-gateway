@@ -65,7 +65,7 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "native test"}, UserID: user.ID, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
+	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "native test"}, UserID: user.ID, Name: "Native test", ModelIDs: []string{"gemini-pro-agent"}, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile("../../deploy/pricing-v2.example.json")

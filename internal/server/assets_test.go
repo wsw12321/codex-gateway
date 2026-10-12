@@ -216,7 +216,8 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 		`data-section="billing"`, `id="billing-cash-balance"`, `id="billing-subscriptions"`,
 		`id="billing-ledger-rows"`, `id="billing-user-search"`, `id="billing-rate-form"`,
 		`id="billing-recharge-form"`, `id="billing-adjustment-form"`,
-		`id="billing-subscription-day"`, `id="billing-subscription-week"`, `id="billing-subscription-month"`,
+		`id="billing-subscription-form"`, `id="billing-subscription-create"`, `id="billing-subscription-models"`,
+		`data-section="plans"`, `id="billing-plan-models"`, `id="key-model-scope"`,
 		`id="billing-batch-panel"`, `id="billing-batch-user-rows"`, `id="billing-batch-select-all"`,
 		`id="billing-batch-recharge-form"`, `id="billing-batch-subscription-form"`,
 		`id="billing-batch-result-rows"`, `id="billing-batch-start"`, `id="billing-batch-retry"`,
@@ -239,8 +240,8 @@ func TestBillingDashboardIncludesReadOnlyAndOwnerWorkflows(t *testing.T) {
 			t.Fatalf("billing dashboard JavaScript is missing %s", required)
 		}
 	}
-	if count := strings.Count(html, `name="period_count" required type="number" min="0" max="99"`); count != 5 {
-		t.Fatalf("billing dashboard administrator period-count input count = %d, want 5", count)
+	if count := strings.Count(html, `name="period_count" required type="number" min="0" max="99"`); count != 3 {
+		t.Fatalf("billing dashboard administrator period-count input count = %d, want 3", count)
 	}
 	if !strings.Contains(html, `name="period_count" type="number" min="1" max="99" step="1" required`) {
 		t.Fatal("billing dashboard purchase period-count input must allow only 1–99 periods")

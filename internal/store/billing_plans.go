@@ -19,20 +19,25 @@ import (
 var ErrBillingPlanChanged = fmt.Errorf("billing plan or subscription configuration changed: %w", ErrConflict)
 
 type BillingPlan struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	PriceUSD       string    `json:"price_usd"`
-	Tier           string    `json:"tier"`
-	AllowanceUSD   string    `json:"allowance_usd"`
-	MinPeriodCount int       `json:"min_period_count"`
-	Active         bool      `json:"active"`
-	Version        int64     `json:"version"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	PeriodDays     int        `json:"period_days"`
+	ModelIDs       []string   `json:"model_ids"`
+	DeletedAt      *time.Time `json:"deleted_at,omitempty"`
+	ID             string     `json:"id"`
+	Name           string     `json:"name"`
+	PriceUSD       string     `json:"price_usd"`
+	Tier           string     `json:"tier"`
+	AllowanceUSD   string     `json:"allowance_usd"`
+	MinPeriodCount int        `json:"min_period_count"`
+	Active         bool       `json:"active"`
+	Version        int64      `json:"version"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
 }
 
 type CreateBillingPlanParams struct {
 	BillingWriteParams
+	PeriodDays                         int
+	ModelIDs                           []string
 	Name, PriceUSD, Tier, AllowanceUSD string
 	MinPeriodCount                     int
 	Active                             bool
@@ -40,6 +45,8 @@ type CreateBillingPlanParams struct {
 
 type UpdateBillingPlanParams struct {
 	BillingWriteParams
+	PeriodDays                         int
+	ModelIDs                           []string
 	PlanID                             string
 	Version                            int64
 	Name, PriceUSD, Tier, AllowanceUSD string
@@ -56,6 +63,7 @@ type PurchaseBillingPlanParams struct {
 
 type RenewBillingSubscriptionParams struct {
 	BillingWriteParams
+	SubscriptionID                         string
 	UserID, Tier                           string
 	PlanVersion, SubscriptionConfigVersion int64
 	PeriodCount                            int
@@ -81,21 +89,29 @@ type billingTransactionSnapshot struct {
 }
 
 func billingPlanAuditMetadata(plan BillingPlan) map[string]any {
+	models := make([]any, len(plan.ModelIDs))
+	for i, model := range plan.ModelIDs {
+		models[i] = model
+	}
 	return map[string]any{"id": plan.ID, "name": plan.Name, "price_usd": plan.PriceUSD,
 		"tier": plan.Tier, "allowance_usd": plan.AllowanceUSD, "min_period_count": plan.MinPeriodCount,
-		"active": plan.Active, "version": plan.Version}
+		"active": plan.Active, "version": plan.Version, "period_days": plan.PeriodDays, "model_ids": models}
 }
 
-const billingPlanColumns = `id,name,price_usd::text,tier,allowance_usd::text,min_period_count,active,version,created_at,updated_at`
+const billingPlanColumns = `id,name,price_usd::text,tier,allowance_usd::text,min_period_count,active,version,created_at,updated_at,period_days,model_ids,deleted_at`
 
 func scanBillingPlan(row rowScanner) (BillingPlan, error) {
 	var p BillingPlan
-	err := row.Scan(&p.ID, &p.Name, &p.PriceUSD, &p.Tier, &p.AllowanceUSD, &p.MinPeriodCount, &p.Active, &p.Version, &p.CreatedAt, &p.UpdatedAt)
+	var models []byte
+	err := row.Scan(&p.ID, &p.Name, &p.PriceUSD, &p.Tier, &p.AllowanceUSD, &p.MinPeriodCount, &p.Active, &p.Version, &p.CreatedAt, &p.UpdatedAt, &p.PeriodDays, &models, &p.DeletedAt)
+	if err == nil {
+		err = json.Unmarshal(models, &p.ModelIDs)
+	}
 	return p, err
 }
 
 func (s *Store) ListBillingPlans(ctx context.Context, includeInactive bool) ([]BillingPlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE active OR $1 ORDER BY created_at,id`, includeInactive)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE deleted_at IS NULL AND (active OR $1) ORDER BY created_at,id`, includeInactive)
 	if err != nil {
 		return nil, mapDBError("list billing plans", err)
 	}
@@ -116,13 +132,18 @@ func normalizeBillingPlan(p *BillingPlan) error {
 	if len([]rune(p.Name)) < 1 || len([]rune(p.Name)) > 100 {
 		return fmt.Errorf("%w: plan name must contain 1 to 100 characters", ErrInvalid)
 	}
-	if _, err := billingPeriodDuration(p.Tier); err != nil {
+	var err error
+	p.PeriodDays, err = normalizeBillingPeriodDays(p.Tier, p.PeriodDays)
+	if err != nil {
+		return err
+	}
+	p.ModelIDs, err = normalizeBillingModels(p.ModelIDs)
+	if err != nil {
 		return err
 	}
 	if p.MinPeriodCount < 1 || p.MinPeriodCount > 99 {
 		return fmt.Errorf("%w: minimum purchase count must be between 1 and 99", ErrInvalid)
 	}
-	var err error
 	p.PriceUSD, err = decimal.ParseRate(p.PriceUSD)
 	if err != nil {
 		return fmt.Errorf("%w: invalid plan price", ErrInvalid)
@@ -138,14 +159,14 @@ func (s *Store) CreateBillingPlan(ctx context.Context, params CreateBillingPlanP
 	if params.MinPeriodCount == 0 {
 		params.MinPeriodCount = 1
 	}
-	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, true)
+	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, true)
 }
 
 func (s *Store) UpdateBillingPlan(ctx context.Context, params UpdateBillingPlanParams) (BillingPlan, error) {
 	if params.PlanID == "" || params.Version < 1 {
 		return BillingPlan{}, fmt.Errorf("%w: plan and version are required", ErrInvalid)
 	}
-	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{ID: params.PlanID, Version: params.Version, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, false)
+	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, ID: params.PlanID, Version: params.Version, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, false)
 }
 
 func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams, plan BillingPlan, create bool) (BillingPlan, error) {
@@ -162,7 +183,7 @@ func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams,
 	if create {
 		opType = "plan_create"
 	}
-	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, params.Reason, plan.ID, strconv.FormatInt(plan.Version, 10), plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, strconv.Itoa(plan.MinPeriodCount), strconv.FormatBool(plan.Active))
+	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, params.Reason, plan.ID, strconv.FormatInt(plan.Version, 10), plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, strconv.Itoa(plan.MinPeriodCount), strconv.FormatBool(plan.Active), strconv.Itoa(plan.PeriodDays), strings.Join(plan.ModelIDs, ","))
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		created, replayID, err := claimBillingOperationTx(ctx, tx, params, opType, "", fingerprint)
 		if err != nil {
@@ -183,19 +204,23 @@ func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams,
 			result = *snap.Plan
 			return nil
 		}
+		if err := validateBillingModelsTx(ctx, tx, plan.ModelIDs); err != nil {
+			return err
+		}
+		modelsJSON, _ := json.Marshal(plan.ModelIDs)
 		if create {
-			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `INSERT INTO billing_plans (name,price_usd,tier,allowance_usd,min_period_count,active,created_at,updated_at,updated_by_user_id) VALUES ($1,$2::numeric,$3,$4::numeric,$5,$6,$7,$7,$8) RETURNING `+billingPlanColumns, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID))
+			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `INSERT INTO billing_plans (name,price_usd,tier,allowance_usd,min_period_count,active,created_at,updated_at,updated_by_user_id,period_days,model_ids) VALUES ($1,$2::numeric,$3,$4::numeric,$5,$6,$7,$7,$8,$9,$10::jsonb) RETURNING `+billingPlanColumns, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID, plan.PeriodDays, modelsJSON))
 		} else {
 			current, readErr := scanBillingPlan(tx.QueryRowContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE id=$1 FOR UPDATE`, plan.ID))
 			if readErr != nil {
 				return mapDBError("lock billing plan", readErr)
 			}
-			if current.Version != plan.Version {
+			if current.DeletedAt != nil || current.Version != plan.Version {
 				return ErrBillingPlanChanged
 			}
 			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `UPDATE billing_plans SET
-				version=version+CASE WHEN (name,price_usd,tier,allowance_usd,min_period_count,active) IS DISTINCT FROM ($2::text,$3::numeric,$4::text,$5::numeric,$6::integer,$7::boolean) THEN 1 ELSE 0 END,
-				name=$2,price_usd=$3::numeric,tier=$4,allowance_usd=$5::numeric,min_period_count=$6,active=$7,updated_at=$8,updated_by_user_id=$9 WHERE id=$1 RETURNING `+billingPlanColumns, plan.ID, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID))
+				version=version+CASE WHEN (name,price_usd,tier,allowance_usd,min_period_count,active,period_days,model_ids) IS DISTINCT FROM ($2::text,$3::numeric,$4::text,$5::numeric,$6::integer,$7::boolean,$10::integer,$11::jsonb) THEN 1 ELSE 0 END,
+				name=$2,price_usd=$3::numeric,tier=$4,allowance_usd=$5::numeric,min_period_count=$6,active=$7,updated_at=$8,updated_by_user_id=$9,period_days=$10,model_ids=$11::jsonb WHERE id=$1 RETURNING `+billingPlanColumns, plan.ID, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID, plan.PeriodDays, modelsJSON))
 		}
 		if err != nil {
 			return mapDBError("save billing plan", err)
@@ -270,11 +295,13 @@ func advanceBillingPeriod(previousEnd, at time.Time, tier string, current int) (
 }
 
 const billingSubscriptionStateColumns = `s.id,s.tier,s.enabled,s.allowance_usd::text,s.period_count,s.current_period_number,s.expires_at,p.id,p.starts_at,p.ends_at,p.remaining_usd::text,s.updated_at,s.config_version,
-	CASE WHEN bp.active AND bp.version=s.plan_version THEN jsonb_build_object('id',bp.id,'name',bp.name,'price_usd',bp.price_usd::text,'tier',bp.tier,'allowance_usd',bp.allowance_usd::text,'min_period_count',bp.min_period_count,'active',bp.active,'version',bp.version,'created_at',bp.created_at,'updated_at',bp.updated_at) END`
+ CASE WHEN bp.deleted_at IS NULL AND bp.id IS NOT NULL THEN to_jsonb(bp) || jsonb_build_object('price_usd',bp.price_usd::text,'allowance_usd',bp.allowance_usd::text) END,
+ s.name,s.period_days,s.model_ids,s.priority,s.charge_enabled,
+ COALESCE((SELECT jsonb_agg(jsonb_build_object('id',e.id,'starts_at',e.starts_at,'ends_at',e.ends_at,'tier',e.tier,'period_days',e.period_days,'allowance_usd',e.allowance_usd::text,'model_ids',e.model_ids,'period_count',e.period_count,'first_period_number',e.first_period_number,'plan',e.plan_snapshot) ORDER BY e.starts_at,e.id) FROM billing_subscription_entitlements e WHERE e.subscription_id=s.id AND e.superseded_at IS NULL AND (e.ends_at IS NULL OR p.starts_at IS NULL OR e.ends_at>p.starts_at)),'[]')`
 const billingSubscriptionStateJoins = ` FROM billing_subscriptions s LEFT JOIN billing_subscription_periods p ON p.id=s.current_period_id LEFT JOIN billing_plans bp ON bp.id=s.plan_id `
 
-func readBillingSubscriptionStateTx(ctx context.Context, tx *sql.Tx, userID, tier string, at time.Time) (BillingSubscriptionState, error) {
-	value, err := subscriptionStateFromPeriodRow(tx.QueryRowContext(ctx, `SELECT `+billingSubscriptionStateColumns+billingSubscriptionStateJoins+` WHERE s.user_id=$1 AND s.tier=$2`, userID, tier))
+func readBillingSubscriptionStateTx(ctx context.Context, tx *sql.Tx, userID, subscriptionID string, at time.Time) (BillingSubscriptionState, error) {
+	value, err := subscriptionStateFromPeriodRow(tx.QueryRowContext(ctx, `SELECT `+billingSubscriptionStateColumns+billingSubscriptionStateJoins+` WHERE s.user_id=$1 AND s.id=$2`, userID, subscriptionID))
 	value.CanRenew = value.Plan != nil && value.Enabled && value.ExpiresAt != nil && value.ExpiresAt.After(at)
 	return value, mapDBError("read subscription state", err)
 }
@@ -282,57 +309,71 @@ func readBillingSubscriptionStateTx(ctx context.Context, tx *sql.Tx, userID, tie
 // Caller holds the account and, for purchases, the catalog shared lock.
 func reopenBillingSubscriptionTx(ctx context.Context, tx *sql.Tx, params PutSubscriptionParams, allowance string, plan *BillingPlan) (BillingSubscriptionState, error) {
 	var empty BillingSubscriptionState
-	duration, err := billingPeriodDuration(params.Tier)
-	if err != nil {
+	if err := validateBillingModelsTx(ctx, tx, params.ModelIDs); err != nil {
 		return empty, err
 	}
-	var expiresAt *time.Time
-	if params.PeriodCount > 0 {
-		value, err := billingPlanExpiry(params.At, params.Tier, params.PeriodCount)
-		if err != nil {
-			return empty, err
-		}
-		expiresAt = &value
-	}
-	var subscriptionID string
-	var oldPeriodID sql.NullString
-	var wasEnabled bool
-	err = tx.QueryRowContext(ctx, `SELECT id,current_period_id,enabled FROM billing_subscriptions WHERE user_id=$1 AND tier=$2 FOR UPDATE`, params.UserID, params.Tier).Scan(&subscriptionID, &oldPeriodID, &wasEnabled)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	var err error
+	subscriptionID := params.SubscriptionID
+	if subscriptionID == "" {
 		subscriptionID, err = newUUID()
 		if err != nil {
 			return empty, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions (id,user_id,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at) VALUES ($1,$2,$3,true,$4::numeric,$5,1,$6,$7,$7)`, subscriptionID, params.UserID, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At); err != nil {
-			return empty, mapDBError("create billing subscription", err)
+	} else {
+		var periodID sql.NullString
+		var previousStart sql.NullTime
+		if err := tx.QueryRowContext(ctx, `SELECT s.current_period_id,p.starts_at FROM billing_subscriptions s LEFT JOIN billing_subscription_periods p ON p.id=s.current_period_id WHERE s.user_id=$1 AND s.id=$2 FOR UPDATE OF s`, params.UserID, subscriptionID).Scan(&periodID, &previousStart); err != nil {
+			return empty, mapDBError("lock subscription for reopen", err)
 		}
-	case err != nil:
-		return empty, mapDBError("lock billing subscription", err)
-	case oldPeriodID.Valid && wasEnabled:
-		result, err := tx.ExecContext(ctx, `UPDATE billing_subscription_periods SET closed_at=$2,close_reason='modified' WHERE id=$1 AND closed_at IS NULL AND $2>=starts_at`, oldPeriodID.String, params.At)
+		if previousStart.Valid && params.At.Before(previousStart.Time) {
+			return empty, fmt.Errorf("%w: replacement precedes current period", ErrInvalid)
+		}
+		if periodID.Valid {
+			if _, err := tx.ExecContext(ctx, `UPDATE billing_subscription_periods SET closed_at=$2,close_reason='modified' WHERE id=$1 AND closed_at IS NULL AND $2>=starts_at`, periodID.String, params.At); err != nil {
+				return empty, err
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscription_entitlements SET superseded_at=$2 WHERE subscription_id=$1 AND superseded_at IS NULL`, subscriptionID, params.At); err != nil {
+			return empty, mapDBError("retire replaced subscription entitlements", err)
+		}
+	}
+	var expiresAt *time.Time
+	if params.PeriodCount > 0 {
+		expiry, err := billingExpiryDays(params.At, params.PeriodDays, params.PeriodCount)
 		if err != nil {
-			return empty, mapDBError("close modified subscription period", err)
-		}
-		if err := requireAffected("close modified subscription period", result); err != nil {
 			return empty, err
 		}
+		expiresAt = &expiry
+	}
+	modelJSON, _ := json.Marshal(params.ModelIDs)
+	if params.SubscriptionID == "" {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,name,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,period_days,model_ids,models_initialized) VALUES($1,$2,$3,$4,true,$5::numeric,$6,1,$7,$8,$8,$9,$10::jsonb,true)`, subscriptionID, params.UserID, params.Name, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At, params.PeriodDays, modelJSON); err != nil {
+			return empty, mapDBError("create billing subscription", err)
+		}
+	}
+	entitlementID, _, err := insertBillingEntitlementTx(ctx, tx, params.UserID, subscriptionID, params.At, params.Tier, params.PeriodDays, params.PeriodCount, 1, allowance, params.ModelIDs, plan, params.At)
+	if err != nil {
+		return empty, err
 	}
 	periodID, err := newUUID()
 	if err != nil {
 		return empty, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscription_periods (id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,period_number,period_count,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,1,$8,$5)`, periodID, subscriptionID, params.UserID, params.Tier, params.At, params.At.Add(duration), allowance, params.PeriodCount); err != nil {
+	periodEnd, err := billingExpiryDays(params.At, params.PeriodDays, 1)
+	if err != nil {
+		return empty, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscription_periods(id,subscription_id,user_id,tier,starts_at,ends_at,allowance_usd,remaining_usd,period_number,period_count,created_at,entitlement_id,period_days) VALUES($1,$2,$3,$4,$5,$6,$7::numeric,$7::numeric,1,$8,$5,$9,$10)`, periodID, subscriptionID, params.UserID, params.Tier, params.At, periodEnd, allowance, params.PeriodCount, entitlementID, params.PeriodDays); err != nil {
 		return empty, mapDBError("create subscription period", err)
 	}
 	var planID, planVersion any
 	if plan != nil {
 		planID, planVersion = plan.ID, plan.Version
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET enabled=true,allowance_usd=$2::numeric,period_count=$3,current_period_number=1,expires_at=$4,current_period_id=$5,disabled_at=NULL,updated_at=$6,plan_id=$7,plan_version=$8,config_version=nextval('billing_subscription_config_versions') WHERE id=$1`, subscriptionID, allowance, params.PeriodCount, timeOrNil(expiresAt), periodID, params.At, planID, planVersion); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET enabled=true,name=$2,tier=$3,period_days=$4,model_ids=$5::jsonb,models_initialized=true,allowance_usd=$6::numeric,period_count=$7,current_period_number=1,expires_at=$8,current_period_id=$9,disabled_at=NULL,updated_at=$10,plan_id=$11,plan_version=$12,config_version=nextval('billing_subscription_config_versions') WHERE id=$1`, subscriptionID, params.Name, params.Tier, params.PeriodDays, modelJSON, allowance, params.PeriodCount, timeOrNil(expiresAt), periodID, params.At, planID, planVersion); err != nil {
 		return empty, mapDBError("activate billing subscription", err)
 	}
-	return readBillingSubscriptionStateTx(ctx, tx, params.UserID, params.Tier, params.At)
+	return readBillingSubscriptionStateTx(ctx, tx, params.UserID, subscriptionID, params.At)
 }
 
 func billingPlanTotal(price string, count int) (string, error) {
@@ -417,17 +458,17 @@ func (s *Store) PurchaseBillingPlan(ctx context.Context, params PurchaseBillingP
 	if params.PlanID == "" {
 		return BillingPlanTransaction{}, fmt.Errorf("%w: plan is required", ErrInvalid)
 	}
-	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, params.PlanID, "", params.PlanVersion, params.SubscriptionConfigVersion, params.PeriodCount, false)
+	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, params.PlanID, "", params.PlanVersion, 0, params.PeriodCount, false)
 }
 
 func (s *Store) RenewBillingSubscription(ctx context.Context, params RenewBillingSubscriptionParams) (BillingPlanTransaction, error) {
-	if _, err := billingPeriodDuration(params.Tier); err != nil {
-		return BillingPlanTransaction{}, err
+	if params.SubscriptionID == "" {
+		return BillingPlanTransaction{}, fmt.Errorf("%w: subscription ID is required", ErrInvalid)
 	}
-	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, "", params.Tier, params.PlanVersion, params.SubscriptionConfigVersion, params.PeriodCount, true)
+	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, "", params.SubscriptionID, params.PlanVersion, params.SubscriptionConfigVersion, params.PeriodCount, true)
 }
 
-func (s *Store) transactBillingPlan(ctx context.Context, params BillingWriteParams, userID, planID, tier string, planVersion, configVersion int64, count int, renew bool) (BillingPlanTransaction, error) {
+func (s *Store) transactBillingPlan(ctx context.Context, params BillingWriteParams, userID, planID, subscriptionID string, planVersion, configVersion int64, count int, renew bool) (BillingPlanTransaction, error) {
 	var result BillingPlanTransaction
 	if err := validateBillingWrite(params); err != nil {
 		return result, err
@@ -441,7 +482,7 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 	if renew {
 		opType = "plan_renewal"
 	}
-	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, userID, params.Reason, planID, tier, strconv.FormatInt(planVersion, 10), strconv.FormatInt(configVersion, 10), strconv.Itoa(count))
+	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, userID, params.Reason, planID, subscriptionID, strconv.FormatInt(planVersion, 10), strconv.FormatInt(configVersion, 10), strconv.Itoa(count))
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if err := lockBillingAccountTx(ctx, tx, userID); err != nil {
 			return err
@@ -469,7 +510,7 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 			// The account lock stabilizes this lookup; acquire the plan lock before
 			// any subscription or lot lock to match purchases and catalog edits.
 			var boundID sql.NullString
-			err := tx.QueryRowContext(ctx, `SELECT plan_id FROM billing_subscriptions WHERE user_id=$1 AND tier=$2`, userID, tier).Scan(&boundID)
+			err := tx.QueryRowContext(ctx, `SELECT plan_id FROM billing_subscriptions WHERE user_id=$1 AND id=$2`, userID, subscriptionID).Scan(&boundID)
 			if errors.Is(err, sql.ErrNoRows) || (err == nil && !boundID.Valid) {
 				return ErrBillingPlanChanged
 			}
@@ -485,22 +526,20 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 		if err != nil {
 			return mapDBError("lock purchase plan", err)
 		}
-		if !plan.Active || plan.Version != planVersion {
+		if plan.DeletedAt != nil || (!renew && !plan.Active) || plan.Version != planVersion {
 			return ErrBillingPlanChanged
 		}
 		if count < plan.MinPeriodCount {
 			return fmt.Errorf("%w: quantity is below the plan minimum", ErrInvalid)
 		}
-		if !renew {
-			tier = plan.Tier
-		}
-		var currentConfig int64
-		err = tx.QueryRowContext(ctx, `SELECT config_version FROM billing_subscriptions WHERE user_id=$1 AND tier=$2 FOR UPDATE`, userID, tier).Scan(&currentConfig)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return mapDBError("lock purchase subscription", err)
-		}
-		if currentConfig != configVersion {
-			return ErrBillingPlanChanged
+		if renew {
+			var currentConfig int64
+			if err := tx.QueryRowContext(ctx, `SELECT config_version FROM billing_subscriptions WHERE user_id=$1 AND id=$2 FOR UPDATE`, userID, subscriptionID).Scan(&currentConfig); err != nil {
+				return mapDBError("lock renewal subscription", err)
+			}
+			if currentConfig != configVersion {
+				return ErrBillingPlanChanged
+			}
 		}
 		var subscription BillingSubscriptionState
 		if renew {
@@ -509,7 +548,7 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 			if _, err := rollBillingSubscriptionsTx(ctx, tx, userID, params.At); err != nil {
 				return err
 			}
-			subscription, err = readBillingSubscriptionStateTx(ctx, tx, userID, tier, params.At)
+			subscription, err = readBillingSubscriptionStateTx(ctx, tx, userID, subscriptionID, params.At)
 			if err != nil {
 				return err
 			}
@@ -519,19 +558,19 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 			if subscription.PeriodCount > math.MaxInt32-count {
 				return fmt.Errorf("%w: subscription period count exceeds supported range", ErrInvalid)
 			}
-			expiry, err := billingPlanExpiry(*subscription.ExpiresAt, tier, count)
+			_, expiry, err := insertBillingEntitlementTx(ctx, tx, userID, subscription.ID, *subscription.ExpiresAt, plan.Tier, plan.PeriodDays, count, subscription.PeriodCount+1, plan.AllowanceUSD, plan.ModelIDs, &plan, params.At)
 			if err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET period_count=period_count+$2,expires_at=$3,updated_at=$4,config_version=nextval('billing_subscription_config_versions') WHERE id=$1`, subscription.ID, count, expiry, params.At); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET period_count=period_count+$2,expires_at=$3,updated_at=$4,plan_version=$5,config_version=nextval('billing_subscription_config_versions') WHERE id=$1`, subscription.ID, count, expiry, params.At, plan.Version); err != nil {
 				return mapDBError("extend plan subscription", err)
 			}
-			subscription, err = readBillingSubscriptionStateTx(ctx, tx, userID, tier, params.At)
+			subscription, err = readBillingSubscriptionStateTx(ctx, tx, userID, subscriptionID, params.At)
 			if err != nil {
 				return err
 			}
 		} else {
-			subscription, err = reopenBillingSubscriptionTx(ctx, tx, PutSubscriptionParams{BillingWriteParams: params, UserID: userID, Tier: tier, AllowanceUSD: plan.AllowanceUSD, PeriodCount: count}, plan.AllowanceUSD, &plan)
+			subscription, err = reopenBillingSubscriptionTx(ctx, tx, PutSubscriptionParams{BillingWriteParams: params, UserID: userID, Name: plan.Name, Tier: plan.Tier, PeriodDays: plan.PeriodDays, ModelIDs: plan.ModelIDs, AllowanceUSD: plan.AllowanceUSD, PeriodCount: count}, plan.AllowanceUSD, &plan)
 			if err != nil {
 				return err
 			}
@@ -548,14 +587,14 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 		if err != nil {
 			return err
 		}
-		entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries (user_id,operation_id,entry_type,amount_usd,cash_delta_usd,balance_after_usd,subscription_tier,subscription_period_id,reason,actor_user_id,created_at,transaction_snapshot) VALUES ($1,$2,$3,$4::numeric,-$4::numeric,$5::numeric,$6,$7,$8,$9,$10,$11) RETURNING `+billingLedgerColumns, userID, params.OperationID, opType, total, balance, tier, subscription.PeriodID, params.Reason, params.ActorUserID, params.At, snapshot))
+		entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries (user_id,operation_id,entry_type,amount_usd,cash_delta_usd,balance_after_usd,subscription_tier,subscription_period_id,reason,actor_user_id,created_at,transaction_snapshot) VALUES ($1,$2,$3,$4::numeric,-$4::numeric,$5::numeric,$6,$7,$8,$9,$10,$11) RETURNING `+billingLedgerColumns, userID, params.OperationID, opType, total, balance, plan.Tier, subscription.PeriodID, params.Reason, params.ActorUserID, params.At, snapshot))
 		if err != nil {
 			return mapDBError("record plan transaction ledger", err)
 		}
 		if err := finishBillingOperationTx(ctx, tx, params.OperationID, entry.ID); err != nil {
 			return err
 		}
-		if err := appendBillingAuditTx(ctx, tx, params, "billing."+opType, "subscription", userID+":"+tier, map[string]any{"operation_id": params.OperationID, "plan": billingPlanAuditMetadata(plan), "period_count": count, "total_usd": total}); err != nil {
+		if err := appendBillingAuditTx(ctx, tx, params, "billing."+opType, "subscription", subscription.ID, map[string]any{"operation_id": params.OperationID, "plan": billingPlanAuditMetadata(plan), "period_count": count, "total_usd": total}); err != nil {
 			return err
 		}
 		result = BillingPlanTransaction{Plan: plan, PeriodCount: count, TotalUSD: total, BalanceUSD: balance, Subscription: subscription, Ledger: entry}

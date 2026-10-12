@@ -61,7 +61,10 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 	}
 	s := &Server{
 		store: repository, mux: http.NewServeMux(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-		config: config.Config{RPOrigins: []string{"https://gateway.example"}, TokenPepper: []byte(strings.Repeat("p", 32)), ReauthMaxAge: 5 * time.Minute},
+		config: config.Config{UsagePricing: config.UsagePricing{Models: map[string]config.ModelPricing{"gpt-test": {}, "claude-test": {}}}, RPOrigins: []string{"https://gateway.example"}, TokenPepper: []byte(strings.Repeat("p", 32)), ReauthMaxAge: 5 * time.Minute},
+	}
+	if err := repository.SyncModelAccessCatalog(ctx, s.config.UsagePricing.ManageableModelNames()); err != nil {
+		t.Fatal(err)
 	}
 	s.routes()
 	now := time.Now().UTC()
@@ -109,7 +112,7 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 	}
 	planBody := map[string]any{
 		"operation_id": uuid.NewString(), "reason": "Integration plan launch", "name": "Daily",
-		"price_usd": "1.25", "tier": "day", "allowance_usd": "12", "min_period_count": 2, "active": true,
+		"price_usd": "1.25", "tier": "day", "model_ids": []string{"gpt-test"}, "allowance_usd": "12", "min_period_count": 2, "active": true,
 	}
 	send(http.MethodPost, "/admin/billing/plans", planBody, memberToken, http.StatusForbidden)
 	response := send(http.MethodPost, "/admin/billing/plans", planBody, ownerToken, http.StatusOK)
@@ -120,35 +123,52 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 	if plan.ID == "" || plan.Version < 1 || plan.PriceUSD != "1.250000000000" {
 		t.Fatalf("plan response: %+v", plan)
 	}
+	// Catalog membership is checked for new writes, after immutable replay.
+	firstPlanSnapshot := response.Body.String()
+	delete(s.config.UsagePricing.Models, "gpt-test")
+	if err := repository.SyncModelAccessCatalog(ctx, s.config.UsagePricing.ManageableModelNames()); err != nil {
+		t.Fatal(err)
+	}
+	if got := send(http.MethodPost, "/admin/billing/plans", planBody, ownerToken, http.StatusOK).Body.String(); got != firstPlanSnapshot {
+		t.Fatal("catalog edit changed committed plan response")
+	}
+	previousPlanOperation := planBody["operation_id"]
+	planBody["operation_id"] = uuid.NewString()
+	send(http.MethodPost, "/admin/billing/plans", planBody, ownerToken, http.StatusBadRequest)
+	planBody["operation_id"] = previousPlanOperation
+	s.config.UsagePricing.Models["gpt-test"] = config.ModelPricing{}
+	if err := repository.SyncModelAccessCatalog(ctx, s.config.UsagePricing.ManageableModelNames()); err != nil {
+		t.Fatal(err)
+	}
 	send(http.MethodGet, "/admin/billing/plans?include_inactive=true", nil, memberToken, http.StatusForbidden)
 	send(http.MethodGet, "/admin/billing/plans?include_inactive=true", nil, ownerToken, http.StatusOK)
 	send(http.MethodPost, "/admin/billing/users/"+member.ID+"/adjustments", map[string]any{
 		"operation_id": uuid.NewString(), "reason": "Integration balance", "usd_amount": "100",
 	}, ownerToken, http.StatusOK)
-	send(http.MethodPut, "/admin/billing/users/"+member.ID+"/subscriptions/day", map[string]any{
-		"operation_id": uuid.NewString(), "reason": "Manual initial subscription", "quota_usd": "50", "period_count": 3,
+	send(http.MethodPost, "/admin/billing/users/"+member.ID+"/subscriptions", map[string]any{
+		"operation_id": uuid.NewString(), "reason": "Manual initial subscription", "name": "Manual", "tier": "day", "model_ids": []string{"gpt-test"}, "quota_usd": "50", "period_count": 3,
 	}, ownerToken, http.StatusOK)
-	getSubscription := func() store.BillingSubscriptionState {
+	getSubscription := func(id string) store.BillingSubscriptionState {
 		t.Helper()
 		state, err := repository.GetBillingState(ctx, member.ID, 100, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, subscription := range state.Subscriptions {
-			if subscription.Tier == "day" {
+			if id == "" || subscription.ID == id {
 				return subscription
 			}
 		}
 		t.Fatal("missing day subscription")
 		return store.BillingSubscriptionState{}
 	}
-	manual := getSubscription()
+	manual := getSubscription("")
 	if manual.Plan != nil || manual.CanRenew || manual.ConfigVersion < 1 {
 		t.Fatalf("manual binding: %+v", manual)
 	}
 	purchase := map[string]any{
 		"operation_id": uuid.NewString(), "plan_id": plan.ID, "plan_version": plan.Version,
-		"subscription_config_version": manual.ConfigVersion, "period_count": 2,
+		"period_count": 2,
 	}
 	send(http.MethodPost, "/admin/billing/me/purchases", purchase, "", http.StatusUnauthorized)
 	send(http.MethodPost, "/admin/billing/me/purchases", purchase, newSession(member.ID, false), http.StatusForbidden)
@@ -161,8 +181,19 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if bought.BalanceUSD != "97.500000000000" || bought.TotalUSD != "2.500000000000" || bought.Subscription.Plan == nil || !bought.Subscription.CanRenew || bought.Subscription.RemainingUSD != "12.000000000000" || bought.Subscription.PeriodCount != 2 || bought.Subscription.CurrentPeriodNumber != 1 {
-		t.Fatalf("purchase did not replace manual entitlement: %+v", bought)
+		t.Fatalf("purchase did not create independent entitlement: %+v", bought)
 	}
+	if bought.Subscription.ID == manual.ID || getSubscription(manual.ID).RemainingUSD != "50.000000000000" {
+		t.Fatal("purchase replaced existing subscription")
+	}
+	duplicatePurchase := map[string]any{"operation_id": uuid.NewString(), "plan_id": plan.ID, "plan_version": plan.Version, "period_count": 2}
+	duplicateResponse := send(http.MethodPost, "/admin/billing/me/purchases", duplicatePurchase, memberToken, http.StatusOK)
+	var duplicate store.BillingPlanTransaction
+	if err := json.Unmarshal(duplicateResponse.Body.Bytes(), &duplicate); err != nil || duplicate.Subscription.ID == bought.Subscription.ID {
+		t.Fatal("duplicate purchase did not create new subscription", err)
+	}
+	send(http.MethodPut, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/preferences", map[string]any{"operation_id": uuid.NewString(), "priority": 42, "charge_enabled": false}, memberToken, http.StatusOK)
+	send(http.MethodPut, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/preferences", map[string]any{"operation_id": uuid.NewString(), "priority": 2, "charge_enabled": true}, ownerToken, http.StatusNotFound)
 	replayed := send(http.MethodPost, "/admin/billing/me/purchases", purchase, memberToken, http.StatusOK)
 	if replayed.Body.String() != response.Body.String() {
 		t.Fatalf("purchase replay changed response: %s != %s", replayed.Body, response.Body)
@@ -172,9 +203,9 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 		"operation_id": uuid.NewString(), "plan_version": plan.Version,
 		"subscription_config_version": bought.Subscription.ConfigVersion, "period_count": 1,
 	}
-	send(http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", renewal, memberToken, http.StatusBadRequest)
+	send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusBadRequest)
 	renewal["period_count"] = 99
-	response = send(http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", renewal, memberToken, http.StatusBadRequest)
+	response = send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusBadRequest)
 	if !strings.Contains(response.Body.String(), "insufficient_balance") {
 		t.Fatalf("expected insufficient balance: %s", response.Body)
 	}
@@ -183,7 +214,7 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 	send(http.MethodPost, "/admin/billing/users/"+member.ID+"/adjustments", map[string]any{
 		"operation_id": uuid.NewString(), "reason": "Fund renewal", "usd_amount": "100",
 	}, ownerToken, http.StatusOK)
-	response = send(http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", renewal, memberToken, http.StatusOK)
+	response = send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusOK)
 	var renewed store.BillingPlanTransaction
 	if err := json.Unmarshal(response.Body.Bytes(), &renewed); err != nil {
 		t.Fatal(err)
@@ -194,20 +225,65 @@ func TestBillingPlansPostgresHTTPIntegration(t *testing.T) {
 	renewedSnapshot := response.Body.String()
 	planBody["operation_id"], planBody["version"], planBody["name"] = uuid.NewString(), plan.Version, "Daily revised"
 	send(http.MethodPut, "/admin/billing/plans/"+plan.ID, planBody, ownerToken, http.StatusOK)
-	unbound := getSubscription()
-	if unbound.Plan != nil || unbound.CanRenew || unbound.PeriodCount != 101 || !unbound.ExpiresAt.Equal(*renewed.Subscription.ExpiresAt) || unbound.RemainingUSD != renewed.Subscription.RemainingUSD {
-		t.Fatalf("plan edit changed purchased rights: %+v", unbound)
+	bound := getSubscription(bought.Subscription.ID)
+	if bound.Plan == nil || !bound.CanRenew || bound.PeriodCount != 101 || !bound.ExpiresAt.Equal(*renewed.Subscription.ExpiresAt) || bound.RemainingUSD != renewed.Subscription.RemainingUSD || bound.Priority != 42 || bound.ChargeEnabled {
+		t.Fatalf("plan edit changed purchased rights: %+v", bound)
 	}
 	if got := send(http.MethodPost, "/admin/billing/me/purchases", purchase, memberToken, http.StatusOK).Body.String(); got != firstSnapshot {
 		t.Fatalf("edited plan broke successful purchase replay: %s != %s", got, firstSnapshot)
 	}
-	if got := send(http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", renewal, memberToken, http.StatusOK).Body.String(); got != renewedSnapshot {
+	if got := send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusOK).Body.String(); got != renewedSnapshot {
 		t.Fatalf("edited plan broke renewal replay: %s != %s", got, renewedSnapshot)
 	}
 	renewal["operation_id"] = uuid.NewString()
-	send(http.MethodPost, "/admin/billing/me/subscriptions/day/renewals", renewal, memberToken, http.StatusConflict)
+	send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusConflict)
 	purchase["operation_id"] = uuid.NewString()
 	send(http.MethodPost, "/admin/billing/me/purchases", purchase, memberToken, http.StatusConflict)
+	// Changing all commercial terms keeps the binding and preserves purchased rights.
+	planBody["operation_id"], planBody["version"], planBody["tier"], planBody["period_days"] = uuid.NewString(), bound.Plan.Version, "custom", 15
+	planBody["model_ids"], planBody["allowance_usd"], planBody["price_usd"], planBody["active"] = []string{"claude-test"}, "25", "0.5", false
+	editedResponse := send(http.MethodPut, "/admin/billing/plans/"+plan.ID, planBody, ownerToken, http.StatusOK)
+	var edited store.BillingPlan
+	if err := json.Unmarshal(editedResponse.Body.Bytes(), &edited); err != nil {
+		t.Fatal(err)
+	}
+	beforeAppend := getSubscription(bought.Subscription.ID)
+	renewal["operation_id"], renewal["plan_version"], renewal["subscription_config_version"], renewal["period_count"] = uuid.NewString(), edited.Version, beforeAppend.ConfigVersion, 2
+	appendedResponse := send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusOK)
+	var appended store.BillingPlanTransaction
+	if err := json.Unmarshal(appendedResponse.Body.Bytes(), &appended); err != nil {
+		t.Fatal(err)
+	}
+	if appended.Subscription.Tier != "day" || appended.Subscription.PeriodDays != 1 || !reflect.DeepEqual(appended.Subscription.ModelIDs, []string{"gpt-test"}) || appended.Subscription.RemainingUSD != bought.Subscription.RemainingUSD || len(appended.Subscription.Entitlements) != 3 || !appended.Subscription.ExpiresAt.Equal(beforeAppend.ExpiresAt.Add(30*24*time.Hour)) {
+		t.Fatalf("append changed current rights: %+v", appended.Subscription)
+	}
+	send(http.MethodDelete, "/admin/billing/plans/"+plan.ID, map[string]any{"operation_id": uuid.NewString(), "reason": "Retire", "version": edited.Version}, ownerToken, http.StatusOK)
+	unbound := getSubscription(bought.Subscription.ID)
+	if unbound.Plan != nil || unbound.CanRenew || unbound.RemainingUSD != appended.Subscription.RemainingUSD || !unbound.ExpiresAt.Equal(*appended.Subscription.ExpiresAt) {
+		t.Fatalf("deletion changed purchased rights: %+v", unbound)
+	}
+	if got := send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusOK).Body.String(); got != appendedResponse.Body.String() {
+		t.Fatal("deleted plan changed historical response")
+	}
+	renewal["operation_id"] = uuid.NewString()
+	send(http.MethodPost, "/admin/billing/me/subscriptions/"+bought.Subscription.ID+"/renewals", renewal, memberToken, http.StatusConflict)
+	// Reopening targets exactly one independent subscription and removes all future rights.
+	send(http.MethodPut, "/admin/billing/users/"+member.ID+"/subscriptions/"+bought.Subscription.ID, map[string]any{"operation_id": uuid.NewString(), "reason": "Replace rights", "name": "Reopened", "tier": "week", "period_count": 0, "quota_usd": "9", "model_ids": []string{"claude-test"}}, ownerToken, http.StatusOK)
+	reopened := getSubscription(bought.Subscription.ID)
+	if reopened.Plan != nil || reopened.CanRenew || reopened.ExpiresAt != nil || len(reopened.Entitlements) != 1 || getSubscription(manual.ID).RemainingUSD != "50.000000000000" {
+		t.Fatalf("reopen did not isolate subscription: %+v", reopened)
+	}
+	send(http.MethodDelete, "/admin/billing/users/"+owner.ID+"/subscriptions/"+bought.Subscription.ID, map[string]any{"operation_id": uuid.NewString(), "reason": "Cross user"}, ownerToken, http.StatusNotFound)
+	send(http.MethodDelete, "/admin/billing/users/"+member.ID+"/subscriptions/"+bought.Subscription.ID, map[string]any{"operation_id": uuid.NewString(), "reason": "Disable"}, ownerToken, http.StatusOK)
+	visible, err := repository.GetBillingState(ctx, member.ID, 100, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, subscription := range visible.Subscriptions {
+		if subscription.ID == bought.Subscription.ID {
+			t.Fatal("disabled subscription remains visible")
+		}
+	}
 	ownerState, err := repository.GetBillingState(ctx, owner.ID, 100, 0)
 	if err != nil || ownerState.BalanceUSD != "0.000000000000" {
 		t.Fatalf("member purchase affected owner: %+v %v", ownerState, err)

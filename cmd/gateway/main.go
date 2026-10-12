@@ -92,6 +92,10 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 		cancelModelAccess()
 		return fmt.Errorf("synchronize model access catalog: %w", err)
 	}
+	if err := repository.InitializeBillingSubscriptionModels(modelAccessContext); err != nil {
+		cancelModelAccess()
+		return fmt.Errorf("initialize subscription model scopes: %w", err)
+	}
 	cancelModelAccess()
 
 	identificationContext, cancelIdentification := context.WithTimeout(ctx, 10*time.Second)

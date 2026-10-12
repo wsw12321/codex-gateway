@@ -45,6 +45,7 @@ type modelIdentificationOptionsDTO struct {
 	Accounts         []modelIdentificationAccountOption `json:"accounts"`
 	AccountID        string                             `json:"account_id,omitempty"`
 	Models           []string                           `json:"models"`
+	ModelCatalog     []sessionModelOption               `json:"model_catalog"`
 	ReferenceVersion string                             `json:"reference_version"`
 }
 
@@ -85,7 +86,7 @@ func (s *Server) modelIdentificationOptions(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) resolveModelIdentificationOptions(ctx context.Context, accountID string) (modelIdentificationOptionsDTO, error) {
-	result := modelIdentificationOptionsDTO{Accounts: []modelIdentificationAccountOption{}, Models: []string{}, ReferenceVersion: modelid.ReferenceVersion}
+	result := modelIdentificationOptionsDTO{Accounts: []modelIdentificationAccountOption{}, Models: []string{}, ModelCatalog: []sessionModelOption{}, ReferenceVersion: modelid.ReferenceVersion}
 	if s.upstream == nil {
 		return result, errors.New("upstream client unavailable")
 	}
@@ -114,6 +115,7 @@ func (s *Server) resolveModelIdentificationOptions(ctx context.Context, accountI
 	result.AccountID = accountID
 	result.Models = models
 	sort.Strings(result.Models)
+	result.ModelCatalog = modelCatalogOptions(result.Models)
 	return result, nil
 }
 

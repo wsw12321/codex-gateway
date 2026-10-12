@@ -48,7 +48,7 @@ class Element {
 
 const plan = {id: "plan-one", name: "日常套餐", tier: "day", price_usd: "0.100000000001", allowance_usd: "20",
   min_period_count: 2, active: true, version: 4};
-const subscription = {id: "sub-one", enabled: true, quota_usd: "20", remaining_usd: "7.25", period_count: 99,
+const subscription = {id: "sub-one", name: "日常订阅", tier: "day", period_days: 1, model_ids: ["gpt-a"], enabled: true, quota_usd: "20", remaining_usd: "7.25", period_count: 99,
   current_period_number: 4, config_version: 8, can_renew: true, plan,
   period_started_at: "2099-01-04T00:00:00Z", period_ends_at: "2099-01-05T00:00:00Z", expires_at: "2099-04-10T00:00:00Z"};
 
@@ -69,7 +69,7 @@ function dashboard(role = "member", sub = subscription) {
     return form;
   };
   const purchase = createForm("billing-purchase-form", ["period_count", "confirmed"], "billing-purchase-dialog");
-  const editor = createForm("billing-plan-form", ["name", "price_usd", "tier", "allowance_usd", "min_period_count", "active", "reason"], "billing-plan-dialog");
+  const editor = createForm("billing-plan-form", ["name", "price_usd", "tier", "period_days", "allowance_usd", "min_period_count", "active", "reason"], "billing-plan-dialog");
   for (const tier of ["day", "week", "month"]) {
     const form = createForm(`billing-subscription-${tier}`, ["quota_usd", "period_count", "reason"]);
     form.className = "billing-subscription-form";
@@ -91,12 +91,12 @@ function dashboard(role = "member", sub = subscription) {
   vm.runInContext(application, context, {filename: "assets/app.js"});
   const run = (code) => vm.runInContext(code, context);
   run(`state = {user: {id: "self", role}, recently_verified: true}; billingUserID = "self";
-    billingDetail = {user: state.user, cash_balance_usd: "100", subscriptions: initialSub ? {day: initialSub} : {}};
+    billingDetail = {user: state.user, cash_balance_usd: "100", subscriptions: initialSub ? [initialSub] : []};
     billingPlans = [initialPlan]; const productionAPI = api; api = request; let refreshes = 0;
-    refreshBillingPlanData = async () => { refreshes++; return true; }; notice = () => {};`);
+    refreshBillingPlanData = async () => { refreshes++; return true; }; notice = () => {}; loadFormModelPicker = () => {}; selectedPickerModels = () => ["gpt-a"];`);
   return {run, context, writes, reads, confirmations, node, purchase, editor,
     controls: (selector) => root.querySelectorAll(selector),
-    open: (kind = "purchase") => run(`openBillingPurchase(initialPlan, "${kind}")`),
+    open: (kind = "purchase") => run(`openBillingPurchase(initialPlan, "${kind}", "${kind}" === "renewal" ? initialSub : null)`),
     confirm: () => { purchase.elements.confirmed.checked = true; },
     message: (form = purchase) => form.querySelector(".form-message").textContent,
     snapshot: (expression) => JSON.parse(run(`JSON.stringify(${expression})`)),
@@ -112,34 +112,30 @@ test("decimal totals and single transaction counts are exact", () => {
   assert.equal(page.run('billingPlanPeriodCount("99", 2)'), 99);
 });
 
-test("cumulative subscriptions render over 99 without truncating the admin reopen input", () => {
+test("cumulative purchased periods are preserved without imposing a 99-period total", () => {
   const page = dashboard("owner", {...subscription, period_count: 198});
   assert.equal(page.run('billingPeriodProgress(initialSub)'), "当前第 4/198 个周期");
-  page.run("renderBillingAdminValues(billingDetail)");
-  const input = page.node("billing-subscription-day").elements.period_count;
-  assert.equal(input.value, "");
-  assert.match(input.placeholder, /198.*0–99/);
 });
 
-test("manual, same-plan and other-plan subscriptions all require overwrite confirmation", async () => {
+test("manual, same-plan and other-plan purchases create independent subscriptions", async () => {
   for (const existing of [null, plan, {...plan, id: "old-plan", name: "旧套餐"}]) {
     const page = dashboard("member", {...subscription, plan: existing, can_renew: Boolean(existing)});
     page.open();
-    assert.match(page.node("billing-purchase-warning").textContent, /覆盖.*剩余额度.*不结转、不自动退款/);
+    assert.match(page.node("billing-purchase-warning").textContent, /新增独立订阅.*重复购买/);
     assert.match(page.node("billing-purchase-summary").textContent, /第 1 期.*补满 US\$20\.00/);
     await assert.rejects(page.run("submitBillingPurchase()"), /先核对/);
     assert.equal(page.writes.length, 0);
     page.confirm(); await page.run("submitBillingPurchase()");
     const body = JSON.parse(page.writes[0].body);
-    assert.deepEqual(body, {plan_id: plan.id, plan_version: 4, subscription_config_version: 8, period_count: 2, operation_id: "operation-1"});
+    assert.deepEqual(body, {plan_id: plan.id, plan_version: 4, period_count: 2, operation_id: "operation-1"});
     assert.equal(page.run("refreshes"), 1);
   }
 });
 
-test("a new subscription captures config version zero and first period benefits", async () => {
+test("a new subscription omits the old overwrite configuration version", async () => {
   const page = dashboard("member", null);
   page.open(); page.confirm(); await page.run("submitBillingPurchase()");
-  assert.equal(JSON.parse(page.writes[0].body).subscription_config_version, 0);
+  assert.equal(JSON.parse(page.writes[0].body).subscription_config_version, undefined);
   assert.match(page.node("billing-purchase-warning").textContent, /立即开始/);
 });
 
@@ -151,9 +147,9 @@ test("renewal confirms added periods and extended expiry while preserving curren
   assert.equal(page.run('billingRenewalExpiry(initialSub, "day", 2)'), "2099-04-12T00:00:00.000Z");
   assert.equal(page.run('billingRenewalExpiry(initialSub, "month", 2)'), "2099-06-11T00:00:00.000Z");
   page.confirm(); await page.run("submitBillingPurchase()");
-  assert.equal(page.writes[0].url, "/admin/billing/me/subscriptions/day/renewals");
+  assert.equal(page.writes[0].url, "/admin/billing/me/subscriptions/sub-one/renewals");
   assert.equal(JSON.parse(page.writes[0].body).plan_id, undefined);
-  assert.equal(page.snapshot("billingDetail.subscriptions.day").remaining_usd, "7.25");
+  assert.equal(page.snapshot("billingDetail.subscriptions[0]").remaining_usd, "7.25");
 });
 
 test("unbound or ineligible subscriptions cannot open renewal", () => {
@@ -202,10 +198,10 @@ test("unknown retry retains the operation after later permission failures or mal
 test("stale confirmation refreshes, closes the dialog and requires a new confirmation", async () => {
   const page = dashboard(); page.open(); page.confirm();
   // Background refresh must not silently rebase the version already confirmed.
-  page.run("billingDetail.subscriptions.day.config_version = 9");
+  page.run("billingDetail.subscriptions[0].config_version = 9");
   page.context.response = async () => { throw Object.assign(new Error("changed"), {status: 409}); };
   await page.run("submitBillingPurchase()");
-  assert.equal(JSON.parse(page.writes[0].body).subscription_config_version, 8);
+  assert.equal(JSON.parse(page.writes[0].body).subscription_config_version, undefined);
   assert.equal(page.run("billingPlanOperation"), null);
   assert.equal(page.node("billing-purchase-dialog").open, false);
   assert.equal(page.run("refreshes"), 1);
@@ -213,7 +209,7 @@ test("stale confirmation refreshes, closes the dialog and requires a new confirm
   page.context.response = null; page.open();
   assert.equal(page.purchase.elements.confirmed.checked, false);
   page.confirm(); await page.run("submitBillingPurchase()");
-  assert.equal(JSON.parse(page.writes[1].body).subscription_config_version, 9);
+  assert.equal(JSON.parse(page.writes[1].body).subscription_config_version, undefined);
   assert.notEqual(JSON.parse(page.writes[0].body).operation_id, JSON.parse(page.writes[1].body).operation_id);
 });
 
@@ -298,7 +294,8 @@ test("Owner creates inactive plans with default minimum and edits with a version
   await page.run("submitBillingPlan()");
   assert.equal(page.writes[1].method, "PUT");
   assert.equal(JSON.parse(page.writes[1].body).version, 4);
-  assert.match(page.confirmations[0], /解除已有订阅的套餐绑定，已购权益保持有效/);
+  assert.equal(page.confirmations.length, 0);
+  assert.match(page.node("billing-plan-edit-warning").textContent, /保留已有绑定/);
 });
 
 test("uncertain Owner edits retry the original frozen fields", async () => {
@@ -310,7 +307,7 @@ test("uncertain Owner edits retry the original frozen fields", async () => {
   page.editor.elements.price_usd.value = "999";
   page.context.response = null; await page.run("submitBillingPlan()");
   assert.equal(page.writes[0].body, page.writes[1].body);
-  assert.equal(page.confirmations.length, 1);
+  assert.equal(page.confirmations.length, 0);
 });
 
 test("catalog only requests inactive plans for Owner and resets private state on logout", async () => {

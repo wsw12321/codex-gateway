@@ -65,7 +65,7 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 	// Install the independent funding and model-price schemas needed by current helpers without
 	// applying the CPA catalog migration being tested until after seeding.
 	for _, migration := range migrations {
-		if migration.Name != "0027_group_priority_billing.sql" && migration.Name != "0029_model_prices.sql" && migration.Name != "0033_anthropic_billing.sql" {
+		if migration.Name != "0027_group_priority_billing.sql" && migration.Name != "0029_model_prices.sql" && migration.Name != "0033_anthropic_billing.sql" && migration.Name != "0034_multi_subscriptions.sql" {
 			continue
 		}
 		if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
@@ -103,7 +103,7 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.PutSubscription(ctx, PutSubscriptionParams{
+	if _, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Migration subscription", ModelIDs: []string{retiredModel},
 		BillingWriteParams: billingIntegrationWrite(t, user.ID, "fund migration history", now),
 		UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "10",
 	}); err != nil {

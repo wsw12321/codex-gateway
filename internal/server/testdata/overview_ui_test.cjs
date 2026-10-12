@@ -44,11 +44,11 @@ function deferred() {
   return {promise, resolve, reject};
 }
 
-const billing = (id = "owner") => ({user: {id}, cash_balance_usd: "123.000000000123", subscriptions: {
-  day: {enabled: true, remaining_usd: "9.000000000001", expires_at: "2099-10-01T12:00:00Z"},
-  week: {enabled: false, remaining_usd: "87", expires_at: "2099-09-30T12:00:00Z"},
-  month: {enabled: true, remaining_usd: "201", expires_at: null, period_count: 0},
-}});
+const billing = (id = "owner") => ({user: {id}, cash_balance_usd: "123.000000000123", subscriptions: [
+  {id: "day", name: "日订阅",enabled: true, remaining_usd: "9.000000000001", expires_at: "2099-10-01T12:00:00Z"},
+  {id: "week", name: "周订阅",enabled: false, remaining_usd: "87", expires_at: "2099-09-30T12:00:00Z"},
+  {id: "month", name: "月订阅",enabled: true, remaining_usd: "201", expires_at: null, period_count: 0},
+]});
 const available = {status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available"};
 
 function fixture(pathname) {
@@ -88,7 +88,7 @@ test("overview uses independent self and monthly snapshots despite other-user fi
   await ui.run("loadOverview()");
   assert.equal(ui.node("overview-cash").textContent, "US$123.000000000123");
   assert.match(ui.node("overview-subscriptions").textContent, /US\$9\.000000000001/);
-  assert.match(ui.node("overview-subscriptions").textContent, /周订阅 未启用/);
+  assert.doesNotMatch(ui.node("overview-subscriptions").textContent, /周订阅/);
   assert.match(ui.node("overview-next-expiry").textContent, /2099\/10\/01/);
   assert.equal(ui.node("metric-requests").textContent, "7");
   assert.equal(ui.node("metric-global-tokens").textContent, "17,000");
@@ -180,12 +180,12 @@ test("a newer refresh wins and late failure cannot replace its successful result
 
 test("unlimited subscriptions, missing remaining values and incomplete onboarding stay distinct", () => {
   const ui = dashboard("member");
-  ui.context.detail = {subscriptions: {day: {enabled: true, expires_at: null, period_count: 0}}};
+  ui.context.detail = {subscriptions: [{id: "day", name: "日订阅", enabled: true, expires_at: null, period_count: 0}]};
   ui.run("renderOverviewBilling(detail)");
   assert.equal(ui.node("overview-cash").textContent, "—");
   assert.match(ui.node("overview-subscriptions").textContent, /日订阅 数据不可用/);
   assert.match(ui.node("overview-next-expiry").textContent, /无限期/);
-  ui.run("renderOverviewBilling({subscriptions: {day: {enabled: true, expires_at: null}}})");
+  ui.run('renderOverviewBilling({subscriptions: [{id: "day", name: "日订阅", enabled: true, expires_at: null}]})');
   assert.match(ui.node("overview-next-expiry").textContent, /数据不可用/);
   ui.run("renderOverviewBilling({})");
   assert.doesNotMatch(ui.node("overview-subscriptions").textContent, /未启用/);

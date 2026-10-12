@@ -52,6 +52,7 @@ const informationUserBlockers = `array_remove(ARRAY[
 	CASE WHEN u.status = 'pending' THEN 'pending_approval' END,
 	CASE WHEN EXISTS(SELECT 1 FROM billing_accounts a WHERE a.user_id=u.id AND a.balance_usd<>0) THEN 'balance' END,
 	CASE WHEN EXISTS(SELECT 1 FROM billing_subscriptions s WHERE s.user_id=u.id) THEN 'subscriptions' END,
+	CASE WHEN EXISTS(SELECT 1 FROM billing_subscription_entitlements e WHERE e.user_id=u.id) THEN 'subscription_entitlements' END,
 	CASE WHEN EXISTS(SELECT 1 FROM usage_requests r WHERE r.user_id=u.id) THEN 'requests' END,
 	CASE WHEN EXISTS(SELECT 1 FROM usage_daily d WHERE d.user_id=u.id)
 		OR EXISTS(SELECT 1 FROM usage_monthly m WHERE m.user_id=u.id) THEN 'usage_summaries' END,

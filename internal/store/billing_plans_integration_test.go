@@ -46,7 +46,7 @@ func (f *billingPlanFixture) fund(t *testing.T, amount string) {
 
 func (f *billingPlanFixture) plan(t *testing.T, tier string, minimum int) BillingPlan {
 	t.Helper()
-	p, err := f.s.CreateBillingPlan(f.ctx, CreateBillingPlanParams{
+	p, err := f.s.CreateBillingPlan(f.ctx, CreateBillingPlanParams{ModelIDs: billingIntegrationSubscriptionModels(t, f.ctx, f.s),
 		BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "test plan", f.now),
 		Name:               "Test plan", Tier: tier, PriceUSD: "2", AllowanceUSD: "10", MinPeriodCount: minimum, Active: true,
 	})
@@ -65,13 +65,13 @@ func (f *billingPlanFixture) purchase(t *testing.T, p BillingPlan, version int64
 func (f *billingPlanFixture) renewal(t *testing.T, p BillingPlan, sub BillingSubscriptionState, count int) RenewBillingSubscriptionParams {
 	t.Helper()
 	return RenewBillingSubscriptionParams{BillingWriteParams: billingIntegrationWrite(t, f.user.ID, "renew plan", f.now),
-		UserID: f.user.ID, Tier: p.Tier, PlanVersion: p.Version, SubscriptionConfigVersion: sub.ConfigVersion, PeriodCount: count}
+		UserID: f.user.ID, SubscriptionID: sub.ID, Tier: p.Tier, PlanVersion: p.Version, SubscriptionConfigVersion: sub.ConfigVersion, PeriodCount: count}
 }
 
 func (f *billingPlanFixture) edit(t *testing.T, p BillingPlan) UpdateBillingPlanParams {
 	t.Helper()
 	return UpdateBillingPlanParams{BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "edit plan", f.now),
-		PlanID: p.ID, Version: p.Version, Name: p.Name, Tier: p.Tier, PriceUSD: p.PriceUSD,
+		PlanID: p.ID, Version: p.Version, PeriodDays: p.PeriodDays, ModelIDs: p.ModelIDs, Name: p.Name, Tier: p.Tier, PriceUSD: p.PriceUSD,
 		AllowanceUSD: p.AllowanceUSD, MinPeriodCount: p.MinPeriodCount, Active: p.Active}
 }
 
@@ -108,7 +108,7 @@ func assertBillingPlanReplay(t *testing.T, first, replay any) {
 func TestBillingPlanPurchaseAndRenewalPostgresIntegration(t *testing.T) {
 	f := newBillingPlanFixture(t)
 	f.fund(t, "500")
-	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{
+	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, f.ctx, f.s),
 		BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "manual subscription", f.now.Add(-time.Hour)),
 		UserID:             f.user.ID, Tier: BillingTierDay, AllowanceUSD: "40", PeriodCount: 5,
 	})
@@ -117,6 +117,9 @@ func TestBillingPlanPurchaseAndRenewalPostgresIntegration(t *testing.T) {
 	}
 	if manual.Plan != nil || manual.CanRenew {
 		t.Fatalf("manual subscription bound: %+v", manual)
+	}
+	if _, err := f.s.SetBillingSubscriptionPreferences(f.ctx, SetBillingSubscriptionPreferencesParams{BillingWriteParams: billingIntegrationWrite(t, f.user.ID, "disable manual charges", f.now), UserID: f.user.ID, SubscriptionID: manual.ID, Priority: 1, ChargeEnabled: false}); err != nil {
+		t.Fatal(err)
 	}
 	p := f.plan(t, BillingTierDay, 2)
 	params := f.purchase(t, p, manual.ConfigVersion, 2)
@@ -136,7 +139,10 @@ func TestBillingPlanPurchaseAndRenewalPostgresIntegration(t *testing.T) {
 	if _, err := f.s.SettleBilling(f.ctx, requestID, f.now.Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	before := f.state(t, p.Tier)
+	before, err := readBillingPlanTestState(f, sub.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !equalAllocationDecimal(before.RemainingUSD, "7") {
 		t.Fatalf("consume: %+v", before)
 	}
@@ -170,7 +176,7 @@ func TestBillingPlanPurchaseAndRenewalPostgresIntegration(t *testing.T) {
 	assertBillingPlanReplay(t, renewed, replayRenew)
 	// Disabling must snapshot the extended 101-period configuration, rather than
 	// reconstruct the original two-period purchase from its current period row.
-	disable := DeleteSubscriptionParams{BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "disable renewed subscription", f.now.Add(time.Minute)), UserID: f.user.ID, Tier: p.Tier}
+	disable := DeleteSubscriptionParams{BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "disable renewed subscription", f.now.Add(time.Minute)), UserID: f.user.ID, SubscriptionID: renewed.Subscription.ID, Tier: p.Tier}
 	disabled, err := f.s.DeleteSubscription(f.ctx, disable)
 	if err != nil {
 		t.Fatal(err)
@@ -178,13 +184,13 @@ func TestBillingPlanPurchaseAndRenewalPostgresIntegration(t *testing.T) {
 	if disabled.PeriodCount != 101 || !disabled.ExpiresAt.Equal(renewed.Subscription.ExpiresAt.UTC()) {
 		t.Fatalf("disable lost renewed configuration: %+v", disabled)
 	}
-	if _, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{
-		BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "manual restart after disable", f.now.Add(2*time.Minute)),
-		UserID:             f.user.ID, Tier: p.Tier, AllowanceUSD: "20", PeriodCount: 1,
+	if _, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, f.ctx, f.s),
+		SubscriptionID: renewed.Subscription.ID, BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "manual restart after disable", f.now.Add(2*time.Minute)),
+		UserID: f.user.ID, Tier: p.Tier, AllowanceUSD: "20", PeriodCount: 1,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if reopened := f.state(t, p.Tier); reopened.Plan != nil || reopened.CanRenew {
+	if reopened, e := readBillingPlanTestState(f, sub.ID); e != nil || reopened.Plan != nil || reopened.CanRenew {
 		t.Fatalf("manual restart kept binding: %+v", reopened)
 	}
 	disableReplay, err := f.s.DeleteSubscription(f.ctx, disable)
@@ -230,7 +236,7 @@ func TestBillingPlanInvalidationPostgresIntegration(t *testing.T) {
 	}{
 		{"name", func(p *UpdateBillingPlanParams) { p.Name = "Renamed" }},
 		{"price", func(p *UpdateBillingPlanParams) { p.PriceUSD = "3" }},
-		{"tier", func(p *UpdateBillingPlanParams) { p.Tier = BillingTierMonth }},
+		{"tier", func(p *UpdateBillingPlanParams) { p.Tier = BillingTierMonth; p.PeriodDays = 31 }},
 		{"allowance", func(p *UpdateBillingPlanParams) { p.AllowanceUSD = "20" }},
 		{"minimum", func(p *UpdateBillingPlanParams) { p.MinPeriodCount = 2 }},
 		{"unlist", func(p *UpdateBillingPlanParams) { p.Active = false }},
@@ -262,7 +268,7 @@ func TestBillingPlanInvalidationPostgresIntegration(t *testing.T) {
 				t.Fatal("edit did not increment plan version")
 			}
 			after := f.state(t, p.Tier)
-			if after.Plan != nil || after.CanRenew || after.PeriodCount != first.Subscription.PeriodCount ||
+			if after.Plan == nil || !after.CanRenew || after.Plan.Version != changed.Version || after.PeriodCount != first.Subscription.PeriodCount ||
 				!after.ExpiresAt.Equal(*first.Subscription.ExpiresAt) || after.RemainingUSD != first.Subscription.RemainingUSD {
 				t.Fatalf("edit changed rights or left binding: %+v", after)
 			}
@@ -274,8 +280,8 @@ func TestBillingPlanInvalidationPostgresIntegration(t *testing.T) {
 			if _, err := f.s.UpdateBillingPlan(f.ctx, restore); err != nil {
 				t.Fatal(err)
 			}
-			if f.state(t, p.Tier).CanRenew {
-				t.Fatal("restoring old settings restored historical binding")
+			if !f.state(t, p.Tier).CanRenew {
+				t.Fatal("restoring settings lost binding")
 			}
 			replay, err := f.s.PurchaseBillingPlan(f.ctx, params)
 			if err != nil {
@@ -327,8 +333,8 @@ func TestBillingPlanFailureRollbackPostgresIntegration(t *testing.T) {
 		t.Fatalf("changed idempotent payload: %v", err)
 	}
 	stale := f.purchase(t, p, 0, 2)
-	if _, err := f.s.PurchaseBillingPlan(f.ctx, stale); !errors.Is(err, ErrBillingPlanChanged) {
-		t.Fatalf("stale config version: %v", err)
+	if _, err := f.s.PurchaseBillingPlan(f.ctx, stale); err != nil {
+		t.Fatalf("independent second purchase: %v", err)
 	}
 	expired := f.renewal(t, p, first.Subscription, 2)
 	expired.At = *first.Subscription.ExpiresAt
@@ -348,9 +354,9 @@ func TestBillingPlanAdminRestartInvalidatesConfirmationPostgresIntegration(t *te
 	}
 	pendingPurchase := f.purchase(t, p, first.Subscription.ConfigVersion, 3)
 	pendingRenewal := f.renewal(t, p, first.Subscription, 3)
-	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{
-		BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "restart after buyer confirmation", f.now),
-		UserID:             f.user.ID, Tier: p.Tier, AllowanceUSD: "50", PeriodCount: 0,
+	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, f.ctx, f.s),
+		SubscriptionID: first.Subscription.ID, BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "restart after buyer confirmation", f.now),
+		UserID: f.user.ID, Tier: p.Tier, AllowanceUSD: "50", PeriodCount: 0,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,8 +364,8 @@ func TestBillingPlanAdminRestartInvalidatesConfirmationPostgresIntegration(t *te
 	if manual.Plan != nil || manual.CanRenew || manual.ConfigVersion == first.Subscription.ConfigVersion {
 		t.Fatalf("manual restart did not clear binding and change confirmation version: %+v", manual)
 	}
-	if _, err := f.s.PurchaseBillingPlan(f.ctx, pendingPurchase); !errors.Is(err, ErrBillingPlanChanged) {
-		t.Fatalf("stale purchase after restart: %v", err)
+	if _, err := f.s.PurchaseBillingPlan(f.ctx, pendingPurchase); err != nil {
+		t.Fatalf("independent purchase after restart: %v", err)
 	}
 	if _, err := f.s.RenewBillingSubscription(f.ctx, pendingRenewal); !errors.Is(err, ErrBillingPlanChanged) {
 		t.Fatalf("stale renewal after restart: %v", err)
@@ -376,7 +382,7 @@ func TestBillingPlanAdminRestartInvalidatesConfirmationPostgresIntegration(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if confirmed.Subscription.Plan == nil || !confirmed.Subscription.CanRenew || !equalAllocationDecimal(confirmed.BalanceUSD, "94") {
+	if confirmed.Subscription.Plan == nil || !confirmed.Subscription.CanRenew || !equalAllocationDecimal(confirmed.BalanceUSD, "88") {
 		t.Fatalf("freshly confirmed purchase did not restore binding: %+v", confirmed)
 	}
 }
@@ -427,7 +433,7 @@ func TestBillingPlanFIFOAndInflightPostgresIntegration(t *testing.T) {
 	f := newBillingPlanFixture(t)
 	f.fund(t, "5")
 	f.fund(t, "10")
-	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "old rights", f.now.Add(-time.Hour)), UserID: f.user.ID, Tier: BillingTierDay, AllowanceUSD: "40", PeriodCount: 5})
+	manual, err := f.s.PutSubscription(f.ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, f.ctx, f.s), BillingWriteParams: billingIntegrationWrite(t, f.actor.ID, "old rights", f.now.Add(-time.Hour)), UserID: f.user.ID, Tier: BillingTierDay, AllowanceUSD: "40", PeriodCount: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,10 +442,10 @@ func TestBillingPlanFIFOAndInflightPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reserved.DayPeriodID == nil || *reserved.DayPeriodID != *manual.PeriodID {
+	if len(reserved.OrderedFundingSources) == 0 || reserved.OrderedFundingSources[0].PeriodID != *manual.PeriodID {
 		t.Fatal("missing old request binding")
 	}
-	if err := f.s.SetBillingSourceDisabled(f.ctx, SetBillingSourceDisabledParams{UserID: f.user.ID, Source: BillingTierDay, Disabled: true, At: f.now}); err != nil {
+	if _, err := f.s.SetBillingSubscriptionPreferences(f.ctx, SetBillingSubscriptionPreferencesParams{BillingWriteParams: billingIntegrationWrite(t, f.user.ID, "disable manual source", f.now), UserID: f.user.ID, SubscriptionID: manual.ID, Priority: 1, ChargeEnabled: false}); err != nil {
 		t.Fatal(err)
 	}
 	p := f.plan(t, BillingTierDay, 1)
@@ -470,16 +476,23 @@ func TestBillingPlanFIFOAndInflightPostgresIntegration(t *testing.T) {
 	if _, err := f.s.SettleBilling(f.ctx, requestID, f.now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	after := f.state(t, p.Tier)
+	after, err := readBillingPlanTestState(f, purchase.Subscription.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if *after.PeriodID != *purchase.Subscription.PeriodID || !equalAllocationDecimal(after.RemainingUSD, "10") {
 		t.Fatalf("old request consumed new rights: %+v", after)
 	}
-	billingIntegrationAssertAllocations(t, f.ctx, f.s, requestID, []string{"day"}, []string{"2.000000000000"})
+	billingIntegrationAssertAllocations(t, f.ctx, f.s, requestID, []string{"subscription"}, []string{"2.000000000000"})
 	state, err := f.s.GetBillingState(f.ctx, f.user.ID, 50, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.SourceDisabled.Day || !equalAllocationDecimal(state.BalanceUSD, "9") {
+	manualState, err := readBillingPlanTestState(f, manual.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manualState.ChargeEnabled || !equalAllocationDecimal(state.BalanceUSD, "9") {
 		t.Fatalf("source or cash changed: %+v", state)
 	}
 }
@@ -580,8 +593,8 @@ func TestBillingPlanEditOrderingPostgresIntegration(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, current := range state.Subscriptions {
-					if current.Plan != nil || current.CanRenew {
-						t.Fatalf("edited plan binding remained: %+v", current)
+					if current.Plan == nil || !current.CanRenew {
+						t.Fatalf("edited plan binding lost: %+v", current)
 					}
 				}
 				want := "98"
@@ -644,4 +657,17 @@ func TestBillingPlanHistoryCleanupPostgresIntegration(t *testing.T) {
 	if len(plans) != 1 || plans[0].ID != p.ID {
 		t.Fatalf("cleanup deleted catalog: %+v", plans)
 	}
+}
+
+func readBillingPlanTestState(f *billingPlanFixture, id string) (BillingSubscriptionState, error) {
+	state, err := f.s.GetBillingState(f.ctx, f.user.ID, 1, 0)
+	if err != nil {
+		return BillingSubscriptionState{}, err
+	}
+	for _, sub := range state.Subscriptions {
+		if sub.ID == id {
+			return sub, nil
+		}
+	}
+	return BillingSubscriptionState{}, ErrNotFound
 }

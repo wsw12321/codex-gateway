@@ -47,9 +47,12 @@ func TestModelMultipliersPostgresIntegration(t *testing.T) {
 
 	t.Run("snapshots survive out of order completion restart and changing current settings", func(t *testing.T) {
 		const model = "multiplier-snapshot"
+		if err := s.SyncModelAccessCatalog(ctx, []string{model}); err != nil {
+			t.Fatal(err)
+		}
 		user, device, key := billingIntegrationPrincipal(t, ctx, s, "multiplier-snapshot")
 		credit(user.ID, "5")
-		if _, err := s.PutSubscription(ctx, PutSubscriptionParams{
+		if _, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Multiplier subscription", ModelIDs: []string{model},
 			BillingWriteParams: billingIntegrationWrite(t, actor.ID, "subscription split", now),
 			UserID:             user.ID, Tier: BillingTierDay, AllowanceUSD: "0.5",
 		}); err != nil {
@@ -177,7 +180,7 @@ func TestModelMultipliersPostgresIntegration(t *testing.T) {
 		fallback := billingIntegrationAdmission(user, device, key, "multiplier-exhausted-group-request", now.Add(time.Minute))
 		fallback.Usage.Model, fallback.Billing.Model = model, model
 		admitted, err := s.AdmitRequest(ctx, fallback)
-		if err != nil || admitted.Billing == nil || admitted.Billing.GroupPeriodID != nil || admitted.Billing.DayPeriodID == nil {
+		if err != nil || admitted.Billing == nil || admitted.Billing.GroupPeriodID != nil || (len(admitted.Billing.OrderedFundingSources) == 0 || admitted.Billing.OrderedFundingSources[0].SourceType != "subscription") {
 			t.Fatalf("exhausted group did not fall back to personal funds: %+v %v", admitted, err)
 		}
 	})
@@ -632,7 +635,7 @@ func TestModelMultiplierMigrationPostgresIntegration(t *testing.T) {
 	// The migration under test has been verified above. Install the unrelated
 	// plan and funding schemas before exercising current billing helpers for replay.
 	for _, migration := range migrations {
-		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" {
+		if migration.Name == "0024_subscription_plans.sql" || migration.Name == "0027_group_priority_billing.sql" || migration.Name == "0034_multi_subscriptions.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply billing helper schema: %v", err)
 			}

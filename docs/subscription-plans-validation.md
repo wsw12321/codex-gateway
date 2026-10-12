@@ -1,7 +1,9 @@
 # 套餐销售验证
 
+本文记录 `0024` 版本的历史验证；当前多订阅行为与验证见[多订阅验证](multi-subscriptions-validation.md)。
+
 本次实现增加套餐目录、购买并重开、绑定续费及 Owner 套餐管理。迁移为
-`0024_subscription_plans.sql`；操作与升级说明见[运维手册](operations.md#套餐销售购买重开与绑定续费)。
+`0024_subscription_plans.sql`；操作与升级说明见[运维手册](operations.md#套餐销售与追加续费)。
 
 ## 已覆盖行为
 

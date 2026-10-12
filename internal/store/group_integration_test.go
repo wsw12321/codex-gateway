@@ -302,7 +302,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 		g := create("Subscription and cash", "1")
 		u, d, k := billingIntegrationPrincipal(t, ctx, s, "group-sub-"+suffix)
 		credit(u, "0.3")
-		if _, err := s.PutSubscription(ctx, PutSubscriptionParams{BillingWriteParams: write(), UserID: u.ID, Tier: "day", AllowanceUSD: "0.2", PeriodCount: 1}); err != nil {
+		if _, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, s), BillingWriteParams: write(), UserID: u.ID, Tier: "day", AllowanceUSD: "0.2", PeriodCount: 1}); err != nil {
 			t.Fatal(err)
 		}
 		members(g, "add", u.ID)

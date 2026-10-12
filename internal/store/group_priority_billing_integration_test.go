@@ -88,7 +88,7 @@ func TestGroupPriorityBillingPostgresIntegration(t *testing.T) {
 			}
 		}
 		r := complete(u, d, k, "only", 1, 20)
-		if r.FundingRuleVersion != 2 || r.GroupPeriodID == nil || r.CashLotCutoff != nil || r.DayPeriodID != nil || r.WeekPeriodID != nil || r.MonthPeriodID != nil {
+		if r.FundingRuleVersion != 3 || r.GroupPeriodID == nil || r.CashLotCutoff != nil || r.DayPeriodID != nil || r.WeekPeriodID != nil || r.MonthPeriodID != nil {
 			t.Fatalf("group-only bindings = %+v", r)
 		}
 		settled := settle(r, "20", "0", "0")
@@ -125,7 +125,7 @@ func TestGroupPriorityBillingPostgresIntegration(t *testing.T) {
 		add(g, u)
 		settle(complete(u, d, k, "member", 1, 95), "95", "0", "0")
 		for i, tier := range []string{"day", "week", "month"} {
-			if _, err := s.PutSubscription(ctx, PutSubscriptionParams{BillingWriteParams: write(), UserID: u.ID,
+			if _, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, s), BillingWriteParams: write(), UserID: u.ID,
 				Tier: tier, AllowanceUSD: fmt.Sprint(i + 2), PeriodCount: 1}); err != nil {
 				t.Fatal(err)
 			}
@@ -133,8 +133,8 @@ func TestGroupPriorityBillingPostgresIntegration(t *testing.T) {
 		credit(u, "10")
 		r := complete(u, d, k, "member", 2, 20)
 		settle(r, "5", "15", "0")
-		billingIntegrationAssertAllocations(t, ctx, s, r.RequestID, []string{"group", "day", "week", "month", "cash"},
-			[]string{"5.000000000000", "2.000000000000", "3.000000000000", "4.000000000000", "6.000000000000"})
+		billingIntegrationAssertAllocations(t, ctx, s, r.RequestID, []string{"group", "subscription", "subscription", "subscription", "cash"},
+			[]string{"5.000000000000", "4.000000000000", "3.000000000000", "2.000000000000", "6.000000000000"})
 		if got := get(g); got.UsedUSD != "100.000000000000" || got.Members[0].UsedUSD != "100.000000000000" {
 			t.Fatalf("member boundary totals = %+v", got)
 		}
