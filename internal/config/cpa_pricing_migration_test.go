@@ -18,8 +18,8 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 	}
 	before.CatalogAsOf, before.FXAsOf, before.USDCNYRate = "2026-09-01", "2026-09-02", "6.987654"
 	before.Models["private-codex-model"] = before.Models["gpt-5.4"]
-	before.Models["gemini-3.1-pro-high"] = before.Models["gemini-pro-agent"]
-	delete(before.Models, "gemini-pro-agent")
+	before.Models["gemini-pro-agent"] = before.Models["gemini-3.8-flash-high"]
+	delete(before.Models, "gemini-3.8-flash-high")
 	delete(before.Models, "gpt-6.1-sol")
 	beforeRaw, _ := json.Marshal(before)
 	upgradedRaw, err := MigrateCPAV8Pricing(beforeRaw)
@@ -34,14 +34,14 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 		t.Fatal("migration changed exchange rate or fallback settings")
 	}
 	for model, rule := range before.Models {
-		if model == "gemini-3.1-pro-high" {
+		if model == "gemini-pro-agent" {
 			continue
 		}
 		if !reflect.DeepEqual(rule, upgraded.Models[model]) {
 			t.Fatalf("unrelated pricing changed: %s", model)
 		}
 	}
-	if _, ok := upgraded.Models["gemini-3.1-pro-high"]; ok {
+	if _, ok := upgraded.Models["gemini-pro-agent"]; ok {
 		t.Fatal("retired model still in catalog")
 	}
 	for model, rule := range CPAV8PricingModels() {
@@ -66,10 +66,10 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 	if restored.USDCNYRate != "7.01" || !reflect.DeepEqual(restored.Models["gpt-6.1-sol"], changed) {
 		t.Fatal("rollback overwrote a post-cutover change")
 	}
-	if _, ok := restored.Models["gemini-pro-agent"]; ok {
+	if _, ok := restored.Models["gemini-3.8-flash-high"]; ok {
 		t.Fatal("rollback retained unchanged new model")
 	}
-	if !reflect.DeepEqual(restored.Models["gemini-3.1-pro-high"], before.Models["gemini-3.1-pro-high"]) ||
+	if !reflect.DeepEqual(restored.Models["gemini-pro-agent"], before.Models["gemini-pro-agent"]) ||
 		!reflect.DeepEqual(restored.Models["private-codex-model"], before.Models["private-codex-model"]) {
 		t.Fatal("rollback lost original model rule")
 	}
@@ -97,10 +97,8 @@ func TestCPAV8ReviewedPricingBoundaries(t *testing.T) {
 		input       int64
 		want        [4]string
 	}{
-		{"gemini-pro-agent", "standard", 200_000, [4]string{"2", "0.20", "0", "12"}},
-		{"gemini-pro-agent", "standard", 200_001, [4]string{"4", "0.40", "0", "18"}},
-		{"gemini-3.1-pro-low", "standard", 200_000, [4]string{"2", "0.20", "0", "12"}},
-		{"gemini-3.1-pro-low", "standard", 200_001, [4]string{"4", "0.40", "0", "18"}},
+		{"gemini-3.8-flash-high", "standard", 1, [4]string{"0.75", "0.075", "0", "3.75"}},
+		{"gemini-4-argon-high", "standard", 1, [4]string{"3.75", "0.375", "0", "18.75"}},
 		{"gemini-3-flash", "standard", 200_001, [4]string{"0.50", "0.05", "0", "3"}},
 		{"gemini-3.1-flash-lite", "standard", 200_001, [4]string{"0.25", "0.025", "0", "1.50"}},
 		{"gemini-3.5-flash-lite", "standard", 200_001, [4]string{"0.30", "0.03", "0", "2.50"}},

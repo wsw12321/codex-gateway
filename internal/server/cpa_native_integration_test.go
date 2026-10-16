@@ -61,11 +61,11 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newResponsesWebSocketTestHarness(t)
-	key, err := repo.CreateAPIKey(ctx, store.CreateAPIKeyParams{UserID: user.ID, DeviceID: device.ID, Name: "native", PublicID: h.database.publicID, KeyPrefix: h.database.keyPrefix, KeyHash: h.database.keyHash, SecretCiphertext: h.database.secretCiphertext, ModelAllowlist: []string{"gemini-pro-agent"}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	key, err := repo.CreateAPIKey(ctx, store.CreateAPIKeyParams{UserID: user.ID, DeviceID: device.ID, Name: "native", PublicID: h.database.publicID, KeyPrefix: h.database.keyPrefix, KeyHash: h.database.keyHash, SecretCiphertext: h.database.secretCiphertext, ModelAllowlist: []string{"gemini-3.8-flash-high"}, CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "native test"}, UserID: user.ID, Name: "Native test", ModelIDs: []string{"gemini-pro-agent"}, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
+	if _, err := repo.PutSubscription(ctx, store.PutSubscriptionParams{BillingWriteParams: store.BillingWriteParams{OperationID: uuid.NewString(), ActorUserID: user.ID, Reason: "native test"}, UserID: user.ID, Name: "Native test", ModelIDs: []string{"gemini-3.8-flash-high"}, Tier: store.BillingTierDay, AllowanceUSD: "1"}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile("../../deploy/pricing-v2.example.json")
@@ -81,7 +81,7 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 	h.server.config.UsagePricing = pricing
 	h.server.config.BodyLimit = 64 << 20
 	h.server.config.AntigravityTransport = "cpa"
-	h.server.config.AntigravityModelRoutes = map[string]string{"gemini-pro-agent": "gemini-pro-agent"}
+	h.server.config.AntigravityModelRoutes = map[string]string{"gemini-3.8-flash-high": "gemini-3.8-flash-high"}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 100}
 	var missingUsage atomic.Bool
 	var calls atomic.Int64
@@ -109,7 +109,7 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 				usage = ""
 			}
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"model":"gemini-pro-agent","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]%s}`, usage)
+			_, _ = fmt.Fprintf(w, `{"model":"gemini-3.8-flash-high","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]%s}`, usage)
 			return
 		}
 		usage := `,"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":30,"thoughtsTokenCount":7,"cachedContentTokenCount":20,"totalTokenCount":137}`
@@ -143,9 +143,9 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct{ path, body string }{
-		{"/v1beta/models/gemini-pro-agent:generateContent", nativeGeminiText},
-		{"/v1beta/models/gemini-pro-agent:streamGenerateContent?alt=sse", nativeGeminiText},
-		{"/v1/responses", `{"model":"gemini-pro-agent","input":"hello"}`},
+		{"/v1beta/models/gemini-3.8-flash-high:generateContent", nativeGeminiText},
+		{"/v1beta/models/gemini-3.8-flash-high:streamGenerateContent?alt=sse", nativeGeminiText},
+		{"/v1/responses", `{"model":"gemini-3.8-flash-high","input":"hello"}`},
 	} {
 		w := send(tc.path, tc.body)
 		if w.Code != 200 {
@@ -157,12 +157,12 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if state != "completed" || provider != "antigravity" || input != 100 || cached != 20 || output != 37 || reasoning != 7 || mode != store.BillingModeGeminiAPIEquivalent || cost != "0.000608000000" {
+		if state != "completed" || provider != "antigravity" || input != 100 || cached != 20 || output != 37 || reasoning != 7 || mode != store.BillingModeGeminiAPIEquivalent || cost != "0.000200250000" {
 			t.Fatalf("settlement %s %s %d %d %d %d %s %s", state, provider, input, cached, output, reasoning, mode, cost)
 		}
 	}
 	missingUsage.Store(true)
-	w := send("/v1beta/models/gemini-pro-agent:generateContent", nativeGeminiText)
+	w := send("/v1beta/models/gemini-3.8-flash-high:generateContent", nativeGeminiText)
 	if w.Code != 502 {
 		t.Fatalf("missing usage status %d %s", w.Code, w.Body)
 	}

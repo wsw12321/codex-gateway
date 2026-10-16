@@ -28,6 +28,7 @@ func TestClaudePricingV2StandardBoundariesAndTTL(t *testing.T) {
 		{"claude-opus-5-5", 1_000_000, [5]string{"4", "20", "0.20", "5", "8"}, "0.006320000000", "0.007220000000"},
 		{"claude-sonnet-5-5", 1_000_000, [5]string{"2", "10", "0.10", "2.50", "4"}, "0.003160000000", "0.003610000000"},
 		{"claude-haiku-4-5-20251001", 200_000, [5]string{"1", "5", "0.10", "1.25", "2"}, "0.001585000000", "0.001810000000"},
+		{"claude-haiku-5-5", 1_000_000, [5]string{"5", "25", "0.5", "6.25", "10"}, "0.007925000000", "0.009050000000"},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			raw, rule, ok, err := pricing.ModelSnapshot(tc.model)

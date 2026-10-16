@@ -3,7 +3,6 @@ package antigravity
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -89,22 +88,17 @@ func TestBridgeCachedCLIUsageAcrossProtocols(t *testing.T) {
 }
 
 func TestCLIUsageAccountingIncludesCacheInContextThreshold(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshotJSON, _, found, err := pricing.ModelSnapshot(config.AntigravityPublicModel)
-	if err != nil || !found {
-		t.Fatalf("model pricing: found=%t err=%v", found, err)
-	}
-	snapshot, err := config.ParsePricingSnapshot(snapshotJSON)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Historical legacy-bridge reservations retain the retired Pro price bands.
+	snapshot := config.PricingSnapshot{Rule: config.ModelPricing{
+		CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 1_048_576,
+		LongContextThresholdTokens: 200_000,
+		ServiceTiers: map[string]config.ServiceTierPricing{
+			config.PricingTierStandard: {
+				Short: &config.TokenPricing{InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.20", OutputUSDPerMillion: "12"},
+				Long:  &config.TokenPricing{InputUSDPerMillion: "4", CachedInputUSDPerMillion: "0.40", OutputUSDPerMillion: "18"},
+			},
+		},
+	}}
 	for _, test := range []struct {
 		name, event, context, cost string
 		input, cached, total       int64

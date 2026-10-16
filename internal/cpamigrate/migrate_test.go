@@ -37,7 +37,7 @@ func testProvider(t *testing.T, identity string) *provider {
 		case googleProjectURL:
 			body = `{"cloudaicompanionProject":{"id":"verified-project"}}`
 		case googleModelsURL:
-			body = `{"models":{"gemini-pro-agent":{"quotaInfo":{"remainingFraction":0.5}},"claude-out-of-scope":{"quotaInfo":{"remainingFraction":1}},"gemini-3.8-flash-high":{"quotaInfo":{"remainingFraction":0}}}}`
+			body = `{"models":{"gemini-4-argon-high":{"quotaInfo":{"remainingFraction":0.5}},"claude-out-of-scope":{"quotaInfo":{"remainingFraction":1}},"gemini-3.8-flash-high":{"quotaInfo":{"remainingFraction":0}}}}`
 		default:
 			t.Fatalf("unexpected destination %s", r.URL.String())
 		}

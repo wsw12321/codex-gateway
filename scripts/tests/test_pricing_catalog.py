@@ -19,6 +19,7 @@ CLAUDE_MODELS = {
     "claude-opus-5-5": (1000000, ("4", "20", "0.20", "5", "8")),
     "claude-sonnet-5-5": (1000000, ("2", "10", "0.10", "2.50", "4")),
     "claude-haiku-4-5-20251001": (200000, ("1", "5", "0.10", "1.25", "2")),
+    "claude-haiku-5-5": (1000000, ("5", "25", "0.5", "6.25", "10")),
 }
 
 
@@ -28,7 +29,7 @@ class PricingCatalogTests(unittest.TestCase):
         cls.catalog = json.loads((ROOT / "deploy/pricing-v2.example.json").read_text())
 
     def test_claude_standard_prices_and_context_limits(self):
-        self.assertEqual(self.catalog["catalog_as_of"], "2026-10-08")
+        self.assertEqual(self.catalog["catalog_as_of"], "2026-10-16")
         self.assertEqual(self.catalog["fx_as_of"], "2026-08-20")
         self.assertEqual(self.catalog["usd_cny_rate"], "7.20")
         self.assertEqual(self.catalog["fallback_policy"], {
@@ -113,7 +114,7 @@ class PricingValidatorTests(unittest.TestCase):
                     changed = copy.deepcopy(self.catalog)
                     mutate(changed)
                     self.assertFalse(self.validate(changed))
-        for model in ("claude-haiku-4-5", "claude-haiku-5-5"):
+        for model in ("claude-haiku-4-5",):
             with self.subTest(unreviewed_model=model):
                 changed = copy.deepcopy(self.catalog)
                 changed["models"][model] = changed["models"]["claude-haiku-4-5-20251001"]

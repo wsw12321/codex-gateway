@@ -35,6 +35,12 @@ Current migrations:
   Detaches legacy plans once; requires model initialization after catalog sync
   and before serving. See the multi-subscription upgrade procedure in
   `docs/operations.md`.
+- `internal/store/migrations/0035_cpa_v8_0_30_model_catalog.sql` — one-time CPA
+  v8.0.30 catalog cutover. Retains five removed model IDs as inactive history,
+  activates `claude-haiku-5-5` and `gemini-4-argon-high`, snapshots
+  defaults/user permissions/multipliers,
+  and leaves keys, balances, usage, ledger rows, and admission snapshots
+  untouched. Conditional rollback is in `scripts/rollback-cpa-model-config.sql`.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

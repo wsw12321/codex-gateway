@@ -40,7 +40,7 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 	if err := repository.SyncModelAccessCatalog(ctx, pricing.ManageableModelNames()); err != nil {
 		t.Fatal(err)
 	}
-	const model = "gemini-pro-agent"
+	const model = "gemini-4-argon-high"
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	actor := globalUsageIntegrationUser(t, ctx, repository, "gemini-actor-"+suffix, UserRoleMember)
 	now := time.Now().UTC().Truncate(time.Microsecond)
@@ -53,24 +53,22 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 		context     string
 		cost        string
 	}{
-		{"pro-low", "gemini-3.1-pro-low", "responses", 200_000, "default", config.ContextClassShort, "0.503200000000"},
 		{"flash-3", "gemini-3-flash", "responses", 200_000, "standard", config.ContextClassShort, "0.125800000000"},
 		{"lite-31", "gemini-3.1-flash-lite", "responses", 200_000, "standard", config.ContextClassShort, "0.062900000000"},
 		{"lite-35", "gemini-3.5-flash-lite", "responses", 200_000, "standard", config.ContextClassShort, "0.082550000000"},
-		{"short", model, "responses", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"long", model, "responses", 200_001, "default", config.ContextClassLong, "0.945804000000"},
-		{"short-missing-tier", model, "responses", 200_000, "", config.ContextClassShort, "0.503200000000"},
-		{"long-missing-tier", model, "responses", 200_001, "", config.ContextClassLong, "0.945804000000"},
-		{"native-short", model, "gemini.generateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"native-long", model, "gemini.generateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
-		{"native-stream-short", model, "gemini.streamGenerateContent", 200_000, "default", config.ContextClassShort, "0.503200000000"},
-		{"native-stream-long", model, "gemini.streamGenerateContent", 200_001, "default", config.ContextClassLong, "0.945804000000"},
+		{"argon-short", model, "responses", 200_000, "default", config.ContextClassShort, "0.905625000000"},
+		{"argon-above-old-threshold", model, "responses", 200_001, "default", config.ContextClassShort, "0.905628750000"},
+		{"argon-missing-tier", model, "responses", 200_000, "", config.ContextClassShort, "0.905625000000"},
+		{"argon-max-missing-tier", model, "responses", 1_048_576, "", config.ContextClassShort, "4.087785000000"},
+		{"native-argon-short", model, "gemini.generateContent", 200_000, "default", config.ContextClassShort, "0.905625000000"},
+		{"native-argon-max", model, "gemini.generateContent", 1_048_576, "default", config.ContextClassShort, "4.087785000000"},
+		{"native-stream-argon-short", model, "gemini.streamGenerateContent", 200_000, "default", config.ContextClassShort, "0.905625000000"},
+		{"native-stream-argon-max", model, "gemini.streamGenerateContent", 1_048_576, "default", config.ContextClassShort, "4.087785000000"},
+		{"argon-over-max", model, "responses", 1_048_577, "default", config.ContextClassLong, "4.087788750000"},
 		{"flash-38-high", "gemini-3.8-flash-high", "responses", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
 		{"flash-38-long", "gemini-3.8-flash-high", "responses", 200_001, "standard", config.ContextClassShort, "0.181125750000"},
-		{"flash-37-high", "gemini-3.7-flash-high", "gemini.generateContent", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
-		{"flash-37-long", "gemini-3.7-flash-high", "gemini.generateContent", 200_001, "standard", config.ContextClassShort, "0.181125750000"},
-		{"flash-36-high", "gemini-3.6-flash-high", "gemini.streamGenerateContent", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
-		{"flash-36-max", "gemini-3.6-flash-high", "gemini.streamGenerateContent", 1_048_576, "standard", config.ContextClassShort, "0.817557000000"},
+		{"native-flash-38-high", "gemini-3.8-flash-high", "gemini.generateContent", 200_000, "standard", config.ContextClassShort, "0.181125000000"},
+		{"native-stream-flash-38-max", "gemini-3.8-flash-high", "gemini.streamGenerateContent", 1_048_576, "standard", config.ContextClassShort, "0.817557000000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			model := tc.model
@@ -164,6 +162,9 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 			wantTier, wantFallback := config.PricingTierStandard, ""
 			if tc.actualTier == "" {
 				wantTier, wantFallback = config.PricingTierMaxPublished, config.FallbackMissingServiceTier
+			}
+			if tc.inputTokens > rule.MaxInputTokens {
+				wantTier, wantFallback = config.PricingTierMaxPublished, config.FallbackMissingPriceCombination
 			}
 			if mode != BillingModeGeminiAPIEquivalent || ledgerCount != 1 || amount != tc.cost || charged != tc.cost || uncovered != "0.000000000000" ||
 				contextClass != tc.context || pricingTier != wantTier || fallback != wantFallback ||

@@ -9,12 +9,12 @@ import (
 
 // CPAV8PricingCatalogAsOf identifies the explicitly reviewed upgrade. This
 // migration is an offline operation, never applied during normal startup.
-const CPAV8PricingCatalogAsOf = "2026-09-30"
+const CPAV8PricingCatalogAsOf = "2026-10-16"
 
 //go:embed data/cpa-v8-model-prices.json
 var cpaV8ModelPrices []byte
 
-// CPAV8PricingModels returns a fresh copy of the nine reviewed price rules.
+// CPAV8PricingModels returns a fresh copy of the seven reviewed price rules.
 // MaxInputTokens is a billing boundary, not a claim of channel capabilities.
 func CPAV8PricingModels() map[string]ModelPricing {
 	var models map[string]ModelPricing

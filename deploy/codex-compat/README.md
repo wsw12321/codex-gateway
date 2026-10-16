@@ -1,18 +1,16 @@
 # Pinned CPA build
 
-The default image builds CPA `v8.0.20` at
-`0f96f568e4dbf6f84ad7399a74b78344c5eac7e6`. The Dockerfile verifies the peeled
+The default image builds CPA `v8.0.30` at
+`5be2cdab0869cbaa3d401891f740aebf7e15aa99`. The Dockerfile verifies the peeled
 release tag, the full commit and `CLIPROXY_PATCH_SHA256` before applying
-`cliproxy-v8.0.20-gateway.patch`. The build uses Go 1.26.9 and retains the security
+`cliproxy-v8.0.30-gateway.patch`. The build uses Go 1.26.9 and retains the security
 dependency updates from the prior build. The old v7 patch is retained only for the
 controlled compatibility rollback described in the operations documentation.
 
-The local catalog is the unchanged `internal/registry/models/models.json` from
-the same pinned CPA commit (SHA256
-`3a97eea65c1df3ea8ad4edac838b37f7714868d1e784b3723d0650b6e848aa9a`).
-It already contains `gpt-6.1-sol` for Codex plus/pro/team with a 272000-token
-context, so the three local additions have been removed. Gateway's public model
-authorization and pricing remain unchanged. Larger channel capacity requires
+The local catalog is the exact `internal/registry/models/models.json` from
+the same pinned CPA commit; its SHA256 and provenance are recorded in
+`source.lock.json`. Gateway keeps remote catalog downloads disabled and exposes
+only the reviewed model and pricing policy. Larger channel capacity requires
 separate real-account validation. `-local-model` disables catalog downloads.
 The management panel and provider/plugin discovery auto-updates remain disabled.
 
@@ -40,7 +38,11 @@ disabled. Never publish CPA's listening port or pass its keys to a browser.
 Provider caches are scoped by authenticated caller, provider and stable account.
 Native Gemini tool histories require real Google signatures; unrecoverable
 legacy continuations receive `new_session_required`. Antigravity model discovery
-is account-specific and permits only the eight reviewed Gemini IDs. Google
+is account-specific and permits only the five reviewed Antigravity IDs:
+`gemini-3-flash`, `gemini-3.8-flash-high`, `gemini-3.1-flash-lite`,
+`gemini-3.5-flash-lite`, and `gemini-4-argon-high`. The base `gemini-4-argon`
+belongs to upstream provider `gemini`; Muse belongs to `meta`. Neither provider
+is integrated, and those models have no Gateway prices, grants, or routes. Google
 requests use the configured egress proxy, fixed hosts, and no redirects.
 
 The Docker build runs the full affected API, authentication, watcher, session,
@@ -51,9 +53,10 @@ transport/quota regression list. Run
 runtime checks, including credential permissions, provider capabilities,
 management-key separation and exclusive refresh locking. These checks do not
 replace the maintenance-window tests with real accounts and a Gateway key.
-The v8.0.20 upgrade delivers source and configuration changes only; local checks
-and pending CI and real-account acceptance are recorded in
-[`cpa-v8.0.20-validation.md`](../../docs/cpa-v8.0.20-validation.md).
+The v8.0.30 upgrade adds Haiku 5.5 and Argon-high, retires five upstream model IDs,
+and requires the `0035` catalog migration plus the offline pricing merge. Local
+checks and pending CI and real-account acceptance are recorded in
+[`cpa-v8.0.30-validation.md`](../../docs/cpa-v8.0.30-validation.md).
 
 Claude subscriptions use Gateway provider `anthropic`; the adapter maps it to
 CPA executor `claude` and OAuth flow `anthropic`. The independent mode-0600

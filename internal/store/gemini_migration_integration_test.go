@@ -103,16 +103,17 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
+	// Freeze the historical rule: a catalog upgrade must not reprice it.
+	rule := config.ModelPricing{
+		CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 1_048_576,
+		LongContextThresholdTokens: 200_000,
+		ServiceTiers: map[string]config.ServiceTierPricing{
+			config.PricingTierStandard: {
+				Short: &config.TokenPricing{InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.20", OutputUSDPerMillion: "12"},
+				Long:  &config.TokenPricing{InputUSDPerMillion: "4", CachedInputUSDPerMillion: "0.40", OutputUSDPerMillion: "18"},
+			},
+		},
 	}
-	pricing, err := config.ParseUsagePricing(string(raw))
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Reuse equivalent current prices while retaining the historical model ID.
-	rule := pricing.Models["gemini-pro-agent"]
 	snapshot := billingIntegrationV2Snapshot(t, oldModel, rule)
 	requestIDs := []string{"gemini-before-migration-settled", "gemini-before-migration-inflight"}
 	for index, requestID := range requestIDs {

@@ -10,7 +10,7 @@ import (
 
 const (
 	// The default is a native CPA ID. Reasoning settings belong in the request.
-	AntigravityPublicModel       = "gemini-pro-agent"
+	AntigravityPublicModel       = "gemini-3.8-flash-high"
 	LegacyAntigravityPublicModel = "gemini-3.1-pro-high"
 	AntigravityCLIModel          = AntigravityPublicModel
 )
@@ -19,9 +19,9 @@ const (
 // slice prevents callers from modifying the allowlist used at other boundaries.
 func AntigravityModels() []string {
 	return []string{
-		"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
-		"gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
+		"gemini-3-flash", "gemini-3.8-flash-high",
 		"gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+		"gemini-4-argon-high",
 	}
 }
 
@@ -49,9 +49,12 @@ func IsLegacyAntigravityModel(model string) bool {
 // history. Restricted API key allowlists must not be rewritten to these names.
 func RetiredAntigravityModels() []string {
 	return []string{
-		"gemini-3.1-pro-high", "gemini-3.6-flash-medium", "gemini-3.7-flash-medium", "gemini-3.8-flash-medium",
+		"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.1-pro-high",
+		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+		"gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash",
+		"gemini-3.8-flash-medium",
 		"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview",
-		"gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
+		"gemini-3.6-flash", "gemini-3.8-flash",
 	}
 }
 
@@ -59,20 +62,16 @@ func RetiredAntigravityModels() []string {
 // equivalent billing; Antigravity subscription charges are not token charges.
 func AntigravityPricingModel(model string) (string, bool) {
 	switch model {
-	case "gemini-pro-agent", "gemini-3.1-pro-low":
-		return "gemini-3.1-pro-preview", true
 	case "gemini-3-flash":
 		return "gemini-3-flash-preview", true
-	case "gemini-3.6-flash-high":
-		return "gemini-3.6-flash", true
-	case "gemini-3.7-flash-high":
-		return "gemini-3.7-flash", true
 	case "gemini-3.8-flash-high":
 		return "gemini-3.8-flash", true
 	case "gemini-3.1-flash-lite":
 		return "gemini-3.1-flash-lite-preview", true
 	case "gemini-3.5-flash-lite":
 		return "gemini-3.5-flash-lite", true
+	case "gemini-4-argon-high":
+		return "gemini-4-argon", true
 	default:
 		return "", false
 	}
@@ -145,7 +144,7 @@ func (c Config) validateAntigravity() error {
 		return errors.New("CPA_MANAGEMENT_KEY must contain at least 32 bytes and differ from SIDECAR_API_KEY")
 	}
 	for model := range c.UsagePricing.Models {
-		if strings.HasPrefix(model, "gemini-") && !IsAntigravityModel(model) && !IsLegacyAntigravityModel(model) {
+		if strings.HasPrefix(model, "gemini-") && !IsAntigravityModel(model) && (c.UsesCPAAntigravity() || !IsLegacyAntigravityModel(model)) {
 			return fmt.Errorf("ANTIGRAVITY pricing catalog contains unsupported model %q; use the reviewed AGY model IDs", model)
 		}
 	}

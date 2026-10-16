@@ -297,11 +297,10 @@ else:
         environment = self.gateway["services"]["gateway"]["environment"]
         pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
         native = {
-            "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
-            "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
-            "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gpt-6.1-sol",
+            "gemini-3-flash", "gemini-3.8-flash-high", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+            "gemini-4-argon-high", "gpt-6.1-sol",
             "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-4-5-20251001", "claude-haiku-5-5",
         }
         codex = {
             "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
@@ -323,20 +322,21 @@ else:
         pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
 
         def add_retired(model):
-            return lambda p: p["models"].update({model: p["models"]["gemini-pro-agent"]})
+            return lambda p: p["models"].update({model: p["models"]["gemini-3.8-flash-high"]})
 
         mutations = [
             (model, add_retired(model)) for model in (
-                "gemini-3.1-pro-high", "gemini-3.6-flash-medium",
+                "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high",
+                "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-high", "gemini-3.6-flash-medium",
                 "gemini-3.7-flash-medium", "gemini-3.8-flash-medium",
                 "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview",
             )
         ] + [
-            ("Gemini Flex", lambda p: p["models"]["gemini-3.1-pro-low"]["service_tiers"].update(
-                flex=p["models"]["gemini-3.1-pro-low"]["service_tiers"]["standard"])),
+            ("Gemini Flex", lambda p: p["models"]["gemini-4-argon-high"]["service_tiers"].update(
+                flex=p["models"]["gemini-4-argon-high"]["service_tiers"]["standard"])),
             ("Gemini cache write", lambda p: p["models"]["gemini-3.1-flash-lite"]["service_tiers"]["standard"]["short"].update(
                 cache_write_usd_per_million="0.25")),
-            ("Pro threshold", lambda p: p["models"]["gemini-3.1-pro-low"].update(
+            ("Argon threshold", lambda p: p["models"]["gemini-4-argon-high"].update(
                 long_context_threshold_tokens=272000)),
             ("Sol threshold", lambda p: p["models"]["gpt-6.1-sol"].update(
                 long_context_threshold_tokens=200000)),

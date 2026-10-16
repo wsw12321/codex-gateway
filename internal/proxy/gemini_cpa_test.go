@@ -12,7 +12,7 @@ import (
 )
 
 func TestCPANativeGeminiStreamUsageAndSignature(t *testing.T) {
-	const model = "gemini-pro-agent"
+	const model = "gemini-3.8-flash-high"
 	const scope = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	frames := []string{
 		`{"responseId":"r","modelVersion":"gemini-3.1-pro-preview","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"thinking","thought":true,"thoughtSignature":"opaque"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":0,"thoughtsTokenCount":2,"cachedContentTokenCount":3,"totalTokenCount":12}}`,
@@ -55,6 +55,7 @@ func TestCPANativeGeminiStreamUsageAndSignature(t *testing.T) {
 }
 
 func TestCPANativeMissingUsageCannotSettleSuccess(t *testing.T) {
+	const model = "gemini-3.8-flash-high"
 	for _, stream := range []bool{false, true} {
 		t.Run(fmt.Sprint(stream), func(t *testing.T) {
 			body := `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`
@@ -66,7 +67,7 @@ func TestCPANativeMissingUsageCannotSettleSuccess(t *testing.T) {
 			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {kind}}, Body: io.NopCloser(strings.NewReader(body))}
 			c := &Client{cpaNative: true}
 			w := httptest.NewRecorder()
-			result, failure := c.forwardNativeGemini(context.Background(), w, resp, "gemini-pro-agent", nil, stream, Result{})
+			result, failure := c.forwardNativeGemini(context.Background(), w, resp, model, nil, stream, Result{})
 			if failure == nil || !stream && w.Body.Len() != 0 || stream && !result.AbortStream {
 				t.Fatalf("missing usage accepted: %+v, %v", result, failure)
 			}
@@ -75,19 +76,20 @@ func TestCPANativeMissingUsageCannotSettleSuccess(t *testing.T) {
 }
 
 func TestCPANativeResponsesReasoningIsIncludedOnce(t *testing.T) {
-	data := `{"model":"gemini-pro-agent","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":10,"output_tokens":7,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2},"total_tokens":17}}`
-	u, err := validateNativeResponse([]byte(data), "gemini-pro-agent", nil)
+	const model = "gemini-3.8-flash-high"
+	data := `{"model":"` + model + `","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":10,"output_tokens":7,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2},"total_tokens":17}}`
+	u, err := validateNativeResponse([]byte(data), model, nil)
 	if err != nil || u.OutputTokens != 7 || u.ReasoningTokens != 2 {
 		t.Fatalf("usage %+v, %v", u, err)
 	}
 	for _, bad := range []string{strings.Replace(data, `"input_tokens":10,`, "", 1), strings.Replace(data, `"output_tokens":7`, `"output_tokens":-7`, 1), strings.Replace(data, `"total_tokens":17`, `"total_tokens":19`, 1)} {
-		if _, err := validateNativeResponse([]byte(bad), "gemini-pro-agent", nil); err == nil {
+		if _, err := validateNativeResponse([]byte(bad), model, nil); err == nil {
 			t.Fatal("invalid usage accepted")
 		}
 	}
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + data + "}\n\ndata: [DONE]\n\n"))}
 	c := &Client{cpaNative: true}
-	r, f := c.forwardNativeResponses(context.Background(), httptest.NewRecorder(), resp, "gemini-pro-agent", nil, Result{})
+	r, f := c.forwardNativeResponses(context.Background(), httptest.NewRecorder(), resp, model, nil, Result{})
 	if f != nil || r.Usage.OutputTokens != 7 {
 		t.Fatalf("native SSE result %+v %v", r, f)
 	}
@@ -107,7 +109,7 @@ func TestCPANativeGeminiRequiresTerminalUsageAndPreservesSignatureOnly(t *testin
 		t.Run(test.name, func(t *testing.T) {
 			resp := &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(test.body))}
 			w := httptest.NewRecorder()
-			result, failure := (&Client{}).forwardNativeGemini(context.Background(), w, resp, "gemini-pro-agent", nil, true, Result{})
+			result, failure := (&Client{}).forwardNativeGemini(context.Background(), w, resp, "gemini-3.8-flash-high", nil, true, Result{})
 			if (failure == nil) != test.valid {
 				t.Fatalf("result=%+v failure=%v", result, failure)
 			}
@@ -128,7 +130,7 @@ func TestCPANativeResponsesRejectsOutOfScopeOrMalformedSSE(t *testing.T) {
 	} {
 		resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("data: " + event + "\n\n"))}
 		w := httptest.NewRecorder()
-		_, failure := (&Client{}).forwardNativeResponses(context.Background(), w, resp, "gemini-pro-agent", nil, Result{})
+		_, failure := (&Client{}).forwardNativeResponses(context.Background(), w, resp, "gemini-3.8-flash-high", nil, Result{})
 		if failure == nil || w.Body.Len() != 0 {
 			t.Errorf("unsafe event emitted %s", event)
 		}

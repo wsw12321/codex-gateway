@@ -58,12 +58,16 @@ docker run --rm --network none --read-only --cap-drop ALL \
             test "$attempt" -lt 30
             sleep 1
         done
-        grep -Fq "Version: v8.0.20" /run/cliproxy/startup.log
-        grep -Fq "Commit: 0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" /run/cliproxy/startup.log
+        grep -Fq "Version: v8.0.30" /run/cliproxy/startup.log
+        grep -Fq "Commit: 5be2cdab0869cbaa3d401891f740aebf7e15aa99" /run/cliproxy/startup.log
         # No Gateway exists on this network: health must not wait for allocation.
         grep -Fq "strategy: \"gateway-allocation\"" /run/cliproxy/config.yaml
         grep -A1 "^discovery:" /run/cliproxy/config.yaml | grep -Eq "enabled:[[:space:]]*false"
         grep -A1 "^codex:" /run/cliproxy/config.yaml | grep -Eq "response-steering:[[:space:]]*false"
+        grep -A1 "^claude:" /run/cliproxy/config.yaml | grep -Eq "^[[:space:]]+tool-search:[[:space:]]*false[[:space:]]*$"
+        grep -Eq "^tls-handshake-timeout-seconds:[[:space:]]*0[[:space:]]*$" /run/cliproxy/config.yaml
+        grep -A1 "^streaming:" /run/cliproxy/config.yaml | grep -Eq "^[[:space:]]+send-keepalive-before-ft:[[:space:]]*false[[:space:]]*$"
+        grep -Eq "^[[:space:]]+session-affinity-rebind-on:[[:space:]]*\"any\"[[:space:]]*$" /run/cliproxy/config.yaml
         {
             printf "GET /internal/upstream-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities

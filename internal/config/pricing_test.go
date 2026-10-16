@@ -53,13 +53,13 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-10-08" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-10-16" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
-		"claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-opus-5-5", "claude-sonnet-5-5",
-		"codex-auto-review", "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.1-pro-low", "gemini-3.5-flash-lite",
-		"gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high", "gemini-pro-agent", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+		"claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5",
+		"codex-auto-review", "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash-high",
+		"gemini-4-argon-high", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
 		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
@@ -162,13 +162,13 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const model = "gemini-pro-agent"
+	const model = "gemini-4-argon-high"
 	snapshotRaw, rule, ok, err := pricing.ModelSnapshot(model)
 	if err != nil || !ok {
 		t.Fatalf("Gemini snapshot: ok=%t err=%v", ok, err)
 	}
 	if rule.CacheWriteMode != CacheWriteIncludedInInput || rule.MaxInputTokens != 1_048_576 ||
-		rule.LongContextThresholdTokens != 200_000 || len(rule.ServiceTiers) != 1 {
+		rule.LongContextThresholdTokens != 1_048_576 || len(rule.ServiceTiers) != 1 {
 		t.Fatalf("Gemini rule = %+v", rule)
 	}
 	snapshot, err := ParsePricingSnapshot(snapshotRaw)
@@ -191,9 +191,9 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 		prices      [4]string
 		cost        string
 	}{
-		{200_000, ContextClassShort, [4]string{"2", "0.20", "0", "12"}, "0.503200000000"},
-		{200_001, ContextClassLong, [4]string{"4", "0.40", "0", "18"}, "0.945804000000"},
-		{1_048_576, ContextClassLong, [4]string{"4", "0.40", "0", "18"}, "4.340104000000"},
+		{200_000, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "0.905625000000"},
+		{200_001, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "0.905628750000"},
+		{1_048_576, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "4.087785000000"},
 	} {
 		t.Run(fmt.Sprint(tc.inputTokens), func(t *testing.T) {
 			for _, tier := range []string{"default", ""} {
@@ -245,9 +245,7 @@ func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
 	if _, _, ok, err := pricing.ModelSnapshot("gemini-3.1-pro-preview"); err != nil || ok {
 		t.Fatalf("retired Gemini alias remains priced: ok=%t err=%v", ok, err)
 	}
-	for _, model := range []string{
-		"gemini-3.8-flash-high", "gemini-3.7-flash-high", "gemini-3.6-flash-high",
-	} {
+	for _, model := range []string{"gemini-3.8-flash-high"} {
 		t.Run(model, func(t *testing.T) {
 			raw, rule, ok, err := pricing.ModelSnapshot(model)
 			if err != nil || !ok {
@@ -295,6 +293,45 @@ func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGeminiArgonPricingV2(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := ParseUsagePricing(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		model string
+		max   int64
+	}{
+		{"gemini-4-argon-high", 1_048_576},
+	} {
+		raw, rule, ok, err := pricing.ModelSnapshot(tc.model)
+		if err != nil || !ok {
+			t.Fatalf("%s snapshot: ok=%t err=%v", tc.model, ok, err)
+		}
+		if rule.CacheWriteMode != CacheWriteIncludedInInput || rule.MaxInputTokens != tc.max ||
+			rule.LongContextThresholdTokens != tc.max || len(rule.ServiceTiers) != 1 ||
+			rule.ServiceTiers[PricingTierStandard].Short == nil {
+			t.Fatalf("%s pricing rule = %+v", tc.model, rule)
+		}
+		short := rule.ServiceTiers[PricingTierStandard].Short
+		if [3]string{short.InputUSDPerMillion, short.CachedInputUSDPerMillion, short.OutputUSDPerMillion} != [3]string{"3.75", "0.375", "18.75"} {
+			t.Fatalf("%s prices = %+v", tc.model, short)
+		}
+		snapshot, err := ParsePricingSnapshot(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decision, err := snapshot.Select("standard", tc.max)
+		if err != nil || decision.FallbackReason != "" || decision.ContextClass != ContextClassShort {
+			t.Fatalf("%s boundary = %+v, %v", tc.model, decision, err)
+		}
 	}
 }
 

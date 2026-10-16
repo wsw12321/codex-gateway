@@ -26,12 +26,12 @@ relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.20-gateway.patch
-compat_patch_sha256=a7b560e1df265647c230b932c49d1719327b3d022488b742bb8a578d909d6fc6
+compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.30-gateway.patch
+compat_patch_sha256=0ed546d0c0749b1a2fc9669669102330e28f90697879f376ddde970148a702f9
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.20-0f96f568-a7b560e1df265647-cpa
+compat_image=codex-gateway-compat:v8.0.30-5be2cdab-0ed546d0c0749b1a-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -56,15 +56,15 @@ test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" 
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
 jq -e --arg patch "$compat_patch_sha256" '
     .repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .tag == "v8.0.20" and
-    .commit == "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" and
-    .patch == "cliproxy-v8.0.20-gateway.patch" and
+    .tag == "v8.0.30" and
+    .commit == "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
+    .patch == "cliproxy-v8.0.30-gateway.patch" and
     .patch_sha256 == $patch and .go_version == "1.26.9" and
     .automatic_updates == false and
     .model_catalog.repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .model_catalog.commit == "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" and
+    .model_catalog.commit == "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
     .model_catalog.file == "internal/registry/models/models.json" and
-    .model_catalog.sha256 == "3a97eea65c1df3ea8ad4edac838b37f7714868d1e784b3723d0650b6e848aa9a"
+    .model_catalog.sha256 == "2a4bd5fd9a72ef5c42c746274a5eec13c65c7e0768b6f1d510e8e9a8994c76c8"
 ' "$root/deploy/codex-compat/source.lock.json" >/dev/null || \
     fail 'CPA source and reviewed local model provenance must remain locked'
 if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" "$compat_entrypoint"; then
@@ -239,7 +239,7 @@ grep -Fq 'TestConversationRootRecognizedHierarchy' "$compat_patch" && \
     grep -Fq 'TestConversationRootConcurrentManagerExecutions' "$compat_patch" && \
     grep -Fq 'TestGatewayConcurrencyDeduplicatesRootExecutions' "$compat_patch" && \
     grep -Fq 'TestGatewayConcurrencySameRootCountsPerAccount' "$compat_patch" && \
-    grep -Fq -- "-run '^Test(Gateway|ConversationRoot)'" "$compat_dockerfile" || \
+    grep -Fxq 'RUN go test -race -count=1 ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy' "$compat_dockerfile" || \
     fail 'CLIProxyAPI must test caller-scoped root identity and account root concurrency under the race detector'
 grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
     grep -Fq '.gateway-account-state' "$compat_patch" && \
@@ -530,15 +530,13 @@ pricing_validator='
       "claude-opus-5-5",
       "claude-sonnet-5-5",
       "claude-haiku-4-5-20251001",
+      "claude-haiku-5-5",
       "codex-auto-review",
-      "gemini-pro-agent",
-      "gemini-3.1-pro-low",
       "gemini-3-flash",
       "gemini-3.1-flash-lite",
       "gemini-3.5-flash-lite",
-      "gemini-3.6-flash-high",
-      "gemini-3.7-flash-high",
       "gemini-3.8-flash-high",
+      "gemini-4-argon-high",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.5",
@@ -554,6 +552,7 @@ pricing_validator='
     (.["claude-opus-5-5"] | claude_model(1000000)) and
     (.["claude-sonnet-5-5"] | claude_model(1000000)) and
     (.["claude-haiku-4-5-20251001"] | claude_model(200000)) and
+    (.["claude-haiku-5-5"] | claude_model(1000000)) and
     (.["gpt-6-astra"] | separate_long_model) and
     (.["gpt-6-sol"] | separate_long_model) and
     (.["gpt-6.1-sol"] | separate_long_model) and
@@ -564,14 +563,11 @@ pricing_validator='
     (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and
-    (.["gemini-pro-agent"] | gemini_pro_model) and
-    (.["gemini-3.1-pro-low"] | gemini_pro_model) and
     (.["gemini-3-flash"] | gemini_flash_model) and
     (.["gemini-3.1-flash-lite"] | gemini_flash_model) and
     (.["gemini-3.5-flash-lite"] | gemini_flash_model) and
-    (.["gemini-3.6-flash-high"] | gemini_flash_model) and
-    (.["gemini-3.7-flash-high"] | gemini_flash_model) and
     (.["gemini-3.8-flash-high"] | gemini_flash_model) and
+    (.["gemini-4-argon-high"] | gemini_flash_model) and
     (.["codex-auto-review"] | internal_zero_model))
 '
 printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
@@ -606,20 +602,20 @@ reject_pricing_mutation \
     '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
     'an unpublished service tier'
 reject_pricing_mutation \
-    'del(.models["gemini-pro-agent"])' \
-    'a missing Gemini model'
+    'del(.models["gemini-4-argon-high"])' \
+    'a missing Argon model'
 reject_pricing_mutation \
-    '.models["gemini-pro-agent"].service_tiers.flex = .models["gemini-pro-agent"].service_tiers.standard' \
-    'an unconfigured Gemini service tier'
+    '.models["gemini-4-argon-high"].service_tiers.flex = .models["gemini-4-argon-high"].service_tiers.standard' \
+    'an unconfigured Argon service tier'
 reject_pricing_mutation \
-    '.models["gemini-pro-agent"].long_context_threshold_tokens = 272000' \
-    'an incorrect Gemini long-context boundary'
+    '.models["gemini-4-argon-high"].long_context_threshold_tokens = 200000' \
+    'an incorrect Argon long-context boundary'
 reject_pricing_mutation \
-    '.models["gemini-pro-agent"].max_input_tokens = 1050000' \
-    'an incorrect Gemini input limit'
+    '.models["gemini-4-argon-high"].max_input_tokens = 1050000' \
+    'an incorrect Argon input limit'
 reject_pricing_mutation \
-    '.models["gemini-pro-agent"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
-    'a separate Gemini cache-write price'
+    '.models["gemini-4-argon-high"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
+    'a separate Argon cache-write price'
 reject_pricing_mutation \
     '.models["gemini-3.8-flash-high"].service_tiers.standard.long = .models["gemini-3.8-flash-high"].service_tiers.standard.short' \
     'an unpublished Flash long-context price'
@@ -627,7 +623,7 @@ reject_pricing_mutation \
     '.models["gemini-3.8-flash-high"].long_context_threshold_tokens = 200000' \
     'an incorrect Flash context boundary'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"] = .models["gemini-pro-agent"]' \
+    '.models["gemini-3.1-pro-preview"] = .models["gemini-4-argon-high"]' \
     'a retired Gemini alias'
 reject_pricing_mutation \
     'del(.models["gpt-6.1-sol"])' \
@@ -639,7 +635,7 @@ reject_pricing_mutation \
     'del(.models["gpt-6.1-sol"].service_tiers.standard.short.cache_write_usd_per_million)' \
     'a missing GPT-6.1 Sol cache-write price'
 reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"] = .models["gemini-pro-agent"]' \
+    '.models["gemini-3.1-pro-high"] = .models["gemini-4-argon-high"]' \
     'a retired Gemini Pro-high model'
 reject_pricing_mutation \
     '.models["gemini-3.8-flash-medium"] = .models["gemini-3.8-flash-high"]' \
@@ -874,9 +870,9 @@ jq -e \
 
 jq -e --arg patch "$compat_patch_sha256" '
   .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.20" and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.30" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6" and
+    "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
@@ -983,9 +979,9 @@ jq -e '
   (.services.gateway.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | if . == "" then {} else fromjson end |
     type == "object" and all(to_entries[];
       .key == .value and (.key | IN(
-        "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
-        "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
-        "gemini-3.1-flash-lite", "gemini-3.5-flash-lite"))))
+        "gemini-3-flash", "gemini-3.8-flash-high",
+        "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+        "gemini-4-argon-high"))))
 ' "$tmp" >/dev/null || fail 'Antigravity process, network, route, keyring or secret isolation failed'
 if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/antigravity_bridge_api_key"; then
     fail 'Codex and Antigravity must use distinct internal Bearer secrets'

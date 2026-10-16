@@ -97,6 +97,9 @@ discovery:
   enabled: false
 codex:
   response-steering: false
+claude:
+  tool-search: false
+tls-handshake-timeout-seconds: 0
 debug: false
 commercial-mode: true
 logging-to-file: false
@@ -109,6 +112,7 @@ max-retry-interval: 0
 passthrough-headers: false
 ws-auth: true
 streaming:
+  send-keepalive-before-ft: false
   # The patched auth manager owns the shared two-account bootstrap budget.
   # A handler-layer retry would allocate a fresh budget and exceed that cap.
   bootstrap-retries: 0
@@ -116,6 +120,7 @@ routing:
   strategy: "gateway-allocation"
   session-affinity: true
   session-affinity-ttl: "1h"
+  session-affinity-rebind-on: "any"
 pprof:
   enable: false
 api-keys:

@@ -3,6 +3,7 @@ package config
 import (
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -100,8 +101,18 @@ func TestValidateAntigravityConfiguration(t *testing.T) {
 
 func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 	models := AntigravityModels()
-	if len(models) != 8 {
+	if AntigravityPublicModel != "gemini-3.8-flash-high" || AntigravityCLIModel != AntigravityPublicModel {
+		t.Fatalf("default Antigravity model = %q/%q", AntigravityPublicModel, AntigravityCLIModel)
+	}
+	if len(models) != 5 {
 		t.Fatalf("catalog contains %d models", len(models))
+	}
+	want := []string{
+		"gemini-3-flash", "gemini-3.8-flash-high", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
+		"gemini-4-argon-high",
+	}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("catalog = %#v, want %#v", models, want)
 	}
 	seen := map[string]bool{}
 	cfg := validConfigForValidation(t)
@@ -122,7 +133,7 @@ func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 	if AntigravityModels()[0] == "changed" {
 		t.Fatal("caller mutated shared catalog")
 	}
-	for _, model := range []string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-high-extra"} {
+	for _, model := range []string{"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash", "gemini-3.8-flash-low", "gemini-3.8-flash-high-extra"} {
 		if IsAntigravityModel(model) {
 			t.Fatalf("accepted non-catalog model %q", model)
 		}
@@ -130,8 +141,9 @@ func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 }
 
 func TestRetiredGeminiPricingCannotReactivateModelAccess(t *testing.T) {
-	for _, model := range []string{"gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash"} {
+	for _, model := range []string{"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash"} {
 		cfg := validConfigForValidation(t)
+		cfg.AntigravityTransport = "cpa"
 		cfg.UsagePricing.Models = map[string]ModelPricing{
 			model: {InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.2", OutputUSDPerMillion: "12"},
 		}

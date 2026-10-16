@@ -1,16 +1,16 @@
 {
   "repository": "https://github.com/router-for-me/CLIProxyAPI",
-  "tag": "v8.0.20",
-  "commit": "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6",
-  "patch": "cliproxy-v8.0.20-gateway.patch",
-  "patch_sha256": "a7b560e1df265647c230b932c49d1719327b3d022488b742bb8a578d909d6fc6",
+  "tag": "v8.0.30",
+  "commit": "5be2cdab0869cbaa3d401891f740aebf7e15aa99",
+  "patch": "cliproxy-v8.0.30-gateway.patch",
+  "patch_sha256": "0ed546d0c0749b1a2fc9669669102330e28f90697879f376ddde970148a702f9",
   "go_version": "1.26.9",
   "model_catalog": {
     "repository": "https://github.com/router-for-me/CLIProxyAPI",
-    "commit": "0f96f568e4dbf6f84ad7399a74b78344c5eac7e6",
+    "commit": "5be2cdab0869cbaa3d401891f740aebf7e15aa99",
     "file": "internal/registry/models/models.json",
-    "sha256": "3a97eea65c1df3ea8ad4edac838b37f7714868d1e784b3723d0650b6e848aa9a",
-    "usage": "Use the unchanged catalog embedded in the pinned CPA source, including gpt-6.1-sol for Codex plus/pro/team with 272000-token context. Gateway public model authorization and pricing are unchanged. Remote model updates disabled."
+    "sha256": "2a4bd5fd9a72ef5c42c746274a5eec13c65c7e0768b6f1d510e8e9a8994c76c8",
+    "usage": "Use the exact catalog embedded in the pinned CPA source. Gateway public model authorization and pricing follow the reviewed v8.0.30 catalog policy; remote model updates disabled."
   },
   "management_panel": "../cpa-panel/UPSTREAM.json",
   "base_image_locks": "../images.lock.env",

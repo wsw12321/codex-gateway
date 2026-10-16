@@ -15,7 +15,7 @@ const initialState = {
   user: {id: "member", username: "lin", display_name: "林同学", role: "member", status: "active"},
   recently_verified: true, login_methods: {password: true},
   devices: [{id: "device", name: "工作电脑", status: "active"}], projects: [],
-  api_keys: [{id: "key", name: "Gemini", key_prefix: "cgk_v1_example", status: "active", model_allowlist: ["gemini-pro-agent"]}],
+  api_keys: [{id: "key", name: "Gemini", key_prefix: "cgk_v1_example", status: "active", model_allowlist: ["gemini-3.8-flash-high"]}],
   passkeys: [],
 };
 
@@ -96,7 +96,7 @@ async function main() {
     assert.equal(await page.locator("#guide-agy-install-windows-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd");
     assert.equal(await page.locator("#guide-agy-install-unix-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.sh | bash");
     assert.equal(await page.locator("#guide-codex-start-code").textContent(), "codex");
-    assert.equal(await page.locator("#guide-agy-start-code").textContent(), "agy --model gemini-pro-agent");
+    assert.equal(await page.locator("#guide-agy-start-code").textContent(), "agy --model gemini-3.8-flash-high");
     for (const client of ["codex", "agy"]) {
       const command = await page.locator(`#guide-${client}-configure-code`).textContent();
       await verifyLauncher(command, client, origin);
@@ -105,7 +105,7 @@ async function main() {
     for (const text of ["公共准备", "Codex CLI", "agy CLI", "Win+R", "cmd", "Node.js LTS", "CODEX_HOME", "0600", "CPA 原生模型 ID", "重新打开终端", "辅助标题请求也需使用已授权模型"]) {
       assert.ok(guideText.includes(text), `guide missing ${text}`);
     }
-    for (const model of ["gemini-pro-agent"]) {
+    for (const model of ["gemini-3.8-flash-high"]) {
       assert.ok(guideText.includes(model));
     }
     assert.equal(await guide.locator('a[download]').count(), 0);

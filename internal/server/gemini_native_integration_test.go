@@ -140,6 +140,18 @@ func TestNativeGeminiLifecyclePostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.server.config.UsagePricing = nativeGeminiPricing(t)
+	// The retained bridge uses its historical Pro price snapshot. Keep this
+	// rollback fixture independent from the current CPA default model and price.
+	h.server.config.UsagePricing.Models[config.LegacyAntigravityPublicModel] = config.ModelPricing{
+		CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 1_048_576,
+		LongContextThresholdTokens: 200_000,
+		ServiceTiers: map[string]config.ServiceTierPricing{
+			config.PricingTierStandard: {
+				Short: &config.TokenPricing{InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.20", OutputUSDPerMillion: "12"},
+				Long:  &config.TokenPricing{InputUSDPerMillion: "4", CachedInputUSDPerMillion: "0.40", OutputUSDPerMillion: "18"},
+			},
+		},
+	}
 	h.server.config.AntigravityModelRoutes = map[string]string{config.LegacyAntigravityPublicModel: config.LegacyAntigravityPublicModel}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 4}
 	executor := &nativeLifecycleExecutor{response: "Hello"}

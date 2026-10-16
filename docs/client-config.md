@@ -113,14 +113,16 @@ Gemini 入口将这两个请求分别解析为 `gemini-3.8-flash-high` 和
 可以用 `X-Goog-Api-Key` 或 Bearer，不能同时提供两种凭据，也不接受 URL 中的 Key。
 
 先查询 `GET /v1/models`。经过价格、用户权限、受限 Key 和可用账号交集筛选后，
-目录最多公开八个原生 Gemini ID：`gemini-pro-agent`、`gemini-3.1-pro-low`、`gemini-3-flash`、
-`gemini-3.6-flash-high`、`gemini-3.7-flash-high`、`gemini-3.8-flash-high`、
-`gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`。
+目录最多公开五个原生 Antigravity ID：`gemini-3-flash`、`gemini-3.8-flash-high`、
+`gemini-3.1-flash-lite`、`gemini-3.5-flash-lite` 和 `gemini-4-argon-high`。
+基础 `gemini-4-argon` 使用上游 `gemini` provider，Muse Wonder 使用 `meta` provider；
+两者本次均未接入，没有价格、默认权限或路由。旧 Pro、3.6 和 3.7 模型只保留历史记录及受控回滚数据，
+不出现在当前目录。
 
 原生请求示例：
 
 ```http
-POST /v1beta/models/gemini-pro-agent:generateContent
+POST /v1beta/models/gemini-3.8-flash-high:generateContent
 Content-Type: application/json
 Authorization: Bearer <Gateway Key>
 
@@ -130,17 +132,18 @@ Authorization: Bearer <Gateway Key>
 Responses 示例：
 
 ```json
-{"model":"gemini-pro-agent","input":"Reply with OK","reasoning":{"effort":"low"},"store":false}
+{"model":"gemini-3.8-flash-high","input":"Reply with OK","reasoning":{"effort":"low"},"store":false}
 ```
 
-支持文本、流式输出和客户端函数工具，请求上限 1 MiB。原生 Gemini 的 `functionCall`、
-`functionResponse` 和 `thoughtSignature` 必须完整保留；收到 `antigravity_new_session_required`
-时新建会话。不要复用旧 CLI 工具历史，也不要填写绕过验证的伪签名。不开放 Claude、图片、
-音视频、供应商搜索或代码执行，Antigravity compact 返回 501。
+支持文本、流式输出和客户端函数工具，请求上限 1 MiB。Argon-high 上游目录中的图片、音频、视频和
+web search 能力不会绕过 Gateway 的现有请求校验。原生 Gemini 的 `functionCall`、`functionResponse` 和 `thoughtSignature`
+必须完整保留；收到 `antigravity_new_session_required` 时新建会话。不要复用旧 CLI 工具历史，也不要填写
+绕过验证的伪签名。Claude 请求使用 Messages API，不通过 Gemini 路径转发。
 
-一次性迁移将八个 Gemini ID 和 `gpt-6.1-sol` 的用户权限/未来用户默认权限设为允许，倍率设为 1。
-已受限 API Key 的白名单完全不变；仅包含退役名称的 Key 需要 Owner 明确重新配置。退役名称
-不会自动变成新名称。其他 Codex 设置、汇率和历史账单保持不变。
+一次性迁移 `0035_cpa_v8_0_30_model_catalog.sql` 激活 Haiku 5.5 与 Argon-high 两个新增模型并初始化现有用户权限；
+`gemini-pro-agent`、`gemini-3.1-pro-low`、`gemini-3.6-flash-high`、`gemini-3.7-flash-high` 和
+`gemini-3.7-flash` 退出活动目录。已受限 API Key 的白名单完全不变；仅包含退役名称的 Key 需要 Owner
+明确重新配置。退役名称不会自动变成新名称。其他 Codex 设置、汇率和历史账单保持不变。
 
 Gemini 仅 Standard，按 Google API 家族价格进行本地等价计费，不代表 Antigravity 订阅账单。
 完整价格、长上下文阈值、Sol 服务档位见 [CPA 原生模型与价格](cpa-native-models.md)。

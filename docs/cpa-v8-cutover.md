@@ -1,25 +1,28 @@
 # CPA v8 切换、演练与回滚
 
-本次固定 CPA **v8.0.20 / 0f96f568e4dbf6f84ad7399a74b78344c5eac7e6**，
+本次固定 CPA **v8.0.30 / 5be2cdab0869cbaa3d401891f740aebf7e15aa99**，
 管理面板 **v1.25.0 / b87b9487f63e08ad97b1fb4e7c17b4adb811b922**。
 CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；面板固定源码组件、
 依赖锁和同源资源摘要见 `deploy/cpa-panel/`。面板是去除配置、代理、权重、插件、任意请求
 与导出能力的受限构建，业务管理继续使用 Gateway 页面。所有自动更新关闭。
 
-默认链路：客户端 → Gateway → 同一 CPA → Codex / Antigravity。
+默认链路：客户端 → Gateway → 同一 CPA → Codex / Antigravity / Claude。
 Gateway 管身份、模型和账号权限、权重、并发、限额、价格、账单及审计；CPA 管 OAuth、
 供应商协议、凭据状态和刷新。`antigravity-bridge` 只在 `legacy-bridge` profile 中运行。
 
-## 已运行 v8.0.4 的补丁升级
+## 已运行 v8.0.20 的补丁升级
 
-从 CPA v8.0.4 升至 v8.0.20 **不新增数据库迁移，不调整现有价格或业务配置，
-不需要转换凭据或让所有账号重新登录**。下文维护窗口中的管理密钥增补、Keyring 正向转换、
-九模型价格合并及 `0025` 步骤属于首次 v7/bridge → v8 切换，已完成的部署不要重复执行。
+从 CPA v8.0.20 升至 v8.0.30 **需要执行一次 `0035_cpa_v8_0_30_model_catalog.sql` 和价格目录合并**。
+迁移只同步模型目录、默认权限和用户权限快照，不改 API Key allowlist、余额、usage 或账单快照；
+价格合并保留其它模型、汇率和 fallback。凭据文件继续复用，只有验收失败的账号单独重新授权。
+本次仅新增 `claude-haiku-5-5` 和 `gemini-4-argon-high`，移除五个退役模型。Antigravity 保留四个
+Flash ID 并加入 Argon-high，共五个；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider
+均未接入，不新增对应价格、权限或路由。
 
 1. 等本次提交的 CI 测试、race/CGO、镜像构建及运行冒烟通过后，使用对应发布清单拉取镜像。
    按 [CI 镜像部署流程](ci-image-deployment.md)更新时，将 `.env` 的
    `GATEWAY_IMAGE_TAG`、`GATEWAY_VERSION`、`GATEWAY_REVISION` 同步为该提交 SHA；
-   其他现有参数、secret、授权及定价保持原值。
+   按模型升级流程合并价格并执行 `0035`，其余现有参数和 secret 保持原值。
 2. 保留旧镜像 digest 和备份，暂停新推理及账号变更，排空活动请求和待结算预约。
    停止旧 CPA 后用新镜像重建 `codex-compat`，继续挂载原 `codex_oauth` 卷；
    保留 OAuth 文件、身份映射和 `.gateway-account-state`，不要使用 `down -v`，
@@ -30,11 +33,11 @@ Gateway 管身份、模型和账号权限、权重、并发、限额、价格、
 
 CPA 重启会清空进程内缓存。依赖旧 Claude thread 工具状态的续聊可能返回
 `thread_not_found`，需新建会话；这不表示需要重新授权账号。
-本次本地通过项及 CI、真实账号待验收项见 [v8.0.20 验证记录](cpa-v8.0.20-validation.md)。
+本次本地通过项及 CI、真实账号待验收项见 [v8.0.30 验证记录](cpa-v8.0.30-validation.md)。
 
 ## 构建与上线前演练
 
-先保留当前部署的镜像 **digest**、配置和受保护凭据。采用 Go 1.26.8：
+先保留当前部署的镜像 **digest**、配置和受保护凭据。采用 Go 1.26.9：
 
 ```sh
 go test -count=1 ./...
@@ -53,9 +56,9 @@ TEST_DATABASE_URL="$DISPOSABLE_DATABASE_URL" \
   go test -count=1 -p 1 -tags=integration ./internal/store ./internal/server
 ```
 
-v8.0.20 的本地源码检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.20-validation.md)；
-此前构建与切换演练保存在 [v8 历史验证记录](cpa-v8-validation.md)。本次升级不在本机构建、
-更新镜像或部署服务，以上构建和运行命令用于后续 CI 与部署验收。
+v8.0.30 的本地检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.30-validation.md)；
+此前构建与切换演练保存在 [v8 历史验证记录](cpa-v8-validation.md)。上述构建和运行检查应在
+进入实际部署维护窗口前完成，历史版本的成功结果不能替代本次验证。
 本地合成凭据、HTTP stub 和测试数据库的成功，
 不能代替真实账号的刷新及 Gateway 生成验收。CI 发布后必须记录应用镜像的 registry digest；
 Docker 本地 image ID 是本地内容标识，不应冒充 registry manifest digest。
@@ -63,8 +66,8 @@ Docker 本地 image ID 是本地内容标识，不应冒充 registry manifest di
 提前构建兼容回滚组合：**本次 Gateway** 加 `deploy/legacy-bridge.override.yml`；
 若需回退 CPA 本身，再加 `deploy/legacy-cpa.override.yml`。旧 Gateway 二进制不能读取新增
 迁移，禁止回退它。保留当前 Go 构建意味着新 schema、稳定映射和历史价格快照仍可处理。
-回滚 profile 只路由旧 CLI 与新目录共有的 Flash-high ID，新增 Pro/lite/Sol 的实际能力
-须逐项检查；旧 CPA 缺少的模型会隐藏或拒绝，绝不替换成其他模型。
+回滚 profile 只路由旧 CLI 与恢复目录共同支持的模型。Haiku 5.5 与 Argon-high 在旧链路上不可用时
+必须隐藏或拒绝，不能改名为其他模型。
 
 ```sh
 legacy_image=codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-rollback
@@ -83,26 +86,27 @@ docker build -f deploy/codex-compat/legacy.Dockerfile -t "$legacy_image" .
 1. 在实际部署服务器暂停新推理请求、账号变更、登录脚本与自动重启。关闭新流量后等待
    Gateway 的活动请求、CPA 账号活动请求归零，确认不存在待结算预约。备份数据库、当前
    部署配置、OAuth 和 Keyring；备份加密并记录此次修改前值。不要导出凭据到浏览器。
-2. 使用 `scripts/bootstrap-secrets.sh` 增补 `cpa_management_key`，保持 0640 和部署 secret GID。
+2. 首次接入 CPA 管理面时，使用 `scripts/bootstrap-secrets.sh` 增补 `cpa_management_key`，保持 0640 和部署 secret GID。
    它只能挂载到 Gateway 与 CPA，必须与执行用 Sidecar Key 不同。没有公网管理端口。
-3. 停止 bridge 与 CPA，确认唯一刷新进程退出。按照
+3. 首次从 bridge 迁入 CPA 时，停止 bridge 与 CPA，确认唯一刷新进程退出。按照
    [凭据双向迁移](cpa-credentials-migration.md) 在服务端 tmpfs 中运行正向转换。
    工具强制刷新并验证真实 Google subject、项目、原生模型和额度；每个失败账号单独隔离，
-   仅这些账号重新登录。保留刷新产生的最新凭据，禁止旧快照覆盖它们。
+   仅这些账号重新登录。保留刷新产生的最新凭据，禁止旧快照覆盖它们。已有 CPA v8 部署跳过此转换，
+   继续使用原 OAuth 卷和稳定身份映射。
 4. 按 [价格合并步骤](cpa-native-models.md) 保存 `pricing.before.json`、`pricing.applied.json`，
-   合并九个模型后写回完整配置。其余 Codex 模型和汇率不能用示例值覆盖。
-   启动新 Gateway 时 `0025` 执行一次，目标用户/默认权限允许、倍率为 1，受限 Key 不变。
+   合并 Haiku 5.5 和 Argon-high 两个新增模型并移除五个退役 Gemini ID 后写回完整配置。其余 Codex/Claude 模型和汇率不能用示例值覆盖。
+   启动新 Gateway 时 `0035` 执行一次，新增模型默认允许、删除模型退出活动目录，受限 Key 不变。
 5. 先启动 CPA 和 Gateway，保持对外维护状态。检查凭据目录 0700、文件 0600、UID 10001，
    独立 subject→稳定账号 ID 映射、`.gateway-account-state`、旧专属名单、权重和费用历史。
    不增加可任意编辑的 YAML 卷；运行配置仍由入口脚本生成。
 6. Owner 通过 `/admin/cpa/` 管理账号。凭据写操作需近期验证和同源校验；OAuth 绑定当前
    Owner 会话、5 分钟有效且单次消费。启停复用 Gateway 控制状态，删除先禁用并排空。
    新转换文件默认停用，逐个临时启用、核对原状态，验收后才恢复原来可用的账号。
-7. 使用真实 Gateway Key 逐账号验证 `GET /v1/models`、Codex/Sol 和实际可用 Gemini 模型的
-   JSON、SSE、函数调用/返回、签名透传、取消、429。检查账单、账户归因和非零有效 usage；
+7. 使用真实 Gateway Key 逐账号验证 `GET /v1/models`、Codex/Sol、实际可用 Gemini 模型和 Claude Messages 的
+   JSON、SSE、函数调用/返回、签名透传、取消、429。Haiku 5.5 与 Argon-high 均需生成验收。检查账单、账户归因和非零有效 usage；
    确认共享/专属权限、撤权后旧会话、权重、禁用和会话并发不会被面板或上传绕过。
    不可用模型隐藏或拒绝。旧 CLI 会话不能续接时应明确提示新建会话。
-8. 强制刷新后重启，再做两类供应商请求；重新授权后稳定 ID 不变。确认不同用户重复使用
+8. 强制刷新后重启，再做 Codex、Antigravity 和 Claude 请求；重新授权后稳定 ID 不变。确认不同用户重复使用
    相同会话/工具 ID 不串账号或签名缓存。完成本次演练记录后恢复流量。
 
 ## 回滚
@@ -123,18 +127,22 @@ docker compose --project-name codex-gateway --project-directory "$REPOSITORY" \
   --profile legacy-bridge config --quiet
 ```
 
+先完成下述价格条件恢复并加载审阅后的 `pricing.legacy.json`，再重新检查此 Compose 配置。
 确认后将最后的 `config --quiet` 改为 `up -d gateway codex-compat antigravity-bridge`。
 若故障在 CPA 本身，再加入 `-f "$REPOSITORY/deploy/legacy-cpa.override.yml"` 使用预先核验的旧 CPA。
 沿用本次 Gateway 和同一数据库；旧 CPA 不支持新增受限管理 API，需使用保留的服务端登录流程。
 操作前清除覆盖 Compose env-file 的同名 shell 环境变量，原则与 `scripts/compose.sh` 一致。
 
-按 [模型价格回滚](cpa-native-models.md) 执行条件恢复：只有仍等于切换时 applied 快照的
+按 [模型价格回滚](cpa-native-models.md#条件恢复快照与-legacy-bridge-配置) 执行条件恢复：只有仍等于切换时 applied 快照的
 当前配置才能恢复，保留后续 Owner 修改、新用户和业务记录。**不得用旧全库备份覆盖当前库**，
 也不删除迁移记录、历史账单、余额和预约快照。回滚后通过 Gateway 再验收并核对账户归因。
+数据库已有 `cpa_v830_model_config_backup` 时，条件恢复脚本只应用 `0035` 的快照，不能叠加旧 `0025` 回滚。
+完整 `pricing.rollback.json` 只作为条件恢复快照保存，不能直接加载。启用 bridge 时，按链接中的命令另行
+生成与所选 legacy 路由相交的 `pricing.legacy.json` 再写入运行配置；普通 CPA 模式仍拒绝退役模型。
 
 ## 稳定期
 
 默认保留 7 天已停止的旧镜像、受保护凭据备份、维护镜像及回滚配置。结束后清理旧 bridge
 运行依赖、CLI 下载域名和旧网络出口权限，保留仍在使用的稳定身份映射和控制状态。
-清理前确认不再需要回滚。三项 Flash-high 价格在 **2026-12-31** 到期，安排到期前复核并
-人工更新价格配置；此次没有自动调价系统。
+清理前确认不再需要回滚。定期复核当前价格目录，只有确认新的计费规则后才人工更新配置；
+此次没有自动调价系统，历史请求继续使用准入时保存的价格快照。

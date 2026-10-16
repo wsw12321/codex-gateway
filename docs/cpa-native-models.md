@@ -1,37 +1,47 @@
-# CPA v8 原生模型与定价迁移
+# CPA v8.0.30 原生模型与定价迁移
 
-Gateway 继续公开已审核的 8 个 Gemini 原生 ID，以及 `gpt-6.1-sol`。
-CPA v8.0.20 使用固定提交自带的模型目录，已原生包含 Sol，不再叠加本地目录条目；
-新增的上游模型不会自动扩大 Gateway 的公开范围，本次升级不改现有授权、价格或数据库结构。
-Gateway 仅展示同时满足价格、用户权限、API Key 白名单和可用账号能力的模型。
-旧 `gemini-3.1-pro-high`、Flash `-medium` 和旧 preview 别名退出默认目录；客户端必须
-主动选择新的精确 ID，并通过请求参数设置推理档位。旧 CLI 会话须新建，不迁移或伪造签名。
+Gateway 固定使用 CLIProxyAPI **v8.0.30**（commit `5be2cdab0869cbaa3d401891f740aebf7e15aa99`）的模型目录，
+公开范围限于已经接入的供应商和审核过的模型。
+目录同步由 Gateway 启动时执行，只有同时满足价格、用户权限、API Key 白名单和上游账号能力的模型才会在
+`/v1/models` 中返回。Antigravity 默认模型为 `gemini-3.8-flash-high`；模型 ID 必须精确匹配，不能用
+别名替代。
 
-| 模型 ID | Standard 输入 | 缓存读取 | 输出 |
+本次公开目录仅新增以下两个模型：
+
+| 模型 ID | 最大输入上下文 | 最大完成 | Standard 输入 / 缓存读取 / 输出（美元／百万 tokens） |
 | --- | ---: | ---: | ---: |
-| `gemini-pro-agent`、`gemini-3.1-pro-low` | 2 | 0.20 | 12 |
-| `gemini-3-flash` | 0.50 | 0.05 | 3 |
-| `gemini-3.6-flash-high`、`gemini-3.7-flash-high`、`gemini-3.8-flash-high` | 0.75 | 0.075 | 3.75 |
-| `gemini-3.1-flash-lite` | 0.25 | 0.025 | 1.50 |
-| `gemini-3.5-flash-lite` | 0.30 | 0.03 | 2.50 |
-| `gpt-6.1-sol` | 2 | 0.10 | 10 |
+| `claude-haiku-5-5` | 1,000,000 | 128,000 | 5 / 0.5 / 25 |
+| `gemini-4-argon-high` | 1,048,576 | 1,048,576 | 3.75 / 0.375 / 18.75 |
 
-单位为美元／百万 tokens。Gemini 是对应 Google API 的本地等价计费，不代表
-Antigravity 订阅产生了按量费用；缓存写入包含在普通输入价格中，仅开放 Standard。
-两项 Pro 的总输入超过 200,000 时，整请求采用 `4 / 0.40 / 18`。
-Flash-high 三项的当前价格有效至 **2026-12-31**；运维须在到期前复核
-[Google 官方价格](https://ai.google.dev/gemini-api/docs/pricing)，更新配置并保存新快照，
-服务不会自动调价。
+当前 Antigravity 公开目录共五个 ID：`gemini-3-flash`、`gemini-3.8-flash-high`、
+`gemini-3.1-flash-lite`、`gemini-3.5-flash-lite` 和 `gemini-4-argon-high`。
+Haiku 5.5 走 Anthropic Messages。上游目录将 Haiku 5.5 标记为支持文本、图片、thinking 和原生 web search，
+Argon-high 标记为支持文本、图片、音频、视频和 web search；Gateway 的 Antigravity 请求校验仍只开放
+文本与客户端函数工具，上游能力描述不代表这些媒体或内置工具已开放。
 
-Sol 的缓存写入单独收费：短上下文为 2.50。总输入超过 272,000 时，整请求采用
-输入／缓存读取／缓存写入／输出 `4 / 0.20 / 5 / 15`。Flex 为 Standard 的 0.5 倍，
-Fast/priority 为 2 倍，见 [OpenAI 官方价格](https://developers.openai.com/api/docs/pricing/)。
-价格配置中的最大输入只用于计费边界，CPA 渠道的实际上下文能力须通过账号验收确认。
-本次实现核对了此前保存的官方页面；当前环境再次抓取返回 HTTP 405，未声称实时复核。
+基础 `gemini-4-argon` 属于上游 `gemini` provider，四个 Muse Wonder ID 属于 `meta` provider；
+这两个 provider 本次均未接入。基础 Argon 和 Muse 不配置价格、默认权限或新请求路由，也不会出现在
+Gateway 的公开目录中，不能通过改名路由到 Argon-high。
 
-完整配置示例在 [pricing-v2.example.json](../deploy/pricing-v2.example.json)。现有部署
-**不要用示例覆盖整个价格环境变量**，否则会覆盖其他 Codex 价格与自定义汇率。先把当前
-`GATEWAY_USAGE_PRICING_JSON` 作为纯 JSON 保存到受保护文件，再运行离线合并工具：
+Haiku 5.5 使用 Anthropic Messages 定价，缓存写入为 TTL 模式：5 分钟 `6.25`、1 小时 `10`。
+Haiku 5.5 的五类价格按 `claude-haiku-4-5-20251001` 乘五。Argon-high 按
+`gemini-3.8-flash-high` 乘五，使用 `included_in_input` 缓存模式，输入、缓存读取和输出分别为
+`3.75`、`0.375` 和 `18.75`。这些最大输入值是计费边界，实际 CPA 账号能力仍须通过真实账号验收。
+
+从当前活动目录移除以下上游删除的 ID：
+
+- `gemini-pro-agent`
+- `gemini-3.1-pro-low`
+- `gemini-3.6-flash-high`
+- `gemini-3.7-flash-high`
+- `gemini-3.7-flash`
+
+删除只会将 `model_access_defaults.catalog_active` 设为 `false`。旧名称保留在历史 usage、账单快照和受限
+API Key allowlist 中，因此历史记录仍可读取；新请求会被拒绝。受限 Key 不会被清空，也不会因目录同步而
+获得新模型。旧 bridge 回滚所需的其它 ID 存放在 legacy 目录，不能通过 CPA 原生路由重新启用。
+
+完整示例在 [pricing-v2.example.json](../deploy/pricing-v2.example.json)。现有部署不要直接以示例覆盖整个
+`GATEWAY_USAGE_PRICING_JSON`，应先保存当前纯 JSON，再使用离线工具合并：
 
 ```sh
 umask 077
@@ -39,35 +49,78 @@ go build -o /tmp/cpa-pricing-migrate ./cmd/cpa-pricing-migrate
 /tmp/cpa-pricing-migrate < pricing.before.json > pricing.applied.json
 ```
 
-审核后将 `pricing.applied.json` 的完整 JSON 写回原部署配置；不要只同步新增模型列表。
-工具保留其他模型、汇率和 fallback 策略，仅替换九个目标模型并移除明确退役 Gemini ID。
-v1 配置需先人工转换到 v2，工具会拒绝隐式改变旧计费语义。
+工具保留其它 Codex/Claude 模型、汇率和 fallback 策略，只替换 v8.0.30 目标价格并移除上述退役 Gemini
+ID。v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义。审核后将完整 `pricing.applied.json` 写回
+部署配置，并保存 before/applied 文件供回滚比较。
 
-数据库迁移 `0025_cpa_v8_native_models.sql` 仅执行一次：目标模型默认权限和所有现有用户
-权限置为允许、倍率重置为 1，后续新用户继承默认值。重启不会再次覆盖管理员操作。
-所有受限 API Key 的白名单逐项保留，包含旧名称的 Key 不会自动获得新模型，也不会被清空
-变成无限制；需要 Owner 显式重新配置。其他 Codex 权限和倍率、余额、历史用量、账单及
-已预约请求的价格快照均不更改。默认允许仍然受 API Key、账号权限、余额与配额约束。
+数据库迁移 `0035_cpa_v8_0_30_model_catalog.sql` 只执行一次。它会：
 
-Responses 客户端采用精确模型名，例如：
+- 将五个删除模型标记为非活动目录，保留历史权限和数据；
+- 初始化 Haiku 5.5 和 Argon-high 两个新模型的活动目录和现有用户授权，新用户通过默认目录继承；
+- 保存默认权限、用户权限和倍率的 before/applied 快照；缺失倍率行继续按 `1` 计费，不伪造管理员归属；
+- 不修改 API Key allowlist、历史 usage、余额、账单、已结算记录或 admission pricing snapshot。
 
-```json
-{"model":"gemini-pro-agent","input":"Reply with OK","store":false}
-```
+## 条件恢复快照与 legacy bridge 配置
 
-原生 Gemini 入口为 `/v1beta/models/gemini-pro-agent:generateContent` 或
-`:streamGenerateContent?alt=sse`。本次只开放文本与客户端函数工具；函数返回时完整保存
-并回传供应商提供的 `thoughtSignature`，不要通过改名续接旧 bridge 会话。
-
-回滚必须使用识别全部新迁移的兼容构建。价格回滚只恢复仍等于切换快照的目标条目，
-保留切换后管理员修改、当前汇率与其他模型：
+迁移具有 forward-only 语义。旧 Gateway 二进制会因未知迁移保护而拒绝启动，回滚时必须使用包含 `0035`
+的兼容构建。数据库配置回滚使用 [rollback-cpa-model-config.sql](../scripts/rollback-cpa-model-config.sql)：
+脚本只恢复仍等于切换 applied 快照的行，保留切换后 Owner 修改、新用户记录和业务数据。
+存在 `0035` 的快照表时只恢复本次切换，不叠加首次 v8 的 `0025` 回滚。价格回滚则比较
+`pricing.before.json` 与 `pricing.applied.json`：
 
 ```sh
 /tmp/cpa-pricing-migrate -rollback-before pricing.before.json \
   -rollback-applied pricing.applied.json < pricing.current.json > pricing.rollback.json
 ```
 
-维护窗口内执行 [rollback-cpa-model-config.sql](../scripts/rollback-cpa-model-config.sql)
-恢复未被后续修改的目标默认权限、原用户权限与倍率。该脚本不恢复全库、不改账单与余额；
-切换后新用户的记录保留。旧链路无法执行的新模型保持不可用，最后以完整回滚价格目录
-同步可用目录。`cpa_v8_model_config_backup` 保存比较所需的切换前后值，7 天稳定期内保留。
+`pricing.rollback.json` 是完整的条件恢复快照，须保留用于审计和后续比较，**不要直接加载为运行配置**。
+它可能恢复 v8.0.20 的 `gemini-pro-agent` 等价格；本次 Gateway 在普通 `cpa` 模式下仍拒绝退役 ID，
+不会因为价格恢复而重新开放。价格快照恢复与选择可运行的回滚传输是两个步骤。
+
+若启用受控 legacy bridge，先按 [切换与回滚](cpa-v8-cutover.md#回滚) 停止 Google 刷新并转换最新凭据。
+然后另行生成 `pricing.legacy.json`：只保留已恢复价格、所选 bridge 路由和
+[`LegacyAntigravityModels()`](../internal/config/antigravity.go) 合法 ID 的交集，不添加或改名任何模型。
+其他供应商价格、汇率、fallback 及其余配置字段完整保留。默认
+[legacy bridge override](../deploy/legacy-bridge.override.yml) 只配置三个 Flash-high 路由，对应命令如下：
+
+```sh
+umask 077
+jq -ce --argjson routes '{"gemini-3.6-flash-high":"gemini-3.6-flash-high","gemini-3.7-flash-high":"gemini-3.7-flash-high","gemini-3.8-flash-high":"gemini-3.8-flash-high"}' '
+  ["gemini-3.1-pro-high", "gemini-3.6-flash-high", "gemini-3.6-flash-medium",
+   "gemini-3.7-flash-high", "gemini-3.7-flash-medium",
+   "gemini-3.8-flash-high", "gemini-3.8-flash-medium"] as $legacy |
+  if .schema_version != 2 or (.models | type) != "object" then
+    error("rollback snapshot must contain pricing v2 models")
+  elif ($routes | to_entries | all(.key == .value and (.key as $id | $legacy | index($id) != null))) | not then
+    error("bridge routes must map reviewed legacy IDs to themselves")
+  else
+    .models |= with_entries(select(
+      (.key | startswith("gemini-") | not) or ($routes[.key] == .key)
+    ))
+  end
+' pricing.rollback.json > pricing.legacy.json
+```
+
+如果选择其他合法 legacy 路由，须同步修改上述 `$routes` 和实际 Compose override；不能只改价格文件。
+缺失价格的路由不会由此命令补齐，仍不可公开。`gemini-pro-agent`、`gemini-3.1-pro-low`、
+基础 Argon、Argon-high 等不在 legacy 路由交集中的 Gemini ID 会被排除，不能映射成 Flash 或旧 Pro。
+
+审阅 `pricing.legacy.json` 后，以其完整单行 JSON 更新 `GATEWAY_USAGE_PRICING_JSON`，并确认最终 Compose
+配置为 `ANTIGRAVITY_TRANSPORT=legacy-bridge`、对应精确路由及 `CPA_ANTIGRAVITY_ENABLED=false`。
+由兼容 Gateway 启动时执行目录同步；只保留价格、权限、路由和账号能力共同允许的模型。验收 `/v1/models`、
+未路由模型拒绝、历史账单可读性及账户归因。原始 before/applied/current/rollback 快照均保留，
+不以 `pricing.legacy.json` 覆盖它们，也不重写历史请求的价格快照。
+
+若继续使用普通 CPA 传输，则保持当前审核过的 CPA 模型集合，不能用完整恢复快照或 legacy 路由重新开放旧 ID。
+
+## 当前 CPA 请求示例
+
+CPA 原生请求使用精确模型名，例如：
+
+```json
+{"model":"gemini-4-argon-high","input":"Reply with OK","store":false}
+```
+
+原生 Gemini 入口为 `/v1beta/models/gemini-4-argon-high:generateContent` 或
+`:streamGenerateContent?alt=sse`。Claude Messages 使用 `/v1/messages` 并携带 `claude-haiku-5-5`。
+上线前必须使用真实账号验收普通/流式请求、工具调用、失败冷却、强制刷新和重启后的身份保持。

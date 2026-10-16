@@ -19,7 +19,7 @@ func TestCPATransportDefaultsAndBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.UsesCPAAntigravity() || len(cfg.AntigravityModelRoutes) != 8 || cfg.CPAManagementToken != strings.Repeat("m", 43) {
+	if !cfg.UsesCPAAntigravity() || len(cfg.AntigravityModelRoutes) != 5 || cfg.CPAManagementToken != strings.Repeat("m", 43) {
 		t.Fatal("CPA defaults missing")
 	}
 	for _, change := range []func(*Config){

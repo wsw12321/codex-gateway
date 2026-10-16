@@ -1,6 +1,63 @@
 # 通过 Antigravity 订阅接入 Gemini
 
-> 以下旧 bridge / CPA v7 内容保留用于历史排障；当前默认部署以 [CPA v8 切换与回滚](cpa-v8-cutover.md) 和 [原生模型目录](cpa-native-models.md) 为准。
+当前默认链路为客户端 → Gateway → CPA v8.0.30 → Antigravity。Gateway 管理模型和账号权限、并发、
+配额与账单，CPA 管理 OAuth、供应商协议和刷新。`antigravity-bridge` 仅用于受控 legacy 回滚，
+不会随默认部署启动。当前升级步骤见 [CPA 切换与回滚](cpa-v8-cutover.md)。
+
+## 当前 CPA 模型目录
+
+Antigravity 当前最多公开以下五个精确 ID，默认模型为 `gemini-3.8-flash-high`。实际 `/v1/models`
+结果还必须通过价格、用户权限、API Key allowlist 与可用账号能力的交集检查。
+
+| 模型 ID | Standard 输入 / 缓存读取 / 输出（美元／百万 tokens） |
+| --- | ---: |
+| `gemini-3-flash` | 0.50 / 0.05 / 3 |
+| `gemini-3.8-flash-high` | 0.75 / 0.075 / 3.75 |
+| `gemini-3.1-flash-lite` | 0.25 / 0.025 / 1.50 |
+| `gemini-3.5-flash-lite` | 0.30 / 0.03 / 2.50 |
+| `gemini-4-argon-high` | 3.75 / 0.375 / 18.75 |
+
+Argon-high 的最大输入和最大完成均为 1,048,576；价格按 `gemini-3.8-flash-high` 的五倍，缓存写入包含
+在普通输入中。费用是本地 API 等价计费，不表示 Antigravity 订阅产生按量费用。上游目录包含的媒体和
+web search 能力不代表 Gateway 已开放相应请求；当前 Antigravity 请求仍只支持文本、流式输出与客户端函数工具。
+
+基础 `gemini-4-argon` 属于上游 `gemini` provider，四个 Muse Wonder ID 属于 `meta` provider。
+这两个 provider 本次均未接入，基础 Argon 和 Muse 没有价格、默认权限或新请求路由，不出现在公开目录中。
+
+v8.0.30 的完整升级只新增 `claude-haiku-5-5` 和 `gemini-4-argon-high`；Haiku 走 Anthropic Messages，
+不属于上述 Antigravity 集合。五个上游删除模型退出活动目录：`gemini-pro-agent`、`gemini-3.1-pro-low`、
+`gemini-3.6-flash-high`、`gemini-3.7-flash-high` 和 `gemini-3.7-flash`。这些旧名称的 usage、账单快照和
+权限记录保留，新请求被拒绝；不会改写受限 API Key allowlist。
+
+## 当前请求与升级
+
+先查询 `GET /v1/models`，再使用已授权的精确 ID。Responses 示例：
+
+```json
+{"model":"gemini-4-argon-high","input":"Reply with OK","store":false}
+```
+
+原生 Gemini 接口为 `/v1beta/models/{model}:generateContent` 和
+`/v1beta/models/{model}:streamGenerateContent?alt=sse`。使用 Gateway Key，且只选择
+`Authorization: Bearer` 或 `X-Goog-Api-Key` 一种凭据。函数调用、函数返回和 `thoughtSignature`
+必须完整保留。当前 AGY 客户端兼容名称和参数限制见 [客户端配置](client-config.md#agy-cli)，
+旧 bridge 的 Pro preview/Medium 别名规则不适用于默认 CPA 路径。
+
+升级时保存完整价格 before/applied 快照，执行离线合并，再由新版 Gateway 执行一次
+`0035_cpa_v8_0_30_model_catalog.sql`。迁移初始化两个新增模型权限并保存配置快照，缺失倍率继续为 1，
+历史 usage、账单、订阅模型范围和 API Key allowlist 保持原值。完整操作见
+[原生模型与定价迁移](cpa-native-models.md)，不能用示例覆盖已有汇率和其它模型价格。
+
+回滚保留包含 `0035` 的兼容 Gateway；配置恢复仅比较本次 before/applied 快照，不叠加旧 `0025`。
+若需要 legacy bridge，按 [受控回滚步骤](cpa-v8-cutover.md#回滚) 转换最新凭据，确保只有一个 Google
+刷新进程。Haiku 5.5、Argon-high 在旧链路不可用时隐藏或拒绝，不以其它模型替代。
+
+## Legacy bridge：历史实现与受控回滚参考
+
+以下保留旧 bridge / CPA v7 的实现、CLI 版本、七模型目录及 `0023` 迁移说明，用于历史排障。
+其中旧模型、别名、路由和价格不属于当前 CPA 公开目录。启用 bridge 必须先完成上方链接中的受控回滚，
+并以实际兼容构建、[按所选 legacy 路由过滤后的价格目录](cpa-native-models.md#条件恢复快照与-legacy-bridge-配置)
+与账号能力的交集决定可用模型；不要直接将以下历史配置复制到默认部署。
 
 Gateway 使用 Google 官方 AGY 的精确模型名，独立 `antigravity-bridge` 将请求模型
 原样传给 `agy --model`，并校验 CLI 返回的模型名。CLI 固定为 `1.2.4`；安装包 URL
@@ -15,7 +72,7 @@ Gateway 使用 Google 官方 AGY 的精确模型名，独立 `antigravity-bridge
 不实现或模拟 Antigravity 私有网络协议。Google 上游使用服务器的订阅登录；客户端配置中的
 Gateway API key 只用于本服务鉴权。
 
-## 模型权限和结算
+### 模型权限和结算
 
 模型进入现有模型目录、用户模型权限、API Key 模型范围及价格目录。管理员继续通过
 现有界面/API 设置默认和个人模型权限。Owner 可在新增的「Antigravity 账号」页面设置
@@ -62,7 +119,7 @@ Gemini 原生响应将答案输出映射为 `candidatesTokenCount`，思考量�
 `cachedContentTokenCount` 是输入的子集，不再加到输入总量。两种协议共用原有账单，
 同一请求只结算一次。
 
-## 使用精确模型名请求 Gateway
+### 使用精确模型名请求 Gateway
 
 链路为 `API 客户端 → Gateway → Antigravity Bridge → 服务器订阅账号 → Google`。
 先由管理员配置同名路由并重新授予用户模型权限，再以 Gateway key 查询 `GET /v1/models`，
@@ -107,7 +164,7 @@ AGY `1.2.12` 的 `gemini-3.8-flash` 原生请求按 `generationConfig.thinkingCo
 服务器内部使用官方 AGY 调用订阅。Gateway key 不发送给 Bridge 或 Google，
 Gateway→Bridge 使用独立凭据。
 
-## Gemini 原生 API
+### Gemini 原生 API
 
 支持以下接口，仅转发给 Antigravity Bridge：
 
@@ -146,7 +203,7 @@ SSE：CLI 初始化并验证模型及严格权限后开始响应，普通文本�
 部署 Gateway 与 Bridge 两个新镜像后，AGY 原生接口才会启用上述流式行为，无新增配置
 或数据库迁移。排查证据与本地验证见 [499 与流式修复记录](agy-499-investigation.md)。
 
-## API 范围
+### API 范围
 
 `POST /v1/responses` 支持文本字符串、消息数组、`instructions`、`stream`、`tools` 工具列表、
 以及 Codex CLI 客户端的会话参数与历史 `function_call` / `function_call_output` 结构。Bridge
@@ -170,7 +227,7 @@ JSON 只取最终成功 `result`。首版 SSE 在 CLI 退出并验证完整协�
 并清理请求数据。认证失效映射 503，订阅额度耗尽映射 429，超时映射 504，进程或输出
 协议失败映射 502；原始 stderr 不发送给客户端。
 
-## 部署和登录
+### 部署和登录
 
 先更新现有配置中的价格目录，保留 `ANTIGRAVITY_MODEL_ROUTES_JSON={}`；默认不会
 把任何模型转向尚未验收的 Bridge。Bridge 服务本身不使用 Compose profile。
@@ -252,7 +309,7 @@ ANTIGRAVITY_MODEL_ROUTES_JSON={"gemini-3.8-flash-high":"gemini-3.8-flash-high","
 启动不依赖 Bridge 健康状态。Gateway 可只启用上述同名路由的子集，默认保持空目录；
 Bridge 的 Compose 配置固定完整七个同名路由。
 
-## 多账号管理和轮换
+### 多账号管理和轮换
 
 Owner 控制台新增「Antigravity 账号」页面，支持历史区间／全部历史的请求、错误、Token
 和 API 等价费用统计，近 24 小时费用占比与分配系数、启停、实时并发对话名额及上限、
@@ -310,7 +367,7 @@ AGY `1.2.12` Gemini 模式实测会在 `systemInstruction.parts[].text` 中携�
 代理；回调和管理接口使用独立的 Bridge secret。部署后的真实 Google 多账号登录和
 额度切换仍需使用站点账号验收。本地测试使用合成凭据和确定性的 CLI 替身。
 
-## 出口验收
+### 出口验收
 
 两个上游使用独立内部网络，只有 Squid 能访问外部网络。Codex 仅允许现有两个 OpenAI
 域名。Antigravity 出口允许 `accounts.google.com`、`oauth2.googleapis.com`、
@@ -339,7 +396,7 @@ TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生�
 不要开放 `*.googleapis.com` 或通用 Google 子域；安装包和自动更新域名不需要运行时出口。
 在真实流量完成前不能宣称出口清单已经充分或生产验收通过。
 
-## 验收和回滚
+### 验收和回滚
 
 开发验证覆盖假 CLI 的 JSON、SSE、NDJSON 分段、认证、限额、协议错误、工具事件、取消、
 超时、usage、路由和共用权限/结算，以及认证恢复、刷新写回和失败后的收尾。
@@ -351,7 +408,7 @@ TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生�
 三个镜像构建。真实账号还需验证重启、续期、重新登录、限额、取消后无残余进程、磁盘残留
 和出口域名。真实 Google 上游验收须独立执行，不应把单元测试或本地 AGY 协议探测视为替代。
 
-本次模型与计费升级须在维护窗口协调切换新 Bridge 与执行 `0023` 迁移的 Gateway，
+历史 bridge 模型与计费升级须在维护窗口协调切换新 Bridge 与执行 `0023` 迁移的 Gateway，
 避免旧 Gateway 的 preview 路由请求新 Bridge，或新 Gateway 向旧 Bridge 发送新模型名。
 按下列步骤执行：
 
@@ -368,16 +425,16 @@ TLS 内容或认证头。验收登录、刷新、模型检查、`/usage` 和生�
    建立 2027-01-01 前的 Flash 手动改价提醒。
 
 迁移是 forward-only。只关闭 Gemini 时可清空路由并停止 Bridge；这不会撤销 `0023`。
-若需恢复旧二进制，须停止全部数据库写入，把升级前备份恢复到新的隔离数据库卷，
-再切回匹配的 Gateway、Bridge、配置与 revision；不能只切旧镜像，也不能保留升级后的
-写入同时恢复旧权限。升级后的新增账务写入必须先完成核账和保全。
+上述 `0023` 是历史迁移，不是 v8.0.30 的回滚步骤。当前部署须保留能够识别 `0035` 的 Gateway，
+按 [CPA 回滚流程](cpa-v8-cutover.md#回滚) 使用最新凭据转换和条件配置恢复；不得以升级前全库
+备份覆盖切换后账单，也不得删除迁移记录。
 真实订阅生成、Google 出口及生产部署需在站点环境独立验收。
 
 旧第三方 Gemini 插件、补丁和登录脚本已移除，Codex Sidecar 禁用插件，历史 Gemini OAuth
 文件不再加载且不会自动删除。`codex_oauth` 卷继续保留原内容。
 
 紧急关闭 Gemini 时把路由恢复为 `{}`，重建 Gateway 并停止 Bridge；Codex 路由不受影响，
-数据库仍保留 `0023`，旧版本恢复遵循上述备份步骤：
+数据库仍保留已应用迁移；以下仅为 legacy bridge 的停用命令，当前 CPA 路径按前述流程操作：
 
 ```sh
 ./scripts/compose.sh up -d --no-deps gateway

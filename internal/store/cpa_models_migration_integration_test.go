@@ -3,9 +3,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -47,6 +50,39 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// This regression describes the immutable 0025 cutover. Later catalog
+	// migrations have their own tests and must not alter its target set.
+	for index, migration := range migrations {
+		if migration.Name >= "0035" {
+			migrations = migrations[:index]
+			break
+		}
+	}
+	applyPendingMigrations := func() {
+		t.Helper()
+		for _, migration := range migrations {
+			if err := s.withTx(ctx, &sql.TxOptions{}, func(tx *sql.Tx) error {
+				var checksum []byte
+				err := tx.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE name=$1`, migration.Name).Scan(&checksum)
+				if err == nil {
+					if !bytes.Equal(checksum, migration.Checksum[:]) {
+						return fmt.Errorf("migration %s checksum mismatch", migration.Name)
+					}
+					return nil
+				}
+				if !isNoRows(err) {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+					return err
+				}
+				_, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)`, migration.Name, migration.Checksum[:])
+				return err
+			}); err != nil {
+				t.Fatalf("apply pending migration %s: %v", migration.Name, err)
+			}
+		}
+	}
 	if _, err := s.db.ExecContext(ctx, `CREATE TABLE schema_migrations (
 		name text PRIMARY KEY, checksum bytea NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())`); err != nil {
 		t.Fatal(err)
@@ -77,7 +113,12 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 	}
 	const unchangedModel = "gpt-5.4"
 	const retiredModel = "gemini-3.1-pro-high"
-	models := append(config.AntigravityModels(), "gpt-6.1-sol", unchangedModel, retiredModel)
+	targetModels := []string{
+		"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3-flash",
+		"gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.8-flash-high",
+		"gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gpt-6.1-sol",
+	}
+	models := append(append([]string{}, targetModels...), unchangedModel, retiredModel)
 	if err := s.SyncModelAccessCatalog(ctx, models); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +155,15 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 	params.Usage.Model = retiredModel
 	params.Usage.PricingRuleVersion = config.PricingSchemaV2
 	params.Usage.RequestedServiceTier = "default"
-	rule := config.CPAV8PricingModels()["gemini-pro-agent"]
+	rule := config.ModelPricing{
+		CacheWriteMode: config.CacheWriteIncludedInInput, MaxInputTokens: 1_048_576,
+		LongContextThresholdTokens: 1_048_576,
+		ServiceTiers: map[string]config.ServiceTierPricing{
+			config.PricingTierStandard: {Short: &config.TokenPricing{
+				InputUSDPerMillion: "0.75", CachedInputUSDPerMillion: "0.075", OutputUSDPerMillion: "3.75",
+			}},
+		},
+	}
 	params.Billing = &BillingReservationParams{
 		RequestID: requestID, UserID: user.ID, APIKeyID: key.ID, Model: retiredModel,
 		PricingRuleVersion: config.PricingSchemaV2, BillingMode: BillingModeGeminiAPIEquivalent,
@@ -142,19 +191,17 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 		return data
 	}
 	protectedBefore := readProtected()
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	applyPendingMigrations()
 	if after := readProtected(); after != protectedBefore {
 		t.Fatal("migration changed restricted key, other Codex settings, balance, ledger or admission snapshot")
 	}
 	// Catalog synchronization must receive the complete pricing catalog, not
 	// just Gemini. Retired names stay in history but leave current availability.
-	fullCatalog := append(config.AntigravityModels(), "gpt-6.1-sol", unchangedModel)
+	fullCatalog := append(append([]string{}, targetModels...), unchangedModel)
 	if err := s.SyncModelAccessCatalog(ctx, fullCatalog); err != nil {
 		t.Fatal(err)
 	}
-	for model := range config.CPAV8PricingModels() {
+	for _, model := range targetModels {
 		for _, principal := range []User{user, disabled} {
 			if err := s.RequireModelAccess(ctx, principal.ID, model); err != nil {
 				t.Fatalf("target model %s user %s not granted: %v", model, principal.ID, err)
@@ -168,7 +215,7 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 		t.Fatalf("other Codex permission changed: %v", err)
 	}
 	future := globalUsageIntegrationUser(t, ctx, s, "cpa-migration-future", UserRoleMember)
-	for model := range config.CPAV8PricingModels() {
+	for _, model := range targetModels {
 		if err := s.RequireModelAccess(ctx, future.ID, model); err != nil {
 			t.Fatalf("future user did not inherit target default %s: %v", model, err)
 		}
@@ -192,9 +239,7 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 		UPDATE billing_model_multipliers SET multiplier=3,updated_at=now()+interval '1 second' WHERE model='gpt-6.1-sol'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	applyPendingMigrations()
 	if err := s.SyncModelAccessCatalog(ctx, fullCatalog); err != nil {
 		t.Fatal(err)
 	}
