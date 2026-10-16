@@ -78,7 +78,14 @@ func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model str
 		return nil, err
 	}
 	if cashCutoff != nil {
-		sources = append(sources, BillingFundingSource{SourceType: "cash", CashLotCutoff: *cashCutoff, Priority: cashPriority, RemainingUSD: balance})
+		var cashAllowed bool
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CASE WHEN models_initialized THEN model_ids ? $1 ELSE false END
+			FROM billing_settings WHERE singleton),false)`, model).Scan(&cashAllowed); err != nil {
+			return nil, mapDBError("read cash model scope", err)
+		}
+		if cashAllowed {
+			sources = append(sources, BillingFundingSource{SourceType: "cash", CashLotCutoff: *cashCutoff, Priority: cashPriority, RemainingUSD: balance})
+		}
 	}
 	if err := sortBillingFundingSources(sources); err != nil {
 		return nil, err

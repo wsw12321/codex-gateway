@@ -288,7 +288,7 @@ async function modelCatalog(scope) {
   return modelCatalogRequests.get(key);
 }
 
-async function loadFormModelPicker(id, scope, selected = [], options = {}) {
+async function loadFormModelPicker(id, scope, selected = null, options = {}) {
   const host = byId(id);
   if (!host || !state) return;
   const token = {}, generation = identityGeneration, actor = state.user.id;
@@ -299,7 +299,10 @@ async function loadFormModelPicker(id, scope, selected = [], options = {}) {
   const current = () => !loggingOut && host.modelPickerRequest === token && generation === identityGeneration && actor === state?.user?.id;
   try {
     const models = await modelCatalog(scope);
-    if (current()) renderModelPicker(host, models, {...options, selected});
+    const initial = options.defaultAll && !Array.isArray(selected)
+      ? models.map((item) => item.id)
+      : selected;
+    if (current()) renderModelPicker(host, models, {...options, selected: initial});
   } catch (error) {
     if (!current()) return;
     host.setAttribute("aria-busy", "false");
@@ -3924,11 +3927,30 @@ async function selectBillingUser(user) {
 }
 
 function renderBillingSettings(result) {
+  const previousModels = Array.isArray(billingSettings?.model_ids) ? billingSettings.model_ids : null;
   billingSettings = result?.settings || result || {};
   const rate = billingSettings.usd_per_cny;
   byId("billing-current-rate").textContent = rate == null ? "—" : String(rate);
   const input = byId("billing-rate-form").elements.usd_per_cny;
   if (document.activeElement !== input) input.value = rate == null ? "" : String(rate);
+  const models = Array.isArray(billingSettings.model_ids) ? billingSettings.model_ids : [];
+  const host = byId("billing-cash-models");
+  if (!host?.modelPicker || JSON.stringify(previousModels) !== JSON.stringify(models)) {
+    loadFormModelPicker("billing-cash-models", "manageable", models);
+  }
+}
+
+async function updateBillingCashModels(event) {
+  const form = event.currentTarget;
+  const modelIDs = selectedPickerModels("billing-cash-models");
+  await billingMutation("/admin/billing/settings/cash-models", "PUT", {
+    model_ids: modelIDs,
+    reason: billingReason(form),
+  });
+  form.elements.reason.value = "";
+  let refreshed = true;
+  try { await loadBillingSettings(); } catch { refreshed = false; }
+  reportBillingMutation(form, "余额可用模型范围已更新；仅影响新请求。", refreshed);
 }
 
 function selectedBillingUserID() {
@@ -5902,6 +5924,7 @@ function resetGroupManagement() {
   byId("group-detail").classList.add("hidden");
   byId("group-detail-name").textContent = "—";
   byId("group-detail-period").textContent = "—";
+  byId("group-detail-models").textContent = "—";
   byId("group-metrics").replaceChildren();
   byId("upstream-access-account").textContent = "—";
   groupMessage();
@@ -5964,6 +5987,11 @@ function groupMetrics(group) {
   ].map(([label, value, empty]) => element("article", {}, element("span", {text: label}), element("strong", {text: formatUSD(value, empty)})));
 }
 
+function groupModelLabel(group) {
+  const models = Array.isArray(group?.model_ids) ? group.model_ids.filter(Boolean) : [];
+  return models.length ? `可用模型：${models.join("、")}` : "可用模型：未配置（兼容旧群组）";
+}
+
 function renderBillingGroup(group, detail = {}) {
   const host = byId("billing-group");
   host.classList.toggle("hidden", !group);
@@ -5976,7 +6004,7 @@ function renderBillingGroup(group, detail = {}) {
       element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(detail.group_member_used_usd, "数据不可用")})),
       element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(detail.group_member_remaining_usd, "数据不可用")})),
     ),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。群组优先支付，剩余费用按个人来源优先级和模型范围结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
+    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。${groupModelLabel(group)}。群组优先支付，剩余费用按个人来源优先级和模型范围结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
   );
 }
 
@@ -5995,6 +6023,7 @@ function renderGroupList() {
       element("span", {text: `${group.member_count} 人 · ${groupPeriodLabel(group)} · ${groupPeriodStatus(group)}`}),
       element("small", {text: `${groupPeriodProgress(group)} · ${groupExpiryLabel(group)}`}),
       element("small", {text: `剩余 ${formatUSD(group.remaining_usd)} / ${formatUSD(group.limit_usd)}`}),
+      element("small", {text: groupModelLabel(group)}),
     );
     button.disabled = groupOperation;
     button.addEventListener("click", () => runButton(button, () => loadGroupDetail(group.id), "加载中…"));
@@ -6037,6 +6066,7 @@ async function loadGroupDetail(id) {
   managedGroup = group;
   byId("group-detail-name").textContent = group.name;
   byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${groupPeriodProgress(group)} · ${groupPeriodStatus(group)}。本期 ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}；${groupExpiryLabel(group)}`;
+  byId("group-detail-models").textContent = groupModelLabel(group);
   byId("group-metrics").replaceChildren(...groupMetrics(group));
   show("group-detail");
   renderGroupList();
@@ -6100,6 +6130,12 @@ function openGroupEditor(group = null) {
   form.elements.period.value = group?.period || "month";
   form.elements.period_count.value = String(group?.period_count ?? 1);
   form.elements.custom_days.value = String(group?.custom_days || 14);
+  form.dataset.modelIDsConfigured = String(!group || Object.prototype.hasOwnProperty.call(group, "model_ids"));
+  form.dataset.modelIDsLoaded = "false";
+  const selectedGroupModels = Array.isArray(group?.model_ids) ? group.model_ids : undefined;
+  loadFormModelPicker("group-models", "manageable", selectedGroupModels, {defaultAll: selectedGroupModels === undefined}).then(() => {
+    if (byId("group-form") === form) form.dataset.modelIDsLoaded = "true";
+  });
   byId("group-dialog-title").textContent = group ? "编辑群组额度" : "创建群组";
   syncGroupPeriodInput();
   openDialog("group-dialog");
@@ -6161,6 +6197,9 @@ async function saveGroup(event) {
   const payload = {name: form.elements.name.value.trim(), limit_usd: amount, member_limit_usd: memberLimit || null, period: form.elements.period.value, period_count: billingPeriodCount(form),
     custom_days: form.elements.period.value === "custom" ? Number(form.elements.custom_days.value) : 0,
     reason: billingReason(form)};
+  if (form.dataset.modelIDsConfigured === "true" && form.dataset.modelIDsLoaded === "true") {
+    if (byId("group-models")?.modelPicker) payload.model_ids = selectedPickerModels("group-models");
+  }
   if (form.elements.starts_at.value) payload.starts_at = new Date(form.elements.starts_at.value).toISOString();
   const current = managedGroup?.id === id ? managedGroup : null;
   const resetsPeriod = current && (payload.period !== current.period || payload.custom_days !== current.custom_days || payload.starts_at);
@@ -8413,6 +8452,7 @@ function bindUI() {
   byId("model-prices-refresh").addEventListener("click", () => loadModelPrices());
   byId("model-prices-search").addEventListener("input", renderModelPrices);
   bindAsync("billing-rate-form", "submit", updateBillingRate, "更新中…");
+  bindAsync("billing-cash-models-form", "submit", updateBillingCashModels, "保存中…", modelSelectionIdentityCurrent);
   bindAsync("billing-recharge-form", "submit", rechargeBillingUser, "充值中…");
   bindAsync("billing-adjustment-form", "submit", adjustBillingUser, "调整中…");
   for (const [id, eventName, action, label] of [

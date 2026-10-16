@@ -21,6 +21,15 @@ type rechargeRateInput struct {
 	USDPerCNY string `json:"usd_per_cny"`
 }
 
+// cashModelsInput updates the single, owner-managed model range that may be
+// funded from cash balances. The store validates the model list against the
+// current manageable catalog while preserving the billing operation's
+// idempotency and audit trail.
+type cashModelsInput struct {
+	billingOperationInput
+	ModelIDs []string `json:"model_ids"`
+}
+
 type rechargeUserInput struct {
 	billingOperationInput
 	CNYAmount string `json:"cny_amount"`
@@ -106,6 +115,22 @@ func (s *Server) billingSettings(w http.ResponseWriter, r *http.Request) {
 	settings, err := s.store.GetBillingSettings(r.Context())
 	if err != nil {
 		s.billingStoreError(w, r, "get billing settings", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, settings)
+}
+
+func (s *Server) updateCashModels(w http.ResponseWriter, r *http.Request) {
+	var input cashModelsInput
+	if !s.decodeBillingWrite(w, r, &input) {
+		return
+	}
+	settings, err := s.store.SetCashModelIDs(r.Context(), store.SetCashModelIDsParams{
+		BillingWriteParams: s.billingWriteParams(r, input.OperationID, input.Reason),
+		ModelIDs:           input.ModelIDs,
+	})
+	if err != nil {
+		s.billingStoreError(w, r, "set cash model range", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, settings)
@@ -251,6 +276,12 @@ func (s *Server) decodeBillingWrite(w http.ResponseWriter, r *http.Request, dest
 		operation = value.billingOperationInput
 	case *adjustmentInput:
 		operation = value.billingOperationInput
+	case *cashModelsInput:
+		operation = value.billingOperationInput
+		if !s.validManageableBillingModels(value.ModelIDs) {
+			s.billingInputError(w, r)
+			return false
+		}
 	case *subscriptionInput:
 		operation = value.billingOperationInput
 		if value.PeriodCount == nil || *value.PeriodCount < 0 || *value.PeriodCount > 99 ||

@@ -27,6 +27,7 @@ type groupInput struct {
 	Name           string          `json:"name"`
 	LimitUSD       string          `json:"limit_usd"`
 	MemberLimitUSD json.RawMessage `json:"member_limit_usd"`
+	ModelIDs       json.RawMessage `json:"model_ids"`
 	Period         string          `json:"period"`
 	PeriodCount    json.RawMessage `json:"period_count"`
 	CustomDays     int             `json:"custom_days"`
@@ -100,6 +101,19 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		s.groupStoreError(w, r, "update group", store.ErrInvalid)
 		return
 	}
+	// model_ids is optional for backwards compatibility. An omitted field
+	// leaves the existing range unchanged on edit and initializes a new group
+	// from the current manageable catalog in the store. Once present, however,
+	// it must be a non-empty list of distinct, well-formed model IDs; the store
+	// checks membership in its current model catalog before committing.
+	var modelIDs []string
+	modelIDsSet := len(input.ModelIDs) != 0
+	if len(input.ModelIDs) != 0 {
+		if string(input.ModelIDs) == "null" || json.Unmarshal(input.ModelIDs, &modelIDs) != nil || !s.validManageableBillingModels(modelIDs) {
+			s.groupStoreError(w, r, "update group", store.ErrInvalid)
+			return
+		}
+	}
 	var memberLimit *string
 	memberLimitSet := len(input.MemberLimitUSD) != 0
 	if memberLimitSet && string(input.MemberLimitUSD) != "null" {
@@ -130,6 +144,7 @@ func (s *Server) putGroup(w http.ResponseWriter, r *http.Request) {
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
 		GroupID:            id, Name: input.Name, LimitUSD: input.LimitUSD,
 		MemberLimitUSD: memberLimit, MemberLimitSet: memberLimitSet,
+		ModelIDs: modelIDs, ModelIDsSet: modelIDsSet,
 		Period: input.Period, PeriodCount: periodCount, CustomDays: input.CustomDays, StartsAt: input.StartsAt,
 	})
 	if err != nil {

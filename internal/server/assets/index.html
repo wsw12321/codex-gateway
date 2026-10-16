@@ -525,6 +525,19 @@
 
               <div class="billing-admin-grid">
                 <details class="billing-operation">
+                  <summary>余额可用模型（全局）</summary>
+                  <form id="billing-cash-models-form" class="panel billing-form">
+                    <div><p>余额模型范围由 Owner 统一配置，作用于所有用户的现金余额。仅影响新请求；已有请求继续按受理时的资金来源结算。</p></div>
+                    <div id="billing-cash-models" aria-label="余额可用模型（全局）"></div>
+                    <label>操作原因
+                      <input name="reason" required maxlength="500" autocomplete="off" placeholder="说明模型范围调整原因">
+                    </label>
+                    <p class="form-message hidden" role="alert"></p>
+                    <button type="submit">保存余额模型范围</button>
+                  </form>
+                </details>
+
+                <details class="billing-operation">
                   <summary>充值汇率</summary>
                 <form id="billing-rate-form" class="panel billing-form">
                   <div><p>当前：<strong id="billing-current-rate">—</strong> USD/CNY。仅影响之后的充值，历史充值保留当时汇率快照。</p></div>
@@ -840,7 +853,7 @@
             <div class="groups-layout">
               <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
               <article id="group-detail" class="panel hidden">
-                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
+                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
                 <div id="group-metrics" class="metrics compact"></div>
                 <form id="group-members-form" class="group-members-form">
                   <div class="panel-heading"><h4>成员管理</h4><span id="group-selected-count" class="badge">已选 0 人</span></div>
@@ -1267,6 +1280,9 @@
       <label>群组名称<input name="name" required maxlength="120" autocomplete="off"></label>
       <label>每周期额度（USD）<input name="limit_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 100.00"></label>
       <label>单个成员周期用量上限（USD）<input name="member_limit_usd" inputmode="decimal" autocomplete="off" placeholder="留空表示不限，0 表示不使用群组额度"></label>
+      <label>群组可用模型
+        <div id="group-models" aria-label="群组可用模型"></div>
+      </label>
       <label>周期<select name="period"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
       <label id="group-custom-days-label" class="hidden">自定义天数<input name="custom_days" type="number" min="1" max="106751" step="1" value="14"></label>
       <label>总周期数（0 表示无限期）<input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off"></label>

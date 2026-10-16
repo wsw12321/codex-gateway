@@ -312,6 +312,44 @@ func TestGroupPeriodCountInputPreservesOmissionAndExplicitValues(t *testing.T) {
 	}
 }
 
+func TestGroupModelIDsInputPreservesOmissionAndValidatesConfiguredModels(t *testing.T) {
+	now := time.Now()
+	s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+	repo := &fakeGroupRepository{}
+	s.groupRepo = repo
+	e := groupHandlerWriteEndpoints()[0]
+	delete(e.body, "model_ids")
+	r := groupHandlerRequest(t, e)
+	addBillingSourceTestSession(t, r)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || repo.put == nil || repo.put.ModelIDsSet || repo.put.ModelIDs != nil {
+		t.Fatalf("omitted models: status=%d put=%+v", w.Code, repo.put)
+	}
+
+	repo.put = nil
+	e.body["model_ids"] = []string{"gpt-test"}
+	r = groupHandlerRequest(t, e)
+	addBillingSourceTestSession(t, r)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || repo.put == nil || !repo.put.ModelIDsSet || !reflect.DeepEqual(repo.put.ModelIDs, []string{"gpt-test"}) {
+		t.Fatalf("explicit models: status=%d put=%+v", w.Code, repo.put)
+	}
+
+	for _, value := range []any{[]string{}, []string{"retired-model"}, nil} {
+		repo.put = nil
+		e.body["model_ids"] = value
+		r = groupHandlerRequest(t, e)
+		addBillingSourceTestSession(t, r)
+		w = httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != http.StatusBadRequest || repo.put != nil {
+			t.Fatalf("invalid models %#v: status=%d put=%+v body=%s", value, w.Code, repo.put, w.Body.String())
+		}
+	}
+}
+
 func TestGroupPeriodCountRejectsNullNonIntegersAndOutOfRange(t *testing.T) {
 	for _, e := range groupHandlerWriteEndpoints()[:2] {
 		for _, value := range []string{"null", "-1", "100", "1.5", "1.0", "1e1", `"1"`, "true", "[]", "{}", "9223372036854775808"} {

@@ -68,7 +68,7 @@ function dashboard() {
   context.groupMutation = async (_host, url, method, payload) => { calls.push({url, method, payload}); return {id: "group"}; };
   const group = {id: "group", name: "预算组", period: "week", custom_days: 0, limit_usd: "1000", used_usd: "400", remaining_usd: "600", member_limit_usd: "100",
     period_count: 3, current_period_number: 2, expires_at: "2026-10-15T00:00:00Z",
-    period_starts_at: "2026-10-01T00:00:00Z", period_ends_at: "2026-10-08T00:00:00Z"};
+    period_starts_at: "2026-10-01T00:00:00Z", period_ends_at: "2026-10-08T00:00:00Z", model_ids: ["gpt-5.6", "claude-sonnet"]};
   const edit = (cap = "100") => {
     run(`openGroupEditor(${JSON.stringify({...group, member_limit_usd: cap})})`);
     form.elements.reason.value = "调整成员上限";
@@ -160,6 +160,21 @@ test("group period display includes final expiry and keeps legacy snapshots fini
   ui.run(`renderBillingGroup(${JSON.stringify(legacy)})`);
   assert.match(ui.node("billing-group").textContent, /已到期.*第 1\/1 期.*最终到期：/);
   assert.doesNotMatch(ui.node("billing-group").textContent, /无限期/);
+});
+
+test("group model ranges render in cards and details and are submitted when selected", async () => {
+  const ui = dashboard();
+  ui.run(`managedGroups = [${JSON.stringify(ui.group)}]; renderGroupList()`);
+  assert.match(ui.node("group-list").textContent, /可用模型：gpt-5\.6、claude-sonnet/);
+  ui.run(`managedGroup = ${JSON.stringify(ui.group)}; byId("group-detail-models").textContent = groupModelLabel(managedGroup)`);
+  assert.match(ui.node("group-detail-models").textContent, /gpt-5\.6.*claude-sonnet/);
+  ui.edit();
+  ui.form.dataset.modelIDsConfigured = "true";
+  ui.form.dataset.modelIDsLoaded = "true";
+  ui.node("group-models").modelPicker = {values: () => ["claude-sonnet"]};
+  ui.form.elements.reason.value = "更新模型范围";
+  await ui.save();
+  assert.deepEqual(ui.calls.at(-1).payload.model_ids, ["claude-sonnet"]);
 });
 
 test("personal group summary uses the selected user's independent counters", () => {

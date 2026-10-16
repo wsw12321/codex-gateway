@@ -14,6 +14,11 @@ import (
 	decimal "github.com/wsw/codex-gateway/internal/billing"
 )
 
+func marshalGroupModels(models []string) []byte {
+	encoded, _ := json.Marshal(models)
+	return encoded
+}
+
 // GroupQuotaExceededError is retained for legacy quota error responses. New
 // admission falls back to personal funds when group funding is unavailable.
 type GroupQuotaExceededError struct {
@@ -45,6 +50,7 @@ type GroupSummary struct {
 	ArchivedAt          *time.Time `json:"archived_at,omitempty"`
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
+	ModelIDs            []string   `json:"model_ids"`
 }
 
 type GroupMember struct {
@@ -71,6 +77,8 @@ type PutGroupParams struct {
 	CustomDays     int
 	StartsAt       *time.Time
 	PeriodCount    *int
+	ModelIDs       []string
+	ModelIDsSet    bool
 }
 
 type SetGroupMembersParams struct {
@@ -103,14 +111,21 @@ const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd
 	GREATEST(g.limit_usd-p.used_usd,0)::numeric(30,12)::text, g.period, g.custom_days, g.starts_at,
 	p.id, p.starts_at, p.ends_at, g.period_count, g.current_period_number, g.expires_at,
 	(SELECT count(*) FROM billing_accounts a WHERE a.group_id=g.id),
-	g.archived_at, g.created_at, g.updated_at`
+	g.archived_at, g.created_at, g.updated_at, g.model_ids`
 
 func scanGroupSummary(row rowScanner) (GroupSummary, error) {
 	var g GroupSummary
+	var models []byte
 	err := row.Scan(&g.ID, &g.Name, &g.LimitUSD, &g.MemberLimitUSD, &g.UsedUSD, &g.RemainingUSD,
 		&g.Period, &g.CustomDays, &g.StartsAt, &g.PeriodID, &g.PeriodStartsAt,
 		&g.PeriodEndsAt, &g.PeriodCount, &g.CurrentPeriodNumber, &g.ExpiresAt,
-		&g.MemberCount, &g.ArchivedAt, &g.CreatedAt, &g.UpdatedAt)
+		&g.MemberCount, &g.ArchivedAt, &g.CreatedAt, &g.UpdatedAt, &models)
+	if err == nil {
+		err = json.Unmarshal(models, &g.ModelIDs)
+		if g.ModelIDs == nil {
+			g.ModelIDs = []string{}
+		}
+	}
 	return g, err
 }
 
@@ -207,6 +222,18 @@ func groupExpiration(end time.Time, duration time.Duration, count, current int) 
 func groupPeriodActive(g *GroupSummary, at time.Time) bool {
 	return g != nil && g.ArchivedAt == nil && !at.Before(g.PeriodStartsAt) && at.Before(g.PeriodEndsAt) &&
 		(g.ExpiresAt == nil || at.Before(*g.ExpiresAt))
+}
+
+func groupModelAllowed(g *GroupSummary, model string) bool {
+	if g == nil {
+		return false
+	}
+	for _, candidate := range g.ModelIDs {
+		if candidate == model {
+			return true
+		}
+	}
+	return false
 }
 
 func groupHasNextPeriod(g *GroupSummary) bool {
@@ -396,7 +423,7 @@ func (s *Store) groupWrite(ctx context.Context, params BillingWriteParams, actio
 		if _, err := tx.ExecContext(ctx, `UPDATE group_operations SET response=$2::jsonb WHERE operation_id=$1`, params.OperationID, string(encoded)); err != nil {
 			return mapDBError("finish group operation", err)
 		}
-		return appendBillingAuditTx(ctx, tx, params, "group."+action, "group", result.ID, map[string]any{"reason": strings.TrimSpace(params.Reason), "operation_id": params.OperationID, "member_count": result.MemberCount})
+		return appendBillingAuditTx(ctx, tx, params, "group."+action, "group", result.ID, map[string]any{"reason": strings.TrimSpace(params.Reason), "operation_id": params.OperationID, "member_count": result.MemberCount, "model_ids": result.ModelIDs})
 	})
 	return result, err
 }
@@ -404,6 +431,9 @@ func (s *Store) groupWrite(ctx context.Context, params BillingWriteParams, actio
 func decodeGroupOperationResponse(encoded []byte, result *Group) error {
 	if err := json.Unmarshal(encoded, result); err != nil {
 		return err
+	}
+	if result.ModelIDs == nil {
+		result.ModelIDs = []string{}
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(encoded, &fields); err != nil {
@@ -456,6 +486,17 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 	if params.PeriodCount != nil && (*params.PeriodCount < 0 || *params.PeriodCount > 99) {
 		return Group{}, fmt.Errorf("%w: group period count must be between 0 and 99", ErrInvalid)
 	}
+	// Direct store callers historically construct params with a non-empty slice
+	// and no presence marker; treat that form as an explicit model update too.
+	if len(params.ModelIDs) > 0 {
+		params.ModelIDsSet = true
+	}
+	if params.ModelIDsSet {
+		params.ModelIDs, err = normalizeBillingModels(params.ModelIDs)
+		if err != nil {
+			return Group{}, err
+		}
+	}
 	startFingerprint := ""
 	if params.StartsAt != nil {
 		if err := validateGroupTime(*params.StartsAt); err != nil {
@@ -474,6 +515,11 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 	if params.PeriodCount != nil {
 		fingerprintValues = append(fingerprintValues, "period_count", fmt.Sprint(*params.PeriodCount))
 	}
+	if params.ModelIDsSet {
+		fingerprintValues = append(fingerprintValues, "model_ids", strings.Join(params.ModelIDs, "\x00"))
+	} else {
+		fingerprintValues = append(fingerprintValues, "model_ids_omitted")
+	}
 	return s.groupWrite(ctx, params.BillingWriteParams, "put", fingerprintValues, func(tx *sql.Tx) (Group, error) {
 		var g GroupSummary
 		create := params.GroupID == ""
@@ -488,6 +534,21 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 			}
 			g = GroupSummary{ID: id, Name: params.Name, LimitUSD: amount, MemberLimitUSD: params.MemberLimitUSD, Period: params.Period,
 				CustomDays: params.CustomDays, StartsAt: start, PeriodCount: 1, CurrentPeriodNumber: 1}
+			if params.ModelIDsSet {
+				if err := validateBillingModelsTx(ctx, tx, params.ModelIDs); err != nil {
+					return Group{}, err
+				}
+				g.ModelIDs = append([]string(nil), params.ModelIDs...)
+			} else {
+				var encoded []byte
+				if err := tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(model ORDER BY model),'[]'::jsonb)
+					FROM model_access_defaults WHERE catalog_active`).Scan(&encoded); err != nil {
+					return Group{}, mapDBError("read group model catalog", err)
+				}
+				if err := json.Unmarshal(encoded, &g.ModelIDs); err != nil {
+					return Group{}, err
+				}
+			}
 		} else {
 			if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {
 				return Group{}, err
@@ -499,6 +560,12 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 			}
 			if g.ArchivedAt != nil {
 				return Group{}, fmt.Errorf("%w: group is archived", ErrConflict)
+			}
+			if params.ModelIDsSet {
+				if err := validateBillingModelsTx(ctx, tx, params.ModelIDs); err != nil {
+					return Group{}, err
+				}
+				g.ModelIDs = append([]string(nil), params.ModelIDs...)
 			}
 		}
 		reset := create || g.Period != params.Period || g.CustomDays != params.CustomDays || (params.StartsAt != nil && !params.StartsAt.Equal(g.StartsAt))
@@ -532,15 +599,17 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 			return Group{}, err
 		}
 		if create {
+			modelsInitialized := len(g.ModelIDs) > 0
 			if _, err := tx.ExecContext(ctx, `INSERT INTO user_groups(id,name,limit_usd,member_limit_usd,period,custom_days,starts_at,
-				period_count,current_period_number,expires_at,created_at,updated_at)
-				VALUES($1,$2,$3::numeric,$4::numeric,$5,$6,$7,$8,$9,$10,$11,$11)`, g.ID, params.Name, amount, g.MemberLimitUSD,
-				params.Period, params.CustomDays, start, g.PeriodCount, g.CurrentPeriodNumber, g.ExpiresAt, params.At); err != nil {
+				period_count,current_period_number,expires_at,created_at,updated_at,model_ids,models_initialized)
+				VALUES($1,$2,$3::numeric,$4::numeric,$5,$6,$7,$8,$9,$10,$11,$11,$12::jsonb,$13)`, g.ID, params.Name, amount, g.MemberLimitUSD,
+				params.Period, params.CustomDays, start, g.PeriodCount, g.CurrentPeriodNumber, g.ExpiresAt, params.At, marshalGroupModels(g.ModelIDs), modelsInitialized); err != nil {
 				return Group{}, mapDBError("create group", err)
 			}
 		} else if _, err := tx.ExecContext(ctx, `UPDATE user_groups SET name=$2,limit_usd=$3::numeric,period=$4,custom_days=$5,starts_at=$6,
-			updated_at=$7,member_limit_usd=$8::numeric,period_count=$9,current_period_number=$10,expires_at=$11 WHERE id=$1`,
-			g.ID, params.Name, amount, params.Period, params.CustomDays, start, params.At, g.MemberLimitUSD, g.PeriodCount, g.CurrentPeriodNumber, g.ExpiresAt); err != nil {
+			updated_at=$7,member_limit_usd=$8::numeric,period_count=$9,current_period_number=$10,expires_at=$11,
+			model_ids=$12::jsonb,models_initialized=$13 WHERE id=$1`,
+			g.ID, params.Name, amount, params.Period, params.CustomDays, start, params.At, g.MemberLimitUSD, g.PeriodCount, g.CurrentPeriodNumber, g.ExpiresAt, marshalGroupModels(g.ModelIDs), len(g.ModelIDs) > 0); err != nil {
 			return Group{}, mapDBError("update group", err)
 		}
 		if reset {

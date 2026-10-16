@@ -111,3 +111,20 @@ func (s *Server) validBillingModels(models []string) bool {
 	}
 	return true
 }
+
+// validManageableBillingModels applies the current configured catalog to
+// model-scope edits. Subscription writes retain the looser shape check above
+// so the store can preserve an already committed operation replay after a
+// catalog change; new cash and group scopes must always name currently
+// manageable models.
+func (s *Server) validManageableBillingModels(models []string) bool {
+	if !s.validBillingModels(models) {
+		return false
+	}
+	for _, model := range models {
+		if !s.config.UsagePricing.IsManageableModel(model) {
+			return false
+		}
+	}
+	return true
+}

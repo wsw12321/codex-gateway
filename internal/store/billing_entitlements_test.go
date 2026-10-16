@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"math"
 	"testing"
@@ -48,5 +49,12 @@ func TestBillingModelScopeRequiresExplicitSelection(t *testing.T) {
 	got, err := normalizeBillingModels([]string{"gemini-test", "gpt-test", "gpt-test"})
 	if err != nil || len(got) != 2 || got[0] != "gemini-test" {
 		t.Fatalf("scope normalization: %v %v", got, err)
+	}
+}
+
+func TestInitializeBillingModelScopesRejectsEmptyConfiguredCatalog(t *testing.T) {
+	s := New(nil)
+	if err := s.InitializeBillingModelScopes(context.Background(), []string{}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("empty configured catalog error = %v, want ErrInvalid", err)
 	}
 }

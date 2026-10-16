@@ -41,6 +41,9 @@ Current migrations:
   defaults/user permissions/multipliers,
   and leaves keys, balances, usage, ledger rows, and admission snapshots
   untouched. Conditional rollback is in `scripts/rollback-cpa-model-config.sql`.
+- `internal/store/migrations/0036_billing_model_scopes.sql` — adds the Owner's
+  global cash model scope and per-group model scopes. Existing scopes are
+  initialized from the current manageable catalog at gateway startup.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

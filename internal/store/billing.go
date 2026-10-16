@@ -40,6 +40,7 @@ func (e *InsufficientFundsError) Error() string { return "billing: insufficient 
 
 type BillingSettings struct {
 	USDPerCNY       string    `json:"usd_per_cny"`
+	ModelIDs        []string  `json:"model_ids"`
 	UpdatedAt       time.Time `json:"updated_at"`
 	UpdatedByUserID *string   `json:"updated_by_user_id,omitempty"`
 }
@@ -241,6 +242,19 @@ type SetRechargeRateParams struct {
 	BillingWriteParams
 	USDPerCNY string
 }
+
+// SetBillingCashModelsParams changes the Owner-controlled global model scope
+// for cash balances. The scope is snapshotted only when a request is admitted;
+// existing reservations retain their original cash source binding.
+type SetBillingCashModelsParams struct {
+	BillingWriteParams
+	ModelIDs []string
+}
+
+type SetBillingCashModelIDsParams = SetBillingCashModelsParams
+
+// SetCashModelIDsParams is the public spelling used by the HTTP layer.
+type SetCashModelIDsParams = SetBillingCashModelsParams
 
 type RechargeUserParams struct {
 	BillingWriteParams
@@ -502,7 +516,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		return BillingReservation{}, err
 	}
 	var groupID, groupPeriodID any
-	if groupPeriodActive(group, params.Now) && billingPositive(group.RemainingUSD) {
+	if groupPeriodActive(group, params.Now) && billingPositive(group.RemainingUSD) && groupModelAllowed(group, params.Model) {
 		memberRemaining, err := groupMemberRemainingTx(ctx, tx, group.PeriodID, params.UserID, group.MemberLimitUSD)
 		if err != nil {
 			return BillingReservation{}, err
@@ -530,7 +544,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		if err != nil {
 			return BillingReservation{}, err
 		}
-		if group != nil && billingPositive(group.LimitUSD) &&
+		if group != nil && groupModelAllowed(group, params.Model) && billingPositive(group.LimitUSD) &&
 			(group.MemberLimitUSD == nil || billingPositive(*group.MemberLimitUSD)) {
 			var groupRenewal time.Time
 			if params.Now.Before(group.PeriodStartsAt) {
@@ -933,11 +947,170 @@ func (s *Store) SetBillingSourceDisabled(ctx context.Context, params SetBillingS
 func (s *Store) GetBillingSettings(ctx context.Context) (BillingSettings, error) {
 	var value BillingSettings
 	var actor sql.NullString
-	err := s.db.QueryRowContext(ctx, `SELECT usd_per_cny::text, updated_at,
+	var models []byte
+	err := s.db.QueryRowContext(ctx, `SELECT usd_per_cny::text, model_ids, updated_at,
 		updated_by_user_id FROM billing_settings WHERE singleton`).Scan(
-		&value.USDPerCNY, &value.UpdatedAt, &actor)
+		&value.USDPerCNY, &models, &value.UpdatedAt, &actor)
+	if err == nil {
+		err = json.Unmarshal(models, &value.ModelIDs)
+	}
 	value.UpdatedByUserID = nullableString(actor)
 	return value, mapDBError("get billing settings", err)
+}
+
+// InitializeBillingModelScopes must run after SyncModelAccessCatalog and before
+// serving requests. Existing cash and group scopes are initialized exactly once
+// to the complete current catalog; later catalog additions require an explicit
+// Owner choice and therefore do not silently expand a saved scope.
+func (s *Store) InitializeBillingModelScopes(ctx context.Context, catalog []string) error {
+	var requestedModels []byte
+	if catalog != nil {
+		values, err := normalizeModelAccessCatalog(catalog)
+		if err != nil {
+			return err
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("%w: cannot initialize billing model scopes from an empty model catalog", ErrInvalid)
+		}
+		requestedModels, err = json.Marshal(values)
+		if err != nil {
+			return err
+		}
+	}
+	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `LOCK TABLE model_access_defaults IN SHARE MODE`); err != nil {
+			return mapDBError("lock billing model initialization catalog", err)
+		}
+		var pending bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+			SELECT 1 FROM billing_settings WHERE singleton AND NOT models_initialized
+			UNION ALL
+			SELECT 1 FROM user_groups WHERE NOT models_initialized
+		)`).Scan(&pending); err != nil {
+			return mapDBError("check billing model initialization", err)
+		}
+		if !pending {
+			return nil
+		}
+		models := requestedModels
+		if catalog == nil {
+			var err error
+			if err = tx.QueryRowContext(ctx, `SELECT COALESCE(jsonb_agg(model ORDER BY model),'[]'::jsonb)
+				FROM model_access_defaults WHERE catalog_active`).Scan(&models); err != nil {
+				return mapDBError("read billing model initialization catalog", err)
+			}
+		}
+		var values []string
+		if err := json.Unmarshal(models, &values); err != nil {
+			return fmt.Errorf("decode billing model initialization catalog: %w", err)
+		}
+		if len(values) == 0 {
+			return fmt.Errorf("%w: cannot initialize billing model scopes from an empty model catalog", ErrInvalid)
+		}
+		if err := validateBillingModelsTx(ctx, tx, values); err != nil {
+			return fmt.Errorf("initialize billing model scopes: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_settings
+			SET model_ids=$1::jsonb, models_initialized=true WHERE singleton AND NOT models_initialized`, models); err != nil {
+			return mapDBError("initialize cash model scope", err)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE user_groups
+			SET model_ids=$1::jsonb, models_initialized=true WHERE NOT models_initialized`, models); err != nil {
+			return mapDBError("initialize group model scopes", err)
+		}
+		return nil
+	})
+}
+
+// InitializeBillingCashAndGroupModels is kept as a descriptive alias for
+// startup callers that name the two initialized scopes explicitly.
+func (s *Store) InitializeBillingCashAndGroupModels(ctx context.Context) error {
+	return s.InitializeBillingModelScopes(ctx, nil)
+}
+
+func (s *Store) SetBillingCashModels(ctx context.Context, params SetBillingCashModelsParams) (BillingSettings, error) {
+	var setting BillingSettings
+	if err := validateBillingWrite(params.BillingWriteParams); err != nil {
+		return setting, err
+	}
+	models, err := normalizeBillingModels(params.ModelIDs)
+	if err != nil {
+		return setting, err
+	}
+	params.At = normalizedBillingTime(params.At, s.now)
+	params.Reason = strings.TrimSpace(params.Reason)
+	encoded, err := json.Marshal(models)
+	if err != nil {
+		return setting, err
+	}
+	fingerprint := billingOperationFingerprint("cash_models", params.ActorUserID, params.Reason, strings.Join(models, "\x00"))
+	err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		created, replayID, err := claimBillingOperationTx(ctx, tx, params.BillingWriteParams, "cash_models", "", fingerprint)
+		if err != nil {
+			return err
+		}
+		if !created {
+			entry, err := replayBillingLedgerTx(ctx, tx, *replayID)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(entry.TransactionSnapshot, &setting); err != nil || len(setting.ModelIDs) == 0 {
+				return fmt.Errorf("%w: replayed cash model operation has no snapshot", ErrConflict)
+			}
+			return nil
+		}
+		var active bool
+		if err := tx.QueryRowContext(ctx, `SELECT models_initialized FROM billing_settings WHERE singleton FOR UPDATE`).Scan(&active); err != nil {
+			return mapDBError("lock cash model settings", err)
+		}
+		if !active {
+			return fmt.Errorf("%w: billing model scopes are not initialized", ErrConflict)
+		}
+		if err := validateBillingModelsTx(ctx, tx, models); err != nil {
+			return err
+		}
+		var actor sql.NullString
+		var current []byte
+		if err := tx.QueryRowContext(ctx, `UPDATE billing_settings SET model_ids=$1::jsonb,
+			updated_at=$2,updated_by_user_id=$3 WHERE singleton
+			RETURNING usd_per_cny::text,model_ids,updated_at,updated_by_user_id`, encoded, params.At, params.ActorUserID).Scan(
+			&setting.USDPerCNY, &current, &setting.UpdatedAt, &actor); err != nil {
+			return mapDBError("set cash model scope", err)
+		}
+		if err := json.Unmarshal(current, &setting.ModelIDs); err != nil {
+			return err
+		}
+		setting.UpdatedByUserID = nullableString(actor)
+		transaction, err := json.Marshal(setting)
+		if err != nil {
+			return err
+		}
+		entry, err := scanBillingLedgerEntry(tx.QueryRowContext(ctx, `INSERT INTO billing_ledger_entries
+			(user_id,operation_id,entry_type,reason,actor_user_id,created_at,transaction_snapshot)
+			VALUES($1,$2,'cash_models',$3,$4,$5,$6::jsonb)
+			RETURNING `+billingLedgerColumns, params.ActorUserID, params.OperationID, params.Reason,
+			params.ActorUserID, params.At, transaction))
+		if err != nil {
+			return mapDBError("record cash model scope ledger", err)
+		}
+		if err := finishBillingOperationTx(ctx, tx, params.OperationID, entry.ID); err != nil {
+			return err
+		}
+		return appendBillingAuditTx(ctx, tx, params.BillingWriteParams, "billing.cash_models_updated", "billing_settings", "global", map[string]any{
+			"operation_id": params.OperationID, "model_ids": models,
+		})
+	})
+	return setting, err
+}
+
+// SetBillingCashModelIDs and SetCashModelIDs are compatibility aliases for
+// service layers that use the field name in the operation method.
+func (s *Store) SetBillingCashModelIDs(ctx context.Context, params SetBillingCashModelsParams) (BillingSettings, error) {
+	return s.SetBillingCashModels(ctx, params)
+}
+
+func (s *Store) SetCashModelIDs(ctx context.Context, params SetBillingCashModelsParams) (BillingSettings, error) {
+	return s.SetBillingCashModels(ctx, params)
 }
 
 func (s *Store) SetRechargeRate(ctx context.Context, params SetRechargeRateParams) (BillingSettings, error) {

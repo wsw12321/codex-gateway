@@ -86,6 +86,33 @@ func TestDecodeBillingSubscriptionRequiresIntegerPeriodCount(t *testing.T) {
 	}
 }
 
+func TestDecodeBillingCashModelsRequiresNonEmptyDistinctModels(t *testing.T) {
+	t.Parallel()
+	const operationID = "550e8400-e29b-41d4-a716-446655440000"
+	server := &Server{config: config.Config{UsagePricing: config.UsagePricing{Models: map[string]config.ModelPricing{
+		"gpt-test": {}, "claude-test": {},
+	}}}}
+	for _, tc := range []struct {
+		name, models string
+		wantOK       bool
+	}{
+		{name: "valid", models: `["gpt-test","claude-test"]`, wantOK: true},
+		{name: "empty", models: `[]`},
+		{name: "duplicate", models: `["gpt-test","gpt-test"]`},
+		{name: "malformed", models: `["bad model"]`},
+		{name: "null", models: `null`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := billingPlanTestRequest(http.MethodPut, "/admin/billing/settings/cash-models", `{"operation_id":"`+operationID+`","reason":"range update","model_ids":`+tc.models+`}`)
+			response := httptest.NewRecorder()
+			var input cashModelsInput
+			if got := server.decodeBillingWrite(response, request, &input); got != tc.wantOK {
+				t.Fatalf("decode ok = %v, want %v; status=%d body=%s", got, tc.wantOK, response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestBillingStoreErrorMapsQuotaAndIdempotencyFailures(t *testing.T) {
 	t.Parallel()
 

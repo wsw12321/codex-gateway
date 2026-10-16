@@ -210,6 +210,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/billing/me/subscriptions/{subscription_id}/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSubscriptionPreferences))))
 	s.mux.Handle("PUT /admin/billing/me/cash/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingCashPreferences))))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
+	s.mux.Handle("PUT /admin/billing/settings/cash-models", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateCashModels)))))
 	s.mux.Handle("GET /admin/billing/model-multipliers", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelMultipliers))))
 	s.mux.Handle("GET /admin/billing/model-prices", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelPrices))))
 	s.mux.Handle("GET /admin/billing/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingUsers))))
