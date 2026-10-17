@@ -16,7 +16,8 @@
 
 新增 PostgreSQL 回归验证空目录拒绝、旧范围初始化、现金与分组范围修改、
 幂等回放、目录增加不自动扩展已保存范围、范围修改后的在途结算，以及订阅范围独立性。
-原有资金、权限、结算断言及 CI 检查继续执行。
+回放时间使用 `Time.Equal` 比较时刻，避免数据库与 JSON 的时区表示差异影响断言。
+原有资金、权限、结算断言及 CI 检查继续执行；集成失败时将错误行输出为 Actions 注解。
 
 验证命令（Go 1.26.9，数据库必须为一次性测试库）：
 
@@ -25,7 +26,7 @@ go build ./cmd/gateway
 go test -count=1 ./...
 go test -race -count=1 ./...
 go vet ./...
-TEST_DATABASE_URL='postgres://gateway:integration-only-password@127.0.0.1:55436/gateway_test?sslmode=disable' \
+TZ=UTC TEST_DATABASE_URL='postgres://gateway:integration-only-password@127.0.0.1:55436/gateway_test?sslmode=disable' \
   go test -count=1 -tags=integration ./internal/store ./internal/server
 gofmt -l .
 git diff --check

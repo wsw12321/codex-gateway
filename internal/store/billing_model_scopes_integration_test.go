@@ -110,7 +110,11 @@ func TestBillingModelScopesPostgresIntegration(t *testing.T) {
 		t.Fatalf("cash scope update: %+v %v", changed, err)
 	}
 	replay, err := s.SetBillingCashModels(ctx, change)
-	if err != nil || !reflect.DeepEqual(changed, replay) {
+	// SQL decoding and JSON replay may use different Location pointers for the
+	// same UTC instant. Compare the timestamp semantically, as the API does.
+	if err != nil || changed.USDPerCNY != replay.USDPerCNY ||
+		!reflect.DeepEqual(changed.ModelIDs, replay.ModelIDs) || !changed.UpdatedAt.Equal(replay.UpdatedAt) ||
+		!reflect.DeepEqual(changed.UpdatedByUserID, replay.UpdatedByUserID) {
 		t.Fatalf("cash scope replay: %+v %v", replay, err)
 	}
 	conflict := change
