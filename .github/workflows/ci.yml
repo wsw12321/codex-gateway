@@ -111,9 +111,26 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: PostgreSQL integration tests
+        shell: bash
         env:
           TEST_DATABASE_URL: postgres://gateway:integration-only-password@127.0.0.1:5432/gateway_test?sslmode=disable
-        run: go test -count=1 -tags=integration ./internal/store ./internal/server
+        run: |
+          set -euo pipefail
+          test_output=$(mktemp)
+          trap 'rm -f "$test_output"' EXIT
+          if go test -count=1 -tags=integration ./internal/store ./internal/server 2>&1 | tee "$test_output"; then
+            exit 0
+          fi
+          while IFS= read -r line; do
+            case "$line" in
+              *'--- FAIL:'*|*'_test.go:'*)
+                message=${line//%/%25}
+                message=${message//$'\r'/%0D}
+                printf '::error title=PostgreSQL integration test::%s\n' "$message"
+                ;;
+            esac
+          done < "$test_output"
+          exit 1
 
   go-security:
     runs-on: ubuntu-24.04
