@@ -69,6 +69,7 @@ func TestModelPriceSnapshotRecoveryPostgresIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			const model = "price-snapshot"
+			billingIntegrationModelScopes(t, ctx, s, model)
 			pricing := modelPriceAcceptanceCatalog(model, schema, "1")
 			if _, err := s.SetModelMultiplier(ctx, SetModelMultiplierParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "Snapshot multiplier", now), Model: model, Multiplier: "2"}); err != nil {
 				t.Fatal(err)
@@ -146,6 +147,7 @@ func TestModelPriceAdmissionLockPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	const model = "price-concurrency"
+	billingIntegrationModelScopes(t, ctx, s, model)
 	pricing := modelPriceAcceptanceCatalog(model, config.PricingSchemaV1, "1")
 	other := modelMultiplierIntegrationReopen(t, ctx, s)
 	params := modelPriceAcceptanceAdmission(t, user, device, key, model, "price-lock-reader", pricing, now)

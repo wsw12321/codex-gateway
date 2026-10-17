@@ -135,12 +135,13 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 	// Current group readers also require the period-limit metadata. Applying
 	// this independent upgrade preserves the legacy period and funding rows.
 	for _, migration := range migrations {
-		if migration.Name == "0031_group_period_limits.sql" || migration.Name == "0033_anthropic_billing.sql" || migration.Name == "0034_multi_subscriptions.sql" {
+		if migration.Name == "0031_group_period_limits.sql" || migration.Name == "0033_anthropic_billing.sql" || migration.Name == "0034_multi_subscriptions.sql" || migration.Name == "0036_billing_model_scopes.sql" {
 			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
 				t.Fatalf("apply group period metadata: %v", err)
 			}
 		}
 	}
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	g, err := s.GetGroup(ctx, groupID)
 	if err != nil || g.PeriodID != groupPeriodID || g.UsedUSD != "10.000000000000" || !g.PeriodStartsAt.Equal(start) || !g.PeriodEndsAt.Equal(end) ||
 		g.MemberLimitUSD != nil || len(g.Members) != 1 || g.Members[0].UsedUSD != "0.000000000000" {

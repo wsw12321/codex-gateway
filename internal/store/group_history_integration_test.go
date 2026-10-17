@@ -13,6 +13,7 @@ func TestGroupMemberUsageSurvivesHistoryCleanupPostgresIntegration(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	old := now.Add(-100 * 24 * time.Hour)

@@ -26,6 +26,7 @@ func newBillingPlanFixture(t *testing.T) *billingPlanFixture {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	t.Cleanup(cancel)
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	actor := globalUsageIntegrationUser(t, ctx, s, "plan-actor", UserRoleMember)

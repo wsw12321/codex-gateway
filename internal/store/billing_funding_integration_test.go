@@ -17,9 +17,7 @@ func TestOrderedMultiSubscriptionFundingPostgresIntegration(t *testing.T) {
 	s := informationIntegrationStore(t, ctx)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
-	if err := s.SyncModelAccessCatalog(ctx, []string{"billing-priced-model", "other-model"}); err != nil {
-		t.Fatal(err)
-	}
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model", "other-model")
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "ordered-funding")
 	write := func(reason string) BillingWriteParams { return billingIntegrationWrite(t, user.ID, reason, now) }
 	create := func(name, tier, allowance string, priority, days int, models []string) BillingSubscriptionState {

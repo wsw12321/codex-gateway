@@ -214,6 +214,7 @@ func TestModelPriceStructureConflictAdmissionPostgresIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			const model = "shape-conflict"
+			billingIntegrationModelScopes(t, ctx, s, model)
 			original := modelPriceAcceptanceCatalog(model, config.PricingSchemaV2, "1")
 			if _, err := s.SetModelPrice(ctx, modelPriceAcceptanceWrite(t, user.ID, model, original, 0, "3", now)); err != nil {
 				t.Fatal(err)

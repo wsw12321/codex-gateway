@@ -34,6 +34,7 @@ func TestBillingPostgresIntegration(t *testing.T) {
 	if err := repository.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
+	billingIntegrationModelScopes(t, ctx, repository, "billing-priced-model", "gpt-v2-priced", "lifecycle-model")
 
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	// HTTP handlers enforce the Owner role. Store tests only need a valid audit
@@ -1983,4 +1984,17 @@ func billingIntegrationSubscriptionModels(t *testing.T, ctx context.Context, rep
 		}
 	}
 	return result
+}
+
+// billingIntegrationModelScopes mirrors startup with an explicit deployment
+// catalog before any request is admitted. Callers must include every cash-funded
+// test model up front: later catalog synchronization must not expand saved scopes.
+func billingIntegrationModelScopes(t *testing.T, ctx context.Context, repository *Store, models ...string) {
+	t.Helper()
+	if err := repository.SyncModelAccessCatalog(ctx, models); err != nil {
+		t.Fatalf("sync billing fixture catalog: %v", err)
+	}
+	if err := repository.InitializeBillingModelScopes(ctx, models); err != nil {
+		t.Fatalf("initialize billing fixture model scopes: %v", err)
+	}
 }

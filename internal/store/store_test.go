@@ -259,6 +259,35 @@ func TestSafeMetadataRejectsSecretBearingKeys(t *testing.T) {
 	}
 }
 
+func TestSafeMetadataStringArrays(t *testing.T) {
+	t.Parallel()
+	encoded, err := marshalSafeMetadata(map[string]any{
+		"model_ids": []string{"billing-priced-model", "second-model"},
+	})
+	if err != nil {
+		t.Fatalf("model scope audit metadata rejected: %v", err)
+	}
+	if got, want := string(encoded), `{"model_ids":["billing-priced-model","second-model"]}`; got != want {
+		t.Fatalf("encoded model scope = %s, want %s", got, want)
+	}
+	var nested any = []string{"model"}
+	for range 8 {
+		nested = map[string]any{"models": nested}
+	}
+	for name, metadata := range map[string]map[string]any{
+		"forbidden key": {"nested": map[string]any{"access_token": []string{"private"}}},
+		"byte limit":    {"model_ids": []string{strings.Repeat("m", maxMetadataBytes)}},
+		"depth limit":   nested.(map[string]any),
+		"unsupported":   {"model_ids": []int{1, 2}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := marshalSafeMetadata(metadata); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("unsafe metadata error = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
 func TestTotalTokensDoesNotDoubleCountCachedOrReasoning(t *testing.T) {
 	t.Parallel()
 	request := UsageRequest{

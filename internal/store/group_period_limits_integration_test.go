@@ -26,6 +26,7 @@ func TestGroupPeriodLimitsPostgresIntegration(t *testing.T) {
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model", "gpt-v2-priced", "lifecycle-model")
 	base := time.Now().UTC().Truncate(time.Microsecond)
 	now := base
 	s.now = func() time.Time { return now }

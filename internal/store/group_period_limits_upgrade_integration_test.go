@@ -116,6 +116,15 @@ func TestGroupPeriodLimitsMigrationPreservesSnapshotsPostgresIntegration(t *test
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	// Current readers also select model scopes; this independent schema change
+	// must not alter the period-limit snapshots under test.
+	for _, migration := range migrations {
+		if migration.Name == "0036_billing_model_scopes.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply model scope helper schema: %v", err)
+			}
+		}
+	}
 	for _, before := range snapshots {
 		t.Run(before.name, func(t *testing.T) {
 			g, err := s.GetGroup(ctx, before.groupID)

@@ -27,6 +27,7 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 	if err := s.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model", "gpt-v2-priced", "lifecycle-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	suffix := fmt.Sprint(now.UnixNano())

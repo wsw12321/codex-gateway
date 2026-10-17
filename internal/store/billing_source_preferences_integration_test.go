@@ -31,6 +31,7 @@ func TestBillingSourcePreferencesPostgresIntegration(t *testing.T) {
 	if err := repository.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
 	}
+	billingIntegrationModelScopes(t, ctx, repository, "billing-priced-model", "gpt-v2-priced", "lifecycle-model")
 	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
 	base := time.Now().UTC().Truncate(time.Microsecond).Add(time.Hour)
 	actor := globalUsageIntegrationUser(t, ctx, repository, "source-actor-"+suffix, UserRoleMember)

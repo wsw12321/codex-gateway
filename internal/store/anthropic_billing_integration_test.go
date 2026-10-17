@@ -16,6 +16,7 @@ func TestAnthropicTTLSettlementAndRetentionPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "claude-test", "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "anthropic-ttl")
 	if _, err := s.AdjustUserBalance(ctx, AdjustUserBalanceParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "Fund Claude TTL billing", now), UserID: user.ID, USDAmount: "10"}); err != nil {
@@ -166,6 +167,7 @@ func TestAnthropicCountTokensDoesNotChargePostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "claude-test", "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "claude-count")
 	const requestID = "claude-count-no-charge"
@@ -204,6 +206,7 @@ func TestScopedCompletionDiscardsForeignAttributionAndSettlesPostgresIntegration
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "claude-test", "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "foreign-attribution")
 	if _, err := s.AdjustUserBalance(ctx, AdjustUserBalanceParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "Fund trace isolation", now), UserID: user.ID, USDAmount: "10"}); err != nil {

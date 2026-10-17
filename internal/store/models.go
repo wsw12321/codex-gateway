@@ -510,6 +510,12 @@ func validateMetadataValue(value any, depth int) error {
 				return err
 			}
 		}
+	case []string:
+		for _, child := range v {
+			if err := validateMetadataValue(child, depth+1); err != nil {
+				return err
+			}
+		}
 	case nil, bool, string, float64, float32,
 		int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, json.Number:

@@ -38,6 +38,7 @@ func TestInformationMonthlyDeletionAccountingPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	cutoff, _ := InformationCutoff(now, 2)
@@ -109,6 +110,7 @@ func TestInformationLateCompletionAfterDetailRetentionPostgresIntegration(t *tes
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	day := time.Date(now.Year(), now.Month()-5, 16, 0, 0, 0, 0, time.UTC)
@@ -187,6 +189,7 @@ func TestInformationSubscriptionAndGroupPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	cutoff, _ := InformationCutoff(now, 5)
@@ -272,6 +275,7 @@ func TestInformationLateAggregationAndSettlementPostgresIntegration(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	cutoff, _ := InformationCutoff(now, 2)
@@ -343,6 +347,7 @@ func TestInformationCleanupPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Second)
 	s.now = func() time.Time { return now }
 	// Fix a mid-month cutoff older than ordinary 90-day detail retention.

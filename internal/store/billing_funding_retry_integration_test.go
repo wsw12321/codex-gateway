@@ -150,11 +150,30 @@ func TestMultiSubscriptionMigrationPreservesV2FundingPostgresIntegration(t *test
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "v2-inflight")
-	group, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "legacy group", now), Name: "Legacy group", LimitUSD: "2", Period: "day"})
+	// Seed the legacy schema directly: current group writers require model
+	// scopes, which did not exist before this migration.
+	groupID, err := newUUID()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.SetGroupMembers(ctx, SetGroupMembersParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "legacy membership", now), GroupID: group.ID, Action: "add", UserIDs: []string{user.ID}}); err != nil {
+	groupPeriodID, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := GroupSummary{ID: groupID, PeriodID: groupPeriodID}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO user_groups(id,name,limit_usd,period,starts_at,
+		period_count,current_period_number,expires_at,created_at,updated_at)
+		VALUES($1,'Legacy group',2,'day',$2,1,1,$3,$2,$2)`, group.ID, now, now.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO group_usage_periods(id,group_id,starts_at,ends_at,limit_usd,created_at)
+		VALUES($1,$2,$3,$4,2,$3)`, group.PeriodID, group.ID, now, now.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE user_groups SET current_period_id=$2 WHERE id=$1`, group.ID, group.PeriodID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2 WHERE user_id=$1`, user.ID, group.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AdjustUserBalance(ctx, AdjustUserBalanceParams{BillingWriteParams: billingIntegrationWrite(t, user.ID, "legacy cash", now), UserID: user.ID, USDAmount: "10"}); err != nil {
@@ -203,6 +222,13 @@ func TestMultiSubscriptionMigrationPreservesV2FundingPostgresIntegration(t *test
 	}
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.Name == "0036_billing_model_scopes.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply current group reader schema: %v", err)
+			}
+		}
 	}
 	if err := s.SyncModelAccessCatalog(ctx, []string{"billing-priced-model"}); err != nil {
 		t.Fatal(err)

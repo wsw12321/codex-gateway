@@ -21,6 +21,28 @@ func TestModelMultipliersPostgresIntegration(t *testing.T) {
 	defer cancel()
 	// Keep settings and cleanup boundaries isolated from other billing suites.
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s,
+		"multiplier-snapshot",
+		"multiplier-db-failure",
+		"multiplier-overflow",
+		"multiplier-standard-short",
+		"multiplier-standard-long",
+		"multiplier-flex-short",
+		"multiplier-flex-long",
+		"multiplier-fast-short",
+		"multiplier-fast-long",
+		"multiplier-missing-tier",
+		"multiplier-unknown-tier",
+		"multiplier-missing-context",
+		"multiplier-over-model-limit",
+		"multiplier-missing-cache-writes",
+		"multiplier-writes-in-input",
+		"multiplier-v1-cached-input",
+		"multiplier-v1-discount",
+		"multiplier-v2-discount",
+		"multiplier-v1-single-rounding",
+		"multiplier-v2-single-rounding",
+	)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	actor := globalUsageIntegrationUser(t, ctx, s, "multiplier-actor", UserRoleMember)

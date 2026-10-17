@@ -63,8 +63,19 @@ func newInvitationHTTPFixture(t *testing.T) invitationHTTPFixture {
 		PublicURL: publicURL, SidecarURL: publicURL, RPID: "gateway.example", RPOrigins: []string{publicURL.String()},
 		TokenPepper: []byte(strings.Repeat("p", 32)), SessionIdle: time.Hour, SessionMax: 24 * time.Hour,
 		ReauthMaxAge: 5 * time.Minute,
+		UsagePricing: config.UsagePricing{Models: map[string]config.ModelPricing{
+			"gpt-test": {},
+		}},
 	}, repository, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Match gateway startup before any group or billing requests are served.
+	models := s.config.UsagePricing.ManageableModelNames()
+	if err := repository.SyncModelAccessCatalog(ctx, models); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.InitializeBillingModelScopes(ctx, models); err != nil {
 		t.Fatal(err)
 	}
 	owner, err := repository.CreateUser(ctx, store.CreateUserParams{Username: "invite-owner", DisplayName: "Owner", Role: store.UserRoleOwner})

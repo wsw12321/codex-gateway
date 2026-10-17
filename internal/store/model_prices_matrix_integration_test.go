@@ -38,6 +38,7 @@ func TestModelPriceOverrideMatrixSettlementPostgresIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 			const model = "price-matrix"
+			billingIntegrationModelScopes(t, ctx, s, model)
 			pricing := modelPriceAcceptanceCatalog(model, config.PricingSchemaV2, "99")
 			configured := config.ModelPricing{CacheWriteMode: mode, MaxInputTokens: 1000,
 				LongContextThresholdTokens: 200, ServiceTiers: map[string]config.ServiceTierPricing{}}

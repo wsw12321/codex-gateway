@@ -14,6 +14,7 @@ func TestGroupExpiryFundingPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "group-expiry-funding")
@@ -108,6 +109,7 @@ func TestGroupPeriodRetryAfterPostgresIntegration(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	s := informationIntegrationStore(t, ctx)
+	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model")
 	base := time.Now().UTC().Truncate(time.Microsecond)
 	now := base
 	s.now = func() time.Time { return now }
