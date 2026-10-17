@@ -69,11 +69,11 @@ chmod 0600 .env
 允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
 完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
 `deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
-`.env` 中的 JSON 必须保持一行。模板中的 GPT-5.6 Sol 按部署要求采用降价前
-历史价格，来源和恢复日期见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
-Claude 标准价格于 2026-10-08 核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)，
+`.env` 中的 JSON 必须保持一行。模板于 2026-10-17 核对当前官方 API 价格，GPT-6 Sol/Luna
+采用各自报价，GPT-5.6 Sol 使用当前促销价，见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+Claude 标准价格同日核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)，
 覆盖 `claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5` 和
-`claude-haiku-4-5-20251001`；五价、上下文限制和仅合并这四条价格的命令见
+`claude-haiku-4-5-20251001`、`claude-haiku-5-5`；五价、上下文分档和仅合并这五条价格的命令见
 [Claude 定价与目录升级](claude-code.md#标准-api-定价与目录升级)。
 数据库中的模型覆盖价优先于此配置；未覆盖或已恢复的模型使用部署配置。Owner 可在
 “模型定价”修改完整基础价格矩阵，操作和升级要求见[模型定价迁移与升级](#模型定价迁移与升级)。
@@ -82,7 +82,7 @@ v2 的结构如下（片段不能单独部署）：
 ```json
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-10-08",
+  "catalog_as_of": "2026-10-17",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -98,16 +98,16 @@ v2 的结构如下（片段不能单独部署）：
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "30"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "20"
           },
           "long": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "45"
+            "input_usd_per_million": "8",
+            "cached_input_usd_per_million": "0.8",
+            "cache_write_usd_per_million": "10",
+            "output_usd_per_million": "30"
           }
         }
       }
@@ -123,9 +123,8 @@ v2 的结构如下（片段不能单独部署）：
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
 用户模型权限、API Key 白名单逐一核对。
 
-`gpt-6-sol` 的 Standard/Flex/Fast 长短档价格与 `gpt-5.6-sol` 完全一致，
-`gpt-6-luna` 的对应价格与 `gpt-5.6-luna` 完全一致；两者都使用独立计费的
-`cache_write_mode=separate`。
+`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol` 和 `gpt-5.6-luna` 分别使用官方对应模型的
+Standard/Flex/Fast 长短档报价，缓存写入均为独立计费的 `cache_write_mode=separate`。
 
 v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
 `schema_version` 的配置仍按 v1 解析，只用于过渡和升级时结算已经执行中的 v1
@@ -136,11 +135,13 @@ reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的�
 
 - Claude Messages 只支持标准速度；顶层 `speed` 缺省或为 `standard` 时准入，
   `fast` 和未知速度在转发、费用预留前返回 `400 service_tier_not_supported`。
-  四款 Claude 使用各自最大上下文内统一的 `standard.short` 五价。
+  Fable、Opus、Sonnet 和 Haiku 4.5 使用各自最大上下文内统一的 `standard.short` 五价；
+  Haiku 5.5 的总输入 ≤100,000 使用短档，>100,000 使用长档。总输入包含缓存读取和写入，
+  超过阈值后整个请求的输入、输出及缓存五价均取长档。
 - 请求或响应 `default`/`standard` 对应 Standard，`flex` 对应 Flex，
   `priority`/`fast` 对应 Fast。显式请求 Ultrafast 或其他未配置层级会在转发前
   返回 `service_tier_not_supported`。
-- `input_tokens <= 272000` 使用 `short`，`input_tokens > 272000` 使用 `long`。
+- GPT 的 `input_tokens <= 272000` 使用 `short`，`input_tokens > 272000` 使用 `long`。
   GPT-5.4-mini 的官方最大输入为 272000，只配置短档；若上游仍报告更大输入，
   作为缺失价格组合使用最高已公布分量并明确标记兜底。
 - 响应缺失服务层时记录 `missing_service_tier`，响应层级未知时记录
@@ -195,6 +196,47 @@ Ultrafast、税费和基础设施成本均不在范围内。Codex 价格及缓�
 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)，Gemini 使用
 `gemini_api_token_equivalent` 模式，价格与 `0035_cpa_v8_0_30_model_catalog.sql` 协调升级步骤见
 [CPA 模型与定价迁移](cpa-native-models.md) 和 [CPA 切换流程](cpa-v8-cutover.md)。
+
+### 同步当前官方 API 价格
+
+仓库模板仅是部署输入，不会自动修改服务器 `.env` 或数据库覆盖价。已有 v2 部署应先保存当前
+`GATEWAY_USAGE_PRICING_JSON` 的纯 JSON 为 `pricing.before.json`，再生成待审阅文件：
+
+```sh
+umask 077
+jq -ce --slurpfile catalog deploy/pricing-v2.example.json '
+  if .schema_version != 2 or (.models | type) != "object" then
+    error("current pricing must use schema_version 2 with a models object")
+  else
+    .models |= with_entries(
+      .key as $id |
+      if ($catalog[0].models | has($id)) then
+        .value = $catalog[0].models[$id]
+      else . end
+    ) |
+    .catalog_as_of = $catalog[0].catalog_as_of
+  end
+' pricing.before.json > pricing.official.json
+```
+
+该命令只替换现有配置与官方模板共有的模型，不增加模型、权限或路由，保留其他自定义模型、
+固定 USD/CNY 汇率、`fx_as_of` 和 fallback policy。自定义模型仍须单独核对官方来源；
+汇率不是 API 单价，本次同步不改变它。命令不代替 CPA 目录升级和退役模型清理。
+
+1. 备份部署配置与数据库，并记录“模型定价”中的覆盖价格、版本和“模型倍率”当前值。
+   审阅 `pricing.before.json` 与 `pricing.official.json` 的差异，确认需要同步的全部在用模型都有官方规则。
+2. 在维护窗口暂停新请求并排空在途请求，将单行 `pricing.official.json` 写回
+   `GATEWAY_USAGE_PRICING_JSON`，运行 `./scripts/validate-compose.sh` 并按部署流程重新创建所有 Gateway 实例。
+3. Owner 在“模型定价”逐模型执行“恢复配置价格”，填写此次官方同步原因，使数据库覆盖不再遮蔽新价；
+   在“模型倍率”将需按官方单价计费的公开模型设为 `1`。核对所有实例的有效矩阵、来源和倍率。
+   Haiku 5.5 从统一价格改为 100,000 输入分档后，旧覆盖价会产生结构冲突并拒绝新请求，
+   须在恢复业务前完成该模型的恢复；不要直接改数据库绕过检查。
+4. 使用实际可用模型提交最小请求，检查新 reservation 的完整价格、档位和倍率快照及结算结果后恢复流量。
+   保存 before/applied 文件与管理审计记录。历史 ledger、已准入请求的价格和倍率快照继续保持原值。
+
+官方定价还需定期复核：GPT-5.6 Sol 促销至少持续至 2026-11-21；Google 已公布 Argon 于
+2026-12-01、Gemini 3.8 Flash 于 2027-01-01 调价。当前模板不会预先应用未来价格，也不会定时自动更新。
+即使基础价与倍率已对齐，缺少服务层或缓存明细时的保守兜底仍按既有规则执行，并记录原因。
 
 ## 2. 供应链锁定
 

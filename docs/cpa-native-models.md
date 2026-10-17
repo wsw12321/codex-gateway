@@ -10,8 +10,8 @@ Gateway 固定使用 CLIProxyAPI **v8.0.30**（commit `5be2cdab0869cbaa3d401891f
 
 | 模型 ID | 最大输入上下文 | 最大完成 | Standard 输入 / 缓存读取 / 输出（美元／百万 tokens） |
 | --- | ---: | ---: | ---: |
-| `claude-haiku-5-5` | 1,000,000 | 128,000 | 5 / 0.5 / 25 |
-| `gemini-4-argon-high` | 1,048,576 | 1,048,576 | 3.75 / 0.375 / 18.75 |
+| `claude-haiku-5-5` | 1,000,000 | 128,000 | 输入 ≤100,000：0.10 / 0.01 / 0.50；输入 >100,000：0.50 / 0.05 / 2.50 |
+| `gemini-4-argon-high` | 1,048,576 | 1,048,576 | 2 / 0.10 / 10 |
 
 当前 Antigravity 公开目录共五个 ID：`gemini-3-flash`、`gemini-3.8-flash-high`、
 `gemini-3.1-flash-lite`、`gemini-3.5-flash-lite` 和 `gemini-4-argon-high`。
@@ -23,10 +23,12 @@ Argon-high 标记为支持文本、图片、音频、视频和 web search；Gate
 这两个 provider 本次均未接入。基础 Argon 和 Muse 不配置价格、默认权限或新请求路由，也不会出现在
 Gateway 的公开目录中，不能通过改名路由到 Argon-high。
 
-Haiku 5.5 使用 Anthropic Messages 定价，缓存写入为 TTL 模式：5 分钟 `6.25`、1 小时 `10`。
-Haiku 5.5 的五类价格按 `claude-haiku-4-5-20251001` 乘五。Argon-high 按
-`gemini-3.8-flash-high` 乘五，使用 `included_in_input` 缓存模式，输入、缓存读取和输出分别为
-`3.75`、`0.375` 和 `18.75`。这些最大输入值是计费边界，实际 CPA 账号能力仍须通过真实账号验收。
+以上价格于 2026-10-17 核对 [Anthropic 官方定价](https://platform.claude.com/docs/en/about-claude/pricing)
+和 [Google 官方定价](https://ai.google.dev/gemini-api/docs/pricing)。Haiku 5.5 使用 TTL 缓存模式，
+5 分钟／1 小时写入价在短档为 `0.125 / 0.20`，长档为 `0.625 / 1`。总输入包含普通输入、缓存读取
+和缓存写入；超过 100,000 后整个请求按长档五价结算。Argon-high 对应 `gemini-4-argon` API 家族，
+使用 `included_in_input` 缓存模式，现价持续至 2026-11-30；2026-12-01 起官方已公布的输入／缓存读取／输出为
+`4 / 0.20 / 20`，需届时复核并更新。实际 CPA 账号上下文能力仍须通过真实账号验收。
 
 从当前活动目录移除以下上游删除的 ID：
 
@@ -49,8 +51,10 @@ go build -o /tmp/cpa-pricing-migrate ./cmd/cpa-pricing-migrate
 /tmp/cpa-pricing-migrate < pricing.before.json > pricing.applied.json
 ```
 
-工具保留其它 Codex/Claude 模型、汇率和 fallback 策略，只替换 v8.0.30 目标价格并移除上述退役 Gemini
-ID。v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义。审核后将完整 `pricing.applied.json` 写回
+工具保留其它 Codex/Claude 模型、汇率和 fallback 策略，只替换其七个目标模型价格（五款 Gemini、
+Haiku 5.5 和 GPT-6.1 Sol），并移除上述退役 Gemini ID。它不覆盖 GPT-6 Sol/Luna 和 GPT-5.6 Sol，
+同步全部现价还须执行[官方价格同步流程](operations.md#同步当前官方-api-价格)。
+v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义。审核后将完整 `pricing.applied.json` 写回
 部署配置，并保存 before/applied 文件供回滚比较。
 
 数据库迁移 `0035_cpa_v8_0_30_model_catalog.sql` 只执行一次。它会：

@@ -88,7 +88,7 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 
 ## 标准 API 定价与目录升级
 
-默认目录 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json) 和两份环境变量示例已包含以下五款精确模型 ID。已有四款价格于 **2026-10-08** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)；Haiku 5.5 无官方价格，按 Haiku 4.5 的五倍计费。单位为美元／百万 tokens：
+默认目录 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json) 和两份环境变量示例已包含以下五款精确模型 ID，价格于 **2026-10-17** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。单位为美元／百万 tokens：
 
 | 精确模型 ID | 输入 | 输出 | 缓存读取 | 5 分钟缓存写入 | 1 小时缓存写入 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -96,11 +96,14 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 | `claude-opus-5-5` | 4 | 20 | 0.20 | 5 | 8 |
 | `claude-sonnet-5-5` | 2 | 10 | 0.10 | 2.50 | 4 |
 | `claude-haiku-4-5-20251001` | 1 | 5 | 0.10 | 1.25 | 2 |
-| `claude-haiku-5-5` | 5 | 25 | 0.5 | 6.25 | 10 |
+| `claude-haiku-5-5`，输入 ≤100,000 | 0.10 | 0.50 | 0.01 | 0.125 | 0.20 |
+| `claude-haiku-5-5`，输入 >100,000 | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
 
 模型 ID 和上下文限制对应当前 [CPA 来源锁](../deploy/codex-compat/source.lock.json) 中的 `v8.0.30` 目录。Haiku 4.5 的输入上下文上限为 `200000`；Fable、Opus、Sonnet 和 Haiku 5.5 为 `1000000`。Haiku 5.5 的最大完成为 `128000`，使用精确 ID `claude-haiku-5-5`。
 
-五款均使用 `cache_write_mode=separate_by_ttl` 和 `service_tiers.standard.short`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。Fable、Opus、Sonnet、Haiku 5.5 的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 4.5 为 `200000`。这些模型按各自价格在完整输入上下文内使用统一单价，无需另设 `long`。缓存 TTL 缺失时继续按价格快照中较高的写入价结算，分项数量保持未知；`/v1/messages/count_tokens` 仍不收取 Token 费用。
+五款均使用 `cache_write_mode=separate_by_ttl`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。Fable、Opus、Sonnet 的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 4.5 为 `200000`；这四款只配置 `service_tiers.standard.short`。
+
+Haiku 5.5 的最大输入仍为 `1000000`，`long_context_threshold_tokens` 为 `100000`，同时配置 `standard.short` 和 `standard.long`。判档的总输入包含普通输入、缓存读取和两种缓存写入；恰好 100,000 使用短档，超过后整个请求的五类 Token 都使用长档单价，并非仅超出部分加价。缓存 TTL 缺失时继续按所选档位中较高的写入价结算，分项数量保持未知；`/v1/messages/count_tokens` 仍不收取 Token 费用。
 
 本目录只覆盖标准 API Token 价格，不支持 Claude Fast、Batch 或地区附加费。普通和流式 `/v1/messages` 请求省略顶层 `speed` 或设置 `"speed":"standard"` 时按标准模式准入；`"speed":"fast"` 及其他未知速度在转发和费用预留前返回 `400 service_tier_not_supported`。重复顶层键、非字符串值等非法形式按请求校验规则拒绝；消息、工具参数等嵌套内容中的 `speed` 不控制服务速度。
 
@@ -125,7 +128,7 @@ jq -ce --slurpfile catalog deploy/pricing-v2.example.json '
 ' pricing-current.json > pricing-claude.json
 ```
 
-核对 `pricing-claude.json` 后，用其单行内容替换 `.env` 的 `GATEWAY_USAGE_PRICING_JSON`，再按现有部署流程校验并重新加载 Gateway。示例文件更新不会自动改变实际部署价格。数据库覆盖价仍优先于部署目录，“模型倍率”继续作用于最终费用；已有覆盖价的模型需在“模型定价”中核对有效价格。`0035` 只初始化新模型权限和配置快照，历史请求和账单继续使用原价格快照，受限 API Key 白名单不会自动扩展。
+核对 `pricing-claude.json` 后，用其单行内容替换 `.env` 的 `GATEWAY_USAGE_PRICING_JSON`，再按现有部署流程校验并重新加载 Gateway。示例文件更新不会自动改变实际部署价格。数据库覆盖价仍优先于部署目录，“模型倍率”继续作用于最终费用；需按[官方价格同步流程](operations.md#同步当前官方-api-价格)核对有效价格与倍率。Haiku 5.5 的分档结构改变后，旧覆盖价会产生结构冲突，Owner 必须恢复配置价格或按新结构重新保存完整矩阵后才可恢复请求。`0035` 只初始化新模型权限和配置快照，历史请求和账单继续使用原价格快照，受限 API Key 白名单不会自动扩展。
 
 ## 上线与回退
 

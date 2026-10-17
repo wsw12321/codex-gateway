@@ -9,7 +9,7 @@ import (
 
 // CPAV8PricingCatalogAsOf identifies the explicitly reviewed upgrade. This
 // migration is an offline operation, never applied during normal startup.
-const CPAV8PricingCatalogAsOf = "2026-10-16"
+const CPAV8PricingCatalogAsOf = "2026-10-17"
 
 //go:embed data/cpa-v8-model-prices.json
 var cpaV8ModelPrices []byte

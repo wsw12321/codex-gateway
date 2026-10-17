@@ -53,7 +53,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		t.Fatalf("schema version = %d", pricing.SchemaVersion)
 	}
-	if pricing.CatalogAsOf != "2026-10-16" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
+	if pricing.CatalogAsOf != "2026-10-17" || pricing.FXAsOf != "2026-08-20" || pricing.USDCNYRate != "7.20" {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
@@ -71,12 +71,12 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		t.Fatalf("models = %v", gotModels)
 	}
 	type expected struct{ input, cached, write, output string }
-	// Sol deliberately uses the pre-promotion rates from the 2026-08-20 template.
+	// Prices match the official API catalog reviewed on 2026-10-17.
 	short := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"10", "1", "12.5", "50"}, "flex": {"5", "0.5", "6.25", "25"}, "priority": {"20", "2", "25", "100"}},
-		"gpt-6-sol":     {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
-		"gpt-6-luna":    {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
-		"gpt-5.6-sol":   {"default": {"5", "0.5", "6.25", "30"}, "flex": {"2.5", "0.25", "3.125", "15"}, "priority": {"10", "1", "12.5", "60"}},
+		"gpt-6-sol":     {"default": {"2", "0.2", "2.5", "10"}, "flex": {"1", "0.1", "1.25", "5"}, "priority": {"4", "0.4", "5", "20"}},
+		"gpt-6-luna":    {"default": {"0.1", "0.01", "0.125", "0.5"}, "flex": {"0.05", "0.005", "0.0625", "0.25"}, "priority": {"0.2", "0.02", "0.25", "1"}},
+		"gpt-5.6-sol":   {"default": {"4", "0.4", "5", "20"}, "flex": {"2", "0.2", "2.5", "10"}, "priority": {"8", "0.8", "10", "40"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
 		"gpt-5.6-luna":  {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
 		"gpt-5.5":       {"default": {"5", "0.5", "0", "30"}, "flex": {"2.5", "0.25", "0", "15"}, "priority": {"12.5", "1.25", "0", "75"}},
@@ -105,9 +105,9 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	long := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"20", "2", "25", "75"}, "flex": {"10", "1", "12.5", "37.5"}, "priority": {"40", "4", "50", "150"}},
-		"gpt-6-sol":     {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
-		"gpt-6-luna":    {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
-		"gpt-5.6-sol":   {"default": {"10", "1", "12.5", "45"}, "flex": {"5", "0.5", "6.25", "22.5"}, "priority": {"20", "2", "25", "90"}},
+		"gpt-6-sol":     {"default": {"4", "0.4", "5", "15"}, "flex": {"2", "0.2", "2.5", "7.5"}, "priority": {"8", "0.8", "10", "30"}},
+		"gpt-6-luna":    {"default": {"0.2", "0.02", "0.25", "0.75"}, "flex": {"0.1", "0.01", "0.125", "0.375"}, "priority": {"0.4", "0.04", "0.5", "1.5"}},
+		"gpt-5.6-sol":   {"default": {"8", "0.8", "10", "30"}, "flex": {"4", "0.4", "5", "15"}, "priority": {"16", "1.6", "20", "60"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
 		"gpt-5.6-luna":  {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
 		"gpt-5.5":       {"default": {"10", "1", "0", "45"}, "flex": {"5", "0.5", "0", "22.5"}},
@@ -191,9 +191,9 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 		prices      [4]string
 		cost        string
 	}{
-		{200_000, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "0.905625000000"},
-		{200_001, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "0.905628750000"},
-		{1_048_576, ContextClassShort, [4]string{"3.75", "0.375", "0", "18.75"}, "4.087785000000"},
+		{200_000, ContextClassShort, [4]string{"2", "0.10", "0", "10"}, "0.482000000000"},
+		{200_001, ContextClassShort, [4]string{"2", "0.10", "0", "10"}, "0.482002000000"},
+		{1_048_576, ContextClassShort, [4]string{"2", "0.10", "0", "10"}, "2.179152000000"},
 	} {
 		t.Run(fmt.Sprint(tc.inputTokens), func(t *testing.T) {
 			for _, tier := range []string{"default", ""} {
@@ -321,7 +321,7 @@ func TestGeminiArgonPricingV2(t *testing.T) {
 			t.Fatalf("%s pricing rule = %+v", tc.model, rule)
 		}
 		short := rule.ServiceTiers[PricingTierStandard].Short
-		if [3]string{short.InputUSDPerMillion, short.CachedInputUSDPerMillion, short.OutputUSDPerMillion} != [3]string{"3.75", "0.375", "18.75"} {
+		if [3]string{short.InputUSDPerMillion, short.CachedInputUSDPerMillion, short.OutputUSDPerMillion} != [3]string{"2", "0.10", "10"} {
 			t.Fatalf("%s prices = %+v", tc.model, short)
 		}
 		snapshot, err := ParsePricingSnapshot(raw)

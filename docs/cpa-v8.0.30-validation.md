@@ -30,9 +30,12 @@ CPA 最终补丁回放、全包普通与竞态测试、镜像构建和运行冒�
 | `claude-haiku-5-5` | 1,000,000 | 128,000 | 输入 5、缓存输入 0.5、输出 25；5m/1h 缓存写入 6.25/10 |
 | `gemini-4-argon-high` | 1,048,576 | 1,048,576 | 输入 3.75、缓存输入 0.375、输出 18.75；`included_in_input` |
 
-以上价格采用已确认的低档模型价格乘 5 规则。Haiku 以 `claude-haiku-4-5-20251001`
+以上为 2026-10-16 验证时的历史价格，采用当时已确认的低档模型价格乘 5 规则。Haiku 以 `claude-haiku-4-5-20251001`
 为基准，Argon High 以 `gemini-3.8-flash-high` 为基准；保留既有汇率、fallback policy
 和历史账单快照语义。
+
+2026-10-17 已将模板同步为官方 API 现价，并为 Haiku 5.5 增加 100,000 输入 Token 分档；
+当前价格见[原生模型与定价迁移](cpa-native-models.md)。本页保留原验证事实，不能作为新价格已完成真实账号验收的证明。
 
 Antigravity 活动目录共五个模型：`gemini-3-flash`、`gemini-3.8-flash-high`、
 `gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`、`gemini-4-argon-high`。

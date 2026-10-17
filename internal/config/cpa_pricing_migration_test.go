@@ -98,7 +98,7 @@ func TestCPAV8ReviewedPricingBoundaries(t *testing.T) {
 		want        [4]string
 	}{
 		{"gemini-3.8-flash-high", "standard", 1, [4]string{"0.75", "0.075", "0", "3.75"}},
-		{"gemini-4-argon-high", "standard", 1, [4]string{"3.75", "0.375", "0", "18.75"}},
+		{"gemini-4-argon-high", "standard", 1, [4]string{"2", "0.10", "0", "10"}},
 		{"gemini-3-flash", "standard", 200_001, [4]string{"0.50", "0.05", "0", "3"}},
 		{"gemini-3.1-flash-lite", "standard", 200_001, [4]string{"0.25", "0.025", "0", "1.50"}},
 		{"gemini-3.5-flash-lite", "standard", 200_001, [4]string{"0.30", "0.03", "0", "2.50"}},

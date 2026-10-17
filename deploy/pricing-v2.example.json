@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "catalog_as_of": "2026-10-16",
+  "catalog_as_of": "2026-10-17",
   "fx_as_of": "2026-08-20",
   "usd_cny_rate": "7.20",
   "fallback_policy": {
@@ -65,44 +65,44 @@
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "30"
+            "input_usd_per_million": "2",
+            "cached_input_usd_per_million": "0.2",
+            "cache_write_usd_per_million": "2.5",
+            "output_usd_per_million": "10"
           },
           "long": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "45"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "15"
           }
         },
         "flex": {
           "short": {
-            "input_usd_per_million": "2.5",
-            "cached_input_usd_per_million": "0.25",
-            "cache_write_usd_per_million": "3.125",
-            "output_usd_per_million": "15"
+            "input_usd_per_million": "1",
+            "cached_input_usd_per_million": "0.1",
+            "cache_write_usd_per_million": "1.25",
+            "output_usd_per_million": "5"
           },
           "long": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "22.5"
+            "input_usd_per_million": "2",
+            "cached_input_usd_per_million": "0.2",
+            "cache_write_usd_per_million": "2.5",
+            "output_usd_per_million": "7.5"
           }
         },
         "fast": {
           "short": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "60"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "20"
           },
           "long": {
-            "input_usd_per_million": "20",
-            "cached_input_usd_per_million": "2",
-            "cache_write_usd_per_million": "25",
-            "output_usd_per_million": "90"
+            "input_usd_per_million": "8",
+            "cached_input_usd_per_million": "0.8",
+            "cache_write_usd_per_million": "10",
+            "output_usd_per_million": "30"
           }
         }
       }
@@ -114,44 +114,44 @@
       "service_tiers": {
         "standard": {
           "short": {
+            "input_usd_per_million": "0.1",
+            "cached_input_usd_per_million": "0.01",
+            "cache_write_usd_per_million": "0.125",
+            "output_usd_per_million": "0.5"
+          },
+          "long": {
             "input_usd_per_million": "0.2",
             "cached_input_usd_per_million": "0.02",
             "cache_write_usd_per_million": "0.25",
-            "output_usd_per_million": "1.2"
-          },
-          "long": {
-            "input_usd_per_million": "0.4",
-            "cached_input_usd_per_million": "0.04",
-            "cache_write_usd_per_million": "0.5",
-            "output_usd_per_million": "1.8"
+            "output_usd_per_million": "0.75"
           }
         },
         "flex": {
           "short": {
+            "input_usd_per_million": "0.05",
+            "cached_input_usd_per_million": "0.005",
+            "cache_write_usd_per_million": "0.0625",
+            "output_usd_per_million": "0.25"
+          },
+          "long": {
             "input_usd_per_million": "0.1",
             "cached_input_usd_per_million": "0.01",
             "cache_write_usd_per_million": "0.125",
-            "output_usd_per_million": "0.6"
-          },
-          "long": {
-            "input_usd_per_million": "0.2",
-            "cached_input_usd_per_million": "0.02",
-            "cache_write_usd_per_million": "0.25",
-            "output_usd_per_million": "0.9"
+            "output_usd_per_million": "0.375"
           }
         },
         "fast": {
           "short": {
+            "input_usd_per_million": "0.2",
+            "cached_input_usd_per_million": "0.02",
+            "cache_write_usd_per_million": "0.25",
+            "output_usd_per_million": "1"
+          },
+          "long": {
             "input_usd_per_million": "0.4",
             "cached_input_usd_per_million": "0.04",
             "cache_write_usd_per_million": "0.5",
-            "output_usd_per_million": "2.4"
-          },
-          "long": {
-            "input_usd_per_million": "0.8",
-            "cached_input_usd_per_million": "0.08",
-            "cache_write_usd_per_million": "1",
-            "output_usd_per_million": "3.6"
+            "output_usd_per_million": "1.5"
           }
         }
       }
@@ -163,44 +163,44 @@
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "30"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "20"
           },
           "long": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "45"
+            "input_usd_per_million": "8",
+            "cached_input_usd_per_million": "0.8",
+            "cache_write_usd_per_million": "10",
+            "output_usd_per_million": "30"
           }
         },
         "flex": {
           "short": {
-            "input_usd_per_million": "2.5",
-            "cached_input_usd_per_million": "0.25",
-            "cache_write_usd_per_million": "3.125",
-            "output_usd_per_million": "15"
+            "input_usd_per_million": "2",
+            "cached_input_usd_per_million": "0.2",
+            "cache_write_usd_per_million": "2.5",
+            "output_usd_per_million": "10"
           },
           "long": {
-            "input_usd_per_million": "5",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_usd_per_million": "6.25",
-            "output_usd_per_million": "22.5"
+            "input_usd_per_million": "4",
+            "cached_input_usd_per_million": "0.4",
+            "cache_write_usd_per_million": "5",
+            "output_usd_per_million": "15"
           }
         },
         "fast": {
           "short": {
-            "input_usd_per_million": "10",
-            "cached_input_usd_per_million": "1",
-            "cache_write_usd_per_million": "12.5",
-            "output_usd_per_million": "60"
+            "input_usd_per_million": "8",
+            "cached_input_usd_per_million": "0.8",
+            "cache_write_usd_per_million": "10",
+            "output_usd_per_million": "40"
           },
           "long": {
-            "input_usd_per_million": "20",
-            "cached_input_usd_per_million": "2",
-            "cache_write_usd_per_million": "25",
-            "output_usd_per_million": "90"
+            "input_usd_per_million": "16",
+            "cached_input_usd_per_million": "1.6",
+            "cache_write_usd_per_million": "20",
+            "output_usd_per_million": "60"
           }
         }
       }
@@ -593,15 +593,22 @@
     "claude-haiku-5-5": {
       "cache_write_mode": "separate_by_ttl",
       "max_input_tokens": 1000000,
-      "long_context_threshold_tokens": 1000000,
+      "long_context_threshold_tokens": 100000,
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "5",
-            "output_usd_per_million": "25",
-            "cached_input_usd_per_million": "0.5",
-            "cache_write_5m_usd_per_million": "6.25",
-            "cache_write_1h_usd_per_million": "10"
+            "input_usd_per_million": "0.10",
+            "output_usd_per_million": "0.50",
+            "cached_input_usd_per_million": "0.01",
+            "cache_write_5m_usd_per_million": "0.125",
+            "cache_write_1h_usd_per_million": "0.20"
+          },
+          "long": {
+            "input_usd_per_million": "0.50",
+            "output_usd_per_million": "2.50",
+            "cached_input_usd_per_million": "0.05",
+            "cache_write_5m_usd_per_million": "0.625",
+            "cache_write_1h_usd_per_million": "1"
           }
         }
       }
@@ -613,9 +620,9 @@
       "service_tiers": {
         "standard": {
           "short": {
-            "input_usd_per_million": "3.75",
-            "cached_input_usd_per_million": "0.375",
-            "output_usd_per_million": "18.75"
+            "input_usd_per_million": "2",
+            "cached_input_usd_per_million": "0.10",
+            "output_usd_per_million": "10"
           }
         }
       }

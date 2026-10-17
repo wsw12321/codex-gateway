@@ -3,18 +3,18 @@
 本指南使用 [`deploy/env.gpt-5.6.example`](../deploy/env.gpt-5.6.example) 生成
 生产 `.env`。完整可读目录是
 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，模型单价和
-缓存语义于 2026-09-05 对照以下官方文档核对：
+缓存语义于 2026-10-17 对照以下官方文档核对：
 
 - [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)
 - [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)
 - [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)
 - [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching/)
 
-2026-09-16 按部署计价要求，将 GPT-5.6 Sol 的 Standard/Flex/Fast 长短档全部
-恢复为仓库 2026-08-20 模板（提交 `5d224a8`）中的降价前价格。9 月 5 日提交
-`74450c7` 曾将这些价格下调；本次核对的官方价格页仍列促销价。因此下表的 Sol
-价格是本部署选用的历史价格，不代表当前官方报价；Terra、Luna 和其他模型沿用
-现有配置。`catalog_as_of` 更新为本次配置调整日期 `2026-09-16`。
+2026-10-17 同步当前官方 API 价格，GPT-6 Sol、GPT-6 Luna 各自采用官方独立报价，
+GPT-5.6 Sol 的 Standard/Flex/Fast 长短档采用当前促销价。此前 2026-09-16 恢复的
+GPT-5.6 Sol 历史价格不再作为模板报价。官方声明该促销价至少持续至 2026-11-21；
+到期前应再次复核，不推测后续价格。`catalog_as_of` 为 `2026-10-17`，本次同步
+不改变固定 USD/CNY 汇率及 `fx_as_of`。
 
 本系统计算的是“OpenAI API Token 等价成本”，不是 OpenAI 实际账单。上游使用
 ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略；订阅费、工具、
@@ -22,7 +22,7 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 
 ## 计价口径
 
-模板包含当前 Codex API 模型目录中的 `gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
+模板包含当前 Codex API 模型目录中的 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、
 `gpt-5.4-mini`，以及隐藏的 `codex-auto-review`。GPT-5.2 等未加入完整规则的模型
 会在转发前拒绝，不能用别名或相近模型价格代替。
@@ -32,18 +32,21 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 
 | 模型 / 服务层 | `<=272000` Token | `>272000` Token |
 | --- | --- | --- |
+| GPT-6.1 Sol Standard | `2 / 0.1 / 2.5 / 10` | `4 / 0.2 / 5 / 15` |
+| GPT-6.1 Sol Flex | `1 / 0.05 / 1.25 / 5` | `2 / 0.1 / 2.5 / 7.5` |
+| GPT-6.1 Sol Fast | `4 / 0.2 / 5 / 20` | `8 / 0.4 / 10 / 30` |
 | GPT-6 Astra Standard | `10 / 1 / 12.5 / 50` | `20 / 2 / 25 / 75` |
 | GPT-6 Astra Flex | `5 / 0.5 / 6.25 / 25` | `10 / 1 / 12.5 / 37.5` |
 | GPT-6 Astra Fast | `20 / 2 / 25 / 100` | `40 / 4 / 50 / 150` |
-| GPT-6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
-| GPT-6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
-| GPT-6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
-| GPT-6 Luna Standard | `0.2 / 0.02 / 0.25 / 1.2` | `0.4 / 0.04 / 0.5 / 1.8` |
-| GPT-6 Luna Flex | `0.1 / 0.01 / 0.125 / 0.6` | `0.2 / 0.02 / 0.25 / 0.9` |
-| GPT-6 Luna Fast | `0.4 / 0.04 / 0.5 / 2.4` | `0.8 / 0.08 / 1 / 3.6` |
-| GPT-5.6 Sol Standard | `5 / 0.5 / 6.25 / 30` | `10 / 1 / 12.5 / 45` |
-| GPT-5.6 Sol Flex | `2.5 / 0.25 / 3.125 / 15` | `5 / 0.5 / 6.25 / 22.5` |
-| GPT-5.6 Sol Fast | `10 / 1 / 12.5 / 60` | `20 / 2 / 25 / 90` |
+| GPT-6 Sol Standard | `2 / 0.2 / 2.5 / 10` | `4 / 0.4 / 5 / 15` |
+| GPT-6 Sol Flex | `1 / 0.1 / 1.25 / 5` | `2 / 0.2 / 2.5 / 7.5` |
+| GPT-6 Sol Fast | `4 / 0.4 / 5 / 20` | `8 / 0.8 / 10 / 30` |
+| GPT-6 Luna Standard | `0.1 / 0.01 / 0.125 / 0.5` | `0.2 / 0.02 / 0.25 / 0.75` |
+| GPT-6 Luna Flex | `0.05 / 0.005 / 0.0625 / 0.25` | `0.1 / 0.01 / 0.125 / 0.375` |
+| GPT-6 Luna Fast | `0.2 / 0.02 / 0.25 / 1` | `0.4 / 0.04 / 0.5 / 1.5` |
+| GPT-5.6 Sol Standard | `4 / 0.4 / 5 / 20` | `8 / 0.8 / 10 / 30` |
+| GPT-5.6 Sol Flex | `2 / 0.2 / 2.5 / 10` | `4 / 0.4 / 5 / 15` |
+| GPT-5.6 Sol Fast | `8 / 0.8 / 10 / 40` | `16 / 1.6 / 20 / 60` |
 | GPT-5.6 Terra Standard | `2 / 0.2 / 2.5 / 12` | `4 / 0.4 / 5 / 18` |
 | GPT-5.6 Terra Flex | `1 / 0.1 / 1.25 / 6` | `2 / 0.2 / 2.5 / 9` |
 | GPT-5.6 Terra Fast | `4 / 0.4 / 5 / 24` | `8 / 0.8 / 10 / 36` |
@@ -64,8 +67,8 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 的最大输入为 272000，只配置短档；若上游仍报告更大输入，会记录缺失组合并用该
 模型最高已公布分量兜底。
 
-GPT-6 和 GPT-5.6 的 `cache_write_mode` 是 `separate`。GPT-6 Sol/Luna 的价格
-分别沿用 GPT-5.6 Sol/Luna 的对应长短档和服务层：
+GPT-6.1、GPT-6 和 GPT-5.6 的 `cache_write_mode` 是 `separate`，按每款模型的
+对应长短档和服务层独立定价：
 
 ```text
 ordinary = input - cached - cache_write

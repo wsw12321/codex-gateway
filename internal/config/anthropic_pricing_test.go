@@ -28,7 +28,6 @@ func TestClaudePricingV2StandardBoundariesAndTTL(t *testing.T) {
 		{"claude-opus-5-5", 1_000_000, [5]string{"4", "20", "0.20", "5", "8"}, "0.006320000000", "0.007220000000"},
 		{"claude-sonnet-5-5", 1_000_000, [5]string{"2", "10", "0.10", "2.50", "4"}, "0.003160000000", "0.003610000000"},
 		{"claude-haiku-4-5-20251001", 200_000, [5]string{"1", "5", "0.10", "1.25", "2"}, "0.001585000000", "0.001810000000"},
-		{"claude-haiku-5-5", 1_000_000, [5]string{"5", "25", "0.5", "6.25", "10"}, "0.007925000000", "0.009050000000"},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
 			raw, rule, ok, err := pricing.ModelSnapshot(tc.model)
@@ -108,6 +107,85 @@ func TestClaudePricingV2StandardBoundariesAndTTL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHaiku55PricingV2LongContextAndTTL(t *testing.T) {
+	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pricing, err := ParseUsagePricing(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, rule, ok, err := pricing.ModelSnapshot("claude-haiku-5-5")
+	if err != nil || !ok {
+		t.Fatalf("snapshot: ok=%t err=%v", ok, err)
+	}
+	standard := rule.ServiceTiers[PricingTierStandard]
+	if rule.CacheWriteMode != CacheWriteSeparateByTTL || rule.MaxInputTokens != 1_000_000 ||
+		rule.LongContextThresholdTokens != 100_000 || len(rule.ServiceTiers) != 1 ||
+		standard.Short == nil || standard.Long == nil {
+		t.Fatalf("Haiku 5.5 pricing rule = %+v", rule)
+	}
+	snapshot, err := ParsePricingSnapshot(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		input   int64
+		context string
+		prices  [5]string // Input, output, cache read, 5m write, 1h write.
+	}{
+		{0, ContextClassShort, [5]string{"0.10", "0.50", "0.01", "0.125", "0.20"}},
+		{100_000, ContextClassShort, [5]string{"0.10", "0.50", "0.01", "0.125", "0.20"}},
+		{100_001, ContextClassLong, [5]string{"0.50", "2.50", "0.05", "0.625", "1"}},
+		{1_000_000, ContextClassLong, [5]string{"0.50", "2.50", "0.05", "0.625", "1"}},
+	} {
+		decision, err := snapshot.Select("standard", tc.input)
+		if err != nil || decision.ContextClass != tc.context || decision.FallbackReason != "" || decision.PricingServiceTier != PricingTierStandard {
+			t.Fatalf("Haiku 5.5 pricing at %d = %+v, %v", tc.input, decision, err)
+		}
+		got := [5]string{decision.InputUSDPerMillion, decision.OutputUSDPerMillion, decision.CachedInputUSDPerMillion,
+			decision.CacheWrite5mUSDPerMillion, decision.CacheWrite1hUSDPerMillion}
+		for index, price := range got {
+			canonical, err := billing.ParsePrice(price)
+			want, wantErr := billing.ParsePrice(tc.prices[index])
+			if err != nil || wantErr != nil || canonical != want {
+				t.Fatalf("Haiku 5.5 price %d at %d = %q, want %q", index, tc.input, price, tc.prices[index])
+			}
+		}
+	}
+	for _, tc := range []struct {
+		input, output int64
+		ttlPresent    bool
+		want          string
+	}{
+		{100_000, 8_000, true, "0.015850000000"},
+		{100_001, 8_000, true, "0.079250500000"},
+		{100_000, 8_000, false, "0.018100000000"},
+		{100_001, 8_000, false, "0.090500500000"},
+		// Output tokens do not move a request into the long input tier.
+		{100_000, 100_000, true, "0.061850000000"},
+	} {
+		decision, err := snapshot.Select("standard", tc.input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		five, hour := int64(0), int64(0)
+		if tc.ttlPresent {
+			five, hour = 30_000, 20_000
+		}
+		// 100,000 total input = 40,000 ordinary + 10,000 reads + 50,000 writes.
+		// Crossing the threshold reprices every category for the whole request.
+		cost, err := billing.CalculateCostV2TTLWithMultiplier(tc.input, 10_000, 50_000, five, hour, tc.output, tc.ttlPresent,
+			decision.InputUSDPerMillion, decision.CachedInputUSDPerMillion, decision.CacheWrite5mUSDPerMillion,
+			decision.CacheWrite1hUSDPerMillion, decision.OutputUSDPerMillion, "1")
+		if err != nil || cost != tc.want {
+			t.Fatalf("Haiku 5.5 cost at %d input/%d output, TTL present=%t: %q, %v; want %q",
+				tc.input, tc.output, tc.ttlPresent, cost, err, tc.want)
+		}
 	}
 }
 

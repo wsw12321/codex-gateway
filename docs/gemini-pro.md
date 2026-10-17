@@ -15,10 +15,14 @@ Antigravity 当前最多公开以下五个精确 ID，默认模型为 `gemini-3.
 | `gemini-3.8-flash-high` | 0.75 / 0.075 / 3.75 |
 | `gemini-3.1-flash-lite` | 0.25 / 0.025 / 1.50 |
 | `gemini-3.5-flash-lite` | 0.30 / 0.03 / 2.50 |
-| `gemini-4-argon-high` | 3.75 / 0.375 / 18.75 |
+| `gemini-4-argon-high` | 2 / 0.10 / 10 |
 
-Argon-high 的最大输入和最大完成均为 1,048,576；价格按 `gemini-3.8-flash-high` 的五倍，缓存写入包含
-在普通输入中。费用是本地 API 等价计费，不表示 Antigravity 订阅产生按量费用。上游目录包含的媒体和
+以上价格于 2026-10-17 核对 [Google 官方定价](https://ai.google.dev/gemini-api/docs/pricing)，
+Argon-high 对应 `gemini-4-argon` API 家族，最大输入和最大完成均为 1,048,576，缓存写入包含
+在普通输入中。Argon 当前价格持续至 2026-11-30，2026-12-01 起官方已公布的输入／缓存读取／输出为
+`4 / 0.20 / 20`；Gemini 3.8 Flash 当前价格持续至 2026-12-31，2027-01-01 起为 `1.50 / 0.15 / 7.50`。
+Gateway 不会自动切价，须在对应日期前重新核对并更新配置。费用是本地 API 等价计费，不表示 Antigravity 订阅产生按量费用。
+上游目录包含的媒体和
 web search 能力不代表 Gateway 已开放相应请求；当前 Antigravity 请求仍只支持文本、流式输出与客户端函数工具。
 
 基础 `gemini-4-argon` 属于上游 `gemini` provider，四个 Muse Wonder ID 属于 `meta` provider。
@@ -47,6 +51,7 @@ v8.0.30 的完整升级只新增 `claude-haiku-5-5` 和 `gemini-4-argon-high`；
 `0035_cpa_v8_0_30_model_catalog.sql`。迁移初始化两个新增模型权限并保存配置快照，缺失倍率继续为 1，
 历史 usage、账单、订阅模型范围和 API Key allowlist 保持原值。完整操作见
 [原生模型与定价迁移](cpa-native-models.md)，不能用示例覆盖已有汇率和其它模型价格。
+仅同步现有模型的官方现价时，使用[官方价格同步流程](operations.md#同步当前官方-api-价格)，同时核对数据库覆盖价和倍率。
 
 回滚保留包含 `0035` 的兼容 Gateway；配置恢复仅比较本次 before/applied 快照，不叠加旧 `0025`。
 若需要 legacy bridge，按 [受控回滚步骤](cpa-v8-cutover.md#回滚) 转换最新凭据，确保只有一个 Google

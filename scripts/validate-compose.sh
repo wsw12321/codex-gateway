@@ -490,7 +490,7 @@ pricing_validator='
     (.service_tiers |
       exact_keys(["standard"]) and
       (.standard | exact_keys(["short"]) and (.short | zero_included_price)));
-  def claude_model($context_limit):
+  def claude_model($context_limit; $threshold):
     exact_keys([
       "cache_write_mode",
       "long_context_threshold_tokens",
@@ -499,10 +499,15 @@ pricing_validator='
     ]) and
     .cache_write_mode == "separate_by_ttl" and
     .max_input_tokens == $context_limit and
-    .long_context_threshold_tokens == $context_limit and
+    .long_context_threshold_tokens == $threshold and
     (.service_tiers |
       exact_keys(["standard"]) and
-      (.standard | exact_keys(["short"]) and (.short | ttl_price)));
+      (.standard |
+        if $threshold < $context_limit then
+          exact_keys(["short", "long"]) and (.short | ttl_price) and (.long | ttl_price)
+        else
+          exact_keys(["short"]) and (.short | ttl_price)
+        end));
   exact_keys([
     "catalog_as_of",
     "fallback_policy",
@@ -548,11 +553,11 @@ pricing_validator='
       "gpt-6-sol",
       "gpt-6.1-sol"
     ]) and
-    (.["claude-fable-5-1"] | claude_model(1000000)) and
-    (.["claude-opus-5-5"] | claude_model(1000000)) and
-    (.["claude-sonnet-5-5"] | claude_model(1000000)) and
-    (.["claude-haiku-4-5-20251001"] | claude_model(200000)) and
-    (.["claude-haiku-5-5"] | claude_model(1000000)) and
+    (.["claude-fable-5-1"] | claude_model(1000000; 1000000)) and
+    (.["claude-opus-5-5"] | claude_model(1000000; 1000000)) and
+    (.["claude-sonnet-5-5"] | claude_model(1000000; 1000000)) and
+    (.["claude-haiku-4-5-20251001"] | claude_model(200000; 200000)) and
+    (.["claude-haiku-5-5"] | claude_model(1000000; 100000)) and
     (.["gpt-6-astra"] | separate_long_model) and
     (.["gpt-6-sol"] | separate_long_model) and
     (.["gpt-6.1-sol"] | separate_long_model) and

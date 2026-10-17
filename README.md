@@ -165,8 +165,9 @@ reservation，照常记录 Token 和零金额 ledger；它不扣群组、个人�
 [群组额度](docs/access-groups-validation.md)。
 
 价格配置 v2 按客户端提交的精确模型，在准入时保存该模型完整的服务层、上下文
-档位、缓存读取和缓存写入规则。结算会记录上游实际模型和实际服务层，并按实际
-输入 Token 在 `272000`/`272001` 边界选择短档或长档；上游返回不同模型不会把
+档位、缓存读取和缓存写入规则。结算会记录上游实际模型和实际服务层，并按总输入
+Token 和模型阈值选择短档或长档：GPT 为 `272000`，Haiku 5.5 为 `100000`，
+超过阈值使用长档，缓存读取和写入均计入总输入；上游返回不同模型不会把
 准入时的计价模型悄然换成另一个目录项。未配置模型返回
 `400 model_pricing_not_found`，显式请求未配置的服务层在转发前返回
 `400 service_tier_not_supported`，非零价请求没有正额度来源时返回
@@ -330,13 +331,16 @@ chmod 0600 .env
 `deploy/env.example` 已包含
 [deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
 覆盖 GPT-6.1 Sol、GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini、
-Gemini、Claude Fable 5.1／Opus 5.5／Sonnet 5.5／Haiku 4.5 和内部零价
-`codex-auto-review`。Claude 标准五价与仅合并四款价格的升级命令见
+Gemini、Claude Fable 5.1／Opus 5.5／Sonnet 5.5／Haiku 4.5／Haiku 5.5 和内部零价
+`codex-auto-review`。模板已于 2026-10-17 同步官方 API 现价，Haiku 5.5 按总输入 100,000 Token 分档。
+Claude 标准五价与仅合并五款价格的升级命令见
 [Claude 定价说明](docs/claude-code.md#标准-api-定价与目录升级)。部署前仍必须对照
 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 及对应供应商官方定价复核每百万
 Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`；不要把 v1
 三价字段混入 v2。完整口径和升级要求见
 [部署与运维手册](docs/operations.md#用量价格快照)。
+已有部署同步现价时按[官方价格同步流程](docs/operations.md#同步当前官方-api-价格)合并现有模型，
+保留既有汇率，并核对数据库覆盖价及倍率；修改示例文件不会改变线上配置或历史账单。
 
 如 Compose 子网与主机已有网段冲突，必须在首次启动前同步调整内部子网、静态
 地址、Caddy 信任的 cloudflared `/32`、`GATEWAY_TRUSTED_PROXY_CIDRS` 及部署

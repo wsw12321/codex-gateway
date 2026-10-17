@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Verify the reviewed Claude catalog and production price validation."""
+"""Verify the reviewed official API catalog and production price validation."""
 
 import copy
+from decimal import Decimal
 import json
 from pathlib import Path
 import shutil
@@ -15,11 +16,14 @@ PRICE_FIELDS = (
     "cache_write_5m_usd_per_million", "cache_write_1h_usd_per_million",
 )
 CLAUDE_MODELS = {
-    "claude-fable-5-1": (1000000, ("10", "50", "0.25", "12.50", "20")),
-    "claude-opus-5-5": (1000000, ("4", "20", "0.20", "5", "8")),
-    "claude-sonnet-5-5": (1000000, ("2", "10", "0.10", "2.50", "4")),
-    "claude-haiku-4-5-20251001": (200000, ("1", "5", "0.10", "1.25", "2")),
-    "claude-haiku-5-5": (1000000, ("5", "25", "0.5", "6.25", "10")),
+    "claude-fable-5-1": (1000000, 1000000, {"short": ("10", "50", "0.25", "12.50", "20")}),
+    "claude-opus-5-5": (1000000, 1000000, {"short": ("4", "20", "0.20", "5", "8")}),
+    "claude-sonnet-5-5": (1000000, 1000000, {"short": ("2", "10", "0.10", "2.50", "4")}),
+    "claude-haiku-4-5-20251001": (200000, 200000, {"short": ("1", "5", "0.10", "1.25", "2")}),
+    "claude-haiku-5-5": (1000000, 100000, {
+        "short": ("0.10", "0.50", "0.01", "0.125", "0.20"),
+        "long": ("0.50", "2.50", "0.05", "0.625", "1"),
+    }),
 }
 
 
@@ -29,7 +33,7 @@ class PricingCatalogTests(unittest.TestCase):
         cls.catalog = json.loads((ROOT / "deploy/pricing-v2.example.json").read_text())
 
     def test_claude_standard_prices_and_context_limits(self):
-        self.assertEqual(self.catalog["catalog_as_of"], "2026-10-16")
+        self.assertEqual(self.catalog["catalog_as_of"], "2026-10-17")
         self.assertEqual(self.catalog["fx_as_of"], "2026-08-20")
         self.assertEqual(self.catalog["usd_cny_rate"], "7.20")
         self.assertEqual(self.catalog["fallback_policy"], {
@@ -39,14 +43,51 @@ class PricingCatalogTests(unittest.TestCase):
         })
         self.assertEqual({model for model in self.catalog["models"] if model.startswith("claude-")},
                          set(CLAUDE_MODELS))
-        for model, (limit, prices) in CLAUDE_MODELS.items():
+        for model, (limit, threshold, contexts) in CLAUDE_MODELS.items():
             with self.subTest(model=model):
                 self.assertEqual(self.catalog["models"][model], {
                     "cache_write_mode": "separate_by_ttl",
                     "max_input_tokens": limit,
-                    "long_context_threshold_tokens": limit,
-                    "service_tiers": {"standard": {"short": dict(zip(PRICE_FIELDS, prices))}},
+                    "long_context_threshold_tokens": threshold,
+                    "service_tiers": {"standard": {
+                        context: dict(zip(PRICE_FIELDS, prices))
+                        for context, prices in contexts.items()
+                    }},
                 })
+
+    def test_revised_openai_prices_in_all_service_tiers(self):
+        fields = ("input_usd_per_million", "cached_input_usd_per_million",
+                  "cache_write_usd_per_million", "output_usd_per_million")
+        standard_prices = {
+            "gpt-6-sol": {"short": ("2", "0.2", "2.5", "10"),
+                          "long": ("4", "0.4", "5", "15")},
+            "gpt-6-luna": {"short": ("0.1", "0.01", "0.125", "0.5"),
+                           "long": ("0.2", "0.02", "0.25", "0.75")},
+            "gpt-5.6-sol": {"short": ("4", "0.4", "5", "20"),
+                            "long": ("8", "0.8", "10", "30")},
+        }
+        for model, contexts in standard_prices.items():
+            for tier, multiplier in (("standard", "1"), ("flex", "0.5"), ("fast", "2")):
+                for context, prices in contexts.items():
+                    with self.subTest(model=model, tier=tier, context=context):
+                        actual = self.catalog["models"][model]["service_tiers"][tier][context]
+                        self.assertEqual({field: Decimal(value) for field, value in actual.items()},
+                                         {field: Decimal(value) * Decimal(multiplier)
+                                          for field, value in zip(fields, prices)})
+
+    def test_argon_current_official_api_price(self):
+        rule = self.catalog["models"]["gemini-4-argon-high"]
+        self.assertEqual(rule["service_tiers"], {"standard": {"short": {
+            "input_usd_per_million": "2",
+            "cached_input_usd_per_million": "0.10",
+            "output_usd_per_million": "10",
+        }}})
+
+    def test_embedded_migration_prices_match_canonical_catalog(self):
+        models = json.loads((ROOT / "internal/config/data/cpa-v8-model-prices.json").read_text())
+        for model, rule in models.items():
+            with self.subTest(model=model):
+                self.assertEqual(rule, self.catalog["models"][model])
 
     def test_environment_examples_match_canonical_catalog(self):
         for name in ("env.example", "env.gpt-5.6.example"):
@@ -106,9 +147,14 @@ class PricingValidatorTests(unittest.TestCase):
                 "wrong boundary": lambda p: p["models"][model].update(long_context_threshold_tokens=272000),
                 "Fast tier": lambda p: p["models"][model]["service_tiers"].update(
                     fast=p["models"][model]["service_tiers"]["standard"]),
-                "long context price": lambda p: p["models"][model]["service_tiers"]["standard"].update(
-                    long=p["models"][model]["service_tiers"]["standard"]["short"]),
+                "extra context price": lambda p: p["models"][model]["service_tiers"]["standard"].update(
+                    extra=p["models"][model]["service_tiers"]["standard"]["short"]),
             }
+            if model == "claude-haiku-5-5":
+                mutations["missing long context price"] = lambda p: p["models"][model]["service_tiers"]["standard"].pop("long")
+            else:
+                mutations["unexpected long context price"] = lambda p: p["models"][model]["service_tiers"]["standard"].update(
+                    long=p["models"][model]["service_tiers"]["standard"]["short"])
             for name, mutate in mutations.items():
                 with self.subTest(model=model, mutation=name):
                     changed = copy.deepcopy(self.catalog)
@@ -118,6 +164,19 @@ class PricingValidatorTests(unittest.TestCase):
             with self.subTest(unreviewed_model=model):
                 changed = copy.deepcopy(self.catalog)
                 changed["models"][model] = changed["models"]["claude-haiku-4-5-20251001"]
+                self.assertFalse(self.validate(changed))
+
+    def test_haiku_long_context_requires_all_five_positive_prices(self):
+        for field in PRICE_FIELDS:
+            for value in (None, "0", "-1", "NaN"):
+                with self.subTest(field=field, value=value):
+                    changed = copy.deepcopy(self.catalog)
+                    price = changed["models"]["claude-haiku-5-5"]["service_tiers"]["standard"]["long"]
+                    price[field] = value
+                    self.assertFalse(self.validate(changed))
+            with self.subTest(missing=field):
+                changed = copy.deepcopy(self.catalog)
+                del changed["models"]["claude-haiku-5-5"]["service_tiers"]["standard"]["long"][field]
                 self.assertFalse(self.validate(changed))
 
 
