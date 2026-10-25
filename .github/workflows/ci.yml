@@ -288,8 +288,22 @@ jobs:
       - name: Build immutable application images
         shell: bash
         run: |
-          set -eu
-          ./scripts/compose.sh build gateway codex-compat antigravity-bridge
+          set -euo pipefail
+          build_output=$(mktemp)
+          trap 'rm -f "$build_output"' EXIT
+          if ./scripts/compose.sh --progress plain build gateway codex-compat antigravity-bridge 2>&1 | tee "$build_output"; then
+            exit 0
+          fi
+          while IFS= read -r line; do
+            case "$line" in
+              *'--- FAIL:'*|*'.go:'*|*'FAIL'*|*'ERROR:'*|*'panic:'*|*'WARNING: DATA RACE'*)
+                message=${line//%/%25}
+                message=${message//$'\r'/%0D}
+                printf '::error title=Application image build::%s\n' "$message"
+                ;;
+            esac
+          done < "$build_output"
+          exit 1
       - name: Verify sidecar runtime without site credentials
         run: ./scripts/test-sidecar-image.sh
       - name: Verify Antigravity keyring isolation without a Google account
