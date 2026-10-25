@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -631,7 +632,10 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 }
 
 func (s *Store) SetGroupMembers(ctx context.Context, params SetGroupMembersParams) (Group, error) {
-	if params.GroupID == "" || (params.Action != "add" && params.Action != "remove") || len(params.UserIDs) == 0 || len(params.UserIDs) > 5000 {
+	removeAll := params.Action == "remove_all"
+	if params.GroupID == "" ||
+		(removeAll && len(params.UserIDs) != 0) ||
+		(!removeAll && ((params.Action != "add" && params.Action != "remove") || len(params.UserIDs) == 0 || len(params.UserIDs) > 5000)) {
 		return Group{}, fmt.Errorf("%w: invalid group members operation", ErrInvalid)
 	}
 	ids := append([]string(nil), params.UserIDs...)
@@ -656,22 +660,42 @@ func (s *Store) SetGroupMembers(ctx context.Context, params SetGroupMembersParam
 	return s.groupWrite(ctx, params.BillingWriteParams, "members."+params.Action, append([]string{params.GroupID}, ids...), func(tx *sql.Tx) (Group, error) {
 		// Lock every account in stable order before the group, matching admission
 		// and settlement. A transfer must be explicit remove then add.
-		for _, id := range ids {
-			var current sql.NullString
-			if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1 FOR UPDATE`, id).Scan(&current); err != nil {
-				return Group{}, mapDBError("lock group member", err)
-			}
-			if current.Valid && current.String != params.GroupID {
-				return Group{}, fmt.Errorf("%w: user already belongs to another group", ErrConflict)
-			}
-		}
-		for _, id := range ids {
-			if err := lockNonPendingUserTx(ctx, tx, id); err != nil {
+		memberIDs := ids
+		if removeAll {
+			// Resolve members only after claiming the operation. They are not part
+			// of its fingerprint, and replays must never clear later additions.
+			var err error
+			memberIDs, err = groupMemberAccountIDsTx(ctx, tx, params.GroupID, true)
+			if err != nil {
 				return Group{}, err
 			}
+		} else {
+			for _, id := range memberIDs {
+				var current sql.NullString
+				if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1 FOR UPDATE`, id).Scan(&current); err != nil {
+					return Group{}, mapDBError("lock group member", err)
+				}
+				if current.Valid && current.String != params.GroupID {
+					return Group{}, fmt.Errorf("%w: user already belongs to another group", ErrConflict)
+				}
+			}
+		}
+		if err := lockGroupMemberUsersTx(ctx, tx, memberIDs); err != nil {
+			return Group{}, err
 		}
 		if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {
 			return Group{}, err
+		}
+		if removeAll {
+			// Use a separate statement after the group lock, so a wait cannot
+			// leave this check on the locking statement's earlier MVCC snapshot.
+			currentIDs, err := groupMemberAccountIDsTx(ctx, tx, params.GroupID, false)
+			if err != nil {
+				return Group{}, err
+			}
+			if !slices.Equal(memberIDs, currentIDs) {
+				return Group{}, fmt.Errorf("%w: group membership changed while removing all members", ErrConflict)
+			}
 		}
 		g, err := rollGroupTx(ctx, tx, params.GroupID, params.At)
 		if err != nil {
@@ -680,17 +704,82 @@ func (s *Store) SetGroupMembers(ctx context.Context, params SetGroupMembersParam
 		if g.ArchivedAt != nil {
 			return Group{}, fmt.Errorf("%w: group is archived", ErrConflict)
 		}
-		for _, id := range ids {
-			var groupID any
-			if params.Action == "add" {
-				groupID = params.GroupID
+		if removeAll {
+			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=NULL,updated_at=$2 WHERE group_id=$1`, params.GroupID, params.At); err != nil {
+				return Group{}, mapDBError("remove all group members", err)
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2,updated_at=$3 WHERE user_id=$1`, id, groupID, params.At); err != nil {
-				return Group{}, mapDBError("set group member", err)
+		} else {
+			for _, id := range memberIDs {
+				var groupID any
+				if params.Action == "add" {
+					groupID = params.GroupID
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2,updated_at=$3 WHERE user_id=$1`, id, groupID, params.At); err != nil {
+					return Group{}, mapDBError("set group member", err)
+				}
 			}
 		}
 		return groupDetailTx(ctx, tx, params.GroupID)
 	})
+}
+
+func groupMemberAccountIDsTx(ctx context.Context, tx *sql.Tx, groupID string, lock bool) ([]string, error) {
+	query := `SELECT user_id FROM billing_accounts WHERE group_id=$1 ORDER BY user_id`
+	if lock {
+		query += ` FOR UPDATE`
+	}
+	rows, err := tx.QueryContext(ctx, query, groupID)
+	if err != nil {
+		return nil, mapDBError("read group member accounts", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan group member account: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// All member accounts must already be locked. NO KEY UPDATE prevents status
+// changes and deletion without conflicting with groupWrite's actor FK lock
+// when an Owner is also a member of the affected group.
+func lockGroupMemberUsersTx(ctx context.Context, tx *sql.Tx, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	encoded, err := marshalStringArray(ids)
+	if err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT status FROM users
+		WHERE id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))
+		ORDER BY id FOR NO KEY UPDATE`, encoded)
+	if err != nil {
+		return mapDBError("lock group member users", err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var status string
+		if err := rows.Scan(&status); err != nil {
+			return fmt.Errorf("scan group member status: %w", err)
+		}
+		if status == StatusPending {
+			return fmt.Errorf("%w: user registration is awaiting approval", ErrConflict)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count != len(ids) {
+		return fmt.Errorf("%w: group member user is missing", ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ArchiveGroup(ctx context.Context, params ArchiveGroupParams) (Group, error) {

@@ -8,6 +8,38 @@ import (
 	"time"
 )
 
+func TestSetGroupMembersRejectsInvalidSelections(t *testing.T) {
+	const groupID = "58ae7d7a-5470-4f97-a77e-248ea922453c"
+	const userID = "743460e2-c674-43a7-81c8-e85cf677a584"
+	for _, tc := range []struct {
+		name   string
+		group  string
+		action string
+		ids    []string
+	}{
+		{"unknown action", groupID, "replace", []string{userID}},
+		{"empty add", groupID, "add", nil},
+		{"empty remove", groupID, "remove", []string{}},
+		{"oversized add", groupID, "add", make([]string, 5001)},
+		{"oversized remove", groupID, "remove", make([]string, 5001)},
+		{"remove all with selection", groupID, "remove_all", []string{userID}},
+		{"remove all missing group", "", "remove_all", nil},
+		{"remove all malformed group", "invalid", "remove_all", nil},
+		{"duplicate selection", groupID, "remove", []string{userID, userID}},
+		{"malformed selection", groupID, "add", []string{"invalid"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(nil).SetGroupMembers(context.Background(), SetGroupMembersParams{
+				BillingWriteParams: BillingWriteParams{OperationID: groupID, ActorUserID: userID, Reason: "invalid selection"},
+				GroupID:            tc.group, Action: tc.action, UserIDs: tc.ids,
+			})
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("invalid selection returned %v", err)
+			}
+		})
+	}
+}
+
 func TestPutGroupRejectsInvalidMemberLimit(t *testing.T) {
 	s := New(nil)
 	for _, value := range []string{"", " ", "-1", "+1", "1e3", "01", "0.1234567", "1000000000000000000", " 1", "1 "} {

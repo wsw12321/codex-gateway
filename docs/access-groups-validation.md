@@ -18,6 +18,11 @@
 分摊。群组有可用额度时，个人额度为零也可接受请求。群组耗尽、额度为零、成员
 达到上限、周期未开始或群组已到期时回退个人；所有来源均不可用时才拒绝新请求。
 
+成员管理的“移除全部成员”会清空当前选中群组在服务端执行时的全部成员，包含
+页面加载后新加入的成员，不受搜索、勾选或 5000 人批量选择上限影响。填写操作
+原因并确认后执行；用户账号、个人资金、群组及历史用量均保留，已接收请求仍按
+原群组和周期结算。空群组和已归档群组的按钮禁用，提交后仍可正常加入成员。
+
 “单个成员周期用量上限”与群组共用周期，留空表示不限，0 表示不使用群组额度。
 例如群组周额度 1000、成员上限 100，成员已用 95，本次实际费用 20，则群组
 支付 5、个人支付 15。成员已用只统计新规则下实际由群组支付的金额。
@@ -55,6 +60,15 @@
 `group_member_used_usd`、`group_member_remaining_usd`，仅包含所查看用户的数据，
 不包含其他成员明细。
 
+成员接口增加 `action: "remove_all"`，与 `operation_id`、`reason` 一起提交；
+`user_ids` 可省略、为 `null` 或空数组，非空时拒绝。原 `add/remove` 仍要求
+1–5000 个用户 ID。清空操作在单个事务内完成：先按用户 ID 顺序锁成员账户和
+用户，再锁群组并重新核对成员集合；发现并发加入的新成员时整次回滚，返回
+409 `group_operation_conflict`，刷新后重试。返回现有群组详情结构；空群组请求
+成功，已归档群组请求返回冲突。成功操作记录 `group.members.remove_all` 审计；
+相同操作 ID 重放只返回原结果，不重复审计，也不会移除首次成功后加入的成员。
+本次功能无需数据库迁移。
+
 创建、编辑接受可选整数 `period_count`：创建省略默认 `1`，编辑省略保留原值；
 `null`、小数、字符串和超出 `0–99` 的值均被拒绝。列表、详情和个人账务的
 `group` 返回 `period_count`、`current_period_number`、`expires_at`，无限期的
@@ -74,7 +88,7 @@
 | `PUT /admin/upstream-accounts/{id}/access` | `mode`、`user_ids`、`reason` |
 | `GET/POST /admin/groups` | 列表／创建群组 |
 | `GET/PUT/DELETE /admin/groups/{id}` | 详情／编辑／归档空群组 |
-| `PUT /admin/groups/{id}/members` | `action: add/remove`、`user_ids` |
+| `PUT /admin/groups/{id}/members` | `action: add/remove`、`user_ids`；或 `action: remove_all` 清空当前群组 |
 
 原单模型权限接口保持兼容。迁移 `0011_upstream_account_access.sql` 和
 `0012_user_groups.sql` 位于 `internal/store/migrations`；既有账号默认共享，

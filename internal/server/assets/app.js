@@ -5940,7 +5940,7 @@ function resetGroupManagement() {
     setBusy(form, false);
     setLocalMessage(form);
   }
-  for (const id of ["groups-refresh", "group-members-add", "group-members-remove", "group-archive"]) setBusy(byId(id), false);
+  for (const id of ["groups-refresh", "group-members-add", "group-members-remove", "group-members-remove-all", "group-archive"]) setBusy(byId(id), false);
 }
 
 function groupIdentityCurrent() {
@@ -6062,7 +6062,11 @@ async function loadGroupDetail(id) {
   catch (error) { if (!current()) return; throw error; }
   if (sequence !== groupDetailSequence || generation !== identityGeneration || groupOperation || loggingOut || state?.user?.role !== "owner") return;
   if (group?.id !== id || !Array.isArray(group.members)) throw new Error("群组详情响应格式无效。");
-  if (managedGroup?.id !== id) groupSelectedUsers.clear();
+  renderGroupDetail(group);
+}
+
+function renderGroupDetail(group) {
+  if (managedGroup?.id !== group.id) groupSelectedUsers.clear();
   managedGroup = group;
   byId("group-detail-name").textContent = group.name;
   byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${groupPeriodProgress(group)} · ${groupPeriodStatus(group)}。本期 ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}；${groupExpiryLabel(group)}`;
@@ -6108,6 +6112,7 @@ function syncGroupControls() {
   byId("group-selected-count").textContent = `已选 ${selected.length} 人`;
   byId("group-members-add").disabled = unavailable || !selected.some((id) => !members.has(id));
   byId("group-members-remove").disabled = unavailable || !selected.some((id) => members.has(id));
+  byId("group-members-remove-all").disabled = unavailable || members.size === 0 || byId("group-members-remove-all").dataset.busy === "true";
   byId("group-archive").disabled = unavailable || members.size > 0;
   byId("group-edit").disabled = unavailable;
   byId("group-invitation-create").disabled = unavailable;
@@ -6237,6 +6242,21 @@ async function archiveSelectedGroup() {
   }
 }
 
+async function removeAllGroupMembers() {
+  const group = managedGroup;
+  if (!group || !group.members.length || group.archived_at || groupOperation || loggingOut || state?.user?.role !== "owner") return;
+  const form = byId("group-members-form");
+  const reason = billingReason(form);
+  if (!window.confirm(`确认移除群组“${group.name}”的全部成员？以执行时的成员为准，用户账号和历史用量会保留。`)) return;
+  const result = await groupMutation(form, `/admin/groups/${encodeURIComponent(group.id)}/members`, "PUT", {action: "remove_all", reason});
+  if (!result) return;
+  groupSelectedUsers.clear();
+  managedGroups = managedGroups.map((item) => item.id === group.id ? result : item);
+  groupUsers = groupUsers.map((user) => user.group_id === group.id ? {...user, group_id: null} : user);
+  renderGroupDetail(result);
+  await refreshGroupsAfterWrite(group.id, "已移除该群组的全部成员。");
+}
+
 function upstreamAccessBlock(account) {
   const exclusive = account.access_mode === "exclusive";
   const button = element("button", {type: "button", className: "secondary upstream-access-button", text: "设置使用权限"});
@@ -6340,6 +6360,7 @@ function bindGroupUI() {
   bindAsync("group-form", "submit", saveGroup, "保存中…", groupIdentityCurrent);
   bindAsync("group-members-add", "click", () => changeGroupMembers("add"), "处理中…", groupIdentityCurrent);
   bindAsync("group-members-remove", "click", () => changeGroupMembers("remove"), "处理中…", groupIdentityCurrent);
+  bindAsync("group-members-remove-all", "click", removeAllGroupMembers, "移除中…", groupIdentityCurrent);
   bindAsync("group-archive", "click", archiveSelectedGroup, "处理中…", groupIdentityCurrent);
   byId("upstream-access-form").elements.mode.addEventListener("change", renderUpstreamAccessUsers);
   byId("upstream-access-search").addEventListener("input", renderUpstreamAccessUsers);

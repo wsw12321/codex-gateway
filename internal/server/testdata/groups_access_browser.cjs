@@ -39,6 +39,8 @@ async function main() {
     const errors = [], writes = [], idempotency = new Map();
     let failCreateOnce = false, failAccounts = false, delayNextGroupRead = false, releaseGroupRead;
     let delayOldList = false, releaseOldList;
+    let dismissNextDialog = false, failGroups = false, failRemoveAllOnce = false;
+    const dialogs = [];
     const memberUsage = {design: {alice: "12.500000000000"}};
     const detail = (group) => ({...group, members: users.filter((u) => u.group_id === group.id).map((u) => {
       const used = memberUsage[group.id]?.[u.id] || "0";
@@ -46,7 +48,11 @@ async function main() {
         remaining_usd: group.member_limit_usd == null ? null : Math.max(0, Number(group.member_limit_usd) - Number(used)).toFixed(12)};
     })});
     page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
+    page.on("dialog", (dialog) => {
+      dialogs.push(dialog.message());
+      if (dismissNextDialog) { dismissNextDialog = false; return dialog.dismiss(); }
+      return dialog.accept();
+    });
     await page.route("**/*", async (route) => {
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, "http://127.0.0.1:8765");
@@ -58,6 +64,7 @@ async function main() {
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
+      if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-5.6"}, {id: "claude-sonnet"}]});
       if (url.pathname === "/admin/usage") return send({summary: {requests: 0}, requests: []});
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: [{id: account.id, active_requests: 0}]});
       if (url.pathname === "/admin/billing/users") return send({users});
@@ -73,7 +80,7 @@ async function main() {
           await new Promise((resolve) => { releaseOldList = resolve; });
           return send({error: {code: "invalid_session", message: "旧身份已过期"}}, 401);
         }
-        return send({groups});
+        return failGroups ? send({error: {message: "模拟群组刷新失败"}}, 503) : send({groups});
       }
       if (url.pathname.startsWith("/admin/groups")) {
         const id = url.pathname.split("/")[3];
@@ -91,7 +98,12 @@ async function main() {
         if (idempotency.has(body.operation_id)) return send(idempotency.get(body.operation_id));
         let result;
         if (url.pathname.endsWith("/members")) {
-          body.user_ids.forEach((id) => { users.find((u) => u.id === id).group_id = body.action === "add" ? group.id : null; });
+          if (body.action === "remove_all") {
+            assert.equal("user_ids" in body, false);
+            users.filter((user) => user.group_id === group.id).forEach((user) => { user.group_id = null; });
+          } else {
+            body.user_ids.forEach((id) => { users.find((u) => u.id === id).group_id = body.action === "add" ? group.id : null; });
+          }
           group.member_count = users.filter((u) => u.group_id === group.id).length;
           result = detail(group);
         } else if (request.method() === "POST") {
@@ -118,6 +130,7 @@ async function main() {
         }
         idempotency.set(body.operation_id, result);
         if (failCreateOnce && request.method() === "POST") { failCreateOnce = false; return send({error: {message: "模拟提交后响应丢失"}}, 503); }
+        if (failRemoveAllOnce && body.action === "remove_all") { failRemoveAllOnce = false; return send({error: {message: "模拟清空后响应丢失"}}, 503); }
         return send(result);
       }
       throw new Error(`Unexpected mocked request: ${request.method()} ${url.pathname}`);
@@ -230,6 +243,7 @@ async function main() {
     await page.screenshot({path: path.join(screenshots, "groups-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    assert.equal(await page.locator("#group-members-remove-all").evaluate((button) => button.getBoundingClientRect().top > document.getElementById("group-members-add").getBoundingClientRect().top), true, "member actions wrap onto separate rows on mobile");
     await page.screenshot({path: path.join(screenshots, "groups-mobile.png"), fullPage: true});
 
     await page.setViewportSize({width: 1440, height: 1080});
@@ -244,6 +258,63 @@ async function main() {
     await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png")});
     await page.locator("#group-form [data-close]").click();
 
+    await page.locator("#group-clear-selection").click();
+    await page.locator("#group-member-search").fill("alice");
+    await page.locator("#group-members-form input[name=reason]").fill("");
+    const beforeRemoveAll = writes.length, beforeRemoveDialogs = dialogs.length;
+    await page.locator("#group-members-remove-all").click();
+    await page.waitForFunction(() => byId("group-members-remove-all").dataset.busy === "false");
+    assert.equal(writes.length, beforeRemoveAll);
+    assert.equal(dialogs.length, beforeRemoveDialogs);
+    assert.match(await page.locator("#group-members-form .form-message").textContent(), /必须填写操作原因/);
+    await page.locator("#group-members-form input[name=reason]").fill("清空产品团队成员");
+    dismissNextDialog = true;
+    await page.locator("#group-members-remove-all").click();
+    await page.waitForFunction(() => byId("group-members-remove-all").dataset.busy === "false");
+    assert.equal(writes.length, beforeRemoveAll, "cancelling confirmation never submits");
+    assert.match(dialogs.at(-1), /产品设计团队.*全部成员.*执行时.*账号和历史用量会保留/);
+
+    users.push({id: "dave", username: "dave", display_name: "刚加入的成员", group_id: "design"});
+    groups[0].member_count = 3;
+    failGroups = true;
+    await page.locator("#group-members-remove-all").click();
+    await page.waitForFunction(() => byId("group-members-remove-all").dataset.busy === "false" && managedGroup?.member_count === 0);
+    assert.equal(writes.length, beforeRemoveAll + 1);
+    assert.equal(writes.at(-1).body.action, "remove_all");
+    assert.equal("user_ids" in writes.at(-1).body, false);
+    assert.equal(users.filter((user) => user.group_id === "design").length, 0, "hidden and newly joined members are removed");
+    assert.equal(users.find((user) => user.id === "carol").group_id, "engineering");
+    assert.equal(await page.evaluate(() => groupUsers.filter((user) => user.group_id === "design").length), 0);
+    assert.equal(await page.evaluate(() => managedGroups.find((group) => group.id === "design").member_count), 0);
+    assert.match(await page.locator("#groups-message").textContent(), /已移除.*全部成员.*刷新失败/);
+    assert.equal(await page.locator("#group-members-remove-all").isDisabled(), true);
+    assert.equal(await page.locator("#group-archive").isDisabled(), false);
+    assert.match(await page.locator("#group-selected-count").textContent(), /0/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+
+    failGroups = false;
+    users.filter((user) => ["alice", "bob"].includes(user.id)).forEach((user) => { user.group_id = "design"; });
+    groups[0].member_count = 2;
+    await page.evaluate(async () => { await loadGroups("design"); });
+    failRemoveAllOnce = true;
+    await page.locator("#group-members-remove-all").click();
+    await page.waitForFunction(() => byId("group-members-remove-all").dataset.busy === "false");
+    assert.match(await page.locator("#group-members-form .form-message").textContent(), /清空后响应丢失/);
+    const clearOperationID = writes.at(-1).body.operation_id;
+    assert.equal(groups[0].member_count, 0);
+    users.find((user) => user.id === "bob").group_id = "design";
+    groups[0].member_count = 1;
+    await page.locator("#group-members-remove-all").click();
+    await page.waitForFunction(() => byId("group-members-remove-all").dataset.busy === "false" && managedGroup?.member_count === 1);
+    assert.equal(writes.at(-1).body.operation_id, clearOperationID);
+    assert.equal(users.find((user) => user.id === "bob").group_id, "design", "replay does not remove members who joined after the original operation");
+    assert.deepEqual(await page.evaluate(() => managedGroup.members.map((member) => member.user_id)), ["bob"]);
+
+    users.find((user) => user.id === "alice").group_id = "design";
+    groups[0].member_count = 2;
+    await page.locator("#group-member-search").fill("");
+    await page.evaluate(async () => { await loadGroups("design"); });
+
     await page.evaluate(() => {
       location.hash = "billing"; routeFromHash(false);
       renderBillingDetail({user: state.user, cash_balance_usd: "0", subscriptions: {}, group: {...managedGroup, used_usd: "95", remaining_usd: "55"},
@@ -255,7 +326,7 @@ async function main() {
     });
     assert.match(await page.locator("#billing-group").textContent(), /本用户本期群组已用US\$95\.00.*本用户本期上限剩余US\$5\.00/);
     assert.match(await page.locator("#billing-group").textContent(), /第 1\/5 期.*最终到期：/);
-    assert.match(await page.locator(".billing-order-card").textContent(), /群组 → 个人日 → 周 → 月 → 现金/);
+    assert.match(await page.locator(".billing-order-card").textContent(), /群组 → 个人来源优先级/);
     await page.locator("#billing-ledger-rows .record-details > summary").first().click();
     assert.match(await page.locator("#billing-ledger-rows tr").first().textContent(), /群组支付：US\$5\.00.*个人支付：US\$13\.00.*未覆盖：US\$2\.00/);
     assert.match(await page.locator("#billing-ledger-rows tr").nth(1).textContent(), /个人支付：US\$0\.00/);
@@ -318,7 +389,7 @@ async function main() {
     assert.equal(await page.locator("#group-member-list").textContent(), "");
     assert.equal(await page.locator("#upstream-access-user-list").textContent(), "");
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, finite/unlimited/expired periods, default and invalid period counts, preserved usage on count change, nullable/zero/invalid member caps, independent member usage, split ledger, idempotent retry, membership, period reset, exclusivity, refresh failure, desktop/mobile forms, logout", errors}));
+    console.log(JSON.stringify({browser: await browser.version(), writes: writes.length, checks: "groups, finite/unlimited/expired periods, default and invalid period counts, preserved usage on count change, nullable/zero/invalid member caps, independent member usage, split ledger, idempotent retry, membership, remove all with cancellation, hidden and newly joined members, refresh failure and replay, period reset, exclusivity, desktop/mobile forms, logout", errors}));
   } finally { await browser.close(); }
 }
 

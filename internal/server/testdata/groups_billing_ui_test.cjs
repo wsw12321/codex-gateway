@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const {randomUUID} = require("node:crypto");
 const {readFileSync} = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -53,7 +54,7 @@ class Element {
 
 function dashboard() {
   const nodes = new Map();
-  const node = (id) => { if (!nodes.has(id)) nodes.set(id, new Element()); return nodes.get(id); };
+  const node = (id) => { if (!nodes.has(id)) { const element = new Element(); element.id = id; nodes.set(id, element); } return nodes.get(id); };
   const form = node("group-form");
   form.elements = Object.fromEntries(["group_id", "name", "limit_usd", "member_limit_usd", "period", "period_count", "custom_days", "starts_at", "reason"].map((name) => [name, new Element("input")]));
   form.reset = () => Object.values(form.elements).forEach((input) => { input.value = ""; });
@@ -63,6 +64,7 @@ function dashboard() {
   const source = readFileSync(path.join(__dirname, "../assets/app.js"), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstart().catch")), context);
   const run = (code) => vm.runInContext(code, context);
+  const originals = run("({groupMutation, syncGroupControls, refreshGroupsAfterWrite})");
   run('state = {user: {id: "owner", role: "owner"}}; openDialog = () => {}; syncGroupControls = () => {}; refreshGroupsAfterWrite = async () => {};');
   const calls = [];
   context.groupMutation = async (_host, url, method, payload) => { calls.push({url, method, payload}); return {id: "group"}; };
@@ -74,7 +76,30 @@ function dashboard() {
     form.elements.reason.value = "调整成员上限";
   };
   const save = () => run('saveGroup({currentTarget: byId("group-form")})');
-  return {node, form, context, group, calls, run, edit, save};
+  return {node, form, context, group, calls, run, edit, save, originals};
+}
+
+function memberDashboard() {
+  const ui = dashboard();
+  Object.assign(ui.context, ui.originals, {crypto: {randomUUID}, sensitiveAction: async (operation) => operation()});
+  const form = ui.node("group-members-form");
+  form.elements = {reason: new Element("input")};
+  form.elements.reason.value = "清空当前群组";
+  form.reset = () => { form.elements.reason.value = ""; };
+  ui.node("upstream-access-form").reset = () => {};
+  const group = {...ui.group, member_count: 2, members: [{user_id: "alice", used_usd: "95", remaining_usd: "5"}, {user_id: "bob", used_usd: "2", remaining_usd: "98"}]};
+  const users = [{id: "alice", username: "alice", group_id: "group"}, {id: "bob", username: "bob", group_id: "group"}, {id: "carol", username: "carol", group_id: "other"}];
+  ui.run(`managedGroup = ${JSON.stringify(group)}; managedGroups = [managedGroup]; groupUsers = ${JSON.stringify(users)}; renderGroupDetail(managedGroup);`);
+  const requests = [], confirmations = [];
+  ui.context.window.confirm = (message) => { confirmations.push(message); return true; };
+  const emptyGroup = {...group, member_count: 0, members: []};
+  ui.context.api = async (url, options) => {
+    if (options) { requests.push({url, method: options.method, body: JSON.parse(options.body)}); return emptyGroup; }
+    if (url === "/admin/groups") return {groups: [emptyGroup]};
+    if (url === "/admin/billing/users") return {users: users.map((user) => user.group_id === "group" ? {...user, group_id: null} : user)};
+    return emptyGroup;
+  };
+  return {...ui, memberForm: form, group, emptyGroup, requests, confirmations, removeAll: () => ui.run("removeAllGroupMembers()")};
 }
 
 test("group editor preserves nullable, zero and exact decimal member caps", () => {
@@ -214,4 +239,124 @@ test("usage ledger displays group and personal splits including zero funding", (
   assert.match(rows[0].textContent, /实际成本：(?:US)?\$20.*群组支付：(?:US)?\$5.*个人支付：(?:US)?\$13.*未覆盖：(?:US)?\$2/);
   assert.match(rows[1].textContent, /群组支付：(?:US)?\$20.*个人支付：(?:US)?\$0/);
   assert.doesNotMatch(rows[2].textContent, /群组支付|个人支付/);
+});
+
+test("remove all members ignores searches and selections and refreshes local membership", async () => {
+  const ui = memberDashboard();
+  ui.node("group-member-search").value = "alice";
+  ui.run('groupSelectedUsers.add("alice"); renderGroupMembers()');
+  await ui.removeAll();
+  assert.equal(ui.requests.length, 1);
+  const request = ui.requests[0];
+  assert.equal(request.url, "/admin/groups/group/members");
+  assert.equal(request.method, "PUT");
+  assert.equal(request.body.action, "remove_all");
+  assert.equal(request.body.reason, "清空当前群组");
+  assert.equal("user_ids" in request.body, false);
+  assert.match(request.body.operation_id, /^[0-9a-f-]{36}$/);
+  assert.match(ui.confirmations[0], /预算组.*全部成员.*执行时.*账号和历史用量会保留/);
+  assert.equal(ui.run("managedGroup.member_count"), 0);
+  assert.equal(ui.run("managedGroups[0].member_count"), 0);
+  assert.equal(ui.run("groupSelectedUsers.size"), 0);
+  assert.equal(ui.run('groupUsers.find((user) => user.id === "alice").group_id'), null);
+  assert.equal(ui.run('groupUsers.find((user) => user.id === "bob").group_id'), null);
+  assert.equal(ui.run('groupUsers.find((user) => user.id === "carol").group_id'), "other");
+  assert.doesNotMatch(ui.node("group-member-list").textContent, /当前成员/);
+  assert.equal(ui.node("group-members-remove-all").disabled, true);
+  assert.equal(ui.node("group-archive").disabled, false);
+  assert.equal(ui.memberForm.dataset.operationId, undefined);
+});
+
+test("remove all requires a reason and confirmation without changing selections on cancellation", async () => {
+  const ui = memberDashboard();
+  ui.run('groupSelectedUsers.add("alice")');
+  ui.memberForm.elements.reason.value = " ";
+  await assert.rejects(ui.removeAll(), /必须填写操作原因/);
+  assert.equal(ui.confirmations.length, 0);
+  ui.memberForm.elements.reason.value = "清空成员";
+  ui.context.window.confirm = () => false;
+  await ui.removeAll();
+  assert.equal(ui.requests.length, 0);
+  assert.equal(ui.run("groupSelectedUsers.size"), 1);
+  assert.equal(ui.run("managedGroup.member_count"), 2);
+});
+
+test("remove all controls and handler reject empty, archived, busy and unavailable groups", async () => {
+  for (const change of ["managedGroup.members = []", 'managedGroup.archived_at = "2026-10-01"', "groupOperation = true", 'state.user.role = "member"', "loggingOut = true", "managedGroup = null"]) {
+    const ui = memberDashboard();
+    assert.equal(ui.node("group-members-remove-all").disabled, false, "no selection is required");
+    ui.run(`${change}; syncGroupControls()`);
+    assert.equal(ui.node("group-members-remove-all").disabled, true, change);
+    await ui.removeAll();
+    assert.equal(ui.requests.length, 0, change);
+    assert.equal(ui.confirmations.length, 0, change);
+  }
+  const ui = memberDashboard();
+  ui.node("group-members-remove-all").dataset.busy = "true";
+  ui.run("syncGroupControls()");
+  assert.equal(ui.node("group-members-remove-all").disabled, true, "the button stays disabled while refreshing");
+});
+
+test("remove all preserves successful local state when refreshing fails", async () => {
+  const ui = memberDashboard();
+  const api = ui.context.api;
+  ui.context.api = (url, options) => options ? api(url, options) : Promise.reject(new Error("模拟刷新失败"));
+  await ui.removeAll();
+  assert.equal(ui.requests.length, 1);
+  assert.equal(ui.run("managedGroup.members.length"), 0);
+  assert.equal(ui.run("managedGroups[0].member_count"), 0);
+  assert.equal(ui.run('groupUsers.filter((user) => user.group_id === "group").length'), 0);
+  assert.match(ui.node("groups-message").textContent, /已移除.*全部成员.*刷新失败/);
+  assert.equal(ui.node("group-members-remove-all").disabled, true);
+  assert.equal(ui.node("groups-refresh").disabled, false);
+});
+
+test("remove all retries reuse the operation ID and retain members added after the original success", async () => {
+  const ui = memberDashboard();
+  const requests = [];
+  const currentGroup = {...ui.group, member_count: 1, members: [{user_id: "bob", used_usd: "2", remaining_usd: "98"}]};
+  ui.context.api = async (url, options) => {
+    if (options) {
+      requests.push(JSON.parse(options.body));
+      if (requests.length === 1) throw new Error("提交成功后响应丢失");
+      return ui.emptyGroup;
+    }
+    if (url === "/admin/groups") return {groups: [currentGroup]};
+    if (url === "/admin/billing/users") return {users: [{id: "bob", username: "bob", group_id: "group"}]};
+    return currentGroup;
+  };
+  await assert.rejects(ui.removeAll(), /响应丢失/);
+  const operationID = ui.memberForm.dataset.operationId;
+  assert.equal(ui.run("groupOperation"), false);
+  await ui.removeAll();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].operation_id, operationID);
+  assert.equal(requests[1].operation_id, operationID);
+  assert.equal(ui.memberForm.dataset.operationId, undefined);
+  assert.equal(ui.run("managedGroup.members[0].user_id"), "bob");
+  assert.equal(ui.node("group-members-remove-all").disabled, false);
+});
+
+test("a late remove-all response cannot restore groups after an identity change", async () => {
+  const ui = memberDashboard();
+  let resolveWrite;
+  ui.context.api = () => new Promise((resolve) => { resolveWrite = resolve; });
+  const button = ui.node("group-members-remove-all");
+  button.tagName = "button";
+  button.textContent = "移除全部成员";
+  ui.run('setBusy(byId("group-members-remove-all"), true, "移除中…")');
+  const pending = ui.removeAll();
+  assert.equal(ui.run("groupOperation"), true);
+  await ui.removeAll();
+  assert.equal(ui.confirmations.length, 1, "a concurrent duplicate never submits");
+  ui.run('identityGeneration++; state = {user: {id: "new-user", role: "member"}}; resetGroupManagement()');
+  resolveWrite(ui.emptyGroup);
+  await pending;
+  assert.equal(ui.run("managedGroup"), null);
+  assert.equal(ui.run("managedGroups.length"), 0);
+  assert.equal(ui.node("group-member-list").textContent, "");
+  assert.equal(ui.node("groups-message").textContent, "");
+  assert.equal(button.dataset.busy, "false");
+  assert.equal(button.textContent, "移除全部成员");
+  assert.equal(ui.memberForm.dataset.operationId, undefined);
 });

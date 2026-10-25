@@ -75,6 +75,7 @@ func groupHandlerWriteEndpoints() []groupHandlerEndpoint {
 		{"update", http.MethodPut, "/admin/groups/" + groupHandlerTestID, groupBody()},
 		{"members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "add", "user_ids": []string{groupHandlerMemberID}}},
 		{"archive", http.MethodDelete, "/admin/groups/" + groupHandlerTestID, map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget "}},
+		{"remove all members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "remove_all"}},
 	}
 }
 
@@ -218,13 +219,17 @@ func TestGroupWriteRoutesCarryAuthenticatedAttribution(t *testing.T) {
 				if p.GroupID != wantID || p.Name != "Research" || p.LimitUSD != "12.345678" || p.Period != "custom" || p.CustomDays != 4 || p.StartsAt == nil || !p.StartsAt.Equal(wantStart) {
 					t.Fatalf("put params: %+v", p)
 				}
-			case "members":
+			case "members", "remove all members":
 				if repo.members == nil {
 					t.Fatal("member write not called")
 				}
 				p := repo.members
 				write = p.BillingWriteParams
-				if p.GroupID != groupHandlerTestID || p.Action != "add" || !reflect.DeepEqual(p.UserIDs, []string{groupHandlerMemberID}) {
+				var wantIDs []string
+				if e.name == "members" {
+					wantIDs = []string{groupHandlerMemberID}
+				}
+				if p.GroupID != groupHandlerTestID || p.Action != e.body["action"] || !reflect.DeepEqual(p.UserIDs, wantIDs) {
 					t.Fatalf("member params: %+v", p)
 				}
 			case "archive":
@@ -279,6 +284,73 @@ func TestGroupMemberLimitInputDistinguishesAbsentNullAndAmount(t *testing.T) {
 }
 
 func groupTestString(v string) *string { return &v }
+
+func TestGroupRemoveAllAcceptsEmptySelectionAndReturnsStoredGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		present bool
+		users   any
+	}{
+		{name: "omitted"},
+		{name: "null", present: true},
+		{name: "empty", present: true, users: []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+			repo := &fakeGroupRepository{group: store.Group{
+				GroupSummary: store.GroupSummary{ID: groupHandlerTestID, Name: "Research", LimitUSD: "100", UsedUSD: "25", RemainingUSD: "75", MemberCount: 0},
+				Members:      []store.GroupMember{},
+			}}
+			s.groupRepo = repo
+			e := groupHandlerEndpoint{method: http.MethodPut, path: "/admin/groups/" + groupHandlerTestID + "/members", body: map[string]any{
+				"operation_id": groupHandlerOperationID, "reason": " clear current group ", "action": "remove_all",
+			}}
+			if tc.present {
+				e.body["user_ids"] = tc.users
+			}
+			r := groupHandlerRequest(t, e)
+			addBillingSourceTestSession(t, r)
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusOK || repo.calls != 1 || repo.members == nil {
+				t.Fatalf("status=%d body=%s calls=%d members=%+v", w.Code, w.Body.String(), repo.calls, repo.members)
+			}
+			p := repo.members
+			if p.Action != "remove_all" || p.GroupID != groupHandlerTestID || len(p.UserIDs) != 0 || p.Reason != "clear current group" || p.OperationID != groupHandlerOperationID {
+				t.Fatalf("remove all params: %+v", p)
+			}
+			var response store.Group
+			if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil || !reflect.DeepEqual(response, repo.group) {
+				t.Fatalf("stored group response: %+v, error=%v, body=%s", response, err, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestGroupMemberActionsAcceptMaximumSelection(t *testing.T) {
+	ids := make([]string, 5000)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
+	}
+	for _, action := range []string{"add", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			now := time.Now()
+			s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+			repo := &fakeGroupRepository{}
+			s.groupRepo = repo
+			e := groupHandlerWriteEndpoints()[2]
+			e.body["action"], e.body["user_ids"] = action, ids
+			r := groupHandlerRequest(t, e)
+			addBillingSourceTestSession(t, r)
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusOK || repo.calls != 1 || repo.members == nil || repo.members.Action != action || !reflect.DeepEqual(repo.members.UserIDs, ids) {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), repo.calls)
+			}
+		})
+	}
+}
 
 func TestGroupPeriodCountInputPreservesOmissionAndExplicitValues(t *testing.T) {
 	for _, e := range groupHandlerWriteEndpoints()[:2] {
@@ -496,6 +568,9 @@ func TestGroupRoutesRejectMalformedResourceAndMemberRequests(t *testing.T) {
 		users  any
 	}{
 		{"missing users", "add", nil}, {"empty users", "add", []string{}}, {"invalid action", "replace", []string{groupHandlerMemberID}}, {"oversized member selection", "add", make([]string, 5001)},
+		{"remove missing users", "remove", nil}, {"remove empty users", "remove", []string{}}, {"remove oversized selection", "remove", make([]string, 5001)},
+		{"remove all with selected users", "remove_all", []string{groupHandlerMemberID}}, {"remove all with oversized selection", "remove_all", make([]string, 5001)},
+		{"remove all with invalid users type", "remove_all", "all"}, {"remove all with invalid user element", "remove_all", []any{123}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now()
