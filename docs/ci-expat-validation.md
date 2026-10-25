@@ -1,5 +1,9 @@
 # Antigravity 镜像 Expat 安全更新
 
+> 2026-10-25 更新：Debian 已发布 amd64 的 `2.5.0-1+deb12u5` 修复包。
+> 当前构建改为直接安装官方安全包，移除了下述临时源码构建与校验清单，
+> 并保留最低版本检查；参见 [本次 CI 安全修复记录](ci-go12610-validation.md)。
+
 2026-10-01 的 [CI 任务](https://github.com/wsw12321/codex-gateway/actions/runs/36811061781/job/110206000124)
 在 Trivy 扫描阶段失败。网关和 CPA 镜像扫描通过；Antigravity 镜像安装的
 `libexpat1 2.5.0-1+deb12u3` 命中 6 个 HIGH 漏洞：CVE-2024-28757、

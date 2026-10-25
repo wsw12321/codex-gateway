@@ -1,4 +1,4 @@
-ARG GOLANG_IMAGE=docker.io/library/golang:1.26.9-bookworm@sha256:d9c68c2c51161e12fd77e4c6320687c9cd86e1af1e3ad6e6cd63ff970641453c
+ARG GOLANG_IMAGE=docker.io/library/golang:1.26.10-bookworm@sha256:632dff7351799a5a9954a48dc06670ade72ee44e8c351cdc0e5a57af2fea21af
 # Supply a reviewed registry digest or the commit-tagged bridge built in CI.
 # A bare local sha256 image ID is not a valid FROM image reference.
 # It provides the pinned AGY binary and Secret Service packages for rollback.

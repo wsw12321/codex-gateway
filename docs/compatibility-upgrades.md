@@ -26,7 +26,7 @@ Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyri
 
 兼容层镜像标签固定为 `v7.3.15-673131f5-2dc404c8b22496a6-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
 Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
-兼容层构建镜像使用 Go 1.26.9；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
+兼容层构建镜像使用 Go 1.26.10；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
 go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
 更新到 `v0.56.0`、`klauspost/compress` 更新到 `v1.18.7`，修复扫描发现的
 SSH 死锁及压缩库越界读取问题。Debian 运行时显式安装 `libpcre2-8-0`，

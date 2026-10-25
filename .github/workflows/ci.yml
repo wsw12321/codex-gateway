@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: '1.26.9'
+  GO_VERSION: '1.26.10'
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -48,6 +48,7 @@ jobs:
         run: |
           set -eu
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
+          test "$(jq -r .go_version deploy/codex-compat/source.lock.json)" = "$GO_VERSION"
           go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
           grep -Fxq "GOLANG_IMAGE|$go_image" deploy/images.sources
           grep -Fxq "CLIPROXY_GOLANG_IMAGE|$go_image" deploy/images.sources

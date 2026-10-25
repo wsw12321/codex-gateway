@@ -3,7 +3,10 @@ set -eu
 umask 077
 
 # Secret Service loads Expat through D-Bus; reject the vulnerable Bookworm build.
-dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libexpat1)" ge '2.5.0-1+deb12u4'
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libexpat1)" ge '2.5.0-1+deb12u5'
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libbrotli1)" ge '1.0.9-2+deb12u1'
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' jq)" ge '1.6-2.1+deb12u3'
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libjq1)" ge '1.6-2.1+deb12u3'
 # DLA-4821-1 fixes the Perl package inherited from the locked Debian image.
 dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4'
 

@@ -8,7 +8,7 @@ A Go gateway ("水源喵中转站") that sits between AI CLI clients (Codex, agy
 
 ## Commands
 
-The toolchain is pinned to Go 1.26.9 (`go.mod` `toolchain`, CI, and every Dockerfile).
+The toolchain is pinned to Go 1.26.10 (`go.mod` `toolchain`, CI, and every Dockerfile).
 
 ```sh
 go build ./cmd/gateway
