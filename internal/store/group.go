@@ -304,6 +304,7 @@ func groupDetailTx(ctx context.Context, tx *sql.Tx, id string) (Group, error) {
 	if membershipTable {
 		memberPredicate = `EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id=$1 AND gm.user_id=u.id) OR ` + memberPredicate
 	}
+	// #nosec G202 -- memberPredicate is selected only from fixed SQL fragments above.
 	rows, err := tx.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,
 		COALESCE(m.used_usd,0)::numeric(30,12)::text,
 		CASE WHEN $3::numeric IS NULL THEN NULL ELSE GREATEST($3::numeric-COALESCE(m.used_usd,0),0)::numeric(30,12)::text END
@@ -833,12 +834,18 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		priority int
 	}
 	members := []membership{}
-	rows, err := tx.QueryContext(ctx, `SELECT group_id, priority FROM group_memberships WHERE user_id=$1 ORDER BY priority, group_id`, userID)
+	var membershipTable bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('group_memberships') IS NOT NULL`).Scan(&membershipTable); err != nil {
+		return nil, mapDBError("check user group memberships schema", err)
+	}
+	var rows *sql.Rows
+	var err error
+	if membershipTable {
+		rows, err = tx.QueryContext(ctx, `SELECT group_id, priority FROM group_memberships WHERE user_id=$1 ORDER BY priority, group_id`, userID)
+	}
 	if err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") {
-			return nil, mapDBError("read user group memberships", err)
-		}
-	} else {
+		return nil, mapDBError("read user group memberships", err)
+	} else if membershipTable {
 		for rows.Next() {
 			var m membership
 			if err := rows.Scan(&m.id, &m.priority); err != nil {

@@ -1711,13 +1711,19 @@ func userBillingGroupsTx(ctx context.Context, tx *sql.Tx, userID string, at time
 		id       string
 		priority int
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT group_id,priority FROM group_memberships WHERE user_id=$1 ORDER BY priority,group_id`, userID)
+	var membershipTable bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('group_memberships') IS NOT NULL`).Scan(&membershipTable); err != nil {
+		return nil, mapDBError("check user group memberships schema", err)
+	}
+	var rows *sql.Rows
+	var err error
+	if membershipTable {
+		rows, err = tx.QueryContext(ctx, `SELECT group_id,priority FROM group_memberships WHERE user_id=$1 ORDER BY priority,group_id`, userID)
+	}
 	members := []membership{}
 	if err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") {
-			return nil, mapDBError("list user group memberships", err)
-		}
-	} else {
+		return nil, mapDBError("list user group memberships", err)
+	} else if membershipTable {
 		for rows.Next() {
 			var m membership
 			if err := rows.Scan(&m.id, &m.priority); err != nil {
