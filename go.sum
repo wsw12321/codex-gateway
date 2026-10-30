@@ -6,7 +6,7 @@ github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSs
 github.com/fxamacker/cbor/v2 v2.9.0 h1:NpKPmjDBgUfBms6tr6JZkTHtfFGcMKsw3eGcmD/sapM=
 github.com/fxamacker/cbor/v2 v2.9.0/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/go-jose/go-jose/v4 v4.1.6 h1:sNRkftxFJxwsILiQukqp5z83QBSmntVwmgRY7AqBDO4=
-github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
+github.com/go-jose/go-jose/v4 v4.1.6/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/go-webauthn/webauthn v0.13.4 h1:q68qusWPcqHbg9STSxBLBHnsKaLxNO0RnVKaAqMuAuQ=
 github.com/go-webauthn/webauthn v0.13.4/go.mod h1:MglN6OH9ECxvhDqoq1wMoF6P6JRYDiQpC9nc5OomQmI=
 github.com/go-webauthn/x v0.1.23 h1:9lEO0s+g8iTyz5Vszlg/rXTGrx3CjcD0RZQ1GPZCaxI=
