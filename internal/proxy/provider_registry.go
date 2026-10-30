@@ -192,4 +192,3 @@ func capabilitySpecificity(capabilities ProviderCapabilities, method, model, pat
 	}
 	return best
 }
-

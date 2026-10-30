@@ -81,4 +81,3 @@ func TestAdapterRegistryLeavesLegacyRouterPathValidationIntact(t *testing.T) {
 		t.Fatalf("legacy path validation changed: failure=%v", failure)
 	}
 }
-
