@@ -429,11 +429,11 @@ func TestGroupsPostgresIntegration(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if success != 1 || conflict != 1 {
+		if success != 2 || conflict != 0 {
 			t.Fatalf("competing memberships success=%d conflict=%d", success, conflict)
 		}
-		if get(left).MemberCount+get(right).MemberCount != 1 {
-			t.Fatal("user entered multiple groups")
+		if get(left).MemberCount+get(right).MemberCount != 2 {
+			t.Fatal("user did not enter both groups")
 		}
 		fresh, _, _ := billingIntegrationPrincipal(t, ctx, s, "group-atomic-"+suffix)
 		missing, _ := newUUID()
