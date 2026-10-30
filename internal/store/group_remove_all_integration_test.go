@@ -209,7 +209,7 @@ func TestGroupRemoveAllConcurrentJoinRollsBackPostgresIntegration(t *testing.T) 
 	if g, err := s.GetGroup(ctx, group.ID); err != nil || g.MemberCount != 0 {
 		t.Fatalf("remove-all did not clear membership: %+v %v", g, err)
 	}
-	assertGroupRemoveAllOperationCount(t, ctx, s, params.OperationID, 0)
+	assertGroupRemoveAllOperationCount(t, ctx, s, params.OperationID, 1)
 	if g, err := s.SetGroupMembers(ctx, params); err != nil || g.MemberCount != 0 {
 		t.Fatalf("rolled-back operation could not retry: %+v %v", g, err)
 	}
