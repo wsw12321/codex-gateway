@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -226,6 +227,84 @@ func (s *Store) SetGroupUpstreamAccountPolicy(ctx context.Context, p SetGroupUps
 type UpstreamAllocationGroup struct {
 	GroupID    string   `json:"group_id"`
 	AccountIDs []string `json:"account_ids"`
+}
+
+// cloneUpstreamAllocationGroups makes the admission-time account-pool
+// capability independent from the backing slices.  A request may outlive an
+// administrator changing group membership or its account policy; callers
+// must never be able to mutate the snapshot that is forwarded to CPA.
+func cloneUpstreamAllocationGroups(groups []UpstreamAllocationGroup) []UpstreamAllocationGroup {
+	if groups == nil {
+		return nil
+	}
+	result := make([]UpstreamAllocationGroup, len(groups))
+	for i, group := range groups {
+		result[i] = UpstreamAllocationGroup{
+			GroupID:    group.GroupID,
+			AccountIDs: append([]string(nil), group.AccountIDs...),
+		}
+	}
+	return result
+}
+
+// snapshotGroupUpstreamAllocationGroupTx reads one already-admitted group's
+// account pool while the admission transaction still holds its group lock.
+// The returned IDs are a capability snapshot: later policy edits cannot alter
+// the account-pool context attached to this request. A database without the
+// optional pool tables is an old schema, whose compatibility behavior is an
+// unrestricted provider pool.
+func snapshotGroupUpstreamAllocationGroupTx(ctx context.Context, tx *sql.Tx, groupID, provider string) (UpstreamAllocationGroup, error) {
+	gid, err := canonicalGroupID(strings.TrimSpace(groupID))
+	if err != nil {
+		return UpstreamAllocationGroup{}, err
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	switch provider {
+	case UpstreamProviderCodex, UpstreamProviderAntigravity, UpstreamProviderAnthropic:
+	default:
+		return UpstreamAllocationGroup{}, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
+
+	strategy := "all"
+	var policiesTable bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('group_upstream_account_policies') IS NOT NULL`).Scan(&policiesTable); err != nil {
+		return UpstreamAllocationGroup{}, mapDBError("check group upstream policy schema", err)
+	}
+	if policiesTable {
+		var value string
+		err := tx.QueryRowContext(ctx, `SELECT strategy FROM group_upstream_account_policies WHERE group_id=$1 AND provider=$2`, gid, provider).Scan(&value)
+		if err == nil {
+			strategy = value
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return UpstreamAllocationGroup{}, mapDBError("read group upstream policy snapshot", err)
+		}
+	}
+
+	var rows *sql.Rows
+	if strategy == "selected" && policiesTable {
+		rows, err = tx.QueryContext(ctx, `SELECT ga.upstream_account_id
+			FROM group_upstream_accounts ga
+			JOIN upstream_accounts a ON a.id=ga.upstream_account_id AND a.provider=ga.provider
+			WHERE ga.group_id=$1 AND ga.provider=$2 ORDER BY ga.upstream_account_id`, gid, provider)
+	} else {
+		rows, err = tx.QueryContext(ctx, `SELECT id FROM upstream_accounts WHERE provider=$1 ORDER BY id`, provider)
+	}
+	if err != nil {
+		return UpstreamAllocationGroup{}, mapDBError("read group upstream account pool snapshot", err)
+	}
+	defer rows.Close()
+	result := UpstreamAllocationGroup{GroupID: gid, AccountIDs: []string{}}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return UpstreamAllocationGroup{}, fmt.Errorf("scan group upstream account pool snapshot: %w", err)
+		}
+		result.AccountIDs = append(result.AccountIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		return UpstreamAllocationGroup{}, fmt.Errorf("iterate group upstream account pool snapshot: %w", err)
+	}
+	return result, nil
 }
 
 // ListGroupUpstreamAllocationGroup resolves one already-admitted group. The

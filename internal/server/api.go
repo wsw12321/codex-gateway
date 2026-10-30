@@ -221,6 +221,13 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if r.ContentLength > 0 {
 		requestBytes = r.ContentLength
 	}
+	provider := store.UpstreamProviderCodex
+	if upstreams.IsAntigravityModel(model) {
+		provider = store.UpstreamProviderAntigravity
+	}
+	if prepared.anthropic {
+		provider = store.UpstreamProviderAnthropic
+	}
 	var billingReservation *store.BillingReservationParams
 	if r.Method == http.MethodPost && !prepared.countTokens {
 		billingReservation = &store.BillingReservationParams{
@@ -256,6 +263,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			RequestedAt:          requestedAt, RequestBytes: requestBytes,
 		},
 		Billing:            billingReservation,
+		UpstreamProvider:   provider,
 		RequireModelAccess: requiresUserModelAccess(r.Method, model, s.config.UsagePricing),
 	})
 	if err != nil {
@@ -291,24 +299,23 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		internalError(s, w, r, "reserve quota", err)
 		return
 	}
-	usageStore := s.store
-	if upstreams.IsAntigravityModel(model) {
-		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
-	}
-	if prepared.anthropic {
-		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
-	}
+	usageStore := s.store.WithUpstreamProvider(provider)
 	allocationGroups := []gatewayproxy.AllocationGroup{}
-	if r.Method == http.MethodPost && key.UserID != "" && admission.Billing != nil && admission.Billing.GroupID != nil {
-		provider := store.UpstreamProviderCodex
-		if upstreams.IsAntigravityModel(model) {
-			provider = store.UpstreamProviderAntigravity
+	if r.Method == http.MethodPost && key.UserID != "" && admission.Billing != nil {
+		if admission.Billing.GroupID != nil && admission.Billing.AllocationGroups == nil {
+			// A group-bound request must carry its admission snapshot. Never
+			// silently fall back to CPA's live account discovery when the
+			// capability is absent.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			_ = s.store.ReleaseRequest(ctx, requestID, time.Now().UTC())
+			cancel()
+			internalError(s, w, r, "read admission account-pool snapshot", errors.New("missing account-pool snapshot"))
+			return
 		}
-		if prepared.anthropic {
-			provider = store.UpstreamProviderAnthropic
-		}
-		if group, e := usageStore.ListGroupUpstreamAllocationGroup(r.Context(), *admission.Billing.GroupID, provider); e == nil {
-			allocationGroups = []gatewayproxy.AllocationGroup{{GroupID: group.GroupID, AccountIDs: group.AccountIDs}}
+		for _, group := range admission.Billing.AllocationGroups {
+			allocationGroups = append(allocationGroups, gatewayproxy.AllocationGroup{
+				GroupID: group.GroupID, AccountIDs: append([]string(nil), group.AccountIDs...),
+			})
 		}
 	}
 	forwardingStarted := false

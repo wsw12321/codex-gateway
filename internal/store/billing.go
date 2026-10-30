@@ -237,6 +237,11 @@ type BillingReservation struct {
 	UncoveredUSD                     *string                `json:"uncovered_usd,omitempty"`
 	CreatedAt                        time.Time              `json:"created_at"`
 	SettledAt                        *time.Time             `json:"settled_at,omitempty"`
+
+	// AllocationGroups is an in-memory admission snapshot. It is populated
+	// before a request is forwarded and intentionally is not re-read from
+	// mutable group policy afterward.
+	AllocationGroups []UpstreamAllocationGroup `json:"allocation_groups,omitempty"`
 }
 
 type BillingWriteParams struct {

@@ -50,6 +50,9 @@ type AdmitRequestParams struct {
 	Quota   ReserveQuotaParams
 	Usage   BeginUsageRequestParams
 	Billing *BillingReservationParams
+	// UpstreamProvider selects the account-pool namespace snapshotted for a
+	// billed request. Empty retains the legacy Codex provider behavior.
+	UpstreamProvider string
 	// RequireModelAccess must be set by managed-model data-plane callers. It is
 	// false only for catalog traffic, legacy store workflows, and explicitly
 	// exempt internal governance models.
@@ -100,6 +103,12 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 		return RequestAdmission{}, fmt.Errorf("%w: unsupported usage endpoint", ErrInvalid)
 	}
 	if params.Billing != nil {
+		if params.UpstreamProvider == "" {
+			params.UpstreamProvider = UpstreamProviderCodex
+		}
+		if params.UpstreamProvider != UpstreamProviderCodex && params.UpstreamProvider != UpstreamProviderAntigravity && params.UpstreamProvider != UpstreamProviderAnthropic {
+			return RequestAdmission{}, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+		}
 		if params.Billing.PricingRuleVersion == 0 {
 			params.Billing.PricingRuleVersion = 1
 		}
@@ -129,6 +138,13 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 			value, billingErr := reserveBillingTx(ctx, tx, *params.Billing)
 			if billingErr != nil {
 				return billingErr
+			}
+			if value.GroupID != nil {
+				group, snapshotErr := snapshotGroupUpstreamAllocationGroupTx(ctx, tx, *value.GroupID, params.UpstreamProvider)
+				if snapshotErr != nil {
+					return snapshotErr
+				}
+				value.AllocationGroups = cloneUpstreamAllocationGroups([]UpstreamAllocationGroup{group})
 			}
 			admission.Billing = &value
 		}
