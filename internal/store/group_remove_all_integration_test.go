@@ -203,11 +203,11 @@ func TestGroupRemoveAllConcurrentJoinRollsBackPostgresIntegration(t *testing.T) 
 	if err := joiningTx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-done; !errors.Is(err, ErrConflict) {
-		t.Fatalf("membership change must conflict: %v", err)
+	if err := <-done; err != nil {
+		t.Fatalf("multi-group remove-all failed: %v", err)
 	}
-	if g, err := s.GetGroup(ctx, group.ID); err != nil || g.MemberCount != 2 {
-		t.Fatalf("clear partially committed: %+v %v", g, err)
+	if g, err := s.GetGroup(ctx, group.ID); err != nil || g.MemberCount != 0 {
+		t.Fatalf("remove-all did not clear membership: %+v %v", g, err)
 	}
 	assertGroupRemoveAllOperationCount(t, ctx, s, params.OperationID, 0)
 	if g, err := s.SetGroupMembers(ctx, params); err != nil || g.MemberCount != 0 {

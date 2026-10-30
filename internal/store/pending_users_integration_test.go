@@ -238,15 +238,19 @@ func TestInvitationGroupReviewSerializesMembershipAndDeletionPostgresIntegration
 		close(start)
 		_, membershipErr := s.SetGroupMembers(ctx, SetGroupMembersParams{BillingWriteParams: write, GroupID: groups[1].ID, UserIDs: []string{u.ID}, Action: "add"})
 		reviewErr := <-reviewDone
-		if (reviewErr == nil) == (membershipErr == nil) || (reviewErr != nil && !errors.Is(reviewErr, ErrConflict)) || (membershipErr != nil && !errors.Is(membershipErr, ErrConflict)) {
-			t.Fatalf("expected one winner: approval=%v manual membership=%v", reviewErr, membershipErr)
+		if reviewErr != nil || membershipErr != nil {
+			t.Fatalf("multi-group membership race failed: approval=%v manual membership=%v", reviewErr, membershipErr)
 		}
-		var actualGroup, actualStatus string
-		if err := s.DB().QueryRowContext(ctx, `SELECT b.group_id,a.status FROM billing_accounts b JOIN invitation_applications a ON a.user_id=b.user_id WHERE a.id=$1`, application.ID).Scan(&actualGroup, &actualStatus); err != nil {
+		var actualStatus string
+		if err := s.DB().QueryRowContext(ctx, `SELECT status FROM invitation_applications WHERE id=$1`, application.ID).Scan(&actualStatus); err != nil {
 			t.Fatal(err)
 		}
-		if reviewErr == nil && (actualGroup != groups[0].ID || actualStatus != "approved") || membershipErr == nil && (actualGroup != groups[1].ID || actualStatus != "pending") {
-			t.Fatalf("mixed membership result: group=%s status=%s", actualGroup, actualStatus)
+		if actualStatus != "approved" {
+			t.Fatalf("unexpected application status: %s", actualStatus)
+		}
+		var membershipCount int
+		if err := s.DB().QueryRowContext(ctx, `SELECT count(*) FROM group_memberships WHERE user_id=$1`, u.ID).Scan(&membershipCount); err != nil || membershipCount != 2 {
+			t.Fatalf("unexpected multi-group membership count: %d %v", membershipCount, err)
 		}
 	}
 	for i := range 8 {
@@ -371,7 +375,7 @@ func TestInvitationReviewDoesNotInvertGroupOperationActorFKPostgresIntegration(t
 	if _, err := barrier.ExecContext(ctx, `SELECT pg_advisory_unlock(271828,$1)`, lockKey); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-manualDone; !errors.Is(err, ErrConflict) {
-		t.Fatalf("manual mutation should observe approved membership: %v", err)
+	if err := <-manualDone; err != nil {
+		t.Fatalf("manual multi-group mutation failed: %v", err)
 	}
 }

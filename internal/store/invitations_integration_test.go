@@ -265,6 +265,9 @@ func TestBatchInvitationsPostgresIntegration(t *testing.T) {
 		if _, err := s.JoinInvitation(ctx, i.TokenHash, outsider.ID); err != nil {
 			t.Fatalf("cross group membership: %v", err)
 		}
+		if _, err := s.SetGroupMembers(ctx, SetGroupMembersParams{BillingWriteParams: billingIntegrationWrite(t, actor.ID, "remove cross-group member", now), GroupID: g.ID, Action: "remove", UserIDs: []string{outsider.ID}}); err != nil {
+			t.Fatal(err)
+		}
 		pending := invitation("pending-group", InvitationGroup, 1, true, g.ID)
 		applicant := globalUsageIntegrationUser(t, ctx, s, "pending-join-"+suffix, UserRoleMember)
 		application, err := s.JoinInvitation(ctx, pending.TokenHash, applicant.ID)
@@ -374,10 +377,9 @@ func TestBatchInvitationsPostgresIntegration(t *testing.T) {
 				t.Fatal("batch did not approve every application")
 			}
 		}
-		if n, err := review(i, "reject", a.ID, b.ID); err != nil || n != 2 {
-			t.Fatalf("batch reject: %d %v", n, err)
+		if n, err := review(i, "reject", a.ID, b.ID); !errors.Is(err, ErrConflict) || n != 0 {
+			t.Fatalf("approved batch reject: %d %v", n, err)
 		}
-		assertCount(i, 0)
 	})
 }
 
