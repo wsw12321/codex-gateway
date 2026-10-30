@@ -52,6 +52,18 @@ func (s *Server) proxyMessagesCountTokens(w http.ResponseWriter, r *http.Request
 	s.proxyCodex(w, r, "/v1/messages/count_tokens", "messages.count_tokens", "")
 }
 
+// providerAdapterRegistry wires the root gateway's fixed HTTP routes to the
+// existing router through the additive provider-adapter contract.  Keeping the
+// Router underneath the adapter preserves exact model dispatch, compact
+// endpoint rejection, bridge outage behavior, and catalog merge semantics.
+// Protocol-specific Gemini and Anthropic paths continue to use their existing
+// adapters below; this registry owns only the root Responses/model routes.
+func providerAdapterRegistry(router *gatewayproxy.Router) *gatewayproxy.AdapterRegistry {
+	return gatewayproxy.NewAdapterRegistry(gatewayproxy.NewRouterAdapter(router, gatewayproxy.ProviderCapabilities{
+		Provider: "gateway",
+	}))
+}
+
 // preparedAPIRequest carries protocol-specific parsing into the shared admission,
 // forwarding and settlement lifecycle. All generation protocols use this path.
 type preparedAPIRequest struct {
@@ -408,7 +420,8 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 				upstreams = gatewayproxy.NewRouter(s.upstream, nil, s.config.AntigravityModelRoutes)
 			}
 		}
-		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
+		registry := providerAdapterRegistry(upstreams)
+		result, failure = registry.ForwardModels(r.Context(), w, r, allowedModels, gatewayproxy.TrustedRequestMetadata{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:        key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount,
@@ -427,7 +440,8 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			OnConversation:    onConversation,
 		})
 	} else {
-		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
+		registry := providerAdapterRegistry(upstreams)
+		result, failure = registry.Forward(r.Context(), w, r, model, upstreamPath, gatewayproxy.TrustedRequestMetadata{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
 			UserID:        key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount,
