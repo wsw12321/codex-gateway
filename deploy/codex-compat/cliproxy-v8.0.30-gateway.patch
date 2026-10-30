@@ -21057,3 +21057,41 @@ index 2e46ee6..c1ecfa5 100644
  // APIKeyFromContext returns the client API key stored in ctx or gin.Context.
  func APIKeyFromContext(ctx context.Context) string {
  	if ctx == nil {
+
+diff --git a/sdk/api/handlers/openai/openai_responses_handlers.go b/sdk/api/handlers/openai/openai_responses_handlers.go
+index 9e41975..38df0b7 100644
+--- a/sdk/api/handlers/openai/openai_responses_handlers.go
++++ b/sdk/api/handlers/openai/openai_responses_handlers.go
+@@ -830,6 +830,13 @@ func (h *OpenAIResponsesAPIHandler) handleStreamingResponse(c *gin.Context, rawJ
+ 			return
+ 		case chunk, ok := <-dataChan:
+ 			if !ok {
++				// The stream producer closes dataChan after observing request cancellation.
++				// A concurrent select may choose this EOF before the context case, so
++				// preserve cancellation instead of reporting a synthetic upstream error.
++				if err := c.Request.Context().Err(); err != nil {
++					cliCancel(err)
++					return
++				}
+ 				framer.Flush(&initialOutput)
+ 				errMsg, hasPendingError := handlers.PendingStreamError(errChan)
+ 				if !hasPendingError && framer.terminalEvent == "" {
+diff --git a/sdk/api/handlers/stream_forwarder.go b/sdk/api/handlers/stream_forwarder.go
+index fb5828f..e0930e6 100644
+--- a/sdk/api/handlers/stream_forwarder.go
++++ b/sdk/api/handlers/stream_forwarder.go
+@@ -163,6 +163,14 @@ func (h *BaseAPIHandler) ForwardStream(c *gin.Context, flusher http.Flusher, can
+ 			return
+ 		case chunk, ok := <-data:
+ 			if !ok {
++				// A canceled downstream request wins over a concurrent upstream EOF.
++				// The producer closes data after observing the same cancellation, and
++				// select may choose this ready channel before the context case.
++				// Preserve the cancellation outcome instead of synthesizing a 502.
++				if err := c.Request.Context().Err(); err != nil {
++					cancel(err)
++					return
++				}
+ 				// Prefer surfacing a terminal error if one is pending.
+ 				if terminalErr == nil {
+ 					if errMsg, ok := PendingStreamError(errs); ok {

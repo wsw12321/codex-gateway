@@ -112,7 +112,7 @@ v8.0.30 新增 SIWC token 请求此前未经过原有 OAuth 安全 helper；已�
 本地最终镜像：
 
 ```text
-codex-gateway-compat:v8.0.30-5be2cdab-0ed546d0c0749b1a-cpa
+codex-gateway-compat:v8.0.30-5be2cdab-f10e3cfd34208d91-cpa
 local image ID: sha256:38bdb87fb500012ab7290436e5a8be6522fe2f8275ba0be044bb527cdb9e1a95
 runtime user: 10001:10001
 ```

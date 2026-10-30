@@ -255,7 +255,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建证明 `v8.0.30` 的 peeled commit 正是
 `5be2cdab0869cbaa3d401891f740aebf7e15aa99`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.30-5be2cdab-0ed546d0c0749b1a-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`v8.0.30-5be2cdab-f10e3cfd34208d91-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次切换、两个新模型与五个退役模型的一次性目录迁移和兼容回滚见 [CPA v8 操作流程](cpa-v8-cutover.md)。
 新增范围仅为 `claude-haiku-5-5` 与 `gemini-4-argon-high`；基础 Argon 的 `gemini` provider 和
 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
