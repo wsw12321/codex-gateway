@@ -19,10 +19,10 @@ func (c *Client) requireAccountAccessCapability(ctx context.Context) error {
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
 		return err
 	}
-	if response.Protocol != "upstream_account_access_v1" {
+	if response.Protocol != AccountAccessProtocolV1 {
 		return errors.New("sidecar account access protocol unavailable")
 	}
-	if c.anthropic && response.AnthropicMessages != "anthropic_messages_v1" {
+	if c.anthropic && response.AnthropicMessages != AnthropicMessagesProtocolV1 {
 		return errors.New("sidecar Anthropic protocol unavailable")
 	}
 	return nil
