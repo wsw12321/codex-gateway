@@ -252,17 +252,9 @@ func (s *Store) JoinInvitation(ctx context.Context, hash []byte, userID string) 
 		if !errors.Is(err, sql.ErrNoRows) {
 			return mapDBError("read previous group application", err)
 		}
-		var current *string
-		if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1`, userID).Scan(&current); err != nil {
-			return mapDBError("read current group", err)
-		}
-		if current != nil {
-			if *current != *i.GroupID {
-				return fmt.Errorf("%w: user already belongs to another group", ErrConflict)
-			}
-			result = InvitationApplication{InvitationID: i.ID, UserID: &user.ID, Username: user.Username, DisplayName: user.DisplayName, RegisteredAt: user.CreatedAt, Status: "approved"}
-			return nil
-		}
+		var member bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND user_id=$2)`, *i.GroupID, userID).Scan(&member); err != nil { return mapDBError("read current group membership", err) }
+		if member { result = InvitationApplication{InvitationID: i.ID, UserID: &user.ID, Username: user.Username, DisplayName: user.DisplayName, RegisteredAt: user.CreatedAt, Status: "approved"}; return nil }
 		now := s.now().UTC()
 		if err := invitationCapacityTx(ctx, tx, i, now); err != nil {
 			return err
@@ -275,10 +267,9 @@ func (s *Store) JoinInvitation(ctx context.Context, hash []byte, userID string) 
 			return err
 		}
 		if !i.RequiresApproval {
-			_, err = tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2 WHERE user_id=$1`, userID, *i.GroupID)
-			if err != nil {
-				return mapDBError("join invitation group", err)
-			}
+			_, err = tx.ExecContext(ctx, `INSERT INTO group_memberships(group_id,user_id,priority,created_at,updated_at) VALUES($2,$1,100,$3,$3) ON CONFLICT DO NOTHING`, userID, *i.GroupID, now)
+			if err != nil { return mapDBError("join invitation group", err) }
+			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, userID, *i.GroupID); err != nil { return mapDBError("update invitation group mirror", err) }
 		}
 		// Record only a newly accepted application. Replays return above, and
 		// audit metadata never retains the applicant's profile after rejection.
@@ -441,16 +432,10 @@ func (s *Store) ReviewInvitationApplications(ctx context.Context, invitationID s
 					if user.Status != StatusActive {
 						return ErrConflict
 					}
-					var current *string
-					if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1`, user.ID).Scan(&current); err != nil {
-						return mapDBError("read application group", err)
-					}
-					if current != nil && *current != *i.GroupID {
-						return fmt.Errorf("%w: user already belongs to another group", ErrConflict)
-					}
-					if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2 WHERE user_id=$1`, user.ID, *i.GroupID); err != nil {
+					if _, err := tx.ExecContext(ctx, `INSERT INTO group_memberships(group_id,user_id,priority,created_at,updated_at) VALUES($2,$1,100,$3,$3) ON CONFLICT DO NOTHING`, user.ID, *i.GroupID, at); err != nil {
 						return mapDBError("approve group membership", err)
 					}
+					if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, user.ID, *i.GroupID); err != nil { return mapDBError("update group mirror", err) }
 				}
 				if _, err := tx.ExecContext(ctx, `UPDATE invitation_applications SET status='approved',reviewed_at=$2,reviewed_by=$3 WHERE id=$1`, a.ID, at, valueOrNil(actorID)); err != nil {
 					return mapDBError("approve invitation application", err)
@@ -476,7 +461,7 @@ func deletePendingInvitationUserTx(ctx context.Context, tx *sql.Tx, user User) e
 	if _, err := tx.ExecContext(ctx, `DELETE FROM user_model_access WHERE user_id=$1`, user.ID); err != nil {
 		return mapDBError("delete pending model defaults", err)
 	}
-	result, err := tx.ExecContext(ctx, `DELETE FROM billing_accounts WHERE user_id=$1 AND balance_usd=0 AND group_id IS NULL`, user.ID)
+	result, err := tx.ExecContext(ctx, `DELETE FROM billing_accounts WHERE user_id=$1 AND balance_usd=0 AND group_id IS NULL AND NOT EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.user_id=$1)`, user.ID)
 	if err != nil {
 		return mapDBError("delete pending billing account", err)
 	}

@@ -855,6 +855,15 @@
               <article id="group-detail" class="panel hidden">
                 <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
                 <div id="group-metrics" class="metrics compact"></div>
+                <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
+                  <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">按服务商选择该群组可用的上游账号；未配置时使用全部账号。</p></div></div>
+                  <div id="group-upstream-providers" class="group-upstream-providers"></div>
+                </section>
+                <section class="group-account-statistics" aria-labelledby="group-account-stats-title">
+                  <div class="panel-heading"><div><h4 id="group-account-stats-title">群组账号占比</h4><p id="group-account-stats-help" class="muted">选择一个或多个群组周期查看实际支付占比。</p></div></div>
+                  <div id="group-account-periods" class="group-account-periods"></div>
+                  <div id="group-account-stats" class="group-account-stats" aria-live="polite"></div>
+                </section>
                 <form id="group-members-form" class="group-members-form">
                   <div class="panel-heading"><h4>成员管理</h4><span id="group-selected-count" class="badge">已选 0 人</span></div>
                   <label>搜索用户<input id="group-member-search" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
@@ -864,7 +873,7 @@
                   <div class="button-group"><button id="group-members-add" type="button">加入所选用户</button><button id="group-members-remove" type="button" class="secondary">移除所选成员</button><button id="group-members-remove-all" type="button" class="danger">移除全部成员</button><button id="group-archive" type="button" class="danger">归档空群组</button></div>
                   <p class="form-message hidden" role="alert"></p>
                 </form>
-                <p class="muted">每人最多加入一个群组。加入其他群组前需先移除；变更前已接收的请求仍使用原群组、原周期。退群再加入或清理历史不恢复已用额度。</p>
+                <p class="muted">用户可同时加入多个群组；请求按用户设置的优先级选择首个可用群组。变更前已接收的请求仍使用原群组、原周期。退群再加入或清理历史不恢复已用额度。</p>
               </article>
             </div>
           </section>

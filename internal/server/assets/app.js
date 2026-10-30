@@ -5905,6 +5905,10 @@ let upstreamAccessAccount = null;
 let upstreamAccessUsers = [];
 let upstreamAccessSelected = new Set();
 let upstreamAccessSequence = 0;
+const groupUpstreamProviders = ["codex", "antigravity", "anthropic"];
+let groupUpstreamState = new Map();
+let groupAccountPeriods = [];
+let groupAccountSelectedPeriods = new Set();
 
 function resetGroupManagement() {
   groupListSequence++;
@@ -5917,6 +5921,9 @@ function resetGroupManagement() {
   upstreamAccessSelected.clear();
   upstreamAccessAccount = null;
   upstreamAccessUsers = [];
+  groupUpstreamState = new Map();
+  groupAccountPeriods = [];
+  groupAccountSelectedPeriods.clear();
   groupOperation = false;
   byId("group-list").replaceChildren(emptyState("登录后加载群组。"));
   byId("group-member-list").replaceChildren();
@@ -5926,6 +5933,9 @@ function resetGroupManagement() {
   byId("group-detail-period").textContent = "—";
   byId("group-detail-models").textContent = "—";
   byId("group-metrics").replaceChildren();
+  byId("group-upstream-providers")?.replaceChildren();
+  byId("group-account-periods")?.replaceChildren();
+  byId("group-account-stats")?.replaceChildren();
   byId("upstream-access-account").textContent = "—";
   groupMessage();
   for (const id of ["group-dialog", "upstream-access-dialog"]) {
@@ -5992,20 +6002,79 @@ function groupModelLabel(group) {
   return models.length ? `可用模型：${models.join("、")}` : "可用模型：未配置（兼容旧群组）";
 }
 
+function billingGroups(detail = billingDetail) {
+  if (Array.isArray(detail?.groups)) return detail.groups.filter(Boolean);
+  return detail?.group ? [detail.group] : [];
+}
+
+function billingGroupPriority(group) {
+  const value = Number(group?.priority ?? group?.membership_priority ?? 100);
+  return Number.isInteger(value) && value >= 1 && value <= 100 ? value : 100;
+}
+
+async function saveBillingGroupPriority(groupID, input, button, reasonInput = null) {
+  if (!billingSourceReady() || !groupID || !input || !button || billingSourceOperation) return;
+  const raw = String(input.value || "").trim();
+  if (!/^(?:[1-9][0-9]?|100)$/.test(raw)) {
+    setBillingSourceMessage("群组优先级须为 1–100 的整数。", true);
+    input.focus();
+    return;
+  }
+  const priority = Number(raw);
+  const operation = {source: `group:${groupID}`, userID: state.user.id, generation: billingSourceGeneration, priority,
+    operationID: crypto.randomUUID()};
+  const current = () => billingSourceOperationCurrent(operation);
+  billingSourceOperation = operation;
+  button.disabled = true;
+  try {
+    const reason = reasonInput ? String(reasonInput.value || "").trim() : "更新群组优先级";
+    if (!reason) throw new Error("请填写操作原因。");
+    const result = await sensitiveAction(() => api(`/admin/billing/me/groups/${encodeURIComponent(groupID)}/preferences`, {
+      method: "PUT", body: JSON.stringify({operation_id: operation.operationID, reason, priority}),
+    }, current), current);
+    if (!current()) return;
+    if (result?.priority != null && Number(result.priority) !== priority) throw new Error("服务器返回的群组优先级不一致。");
+    setBillingSourceMessage(`群组优先级已保存为 ${priority}；仅影响新请求。`);
+    await loadBillingDetail(operation.userID, billingLedgerOffset);
+  } catch (error) {
+    if (current()) setBillingSourceMessage(`保存群组优先级失败：${friendlyError(error)}`, true);
+  } finally {
+    if (billingSourceOperation === operation) billingSourceOperation = null;
+    syncBillingSourceControls();
+  }
+}
+
 function renderBillingGroup(group, detail = {}) {
   const host = byId("billing-group");
-  host.classList.toggle("hidden", !group);
+  const groups = Array.isArray(detail?.groups) ? detail.groups.filter(Boolean) : group ? [group] : billingGroups(detail);
+  host.classList.toggle("hidden", !groups.length);
   host.replaceChildren();
-  if (!group) return;
-  host.append(element("h3", {text: `群组额度 · ${group.name} · ${groupPeriodStatus(group)}`}),
-    element("p", {className: "muted", text: `${groupPeriodProgress(group)} · ${groupExpiryLabel(group)}`}),
-    element("div", {className: "metrics compact"}, ...groupMetrics(group)),
-    element("div", {className: "metrics compact"},
-      element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(detail.group_member_used_usd, "数据不可用")})),
-      element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(detail.group_member_remaining_usd, "数据不可用")})),
-    ),
-    element("p", {className: "muted", text: `${groupPeriodLabel(group)} · ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。${groupModelLabel(group)}。群组优先支付，剩余费用按个人来源优先级和模型范围结算。群组到期、耗尽、成员达到上限或周期未开始时使用个人资金；所有来源均不可用时拒绝新请求。`}),
-  );
+  if (!groups.length) return;
+  const self = state?.user?.id && selectedBillingUserID() === state.user.id;
+  host.append(element("h3", {text: "群组额度"}), element("p", {className: "muted", text: "请求按优先级从上到下选择可用群组；同级按群组 UUID 稳定排序。"}));
+  for (const group of groups) {
+    const memberUsed = group.member_used_usd ?? group.group_member_used_usd ?? detail.group_member_used_usd;
+    const memberRemaining = group.member_remaining_usd ?? group.group_member_remaining_usd ?? detail.group_member_remaining_usd;
+    const input = element("input", {type: "number", attributes: {min: 1, max: 100, step: 1, "aria-label": `${group.name || "群组"}优先级`}});
+    input.value = String(billingGroupPriority(group));
+    const reason = element("input", {type: "text", attributes: {maxlength: "500", placeholder: "操作原因", "aria-label": `${group.name || "群组"}操作原因`}});
+    const save = element("button", {type: "button", className: "secondary", text: "保存优先级"});
+    save.disabled = !self;
+    save.addEventListener("click", () => void saveBillingGroupPriority(group.id, input, save, reason));
+    const controls = element("div", {className: "billing-group-preferences"},
+      element("label", {text: "优先级（1–100）"}, input), element("label", {text: "操作原因"}, reason), save);
+    const card = element("article", {className: "billing-group-card", dataset: {groupID: group.id}},
+      element("header", {}, element("h4", {text: `${group.name || group.id} · ${groupPeriodStatus(group)}`}), element("span", {className: "badge", text: `优先级 ${billingGroupPriority(group)}`})),
+      element("p", {className: "muted", text: `${groupPeriodProgress(group)} · ${groupExpiryLabel(group)} · ${groupPeriodLabel(group)}`}),
+      element("div", {className: "metrics compact"}, ...groupMetrics(group)),
+      element("div", {className: "metrics compact"},
+        element("article", {}, element("span", {text: "本用户本期群组已用"}), element("strong", {text: formatUSD(memberUsed, "数据不可用")})),
+        element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(memberRemaining, "数据不可用")})),
+      ), controls,
+      element("p", {className: "muted", text: `${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。${groupModelLabel(group)}。群组优先支付；群组额度不可用时回退下一个群组或个人额度。`}),
+    );
+    host.append(card);
+  }
 }
 
 function groupMessage(message = "", isError = false) {
@@ -6075,6 +6144,110 @@ function renderGroupDetail(group) {
   show("group-detail");
   renderGroupList();
   renderGroupMembers();
+  // Keep the synchronous group rendering usable in lightweight DOM harnesses;
+  // the dashboard browser always exposes fetch for these optional panels.
+  if (typeof fetch === "function") {
+    void loadGroupUpstreamSettings(group);
+    void loadGroupAccountPeriods(group);
+  }
+}
+
+function groupUpstreamProviderLabel(provider) {
+  return ({codex: "Codex", antigravity: "Antigravity", anthropic: "Claude"})[provider] || provider;
+}
+
+async function groupProviderAccounts(provider) {
+  const path = provider === "codex" ? "/admin/upstream-accounts?all=true" : `/admin/${provider}-accounts?all=true`;
+  const result = await api(path);
+  return Array.isArray(result?.accounts) ? result.accounts : [];
+}
+
+async function loadGroupUpstreamSettings(group) {
+  const host = byId("group-upstream-providers");
+  if (!host || !group?.id) return;
+  host.replaceChildren(element("p", {className: "muted", text: "正在加载账号池…"}));
+  try {
+    let configured = group.upstream_accounts || group.upstream_account_policies || {};
+    if (!configured || typeof configured !== "object" || Array.isArray(configured)) configured = {};
+    const sections = [];
+    for (const provider of groupUpstreamProviders) {
+      let accounts = [];
+      try { accounts = await groupProviderAccounts(provider); } catch { /* provider may be disabled */ }
+      let value = configured[provider];
+      if (!value) {
+        try { value = await api(`/admin/groups/${encodeURIComponent(group.id)}/upstream-accounts/${encodeURIComponent(provider)}`); }
+        catch { value = null; }
+      }
+      const mode = value?.mode === "selected" ? "selected" : "all";
+      const ids = new Set(Array.isArray(value?.account_ids) ? value.account_ids : Array.isArray(value?.upstream_account_ids) ? value.upstream_account_ids : []);
+      const select = element("select", {attributes: {"aria-label": `${groupUpstreamProviderLabel(provider)}账号范围`}});
+      select.append(element("option", {text: "全部可用账号", attributes: {value: "all"}}), element("option", {text: "仅选择账号", attributes: {value: "selected"}}));
+      select.value = mode;
+      const list = element("select", {attributes: {multiple: "", size: "4", "aria-label": `${groupUpstreamProviderLabel(provider)}账号`}});
+      for (const account of accounts) {
+        const option = element("option", {text: account.display_name || account.email_masked || account.id, attributes: {value: account.id}});
+        option.selected = ids.has(account.id);
+        list.append(option);
+      }
+      list.classList.toggle("hidden", mode !== "selected");
+      select.addEventListener("change", () => list.classList.toggle("hidden", select.value !== "selected"));
+      const save = element("button", {type: "button", className: "secondary", text: "保存账号池"});
+      save.disabled = state?.user?.role !== "owner";
+      save.addEventListener("click", async () => {
+        save.disabled = true;
+        try {
+          const accountIDs = select.value === "selected" ? [...list.selectedOptions].map((item) => item.value).sort() : [];
+          await api(`/admin/groups/${encodeURIComponent(group.id)}/upstream-accounts/${encodeURIComponent(provider)}`, {
+            method: "PUT", body: JSON.stringify({mode: select.value, account_ids: accountIDs, operation_id: crypto.randomUUID(), reason: "更新群组账号池"}),
+          });
+          groupUpstreamState.set(provider, {mode: select.value, account_ids: accountIDs});
+          groupMessage(`${groupUpstreamProviderLabel(provider)}账号池已保存。`);
+        } catch (error) { groupMessage(`保存${groupUpstreamProviderLabel(provider)}账号池失败：${friendlyError(error)}`, true); }
+        finally { save.disabled = state?.user?.role !== "owner"; }
+      });
+      sections.push(element("div", {className: "group-upstream-provider"}, element("strong", {text: groupUpstreamProviderLabel(provider)}), select, list, save));
+    }
+    host.replaceChildren(...sections);
+  } catch (error) {
+    host.replaceChildren(element("p", {className: "muted", text: `账号池加载失败：${friendlyError(error)}`}));
+  }
+}
+
+async function loadGroupAccountPeriods(group) {
+  const periodsHost = byId("group-account-periods");
+  const statsHost = byId("group-account-stats");
+  if (!periodsHost || !statsHost || !group?.id) return;
+  periodsHost.replaceChildren(element("p", {className: "muted", text: "正在加载群组周期…"}));
+  statsHost.replaceChildren();
+  try {
+    const result = await api(`/admin/groups/${encodeURIComponent(group.id)}/periods`);
+    groupAccountPeriods = Array.isArray(result?.periods) ? result.periods : [];
+    if (!groupAccountPeriods.length) { periodsHost.replaceChildren(element("p", {className: "muted", text: "暂无可统计周期。"})); return; }
+    groupAccountSelectedPeriods = new Set(groupAccountPeriods.slice(0, 1).map((period) => period.id));
+    const rows = groupAccountPeriods.map((period) => {
+      const checkbox = element("input", {type: "checkbox", attributes: {value: period.id, "aria-label": `选择周期 ${period.id}`} });
+      checkbox.checked = groupAccountSelectedPeriods.has(period.id);
+      checkbox.addEventListener("change", () => { if (checkbox.checked) groupAccountSelectedPeriods.add(period.id); else groupAccountSelectedPeriods.delete(period.id); void loadGroupAccountStats(group); });
+      return element("label", {className: "group-account-period"}, checkbox, element("span", {text: `${formatDateTime(period.starts_at)} — ${formatDateTime(period.ends_at)} · ${formatUSD(period.used_usd)}`}));
+    });
+    periodsHost.replaceChildren(...rows);
+    await loadGroupAccountStats(group);
+  } catch (error) { periodsHost.replaceChildren(element("p", {className: "muted", text: `周期加载失败：${friendlyError(error)}`})); }
+}
+
+async function loadGroupAccountStats(group) {
+  const host = byId("group-account-stats");
+  if (!host || !group?.id || !groupAccountSelectedPeriods.size) { host?.replaceChildren(element("p", {className: "muted", text: "请选择至少一个周期。"})); return; }
+  host.replaceChildren(element("p", {className: "muted", text: "正在加载统计…"}));
+  try {
+    const query = new URLSearchParams();
+    [...groupAccountSelectedPeriods].forEach((id) => query.append("period_id", id));
+    const result = await api(`/admin/groups/${encodeURIComponent(group.id)}/account-stats?${query}`);
+    const rows = Array.isArray(result?.accounts) ? result.accounts : Array.isArray(result?.stats) ? result.stats : [];
+    const rendered = rows.length ? rows.map((item) => element("div", {className: "group-account-stat-row"}, element("strong", {text: item.display_name || item.email_masked || item.upstream_account_id || item.account_id}), element("span", {text: `群组支付 ${formatUSD(item.group_charged_usd)} / 总成本 ${formatUSD(item.actual_cost_usd)} · 占比 ${item.share == null ? "—" : formatPercent(item.share)}`}))) : [element("p", {className: "muted", text: "所选周期暂无账号统计。"})];
+    if (result?.data_complete === false) rendered.unshift(element("p", {className: "form-message", text: "部分账单历史已清理，统计数据不完整。"}));
+    host.replaceChildren(...rendered);
+  } catch (error) { host.replaceChildren(element("p", {className: "muted", text: `统计加载失败：${friendlyError(error)}`})); }
 }
 
 function matchingManagedUsers(search, users = groupUsers) {
@@ -6082,12 +6255,20 @@ function matchingManagedUsers(search, users = groupUsers) {
 }
 
 function groupUserAvailable(user) {
-  return !user.group_id || user.group_id === managedGroup?.id;
+  return true;
 }
 
 function renderGroupMembers() {
   const members = new Map((managedGroup?.members || []).map((member) => [member.user_id, member]));
-  const rows = matchingManagedUsers(byId("group-member-search").value).map((user) => {
+  const rows = matchingManagedUsers(byId("group-member-search").value).sort((a, b) => {
+    const am = members.get(a.id), bm = members.get(b.id);
+    if (Boolean(am) !== Boolean(bm)) return am ? -1 : 1;
+    const au = Number(am?.used_usd || 0), bu = Number(bm?.used_usd || 0);
+    if (Number.isFinite(au) && Number.isFinite(bu) && au !== bu) return bu - au;
+    const an = String(a.username || a.display_name || "").toLocaleLowerCase();
+    const bn = String(b.username || b.display_name || "").toLocaleLowerCase();
+    return an.localeCompare(bn) || String(a.id).localeCompare(String(b.id));
+  }).map((user) => {
     const member = members.get(user.id);
     const checkbox = element("input", {type: "checkbox", attributes: {"aria-label": `选择用户 ${user.username || user.id}`}});
     checkbox.checked = groupSelectedUsers.has(user.id);
@@ -6097,7 +6278,8 @@ function renderGroupMembers() {
       syncGroupControls();
     });
     const remaining = managedGroup?.member_limit_usd == null ? "不限" : formatUSD(member?.remaining_usd, "数据不可用");
-    const description = member ? `当前成员 · 本期群组已用 ${formatUSD(member.used_usd)} · 上限剩余 ${remaining}` : user.group_id ? "已加入其他群组，需先移除" : "未加入群组";
+    const memberships = Array.isArray(user.group_ids) ? user.group_ids : (user.group_id ? [user.group_id] : []);
+    const description = member ? `当前成员 · 本期群组已用 ${formatUSD(member.used_usd)} · 上限剩余 ${remaining}` : memberships.length ? `其他群组 ${memberships.length} 个` : "未加入群组";
     return element("label", {className: "user-check-row"}, checkbox,
       element("span", {}, element("strong", {text: user.display_name || user.username}), element("small", {text: `${user.username} · ${description}`})));
   });

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/wsw/codex-gateway/internal/config"
 )
 
@@ -136,6 +137,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if len(values) == 1 {
 				request.userID = values[0]
+			}
+			if raw := r.Header.Get("X-Codex-Gateway-Groups"); raw != "" && len(raw) <= 8192 {
+				var groups []allocationGroup
+				if json.Unmarshal([]byte(raw), &groups) != nil || len(groups) > 64 { writeFailure(w, allocationFailure()); return }
+				seen := map[string]bool{}
+				for _, group := range groups {
+					parsed, err := uuid.Parse(group.GroupID)
+					if err != nil || parsed.String() != group.GroupID || seen[group.GroupID] || len(group.AccountIDs) > 256 { writeFailure(w, allocationFailure()); return }
+					seen[group.GroupID] = true
+				}
+				request.groups = groups
 			}
 		}
 		r = r.WithContext(context.WithValue(r.Context(), accountRequestKey{}, request))

@@ -242,7 +242,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			billingReservation.PricingModel = ""
 		}
 	}
-	_, err = s.store.AdmitRequest(r.Context(), store.AdmitRequestParams{
+	admission, err := s.store.AdmitRequest(r.Context(), store.AdmitRequestParams{
 		Quota: store.ReserveQuotaParams{
 			RequestID: requestID, UserID: key.UserID, APIKeyID: key.ID,
 			Day: requestedAt, Now: requestedAt, ReservedTokens: 0, LeaseTTL: 5 * time.Minute,
@@ -297,6 +297,15 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	}
 	if prepared.anthropic {
 		usageStore = s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
+	}
+	allocationGroups := []gatewayproxy.AllocationGroup{}
+	if r.Method == http.MethodPost && key.UserID != "" && admission.Billing != nil && admission.Billing.GroupID != nil {
+		provider := store.UpstreamProviderCodex
+		if upstreams.IsAntigravityModel(model) { provider = store.UpstreamProviderAntigravity }
+		if prepared.anthropic { provider = store.UpstreamProviderAnthropic }
+		if group, e := usageStore.ListGroupUpstreamAllocationGroup(r.Context(), *admission.Billing.GroupID, provider); e == nil {
+			allocationGroups = []gatewayproxy.AllocationGroup{{GroupID: group.GroupID, AccountIDs: group.AccountIDs}}
+		}
 	}
 	forwardingStarted := false
 	// Upstream account attribution arrives with the response headers, which can
@@ -390,26 +399,26 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		}
 		result, failure = upstreams.ForwardModelsWithOptions(r.Context(), w, r, allowedModels, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:            key.UserID,
+			UserID:            key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount,
 			OnConversation:    onConversation,
 		})
 	} else if prepared.anthropic {
 		result, failure = s.anthropic.ForwardMessages(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
-			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID,
+			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount, OnConversation: onConversation,
 		})
 	} else if prepared.gemini {
 		result, failure = upstreams.ForwardGemini(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:            key.UserID,
+			UserID:            key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount,
 			OnConversation:    onConversation,
 		})
 	} else {
 		result, failure = upstreams.ForwardWithOptions(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope:     upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:            key.UserID,
+			UserID:            key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount,
 			OnConversation:    onConversation,
 		})

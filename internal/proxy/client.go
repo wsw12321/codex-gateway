@@ -32,6 +32,7 @@ const (
 	gatewayUserHeader            = "X-Codex-Gateway-User"
 	upstreamAccountHeader        = "X-Codex-Upstream-Account"
 	conversationHashHeader       = "X-Codex-Conversation-Hash"
+	gatewayGroupsHeader           = "X-Codex-Gateway-Groups"
 	maxInternalResponseBodyBytes = 1 << 20
 )
 
@@ -159,9 +160,13 @@ type Client struct {
 	anthropic      bool
 }
 
+type AllocationGroup struct { GroupID string `json:"group_id"`; AccountIDs []string `json:"account_ids"` }
+
 type ForwardOptions struct {
 	// UserID comes only from the authenticated API key, never client headers.
 	UserID string
+	// Groups carries the trusted, admission-time ordered account-pool layers.
+	Groups []AllocationGroup
 	// AffinityScope is an opaque, gateway-generated caller namespace. It is
 	// accepted only in the fixed base64url form emitted by the gateway and is
 	// consumed by the sidecar rather than forwarded to the service provider.
@@ -254,6 +259,7 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
+	if len(options.Groups) > 0 { encoded, _ := json.Marshal(options.Groups); if len(encoded) > 8192 { return nil, Result{}, protocolFailure(errors.New("upstream group context is too large")) }; outgoing.Header.Set(gatewayGroupsHeader, string(encoded)) }
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {
@@ -499,6 +505,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
+	if len(options.Groups) > 0 { encoded, _ := json.Marshal(options.Groups); if len(encoded) > 8192 { return Result{}, protocolFailure(errors.New("upstream group context is too large")) }; outgoing.Header.Set(gatewayGroupsHeader, string(encoded)) }
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {

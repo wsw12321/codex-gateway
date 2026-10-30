@@ -234,7 +234,7 @@ func (s *Server) groupStoreError(w http.ResponseWriter, r *http.Request, operati
 	case errors.Is(err, store.ErrNotFound):
 		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "group_resource_not_found", "群组或用户不存在")
 	case errors.Is(err, store.ErrConflict):
-		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "group_operation_conflict", "群组操作冲突：成员可能已变化、用户已加入其他群组、群组仍有成员或已归档，或操作 ID 已用于不同请求。请刷新后重试")
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "group_operation_conflict", "群组操作冲突：成员可能已变化、群组仍有成员或已归档，或操作 ID 已用于不同请求。请刷新后重试")
 	default:
 		internalError(s, w, r, operation, err)
 	}

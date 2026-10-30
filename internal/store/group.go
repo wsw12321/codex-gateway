@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -111,6 +110,14 @@ func groupPeriodDuration(period string, customDays int) (time.Duration, error) {
 const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd::text, p.used_usd::text,
 	GREATEST(g.limit_usd-p.used_usd,0)::numeric(30,12)::text, g.period, g.custom_days, g.starts_at,
 	p.id, p.starts_at, p.ends_at, g.period_count, g.current_period_number, g.expires_at,
+	((SELECT count(*) FROM group_memberships gm WHERE gm.group_id=g.id)
+	 + (SELECT count(*) FROM billing_accounts ba WHERE ba.group_id=g.id
+		AND NOT EXISTS (SELECT 1 FROM group_memberships gm2 WHERE gm2.group_id=g.id AND gm2.user_id=ba.user_id)))::int,
+	g.archived_at, g.created_at, g.updated_at, g.model_ids`
+
+const legacyGroupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd::text, p.used_usd::text,
+	GREATEST(g.limit_usd-p.used_usd,0)::numeric(30,12)::text, g.period, g.custom_days, g.starts_at,
+	p.id, p.starts_at, p.ends_at, g.period_count, g.current_period_number, g.expires_at,
 	(SELECT count(*) FROM billing_accounts a WHERE a.group_id=g.id),
 	g.archived_at, g.created_at, g.updated_at, g.model_ids`
 
@@ -138,8 +145,10 @@ func lockGroupTx(ctx context.Context, tx *sql.Tx, id string) error {
 }
 
 func readGroupSummaryTx(ctx context.Context, tx *sql.Tx, id string) (GroupSummary, error) {
-	g, err := scanGroupSummary(tx.QueryRowContext(ctx, `SELECT `+groupSummaryColumns+`
-		FROM user_groups g JOIN group_usage_periods p ON p.id=g.current_period_id WHERE g.id=$1`, id))
+	var available bool
+	if err:=tx.QueryRowContext(ctx, `SELECT to_regclass('group_memberships') IS NOT NULL`).Scan(&available); err!=nil { return GroupSummary{}, mapDBError("check group memberships schema",err) }
+	columns:=legacyGroupSummaryColumns; if available { columns=groupSummaryColumns }
+	g, err := scanGroupSummary(tx.QueryRowContext(ctx, `SELECT `+columns+` FROM user_groups g JOIN group_usage_periods p ON p.id=g.current_period_id WHERE g.id=$1`, id))
 	return g, mapDBError("read group", err)
 }
 
@@ -282,12 +291,15 @@ func groupDetailTx(ctx context.Context, tx *sql.Tx, id string) (Group, error) {
 	if err != nil {
 		return result, err
 	}
+	memberPredicate := `EXISTS (SELECT 1 FROM billing_accounts a WHERE a.group_id=$1 AND a.user_id=u.id)`
+	var membershipTable bool
+	if err:=tx.QueryRowContext(ctx, `SELECT to_regclass('group_memberships') IS NOT NULL`).Scan(&membershipTable); err!=nil{return result,mapDBError("check group memberships schema",err)}
+	if membershipTable { memberPredicate = `EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.group_id=$1 AND gm.user_id=u.id) OR `+memberPredicate }
 	rows, err := tx.QueryContext(ctx, `SELECT u.id,u.username,u.display_name,
 		COALESCE(m.used_usd,0)::numeric(30,12)::text,
 		CASE WHEN $3::numeric IS NULL THEN NULL ELSE GREATEST($3::numeric-COALESCE(m.used_usd,0),0)::numeric(30,12)::text END
-		FROM billing_accounts a JOIN users u ON u.id=a.user_id
-		LEFT JOIN group_member_usage m ON m.period_id=$2 AND m.user_id=u.id
-		WHERE a.group_id=$1 ORDER BY u.username,u.id`, id, summary.PeriodID, summary.MemberLimitUSD)
+		FROM users u LEFT JOIN group_member_usage m ON m.period_id=$2 AND m.user_id=u.id
+		WHERE `+memberPredicate+` ORDER BY COALESCE(m.used_usd,0) DESC, lower(u.username),u.id`, id, summary.PeriodID, summary.MemberLimitUSD)
 	if err != nil {
 		return result, mapDBError("list group members", err)
 	}
@@ -633,115 +645,45 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 
 func (s *Store) SetGroupMembers(ctx context.Context, params SetGroupMembersParams) (Group, error) {
 	removeAll := params.Action == "remove_all"
-	if params.GroupID == "" ||
-		(removeAll && len(params.UserIDs) != 0) ||
-		(!removeAll && ((params.Action != "add" && params.Action != "remove") || len(params.UserIDs) == 0 || len(params.UserIDs) > 5000)) {
+	if params.GroupID == "" || (removeAll && len(params.UserIDs) != 0) || (!removeAll && ((params.Action != "add" && params.Action != "remove") || len(params.UserIDs) == 0 || len(params.UserIDs) > 5000)) {
 		return Group{}, fmt.Errorf("%w: invalid group members operation", ErrInvalid)
 	}
 	ids := append([]string(nil), params.UserIDs...)
 	var err error
-	params.GroupID, err = canonicalGroupID(params.GroupID)
-	if err != nil {
-		return Group{}, err
-	}
-	for i, id := range ids {
-		ids[i], err = canonicalGroupID(id)
-		if err != nil {
-			return Group{}, err
-		}
-	}
+	params.GroupID, err = canonicalGroupID(params.GroupID); if err != nil { return Group{}, err }
+	for i,id := range ids { ids[i],err=canonicalGroupID(id); if err!=nil{return Group{},err} }
 	sort.Strings(ids)
-	for i, id := range ids {
-		if id == "" || (i > 0 && ids[i-1] == id) {
-			return Group{}, fmt.Errorf("%w: user IDs must be distinct and nonempty", ErrInvalid)
+	for i,id:=range ids { if i>0&&ids[i-1]==id{return Group{},fmt.Errorf("%w: user IDs must be distinct",ErrInvalid)} }
+	params.At=normalizedBillingTime(params.At,s.now)
+	return s.groupWrite(ctx,params.BillingWriteParams,"members."+params.Action,append([]string{params.GroupID},ids...),func(tx *sql.Tx)(Group,error){
+		memberIDs:=ids
+		if removeAll { var e error; memberIDs,e=groupMemberAccountIDsTx(ctx,tx,params.GroupID,true);if e!=nil{return Group{},e} }
+		// Lock member accounts and users in stable order, then the group. A user
+		// may belong to several groups, so no cross-group conflict is raised.
+		if len(memberIDs)>0 {
+			encoded,_:=marshalStringArray(memberIDs)
+			lockedRows,e:=tx.QueryContext(ctx,`SELECT user_id FROM billing_accounts WHERE user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY user_id FOR UPDATE`,encoded);if e!=nil{return Group{},mapDBError("lock group member accounts",e)};if e=lockedRows.Close();e!=nil{return Group{},e}
+			if e:=lockGroupMemberUsersTx(ctx,tx,memberIDs);e!=nil{return Group{},e}
 		}
-	}
-	params.At = normalizedBillingTime(params.At, s.now)
-	return s.groupWrite(ctx, params.BillingWriteParams, "members."+params.Action, append([]string{params.GroupID}, ids...), func(tx *sql.Tx) (Group, error) {
-		// Lock every account in stable order before the group, matching admission
-		// and settlement. A transfer must be explicit remove then add.
-		memberIDs := ids
+		if e:=lockGroupTx(ctx,tx,params.GroupID);e!=nil{return Group{},e}
+		g,e:=rollGroupTx(ctx,tx,params.GroupID,params.At);if e!=nil{return Group{},e};if g.ArchivedAt!=nil{return Group{},fmt.Errorf("%w: group is archived",ErrConflict)}
 		if removeAll {
-			// Resolve members only after claiming the operation. They are not part
-			// of its fingerprint, and replays must never clear later additions.
-			var err error
-			memberIDs, err = groupMemberAccountIDsTx(ctx, tx, params.GroupID, true)
-			if err != nil {
-				return Group{}, err
-			}
+			if _,e:=tx.ExecContext(ctx,`DELETE FROM group_memberships WHERE group_id=$1`,params.GroupID);e!=nil{return Group{},mapDBError("remove all group memberships",e)}
+			if _,e:=tx.ExecContext(ctx,`UPDATE billing_accounts SET group_id=NULL,updated_at=$2 WHERE group_id=$1 AND NOT EXISTS (SELECT 1 FROM group_memberships gm WHERE gm.user_id=billing_accounts.user_id)`,params.GroupID,params.At);e!=nil{return Group{},mapDBError("clear legacy group mirror",e)}
+		} else if params.Action=="add" {
+			for _,id:=range memberIDs { if _,e:=tx.ExecContext(ctx,`INSERT INTO group_memberships(group_id,user_id,priority,created_at,updated_at) VALUES($1,$2,100,$3,$3) ON CONFLICT(group_id,user_id) DO NOTHING`,params.GroupID,id,params.At);e!=nil{return Group{},mapDBError("add group membership",e)}; if _,e:=tx.ExecContext(ctx,`UPDATE billing_accounts SET group_id=COALESCE(group_id,$2),updated_at=$3 WHERE user_id=$1`,id,params.GroupID,params.At);e!=nil{return Group{},mapDBError("update legacy group mirror",e)} }
 		} else {
-			for _, id := range memberIDs {
-				var current sql.NullString
-				if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1 FOR UPDATE`, id).Scan(&current); err != nil {
-					return Group{}, mapDBError("lock group member", err)
-				}
-				if current.Valid && current.String != params.GroupID {
-					return Group{}, fmt.Errorf("%w: user already belongs to another group", ErrConflict)
-				}
-			}
+			for _,id:=range memberIDs { if _,e:=tx.ExecContext(ctx,`DELETE FROM group_memberships WHERE group_id=$1 AND user_id=$2`,params.GroupID,id);e!=nil{return Group{},mapDBError("remove group membership",e)}; if _,e:=tx.ExecContext(ctx,`UPDATE billing_accounts SET group_id=(SELECT gm.group_id FROM group_memberships gm WHERE gm.user_id=billing_accounts.user_id ORDER BY gm.priority,gm.group_id LIMIT 1),updated_at=$2 WHERE user_id=$1 AND group_id=$3`,id,params.At,params.GroupID);e!=nil{return Group{},mapDBError("update legacy group mirror",e)} }
 		}
-		if err := lockGroupMemberUsersTx(ctx, tx, memberIDs); err != nil {
-			return Group{}, err
-		}
-		if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {
-			return Group{}, err
-		}
-		if removeAll {
-			// Use a separate statement after the group lock, so a wait cannot
-			// leave this check on the locking statement's earlier MVCC snapshot.
-			currentIDs, err := groupMemberAccountIDsTx(ctx, tx, params.GroupID, false)
-			if err != nil {
-				return Group{}, err
-			}
-			if !slices.Equal(memberIDs, currentIDs) {
-				return Group{}, fmt.Errorf("%w: group membership changed while removing all members", ErrConflict)
-			}
-		}
-		g, err := rollGroupTx(ctx, tx, params.GroupID, params.At)
-		if err != nil {
-			return Group{}, err
-		}
-		if g.ArchivedAt != nil {
-			return Group{}, fmt.Errorf("%w: group is archived", ErrConflict)
-		}
-		if removeAll {
-			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=NULL,updated_at=$2 WHERE group_id=$1`, params.GroupID, params.At); err != nil {
-				return Group{}, mapDBError("remove all group members", err)
-			}
-		} else {
-			for _, id := range memberIDs {
-				var groupID any
-				if params.Action == "add" {
-					groupID = params.GroupID
-				}
-				if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=$2,updated_at=$3 WHERE user_id=$1`, id, groupID, params.At); err != nil {
-					return Group{}, mapDBError("set group member", err)
-				}
-			}
-		}
-		return groupDetailTx(ctx, tx, params.GroupID)
+		return groupDetailTx(ctx,tx,params.GroupID)
 	})
 }
 
+
 func groupMemberAccountIDsTx(ctx context.Context, tx *sql.Tx, groupID string, lock bool) ([]string, error) {
-	query := `SELECT user_id FROM billing_accounts WHERE group_id=$1 ORDER BY user_id`
-	if lock {
-		query += ` FOR UPDATE`
-	}
-	rows, err := tx.QueryContext(ctx, query, groupID)
-	if err != nil {
-		return nil, mapDBError("read group member accounts", err)
-	}
-	defer rows.Close()
-	ids := make([]string, 0)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan group member account: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	query := `SELECT user_id FROM (SELECT user_id FROM group_memberships WHERE group_id=$1 UNION SELECT user_id FROM billing_accounts WHERE group_id=$1) members ORDER BY user_id`
+	rows,err:=tx.QueryContext(ctx,query,groupID);if err!=nil{return nil,mapDBError("read group members",err)};defer rows.Close();ids:=[]string{}
+	for rows.Next(){var id string;if err:=rows.Scan(&id);err!=nil{return nil,err};ids=append(ids,id)};return ids,rows.Err()
 }
 
 // All member accounts must already be locked. NO KEY UPDATE prevents status
@@ -810,27 +752,26 @@ func (s *Store) ArchiveGroup(ctx context.Context, params ArchiveGroupParams) (Gr
 	})
 }
 
-// userGroupTx requires the user's billing-account lock, then takes the group
-// lock. This serializes membership changes with the admission snapshot.
-func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) (*GroupSummary, error) {
-	var id sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1`, userID).Scan(&id); err != nil {
-		return nil, mapDBError("read user group", err)
-	}
-	if !id.Valid {
-		return nil, nil
-	}
-	if err := lockGroupTx(ctx, tx, id.String); err != nil {
-		return nil, err
-	}
-	g, err := rollGroupTx(ctx, tx, id.String, at)
+// userGroupTx returns the highest-priority currently usable group. Membership
+// rows are authoritative; the legacy billing_accounts mirror remains a read
+// fallback for databases upgraded from the single-group schema.
+func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, models ...string) (*GroupSummary, error) {
+	type membership struct { id string; priority int }
+	members := []membership{}
+	rows, err := tx.QueryContext(ctx, `SELECT group_id, priority FROM group_memberships WHERE user_id=$1 ORDER BY priority, group_id`, userID)
 	if err != nil {
-		return nil, err
+		if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") { return nil, mapDBError("read user group memberships", err) }
+	} else {
+		for rows.Next() { var m membership; if err:=rows.Scan(&m.id,&m.priority);err!=nil{_ = rows.Close();return nil,err};members=append(members,m) }
+		if err:=rows.Close();err!=nil{return nil,err};if err:=rows.Err();err!=nil{return nil,err}
 	}
-	if g.ArchivedAt != nil {
-		return nil, fmt.Errorf("%w: user belongs to archived group", ErrConflict)
-	}
-	return &g, nil
+	if len(members)==0 { var legacy sql.NullString; if err:=tx.QueryRowContext(ctx,`SELECT group_id FROM billing_accounts WHERE user_id=$1`,userID).Scan(&legacy);err!=nil{return nil,mapDBError("read legacy user group",err)};if legacy.Valid{members=[]membership{{id:legacy.String,priority:100}}} }
+	ids:=make([]string,0,len(members));seen:=map[string]bool{};for _,m:=range members{if !seen[m.id]{seen[m.id]=true;ids=append(ids,m.id)}};sort.Strings(ids)
+	for _,id:=range ids{if err:=lockGroupTx(ctx,tx,id);err!=nil{return nil,err}}
+	byID:=map[string]GroupSummary{};for _,m:=range members{if _,ok:=byID[m.id];ok{continue};g,err:=rollGroupTx(ctx,tx,m.id,at);if err!=nil{return nil,err};if g.ArchivedAt==nil{byID[m.id]=g}}
+	model := ""; if len(models)>0 { model=models[0] }
+	for _,m:=range members{g,ok:=byID[m.id];if !ok{continue};if groupPeriodActive(&g,at)&&billingPositive(g.RemainingUSD)&&(model==""||groupModelAllowed(&g,model)){rem,err:=groupMemberRemainingTx(ctx,tx,g.PeriodID,userID,g.MemberLimitUSD);if err!=nil{return nil,err};if rem==nil||billingPositive(*rem){return &g,nil}}}
+	return nil,nil
 }
 
 func requireGroupQuota(g *GroupSummary, at time.Time) error {

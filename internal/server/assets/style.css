@@ -2775,6 +2775,22 @@ dialog form {
 #upstream-access-users { display: grid; gap: .75rem; }
 #upstream-access-users.hidden { display: none; }
 #billing-group { margin-bottom: 1rem; }
+.billing-group-card { border-top: 1px solid var(--border); padding: 1rem 0; }
+.billing-group-card:first-of-type { border-top: 0; padding-top: 0; }
+.billing-group-card header { display:flex; align-items:center; justify-content:space-between; gap:.75rem; }
+.billing-group-preferences { display:flex; align-items:end; gap:.6rem; flex-wrap:wrap; margin:.75rem 0; }
+.billing-group-preferences label { display:flex; flex-direction:column; gap:.25rem; font-size:.8rem; }
+.billing-group-preferences input[type=number] { width:7rem; }
+.billing-group-preferences input[type=text] { width:14rem; }
+.group-upstream-settings, .group-account-statistics { border-top:1px solid var(--border); margin-top:1.2rem; padding-top:1rem; }
+.group-upstream-providers { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+.group-upstream-provider { display:flex; flex-direction:column; gap:.45rem; padding:.75rem; border:1px solid var(--border); border-radius:.7rem; }
+.group-upstream-provider select[multiple] { min-height:6rem; }
+.group-account-periods { display:flex; flex-wrap:wrap; gap:.5rem; }
+.group-account-period { display:flex; align-items:center; gap:.4rem; padding:.35rem .55rem; border:1px solid var(--border); border-radius:.5rem; }
+.group-account-stats { display:grid; gap:.4rem; margin-top:.75rem; }
+.group-account-stat-row { display:flex; justify-content:space-between; gap:1rem; padding:.55rem .7rem; background:var(--soft); border-radius:.45rem; }
+@media (max-width:600px) { .group-account-stat-row { flex-direction:column; gap:.2rem; } }
 #group-detail > .panel-heading { flex-wrap: wrap; }
 #group-detail > .panel-heading > div:first-child { flex: 1 1 20rem; }
 #group-detail > .panel-heading > .button-group { flex-shrink: 0; }

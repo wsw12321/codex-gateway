@@ -82,6 +82,7 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 		"source_disabled":            state.SourceDisabled,
 		"cash_preferences":           state.CashPreferences,
 		"group":                      state.Group,
+		"groups":                     billingGroupsResponse(state.Groups),
 		"group_member_used_usd":      state.GroupMemberUsedUSD,
 		"group_member_remaining_usd": state.GroupMemberRemainingUSD,
 		"subscriptions":              billingSubscriptionsResponse(state.Subscriptions),
@@ -91,6 +92,22 @@ func billingStateResponse(state store.BillingState, limit, offset int) map[strin
 			"has_more": hasMore, "next_offset": offset + len(state.Ledger),
 		},
 	}
+}
+
+func billingGroupsResponse(values []store.BillingGroupState) []map[string]any {
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		item := map[string]any{
+			"id": value.ID, "name": value.Name, "limit_usd": value.LimitUSD, "member_limit_usd": value.MemberLimitUSD,
+			"used_usd": value.UsedUSD, "remaining_usd": value.RemainingUSD, "period": value.Period, "custom_days": value.CustomDays,
+			"starts_at": value.StartsAt, "period_id": value.PeriodID, "period_starts_at": value.PeriodStartsAt, "period_ends_at": value.PeriodEndsAt,
+			"period_count": value.PeriodCount, "current_period_number": value.CurrentPeriodNumber, "expires_at": value.ExpiresAt,
+			"member_count": value.MemberCount, "archived_at": value.ArchivedAt, "created_at": value.CreatedAt, "updated_at": value.UpdatedAt,
+			"model_ids": value.ModelIDs, "priority": value.Priority, "member_used_usd": value.MemberUsedUSD, "member_remaining_usd": value.MemberRemainingUSD,
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func billingSubscriptionsResponse(values []store.BillingSubscriptionState) []map[string]any {
@@ -148,6 +165,7 @@ func (s *Server) billingUsers(w http.ResponseWriter, r *http.Request) {
 			"id": user.UserID, "username": user.Username, "display_name": user.DisplayName,
 			"role": user.Role, "status": user.Status, "cash_balance_usd": user.BalanceUSD,
 			"group_id":         user.GroupID,
+			"group_ids":        user.GroupIDs,
 			"subscriptions":    billingSubscriptionsResponse(user.Subscriptions),
 			"source_disabled":  user.SourceDisabled,
 			"cash_preferences": user.CashPreferences,

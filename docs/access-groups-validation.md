@@ -11,8 +11,9 @@
 原有权重和近 24 小时费用差额。已有会话、重试和故障切换都重新校验授权；
 失去权限的绑定会被撤销，正在执行的请求继续完成。权重为零仍仅阻止新分配。
 
-群组页面支持创建、编辑、成员批量加入／移除和空群组归档。每个用户最多属于
-一个群组，转组必须先移除。请求按“群组 → 个人日额度 → 周额度 → 月额度 →
+群组页面支持创建、编辑、成员批量加入／移除和空群组归档。每个用户可以加入多个
+群组，并可在“额度与订阅”中为每个群组设置 1–100 优先级；请求按群组优先级依次
+尝试可用群组，再按“个人日额度 → 周额度 → 月额度 →
 现金余额”结算，个人来源遵守本人的禁用设置。群组支付金额为实际费用、群组
 剩余额度、成员本期剩余上限三者的最小值，仅余下费用扣个人额度，同一请求可以
 分摊。群组有可用额度时，个人额度为零也可接受请求。群组耗尽、额度为零、成员
@@ -56,7 +57,7 @@
 返回 409。创建、编辑和查询群组使用可空十进制字符串 `member_limit_usd`；创建时
 省略或传 `null` 表示不限，编辑时省略保留现值、传 `null` 清除上限。
 群组详情的成员 `used_usd` 和可空 `remaining_usd` 分别表示本期群组支付和上限
-剩余，`remaining_usd: null` 表示不限。个人账务接口提供 `group` 摘要及
+剩余，`remaining_usd: null` 表示不限。个人账务接口提供 `groups` 群组摘要数组（含优先级）及
 `group_member_used_usd`、`group_member_remaining_usd`，仅包含所查看用户的数据，
 不包含其他成员明细。
 
@@ -89,6 +90,9 @@
 | `GET/POST /admin/groups` | 列表／创建群组 |
 | `GET/PUT/DELETE /admin/groups/{id}` | 详情／编辑／归档空群组 |
 | `PUT /admin/groups/{id}/members` | `action: add/remove`、`user_ids`；或 `action: remove_all` 清空当前群组 |
+| `PUT /admin/billing/me/groups/{id}/preferences` | 当前用户设置群组 `priority`（1–100） |
+| `PUT /admin/groups/{id}/upstream-accounts/{provider}` | 设置群组账号池 `all` 或 `selected` |
+| `GET /admin/groups/{id}/periods`、`GET /admin/groups/{id}/account-stats` | 群组周期及账号占比统计 |
 
 原单模型权限接口保持兼容。迁移 `0011_upstream_account_access.sql` 和
 `0012_user_groups.sql` 位于 `internal/store/migrations`；既有账号默认共享，
@@ -172,3 +176,8 @@ gateway 与 codex-compat 必须配套更新。网关每次 Codex 生成请求检
 本次仅构建与验证，没有部署、启动生产服务、修改现有 `.env` 或操作真实 OAuth。
 直接侧车冒烟只检查元数据、模型目录和权限协议；真实 JSON／SSE 生成验证应使用
 有效用户 API Key 经 Gateway 完成。
+
+多群组与账号池升级使用 `0037_group_memberships_and_upstream_pools.sql`。迁移会从
+`billing_accounts.group_id` 回填默认优先级为 100 的 membership；新写入以
+`group_memberships` 为准，并按服务商保存 `all` 或 `selected` 账号池。升级后核对
+多群组成员、账号池策略及周期统计接口，再切换兼容侧车版本。

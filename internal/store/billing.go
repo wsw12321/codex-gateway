@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 	"strings"
 	"time"
 
@@ -130,9 +131,18 @@ type BillingLedgerEntry struct {
 	CreatedAt                        time.Time       `json:"created_at"`
 }
 
+type BillingGroupState struct {
+	GroupSummary
+	Priority              int     `json:"priority"`
+	MemberUsedUSD         string  `json:"member_used_usd"`
+	MemberRemainingUSD    *string `json:"member_remaining_usd"`
+}
+
 type BillingState struct {
 	CashPreferences         BillingCashPreferences     `json:"cash_preferences"`
+	// Group is retained as the first-group compatibility view. New callers use Groups.
 	Group                   *GroupSummary              `json:"group,omitempty"`
+	Groups                  []BillingGroupState        `json:"groups,omitempty"`
 	GroupMemberUsedUSD      *string                    `json:"group_member_used_usd"`
 	GroupMemberRemainingUSD *string                    `json:"group_member_remaining_usd"`
 	UserID                  string                     `json:"user_id"`
@@ -148,6 +158,7 @@ type BillingState struct {
 type BillingUserSummary struct {
 	CashPreferences BillingCashPreferences     `json:"cash_preferences"`
 	GroupID         *string                    `json:"group_id,omitempty"`
+	GroupIDs        []string                   `json:"group_ids"`
 	UserID          string                     `json:"user_id"`
 	Username        string                     `json:"username"`
 	DisplayName     string                     `json:"display_name"`
@@ -511,7 +522,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash, &cashPriority); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
-	group, err := userGroupTx(ctx, tx, params.UserID, params.Now)
+	group, err := userGroupTx(ctx, tx, params.UserID, params.Now, params.Model)
 	if err != nil {
 		return BillingReservation{}, err
 	}
@@ -1695,6 +1706,16 @@ func (s *Store) DeleteSubscription(ctx context.Context, params DeleteSubscriptio
 	return state, err
 }
 
+func userBillingGroupsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time) ([]BillingGroupState, error) {
+	type membership struct{id string; priority int}
+	rows,err:=tx.QueryContext(ctx,`SELECT group_id,priority FROM group_memberships WHERE user_id=$1 ORDER BY priority,group_id`,userID)
+	members:=[]membership{};if err!=nil { if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") { return nil,mapDBError("list user group memberships",err) } } else {for rows.Next(){var m membership;if err:=rows.Scan(&m.id,&m.priority);err!=nil{_ = rows.Close();return nil,err};members=append(members,m)};if err:=rows.Close();err!=nil{return nil,err} }
+	if len(members)==0 { var legacy sql.NullString;if err:=tx.QueryRowContext(ctx,`SELECT group_id FROM billing_accounts WHERE user_id=$1`,userID).Scan(&legacy);err!=nil{return nil,mapDBError("read legacy user group",err)};if legacy.Valid{members=[]membership{{id:legacy.String,priority:100}}} }
+	ids:=[]string{};seen:=map[string]bool{};for _,m:=range members{if !seen[m.id]{seen[m.id]=true;ids=append(ids,m.id)}};sort.Strings(ids);for _,id:=range ids{if err:=lockGroupTx(ctx,tx,id);err!=nil{return nil,err}}
+	result:=make([]BillingGroupState,0,len(members));for _,m:=range members{g,err:=rollGroupTx(ctx,tx,m.id,at);if err!=nil{return nil,err};if g.ArchivedAt!=nil{continue};used,err:=groupMemberUsedTx(ctx,tx,g.PeriodID,userID);if err!=nil{return nil,err};remaining,err:=groupMemberRemainingTx(ctx,tx,g.PeriodID,userID,g.MemberLimitUSD);if err!=nil{return nil,err};result=append(result,BillingGroupState{GroupSummary:g,Priority:m.priority,MemberUsedUSD:used,MemberRemainingUSD:remaining})}
+	return result,nil
+}
+
 func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offset int) (BillingState, error) {
 	var state BillingState
 	if userID == "" || offset < 0 {
@@ -1715,21 +1736,13 @@ func (s *Store) GetBillingState(ctx context.Context, userID string, limit, offse
 			return mapDBError("lock billing state account", err)
 		}
 		state.CashPreferences.ChargeEnabled = !state.SourceDisabled.Cash
-		group, err := userGroupTx(ctx, tx, userID, s.now().UTC())
-		if err != nil {
-			return err
-		}
-		state.Group = group
-		if group != nil {
-			used, err := groupMemberUsedTx(ctx, tx, group.PeriodID, userID)
-			if err != nil {
-				return err
-			}
-			state.GroupMemberUsedUSD = &used
-			state.GroupMemberRemainingUSD, err = groupMemberRemainingTx(ctx, tx, group.PeriodID, userID, group.MemberLimitUSD)
-			if err != nil {
-				return err
-			}
+		groups, err := userBillingGroupsTx(ctx, tx, userID, s.now().UTC())
+		if err != nil { return err }
+		state.Groups = groups
+		if len(groups) > 0 {
+			state.Group = &groups[0].GroupSummary
+			state.GroupMemberUsedUSD = &groups[0].MemberUsedUSD
+			state.GroupMemberRemainingUSD = groups[0].MemberRemainingUSD
 		}
 		if _, err := rollBillingSubscriptionsTx(ctx, tx, userID, s.now().UTC()); err != nil {
 			return err
@@ -1815,10 +1828,9 @@ func (s *Store) ListBillingUsers(ctx context.Context) ([]BillingUserSummary, err
 			return nil, err
 		}
 		var groupID *string
-		if state.Group != nil {
-			groupID = &state.Group.ID
-		}
-		result = append(result, BillingUserSummary{GroupID: groupID, UserID: user.id, Username: user.username,
+		if state.Group != nil { groupID = &state.Group.ID }
+		groupIDs := make([]string, 0, len(state.Groups)); for _, g := range state.Groups { groupIDs = append(groupIDs, g.ID) }
+		result = append(result, BillingUserSummary{GroupID: groupID, GroupIDs: groupIDs, UserID: user.id, Username: user.username,
 			DisplayName: user.displayName, Role: user.role, Status: user.status,
 			BalanceUSD: state.BalanceUSD, CashPreferences: state.CashPreferences, SourceDisabled: state.SourceDisabled, Subscriptions: state.Subscriptions})
 	}
