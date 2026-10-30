@@ -885,6 +885,7 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		}
 	}
 	byID := map[string]GroupSummary{}
+	var fallback *GroupSummary
 	for _, m := range members {
 		if _, ok := byID[m.id]; ok {
 			continue
@@ -906,7 +907,14 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		if !ok {
 			continue
 		}
-		if groupPeriodActive(&g, at) && billingPositive(g.RemainingUSD) && (model == "" || groupModelAllowed(&g, model)) {
+		if model != "" && !groupModelAllowed(&g, model) {
+			continue
+		}
+		if fallback == nil && (g.ExpiresAt == nil || at.Before(*g.ExpiresAt)) {
+			copy := g
+			fallback = &copy
+		}
+		if groupPeriodActive(&g, at) && billingPositive(g.RemainingUSD) {
 			rem, err := groupMemberRemainingTx(ctx, tx, g.PeriodID, userID, g.MemberLimitUSD)
 			if err != nil {
 				return nil, err
@@ -916,7 +924,7 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 			}
 		}
 	}
-	return nil, nil
+	return fallback, nil
 }
 
 func requireGroupQuota(g *GroupSummary, at time.Time) error {
