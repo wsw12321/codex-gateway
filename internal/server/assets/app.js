@@ -409,7 +409,13 @@ function formatUSD(value, fallback = "—") {
 
 function formatDateTime(value, fallback = "从未使用") {
   if (!value) return fallback;
-  const date = new Date(value);
+  // Date-only API values represent a calendar date, not midnight UTC. Parse
+  // them as local midnight so the displayed day does not shift with the
+  // browser timezone (for example, 2099-01-01 becoming 2098-12-31).
+  const normalized = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T00:00:00`
+    : value;
+  const date = new Date(normalized);
   return Number.isNaN(date.getTime()) ? fallback : dateTimeFormatter.format(date);
 }
 

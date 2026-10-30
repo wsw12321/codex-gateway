@@ -221,30 +221,67 @@ func (m *AccountManager) Models(ctx context.Context) ([]string, *Failure) {
 
 func (m *AccountManager) eligibleLimits(ctx context.Context, userID string, ids []string) (map[string]int64, *Failure) {
 	var eligible struct {
-		Accounts *[]struct { ID string `json:"id"`; Limit int64 `json:"concurrent_limit"` } `json:"accounts"`
-		Groups *[]struct { GroupID string `json:"group_id"`; Accounts []struct { ID string `json:"id"`; Limit int64 `json:"concurrent_limit"` } `json:"accounts"` } `json:"groups"`
+		Accounts *[]struct {
+			ID    string `json:"id"`
+			Limit int64  `json:"concurrent_limit"`
+		} `json:"accounts"`
+		Groups *[]struct {
+			GroupID  string `json:"group_id"`
+			Accounts []struct {
+				ID    string `json:"id"`
+				Limit int64  `json:"concurrent_limit"`
+			} `json:"accounts"`
+		} `json:"groups"`
 	}
-	if err := m.callback(ctx, "eligible", userID, ids, &eligible); err != nil || (eligible.Accounts == nil && eligible.Groups == nil) { return nil, allocationFailure() }
-	candidates := map[string]bool{}; for _, id := range ids { candidates[id] = true }
+	if err := m.callback(ctx, "eligible", userID, ids, &eligible); err != nil || (eligible.Accounts == nil && eligible.Groups == nil) {
+		return nil, allocationFailure()
+	}
+	candidates := map[string]bool{}
+	for _, id := range ids {
+		candidates[id] = true
+	}
 	limits := map[string]int64{}
 	if eligible.Accounts != nil {
 		for _, account := range *eligible.Accounts {
-			if !candidates[account.ID] || account.Limit < 1 || account.Limit > 2147483647 { return nil, allocationFailure() }
-			if previous, exists := limits[account.ID]; exists { if previous != account.Limit { return nil, allocationFailure() }; continue }
+			if !candidates[account.ID] || account.Limit < 1 || account.Limit > 2147483647 {
+				return nil, allocationFailure()
+			}
+			if previous, exists := limits[account.ID]; exists {
+				if previous != account.Limit {
+					return nil, allocationFailure()
+				}
+				continue
+			}
 			limits[account.ID] = account.Limit
 		}
 	} else {
-		expected := map[string]bool{}; request, _ := ctx.Value(accountRequestKey{}).(accountRequest); for _, group := range request.groups { expected[group.GroupID] = true }
+		expected := map[string]bool{}
+		request, _ := ctx.Value(accountRequestKey{}).(accountRequest)
+		for _, group := range request.groups {
+			expected[group.GroupID] = true
+		}
 		seenGroups := map[string]bool{}
 		for _, group := range *eligible.Groups {
-			if !expected[group.GroupID] || seenGroups[group.GroupID] { return nil, allocationFailure() }; seenGroups[group.GroupID] = true
+			if !expected[group.GroupID] || seenGroups[group.GroupID] {
+				return nil, allocationFailure()
+			}
+			seenGroups[group.GroupID] = true
 			for _, account := range group.Accounts {
-				if !candidates[account.ID] || account.Limit < 1 || account.Limit > 2147483647 { return nil, allocationFailure() }
-				if previous, exists := limits[account.ID]; exists { if previous != account.Limit { return nil, allocationFailure() }; continue }
+				if !candidates[account.ID] || account.Limit < 1 || account.Limit > 2147483647 {
+					return nil, allocationFailure()
+				}
+				if previous, exists := limits[account.ID]; exists {
+					if previous != account.Limit {
+						return nil, allocationFailure()
+					}
+					continue
+				}
 				limits[account.ID] = account.Limit
 			}
 		}
-		if len(seenGroups) != len(expected) { return nil, allocationFailure() }
+		if len(seenGroups) != len(expected) {
+			return nil, allocationFailure()
+		}
 	}
 	return limits, nil
 }
@@ -376,17 +413,43 @@ func (m *AccountManager) acquire(ctx context.Context, request accountRequest, mo
 		// request and ask groups in priority order; a group with no positive
 		// weight or no currently admissible account falls through.
 		groupCandidates := make([][]string, 0, len(request.groups)+1)
-		if len(request.groups) > 0 { for _, group := range request.groups { groupCandidates = append(groupCandidates, group.AccountIDs) } } else { groupCandidates = append(groupCandidates, ids) }
+		if len(request.groups) > 0 {
+			for _, group := range request.groups {
+				groupCandidates = append(groupCandidates, group.AccountIDs)
+			}
+		} else {
+			groupCandidates = append(groupCandidates, ids)
+		}
 		for _, groupIDs := range groupCandidates {
 			preferred, remaining := []string{}, []string{}
 			m.mu.Lock()
 			for _, account := range m.accounts {
-				if !containsString(groupIDs, account.record.ID) || !account.canAcquire(request.conversationHash, limits[account.record.ID]) || !account.record.Enabled || !account.ready || !account.models[model] || account.refreshing || tried[account.record.ID] || time.Now().Before(account.cooldown) { continue }
-				if account.conversations[request.conversationHash] > 0 { preferred = append(preferred, account.record.ID) } else { remaining = append(remaining, account.record.ID) }
+				if !containsString(groupIDs, account.record.ID) || !account.canAcquire(request.conversationHash, limits[account.record.ID]) || !account.record.Enabled || !account.ready || !account.models[model] || account.refreshing || tried[account.record.ID] || time.Now().Before(account.cooldown) {
+					continue
+				}
+				if account.conversations[request.conversationHash] > 0 {
+					preferred = append(preferred, account.record.ID)
+				} else {
+					remaining = append(remaining, account.record.ID)
+				}
 			}
 			m.mu.Unlock()
-			for _, candidates := range [][]string{preferred, remaining} { if len(candidates) == 0 { continue }; selected, failure = m.selectAccount(ctx, request.userID, candidates); if failure != nil { if failure.Code == "upstream_concurrency_exceeded" { continue }; return nil, failure }; break }
-			if selected != "" { break }
+			for _, candidates := range [][]string{preferred, remaining} {
+				if len(candidates) == 0 {
+					continue
+				}
+				selected, failure = m.selectAccount(ctx, request.userID, candidates)
+				if failure != nil {
+					if failure.Code == "upstream_concurrency_exceeded" {
+						continue
+					}
+					return nil, failure
+				}
+				break
+			}
+			if selected != "" {
+				break
+			}
 		}
 		if selected == "" {
 			return nil, accountBusyFailure()
@@ -426,39 +489,87 @@ func (m *AccountManager) selectAccount(ctx context.Context, userID string, ids [
 func (m *AccountManager) callback(ctx context.Context, action, user string, ids []string, destination any) error {
 	payload := map[string]any{"user_id": user, "account_ids": ids}
 	if action == "eligible" {
-		if request, ok := ctx.Value(accountRequestKey{}).(accountRequest); ok && len(request.groups) > 0 { payload["groups"] = request.groups }
+		if request, ok := ctx.Value(accountRequestKey{}).(accountRequest); ok && len(request.groups) > 0 {
+			payload["groups"] = request.groups
+		}
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.gateway+"/internal/antigravity-accounts/"+action, bytes.NewReader(body))
-	if err != nil { return errors.New("allocation unavailable") }
+	if err != nil {
+		return errors.New("allocation unavailable")
+	}
 	req.Header.Set("Authorization", "Bearer "+m.token)
 	req.Header.Set("Content-Type", "application/json")
 	response, err := m.client.Do(req)
-	if err != nil { return errors.New("allocation unavailable") }
+	if err != nil {
+		return errors.New("allocation unavailable")
+	}
 	defer response.Body.Close()
 	media, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if (response.StatusCode != 200 && response.StatusCode != 429) || err != nil || media != "application/json" { return errors.New("allocation unavailable") }
+	if (response.StatusCode != 200 && response.StatusCode != 429) || err != nil || media != "application/json" {
+		return errors.New("allocation unavailable")
+	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, 16385))
-	if err != nil || len(data) > 16384 || uniqueJSON(data) != nil { return errors.New("allocation unavailable") }
+	if err != nil || len(data) > 16384 || uniqueJSON(data) != nil {
+		return errors.New("allocation unavailable")
+	}
 	if response.StatusCode == 429 {
-		var failure struct { Error struct { Code string `json:"code"` } `json:"error"` }
-		if action == "select" && json.Unmarshal(data, &failure) == nil && failure.Error.Code == "upstream_concurrency_exceeded" { return errAccountSelectionBusy }
+		var failure struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if action == "select" && json.Unmarshal(data, &failure) == nil && failure.Error.Code == "upstream_concurrency_exceeded" {
+			return errAccountSelectionBusy
+		}
 		return errors.New("allocation unavailable")
 	}
 	fields, valid := object(data)
-	if !valid || len(fields) != 1 { return errors.New("allocation unavailable") }
+	if !valid || len(fields) != 1 {
+		return errors.New("allocation unavailable")
+	}
 	if action == "eligible" {
 		if raw, ok := fields["accounts"]; ok {
-			var rows []json.RawMessage; if json.Unmarshal(raw, &rows) != nil || rows == nil { return errors.New("allocation unavailable") }
-			for _, row := range rows { account, ok := object(row); if !ok || len(account) != 2 || account["id"] == nil || account["concurrent_limit"] == nil { return errors.New("allocation unavailable") } }
+			var rows []json.RawMessage
+			if json.Unmarshal(raw, &rows) != nil || rows == nil {
+				return errors.New("allocation unavailable")
+			}
+			for _, row := range rows {
+				account, ok := object(row)
+				if !ok || len(account) != 2 || account["id"] == nil || account["concurrent_limit"] == nil {
+					return errors.New("allocation unavailable")
+				}
+			}
 		} else if raw, ok := fields["groups"]; ok {
-			var groups []struct { GroupID string `json:"group_id"`; Accounts []json.RawMessage `json:"accounts"` }
-			if json.Unmarshal(raw, &groups) != nil || groups == nil { return errors.New("allocation unavailable") }
-			for _, group := range groups { if group.GroupID == "" { return errors.New("allocation unavailable") }; for _, row := range group.Accounts { account, ok := object(row); if !ok || len(account) != 2 || account["id"] == nil || account["concurrent_limit"] == nil { return errors.New("allocation unavailable") } } }
-		} else { return errors.New("allocation unavailable") }
-	} else if fields["account_id"] == nil { return errors.New("allocation unavailable") }
-	decoder := json.NewDecoder(bytes.NewReader(data)); decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil { return errors.New("allocation unavailable") }
+			var groups []struct {
+				GroupID  string            `json:"group_id"`
+				Accounts []json.RawMessage `json:"accounts"`
+			}
+			if json.Unmarshal(raw, &groups) != nil || groups == nil {
+				return errors.New("allocation unavailable")
+			}
+			for _, group := range groups {
+				if group.GroupID == "" {
+					return errors.New("allocation unavailable")
+				}
+				for _, row := range group.Accounts {
+					account, ok := object(row)
+					if !ok || len(account) != 2 || account["id"] == nil || account["concurrent_limit"] == nil {
+						return errors.New("allocation unavailable")
+					}
+				}
+			}
+		} else {
+			return errors.New("allocation unavailable")
+		}
+	} else if fields["account_id"] == nil {
+		return errors.New("allocation unavailable")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return errors.New("allocation unavailable")
+	}
 	return nil
 }
 
@@ -538,4 +649,11 @@ func (m *AccountManager) serveInternal(w http.ResponseWriter, r *http.Request) b
 	return true
 }
 
-func containsString(values []string, wanted string) bool { for _, value := range values { if value == wanted { return true } }; return false }
+func containsString(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}

@@ -59,7 +59,9 @@ func normalizeGroupUpstreamParams(p SetGroupUpstreamAccountsParams) (SetGroupUps
 		p.AccountIDs[i] = id
 	}
 	sort.Strings(p.AccountIDs)
-	if p.AccountIDs == nil { p.AccountIDs = []string{} }
+	if p.AccountIDs == nil {
+		p.AccountIDs = []string{}
+	}
 	return p, nil
 }
 
@@ -86,8 +88,12 @@ func (s *Store) SetGroupUpstreamAccounts(ctx context.Context, p SetGroupUpstream
 			return err
 		}
 		var archived sql.NullTime
-		if err := tx.QueryRowContext(ctx, `SELECT archived_at FROM user_groups WHERE id=$1`, p.GroupID).Scan(&archived); err != nil { return mapDBError("read group upstream status", err) }
-		if archived.Valid { return fmt.Errorf("%w: group is archived", ErrConflict) }
+		if err := tx.QueryRowContext(ctx, `SELECT archived_at FROM user_groups WHERE id=$1`, p.GroupID).Scan(&archived); err != nil {
+			return mapDBError("read group upstream status", err)
+		}
+		if archived.Valid {
+			return fmt.Errorf("%w: group is archived", ErrConflict)
+		}
 		if len(p.AccountIDs) > 0 {
 			encoded := marshalStringSliceJSON(p.AccountIDs)
 			var count int
@@ -166,8 +172,12 @@ func (s *Store) GetGroupUpstreamAccounts(ctx context.Context, groupID, provider 
 		return GroupUpstreamAccountPolicy{}, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
 	}
 	var exists bool
-	if err:=s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)`, gid).Scan(&exists); err!=nil{return GroupUpstreamAccountPolicy{},mapDBError("check group upstream group",err)}
-	if !exists{return GroupUpstreamAccountPolicy{},ErrNotFound}
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)`, gid).Scan(&exists); err != nil {
+		return GroupUpstreamAccountPolicy{}, mapDBError("check group upstream group", err)
+	}
+	if !exists {
+		return GroupUpstreamAccountPolicy{}, ErrNotFound
+	}
 	var result GroupUpstreamAccountPolicy
 	err = s.db.QueryRowContext(ctx, `SELECT strategy,updated_at FROM group_upstream_account_policies WHERE group_id=$1 AND provider=$2`, gid, provider).Scan(&result.Strategy, &result.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -214,7 +224,7 @@ func (s *Store) SetGroupUpstreamAccountPolicy(ctx context.Context, p SetGroupUps
 }
 
 type UpstreamAllocationGroup struct {
-	GroupID string `json:"group_id"`
+	GroupID    string   `json:"group_id"`
 	AccountIDs []string `json:"account_ids"`
 }
 
@@ -222,14 +232,28 @@ type UpstreamAllocationGroup struct {
 // caller uses the immutable billing reservation's group ID so a membership
 // or priority edit after admission cannot silently switch the account pool.
 func (s *Store) ListGroupUpstreamAllocationGroup(ctx context.Context, groupID, provider string) (UpstreamAllocationGroup, error) {
-	gid, err := canonicalGroupID(strings.TrimSpace(groupID)); if err != nil { return UpstreamAllocationGroup{}, err }
+	gid, err := canonicalGroupID(strings.TrimSpace(groupID))
+	if err != nil {
+		return UpstreamAllocationGroup{}, err
+	}
 	provider = strings.ToLower(strings.TrimSpace(provider))
-	if provider != UpstreamProviderCodex && provider != UpstreamProviderAntigravity && provider != UpstreamProviderAnthropic { return UpstreamAllocationGroup{}, fmt.Errorf("%w: invalid upstream provider", ErrInvalid) }
-	policy, err := s.GetGroupUpstreamAccounts(ctx, gid, provider); if err != nil { return UpstreamAllocationGroup{}, err }
+	if provider != UpstreamProviderCodex && provider != UpstreamProviderAntigravity && provider != UpstreamProviderAnthropic {
+		return UpstreamAllocationGroup{}, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
+	policy, err := s.GetGroupUpstreamAccounts(ctx, gid, provider)
+	if err != nil {
+		return UpstreamAllocationGroup{}, err
+	}
 	accountIDs := append([]string{}, policy.AccountIDs...)
 	if policy.Strategy == "all" {
-		accounts, err := s.ListUpstreamAccounts(ctx); if err != nil { return UpstreamAllocationGroup{}, err }
-		accountIDs = make([]string, 0, len(accounts)); for _, account := range accounts { accountIDs = append(accountIDs, account.ID) }
+		accounts, err := s.ListUpstreamAccounts(ctx)
+		if err != nil {
+			return UpstreamAllocationGroup{}, err
+		}
+		accountIDs = make([]string, 0, len(accounts))
+		for _, account := range accounts {
+			accountIDs = append(accountIDs, account.ID)
+		}
 	}
 	return UpstreamAllocationGroup{GroupID: gid, AccountIDs: accountIDs}, nil
 }
@@ -238,19 +262,66 @@ func (s *Store) ListGroupUpstreamAllocationGroup(ctx context.Context, groupID, p
 // layers used by a request. A missing policy means all current provider
 // accounts; an explicit selected-empty policy remains an empty layer.
 func (s *Store) ListUserUpstreamAllocationGroups(ctx context.Context, userID, provider string, models ...string) ([]UpstreamAllocationGroup, error) {
-	uid, err := canonicalGroupID(strings.TrimSpace(userID)); if err != nil { return nil, err }
-	provider = strings.ToLower(strings.TrimSpace(provider)); if provider != UpstreamProviderCodex && provider != UpstreamProviderAntigravity && provider != UpstreamProviderAnthropic { return nil, fmt.Errorf("%w: invalid upstream provider", ErrInvalid) }
-	model := ""; if len(models)>0 { model=models[0] }
+	uid, err := canonicalGroupID(strings.TrimSpace(userID))
+	if err != nil {
+		return nil, err
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider != UpstreamProviderCodex && provider != UpstreamProviderAntigravity && provider != UpstreamProviderAnthropic {
+		return nil, fmt.Errorf("%w: invalid upstream provider", ErrInvalid)
+	}
+	model := ""
+	if len(models) > 0 {
+		model = models[0]
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT gm.group_id FROM group_memberships gm JOIN user_groups g ON g.id=gm.group_id WHERE gm.user_id=$1 AND g.archived_at IS NULL AND ($2='' OR g.model_ids ? $2) ORDER BY gm.priority,gm.group_id`, uid, model)
-	ids:=[]string{}
+	ids := []string{}
 	legacyFallback := false
 	if err != nil {
-		if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") { return nil, mapDBError("list user allocation groups", err) }
+		if !strings.Contains(strings.ToLower(err.Error()), "group_memberships") {
+			return nil, mapDBError("list user allocation groups", err)
+		}
 		legacyFallback = true
 	} else {
-		defer rows.Close(); for rows.Next(){var id string;if err:=rows.Scan(&id);err!=nil{return nil,err};ids=append(ids,id)};if err:=rows.Err();err!=nil{return nil,err}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
 	}
-	if legacyFallback { var legacy sql.NullString; if e:=s.db.QueryRowContext(ctx,`SELECT group_id FROM billing_accounts WHERE user_id=$1`,uid).Scan(&legacy);e!=nil{return nil,mapDBError("read legacy allocation group",e)};if legacy.Valid{ids=append(ids,legacy.String)} }
-	result:=make([]UpstreamAllocationGroup,0,len(ids)); for _,gid:=range ids { policy,err:=s.GetGroupUpstreamAccounts(ctx,gid,provider);if err!=nil{return nil,err}; accountIDs:=append([]string{},policy.AccountIDs...);if policy.Strategy=="all" { ar,err:=s.ListUpstreamAccounts(ctx);if err!=nil{return nil,err};accountIDs=make([]string,0,len(ar));for _,a:=range ar{accountIDs=append(accountIDs,a.ID)} };result=append(result,UpstreamAllocationGroup{GroupID:gid,AccountIDs:accountIDs}) }
-	return result,nil
+	if legacyFallback {
+		var legacy sql.NullString
+		if e := s.db.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1`, uid).Scan(&legacy); e != nil {
+			return nil, mapDBError("read legacy allocation group", e)
+		}
+		if legacy.Valid {
+			ids = append(ids, legacy.String)
+		}
+	}
+	result := make([]UpstreamAllocationGroup, 0, len(ids))
+	for _, gid := range ids {
+		policy, err := s.GetGroupUpstreamAccounts(ctx, gid, provider)
+		if err != nil {
+			return nil, err
+		}
+		accountIDs := append([]string{}, policy.AccountIDs...)
+		if policy.Strategy == "all" {
+			ar, err := s.ListUpstreamAccounts(ctx)
+			if err != nil {
+				return nil, err
+			}
+			accountIDs = make([]string, 0, len(ar))
+			for _, a := range ar {
+				accountIDs = append(accountIDs, a.ID)
+			}
+		}
+		result = append(result, UpstreamAllocationGroup{GroupID: gid, AccountIDs: accountIDs})
+	}
+	return result, nil
 }

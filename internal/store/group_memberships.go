@@ -55,20 +55,35 @@ func (s *Store) SetGroupMembershipPriority(ctx context.Context, p SetGroupMember
 		}
 		inserted, err := tx.ExecContext(ctx, `INSERT INTO group_operations(operation_id,actor_user_id,action,request_fingerprint,created_at)
 			VALUES($1,$2,'membership_priority',$3,$4) ON CONFLICT DO NOTHING`, p.OperationID, p.ActorUserID, fingerprint, p.At)
-		if err != nil { return mapDBError("claim membership priority operation", err) }
+		if err != nil {
+			return mapDBError("claim membership priority operation", err)
+		}
 		n, _ := inserted.RowsAffected()
 		if n == 0 {
-			var actor, action string; var stored, encoded []byte
-			if err := tx.QueryRowContext(ctx, `SELECT actor_user_id,action,request_fingerprint,response FROM group_operations WHERE operation_id=$1 FOR UPDATE`, p.OperationID).Scan(&actor, &action, &stored, &encoded); err != nil { return mapDBError("read membership priority operation", err) }
-			if actor != p.ActorUserID || action != "membership_priority" || string(stored) != string(fingerprint) || len(encoded) == 0 { return fmt.Errorf("%w: group operation replay mismatch", ErrConflict) }
+			var actor, action string
+			var stored, encoded []byte
+			if err := tx.QueryRowContext(ctx, `SELECT actor_user_id,action,request_fingerprint,response FROM group_operations WHERE operation_id=$1 FOR UPDATE`, p.OperationID).Scan(&actor, &action, &stored, &encoded); err != nil {
+				return mapDBError("read membership priority operation", err)
+			}
+			if actor != p.ActorUserID || action != "membership_priority" || string(stored) != string(fingerprint) || len(encoded) == 0 {
+				return fmt.Errorf("%w: group operation replay mismatch", ErrConflict)
+			}
 			return json.Unmarshal(encoded, &result)
 		}
 		var archived sql.NullTime
-		if err := tx.QueryRowContext(ctx, `SELECT archived_at FROM user_groups WHERE id=$1`, gid).Scan(&archived); err != nil { return mapDBError("read group status", err) }
-		if archived.Valid { return fmt.Errorf("%w: group is archived", ErrConflict) }
+		if err := tx.QueryRowContext(ctx, `SELECT archived_at FROM user_groups WHERE id=$1`, gid).Scan(&archived); err != nil {
+			return mapDBError("read group status", err)
+		}
+		if archived.Valid {
+			return fmt.Errorf("%w: group is archived", ErrConflict)
+		}
 		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND user_id=$2)`, gid, uid).Scan(&exists); err != nil { return mapDBError("check group membership", err) }
-		if !exists { return fmt.Errorf("%w: group membership not found", ErrNotFound) }
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND user_id=$2)`, gid, uid).Scan(&exists); err != nil {
+			return mapDBError("check group membership", err)
+		}
+		if !exists {
+			return fmt.Errorf("%w: group membership not found", ErrNotFound)
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE group_memberships SET priority=$3,updated_at=$4 WHERE group_id=$1 AND user_id=$2`, gid, uid, p.Priority, p.At); err != nil {
 			return mapDBError("save membership priority", err)
 		}

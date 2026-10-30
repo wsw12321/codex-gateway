@@ -253,8 +253,13 @@ func (s *Store) JoinInvitation(ctx context.Context, hash []byte, userID string) 
 			return mapDBError("read previous group application", err)
 		}
 		var member bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND user_id=$2)`, *i.GroupID, userID).Scan(&member); err != nil { return mapDBError("read current group membership", err) }
-		if member { result = InvitationApplication{InvitationID: i.ID, UserID: &user.ID, Username: user.Username, DisplayName: user.DisplayName, RegisteredAt: user.CreatedAt, Status: "approved"}; return nil }
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM group_memberships WHERE group_id=$1 AND user_id=$2)`, *i.GroupID, userID).Scan(&member); err != nil {
+			return mapDBError("read current group membership", err)
+		}
+		if member {
+			result = InvitationApplication{InvitationID: i.ID, UserID: &user.ID, Username: user.Username, DisplayName: user.DisplayName, RegisteredAt: user.CreatedAt, Status: "approved"}
+			return nil
+		}
 		now := s.now().UTC()
 		if err := invitationCapacityTx(ctx, tx, i, now); err != nil {
 			return err
@@ -268,8 +273,12 @@ func (s *Store) JoinInvitation(ctx context.Context, hash []byte, userID string) 
 		}
 		if !i.RequiresApproval {
 			_, err = tx.ExecContext(ctx, `INSERT INTO group_memberships(group_id,user_id,priority,created_at,updated_at) VALUES($2,$1,100,$3,$3) ON CONFLICT DO NOTHING`, userID, *i.GroupID, now)
-			if err != nil { return mapDBError("join invitation group", err) }
-			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, userID, *i.GroupID); err != nil { return mapDBError("update invitation group mirror", err) }
+			if err != nil {
+				return mapDBError("join invitation group", err)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, userID, *i.GroupID); err != nil {
+				return mapDBError("update invitation group mirror", err)
+			}
 		}
 		// Record only a newly accepted application. Replays return above, and
 		// audit metadata never retains the applicant's profile after rejection.
@@ -435,7 +444,9 @@ func (s *Store) ReviewInvitationApplications(ctx context.Context, invitationID s
 					if _, err := tx.ExecContext(ctx, `INSERT INTO group_memberships(group_id,user_id,priority,created_at,updated_at) VALUES($2,$1,100,$3,$3) ON CONFLICT DO NOTHING`, user.ID, *i.GroupID, at); err != nil {
 						return mapDBError("approve group membership", err)
 					}
-					if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, user.ID, *i.GroupID); err != nil { return mapDBError("update group mirror", err) }
+					if _, err := tx.ExecContext(ctx, `UPDATE billing_accounts SET group_id=COALESCE(group_id,$2) WHERE user_id=$1`, user.ID, *i.GroupID); err != nil {
+						return mapDBError("update group mirror", err)
+					}
 				}
 				if _, err := tx.ExecContext(ctx, `UPDATE invitation_applications SET status='approved',reviewed_at=$2,reviewed_by=$3 WHERE id=$1`, a.ID, at, valueOrNil(actorID)); err != nil {
 					return mapDBError("approve invitation application", err)
