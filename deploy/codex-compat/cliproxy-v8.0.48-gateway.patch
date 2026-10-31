@@ -9100,10 +9100,18 @@ index a8087033..08d5e099 100644
  	var authID, authLabel, authType, authValue string
  	if auth != nil {
 diff --git a/internal/runtime/executor/codex_websockets_executor_test.go b/internal/runtime/executor/codex_websockets_executor_test.go
-index 47e957f3..465cb335 100644
+index 47e957f3..8c15b397 100644
 --- a/internal/runtime/executor/codex_websockets_executor_test.go
 +++ b/internal/runtime/executor/codex_websockets_executor_test.go
-@@ -1173,7 +1173,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
+@@ -9,6 +9,7 @@ import (
+ 	"net/http"
+ 	"net/http/httptest"
+ 	"strings"
++	"sync"
+ 	"sync/atomic"
+ 	"testing"
+ 	"time"
+@@ -1173,7 +1174,7 @@ func TestApplyCodexWebsocketHeadersDefaultsToCodexCloaking(t *testing.T) {
  	}
  }
  
@@ -9112,7 +9120,7 @@ index 47e957f3..465cb335 100644
  	cfg := &config.Config{Codex: config.CodexConfig{DisableCodexCloaking: true}}
  	auth := &cliproxyauth.Auth{
  		Provider: "codex",
-@@ -1205,8 +1205,8 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeadersWhenCloakin
+@@ -1205,8 +1206,8 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeadersWhenCloakin
  	if got := headers.Get("X-Codex-Turn-Metadata"); got != `{"turn_id":"turn-1"}` {
  		t.Fatalf("X-Codex-Turn-Metadata = %s, want %s", got, `{"turn_id":"turn-1"}`)
  	}
@@ -9123,7 +9131,7 @@ index 47e957f3..465cb335 100644
  	}
  	if got := headerValueCaseInsensitive(headers, "session_id"); got != "" {
  		t.Fatalf("unexpected session_id = %q", got)
-@@ -1214,7 +1214,7 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeadersWhenCloakin
+@@ -1214,7 +1215,7 @@ func TestApplyCodexWebsocketHeadersPassesThroughClientIdentityHeadersWhenCloakin
  	if got := headerValueCaseInsensitive(headers, "conversation_id"); got != "" {
  		t.Fatalf("unexpected conversation_id = %q", got)
  	}
@@ -9132,7 +9140,7 @@ index 47e957f3..465cb335 100644
  		if got := headers.Get(key); got != want {
  			t.Errorf("%s = %q, want %q", key, got, want)
  		}
-@@ -1243,7 +1243,7 @@ func TestApplyCodexWebsocketHeadersNativeSessionCombinations(t *testing.T) {
+@@ -1243,7 +1244,7 @@ func TestApplyCodexWebsocketHeadersNativeSessionCombinations(t *testing.T) {
  				"Thread-Id":  "thread-both",
  			},
  			wantSessionID: "sess-both",
@@ -9141,7 +9149,7 @@ index 47e957f3..465cb335 100644
  		},
  		{
  			name: "only session present",
-@@ -1259,7 +1259,7 @@ func TestApplyCodexWebsocketHeadersNativeSessionCombinations(t *testing.T) {
+@@ -1259,7 +1260,7 @@ func TestApplyCodexWebsocketHeadersNativeSessionCombinations(t *testing.T) {
  				"Thread-Id": "thread-only",
  			},
  			wantSessionID: "",
@@ -9150,7 +9158,7 @@ index 47e957f3..465cb335 100644
  		},
  		{
  			name:          "neither present",
-@@ -1871,7 +1871,7 @@ func TestApplyModelHeaderOverridesMultipleHeaders(t *testing.T) {
+@@ -1871,7 +1872,7 @@ func TestApplyModelHeaderOverridesMultipleHeaders(t *testing.T) {
  	}
  }
  
@@ -9159,7 +9167,7 @@ index 47e957f3..465cb335 100644
  	req, err := http.NewRequest(http.MethodPost, "https://example.com/responses", nil)
  	if err != nil {
  		t.Fatalf("NewRequest() error = %v", err)
-@@ -1903,8 +1903,8 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
+@@ -1903,8 +1904,8 @@ func TestApplyCodexHeadersPassesThroughClientIdentityHeaders(t *testing.T) {
  	if got := req.Header.Get("X-Codex-Turn-State"); got != "opaque-turn-state" {
  		t.Fatalf("X-Codex-Turn-State = %q, want %q", got, "opaque-turn-state")
  	}
@@ -9170,6 +9178,181 @@ index 47e957f3..465cb335 100644
  	}
  }
  
+@@ -2641,10 +2642,14 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
+ 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+ 	serverPongCh := make(chan string, 1)
+ 	inWriteHook := make(chan struct{})
++	var inWriteHookOnce sync.Once
+ 	pongDeliveredDuringWrite := make(chan struct{})
++	var pongDeliveredOnce sync.Once
+ 
+ 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
+-		close(inWriteHook)
++		// A failed write is retried on a new connection, which runs the hook
++		// and the handler again; a second close would panic the package run.
++		inWriteHookOnce.Do(func() { close(inWriteHook) })
+ 		// Wait until server confirms pong was received before allowing write to finish.
+ 		select {
+ 		case <-pongDeliveredDuringWrite:
+@@ -2669,12 +2674,18 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
+ 
+ 		// Start server reader loop so server processes control frames.
+ 		readErrCh := make(chan error, 1)
++		payloadReceived := make(chan struct{})
+ 		go func() {
++			signaled := false
+ 			for {
+ 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 					readErrCh <- errRead
+ 					return
+ 				}
++				if !signaled {
++					signaled = true
++					close(payloadReceived)
++				}
+ 			}
+ 		}()
+ 
+@@ -2695,12 +2706,22 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
+ 			if got != "session-ping" {
+ 				t.Errorf("unexpected pong payload: got %q, want session-ping", got)
+ 			}
+-			close(pongDeliveredDuringWrite)
++			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
+ 		case <-time.After(2 * time.Second):
+ 			t.Errorf("pong was not received while payload write was in progress")
+ 			return
+ 		}
+ 
++		// The held client write is released together with the pong. Closing the
++		// socket before that payload arrives fails the write with "use of closed
++		// network connection", so answer only once the request is in.
++		select {
++		case <-payloadReceived:
++		case <-time.After(2 * time.Second):
++			t.Errorf("client payload never reached the server")
++			return
++		}
++
+ 		// Now send terminal response.
+ 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
+ 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
+@@ -2741,10 +2762,14 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
+ 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+ 	serverPongCh := make(chan string, 1)
+ 	inWriteHook := make(chan struct{})
++	var inWriteHookOnce sync.Once
+ 	pongDeliveredDuringWrite := make(chan struct{})
++	var pongDeliveredOnce sync.Once
+ 
+ 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
+-		close(inWriteHook)
++		// A failed write is retried on a new connection, which runs the hook
++		// and the handler again; a second close would panic the package run.
++		inWriteHookOnce.Do(func() { close(inWriteHook) })
+ 		select {
+ 		case <-pongDeliveredDuringWrite:
+ 		case <-time.After(2 * time.Second):
+@@ -2766,11 +2791,17 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
+ 			return nil
+ 		})
+ 
++		payloadReceived := make(chan struct{})
+ 		go func() {
++			signaled := false
+ 			for {
+ 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 					return
+ 				}
++				if !signaled {
++					signaled = true
++					close(payloadReceived)
++				}
+ 			}
+ 		}()
+ 
+@@ -2791,12 +2822,22 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
+ 			if got != "sessionless-ping" {
+ 				t.Errorf("unexpected pong payload: got %q, want sessionless-ping", got)
+ 			}
+-			close(pongDeliveredDuringWrite)
++			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
+ 		case <-time.After(2 * time.Second):
+ 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
+ 			return
+ 		}
+ 
++		// The held client write is released together with the pong. Closing the
++		// socket before that payload arrives fails the write with "use of closed
++		// network connection", so answer only once the request is in.
++		select {
++		case <-payloadReceived:
++		case <-time.After(2 * time.Second):
++			t.Errorf("client payload never reached the server")
++			return
++		}
++
+ 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
+ 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
+ 	}))
+@@ -2833,10 +2874,14 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
+ 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+ 	serverPongCh := make(chan string, 1)
+ 	inWriteHook := make(chan struct{})
++	var inWriteHookOnce sync.Once
+ 	pongDeliveredDuringWrite := make(chan struct{})
++	var pongDeliveredOnce sync.Once
+ 
+ 	testWebsocketWritePayloadHook = func(conn *websocket.Conn) {
+-		close(inWriteHook)
++		// A failed write is retried on a new connection, which runs the hook
++		// and the handler again; a second close would panic the package run.
++		inWriteHookOnce.Do(func() { close(inWriteHook) })
+ 		select {
+ 		case <-pongDeliveredDuringWrite:
+ 		case <-time.After(2 * time.Second):
+@@ -2858,11 +2903,17 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
+ 			return nil
+ 		})
+ 
++		payloadReceived := make(chan struct{})
+ 		go func() {
++			signaled := false
+ 			for {
+ 				if _, _, errRead := conn.ReadMessage(); errRead != nil {
+ 					return
+ 				}
++				if !signaled {
++					signaled = true
++					close(payloadReceived)
++				}
+ 			}
+ 		}()
+ 
+@@ -2883,12 +2934,22 @@ func TestCodexWebsockets_KeepalivePingDuringUpload_NonstreamSessionless(t *testi
+ 			if got != "nonstream-sessionless-ping" {
+ 				t.Errorf("unexpected pong payload: got %q, want nonstream-sessionless-ping", got)
+ 			}
+-			close(pongDeliveredDuringWrite)
++			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
+ 		case <-time.After(2 * time.Second):
+ 			t.Errorf("pong was not received while payload write was in progress on nonstream sessionless connection")
+ 			return
+ 		}
+ 
++		// The held client write is released together with the pong. Closing the
++		// socket before that payload arrives fails the write with "use of closed
++		// network connection", so answer only once the request is in.
++		select {
++		case <-payloadReceived:
++		case <-time.After(2 * time.Second):
++			t.Errorf("client payload never reached the server")
++			return
++		}
++
+ 		respPayload := []byte(`{"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[]}}`)
+ 		_ = conn.WriteMessage(websocket.TextMessage, respPayload)
+ 	}))
 diff --git a/internal/runtime/executor/codex_websockets_request.go b/internal/runtime/executor/codex_websockets_request.go
 index e2b95b26..4b528900 100644
 --- a/internal/runtime/executor/codex_websockets_request.go

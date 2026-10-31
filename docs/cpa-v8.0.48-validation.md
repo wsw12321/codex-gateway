@@ -24,7 +24,7 @@
   `dbb706215a3afd2f0ea3c96482d4233856466caa`；Go **1.26.10**，与上游 `go.mod` 要求一致。
 - 补丁：`deploy/codex-compat/cliproxy-v8.0.48-gateway.patch`，摘要记录在
   [source.lock.json](../deploy/codex-compat/source.lock.json)，镜像标签为
-  `codex-gateway-compat:v8.0.48-dbb70621-6a9f81db396bd188-cpa`。v8.0.30 补丁保留作为回滚输入。
+  `codex-gateway-compat:v8.0.48-dbb70621-dfa7fe36e765f172-cpa`。v8.0.30 补丁保留作为回滚输入。
 - 依赖：上游已自带 go-git/v6 `v6.0.0-alpha.5`、go-billy/v6 `v6.0.0-alpha.2`、`golang.org/x/crypto v0.57.0`、
   `x/net v0.60.0`、`x/text v0.42.0`；补丁只把 `klauspost/compress` 从上游的 `v1.17.4` 升到 `v1.18.7`。
 - 模型目录：`internal/registry/models/models.json` SHA-256
@@ -61,6 +61,11 @@ v8.0.30 补丁对 v8.0.48 三方合并产生 42 个冲突文件。除逐一合�
   使用 `WithSingleSegment(true)`，生产代码未改。
 - **上游计时测试**：`TestServiceHeartbeatFailoverDoesNotDrainBlockingScope` 在原版 v8.0.48 竞态模式下同样约
   1–2/10 失败（重连退避最长 1 秒而等待只有 1 秒）；等待改为覆盖首轮退避，20 次竞态运行全部通过。
+- **上游 Codex keepalive 上传测试**：`TestCodexWebsockets_KeepalivePingDuringUpload_*` 三个测试的假上游在收到
+  `response.create` 之前就发送 `response.completed` 并关闭连接，客户端读循环随即因 EOF 关闭 socket；若被钩子挂起的
+  写入此时尚未执行，就以 `use of closed network connection` 失败（`41c94d1` 仅改文档，CI 镜像构建仍因此失败）。
+  上游 `84e83441` 只修复了 xAI 的同名测试，这里按同一做法等请求到达再应答，并用 `sync.Once` 保护钩子通道。
+  在钩子后注入 200 ms 延迟可稳定复现原失败；修复后注入延迟仍通过，三个测试 `-race -count=200` 全部通过。
 
 因 Gateway 安全策略而调整断言的上游测试：SIWC 绑定资格（OAuth 分类在注册时固定）、续期恢复流程
 （夹具 `id_token` 与 `account_id` 保持一致，矛盾身份会被隔离）、Antigravity 会话代理（配置持久身份登记）、

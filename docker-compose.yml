@@ -169,7 +169,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v8.0.48-dbb70621-6a9f81db396bd188-cpa
+    image: codex-gateway-compat:v8.0.48-dbb70621-dfa7fe36e765f172-cpa
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
@@ -178,7 +178,7 @@ services:
         RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v8.0.48
         CLIPROXY_COMMIT: dbb706215a3afd2f0ea3c96482d4233856466caa
-        CLIPROXY_PATCH_SHA256: 6a9f81db396bd188730e1040628b3196fd60933310ae7d5717b7f6dbae1a5993
+        CLIPROXY_PATCH_SHA256: dfa7fe36e765f1724c8a60f13ab812fda30a96b92087ac5773256351626de1bf
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true
