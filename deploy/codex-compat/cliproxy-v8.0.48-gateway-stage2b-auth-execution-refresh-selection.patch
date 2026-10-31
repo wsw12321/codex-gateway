@@ -1,0 +1,866 @@
+--- a/sdk/cliproxy/auth/conductor_execution.go
++++ b/sdk/cliproxy/auth/conductor_execution.go
+@@ -3,11 +3,15 @@
+ import (
+ 	"bytes"
+ 	"context"
++	"crypto/sha256"
++	"encoding/hex"
+ 	"errors"
+ 	"fmt"
+ 	"io"
+ 	"maps"
++	"net"
+ 	"net/http"
++	"net/url"
+ 	"path/filepath"
+ 	"sort"
+ 	"strconv"
+@@ -121,6 +125,12 @@
+ // Execute performs a non-streaming execution using the configured selector and executor.
+ // It supports multiple providers for the same model and round-robins the starting provider per model.
+ func (m *Manager) Execute(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		if ctx == nil {
++			ctx = context.Background()
++		}
++		ctx = context.WithValue(ctx, gatewayManagedRequestKey{}, true)
++	}
+ 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+ 	req, opts = cliproxysession.Enrich(req, opts)
+ 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+@@ -135,6 +145,12 @@
+ 	}
+ 
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		defaultRequestRetry, maxRetryCredentials = 0, 2
++	}
++	if firstAttemptOnlyFromMetadata(opts.Metadata) {
++		defaultRequestRetry, maxRetryCredentials = 0, 1
++	}
+ 
+ 	var lastErr error
+ 	var preferredUpstreamErr error
+@@ -146,6 +162,9 @@
+ 		if errExec == nil {
+ 			return resp, nil
+ 		}
++		if firstAttemptOnlyFromMetadata(opts.Metadata) {
++			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
++		}
+ 		if isRequestTerminatedError(errExec) || isRequestStopError(errExec) {
+ 			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExec)
+ 		}
+@@ -183,6 +202,12 @@
+ 
+ // It supports multiple providers for the same model and round-robins the starting provider per model.
+ func (m *Manager) ExecuteCount(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		if ctx == nil {
++			ctx = context.Background()
++		}
++		ctx = context.WithValue(ctx, gatewayManagedRequestKey{}, true)
++	}
+ 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+ 	req, opts = cliproxysession.Enrich(req, opts)
+ 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+@@ -197,6 +222,9 @@
+ 	}
+ 
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		defaultRequestRetry, maxRetryCredentials = 0, 2
++	}
+ 
+ 	var lastErr error
+ 	var preferredUpstreamErr error
+@@ -238,6 +266,12 @@
+ // ExecuteStream performs a streaming execution using the configured selector and executor.
+ // It supports multiple providers for the same model and round-robins the starting provider per model.
+ func (m *Manager) ExecuteStream(ctx context.Context, providers []string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		if ctx == nil {
++			ctx = context.Background()
++		}
++		ctx = context.WithValue(ctx, gatewayManagedRequestKey{}, true)
++	}
+ 	ctx = cliproxyexecutor.WithRequestProxyURL(ctx, opts.ProxyURL)
+ 	req, opts = cliproxysession.Enrich(req, opts)
+ 	ctx = WithCodexClientRequest(ctx, IsCodexClientRequest(ctx, opts.Headers))
+@@ -253,6 +287,9 @@
+ 	}
+ 
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
++	if _, gateway := m.Selector().(*GatewayAllocationSelector); gateway {
++		defaultRequestRetry, maxRetryCredentials = 0, 2
++	}
+ 
+ 	var lastErr error
+ 	var preferredUpstreamErr error
+@@ -350,7 +387,18 @@
+ 		Body:           req.Payload,
+ 		Metadata:       opts.Metadata,
+ 	})
++	previousPayload := opts.OriginalRequest
++	if len(previousPayload) == 0 {
++		previousPayload = req.Payload
++	}
++	previousSession, _ := cliproxysession.ExtractSessionInfo(opts.Headers, previousPayload, nil)
++	previousIdentity, _ := cliproxysession.ExtractSessionInfo(opts.Headers, nil, nil)
+ 	opts.Headers = mergeRequestHeaders(opts.Headers, resp.Headers, resp.ClearHeaders)
++	if opts.Headers != nil {
++		// This header is generated at the sidecar boundary and must never be
++		// forwarded from a client/plugin response to an upstream provider.
++		stripConversationHashHeader(opts.Headers)
++	}
+ 	if len(resp.Body) > 0 {
+ 		req.Payload = resp.Body
+ 		opts.OriginalRequest = resp.Body
+@@ -363,43 +411,55 @@
+ 		}
+ 		opts.Metadata[cliproxyexecutor.RequestPathMetadataKey] = path
+ 	}
+-	if resp.Terminate {
+-		return req, opts, &cliproxyexecutor.RequestTerminatedError{
+-			HTTPStatus: resp.StatusCode,
+-			Header:     cloneRequestHeaders(resp.ResponseHeaders),
+-			Body:       bytes.Clone(resp.ResponseBody),
+-		}
+-	}
+-	if len(resp.ClearHeaders) > 0 || len(resp.Body) > 0 {
++	if len(resp.ClearHeaders) > 0 || len(resp.Headers) > 0 || len(resp.Body) > 0 {
++		opts.Metadata = cloneRequestMetadata(opts.Metadata)
++		currentIdentity, _ := cliproxysession.ExtractSessionInfo(opts.Headers, nil, nil)
++		preserveMetadataIdentity := len(resp.Body) == 0 && previousIdentity.UnboundedSessionID == currentIdentity.UnboundedSessionID && previousIdentity.UnboundedParentSessionID == currentIdentity.UnboundedParentSessionID
++		// Reparse the final request. Derived identity from the original body or
++		// a previous selection must not override an interceptor's rewrite.
++		for _, key := range []string{
++			cliproxyexecutor.CanonicalSessionIDMetadataKey,
++			cliproxyexecutor.ParentSessionIDMetadataKey,
++			cliproxyexecutor.LCPAffinitySessionIDMetadataKey,
++			cliproxyexecutor.DerivedSessionIDMetadataKey,
++			cliproxyexecutor.IsForkMetadataKey,
++		} {
++			if !preserveMetadataIdentity {
++				delete(opts.Metadata, key)
++			}
++		}
++		delete(opts.Metadata, cliproxyexecutor.ConversationRootSessionIDMetadataKey)
++		delete(opts.Metadata, cliproxyexecutor.ConversationHashMetadataKey)
++		delete(opts.Metadata, conversationRootStateKey)
+ 		evalPayload := opts.OriginalRequest
+ 		if len(evalPayload) == 0 {
+ 			evalPayload = req.Payload
+ 		}
+-		info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata)
+-		if ok && info.SessionID != "" {
++		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, evalPayload, opts.Metadata); ok && info.SessionID != "" {
+ 			if opts.Metadata == nil {
+-				opts.Metadata = make(map[string]any, 2)
++				opts.Metadata = make(map[string]any)
+ 			}
+-			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+-			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+-				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
+-			} else {
+-				delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
++			primary, parent := info.SessionID, info.ParentSessionID
++			if info.ClientType != "lcp" {
++				primary, parent = callerScopedSessionIDs(primary, parent, opts.Metadata)
+ 			}
+-		} else {
+-			delete(opts.Metadata, cliproxyexecutor.CanonicalSessionIDMetadataKey)
++			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(primary)
+ 			delete(opts.Metadata, cliproxyexecutor.ParentSessionIDMetadataKey)
+-			delete(opts.Metadata, cliproxyexecutor.LCPAffinitySessionIDMetadataKey)
+-		}
+-	} else if len(resp.Headers) > 0 {
+-		if info, ok := cliproxysession.ExtractSessionInfo(opts.Headers, nil, opts.Metadata); ok && info.SessionID != "" {
+-			if opts.Metadata == nil {
+-				opts.Metadata = make(map[string]any, 2)
++			if parent != "" && parent != primary {
++				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(parent)
+ 			}
+-			opts.Metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.SessionID)
+-			if info.ParentSessionID != "" && info.ParentSessionID != info.SessionID {
+-				opts.Metadata[cliproxyexecutor.ParentSessionIDMetadataKey] = cliproxysession.BoundSessionIdentity(info.ParentSessionID)
++			if previousSession.UnboundedSessionID == info.UnboundedSessionID && previousSession.UnboundedParentSessionID != "" && info.UnboundedParentSessionID == "" {
++				forgetConversationRootRelation(opts.Metadata, info.UnboundedSessionID)
+ 			}
++			recordConversationRootSessionMetadata(opts.Metadata, info.UnboundedSessionID, info.UnboundedParentSessionID)
++		}
++	}
++	publishConversationHashMetadata(opts.Metadata)
++	if resp.Terminate {
++		return req, opts, &cliproxyexecutor.RequestTerminatedError{
++			HTTPStatus: resp.StatusCode,
++			Header:     cloneRequestHeaders(resp.ResponseHeaders),
++			Body:       bytes.Clone(resp.ResponseBody),
+ 		}
+ 	}
+ 	return req, opts, nil
+@@ -572,6 +632,9 @@
+ 		var errPrepare error
+ 		auth, errPrepare = m.prepareRequestAuth(execCtx, executor, auth)
+ 		if errPrepare != nil {
++			if firstAttemptOnlyFromMetadata(opts.Metadata) {
++				return cliproxyexecutor.Response{}, errPrepare
++			}
+ 			if errCancel := claudeOAuthRequestCancellation(execCtx, auth, errPrepare); errCancel != nil {
+ 				return cliproxyexecutor.Response{}, errCancel
+ 			}
+@@ -608,6 +671,13 @@
+ 					} else {
+ 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+ 					}
++					for _, key := range []string{cliproxyexecutor.ConversationRootSessionIDMetadataKey, conversationRootStateKey} {
++						if value, exists := pickOpts.Metadata[key]; exists {
++							meta[key] = value
++						} else {
++							delete(meta, key)
++						}
++					}
+ 					execOpts.Metadata = meta
+ 				}
+ 			}
+@@ -625,7 +695,7 @@
+ 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+ 			executionSeq := m.nextExecutionSeq()
+ 			startExec := time.Now()
+-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
++			resp, errExec := m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, false)
+ 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 			durationExec := time.Since(startExec)
+ 			if errExec != nil {
+@@ -690,7 +760,7 @@
+ 					}
+ 					continue
+ 				}
+-				if isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec) {
++				if !isGatewayProvider(provider, ctx) && (isResponsesCompactRequestFaultError(execOpts, errExec) || isRequestInvalidError(errExec)) {
+ 					return cliproxyexecutor.Response{}, errExec
+ 				}
+ 				authErr = errExec
+@@ -705,6 +775,9 @@
+ 			return resp, nil
+ 		}
+ 		if authErr != nil {
++			if isGatewayProvider(provider, ctx) && !credentialSwitchEligible(provider, authErr, execCtx) {
++				return cliproxyexecutor.Response{}, authErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -716,7 +789,7 @@
+ 				}
+ 				continue
+ 			}
+-			if isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr) {
++			if !isGatewayProvider(provider, ctx) && (isResponsesCompactRequestFaultError(opts, authErr) || isRequestInvalidError(authErr)) {
+ 				return cliproxyexecutor.Response{}, authErr
+ 			}
+ 			lastErr = authErr
+@@ -826,6 +899,13 @@
+ 					} else {
+ 						delete(meta, cliproxyexecutor.ParentSessionIDMetadataKey)
+ 					}
++					for _, key := range []string{cliproxyexecutor.ConversationRootSessionIDMetadataKey, conversationRootStateKey} {
++						if value, exists := pickOpts.Metadata[key]; exists {
++							meta[key] = value
++						} else {
++							delete(meta, key)
++						}
++					}
+ 					execOpts.Metadata = meta
+ 				}
+ 			}
+@@ -843,7 +923,7 @@
+ 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+ 			executionSeq := m.nextExecutionSeq()
+ 			startExec := time.Now()
+-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
++			resp, errExec := m.executeGatewayAttempt(execCtx, executor, auth, execReq, execOpts, true)
+ 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
+ 			durationExec := time.Since(startExec)
+ 			if errExec != nil {
+@@ -892,7 +972,8 @@
+ 				// count_tokens route and return a generic endpoint 404. Record
+ 				// the failure for hooks and metrics without suspending a model
+ 				// that remains usable through the messages endpoint.
+-				if isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
++				eligible := credentialSwitchEligible(provider, errExec, execCtx)
++				if isGatewayProvider(provider, ctx) && !eligible || isCountTokensEndpointNotFoundError(errExec, execReq.Model) && (result.Error == nil || result.Error.Code != ErrorCodeForceCooldown) {
+ 					m.recordAvailabilityNeutralResult(execCtx, result)
+ 				} else {
+ 					if isCredentialScopedError(errExec) {
+@@ -912,7 +993,7 @@
+ 					}
+ 					continue
+ 				}
+-				if isRequestInvalidError(errExec) {
++				if !isGatewayProvider(provider, ctx) && isRequestInvalidError(errExec) {
+ 					return cliproxyexecutor.Response{}, errExec
+ 				}
+ 				authErr = errExec
+@@ -927,6 +1008,9 @@
+ 			return resp, nil
+ 		}
+ 		if authErr != nil {
++			if isGatewayProvider(provider, ctx) && !credentialSwitchEligible(provider, authErr, execCtx) {
++				return cliproxyexecutor.Response{}, authErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, authErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -938,7 +1022,7 @@
+ 				}
+ 				continue
+ 			}
+-			if isRequestInvalidError(authErr) {
++			if !isGatewayProvider(provider, ctx) && isRequestInvalidError(authErr) {
+ 				return cliproxyexecutor.Response{}, authErr
+ 			}
+ 			lastErr = authErr
+@@ -960,6 +1044,7 @@
+ 	opts = ensureRequestedModelMetadata(opts, routeModel)
+ 	homeMode := m.HomeEnabled()
+ 	homeAuthCount := 1
++	homeTransportFallbackTried := false
+ 	tried := make(map[string]struct{})
+ 	if !homeMode {
+ 		for authID := range m.requestRetryRoundExclusions(retryRound, defaultRequestRetry) {
+@@ -1248,6 +1333,11 @@
+ 			if errCtx := execCtx.Err(); errCtx != nil && ctx != nil && ctx.Err() != nil {
+ 				return nil, errCtx
+ 			}
++			transportFallback := !homeTransportFallbackTried && len(attempted) == 1 &&
++				homeWebsocketTransportFallbackEligible(ctx, selection, errStream)
++			if !transportFallback && isGatewayProvider(provider, ctx) && !credentialSwitchEligible(provider, errStream, execCtx) {
++				return nil, errStream
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				if isRequestScopedStop(action, okAction) {
+@@ -1325,6 +1415,98 @@
+ 	return dst
+ }
+ 
++func credentialSwitchEligible(provider string, err error, ctx context.Context) bool {
++	if isGatewayProvider(provider, ctx) {
++		return gatewayRetryEligible(err, ctx)
++	}
++	return !isRequestInvalidError(err)
++}
++
++type gatewayManagedRequestKey struct{}
++
++func isGatewayProvider(provider string, ctx context.Context) bool {
++	if strings.EqualFold(strings.TrimSpace(provider), "codex") {
++		return true
++	}
++	if ctx == nil {
++		return false
++	}
++	enabled, _ := ctx.Value(gatewayManagedRequestKey{}).(bool)
++	provider = strings.ToLower(strings.TrimSpace(provider))
++	return enabled && (provider == "antigravity" || provider == "claude")
++}
++
++func homeWebsocketTransportFallbackEligible(ctx context.Context, selection *HomeDispatchSelection, err error) bool {
++	return selection != nil && cliproxyexecutor.DownstreamWebsocket(ctx) && statusCodeFromError(err) == http.StatusUpgradeRequired
++}
++
++func (m *Manager) recordCredentialFailure(ctx context.Context, result Result, auth *Auth, provider string, err error, ephemeral bool) bool {
++	eligible := credentialSwitchEligible(provider, err, ctx)
++	if ephemeral {
++		m.reportHomeResult(ctx, result, auth)
++	} else if isGatewayProvider(provider, ctx) && !eligible {
++		m.recordAvailabilityNeutralResult(ctx, result)
++	} else {
++		m.MarkResult(ctx, result)
++	}
++	return eligible
++}
++
++// gatewayRetryEligible is the fail-closed credential switching
++// policy used by ordinary requests and stream bootstrap failures. Only
++// authentication/quota failures, explicit timeouts, transport failures, and
++// upstream server errors may replay the request on another credential.
++func gatewayRetryEligible(err error, ctx context.Context) bool {
++	if err == nil || isRequestTerminatedError(err) {
++		return false
++	}
++	if ctx != nil && ctx.Err() != nil {
++		return false
++	}
++	if errors.Is(err, context.Canceled) {
++		return false
++	}
++	status := statusCodeFromError(err)
++	// Codex marks an incomplete pre-payload stream as request-scoped, but its
++	// explicit 408 status is the transport timeout signal that permits trying a
++	// second credential. Cancellation checks above still take precedence.
++	if status == http.StatusRequestTimeout {
++		return true
++	}
++	if status != 0 && isRequestInvalidError(err) {
++		return false
++	}
++	switch status {
++	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden,
++		http.StatusTooManyRequests:
++		return true
++	}
++	if status >= http.StatusInternalServerError {
++		return true
++	}
++	if status != 0 {
++		return false
++	}
++	var urlErr *url.Error
++	if errors.As(err, &urlErr) && urlErr != nil {
++		return !errors.Is(urlErr.Err, context.Canceled)
++	}
++	if errors.Is(err, context.DeadlineExceeded) {
++		return false
++	}
++	var networkErr net.Error
++	if errors.As(err, &networkErr) && networkErr != nil {
++		return true
++	}
++	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
++		return true
++	}
++	if isRequestInvalidError(err) {
++		return false
++	}
++	return false
++}
++
+ func ensureRequestedModelMetadata(opts cliproxyexecutor.Options, requestedModel string) cliproxyexecutor.Options {
+ 	opts.Metadata = cloneRequestMetadata(opts.Metadata)
+ 	requestedModel = strings.TrimSpace(requestedModel)
+@@ -1571,7 +1753,17 @@
+ 	return prepare()
+ }
+ 
+-func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (*Auth, error) {
++func (m *Manager) prepareRequestAuth(ctx context.Context, executor ProviderExecutor, auth *Auth) (prepared *Auth, err error) {
++	// Preparing tokens must not advance a request across an administrator's
++	// control version. Its eventual result still belongs to its selection.
++	if auth != nil {
++		version := auth.GatewayAccountVersion
++		defer func() {
++			if prepared != nil {
++				prepared.GatewayAccountVersion = version
++			}
++		}()
++	}
+ 	if m == nil || executor == nil || auth == nil {
+ 		return auth, nil
+ 	}
+@@ -1770,6 +1962,11 @@
+ 	}
+ }
+ 
++func firstAttemptOnlyFromMetadata(meta map[string]any) bool {
++	value, _ := meta[cliproxyexecutor.FirstAttemptOnlyMetadataKey].(bool)
++	return value
++}
++
+ func disallowFreeAuthFromMetadata(meta map[string]any) bool {
+ 	if len(meta) == 0 {
+ 		return false
+@@ -1818,6 +2015,15 @@
+ 			callback(authIndex)
+ 		}
+ 	}
++	accountIndex, attributable := GatewayOAuthAccountIndex(auth)
++	if attributable {
++		meta[cliproxyexecutor.UpstreamAccountIndexMetadataKey] = accountIndex
++	} else {
++		delete(meta, cliproxyexecutor.UpstreamAccountIndexMetadataKey)
++	}
++	if callback, ok := meta[cliproxyexecutor.UpstreamAccountIndexCallbackMetadataKey].(func(string)); ok && callback != nil {
++		callback(accountIndex)
++	}
+ }
+ 
+ func (m *Manager) executorFor(provider string) ProviderExecutor {
+@@ -2139,21 +2345,64 @@
+ }
+ 
+ func ensureCanonicalSessionMetadata(metadata map[string]any, headers http.Header, payload []byte) map[string]any {
+-	if metadata != nil {
+-		if canonicalID, ok := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string); ok && strings.TrimSpace(canonicalID) != "" {
+-			return metadata
++	stripConversationHashHeader(headers)
++	if metadata == nil {
++		metadata = make(map[string]any)
++	}
++	canonicalID, _ := metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey].(string)
++	if strings.TrimSpace(canonicalID) == "" {
++		canonicalID = CanonicalSessionID(headers, payload, metadata)
++		if canonicalID != "" {
++			metadata[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+ 		}
+ 	}
+-	canonicalID := CanonicalSessionID(headers, payload, metadata)
+-	if canonicalID == "" {
+-		return metadata
++	// Extract again from the actual request before bounding, including when
++	// Enrich or the affinity selector already supplied a bounded canonical ID.
++	if info, ok := cliproxysession.ExtractSessionInfo(headers, payload, nil); ok && canonicalID != "" {
++		recordConversationRootSessionMetadata(metadata, info.UnboundedSessionID, info.UnboundedParentSessionID)
+ 	}
+-	out := make(map[string]any, len(metadata)+1)
+-	for k, v := range metadata {
+-		out[k] = v
++	publishConversationHashMetadata(metadata)
++	return metadata
++}
++
++func stripConversationHashHeader(headers http.Header) {
++	for key := range headers {
++		if strings.EqualFold(key, logging.ConversationHashHeader) {
++			delete(headers, key)
++		}
++	}
++}
++
++const conversationHashDomain = "codex-gateway/conversation-root/v2\x00"
++
++// publishConversationHashMetadata derives a stable opaque identity from the
++// caller-scoped root session selected by the sidecar. Raw session IDs remain
++// inside metadata and never cross the response boundary.
++func publishConversationHashMetadata(metadata map[string]any) {
++	if metadata == nil {
++		return
++	}
++	ensureConversationRootSessionMetadata(metadata)
++	rootID, _ := metadata[cliproxyexecutor.ConversationRootSessionIDMetadataKey].(string)
++	rootID = strings.TrimSpace(rootID)
++	callerScope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	callerScope = strings.TrimSpace(callerScope)
++	hashValue := ""
++	if rootID != "" {
++		digest := sha256.New()
++		_, _ = digest.Write([]byte(conversationHashDomain))
++		_, _ = digest.Write([]byte(callerScope))
++		_, _ = digest.Write([]byte{0})
++		_, _ = digest.Write([]byte(rootID))
++		full := digest.Sum(nil)
++		hashValue = "conv-" + hex.EncodeToString(full[:16])
++		metadata[cliproxyexecutor.ConversationHashMetadataKey] = hashValue
++	} else {
++		delete(metadata, cliproxyexecutor.ConversationHashMetadataKey)
++	}
++	if callback, ok := metadata[cliproxyexecutor.ConversationHashCallbackMetadataKey].(func(string)); ok && callback != nil {
++		callback(hashValue)
+ 	}
+-	out[cliproxyexecutor.CanonicalSessionIDMetadataKey] = canonicalID
+-	return out
+ }
+ 
+ func syncMetadataSessionToContext(ctx context.Context, metadata map[string]any) context.Context {
+--- a/sdk/cliproxy/auth/conductor_refresh.go
++++ b/sdk/cliproxy/auth/conductor_refresh.go
+@@ -1112,17 +1112,18 @@
+ 	}
+ 	failedToken := authAccessTokenForRequest(ctx, auth, clientHeaders...)
+ 	if failedToken != "" {
+-		m.markRejectedAccessToken(auth.ID, failedToken)
++		m.markRejectedAccessTokenForSnapshot(auth.ID, failedToken, auth)
+ 	}
+ 	if alreadyTried || !authHasRefreshCredential(auth) || hasUnauthorizedAuthFailure(auth) {
+ 		return auth, false
+ 	}
+ 	log.Debugf("unauthorized response for %s (%s), refreshing credentials before fallback", auth.Provider, auth.ID)
+-	refreshed, errRefresh := m.refreshAuthForRequest(ctx, auth.ID, failedToken)
++	refreshed, errRefresh := m.refreshAuthForRequestSnapshot(ctx, auth.ID, failedToken, auth.RegistrationEpoch, auth)
+ 	if errRefresh != nil || refreshed == nil {
+ 		log.Debugf("credential refresh before fallback failed for %s (%s): %v", auth.Provider, auth.ID, errRefresh)
+ 		return auth, false
+ 	}
++	refreshed.GatewayAccountVersion = auth.GatewayAccountVersion
+ 	if failedToken != "" && authAccessTokenForRequest(ctx, refreshed, clientHeaders...) == failedToken && (refreshed.RejectedAccessToken == failedToken || refreshed.RejectedSIWCAccessToken == failedToken) {
+ 		return auth, false
+ 	}
+@@ -1183,13 +1184,17 @@
+ }
+ 
+ func (m *Manager) markRejectedAccessToken(id, failedAccessToken string) {
++	m.markRejectedAccessTokenForSnapshot(id, failedAccessToken, nil)
++}
++
++func (m *Manager) markRejectedAccessTokenForSnapshot(id, failedAccessToken string, snapshot *Auth) {
+ 	if m == nil || id == "" || failedAccessToken == "" {
+ 		return
+ 	}
+ 	releaseMutation := m.lockAuthMutation(id)
+ 	defer releaseMutation()
+ 	m.mu.Lock()
+-	if current := m.auths[id]; current != nil && recordRejectedTokenOnAuth(current, failedAccessToken) {
++	if current := m.auths[id]; current != nil && (snapshot == nil || refreshSnapshotCurrent(snapshot, current)) && recordRejectedTokenOnAuth(current, failedAccessToken) {
+ 		current.Generation++
+ 		current.UpdatedAt = time.Now()
+ 		m.auths[id] = current
+@@ -1201,6 +1206,10 @@
+ }
+ 
+ func (m *Manager) refreshAuthForRequestAtEpoch(ctx context.Context, id, failedAccessToken string, registrationEpoch uint64) (*Auth, error) {
++	return m.refreshAuthForRequestSnapshot(ctx, id, failedAccessToken, registrationEpoch, nil)
++}
++
++func (m *Manager) refreshAuthForRequestSnapshot(ctx context.Context, id, failedAccessToken string, registrationEpoch uint64, selected *Auth) (*Auth, error) {
+ 	if m == nil {
+ 		return nil, errors.New("auth manager is nil")
+ 	}
+@@ -1216,9 +1225,6 @@
+ 	if id == "" {
+ 		return nil, errors.New("auth id is empty")
+ 	}
+-	if failedAccessToken != "" {
+-		m.markRejectedAccessToken(id, failedAccessToken)
+-	}
+ 
+ 	lockValue, _ := m.refreshLocks.LoadOrStore(id, &authRefreshLock{})
+ 	lock, _ := lockValue.(*authRefreshLock)
+@@ -1244,6 +1250,16 @@
+ 	if registrationEpoch != 0 && auth.RegistrationEpoch != registrationEpoch {
+ 		return nil, errors.New("auth registration changed before refresh")
+ 	}
++	if selected != nil {
++		if auth.GatewayAccountBlocked || auth.GatewayAccountVersion != selected.GatewayAccountVersion {
++			return nil, errors.New("gateway account control changed before refresh")
++		}
++		// A concurrent authorization may keep the access token while replacing
++		// the refresh token. Reuse its snapshot without rejecting new credentials.
++		if auth.CredentialVersion != selected.CredentialVersion || CredentialsChanged(selected, auth) {
++			return auth.Clone(), nil
++		}
++	}
+ 	if hasDisabledInvalidGrantFailure(auth) && !forceRefresh {
+ 		return nil, errors.New("auth is disabled with invalid grant")
+ 	}
+@@ -1511,6 +1527,14 @@
+ 	if updated == nil {
+ 		updated = base.Clone()
+ 	}
++	ApplyGatewayOAuthAccountIdentity(updated, updated.Metadata)
++	if isCodexOAuthIdentityRefreshMismatch(base, updated) {
++		return nil, &Error{
++			Code:       "codex_account_identity_changed",
++			Message:    "Codex OAuth account identity changed during refresh",
++			HTTPStatus: http.StatusUnauthorized,
++		}
++	}
+ 	// Preserve runtime created by the executor during Refresh.
+ 	// If executor didn't set one, fall back to the previous runtime.
+ 	if updated.Runtime == nil {
+@@ -1662,3 +1686,29 @@
+ 	wg.Wait()
+ 	return results
+ }
++
++func isCodexOAuthIdentityRefreshMismatch(previous, updated *Auth) bool {
++	if previous == nil || updated == nil || !strings.EqualFold(strings.TrimSpace(previous.Provider), "codex") {
++		return false
++	}
++	if previous.AuthKind() != AuthKindOAuth && updated.AuthKind() != AuthKindOAuth {
++		return false
++	}
++	if updated.Disabled && updated.Status == StatusDisabled {
++		return true
++	}
++	previousIndex, previousValid := CodexOAuthAccountIndex(previous)
++	updatedIndex, updatedValid := CodexOAuthAccountIndex(updated)
++	if !previousValid {
++		return false
++	}
++	return !updatedValid || previousIndex != updatedIndex
++}
++
++// refreshSnapshotCurrent keeps late refresh failures and cancellation from changing
++// reauthorized credentials, a replacement registration, or Gateway account controls.
++func refreshSnapshotCurrent(base, current *Auth) bool {
++	return base != nil && current != nil && base.RegistrationEpoch == current.RegistrationEpoch &&
++		base.CredentialVersion == current.CredentialVersion && !CredentialsChanged(base, current) &&
++		base.GatewayAccountVersion == current.GatewayAccountVersion
++}
+--- a/sdk/cliproxy/auth/conductor_selection.go
++++ b/sdk/cliproxy/auth/conductor_selection.go
+@@ -630,6 +630,7 @@
+ // or scheduler additionally receives lower priority tiers.
+ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool) (priorityAuths, selectorAuths []*Auth, err error) {
+ 	_, sessionAffinity := selector.(*SessionAffinitySelector)
++	_, gatewayAllocation := selector.(*GatewayAllocationSelector)
+ 
+ 	if !sessionAffinity && !schedulerAcross {
+ 		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
+@@ -654,7 +655,7 @@
+ 		priorityAuths = highestPriorityAuths(allAuths)
+ 	}
+ 
+-	if sessionAffinity {
++	if sessionAffinity || gatewayAllocation {
+ 		selectorAuths = allAuths
+ 	} else {
+ 		selectorAuths = highestPriorityAuths(allAuths)
+@@ -672,7 +673,9 @@
+ func selectorContextForAvailableAuths(ctx context.Context, selector Selector, routeModel string) context.Context {
+ 	ctx = withWeightedSelectorStateModel(ctx, selector, routeModel)
+ 	if !isBuiltInSelector(selector) {
+-		if _, sessionAffinity := selector.(*SessionAffinitySelector); !sessionAffinity {
++		_, sessionAffinity := selector.(*SessionAffinitySelector)
++		_, gatewayAllocation := selector.(*GatewayAllocationSelector)
++		if !sessionAffinity && !gatewayAllocation {
+ 			return ctx
+ 		}
+ 	}
+@@ -1103,7 +1106,7 @@
+ 	seen := make(map[string]struct{}, len(m.auths))
+ 	out := make([]string, 0, len(m.auths))
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		provider := canonicalSchedulingProvider(auth.Provider)
+@@ -1133,7 +1136,7 @@
+ 	m.mu.RLock()
+ 	defer m.mu.RUnlock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if canonicalSchedulingProvider(auth.Provider) == targetKey {
+@@ -1303,7 +1306,7 @@
+ 		minWait time.Duration
+ 	)
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1401,7 +1404,7 @@
+ 	m.mu.RLock()
+ 	defer m.mu.RUnlock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1911,6 +1914,9 @@
+ 
+ 	m.mu.RLock()
+ 	selector := m.selector
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		pluginScheduler = nil
++	}
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
+ 	executor, okExecutor := m.executorLocked(provider)
+ 	if !okExecutor {
+@@ -1935,7 +1941,7 @@
+ 		affinityCandidates = make([]*Auth, 0, len(m.auths))
+ 	}
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || candidate.Disabled {
++		if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+@@ -1977,6 +1983,7 @@
+ 	if !handled {
+ 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+ 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
++		selectorCtx = m.withGatewayAllocationRefresh(selectorCtx, selector, selectorAuths, provider, model)
+ 		selected, errPick = selector.Pick(selectorCtx, provider, selectionArgForSelector(selector, model), opts, selectorAuths)
+ 		if errPick != nil {
+ 			if isBuiltInSelector(selector) {
+@@ -1989,6 +1996,13 @@
+ 	if selected == nil {
+ 		return nil, nil, &Error{Code: "auth_not_found", Message: "selector returned no auth"}
+ 	}
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		fresh, err := m.gatewayAllocationSnapshot(selector, []*Auth{selected}, provider, model)
++		if err != nil || len(fresh) != 1 {
++			return nil, nil, gatewayAllocationUnavailable()
++		}
++		selected = fresh[0]
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -2184,7 +2198,7 @@
+ 		m.mu.RLock()
+ 		targetKey := canonicalSchedulingProvider(provider)
+ 		for _, candidate := range m.auths {
+-			if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || candidate.Disabled {
++			if candidate == nil || canonicalSchedulingProvider(executorKeyFromAuth(candidate)) != targetKey || !GatewayAccountAvailable(candidate) {
+ 				continue
+ 			}
+ 			if !eligibility.allows(candidate) {
+@@ -2256,6 +2270,9 @@
+ 
+ 	m.mu.RLock()
+ 	selector := m.selector
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		pluginScheduler = nil
++	}
+ 	opts.Metadata[cliproxyexecutor.SessionAffinityModelMetadataKey] = selectionArgForSelector(selector, model)
+ 	candidates := make([]*Auth, 0, len(m.auths))
+ 	modelKey := strings.TrimSpace(model)
+@@ -2274,7 +2291,7 @@
+ 		affinityCandidates = make([]*Auth, 0, len(m.auths))
+ 	}
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || candidate.Disabled {
++		if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && candidate.ID != pinnedAuthID {
+@@ -2326,6 +2343,7 @@
+ 	if !handled {
+ 		selectorCtx := selectorContextForAvailableAuths(ctx, selector, model)
+ 		selectorCtx = withSessionAffinityTransientAuthIDs(selectorCtx, transientAuthIDs)
++		selectorCtx = m.withGatewayAllocationRefresh(selectorCtx, selector, selectorAuths, "mixed", model)
+ 		selected, errPick = selector.Pick(selectorCtx, "mixed", selectionArgForSelector(selector, model), opts, selectorAuths)
+ 		if errPick != nil {
+ 			if isBuiltInSelector(selector) {
+@@ -2343,6 +2361,13 @@
+ 	if !okExecutor {
+ 		return nil, nil, "", &Error{Code: "executor_not_found", Message: "executor not registered"}
+ 	}
++	if _, gatewayAllocation := selector.(*GatewayAllocationSelector); gatewayAllocation {
++		fresh, err := m.gatewayAllocationSnapshot(selector, []*Auth{selected}, "mixed", model)
++		if err != nil || len(fresh) != 1 {
++			return nil, nil, "", gatewayAllocationUnavailable()
++		}
++		selected = fresh[0]
++	}
+ 	authCopy := selected.Clone()
+ 	if !selected.indexAssigned {
+ 		m.mu.Lock()
+@@ -2395,7 +2420,7 @@
+ 		}
+ 		m.mu.RLock()
+ 		for _, candidate := range m.auths {
+-			if candidate == nil || candidate.Disabled {
++			if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 				continue
+ 			}
+ 			if _, ok := providerSet[canonicalSchedulingProvider(executorKeyFromAuth(candidate))]; !ok {
+@@ -2504,7 +2529,7 @@
+ 	coolingSummaries := make([]string, 0)
+ 	totalCandidates := 0
+ 	for _, candidate := range m.auths {
+-		if candidate == nil || candidate.Disabled {
++		if candidate == nil || !GatewayAccountAvailable(candidate) {
+ 			continue
+ 		}
+ 		providerKey := executorKeyFromAuth(candidate)
