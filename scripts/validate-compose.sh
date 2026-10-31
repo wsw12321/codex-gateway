@@ -211,10 +211,9 @@ grep -Fq 'http://gateway:8080/internal/upstream-accounts/select' "$compat_patch"
     grep -Fq 'TestGatewayAllocationRechecksControlWithoutHoldingManagerLock' "$compat_patch" || \
     fail 'codex-compat must carry bounded Gateway allocation and concurrency regressions'
 grep -Fq 'http://gateway:8080/internal/upstream-accounts/eligible' "$compat_patch" && \
-    grep -Fq 'upstream_account_access_v1' "$compat_patch" && \
     grep -Fq 'TestGatewayAllocationAccessRechecksBindingsAndPreservesOtherSessions' "$compat_patch" && \
-    grep -Fq 'TestGatewayUserIdentityConsumedAndValidated' "$compat_patch" || \
-    fail 'codex-compat must enforce authenticated per-user account eligibility before binding reuse'
+    grep -Fq 'TestGatewayAllocationAccessRejectsIdentityAndForgedEligibility' "$compat_patch" || \
+    fail 'codex-compat must enforce authenticated account eligibility before binding reuse'
 grep -Eq '^[[:space:]]+session-affinity-ttl:[[:space:]]*"1h"[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must retain session affinity for one hour'
 grep -Eq '^[[:space:]]+bootstrap-retries:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
