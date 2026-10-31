@@ -178,7 +178,7 @@ services:
         RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v8.0.48
         CLIPROXY_COMMIT: dbb706215a3afd2f0ea3c96482d4233856466caa
-        CLIPROXY_PATCH_SHA256: ff77cdabd75af88a3893f255db0be09c388996cc08a779075fa5d94e1adf8b83
+        CLIPROXY_PATCH_SHA256: 8f856eeabf625c980ebc62044e5ab20cc26f51f56ee1cd87406a0392dbc1554c
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true

@@ -1,3 +1,31 @@
+diff --git a/go.mod b/go.mod
+index 9236727..afe03d8 100644
+--- a/go.mod
++++ b/go.mod
+@@ -15,7 +15,7 @@ require (
+ 	github.com/gorilla/websocket v1.5.3
+ 	github.com/jackc/pgx/v5 v5.9.2
+ 	github.com/joho/godotenv v1.5.1
+-	github.com/klauspost/compress v1.17.4
++	github.com/klauspost/compress v1.18.7
+ 	github.com/libp2p/zeroconf/v2 v2.2.0
+ 	github.com/miekg/dns v1.1.43
+ 	github.com/minio/minio-go/v7 v7.0.66
+diff --git a/go.sum b/go.sum
+index 50767c7..fdd282e 100644
+--- a/go.sum
++++ b/go.sum
+@@ -114,8 +114,8 @@ github.com/json-iterator/go v1.1.12 h1:PV8peI4a0ysnczrg+LtxykD8LfKY9ML6u2jnxaEnr
+ github.com/json-iterator/go v1.1.12/go.mod h1:e30LSqwooZae/UwlEbR2852Gd8hjQvJoHmT4TnhNGBo=
+ github.com/kevinburke/ssh_config v1.6.0 h1:J1FBfmuVosPHf5GRdltRLhPJtJpTlMdKTBjRgTaQBFY=
+ github.com/kevinburke/ssh_config v1.6.0/go.mod h1:q2RIzfka+BXARoNexmF9gkxEX7DmvbW9P4hIVx2Kg4M=
+-github.com/klauspost/compress v1.17.4 h1:Ej5ixsIri7BrIjBkRZLTo6ghwrEtHFk7ijlczPW4fZ4=
+-github.com/klauspost/compress v1.17.4/go.mod h1:/dCuZOvVtNoHsyb+cuJD3itjs3NbnF6KH9zAO4BDxPM=
++github.com/klauspost/compress v1.18.7 h1:aUyZsS4kH3QTKurYhAOwAHxllVPnOthb3vPfnF1Ehjw=
++github.com/klauspost/compress v1.18.7/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+ github.com/klauspost/cpuid/v2 v2.0.1/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
+ github.com/klauspost/cpuid/v2 v2.0.9/go.mod h1:FInQzS24/EEf25PyTYn52gqo7WaD8xa0213Md/qVLRg=
+ github.com/klauspost/cpuid/v2 v2.3.0 h1:S4CRMLnYUhGeDFDqkGriYKdfoFlDnMtqTiI/sFzhA9Y=
 diff --git a/internal/api/anthropic_gateway_internal.go b/internal/api/anthropic_gateway_internal.go
 new file mode 100644
 index 0000000..4e81af0

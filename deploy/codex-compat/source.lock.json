@@ -3,7 +3,7 @@
   "tag": "v8.0.48",
   "commit": "dbb706215a3afd2f0ea3c96482d4233856466caa",
   "patch": "cliproxy-v8.0.48-gateway.patch",
-  "patch_sha256": "ff77cdabd75af88a3893f255db0be09c388996cc08a779075fa5d94e1adf8b83",
+  "patch_sha256": "8f856eeabf625c980ebc62044e5ab20cc26f51f56ee1cd87406a0392dbc1554c",
   "go_version": "1.26.10",
   "model_catalog": {
     "repository": "https://github.com/router-for-me/CLIProxyAPI",
