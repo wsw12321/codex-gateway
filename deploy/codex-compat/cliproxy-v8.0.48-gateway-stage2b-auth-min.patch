@@ -1,0 +1,122 @@
+diff --git a/sdk/cliproxy/auth/conductor_cooldown.go b/sdk/cliproxy/auth/conductor_cooldown.go
+--- a/sdk/cliproxy/auth/conductor_cooldown.go
++++ b/sdk/cliproxy/auth/conductor_cooldown.go
+@@ -369,7 +369,7 @@
+ 		return false
+ 	}
+ 	auth := m.auths[authID]
+-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) || hasUnauthorizedAuthFailure(auth) {
++	if auth == nil || !m.gatewayCooldownRecordCurrentLocked(auth, record) || auth.Disabled || auth.Status == StatusDisabled || m.cooldownDisabledForAuth(auth) || hasUnauthorizedAuthFailure(auth) {
+ 		return false
+ 	}
+ 	updatedAt := record.UpdatedAt
+@@ -786,7 +786,8 @@
+ 	return a.Code == b.Code &&
+ 		a.Message == b.Message &&
+ 		a.Retryable == b.Retryable &&
+-		a.HTTPStatus == b.HTTPStatus
++		a.HTTPStatus == b.HTTPStatus &&
++		a.QuotaExhausted == b.QuotaExhausted
+ }
+ 
+ func authCooldownStateRecord(auth *Auth, now time.Time) (CooldownStateRecord, bool) {
+@@ -928,6 +929,16 @@
+ 			m.publishErrorEvent(result, nil)
+ 			return
+ 		}
++		if !m.gatewayResultCurrentLocked(auth, result) {
++			m.mu.Unlock()
++			releaseMutation()
++			m.hook.OnResult(ctx, result)
++			m.publishErrorEvent(result, nil)
++			return
++		}
++		if !result.Success && result.Error != nil && result.Error.QuotaExhausted && !result.SkipQuotaObservation && result.Error.HTTPStatus != http.StatusUnauthorized && result.Error.HTTPStatus != http.StatusForbidden {
++			m.markGatewayQuotaExhaustedLocked(auth)
++		}
+ 		if modelKey == "" && strings.TrimSpace(result.RouteModel) != "" {
+ 			if m != nil {
+ 				modelKey = m.selectionModelKeyForAuth(auth, result.RouteModel)
+@@ -1467,6 +1478,10 @@
+ }
+ 
+ func (m *Manager) recordAvailabilityNeutralResult(ctx context.Context, result Result) {
++	if result.Error != nil && result.Error.QuotaExhausted && !result.SkipQuotaObservation {
++		m.MarkResult(ctx, result)
++		return
++	}
+ 	if result.AuthID == "" {
+ 		return
+ 	}
+@@ -1476,7 +1491,7 @@
+ 	defer releaseMutation()
+ 	m.mu.Lock()
+ 	if auth, ok := m.auths[result.AuthID]; ok && auth != nil {
+-		if isStaleExecutionResult(result, auth) {
++		if isStaleExecutionResult(result, auth) || !m.gatewayResultCurrentLocked(auth, result) {
+ 			m.mu.Unlock()
+ 			releaseMutation()
+ 			m.hook.OnResult(ctx, result)
+@@ -1898,10 +1913,11 @@
+ 		return nil
+ 	}
+ 	return &Error{
+-		Code:       err.Code,
+-		Message:    err.Message,
+-		Retryable:  err.Retryable,
+-		HTTPStatus: err.HTTPStatus,
++		Code:           err.Code,
++		Message:        err.Message,
++		Retryable:      err.Retryable,
++		HTTPStatus:     err.HTTPStatus,
++		QuotaExhausted: err.QuotaExhausted,
+ 	}
+ }
+ 
+@@ -1967,9 +1983,16 @@
+ 	} else {
+ 		resultErr = &Error{Message: err.Error()}
+ 	}
++	var quotaSignal interface{ QuotaExhausted() bool }
++	if errors.As(err, &quotaSignal) && quotaSignal != nil && quotaSignal.QuotaExhausted() {
++		resultErr.QuotaExhausted = true
++	}
+ 	if resultErr.HTTPStatus == 0 {
+ 		resultErr.HTTPStatus = statusCodeFromError(err)
+ 	}
++	if resultErr.HTTPStatus == http.StatusUnauthorized || resultErr.HTTPStatus == http.StatusForbidden {
++		resultErr.QuotaExhausted = false
++	}
+ 	switch {
+ 	case isStreamTruncatedError(err):
+ 		// Preserve the local truncation classification alongside the public
+diff --git a/sdk/cliproxy/auth/types.go b/sdk/cliproxy/auth/types.go
+--- a/sdk/cliproxy/auth/types.go
++++ b/sdk/cliproxy/auth/types.go
+@@ -79,6 +79,10 @@
+ 	StatusMessage string `json:"status_message,omitempty"`
+ 	// Disabled indicates the auth is intentionally disabled by operator.
+ 	Disabled bool `json:"disabled"`
++	// GatewayAccountBlocked and GatewayAccountVersion belong to the independent
++	// durable account control store, never to an OAuth credential file.
++	GatewayAccountBlocked bool   `json:"-"`
++	GatewayAccountVersion uint64 `json:"-"`
+ 	// Unavailable flags transient provider unavailability (e.g. quota exceeded).
+ 	Unavailable bool `json:"unavailable"`
+ 	// ProxyURL overrides the global proxy setting for this auth if provided.
+@@ -686,10 +690,11 @@
+ 	copyState.Quota = m.Quota.Clone()
+ 	if m.LastError != nil {
+ 		copyState.LastError = &Error{
+-			Code:       m.LastError.Code,
+-			Message:    m.LastError.Message,
+-			Retryable:  m.LastError.Retryable,
+-			HTTPStatus: m.LastError.HTTPStatus,
++			Code:           m.LastError.Code,
++			Message:        m.LastError.Message,
++			Retryable:      m.LastError.Retryable,
++			HTTPStatus:     m.LastError.HTTPStatus,
++			QuotaExhausted: m.LastError.QuotaExhausted,
+ 		}
+ 	}
+ 	if m.credentialQuotaShadow != nil {
