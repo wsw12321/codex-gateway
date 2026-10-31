@@ -188,10 +188,10 @@ grep -Fq 'go test -count=1' "$compat_dockerfile" || \
     fail 'codex-compat image must run the patch regression tests'
 grep -Fq 'go test -list' "$compat_dockerfile" && grep -Fq 'grep -Fxq "$test_name"' "$compat_dockerfile" || \
     fail 'codex-compat image must fail closed when a named runtime regression test is missing'
-grep -Fq 'TestCodexAstraUpgradeHTTPTransports' "$compat_dockerfile" && \
-    grep -Fq 'TestAstraUpgradeModels' "$compat_patch" && \
-    grep -Fq 'TestAstraUpgradeResponses' "$compat_patch" || \
-    fail 'codex-compat must verify Astra models, Responses, SSE, and compact'
+grep -Fq 'TestCodexDiagnosticProbeResponsesLiteContract' "$compat_dockerfile" && \
+    grep -Fq 'TestCodexDiagnosticProbeSSEValidation' "$compat_dockerfile" && \
+    grep -Fq 'TestGatewayAccountQuotaSignalAcrossOrdinaryCompactAndSSE' "$compat_patch" || \
+    fail 'codex-compat must verify Responses, SSE, compact, and Gateway quota handling'
 grep -Fq './internal/watcher' "$compat_dockerfile" && \
     grep -Fq './internal/auth/codex' "$compat_dockerfile" && \
     grep -Fq './sdk/auth' "$compat_dockerfile" || \
