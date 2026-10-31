@@ -7,7 +7,7 @@ upstream commit:
   https://github.com/router-for-me/CLIProxyAPI
   dbb706215a3afd2f0ea3c96482d4233856466caa
   Gateway patch: deploy/codex-compat/cliproxy-v8.0.48-gateway.patch
-  SHA256: 04e1fef28ceaf627175ae48be90dcf8e1ae8cd77ca8ee00c80189f54d4c3341a
+  SHA256: 325df2292a40cb27bc2753bf60d52d5b4c955ab0a839f0b3e381999dd0f6d30b
 
 CLIProxyAPI is licensed under the MIT License. Its copyright remains with the
 upstream authors and contributors. The license text supplied by the upstream

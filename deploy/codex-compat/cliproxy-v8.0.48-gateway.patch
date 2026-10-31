@@ -238,6 +238,26 @@ index 0000000..9eb54e8
 +	scope, _ := ctx.Value(gatewayScopeKey{}).(string)
 +	return scope
 +}
+diff --git a/internal/logging/cpa_trace.go b/internal/logging/cpa_trace.go
+index 8d9fbfc..c908a0c 100644
+--- a/internal/logging/cpa_trace.go
++++ b/internal/logging/cpa_trace.go
+@@ -13,6 +13,15 @@ import (
+ // CPATraceIDHeader is the downstream response header used to correlate requests with selected credentials.
+ const CPATraceIDHeader = "X-CPA-TRACE-ID"
+ 
++// UpstreamAccountHeader identifies the final selected credential by its stable,
++// non-secret auth index. The gateway consumes this header for attribution and
++// removes it before sending the response to an API client.
++const UpstreamAccountHeader = "X-Codex-Upstream-Account"
++
++// ConversationHashHeader carries the sidecar's opaque canonical conversation
++// identity to the gateway. It is stripped by the gateway before reaching API clients.
++const ConversationHashHeader = "X-Codex-Conversation-Hash"
++
+ const ginCPATraceStateKey = "__cpa_trace_state__"
+ 
+ // FormatCPATraceID builds a CPA trace ID from the selection time, auth index, and request ID.
 diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
 index 235c193..eeb0fa5 100644
 --- a/internal/runtime/executor/antigravity_executor_execute.go
@@ -3069,17 +3089,20 @@ index b2421f7..01652fc 100644
 +		base.GatewayAccountVersion == current.GatewayAccountVersion
 +}
 diff --git a/sdk/cliproxy/auth/conductor_selection.go b/sdk/cliproxy/auth/conductor_selection.go
-index bf1bbc5..d8f06d8 100644
+index bf1bbc5..66995ee 100644
 --- a/sdk/cliproxy/auth/conductor_selection.go
 +++ b/sdk/cliproxy/auth/conductor_selection.go
-@@ -630,6 +630,7 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
+@@ -630,8 +630,9 @@ func (m *Manager) availableAuthsForRouteModelWithPriorityMode(auths []*Auth, pro
  // or scheduler additionally receives lower priority tiers.
  func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, provider, routeModel string, now time.Time, schedulerAcross bool) (priorityAuths, selectorAuths []*Auth, err error) {
  	_, sessionAffinity := selector.(*SessionAffinitySelector)
 +	_, gatewayAllocation := selector.(*GatewayAllocationSelector)
  
- 	if !sessionAffinity && !schedulerAcross {
+-	if !sessionAffinity && !schedulerAcross {
++	if !sessionAffinity && !gatewayAllocation && !schedulerAcross {
  		priorityAuths, err = m.availableAuthsForRouteModel(auths, provider, routeModel, now)
+ 		if err != nil {
+ 			return nil, nil, err
 @@ -654,7 +655,7 @@ func (m *Manager) availableAuthsForSelector(selector Selector, auths []*Auth, pr
  		priorityAuths = highestPriorityAuths(allAuths)
  	}
@@ -5002,7 +5025,7 @@ index 0000000..774ed31
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 0000000..86ec8a4
+index 0000000..f595f83
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
 @@ -0,0 +1,400 @@
@@ -5375,7 +5398,7 @@ index 0000000..86ec8a4
 +		}
 +		current = append(current, fresh)
 +	}
-+	_, snapshot, err := m.availableAuthsForSelector(selector, current, provider, model, time.Now())
++	_, snapshot, err := m.availableAuthsForSelector(selector, current, provider, model, time.Now(), false)
 +	return snapshot, err
 +}
 +
