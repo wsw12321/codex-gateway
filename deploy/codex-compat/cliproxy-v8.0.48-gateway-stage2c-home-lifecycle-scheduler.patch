@@ -1,0 +1,150 @@
+--- a/sdk/cliproxy/auth/conductor_home.go
++++ b/sdk/cliproxy/auth/conductor_home.go
+@@ -956,6 +956,9 @@
+ }
+ 
+ func (m *Manager) pickHomeDispatchSelection(ctx context.Context, model string, opts cliproxyexecutor.Options) (*HomeDispatchSelection, error) {
++	if _, gatewayAllocation := m.Selector().(*GatewayAllocationSelector); gatewayAllocation {
++		return nil, gatewayAllocationUnavailable()
++	}
+ 	if m == nil {
+ 		return nil, &Error{Code: "auth_not_found", Message: "no auth available"}
+ 	}
+@@ -1299,7 +1302,7 @@
+ 	var candidates []creditsCandidateEntry
+ 	m.mu.RLock()
+ 	for _, auth := range m.auths {
+-		if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++		if auth == nil || !GatewayAccountAvailable(auth) {
+ 			continue
+ 		}
+ 		if pinnedAuthID != "" && auth.ID != pinnedAuthID {
+@@ -1446,7 +1449,7 @@
+ 			creditsCtx = syncMetadataSessionToContext(creditsCtx, creditsOpts.Metadata)
+ 			executionSeq := m.nextExecutionSeq()
+ 			resp, errExec := c.executor.Execute(creditsCtx, c.auth, execReq, creditsOpts)
+-			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++			result := Result{AuthID: c.auth.ID, Provider: c.provider, Model: resultModel, RouteModel: routeModel, Success: errExec == nil, Options: creditsOpts, CredentialVersion: c.auth.CredentialVersion, RegistrationEpoch: c.auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(c.auth), GatewayAccountVersion: c.auth.GatewayAccountVersion, ExecutionSeq: executionSeq}
+ 			if errExec != nil {
+ 				result.Error = resultErrorFromError(errExec)
+ 				if ra := retryAfterFromError(errExec); ra != nil {
+--- a/sdk/cliproxy/auth/conductor_lifecycle.go
++++ b/sdk/cliproxy/auth/conductor_lifecycle.go
+@@ -86,6 +86,7 @@
+ 		return nil, nil
+ 	}
+ 	NormalizeCredentialMetadata(auth.Metadata)
++	ApplyGatewayOAuthAccountIdentity(auth, auth.Metadata)
+ 	if errWeight := ValidateAuthWeight(auth); errWeight != nil {
+ 		return nil, fmt.Errorf("register auth: %w", errWeight)
+ 	}
+@@ -117,6 +118,18 @@
+ 	}
+ 	auth.EnsureIndex()
+ 	m.mu.Lock()
++	if strings.EqualFold(strings.TrimSpace(auth.Provider), "antigravity") || strings.EqualFold(strings.TrimSpace(auth.Provider), "claude") {
++		if index, ok := GatewayOAuthAccountIndex(auth); ok {
++			for _, existing := range m.auths {
++				other, valid := GatewayOAuthAccountIndex(existing)
++				if valid && other == index && existing.ID != auth.ID {
++					m.mu.Unlock()
++					return nil, ErrGatewayAccountIdentityInvalid
++				}
++			}
++		}
++	}
++
+ 	if m.authEpochs == nil {
+ 		m.authEpochs = make(map[string]uint64)
+ 	}
+@@ -330,7 +343,9 @@
+ 	}
+ 	// Do not let an in-flight refresh overwrite credentials committed after its snapshot.
+ 	if mode == updateModeRefresh && base != nil && (existing.CredentialVersion != base.CredentialVersion || CredentialsChanged(base, existing)) {
+-		if auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
++		_, gatewayAllocation := m.selector.(*GatewayAllocationSelector)
++		gatewayManaged := gatewayAllocation || m.gatewayAccountStatePath != "" || base.GatewayAccountVersion != 0 || existing.GatewayAccountVersion != 0
++		if gatewayManaged || auth.CodexRefreshPatch == nil || !auth.CodexRefreshPatch.CanApplyTo(existing.Metadata) {
+ 			current := existing.Clone()
+ 			m.mu.Unlock()
+ 			// Discarded stale refresh: committed=false so callers do not
+@@ -360,7 +375,9 @@
+ 	} else if auth.RegistrationEpoch == 0 {
+ 		auth.RegistrationEpoch = m.authEpochs[auth.ID]
+ 	}
+-	if !auth.indexAssigned && auth.Index == "" {
++	ApplyGatewayOAuthAccountIdentity(auth, auth.Metadata)
++	isCodexOAuth := strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") && auth.AuthKind() == AuthKindOAuth
++	if !isCodexOAuth && !auth.indexAssigned && auth.Index == "" {
+ 		auth.Index = existing.Index
+ 		auth.indexAssigned = existing.indexAssigned
+ 	}
+@@ -702,6 +719,13 @@
+ 	}
+ 	m.mu.Lock()
+ 	previousAuths := m.auths
++	for _, auth := range items {
++		if auth != nil {
++			NormalizeCredentialMetadata(auth.Metadata)
++			ApplyGatewayOAuthAccountIdentity(auth, auth.Metadata)
++		}
++	}
++	items = DeduplicateCodexOAuthAuths(items)
+ 	m.auths = make(map[string]*Auth, len(items))
+ 	if m.authEpochs == nil {
+ 		m.authEpochs = make(map[string]uint64, len(items))
+@@ -727,6 +751,7 @@
+ 		if auth.CredentialVersion == 0 {
+ 			auth.CredentialVersion = 1
+ 		}
++		m.applyGatewayAccountStateLocked(auth)
+ 		m.auths[auth.ID] = auth.Clone()
+ 	}
+ 
+--- a/sdk/cliproxy/auth/scheduler.go
++++ b/sdk/cliproxy/auth/scheduler.go
+@@ -192,7 +192,7 @@
+ // isSchedulableAuth determines whether an auth can be scheduled by a provider scheduler,
+ // returning its normalized ID and providerKey.
+ func isSchedulableAuth(auth *Auth) (string, string, bool) {
+-	if auth == nil || auth.Disabled || auth.Status == StatusDisabled {
++	if auth == nil || !GatewayAccountAvailable(auth) {
+ 		return "", "", false
+ 	}
+ 	authID := strings.TrimSpace(auth.ID)
+@@ -802,7 +802,7 @@
+ 	authToSchedule := auth
+ 	if existing, ok := s.authGenerations[authID]; ok && existing.epoch == auth.RegistrationEpoch && existing.generation > auth.Generation {
+ 		existingMeta := existingMetas[authID]
+-		if existingMeta == nil || existingMeta.auth == nil || existingMeta.auth.Disabled || existingMeta.auth.Status == StatusDisabled {
++		if existingMeta == nil || existingMeta.auth == nil || !GatewayAccountAvailable(existingMeta.auth) {
+ 			// Newer state disabled or removed the auth from providers; do not resurrect with old enabled snapshot.
+ 			return
+ 		}
+@@ -810,7 +810,7 @@
+ 	}
+ 
+ 	providerKey := executorKeyFromAuth(authToSchedule)
+-	if providerKey == "" || authToSchedule.Disabled || authToSchedule.Status == StatusDisabled {
++	if providerKey == "" || !GatewayAccountAvailable(authToSchedule) {
+ 		s.removeAuthFromProvidersLocked(authID)
+ 		return
+ 	}
+@@ -865,7 +865,7 @@
+ 	}
+ 
+ 	providerKey := executorKeyFromAuth(auth)
+-	if providerKey == "" || auth.Disabled || auth.Status == StatusDisabled {
++	if providerKey == "" || !GatewayAccountAvailable(auth) {
+ 		s.removeAuthFromProvidersLocked(authID)
+ 		return
+ 	}
+@@ -943,7 +943,7 @@
+ 		updatedAt:  auth.UpdatedAt,
+ 	}
+ 
+-	if providerKey == "" || auth.Disabled || auth.Status == StatusDisabled {
++	if providerKey == "" || !GatewayAccountAvailable(auth) {
+ 		s.removeAuthFromProvidersLocked(authID)
+ 		return
+ 	}
