@@ -1,0 +1,63 @@
+--- a/internal/util/header_helpers.go
++++ b/internal/util/header_helpers.go
+@@ -43,6 +43,12 @@
+ // SessionIDResolver is a pluggable resolver for extracting the internal session ID.
+ var SessionIDResolver func(ctx context.Context, clientHeaders http.Header) string
+ 
++const (
++	CodexGatewayUserHeader     = "X-Codex-Gateway-User"
++	CodexGatewayAffinityHeader = "X-Codex-Gateway-Affinity"
++	CodexUpstreamAccountHeader = "X-Codex-Upstream-Account"
++)
++
+ // ResolveClientHeaders returns the client request headers from the provided slice
+ // or falls back to the Gin request headers in r.Context() when available.
+ func ResolveClientHeaders(r *http.Request, clientHeaders ...http.Header) http.Header {
+@@ -211,6 +217,9 @@
+ 		if k == "" || v == "" {
+ 			continue
+ 		}
++		if isCodexInternalHeader(k) {
++			continue
++		}
+ 		// net/http reads Host from req.Host (not req.Header) when writing
+ 		// a real request, so we must mirror it there. Some callers pass
+ 		// synthetic requests (e.g. &http.Request{Header: ...}) and only
+@@ -222,3 +231,37 @@
+ 		r.Header.Set(k, v)
+ 	}
+ }
++
++// RemoveCodexInternalHeaders removes routing, attribution, and hierarchy hints
++// at the final provider request assembly boundary. Session-Id / Session_id and
++// X-Codex-Turn-Metadata retain the existing Codex provider cache/turn semantics.
++func RemoveCodexInternalHeaders(headers http.Header) {
++	if headers == nil {
++		return
++	}
++	for name := range headers {
++		if isCodexInternalHeader(name) || isCodexRelationHeader(name) {
++			delete(headers, name)
++		}
++	}
++}
++
++func isCodexInternalHeader(name string) bool {
++	return strings.EqualFold(strings.TrimSpace(name), "X-Codex-Diagnostic-Run") || strings.EqualFold(strings.TrimSpace(name), "X-Codex-Diagnostic-Probe") || strings.EqualFold(strings.TrimSpace(name), CodexGatewayUserHeader) || strings.EqualFold(strings.TrimSpace(name), CodexGatewayAffinityHeader) ||
++		strings.EqualFold(strings.TrimSpace(name), CodexUpstreamAccountHeader) || strings.EqualFold(strings.TrimSpace(name), "X-Codex-Conversation-Hash")
++}
++
++func isCodexRelationHeader(name string) bool {
++	switch strings.ToLower(strings.ReplaceAll(name, "_", "-")) {
++	case "thread-id", "x-codex-parent-thread-id", "x-openai-subagent",
++		"x-claude-code-session-id", "x-claude-code-agent-id", "x-claude-code-parent-agent-id",
++		"x-claude-code-parent-session-id", "x-claude-parent-session-id", "x-claude-code-side-session-id",
++		"x-http-session-id", "x-session-id", "x-session-affinity", "x-slot-session-id", "x-task-id",
++		"x-conversation-id", "x-thread-id", "x-client-request-id", "x-side-session-id", "x-side-thread-id",
++		"x-parent-id", "x-parent-session", "x-parent-session-id", "x-parent-thread-id", "x-parent-task-id",
++		"x-parent-conversation-id", "x-parent-session-affinity", "x-parent-slot-session-id",
++		"x-parent-side-session-id", "x-parent-side-thread-id":
++		return true
++	}
++	return false
++}
