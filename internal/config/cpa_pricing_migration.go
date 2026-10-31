@@ -24,9 +24,16 @@ func CPAV8PricingModels() map[string]ModelPricing {
 	return models
 }
 
+// RetiredCodexModels lists Codex IDs removed from the pinned CPA catalog. Their
+// usage and ledger history remains readable, but they cannot be priced again.
+func RetiredCodexModels() []string {
+	return []string{"gpt-5.5"}
+}
+
 // MigrateCPAV8Pricing merges the reviewed prices into the entire configured
 // catalog. Unrelated models, FX and fallback policy survive unchanged. Only
-// retired Gemini aliases are removed; API key allowlists are never consulted.
+// retired Gemini aliases and Codex IDs are removed; API key allowlists are
+// never consulted.
 func MigrateCPAV8Pricing(raw []byte) ([]byte, error) {
 	pricing, err := ParseUsagePricing(string(raw))
 	if err != nil {
@@ -35,7 +42,7 @@ func MigrateCPAV8Pricing(raw []byte) ([]byte, error) {
 	if pricing.SchemaVersion != PricingSchemaV2 {
 		return nil, fmt.Errorf("CPA v8 pricing migration requires schema_version 2; convert legacy pricing explicitly first")
 	}
-	for _, model := range RetiredAntigravityModels() {
+	for _, model := range append(RetiredAntigravityModels(), RetiredCodexModels()...) {
 		delete(pricing.Models, model)
 	}
 	for model, rule := range CPAV8PricingModels() {
@@ -65,7 +72,7 @@ func RestoreCPAV8Pricing(current, before, applied []byte) ([]byte, error) {
 	if currentPricing.SchemaVersion != PricingSchemaV2 || beforePricing.SchemaVersion != PricingSchemaV2 || appliedPricing.SchemaVersion != PricingSchemaV2 {
 		return nil, fmt.Errorf("CPA v8 pricing rollback requires schema_version 2 snapshots")
 	}
-	models := RetiredAntigravityModels()
+	models := append(RetiredAntigravityModels(), RetiredCodexModels()...)
 	for model := range CPAV8PricingModels() {
 		models = append(models, model)
 	}
@@ -85,6 +92,17 @@ func RestoreCPAV8Pricing(current, before, applied []byte) ([]byte, error) {
 		currentPricing.CatalogAsOf = beforePricing.CatalogAsOf
 	}
 	return marshalValidatedPricing(currentPricing)
+}
+
+// validateRetiredCodexPricing keeps a stale pricing catalog from reactivating a
+// model that the pinned CPA no longer serves at the next catalog sync.
+func (c Config) validateRetiredCodexPricing() error {
+	for _, model := range RetiredCodexModels() {
+		if _, ok := c.UsagePricing.Models[model]; ok {
+			return fmt.Errorf("GATEWAY_USAGE_PRICING_JSON contains retired CPA model %q; migrate pricing with cpa-pricing-migrate", model)
+		}
+	}
+	return nil
 }
 
 func marshalValidatedPricing(pricing UsagePricing) ([]byte, error) {

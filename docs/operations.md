@@ -117,7 +117,7 @@ v2 的结构如下（片段不能单独部署）：
 ```
 
 完整模板还覆盖 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
-`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
+`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
 `codex-auto-review`，以及 [Gemini 价格目录](gemini-pro.md)。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
@@ -148,8 +148,8 @@ reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的�
   `unknown_service_tier`；二者都在当前上下文档位按各价格分量的最高已公布值
   结算。指定模型/层级/档位缺少组合时记录 `missing_price_combination`，并在该
   模型所有已公布组合中逐分量取最高值。
-- GPT-5.5 和 GPT-5.4 的 Fast 长上下文未公布，分别兜底为
-  `12.5 / 1.25 / 75` 和 `5 / 0.5 / 30`（输入/缓存读取/输出，每百万 Token）。
+- GPT-5.4 的 Fast 长上下文未公布，兜底为 `5 / 0.5 / 30`
+  （输入/缓存读取/输出，每百万 Token）。
   这属于本地保守兜底，不伪装成官方精确价格。
 
 GPT-6 和 GPT-5.6 使用 `cache_write_mode=separate`，缓存写入是独立计费类别：
@@ -162,7 +162,7 @@ cost = (ordinary * input_price
       + output_tokens * output_price) / 1,000,000
 ```
 
-GPT-5.5、GPT-5.4 和 GPT-5.4-mini 使用
+GPT-5.4 和 GPT-5.4-mini 使用
 `cache_write_mode=included_in_input`，cache-write Token 仍包含在普通非缓存输入中，
 不额外收费：
 
@@ -256,11 +256,11 @@ git diff -- deploy/images.sources deploy/images.lock.env
 `latest`。CLIProxyAPI 的构建证明 `v8.0.48` 的 peeled commit 正是
 `dbb706215a3afd2f0ea3c96482d4233856466caa`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
 `v8.0.48-dbb70621-6a9f81db396bd188-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
-本次切换、两个新模型与五个退役模型的一次性目录迁移和兼容回滚见 [CPA v8 操作流程](cpa-v8-cutover.md)。
-新增范围仅为 `claude-haiku-5-5` 与 `gemini-4-argon-high`；基础 Argon 的 `gemini` provider 和
-Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
-v8.0.30 同步更新 CPA 源码、模型目录和价格；数据库迁移 `0035_cpa_v8_0_30_model_catalog.sql`
-必须在镜像切换前完成，回滚使用包含该迁移的兼容构建。
+本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
+[CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
+保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
+v8.0.48 同步更新 CPA 源码、模型目录和价格；价格合并须先移除 `gpt-5.5`，数据库迁移
+`0038_cpa_v8_0_48_model_catalog.sql` 必须在镜像切换前完成，回滚使用包含该迁移的兼容构建。
 本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.30-validation.md)。
 2026-10-12 安全更新使用 Go 1.26.9 构建，并将 CPA 的 `golang.org/x/net`
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。

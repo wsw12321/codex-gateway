@@ -1,4 +1,4 @@
-# CPA v8.0.30 原生模型与定价迁移
+# CPA v8.0.48 原生模型与定价迁移
 
 Gateway 固定使用 CLIProxyAPI **v8.0.48**（commit `dbb706215a3afd2f0ea3c96482d4233856466caa`）的模型目录，
 公开范围限于已经接入的供应商和审核过的模型。
@@ -6,7 +6,23 @@ Gateway 固定使用 CLIProxyAPI **v8.0.48**（commit `dbb706215a3afd2f0ea3c9648
 `/v1/models` 中返回。Antigravity 默认模型为 `gemini-3.8-flash-high`；模型 ID 必须精确匹配，不能用
 别名替代。
 
-本次公开目录仅新增以下两个模型：
+## v8.0.48 目录变更
+
+上游 v8.0.48 从全部四个 Codex 目录（free/team/plus/pro）移除 `gpt-5.5`，并新增 `gpt-6.1-terra`、
+Kimi 与 xAI 模型。Gateway 只退役 `gpt-5.5`，不新增公开模型：`gpt-6.1-terra` 尚无审核过的价格，
+Kimi 与 xAI 没有 Gateway 路由和计费策略，均保持不可用。完整差异见
+[目录审计](cpa-v8.0.48-model-catalog-audit.md)。
+
+- 价格：离线工具 `cpa-pricing-migrate` 同时移除 `gpt-5.5`。Gateway 启动时若价格目录仍包含
+  `gpt-5.5` 会拒绝启动，避免旧配置在下次目录同步时把退役模型重新标记为活动。
+- 数据库：`0038_cpa_v8_0_48_model_catalog.sql` 只执行一次，将 `gpt-5.5` 标为非活动目录，并保存默认
+  权限、用户权限和倍率的 before/applied 快照；历史 usage、账单、余额、API Key allowlist 和订阅
+  模型范围不变，历史记录仍可读取，新请求会被拒绝。
+- 回滚：条件恢复脚本只应用最新的快照表；存在 `0038` 快照时只恢复本次退役，不叠加 `0035` 或 `0025`。
+
+## v8.0.30 目录变更
+
+v8.0.30 新增以下两个模型（v8.0.48 保持不变）：
 
 | 模型 ID | 最大输入上下文 | 最大完成 | Standard 输入 / 缓存读取 / 输出（美元／百万 tokens） |
 | --- | ---: | ---: | ---: |
@@ -30,7 +46,7 @@ Gateway 的公开目录中，不能通过改名路由到 Argon-high。
 使用 `included_in_input` 缓存模式，现价持续至 2026-11-30；2026-12-01 起官方已公布的输入／缓存读取／输出为
 `4 / 0.20 / 20`，需届时复核并更新。实际 CPA 账号上下文能力仍须通过真实账号验收。
 
-从当前活动目录移除以下上游删除的 ID：
+v8.0.30 从活动目录移除以下上游删除的 ID：
 
 - `gemini-pro-agent`
 - `gemini-3.1-pro-low`
@@ -52,7 +68,7 @@ go build -o /tmp/cpa-pricing-migrate ./cmd/cpa-pricing-migrate
 ```
 
 工具保留其它 Codex/Claude 模型、汇率和 fallback 策略，只替换其七个目标模型价格（五款 Gemini、
-Haiku 5.5 和 GPT-6.1 Sol），并移除上述退役 Gemini ID。它不覆盖 GPT-6 Sol/Luna 和 GPT-5.6 Sol，
+Haiku 5.5 和 GPT-6.1 Sol），并移除上述退役 Gemini ID 和 v8.0.48 退役的 `gpt-5.5`。它不覆盖 GPT-6 Sol/Luna 和 GPT-5.6 Sol，
 同步全部现价还须执行[官方价格同步流程](operations.md#同步当前官方-api-价格)。
 v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义。审核后将完整 `pricing.applied.json` 写回
 部署配置，并保存 before/applied 文件供回滚比较。
@@ -66,10 +82,11 @@ v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义�
 
 ## 条件恢复快照与 legacy bridge 配置
 
-迁移具有 forward-only 语义。旧 Gateway 二进制会因未知迁移保护而拒绝启动，回滚时必须使用包含 `0035`
-的兼容构建。数据库配置回滚使用 [rollback-cpa-model-config.sql](../scripts/rollback-cpa-model-config.sql)：
+迁移具有 forward-only 语义。旧 Gateway 二进制会因未知迁移保护而拒绝启动，回滚时必须使用包含已应用迁移
+（含 `0038`）的兼容构建。数据库配置回滚使用 [rollback-cpa-model-config.sql](../scripts/rollback-cpa-model-config.sql)：
 脚本只恢复仍等于切换 applied 快照的行，保留切换后 Owner 修改、新用户记录和业务数据。
-存在 `0035` 的快照表时只恢复本次切换，不叠加首次 v8 的 `0025` 回滚。价格回滚则比较
+脚本只选择最新的快照表：存在 `0038` 时只恢复 v8.0.48 退役，否则存在 `0035` 时只恢复 v8.0.30
+切换，均不叠加更早的回滚。价格回滚则比较
 `pricing.before.json` 与 `pricing.applied.json`：
 
 ```sh

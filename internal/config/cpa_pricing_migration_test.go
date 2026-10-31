@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +20,7 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 	before.CatalogAsOf, before.FXAsOf, before.USDCNYRate = "2026-09-01", "2026-09-02", "6.987654"
 	before.Models["private-codex-model"] = before.Models["gpt-5.4"]
 	before.Models["gemini-pro-agent"] = before.Models["gemini-3.8-flash-high"]
+	before.Models["gpt-5.5"] = before.Models["gpt-5.4"]
 	delete(before.Models, "gemini-3.8-flash-high")
 	delete(before.Models, "gpt-6.1-sol")
 	beforeRaw, _ := json.Marshal(before)
@@ -34,15 +36,17 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 		t.Fatal("migration changed exchange rate or fallback settings")
 	}
 	for model, rule := range before.Models {
-		if model == "gemini-pro-agent" {
+		if model == "gemini-pro-agent" || model == "gpt-5.5" {
 			continue
 		}
 		if !reflect.DeepEqual(rule, upgraded.Models[model]) {
 			t.Fatalf("unrelated pricing changed: %s", model)
 		}
 	}
-	if _, ok := upgraded.Models["gemini-pro-agent"]; ok {
-		t.Fatal("retired model still in catalog")
+	for _, retired := range []string{"gemini-pro-agent", "gpt-5.5"} {
+		if _, ok := upgraded.Models[retired]; ok {
+			t.Fatalf("retired model %s still in catalog", retired)
+		}
 	}
 	for model, rule := range CPAV8PricingModels() {
 		if !reflect.DeepEqual(rule, upgraded.Models[model]) {
@@ -70,6 +74,7 @@ func TestCPAV8PricingMigrationPreservesUnrelatedRulesAndFX(t *testing.T) {
 		t.Fatal("rollback retained unchanged new model")
 	}
 	if !reflect.DeepEqual(restored.Models["gemini-pro-agent"], before.Models["gemini-pro-agent"]) ||
+		!reflect.DeepEqual(restored.Models["gpt-5.5"], before.Models["gpt-5.5"]) ||
 		!reflect.DeepEqual(restored.Models["private-codex-model"], before.Models["private-codex-model"]) {
 		t.Fatal("rollback lost original model rule")
 	}
@@ -125,6 +130,18 @@ func TestCPAV8ReviewedPricingBoundaries(t *testing.T) {
 			if err := pricing.ValidateRequestedServiceTier(model, tier); err == nil {
 				t.Fatalf("Gemini %s accepted %s", model, tier)
 			}
+		}
+	}
+}
+
+func TestRetiredCodexPricingCannotReactivateModelAccess(t *testing.T) {
+	for _, model := range RetiredCodexModels() {
+		cfg := validConfigForValidation(t)
+		cfg.UsagePricing.Models = map[string]ModelPricing{
+			model: {InputUSDPerMillion: "5", CachedInputUSDPerMillion: "0.5", OutputUSDPerMillion: "30"},
+		}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "retired CPA model") {
+			t.Fatalf("retired Codex model %q: %v", model, err)
 		}
 	}
 }

@@ -10,7 +10,29 @@ CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；�
 Gateway 管身份、模型和账号权限、权重、并发、限额、价格、账单及审计；CPA 管 OAuth、
 供应商协议、凭据状态和刷新。`antigravity-bridge` 只在 `legacy-bridge` profile 中运行。
 
-## 已运行 v8.0.20 的补丁升级
+## 已运行 v8.0.30 的补丁升级
+
+从 CPA v8.0.30 升至 v8.0.48 **需要执行一次 `0038_cpa_v8_0_48_model_catalog.sql` 和价格目录合并**。
+上游 Codex 目录移除了 `gpt-5.5`；本次只退役该模型，不新增公开模型。迁移只把 `gpt-5.5` 标为非活动目录
+并保存权限与倍率快照，不改 API Key allowlist、余额、usage、订阅范围或账单快照。凭据文件、身份映射和
+`.gateway-account-state` 继续复用，不需要重新登录。
+
+1. 等本次提交的 CI 测试、race/CGO、镜像构建及运行冒烟通过后，按
+   [CI 镜像部署流程](ci-image-deployment.md)拉取镜像，并同步 `.env` 的 `GATEWAY_IMAGE_TAG`、
+   `GATEWAY_VERSION`、`GATEWAY_REVISION`。
+2. 用 `cpa-pricing-migrate` 处理当前价格目录（见 [价格合并](cpa-native-models.md)），保存
+   `pricing.before.json` 与 `pricing.applied.json`，确认 `gpt-5.5` 已移除后写回完整配置。新 Gateway
+   在价格目录仍含 `gpt-5.5` 时拒绝启动，因此必须先完成这一步。
+3. 暂停新推理及账号变更，排空活动请求和待结算预约，保留旧镜像 digest 和备份。停止旧 CPA 后用新镜像
+   重建 `codex-compat`，继续挂载原 `codex_oauth` 卷；不要使用 `down -v`，不要同时运行两个刷新进程。
+   启动新 Gateway 时 `0038` 执行一次。
+4. 用真实 Gateway Key 验证模型列表不再包含 `gpt-5.5`、历史 usage 仍可读，以及 Codex、Claude、
+   Antigravity 的 JSON/SSE、工具续聊、刷新后重启、权限和账单归因，再恢复流量。
+
+兼容层不再对内部 Gateway 链路压缩响应（`response-compression.enabled: false`），SSE 按原样流式
+传给 Gateway；这是部署入口固定的安全默认值，不需要手工配置。
+
+## 历史：v8.0.20 升至 v8.0.30
 
 从 CPA v8.0.20 升至 v8.0.30 **需要执行一次 `0035_cpa_v8_0_30_model_catalog.sql` 和价格目录合并**。
 迁移只同步模型目录、默认权限和用户权限快照，不改 API Key allowlist、余额、usage 或账单快照；
@@ -136,7 +158,8 @@ docker compose --project-name codex-gateway --project-directory "$REPOSITORY" \
 按 [模型价格回滚](cpa-native-models.md#条件恢复快照与-legacy-bridge-配置) 执行条件恢复：只有仍等于切换时 applied 快照的
 当前配置才能恢复，保留后续 Owner 修改、新用户和业务记录。**不得用旧全库备份覆盖当前库**，
 也不删除迁移记录、历史账单、余额和预约快照。回滚后通过 Gateway 再验收并核对账户归因。
-数据库已有 `cpa_v830_model_config_backup` 时，条件恢复脚本只应用 `0035` 的快照，不能叠加旧 `0025` 回滚。
+条件恢复脚本只应用最新的快照表：已有 `cpa_v848_model_config_backup` 时只应用 `0038` 的快照，否则已有
+`cpa_v830_model_config_backup` 时只应用 `0035` 的快照，不能叠加更早的回滚。
 完整 `pricing.rollback.json` 只作为条件恢复快照保存，不能直接加载。启用 bridge 时，按链接中的命令另行
 生成与所选 legacy 路由相交的 `pricing.legacy.json` 再写入运行配置；普通 CPA 模式仍拒绝退役模型。
 

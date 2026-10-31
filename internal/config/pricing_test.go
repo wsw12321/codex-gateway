@@ -59,7 +59,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	wantModels := []string{
 		"claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5",
 		"codex-auto-review", "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash-high",
-		"gemini-4-argon-high", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5",
+		"gemini-4-argon-high", "gpt-5.4", "gpt-5.4-mini",
 		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
@@ -79,7 +79,6 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		"gpt-5.6-sol":   {"default": {"4", "0.4", "5", "20"}, "flex": {"2", "0.2", "2.5", "10"}, "priority": {"8", "0.8", "10", "40"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
 		"gpt-5.6-luna":  {"default": {"0.2", "0.02", "0.25", "1.2"}, "flex": {"0.1", "0.01", "0.125", "0.6"}, "priority": {"0.4", "0.04", "0.5", "2.4"}},
-		"gpt-5.5":       {"default": {"5", "0.5", "0", "30"}, "flex": {"2.5", "0.25", "0", "15"}, "priority": {"12.5", "1.25", "0", "75"}},
 		"gpt-5.4":       {"default": {"2.5", "0.25", "0", "15"}, "flex": {"1.25", "0.13", "0", "7.5"}, "priority": {"5", "0.5", "0", "30"}},
 		"gpt-5.4-mini":  {"default": {"0.75", "0.075", "0", "4.5"}, "flex": {"0.375", "0.0375", "0", "2.25"}, "priority": {"1.5", "0.15", "0", "9"}},
 	}
@@ -110,7 +109,6 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		"gpt-5.6-sol":   {"default": {"8", "0.8", "10", "30"}, "flex": {"4", "0.4", "5", "15"}, "priority": {"16", "1.6", "20", "60"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
 		"gpt-5.6-luna":  {"default": {"0.4", "0.04", "0.5", "1.8"}, "flex": {"0.2", "0.02", "0.25", "0.9"}, "priority": {"0.8", "0.08", "1", "3.6"}},
-		"gpt-5.5":       {"default": {"10", "1", "0", "45"}, "flex": {"5", "0.5", "0", "22.5"}},
 		"gpt-5.4":       {"default": {"5", "0.5", "0", "22.5"}, "flex": {"2.5", "0.25", "0", "11.25"}},
 	}
 	for model, tiers := range long {
@@ -132,7 +130,6 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		}
 	}
 	longFallbacks := map[string]expected{
-		"gpt-5.5":      {"12.5", "1.25", "0", "75"},
 		"gpt-5.4":      {"5", "0.5", "0", "30"},
 		"gpt-5.4-mini": {"1.5", "0.15", "0", "9"},
 	}

@@ -303,7 +303,7 @@ else:
             "claude-haiku-4-5-20251001", "claude-haiku-5-5",
         }
         codex = {
-            "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-luna",
+            "gpt-5.4", "gpt-5.4-mini", "gpt-5.6-luna",
             "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
         }
         self.assertEqual(set(pricing["models"]), native | codex | {"codex-auto-review"})
@@ -329,7 +329,7 @@ else:
                 "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high",
                 "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-high", "gemini-3.6-flash-medium",
                 "gemini-3.7-flash-medium", "gemini-3.8-flash-medium",
-                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview",
+                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gpt-5.5",
             )
         ] + [
             ("Gemini Flex", lambda p: p["models"]["gemini-4-argon-high"]["service_tiers"].update(

@@ -546,7 +546,6 @@ pricing_validator='
       "gemini-4-argon-high",
       "gpt-5.4",
       "gpt-5.4-mini",
-      "gpt-5.5",
       "gpt-5.6-luna",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
@@ -567,7 +566,6 @@ pricing_validator='
     (.["gpt-5.6-sol"] | separate_long_model) and
     (.["gpt-5.6-terra"] | separate_long_model) and
     (.["gpt-5.6-luna"] | separate_long_model) and
-    (.["gpt-5.5"] | long_included_model) and
     (.["gpt-5.4"] | long_included_model) and
     (.["gpt-5.4-mini"] | mini_model) and
     (.["gemini-3-flash"] | gemini_flash_model) and

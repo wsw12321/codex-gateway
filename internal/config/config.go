@@ -231,6 +231,9 @@ func (c Config) Validate() error {
 	if err := c.validateAntigravity(); err != nil {
 		return err
 	}
+	if err := c.validateRetiredCodexPricing(); err != nil {
+		return err
+	}
 	if err := c.ValidateOIDC(); err != nil {
 		return err
 	}

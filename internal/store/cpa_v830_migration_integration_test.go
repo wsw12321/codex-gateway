@@ -3,8 +3,11 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -54,6 +57,39 @@ func TestCPAV830ModelMigrationPostgresIntegration(t *testing.T) {
 	migrations, err := EmbeddedMigrations()
 	if err != nil {
 		t.Fatal(err)
+	}
+	// This regression describes the immutable 0035 cutover. Later catalog
+	// migrations have their own tests and select their own rollback snapshot.
+	for index, migration := range migrations {
+		if migration.Name >= "0038" {
+			migrations = migrations[:index]
+			break
+		}
+	}
+	applyPendingMigrations := func() {
+		t.Helper()
+		for _, migration := range migrations {
+			if err := s.withTx(ctx, &sql.TxOptions{}, func(tx *sql.Tx) error {
+				var checksum []byte
+				err := tx.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE name=$1`, migration.Name).Scan(&checksum)
+				if err == nil {
+					if !bytes.Equal(checksum, migration.Checksum[:]) {
+						return fmt.Errorf("migration %s checksum mismatch", migration.Name)
+					}
+					return nil
+				}
+				if !isNoRows(err) {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+					return err
+				}
+				_, err = tx.ExecContext(ctx, `INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)`, migration.Name, migration.Checksum[:])
+				return err
+			}); err != nil {
+				t.Fatalf("apply pending migration %s: %v", migration.Name, err)
+			}
+		}
 	}
 	for _, migration := range migrations {
 		if migration.Name >= "0035" {
@@ -168,9 +204,7 @@ func TestCPAV830ModelMigrationPostgresIntegration(t *testing.T) {
 		return value
 	}
 	protectedBefore := readProtected()
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	applyPendingMigrations()
 	if got := readProtected(); got != protectedBefore {
 		t.Fatal("v8.0.30 migration changed keys, usage, settled billing, subscription scope, or unrelated configuration")
 	}
@@ -228,9 +262,7 @@ func TestCPAV830ModelMigrationPostgresIntegration(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE billing_model_multipliers SET multiplier=3,updated_at=now()+interval '1 second' WHERE model=$1`, added[1]); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	applyPendingMigrations()
 	if err := s.RequireModelAccess(ctx, user.ID, added[1]); !errors.Is(err, ErrModelNotAllowed) {
 		t.Fatalf("migration replay overwrote later user choice: %v", err)
 	}

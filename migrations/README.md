@@ -44,6 +44,13 @@ Current migrations:
 - `internal/store/migrations/0036_billing_model_scopes.sql` — adds the Owner's
   global cash model scope and per-group model scopes. Existing scopes are
   initialized from the current manageable catalog at gateway startup.
+- `internal/store/migrations/0038_cpa_v8_0_48_model_catalog.sql` — one-time CPA
+  v8.0.48 catalog cutover. Retains `gpt-5.5`, which upstream removed from every
+  Codex catalog, as inactive history; adds no model. Snapshots defaults/user
+  permissions/multipliers and leaves keys, balances, usage, ledger rows,
+  subscription scopes, and admission snapshots untouched. The conditional
+  rollback in `scripts/rollback-cpa-model-config.sql` applies only the newest
+  cutover table present.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

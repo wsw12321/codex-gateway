@@ -6,7 +6,6 @@
 缓存语义于 2026-10-17 对照以下官方文档核对：
 
 - [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)
-- [GPT-5.5](https://developers.openai.com/api/docs/models/gpt-5.5)
 - [GPT-5.4](https://developers.openai.com/api/docs/models/gpt-5.4)
 - [Prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching/)
 
@@ -16,6 +15,10 @@ GPT-5.6 Sol 历史价格不再作为模板报价。官方声明该促销价至�
 到期前应再次复核，不推测后续价格。`catalog_as_of` 为 `2026-10-17`，本次同步
 不改变固定 USD/CNY 汇率及 `fx_as_of`。
 
+CPA v8.0.48 的上游 Codex 目录不再提供 `gpt-5.5`，模板随之移除该模型，价格未重新
+核对，`catalog_as_of` 不变；历史用量和账单保持可读，升级步骤见
+[CPA v8 切换与回滚](cpa-v8-cutover.md)。
+
 本系统计算的是“OpenAI API Token 等价成本”，不是 OpenAI 实际账单。上游使用
 ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略；订阅费、工具、
 区域、Batch、Ultrafast、税费和基础设施成本不在范围内。
@@ -23,7 +26,7 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 ## 计价口径
 
 模板包含当前 Codex API 模型目录中的 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
-`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.5`、`gpt-5.4`、
+`gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4`、
 `gpt-5.4-mini`，以及隐藏的 `codex-auto-review`。GPT-5.2 等未加入完整规则的模型
 会在转发前拒绝，不能用别名或相近模型价格代替。
 
@@ -53,9 +56,6 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 | GPT-5.6 Luna Standard | `0.2 / 0.02 / 0.25 / 1.2` | `0.4 / 0.04 / 0.5 / 1.8` |
 | GPT-5.6 Luna Flex | `0.1 / 0.01 / 0.125 / 0.6` | `0.2 / 0.02 / 0.25 / 0.9` |
 | GPT-5.6 Luna Fast | `0.4 / 0.04 / 0.5 / 2.4` | `0.8 / 0.08 / 1 / 3.6` |
-| GPT-5.5 Standard | `5 / 0.5 / 包含 / 30` | `10 / 1 / 包含 / 45` |
-| GPT-5.5 Flex | `2.5 / 0.25 / 包含 / 15` | `5 / 0.5 / 包含 / 22.5` |
-| GPT-5.5 Fast | `12.5 / 1.25 / 包含 / 75` | 未公布；保守兜底同左 |
 | GPT-5.4 Standard | `2.5 / 0.25 / 包含 / 15` | `5 / 0.5 / 包含 / 22.5` |
 | GPT-5.4 Flex | `1.25 / 0.13 / 包含 / 7.5` | `2.5 / 0.25 / 包含 / 11.25` |
 | GPT-5.4 Fast | `5 / 0.5 / 包含 / 30` | 未公布；保守兜底同左 |
@@ -78,7 +78,7 @@ cost = ordinary * input_price
      + output * output_price
 ```
 
-GPT-5.5、GPT-5.4 和 GPT-5.4-mini 使用 `included_in_input`：
+GPT-5.4 和 GPT-5.4-mini 使用 `included_in_input`：
 
 ```text
 ordinary = input - cached
@@ -94,9 +94,8 @@ cost = ordinary * input_price
 服务层处理规则：请求/响应 `default` 或 `standard` 映射 Standard，`flex` 映射
 Flex，`priority` 或 `fast` 映射 Fast。显式请求 Ultrafast 或其他未配置层级会在
 转发前拒绝；响应缺失或未知层级时，在当前上下文档位逐分量取最高已公布价格并
-记录原因。缺少指定组合时在该模型全部已公布组合中逐分量取最高值。GPT-5.5 和
-GPT-5.4 的 Fast 长上下文因此分别用 `12.5 / 1.25 / 75` 与 `5 / 0.5 / 30`
-兜底，管理台会单独统计，不显示成官方精确价格。
+记录原因。缺少指定组合时在该模型全部已公布组合中逐分量取最高值。GPT-5.4 的
+Fast 长上下文因此用 `5 / 0.5 / 30` 兜底，管理台会单独统计，不显示成官方精确价格。
 
 `codex-auto-review` 是自动审批使用的独立 reviewer 模型名。官方文档没有为这个
 内部名称公布独立 API 价格，模板将其设为零价，表示审批属于不向用户扣费的内部

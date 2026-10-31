@@ -330,7 +330,7 @@ chmod 0600 .env
 
 `deploy/env.example` 已包含
 [deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
-覆盖 GPT-6.1 Sol、GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.5、GPT-5.4、GPT-5.4-mini、
+覆盖 GPT-6.1 Sol、GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.4、GPT-5.4-mini、
 Gemini、Claude Fable 5.1／Opus 5.5／Sonnet 5.5／Haiku 4.5／Haiku 5.5 和内部零价
 `codex-auto-review`。模板已于 2026-10-17 同步官方 API 现价，Haiku 5.5 按总输入 100,000 Token 分档。
 Claude 标准五价与仅合并五款价格的升级命令见
@@ -427,11 +427,12 @@ CPA 固定为 **v8.0.48**，同时执行 Codex 和 Antigravity；独立 bridge �
 和额度查询，复用 Gateway 会话；权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。
 管理面板使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。
 
-公开模型按 CPA v8.0.30 的已接入 provider 目录审核，并由 Gateway 定价和权限控制；本次仅加入
-`claude-haiku-5-5` 和 `gemini-4-argon-high`，移除上游已删除的五个模型。Antigravity 当前共五个
+公开模型按 CPA v8.0.48 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。v8.0.48 只退役上游
+Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `claude-haiku-5-5` 和
+`gemini-4-argon-high` 保持不变。Antigravity 当前共五个
 模型，默认使用 `gemini-3.8-flash-high`。基础 Argon 属于 `gemini` provider、Muse Wonder 属于
 `meta` provider，本次均未接入，不配置价格、权限或路由。仅公开已定价、已授权并有可用账号的模型；
-旧模型仍可读取历史 usage 和账单，但新请求会被拒绝。`0035` 迁移只执行一次，初始化新模型权限并保存
+旧模型仍可读取历史 usage 和账单，但新请求会被拒绝。`0035` 与 `0038` 迁移各只执行一次，更新目录并保存
 配置快照；缺失倍率继续按 1 计费，重启不会覆盖管理员选择。
 
 升级须在维护窗口完成价格合并、数据库迁移及账号验收，不能仅替换镜像标签。已有 CPA v8 凭据继续复用；
