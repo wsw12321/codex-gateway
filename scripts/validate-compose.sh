@@ -229,11 +229,10 @@ grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
 grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
     fail 'CLIProxyAPI patch must carry the narrow internal account API'
-grep -Fq 'internalAccounts.GET("/concurrency", s.getUpstreamConcurrency)' "$compat_patch" && \
-    grep -Fq 'TestGatewayConcurrencyRepeatedReleaseAndRaces' "$compat_patch" && \
+grep -Fq 'TestGatewayConcurrencyRepeatedReleaseAndRaces' "$compat_patch" && \
     grep -Fq 'TestGatewayConcurrencyStreamWaitOutputCloseCancelAndFailure' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamConcurrencyRequiresBearerAndReturnsOnlyCounters' "$compat_patch" || \
-    fail 'CLIProxyAPI must expose authenticated execution concurrency with lifecycle regressions'
+    grep -Fq 'TestGatewayConcurrencyLimitAllAccountsFullReturns429FromAllocator' "$compat_patch" || \
+    fail 'CLIProxyAPI must exercise account concurrency limits and lifecycle regressions'
 grep -Fq 'TestConversationRootRecognizedHierarchy' "$compat_patch" && \
     grep -Fq 'TestConversationRootConcurrentManagerExecutions' "$compat_patch" && \
     grep -Fq 'TestGatewayConcurrencyDeduplicatesRootExecutions' "$compat_patch" && \
