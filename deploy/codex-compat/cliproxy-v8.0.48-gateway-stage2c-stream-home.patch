@@ -1,0 +1,183 @@
+--- a/sdk/cliproxy/auth/conductor_stream.go
++++ b/sdk/cliproxy/auth/conductor_stream.go
+@@ -80,12 +80,21 @@
+ 	}
+ }
+ 
++func newEmptyStreamBootstrapError(message string) *Error {
++	return &Error{
++		Code:       requestScopedErrorCode,
++		Message:    message,
++		Retryable:  true,
++		HTTPStatus: http.StatusRequestTimeout,
++	}
++}
++
+ func validateStreamResult(result *cliproxyexecutor.StreamResult, err error) (*cliproxyexecutor.StreamResult, error) {
+ 	if err != nil {
+ 		return result, err
+ 	}
+ 	if result == nil || result.Chunks == nil {
+-		return result, &Error{Code: "empty_stream", Message: "upstream stream has no source", Retryable: true}
++		return result, newEmptyStreamBootstrapError("upstream stream has no source")
+ 	}
+ 	return result, nil
+ }
+@@ -438,7 +447,7 @@
+ 		ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+ 		executionSeq := m.nextExecutionSeq()
+ 		startStream := time.Now()
+-		streamResult, errStream := executor.ExecuteStream(ctx, auth, execReq, execOpts)
++		streamResult, errStream := m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 		errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+ 		if hasUpstreamExecutionAttempt(errStream) {
+ 			upstreamErr = errStream
+@@ -460,7 +469,7 @@
+ 					ctx = syncMetadataSessionToContext(ctx, execOpts.Metadata)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+-					streamResult, errStream = executor.ExecuteStream(ctx, auth, execReq, execOpts)
++					streamResult, errStream = m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 					errStream = markUpstreamExecutionAttemptFromContext(ctx, errStream)
+ 					if hasUpstreamExecutionAttempt(errStream) {
+ 						upstreamErr = errStream
+@@ -541,7 +550,7 @@
+ 					ctx = newUpstreamAttemptContext(ctx)
+ 					executionSeq = m.nextExecutionSeq()
+ 					startRetry := time.Now()
+-					retryStream, retryErr := executor.ExecuteStream(ctx, auth, execReq, execOpts)
++					retryStream, retryErr := m.executeGatewayStreamAttempt(ctx, executor, auth, execReq, execOpts)
+ 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
+ 					retryStream, retryErr = validateStreamResult(retryStream, retryErr)
+ 					retryErr = markUpstreamExecutionAttemptFromContext(ctx, retryErr)
+@@ -578,10 +587,17 @@
+ 			}
+ 		}
+ 		if bootstrapErr != nil {
++			if isGatewayProvider(provider, ctx) && !credentialSwitchEligible(provider, bootstrapErr, ctx) {
++				result := Result{AuthID: auth.ID, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(bootstrapErr), Options: execOpts, ExecutionSeq: executionSeq}
++				result.RetryAfter = retryAfterFromError(bootstrapErr)
++				m.recordCredentialFailure(ctx, result, auth, provider, bootstrapErr, ephemeralResult)
++				discardStreamChunks(streamResult.Chunks)
++				return nil, bootstrapErr
++			}
+ 			action, okAction := matchRequestScopedErrorAction(auth, bootstrapErr, m.runtimeConfigSnapshot())
+ 			if okAction {
+ 				rerr := resultErrorFromError(bootstrapErr)
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, ExecutionSeq: executionSeq}
+ 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 				if isCredentialScopedError(bootstrapErr) {
+ 					result.CredentialScope = true
+@@ -617,7 +633,7 @@
+ 			}
+ 			if idx < len(execModels)-1 {
+ 				rerr := resultErrorFromError(bootstrapErr)
+-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, ExecutionSeq: executionSeq}
+ 				result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 				if isCredentialScopedError(bootstrapErr) {
+ 					result.CredentialScope = true
+@@ -635,7 +651,7 @@
+ 				continue
+ 			}
+ 			rerr := resultErrorFromError(bootstrapErr)
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: rerr, Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, ExecutionSeq: executionSeq}
+ 			result.RetryAfter = retryAfterFromError(bootstrapErr)
+ 			if isCredentialScopedError(bootstrapErr) {
+ 				result.CredentialScope = true
+@@ -650,13 +666,14 @@
+ 		}
+ 
+ 		if closed && len(buffered) == 0 {
+-			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true})
++			// Incomplete bootstrap may switch credentials without suspending the account.
++			emptyErr := markUpstreamExecutionAttemptFromContext(ctx, newEmptyStreamBootstrapError("upstream stream closed before first payload"))
+ 			currentErr := newStreamBootstrapError(emptyErr, streamResult.Headers)
+ 			if hasUpstreamExecutionAttempt(emptyErr) {
+ 				upstreamErr = currentErr
+ 			}
+ 			warnLogUpstreamFailure(ctx, entry, provider, execModel, auth, time.Since(startStream), emptyErr)
+-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, ExecutionSeq: executionSeq}
++			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(emptyErr), Options: execOpts, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, ExecutionSeq: executionSeq}
+ 			m.recordExecutionResult(ctx, result, auth, ephemeralResult)
+ 			if idx < len(execModels)-1 {
+ 				lastErr = emptyErr
+--- a/sdk/cliproxy/auth/conductor_home_execution.go
++++ b/sdk/cliproxy/auth/conductor_home_execution.go
+@@ -17,6 +17,9 @@
+ 		defer unlockSession()
+ 	}
+ 	defaultRequestRetry, maxRetryCredentials, maxWait := m.retrySettings()
++	if firstAttemptOnlyFromMetadata(opts.Metadata) {
++		defaultRequestRetry, maxRetryCredentials = 0, 1
++	}
+ 	retryModel := authSelectionModelFromOptions(opts, req.Model)
+ 	homeRetryLimit := -1
+ 	attempt := 0
+@@ -28,6 +31,9 @@
+ 		if errExecute == nil {
+ 			return response, nil
+ 		}
++		if firstAttemptOnlyFromMetadata(opts.Metadata) {
++			return cliproxyexecutor.Response{}, unwrapExecutionBoundaryError(errExecute)
++		}
+ 		if hasUpstreamExecutionAttempt(errExecute) {
+ 			preferredUpstreamErr = errExecute
+ 		}
+@@ -160,11 +166,16 @@
+ 		}
+ 		preparedAuth, errPrepare := m.prepareHomeRequestAuth(execCtx, selection.Executor, selection)
+ 		if errPrepare != nil {
++			if firstAttemptOnlyFromMetadata(opts.Metadata) {
++				releaseAttempt()
++				selection.End("prepare_failed")
++				return cliproxyexecutor.Response{}, errPrepare
++			}
+ 			stateModel := m.selectionModelKeyForAuth(auth, routeModel)
+ 			if stateModel == "" {
+ 				stateModel = canonicalModelKey(routeModel)
+ 			}
+-			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
++			m.reportHomeResult(execCtx, Result{AuthID: auth.ID, CredentialVersion: auth.CredentialVersion, RegistrationEpoch: auth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(auth), GatewayAccountVersion: auth.GatewayAccountVersion, Provider: selection.Provider, Model: stateModel, RouteModel: routeModel, Success: false, Error: resultErrorFromError(errPrepare), Options: opts}, auth)
+ 			releaseAttempt()
+ 			if errEnd := m.endHomeSelectionBeforeRedispatch(ctx, selection, "prepare_failed"); errEnd != nil {
+ 				return cliproxyexecutor.Response{}, errEnd
+@@ -240,9 +251,9 @@
+ 			executor := executorForAuth(selection.Executor, preparedAuth)
+ 			execute := func() (cliproxyexecutor.Response, error) {
+ 				if countTokens {
+-					return executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
++					return m.executeGatewayAttempt(executorCtx, executor, preparedAuth, execReq, execOpts, true)
+ 				}
+-				return executor.Execute(execCtx, preparedAuth, execReq, execOpts)
++				return m.executeGatewayAttempt(execCtx, executor, preparedAuth, execReq, execOpts, false)
+ 			}
+ 			startHomeExec := time.Now()
+ 			response, errExecute = execute()
+@@ -257,9 +268,11 @@
+ 				if hasUpstreamExecutionAttempt(errExecute) {
+ 					upstreamErr = errExecute
+ 				}
+-				warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
++				if !firstAttemptOnlyFromMetadata(opts.Metadata) {
++					warnLogUpstreamFailure(execCtx, entry, selection.Provider, upstreamModel, preparedAuth, durationHomeExec, errExecute)
++				}
+ 			}
+-			result := Result{AuthID: preparedAuth.ID, Provider: selection.Provider, Model: resultModel, RouteModel: routeModel, Success: errExecute == nil, Options: execOpts}
++			result := Result{AuthID: preparedAuth.ID, CredentialVersion: preparedAuth.CredentialVersion, RegistrationEpoch: preparedAuth.RegistrationEpoch, GatewayAccountIndex: gatewayAccountResultIndex(preparedAuth), GatewayAccountVersion: preparedAuth.GatewayAccountVersion, Provider: selection.Provider, Model: resultModel, RouteModel: routeModel, Success: errExecute == nil, Options: execOpts}
+ 			if errExecute == nil {
+ 				m.reportHomeResult(execCtx, result, preparedAuth)
+ 				releaseAttempt()
+@@ -271,6 +284,10 @@
+ 				return response, nil
+ 			}
+ 			result.Error = resultErrorFromError(errExecute)
++			if firstAttemptOnlyFromMetadata(opts.Metadata) {
++				result.Error.Code = "probe_execution_failed"
++				result.Error.Message = "probe_execution_failed"
++			}
+ 			result.RetryAfter = retryAfterFromError(errExecute)
+ 			if isCredentialScopedError(errExecute) {
+ 				result.CredentialScope = true
