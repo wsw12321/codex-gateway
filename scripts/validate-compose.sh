@@ -239,11 +239,11 @@ grep -Fq 'TestConversationRootRecognizedHierarchy' "$compat_patch" && \
     grep -Fq 'TestGatewayConcurrencySameRootCountsPerAccount' "$compat_patch" && \
     grep -Fxq 'RUN go test -race -count=1 ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy' "$compat_dockerfile" || \
     fail 'CLIProxyAPI must test caller-scoped root identity and account root concurrency under the race detector'
-grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
-    grep -Fq '.gateway-account-state' "$compat_patch" && \
+grep -Fq '.gateway-account-state' "$compat_patch" && \
     grep -Fq 'TestGatewayAccountConcurrentControlsRemainDurable' "$compat_patch" && \
     grep -Fq 'TestGatewayAccountStateLoadRejectsInvalidExistingState' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountStatusPersistenceFailure' "$compat_patch" && \
+    grep -Fq 'TestGatewayPersistedCodexRevisionSurvivesStaleSnapshot' "$compat_patch" && \
+    grep -Fq 'TestGatewayQuotaSignalSurvivesErrorSnapshots' "$compat_patch" && \
     grep -Fq 'TestCodexGatewayQuotaHTTPTransports' "$compat_dockerfile" && \
     grep -Fq './sdk/cliproxy' "$compat_dockerfile" || \
     fail 'CLIProxyAPI must test persistent account controls, fail-closed state, and quota signals'
