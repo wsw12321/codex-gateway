@@ -1,0 +1,203 @@
+diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
+index 235c193f..eeb0fa54 100644
+--- a/internal/runtime/executor/antigravity_executor_execute.go
++++ b/internal/runtime/executor/antigravity_executor_execute.go
+@@ -132,7 +132,7 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
+ 	}
+ 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+ 
+-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
++	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, false, opts.Alt, baseURL, helps.GatewayCacheIdentity(req.Metadata, "antigravity", helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata)))
+ 	if errReq != nil {
+ 		err = errReq
+ 		return resp, err
+@@ -351,7 +351,7 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
+ 		}
+ 	}
+ 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
++	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.GatewayCacheIdentity(req.Metadata, "antigravity", helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata)))
+ 	if errReq != nil {
+ 		err = errReq
+ 		return resp, err
+diff --git a/internal/runtime/executor/antigravity_executor_request.go b/internal/runtime/executor/antigravity_executor_request.go
+index bdb56aaa..d4c5332d 100644
+--- a/internal/runtime/executor/antigravity_executor_request.go
++++ b/internal/runtime/executor/antigravity_executor_request.go
+@@ -57,6 +57,14 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
+ 		return nil, errProject
+ 	}
+ 	payload = geminiToAntigravity(modelName, payload, projectID, derivedSessionIDs...)
++	if e.cfg != nil && strings.EqualFold(strings.TrimSpace(e.cfg.Routing.Strategy), "gateway-allocation") {
++		if len(derivedSessionIDs) > 0 && strings.TrimSpace(derivedSessionIDs[0]) != "" {
++			payload, _ = sjson.SetBytes(payload, "request.sessionId", derivedSessionIDs[0])
++		}
++		if err := helps.ValidateGatewayGeminiHistory(payload); err != nil {
++			return nil, statusErr{code: http.StatusConflict, msg: err.Error()}
++		}
++	}
+ 	payload, promptStructuredOutput := helps.PrepareAntigravityClaudeStructuredOutput(modelName, payload)
+ 
+ 	// Cap maxOutputTokens to model's max_completion_tokens from registry
+@@ -141,6 +149,8 @@ func (e *AntigravityExecutor) buildRequest(ctx context.Context, auth *cliproxyau
+ 		attrs = auth.Attributes
+ 	}
+ 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
++	util.RemoveCodexInternalHeaders(httpReq.Header)
++	httpReq.Header.Set("Authorization", "Bearer "+token)
+ 
+ 	var authID, authLabel, authType, authValue string
+ 	if auth != nil {
+diff --git a/internal/runtime/executor/antigravity_executor_stream.go b/internal/runtime/executor/antigravity_executor_stream.go
+index 4b819b7b..f278a380 100644
+--- a/internal/runtime/executor/antigravity_executor_stream.go
++++ b/internal/runtime/executor/antigravity_executor_stream.go
+@@ -132,7 +132,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
+ 		}
+ 	}
+ 	requestPayload = ensureAntigravityGeminiBoundaryUserContent(baseModel, requestPayload)
+-	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata))
++	httpReq, errReq := e.buildRequest(ctx, auth, token, baseModel, requestPayload, true, opts.Alt, baseURL, helps.GatewayCacheIdentity(req.Metadata, "antigravity", helps.DerivedAntigravitySessionID(opts.Metadata, req.Metadata)))
+ 	if errReq != nil {
+ 		err = errReq
+ 		return nil, err
+diff --git a/internal/runtime/executor/antigravity_executor_tokens.go b/internal/runtime/executor/antigravity_executor_tokens.go
+index 9ed35aa6..535b2d53 100644
+--- a/internal/runtime/executor/antigravity_executor_tokens.go
++++ b/internal/runtime/executor/antigravity_executor_tokens.go
+@@ -114,6 +114,8 @@ func (e *AntigravityExecutor) CountTokens(ctx context.Context, auth *cliproxyaut
+ 		attrs = auth.Attributes
+ 	}
+ 	util.ApplyCustomHeadersFromAttrs(httpReq, attrs)
++	util.RemoveCodexInternalHeaders(httpReq.Header)
++	httpReq.Header.Set("Authorization", "Bearer "+token)
+ 
+ 	helps.RecordAPIRequest(ctx, e.cfg, helps.UpstreamRequestLog{
+ 		URL:       requestURL.String(),
+diff --git a/internal/runtime/executor/claude_executor_execute.go b/internal/runtime/executor/claude_executor_execute.go
+index f7cc78b5..9381bb7a 100644
+--- a/internal/runtime/executor/claude_executor_execute.go
++++ b/internal/runtime/executor/claude_executor_execute.go
+@@ -213,7 +213,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 	var oauthToolNamesReverseMap map[string]string
+ 	if fp.MCPAlias && cloaked {
+ 		mcpAliases := resolveClaudeMCPAliasOptions(ctx, opts.Metadata, req.Metadata)
+-		bodyForUpstream, oauthToolNamesReverseMap, err = e.prepareClaudeOAuthToolNamesForRequest(bodyForUpstream, mcpAliases)
++		bodyForUpstream, oauthToolNamesReverseMap, err = e.prepareClaudeOAuthToolNamesForRequest(bodyForUpstream, mcpAliases, req.Metadata)
+ 		if err != nil {
+ 			return resp, err
+ 		}
+@@ -367,7 +367,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 		}
+ 		if msgID := claudeMessageIDFromSSE(data); msgID != "" {
+ 			commitClaudeContinuity(diagnosticsState, msgID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
+-			e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, msgID)
++			e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, msgID, req.Metadata)
+ 		}
+ 		lines := bytes.Split(data, []byte("\n"))
+ 		var eventBuf bytes.Buffer
+@@ -397,7 +397,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
+ 	} else {
+ 		messageID := claudeMessageIDFromResponse(data)
+ 		commitClaudeContinuity(diagnosticsState, messageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
+-		e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, messageID)
++		e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, messageID, req.Metadata)
+ 		reporter.ObserveResponseModel(data)
+ 		var errRestore error
+ 		data, errRestore = restoreClaudeOAuthToolNamesFromResponse(data, oauthToolNamesReverseMap)
+diff --git a/internal/runtime/executor/claude_executor_stream.go b/internal/runtime/executor/claude_executor_stream.go
+index bb441d2c..f571d959 100644
+--- a/internal/runtime/executor/claude_executor_stream.go
++++ b/internal/runtime/executor/claude_executor_stream.go
+@@ -209,7 +209,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 	var oauthToolNamesReverseMap map[string]string
+ 	if fp.MCPAlias && cloaked {
+ 		mcpAliases := resolveClaudeMCPAliasOptions(ctx, opts.Metadata, req.Metadata)
+-		bodyForUpstream, oauthToolNamesReverseMap, err = e.prepareClaudeOAuthToolNamesForRequest(bodyForUpstream, mcpAliases)
++		bodyForUpstream, oauthToolNamesReverseMap, err = e.prepareClaudeOAuthToolNamesForRequest(bodyForUpstream, mcpAliases, req.Metadata)
+ 		if err != nil {
+ 			return nil, err
+ 		}
+@@ -457,7 +457,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 			}
+ 			if upstreamCompleted {
+ 				commitClaudeContinuity(diagnosticsState, upstreamMessageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
+-				e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, upstreamMessageID)
++				e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, upstreamMessageID, req.Metadata)
+ 			}
+ 			return
+ 		}
+@@ -560,7 +560,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
+ 		}
+ 		if upstreamCompleted {
+ 			commitClaudeContinuity(diagnosticsState, upstreamMessageID, helps.HeaderValueCaseInsensitive(httpResp.Header, "request-id"))
+-			e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, upstreamMessageID)
++			e.rememberClaudeOAuthToolAliases(body, oauthToolNamesReverseMap, upstreamMessageID, req.Metadata)
+ 		}
+ 	}()
+ 	result := &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}
+diff --git a/internal/runtime/executor/claude_executor_tool_state.go b/internal/runtime/executor/claude_executor_tool_state.go
+index ccb457fb..6118a49c 100644
+--- a/internal/runtime/executor/claude_executor_tool_state.go
++++ b/internal/runtime/executor/claude_executor_tool_state.go
+@@ -4,6 +4,7 @@ import (
+ 	"net/http"
+ 	"sync"
+ 
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
+ 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/tidwall/gjson"
+ )
+@@ -82,7 +83,7 @@ func (e *ClaudeExecutor) claudeOAuthToolAliasStore() *claudeOAuthToolAliasStore
+ 	return e.oauthToolAliases
+ }
+ 
+-func claudeOAuthToolAliasKeys(payload []byte, messageID string) []string {
++func (e *ClaudeExecutor) claudeOAuthToolAliasKeys(payload []byte, messageID string, metadata ...map[string]any) []string {
+ 	keys := make([]string, 0, 2)
+ 	if previousMessageID := gjson.GetBytes(payload, "thread.previous_message_id").String(); previousMessageID != "" {
+ 		keys = append(keys, "message:"+previousMessageID)
+@@ -90,7 +91,16 @@ func claudeOAuthToolAliasKeys(payload []byte, messageID string) []string {
+ 	if messageID != "" {
+ 		keys = append(keys, "message:"+messageID)
+ 	}
+-	return keys
++	if len(metadata) == 0 {
++		return keys
++	}
++	scoped := keys[:0]
++	for _, key := range keys {
++		if key = helps.GatewayCacheIdentity(metadata[0], e.upstreamRequestLogProvider(), key); key != "" {
++			scoped = append(scoped, key)
++		}
++	}
++	return scoped
+ }
+ 
+ func claudeThreadContinuationNeedsAliasState(payload []byte) bool {
+@@ -105,9 +115,9 @@ func claudeThreadContinuationNeedsAliasState(payload []byte) bool {
+ 	return !tools.Exists() || !tools.IsArray() || len(tools.Array()) == 0
+ }
+ 
+-func (e *ClaudeExecutor) prepareClaudeOAuthToolNamesForRequest(payload []byte, options claudeMCPAliasOptions) ([]byte, map[string]string, error) {
++func (e *ClaudeExecutor) prepareClaudeOAuthToolNamesForRequest(payload []byte, options claudeMCPAliasOptions, metadata ...map[string]any) ([]byte, map[string]string, error) {
+ 	if claudeThreadContinuationNeedsAliasState(payload) {
+-		aliases, ok := e.claudeOAuthToolAliasStore().load(claudeOAuthToolAliasKeys(payload, ""))
++		aliases, ok := e.claudeOAuthToolAliasStore().load(e.claudeOAuthToolAliasKeys(payload, "", metadata...))
+ 		if !ok {
+ 			return nil, nil, newClaudeThreadNotFoundError()
+ 		}
+@@ -117,11 +127,11 @@ func (e *ClaudeExecutor) prepareClaudeOAuthToolNamesForRequest(payload []byte, o
+ 	return remapped, aliases, nil
+ }
+ 
+-func (e *ClaudeExecutor) rememberClaudeOAuthToolAliases(payload []byte, aliases map[string]string, messageID string) {
++func (e *ClaudeExecutor) rememberClaudeOAuthToolAliases(payload []byte, aliases map[string]string, messageID string, metadata ...map[string]any) {
+ 	if gjson.GetBytes(payload, "thread.type").String() == "" {
+ 		return
+ 	}
+-	keys := claudeOAuthToolAliasKeys(payload, messageID)
++	keys := e.claudeOAuthToolAliasKeys(payload, messageID, metadata...)
+ 	if len(keys) == 0 {
+ 		return
+ 	}
