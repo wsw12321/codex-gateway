@@ -9234,6 +9234,19 @@ index a103286..4841b34 100644
  )
  
  // Request encapsulates the translated payload that will be sent to a provider executor.
+diff --git a/sdk/cliproxy/service_executionregistry_test.go b/sdk/cliproxy/service_executionregistry_test.go
+index dbf9229..64bb143 100644
+--- a/sdk/cliproxy/service_executionregistry_test.go
++++ b/sdk/cliproxy/service_executionregistry_test.go
+@@ -1450,7 +1450,7 @@ func TestServiceHeartbeatFailoverDoesNotDrainBlockingScope(t *testing.T) {
+ 	}
+ 	select {
+ 	case <-secondSubscribe:
+-	case <-time.After(time.Second):
++	case <-time.After(2 * homeSubscriberRetryInitial):
+ 		t.Fatal("new subscription did not start while the old scope remained active")
+ 	}
+ 	service.homeMu.Lock()
 diff --git a/sdk/cliproxy/service_plugins.go b/sdk/cliproxy/service_plugins.go
 index 5b7fb89..38b83d4 100644
 --- a/sdk/cliproxy/service_plugins.go
