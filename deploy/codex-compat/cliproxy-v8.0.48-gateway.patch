@@ -328,6 +328,124 @@ index 8d9fbfc..c908a0c 100644
  const ginCPATraceStateKey = "__cpa_trace_state__"
  
  // FormatCPATraceID builds a CPA trace ID from the selection time, auth index, and request ID.
+diff --git a/internal/registry/model_registry.go b/internal/registry/model_registry.go
+index 7f82e7d..cca4124 100644
+--- a/internal/registry/model_registry.go
++++ b/internal/registry/model_registry.go
+@@ -1483,6 +1483,33 @@ func (r *ModelRegistry) GetAvailableModels(handlerType string) []map[string]any
+ 	return models
+ }
+ 
++// GetAvailableModelsForClients returns models available from the selected
++// clients only. The global registry is shared by all handlers and test
++// instances in a process, while a handler's AuthManager owns the clients that
++// are actually routable by that service. Keeping this projection scoped to
++// those client IDs prevents an unrelated registration from making a model
++// appear available after the current credential was suspended.
++func (r *ModelRegistry) GetAvailableModelsForClients(handlerType string, clientIDs []string) []map[string]any {
++	if r == nil || len(clientIDs) == 0 {
++		return nil
++	}
++	allowed := make(map[string]struct{}, len(clientIDs))
++	for _, clientID := range clientIDs {
++		if clientID = strings.TrimSpace(clientID); clientID != "" {
++			allowed[clientID] = struct{}{}
++		}
++	}
++	if len(allowed) == 0 {
++		return nil
++	}
++
++	now := time.Now()
++	r.mutex.RLock()
++	defer r.mutex.RUnlock()
++	models, _ := r.buildAvailableModelsForClientsLocked(handlerType, now, allowed)
++	return models
++}
++
+ // isQuotaSuspension reports whether a suspension is a quota cooldown. A model in a
+ // quota cooldown stays listed: the limit is temporary, and a request meanwhile gets a
+ // 429 with its retry time instead of an unknown model. A credential-wide quota
+@@ -1583,6 +1610,79 @@ func (r *ModelRegistry) buildAvailableModelsLocked(handlerType string, now time.
+ 	return models, expiresAt
+ }
+ 
++func (r *ModelRegistry) buildAvailableModelsForClientsLocked(handlerType string, now time.Time, allowed map[string]struct{}) ([]map[string]any, time.Time) {
++	models := make([]map[string]any, 0, len(r.models))
++	var expiresAt time.Time
++
++	for modelID, registration := range r.models {
++		available, registrationExpiresAt := r.modelRegistrationAvailabilityForClientsLocked(modelID, registration, now, allowed)
++		if !registrationExpiresAt.IsZero() && (expiresAt.IsZero() || registrationExpiresAt.Before(expiresAt)) {
++			expiresAt = registrationExpiresAt
++		}
++		if !available || registration == nil {
++			continue
++		}
++		model := r.convertModelToMap(registration.Info, handlerType)
++		if model != nil {
++			models = append(models, model)
++		}
++	}
++	return models, expiresAt
++}
++
++// modelRegistrationAvailabilityForClientsLocked mirrors the global
++// availability calculation but counts only registrations owned by allowed.
++// Callers must hold r.mutex for reading or writing.
++func (r *ModelRegistry) modelRegistrationAvailabilityForClientsLocked(modelID string, registration *ModelRegistration, now time.Time, allowed map[string]struct{}) (bool, time.Time) {
++	if registration == nil || len(allowed) == 0 {
++		return false, time.Time{}
++	}
++	availableClients := 0
++	expiredClients := 0
++	var expiresAt time.Time
++	cooldownSuspended := 0
++	otherSuspended := 0
++	quotaAndSuspended := 0
++	for clientID := range allowed {
++		owned := false
++		for _, ownedModel := range r.clientModels[clientID] {
++			if ownedModel == modelID {
++				owned = true
++				break
++			}
++		}
++		if !owned {
++			continue
++		}
++		availableClients++
++		if quotaTime := registration.QuotaExceededClients[clientID]; quotaTime != nil {
++			recoveryAt := quotaTime.Add(modelQuotaExceededWindow)
++			if now.Before(recoveryAt) {
++				expiredClients++
++				if expiresAt.IsZero() || recoveryAt.Before(expiresAt) {
++					expiresAt = recoveryAt
++				}
++			}
++		}
++		if reason, suspended := registration.SuspendedClients[clientID]; suspended {
++			if quotaTime := registration.QuotaExceededClients[clientID]; quotaTime != nil && now.Before(quotaTime.Add(modelQuotaExceededWindow)) {
++				quotaAndSuspended++
++			}
++			if isQuotaSuspension(reason) {
++				cooldownSuspended++
++			} else {
++				otherSuspended++
++			}
++		}
++	}
++	effectiveClients := availableClients - expiredClients - cooldownSuspended - otherSuspended + quotaAndSuspended
++	if effectiveClients < 0 {
++		effectiveClients = 0
++	}
++	available := effectiveClients > 0 || (availableClients > 0 && (expiredClients > 0 || cooldownSuspended > 0) && otherSuspended == 0)
++	return available, expiresAt
++}
++
+ func cloneModelMaps(models []map[string]any) []map[string]any {
+ 	cloned := make([]map[string]any, 0, len(models))
+ 	for _, model := range models {
 diff --git a/internal/runtime/executor/antigravity_executor_execute.go b/internal/runtime/executor/antigravity_executor_execute.go
 index 235c193..eeb0fa5 100644
 --- a/internal/runtime/executor/antigravity_executor_execute.go
@@ -1315,6 +1433,52 @@ index 0000000..4c76524
 +		t.Fatalf("state directory synthesized as OAuth: %v, %v", auths, err)
 +	}
 +}
+diff --git a/sdk/api/handlers/openai/openai_handlers.go b/sdk/api/handlers/openai/openai_handlers.go
+index e0e7245..8d92d95 100644
+--- a/sdk/api/handlers/openai/openai_handlers.go
++++ b/sdk/api/handlers/openai/openai_handlers.go
+@@ -55,6 +55,18 @@ func (h *OpenAIAPIHandler) HandlerType() string {
+ func (h *OpenAIAPIHandler) Models() []map[string]any {
+ 	// Get dynamic models from the global registry
+ 	modelRegistry := registry.GetGlobalRegistry()
++	if h != nil && h.AuthManager != nil {
++		auths := h.AuthManager.List()
++		clientIDs := make([]string, 0, len(auths))
++		for _, auth := range auths {
++			if auth != nil && auth.ID != "" {
++				clientIDs = append(clientIDs, auth.ID)
++			}
++		}
++		if len(clientIDs) > 0 {
++			return modelRegistry.GetAvailableModelsForClients("openai", clientIDs)
++		}
++	}
+ 	return modelRegistry.GetAvailableModels("openai")
+ }
+ 
+diff --git a/sdk/api/handlers/openai/openai_responses_handlers.go b/sdk/api/handlers/openai/openai_responses_handlers.go
+index 0c0eac6..4431190 100644
+--- a/sdk/api/handlers/openai/openai_responses_handlers.go
++++ b/sdk/api/handlers/openai/openai_responses_handlers.go
+@@ -781,6 +781,18 @@ func (h *OpenAIResponsesAPIHandler) HandlerType() string {
+ func (h *OpenAIResponsesAPIHandler) Models() []map[string]any {
+ 	// Get dynamic models from the global registry
+ 	modelRegistry := registry.GetGlobalRegistry()
++	if h != nil && h.AuthManager != nil {
++		auths := h.AuthManager.List()
++		clientIDs := make([]string, 0, len(auths))
++		for _, auth := range auths {
++			if auth != nil && auth.ID != "" {
++				clientIDs = append(clientIDs, auth.ID)
++			}
++		}
++		if len(clientIDs) > 0 {
++			return modelRegistry.GetAvailableModelsForClients("openai", clientIDs)
++		}
++	}
+ 	return modelRegistry.GetAvailableModels("openai")
+ }
+ 
 diff --git a/sdk/api/handlers/openai/openai_responses_interrupt_test.go b/sdk/api/handlers/openai/openai_responses_interrupt_test.go
 index f53fd26..c9ea69b 100644
 --- a/sdk/api/handlers/openai/openai_responses_interrupt_test.go
@@ -9070,6 +9234,44 @@ index a103286..4841b34 100644
  )
  
  // Request encapsulates the translated payload that will be sent to a provider executor.
+diff --git a/sdk/cliproxy/service_plugins.go b/sdk/cliproxy/service_plugins.go
+index 5b7fb89..38b83d4 100644
+--- a/sdk/cliproxy/service_plugins.go
++++ b/sdk/cliproxy/service_plugins.go
+@@ -272,6 +272,13 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
+ 		}
+ 
+ 		taskCh := make(chan modelRegistrationTask)
++		// A registration batch must begin tasks in input order. Without this
++		// acknowledgement, the scheduler can run the second worker first under
++		// load, making a same-revision replay for the first auth wait on an
++		// unrelated blocked registration. The acknowledgement is sent after the
++		// pre-run hook and before task.run, so workers still execute concurrently
++		// once each task has started.
++		started := make(chan struct{}, len(group))
+ 		for i := 0; i < workers; i++ {
+ 			wg.Add(1)
+ 			go func() {
+@@ -289,6 +296,7 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
+ 						if modelRegistrationTaskHook != nil {
+ 							modelRegistrationTaskHook()
+ 						}
++						started <- struct{}{}
+ 						task.run(compatCache)
+ 					}(task)
+ 				}
+@@ -302,6 +310,11 @@ func (s *Service) runModelRegistrationTaskPhase(ctx context.Context, tasks []mod
+ 					return
+ 				case taskCh <- task:
+ 				}
++				select {
++				case <-ctx.Done():
++					return
++				case <-started:
++				}
+ 			}
+ 		}(group)
+ 	}
 diff --git a/sdk/cliproxy/session/info.go b/sdk/cliproxy/session/info.go
 index 3531adb..6dc94ad 100644
 --- a/sdk/cliproxy/session/info.go
