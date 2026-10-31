@@ -16,7 +16,12 @@
       "incomplete stream cooldown handling",
       "Claude tool-result error semantics",
       "Codex compaction capsule expansion"
-    ]
+    ],
+    "model_catalog": {
+      "file": "internal/registry/models/models.json",
+      "sha256": "32f663de911083339cf5347be74b0b4cbf1471bc1968362897cc94ebf021c306",
+      "review_status": "unreviewed; do not publish or apply as Gateway pricing/authorization policy"
+    }
   },
   "current_deployment": {
     "tag": "v8.0.30",
@@ -45,53 +50,194 @@
     "conflict_files": 47,
     "patch_must_be_rebased_before_source_lock_changes": true,
     "conflicts": [
-      {"path": "go.mod", "hunks": 4},
-      {"path": "go.sum", "hunks": 3},
-      {"path": "internal/api/handlers/management/auth_files_provider_oauth.go", "hunks": 3},
-      {"path": "internal/api/middleware/response_writer.go", "hunks": 1},
-      {"path": "internal/auth/codex/openai_auth.go", "hunks": 1},
-      {"path": "internal/auth/codex/siwc_auth.go", "hunks": 1},
-      {"path": "internal/runtime/executor/antigravity_executor_request.go", "hunks": 1},
-      {"path": "internal/runtime/executor/claude_executor_execute.go", "hunks": 2},
-      {"path": "internal/runtime/executor/claude_executor_stream.go", "hunks": 1},
-      {"path": "internal/runtime/executor/codex_executor_execute.go", "hunks": 4},
-      {"path": "internal/runtime/executor/codex_executor_request.go", "hunks": 2},
-      {"path": "internal/runtime/executor/codex_executor_stream.go", "hunks": 2},
-      {"path": "internal/runtime/executor/codex_executor_terminal.go", "hunks": 1},
-      {"path": "internal/runtime/executor/codex_openai_images.go", "hunks": 4},
-      {"path": "internal/runtime/executor/codex_websockets_errors.go", "hunks": 1},
-      {"path": "internal/runtime/executor/helps/usage_helpers.go", "hunks": 1},
-      {"path": "internal/runtime/executor/openai_compat_executor.go", "hunks": 2},
-      {"path": "internal/store/gitstore.go", "hunks": 1},
-      {"path": "internal/store/gitstore_test.go", "hunks": 1},
-      {"path": "internal/translator/gemini/openai/responses/gemini_openai-responses_response.go", "hunks": 1},
-      {"path": "internal/util/header_helpers.go", "hunks": 1},
-      {"path": "internal/watcher/clients.go", "hunks": 1},
-      {"path": "internal/watcher/dispatcher.go", "hunks": 1},
-      {"path": "internal/watcher/synthesizer/file.go", "hunks": 2},
-      {"path": "internal/watcher/synthesizer/file_test.go", "hunks": 1},
-      {"path": "sdk/api/handlers/handlers.go", "hunks": 1},
-      {"path": "sdk/api/handlers/handlers_execution.go", "hunks": 1},
-      {"path": "sdk/api/handlers/handlers_metadata_test.go", "hunks": 1},
-      {"path": "sdk/api/handlers/model_execution.go", "hunks": 3},
-      {"path": "sdk/api/handlers/openai/openai_responses_websocket_forward.go", "hunks": 3},
-      {"path": "sdk/api/handlers/openai/openai_responses_websocket_input.go", "hunks": 3},
-      {"path": "sdk/cliproxy/antigravity_models.go", "hunks": 6},
-      {"path": "sdk/cliproxy/auth/conductor_cooldown.go", "hunks": 2},
-      {"path": "sdk/cliproxy/auth/conductor_execution.go", "hunks": 13},
-      {"path": "sdk/cliproxy/auth/conductor_home.go", "hunks": 1},
-      {"path": "sdk/cliproxy/auth/conductor_home_execution.go", "hunks": 1},
-      {"path": "sdk/cliproxy/auth/conductor_lifecycle.go", "hunks": 2},
-      {"path": "sdk/cliproxy/auth/conductor_persistence.go", "hunks": 1},
-      {"path": "sdk/cliproxy/auth/conductor_refresh.go", "hunks": 4},
-      {"path": "sdk/cliproxy/auth/conductor_selection.go", "hunks": 3},
-      {"path": "sdk/cliproxy/auth/conductor_stream.go", "hunks": 6},
-      {"path": "sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go", "hunks": 2},
-      {"path": "sdk/cliproxy/auth/scheduler.go", "hunks": 1},
-      {"path": "sdk/cliproxy/auth/types.go", "hunks": 1},
-      {"path": "sdk/cliproxy/executor/types.go", "hunks": 1},
-      {"path": "sdk/cliproxy/service_models.go", "hunks": 1},
-      {"path": "sdk/cliproxy/usage/manager.go", "hunks": 1}
+      {
+        "path": "go.mod",
+        "hunks": 4
+      },
+      {
+        "path": "go.sum",
+        "hunks": 3
+      },
+      {
+        "path": "internal/api/handlers/management/auth_files_provider_oauth.go",
+        "hunks": 3
+      },
+      {
+        "path": "internal/api/middleware/response_writer.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/auth/codex/openai_auth.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/auth/codex/siwc_auth.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/antigravity_executor_request.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/claude_executor_execute.go",
+        "hunks": 2
+      },
+      {
+        "path": "internal/runtime/executor/claude_executor_stream.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/codex_executor_execute.go",
+        "hunks": 4
+      },
+      {
+        "path": "internal/runtime/executor/codex_executor_request.go",
+        "hunks": 2
+      },
+      {
+        "path": "internal/runtime/executor/codex_executor_stream.go",
+        "hunks": 2
+      },
+      {
+        "path": "internal/runtime/executor/codex_executor_terminal.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/codex_openai_images.go",
+        "hunks": 4
+      },
+      {
+        "path": "internal/runtime/executor/codex_websockets_errors.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/helps/usage_helpers.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/runtime/executor/openai_compat_executor.go",
+        "hunks": 2
+      },
+      {
+        "path": "internal/store/gitstore.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/store/gitstore_test.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/translator/gemini/openai/responses/gemini_openai-responses_response.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/util/header_helpers.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/watcher/clients.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/watcher/dispatcher.go",
+        "hunks": 1
+      },
+      {
+        "path": "internal/watcher/synthesizer/file.go",
+        "hunks": 2
+      },
+      {
+        "path": "internal/watcher/synthesizer/file_test.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/api/handlers/handlers.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/api/handlers/handlers_execution.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/api/handlers/handlers_metadata_test.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/api/handlers/model_execution.go",
+        "hunks": 3
+      },
+      {
+        "path": "sdk/api/handlers/openai/openai_responses_websocket_forward.go",
+        "hunks": 3
+      },
+      {
+        "path": "sdk/api/handlers/openai/openai_responses_websocket_input.go",
+        "hunks": 3
+      },
+      {
+        "path": "sdk/cliproxy/antigravity_models.go",
+        "hunks": 6
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_cooldown.go",
+        "hunks": 2
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_execution.go",
+        "hunks": 13
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_home.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_home_execution.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_lifecycle.go",
+        "hunks": 2
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_persistence.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_refresh.go",
+        "hunks": 4
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_selection.go",
+        "hunks": 3
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_stream.go",
+        "hunks": 6
+      },
+      {
+        "path": "sdk/cliproxy/auth/conductor_unauthorized_refresh_test.go",
+        "hunks": 2
+      },
+      {
+        "path": "sdk/cliproxy/auth/scheduler.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/auth/types.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/executor/types.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/service_models.go",
+        "hunks": 1
+      },
+      {
+        "path": "sdk/cliproxy/usage/manager.go",
+        "hunks": 1
+      }
     ]
   },
   "guardrails": [
