@@ -372,7 +372,7 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v8.0.48` / commit
 `dbb706215a3afd2f0ea3c96482d4233856466caa`。CPA 补丁 SHA-256 为
-`29a0e5efe0d50053a80aa71cd5409bbee51888e5523cf1442f22e2e605eff1b2`；
+`fdb77ac98dbb7c2c846894e1fb7c056a090c18175d2ec8a59cd732e01c6f703d`；
 镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次 v8.0.48 候选的源码与镜像门槛由 CI 验证；v8.0.30 验证记录仍保留为回滚参考。生产切换及真实 OAuth 账号验收

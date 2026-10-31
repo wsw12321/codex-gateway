@@ -46,6 +46,28 @@ index 4f27182..85a0cf3 100644
  	for _, key := range []string{"access_token", "refresh_token"} {
  		value, _ := auth.Metadata[key].(string)
  		if strings.TrimSpace(value) == "" {
+diff --git a/internal/api/middleware/response_writer.go b/internal/api/middleware/response_writer.go
+index 8388788..f86945e 100644
+--- a/internal/api/middleware/response_writer.go
++++ b/internal/api/middleware/response_writer.go
+@@ -377,13 +377,16 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
+ 	if w.isStreaming && w.streamWriter != nil {
+ 		if w.chunkChannel != nil {
+ 			close(w.chunkChannel)
+-			w.chunkChannel = nil
+ 		}
+ 
+ 		if w.streamDone != nil {
+ 			<-w.streamDone
+ 			w.streamDone = nil
+ 		}
++		// processStreamingChunks reads w.chunkChannel to drain the stream. Do
++		// not clear the field until that goroutine has exited; clearing it before
++		// the receive completes races with its range expression under -race.
++		w.chunkChannel = nil
+ 
+ 		w.streamWriter.SetFirstChunkTimestamp(w.firstChunkTimestamp)
+ 
 diff --git a/internal/auth/antigravity/gateway_identity.go b/internal/auth/antigravity/gateway_identity.go
 new file mode 100644
 index 0000000..d09d38f
@@ -1293,6 +1315,24 @@ index 0000000..4c76524
 +		t.Fatalf("state directory synthesized as OAuth: %v, %v", auths, err)
 +	}
 +}
+diff --git a/sdk/api/handlers/openai/openai_responses_interrupt_test.go b/sdk/api/handlers/openai/openai_responses_interrupt_test.go
+index f53fd26..c9ea69b 100644
+--- a/sdk/api/handlers/openai/openai_responses_interrupt_test.go
++++ b/sdk/api/handlers/openai/openai_responses_interrupt_test.go
+@@ -372,6 +372,13 @@ func TestResponsesInterruptStopsHTTPUpstream(t *testing.T) {
+ 	if got := gjson.GetBytes(interrupted, "response.incomplete_details.reason").String(); got != "interrupted" {
+ 		t.Fatalf("interrupt reason = %q, payload %s", got, interrupted)
+ 	}
++	// The interrupt cancels the execution context synchronously, while the
++	// executor observes that cancellation from its stream goroutine. Allow
++	// that goroutine to run before declaring the upstream uncanceled.
++	cancelDeadline := time.Now().Add(time.Second)
++	for !executor.canceled.Load() && time.Now().Before(cancelDeadline) {
++		time.Sleep(time.Millisecond)
++	}
+ 	if !executor.canceled.Load() {
+ 		t.Fatal("http upstream was not canceled")
+ 	}
 diff --git a/sdk/cliproxy/auth/codex_oauth_dedupe.go b/sdk/cliproxy/auth/codex_oauth_dedupe.go
 new file mode 100644
 index 0000000..902e96f
