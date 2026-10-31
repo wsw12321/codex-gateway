@@ -1,0 +1,315 @@
+diff --git a/internal/runtime/executor/helps/gateway_cache.go b/internal/runtime/executor/helps/gateway_cache.go
+new file mode 100644
+index 0000000..a3084c5
+--- /dev/null
++++ b/internal/runtime/executor/helps/gateway_cache.go
+@@ -0,0 +1,23 @@
++package helps
++
++import (
++	"crypto/sha256"
++	"encoding/hex"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// GatewayCacheIdentity isolates provider cache state by the authenticated user
++// and stable account; client-controlled session and tool IDs are only suffixes.
++func GatewayCacheIdentity(metadata map[string]any, provider, value string) string {
++	user, _ := metadata[cliproxyexecutor.GatewayUserIDMetadataKey].(string)
++	if user == "" || value == "" {
++		return value
++	}
++	account, _ := metadata[cliproxyexecutor.UpstreamAccountIndexMetadataKey].(string)
++	if account == "" {
++		return ""
++	}
++	caller, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	sum := sha256.Sum256([]byte("gateway-provider-cache-v1\x00" + caller + "\x00" + user + "\x00" + provider + "\x00" + account + "\x00" + value))
++	return "gateway-" + hex.EncodeToString(sum[:])
++}
+diff --git a/internal/runtime/executor/helps/gateway_history.go b/internal/runtime/executor/helps/gateway_history.go
+new file mode 100644
+index 0000000..e73b272
+--- /dev/null
++++ b/internal/runtime/executor/helps/gateway_history.go
+@@ -0,0 +1,28 @@
++package helps
++
++import (
++	"errors"
++	"github.com/tidwall/gjson"
++	"strings"
++)
++
++// Every tool round must retain Google's real provenance. The default upstream
++// translator's bypass sentinel is never accepted in the Gateway deployment.
++func ValidateGatewayGeminiHistory(payload []byte) error {
++	for _, content := range gjson.GetBytes(payload, "request.contents").Array() {
++		firstCall := true
++		for _, part := range content.Get("parts").Array() {
++			signature := strings.TrimSpace(part.Get("thoughtSignature").String())
++			if signature == "skip_thought_signature_validator" {
++				return errors.New("new_session_required: Google thought signature is missing; start a new session")
++			}
++			if part.Get("functionCall").Exists() && firstCall {
++				firstCall = false
++				if signature == "" {
++					return errors.New("new_session_required: Google function signature is missing; start a new session")
++				}
++			}
++		}
++	}
++	return nil
++}
+diff --git a/internal/runtime/executor/helps/gateway_security_test.go b/internal/runtime/executor/helps/gateway_security_test.go
+new file mode 100644
+index 0000000..974446c
+--- /dev/null
++++ b/internal/runtime/executor/helps/gateway_security_test.go
+@@ -0,0 +1,46 @@
++package helps
++
++import (
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++	"net/http"
++	"testing"
++)
++
++func TestGatewayCacheIsolation(t *testing.T) {
++	scope := func(user, account, provider string) string {
++		return GatewayCacheIdentity(map[string]any{cliproxyexecutor.GatewayUserIDMetadataKey: user, cliproxyexecutor.UpstreamAccountIndexMetadataKey: account}, provider, "same-session-or-tool")
++	}
++	seen := map[string]bool{}
++	for _, tuple := range [][3]string{{"u1", "a1", "codex"}, {"u2", "a1", "codex"}, {"u1", "a2", "codex"}, {"u1", "a1", "antigravity"}} {
++		value := scope(tuple[0], tuple[1], tuple[2])
++		if value == "" || seen[value] {
++			t.Fatal("cache scope collision")
++		}
++		seen[value] = true
++	}
++	if scope("u1", "", "antigravity") != "" {
++		t.Fatal("missing stable account allowed cache")
++	}
++}
++func TestGatewayGoogleEgressRejectsUnexpectedHosts(t *testing.T) {
++	for _, target := range []string{"https://evil.invalid/token", "http://oauth2.googleapis.com/token", "https://oauth2.googleapis.com:444/token", "https://user@oauth2.googleapis.com/token"} {
++		req, _ := http.NewRequest(http.MethodPost, target, nil)
++		if _, err := (GatewayGoogleTransport{}).RoundTrip(req); err == nil {
++			t.Fatalf("accepted %s", target)
++		}
++	}
++	if ValidGatewayProxy(":broken") || ValidGatewayProxy("direct") || ValidGatewayProxy("") {
++		t.Fatal("invalid proxy accepted")
++	}
++}
++func TestGatewayGeminiHistoryRequiresRealSignatures(t *testing.T) {
++	for _, signature := range []string{"", "skip_thought_signature_validator"} {
++		payload := []byte(`{"request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"run","args":{}},"thoughtSignature":"` + signature + `"}]}]}}`)
++		if ValidateGatewayGeminiHistory(payload) == nil {
++			t.Fatal("missing signature accepted")
++		}
++	}
++	if err := ValidateGatewayGeminiHistory([]byte(`{"request":{"contents":[{"role":"model","parts":[{"functionCall":{"name":"run","args":{}},"thoughtSignature":"real-signature"},{"functionCall":{"name":"run","args":{}}}]}]}}`)); err != nil {
++		t.Fatal(err)
++	}
++}
+diff --git a/internal/auth/antigravity/gateway_identity.go b/internal/auth/antigravity/gateway_identity.go
+new file mode 100644
+index 0000000..d09d38f
+--- /dev/null
++++ b/internal/auth/antigravity/gateway_identity.go
+@@ -0,0 +1,130 @@
++package antigravity
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"net/url"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
++)
++
++type gatewayOAuthTransport struct{ base http.RoundTripper }
++
++func (t gatewayOAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
++	if t.base == nil || r.URL == nil || r.URL.Scheme != "https" || r.URL.User != nil || r.URL.Port() != "" && r.URL.Port() != "443" || r.Host != "" && r.Host != r.URL.Host {
++		return nil, errors.New("Google OAuth egress unavailable")
++	}
++	switch r.URL.Hostname() {
++	case "oauth2.googleapis.com", "www.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "daily-cloudcode-pa.sandbox.googleapis.com":
++	default:
++		return nil, errors.New("Google OAuth endpoint rejected")
++	}
++	return t.base.RoundTrip(r)
++}
++func gatewayOAuthHTTPClient(raw string) *http.Client {
++	client := &http.Client{Timeout: 30 * time.Second, Transport: gatewayOAuthTransport{}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
++	u, err := url.Parse(raw)
++	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https" && u.Scheme != "socks5" && u.Scheme != "socks5h") {
++		return client
++	}
++	transport, _, err := proxyutil.BuildHTTPTransport(raw)
++	if err != nil || transport == nil {
++		return client
++	}
++	client.Transport = gatewayOAuthTransport{base: transport}
++	return client
++}
++
++// FetchVerifiedIdentity deliberately excludes provider response bodies from
++// errors. Only Google's fixed endpoint may establish a durable account ID.
++func (o *AntigravityAuth) FetchVerifiedIdentity(ctx context.Context, accessToken string) (string, string, error) {
++	req, err := http.NewRequestWithContext(ctx, http.MethodGet, UserInfoEndpoint, nil)
++	if err != nil || strings.TrimSpace(accessToken) == "" {
++		return "", "", errors.New("Google identity unavailable")
++	}
++	req.Header.Set("Authorization", "Bearer "+accessToken)
++	client := *o.httpClient
++	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	resp, err := client.Do(req)
++	if err != nil {
++		return "", "", errors.New("Google identity unavailable")
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return "", "", errors.New("Google identity rejected")
++	}
++	data, err := io.ReadAll(io.LimitReader(resp.Body, (64<<10)+1))
++	if err != nil || len(data) > 64<<10 {
++		return "", "", errors.New("Google identity invalid")
++	}
++	var info struct {
++		ID       string `json:"id"`
++		Email    string `json:"email"`
++		Verified bool   `json:"verified_email"`
++	}
++	if json.Unmarshal(data, &info) != nil || !info.Verified || info.ID == "" || info.Email == "" {
++		return "", "", errors.New("Google identity unverified")
++	}
++	return strings.TrimSpace(info.Email), strings.TrimSpace(info.ID), nil
++}
++
++type GatewayQuotaWindow struct {
++	Model             string  `json:"model"`
++	RemainingFraction float64 `json:"remaining_fraction"`
++	ResetTime         string  `json:"reset_time,omitempty"`
++}
++
++func (o *AntigravityAuth) FetchGatewayQuota(ctx context.Context, accessToken, project string) ([]GatewayQuotaWindow, error) {
++	if accessToken == "" || project == "" {
++		return nil, errors.New("quota credential unavailable")
++	}
++	body, _ := json.Marshal(map[string]string{"project": project})
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels", bytes.NewReader(body))
++	if err != nil {
++		return nil, errors.New("quota unavailable")
++	}
++	req.Header.Set("Authorization", "Bearer "+accessToken)
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("User-Agent", o.shortUserAgent())
++	client := *o.httpClient
++	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
++	resp, err := client.Do(req)
++	if err != nil {
++		return nil, errors.New("quota unavailable")
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return nil, errors.New("quota rejected")
++	}
++	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
++	if err != nil || len(data) > 1<<20 {
++		return nil, errors.New("quota invalid")
++	}
++	var payload struct {
++		Models map[string]struct {
++			Quota *struct {
++				Remaining *float64 `json:"remainingFraction"`
++				Reset     string   `json:"resetTime"`
++			} `json:"quotaInfo"`
++		} `json:"models"`
++	}
++	if json.Unmarshal(data, &payload) != nil || payload.Models == nil {
++		return nil, errors.New("quota invalid")
++	}
++	result := make([]GatewayQuotaWindow, 0, len(payload.Models))
++	for model, value := range payload.Models {
++		if value.Quota != nil && value.Quota.Remaining != nil && *value.Quota.Remaining >= 0 && *value.Quota.Remaining <= 1 && strings.HasPrefix(model, "gemini-") {
++			result = append(result, GatewayQuotaWindow{Model: model, RemainingFraction: *value.Quota.Remaining, ResetTime: value.Quota.Reset})
++		}
++	}
++	if len(result) == 0 {
++		return nil, errors.New("Gemini quota unavailable")
++	}
++	return result, nil
++}
+diff --git a/internal/auth/antigravity/gateway_identity_test.go b/internal/auth/antigravity/gateway_identity_test.go
+new file mode 100644
+index 0000000..b878e73
+--- /dev/null
++++ b/internal/auth/antigravity/gateway_identity_test.go
+@@ -0,0 +1,58 @@
++package antigravity
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"strings"
++	"testing"
++)
++
++type gatewayIdentityRoundTrip func(*http.Request) (*http.Response, error)
++
++func (f gatewayIdentityRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func TestGatewayManagementGoogleIdentityMustBeVerified(t *testing.T) {
++	for _, test := range []struct {
++		body  string
++		valid bool
++	}{{`{"id":"123456","email":"fixture@example.test","verified_email":true}`, true}, {`{"email":"fixture@example.test","verified_email":true}`, false}, {`{"id":"123456","email":"fixture@example.test","verified_email":false}`, false}, {`{"id":"123456","email":"fixture@example.test"}`, false}} {
++		service := NewAntigravityAuth(nil, &http.Client{Transport: gatewayIdentityRoundTrip(func(r *http.Request) (*http.Response, error) {
++			if r.URL.String() != UserInfoEndpoint || r.Header.Get("Authorization") != "Bearer synthetic" {
++				t.Error("wrong identity boundary")
++			}
++			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(test.body))}, nil
++		})})
++		_, _, err := service.FetchVerifiedIdentity(context.Background(), "synthetic")
++		if (err == nil) != test.valid {
++			t.Errorf("body=%s valid=%v err=%v", test.body, test.valid, err)
++		}
++	}
++}
++
++func TestGatewayManagementOAuthRejectsMissingOrInvalidProxy(t *testing.T) {
++	for _, raw := range []string{"", "direct", "ftp://proxy.invalid", ":invalid"} {
++		client := gatewayOAuthHTTPClient(raw)
++		req, _ := http.NewRequest("GET", UserInfoEndpoint, nil)
++		if _, err := client.Do(req); err == nil {
++			t.Errorf("proxy %q unexpectedly accepted", raw)
++		}
++	}
++}
++
++func TestGatewayManagementOAuthRejectsForeignHosts(t *testing.T) {
++	called := false
++	transport := gatewayOAuthTransport{base: gatewayIdentityRoundTrip(func(*http.Request) (*http.Response, error) {
++		called = true
++		return &http.Response{StatusCode: 200}, nil
++	})}
++	for _, target := range []string{"http://www.googleapis.com/", "https://www.googleapis.com.attacker.example/", "https://attacker@www.googleapis.com/", "https://www.googleapis.com:444/"} {
++		r, _ := http.NewRequest("GET", target, nil)
++		if _, err := transport.RoundTrip(r); err == nil {
++			t.Errorf("unsafe target %s", target)
++		}
++	}
++	if called {
++		t.Fatal("foreign request reached transport")
++	}
++}
