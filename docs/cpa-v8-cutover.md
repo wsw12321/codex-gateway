@@ -31,6 +31,7 @@ Gateway 管身份、模型和账号权限、权重、并发、限额、价格、
 
 兼容层不再对内部 Gateway 链路压缩响应（`response-compression.enabled: false`），SSE 按原样流式
 传给 Gateway；这是部署入口固定的安全默认值，不需要手工配置。
+本次本地 CI 复现结果及真实账号待验收项见 [v8.0.48 验证记录](cpa-v8.0.48-validation.md)。
 
 ## 历史：v8.0.20 升至 v8.0.30
 
@@ -78,7 +79,7 @@ TEST_DATABASE_URL="$DISPOSABLE_DATABASE_URL" \
   go test -count=1 -p 1 -tags=integration ./internal/store ./internal/server
 ```
 
-v8.0.30 的本地检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.30-validation.md)；
+v8.0.48 的本地检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.48-validation.md)；
 此前构建与切换演练保存在 [v8 历史验证记录](cpa-v8-validation.md)。上述构建和运行检查应在
 进入实际部署维护窗口前完成，历史版本的成功结果不能替代本次验证。
 本地合成凭据、HTTP stub 和测试数据库的成功，

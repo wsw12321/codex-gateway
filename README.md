@@ -248,8 +248,8 @@ Ultrafast、税费或基础设施成本。Gemini 使用对应 API 家族的 Stan
 
 ### 已验证
 
-以下为既有部署的历史验证；本次 CPA v8.0.30 的源码检查与待完成的 CI、镜像和真实账号验收
-单独记录在 [升级验证记录](docs/cpa-v8.0.30-validation.md)。
+以下为既有部署的历史验证；本次 CPA v8.0.48 的重基、本地 CI 复现与待完成的真实账号验收
+单独记录在 [升级验证记录](docs/cpa-v8.0.48-validation.md)。
 
 - `go test ./...`、`go test -race ./...`、`go vet ./...` 和格式检查通过。
 - PostgreSQL 17 真实集成测试已覆盖迁移、配额、usage、日/月聚合、审计和告警，
@@ -374,7 +374,7 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 `dbb706215a3afd2f0ea3c96482d4233856466caa`。CPA 补丁和本地构建产物另行记录 SHA-256；
 镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
-此次版本升级的源码、镜像与数据库验证状态见 [v8.0.30 验证记录](docs/cpa-v8.0.30-validation.md)。生产切换及真实 OAuth 账号验收
+此次版本升级的源码、镜像与数据库验证状态见 [v8.0.48 验证记录](docs/cpa-v8.0.48-validation.md)。生产切换及真实 OAuth 账号验收
 按 [CPA v8 切换与回滚](docs/cpa-v8-cutover.md) 执行。
 
 ```sh
@@ -439,7 +439,7 @@ Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `
 首次从 bridge 切换时再执行凭据转换。参见
 [切换与回滚](docs/cpa-v8-cutover.md)、[凭据迁移](docs/cpa-credentials-migration.md)、
 [模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
-[v8.0.30 验证记录](docs/cpa-v8.0.30-validation.md)。首次 v8 切换的
+[v8.0.48 验证记录](docs/cpa-v8.0.48-validation.md)（[v8.0.30](docs/cpa-v8.0.30-validation.md) 保留为历史）。首次 v8 切换的
 [历史验证记录](docs/cpa-v8-validation.md)仍保留。
 
 ### 5. 初始化 Owner

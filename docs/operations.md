@@ -261,7 +261,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
 v8.0.48 同步更新 CPA 源码、模型目录和价格；价格合并须先移除 `gpt-5.5`，数据库迁移
 `0038_cpa_v8_0_48_model_catalog.sql` 必须在镜像切换前完成，回滚使用包含该迁移的兼容构建。
-本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.30-validation.md)。
+本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.48-validation.md)。
 2026-10-12 安全更新使用 Go 1.26.9 构建，并将 CPA 的 `golang.org/x/net`
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
