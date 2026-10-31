@@ -8426,6 +8426,37 @@ index 752a52d..d07e3ae 100644
  		s.removeAuthFromProvidersLocked(authID)
  		return
  	}
+diff --git a/sdk/cliproxy/auth/selector.go b/sdk/cliproxy/auth/selector.go
+index fc78054..24eb7ac 100644
+--- a/sdk/cliproxy/auth/selector.go
++++ b/sdk/cliproxy/auth/selector.go
+@@ -1828,6 +1828,26 @@ func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]a
+ 	return primary
+ }
+ 
++// callerScopedSessionIDs keeps inferred and explicit identities isolated for
++// each authenticated downstream caller before they enter affinity/root state.
++// The scope is supplied by trusted gateway metadata; an absent scope keeps the
++// upstream identity unchanged for backwards compatibility.
++func callerScopedSessionIDs(primary, fallback string, metadata map[string]any) (string, string) {
++	callerScope, _ := metadata[cliproxyexecutor.CallerScopeMetadataKey].(string)
++	callerScope = strings.TrimSpace(callerScope)
++	if callerScope == "" {
++		return primary, fallback
++	}
++	prefix := "caller:" + callerScope + ":"
++	if primary != "" {
++		primary = prefix + primary
++	}
++	if fallback != "" {
++		fallback = prefix + fallback
++	}
++	return primary, fallback
++}
++
+ func extractConversationAlias(payload []byte) string {
+ 	if len(payload) == 0 {
+ 		return ""
 diff --git a/sdk/cliproxy/auth/types.go b/sdk/cliproxy/auth/types.go
 index 48dd5a6..acd7d5e 100644
 --- a/sdk/cliproxy/auth/types.go
@@ -8484,3 +8515,53 @@ index a103286..4841b34 100644
  )
  
  // Request encapsulates the translated payload that will be sent to a provider executor.
+diff --git a/sdk/cliproxy/session/info.go b/sdk/cliproxy/session/info.go
+index 3531adb..e8c2c89 100644
+--- a/sdk/cliproxy/session/info.go
++++ b/sdk/cliproxy/session/info.go
+@@ -15,19 +15,23 @@ import (
+ 
+ // SessionInfo encapsulates incoming request details needed for session affinity and upstream reporting.
+ type SessionInfo struct {
+-	SessionID       string         `json:"session_id"`
+-	ParentSessionID string         `json:"parent_session_id,omitempty"`
+-	AgentName       string         `json:"agent_name,omitempty"`
+-	ClientType      string         `json:"client_type,omitempty"`
+-	CallerScope     string         `json:"caller_scope,omitempty"`
+-	AuthID          string         `json:"auth_id,omitempty"`
+-	Provider        string         `json:"provider,omitempty"`
+-	Model           string         `json:"model,omitempty"`
+-	NodeKind        string         `json:"node_kind,omitempty"`
+-	IsFork          bool           `json:"is_fork,omitempty"`
+-	IsCompaction    bool           `json:"is_compaction,omitempty"`
+-	IsSubagent      bool           `json:"is_subagent,omitempty"`
+-	Metadata        map[string]any `json:"metadata,omitempty"`
++	// Unbounded identities preserve hierarchy for root resolution before affinity
++	// compresses long composite IDs. They never enter serialized session reports.
++	UnboundedSessionID       string         `json:"-"`
++	UnboundedParentSessionID string         `json:"-"`
++	SessionID                string         `json:"session_id"`
++	ParentSessionID          string         `json:"parent_session_id,omitempty"`
++	AgentName                string         `json:"agent_name,omitempty"`
++	ClientType               string         `json:"client_type,omitempty"`
++	CallerScope              string         `json:"caller_scope,omitempty"`
++	AuthID                   string         `json:"auth_id,omitempty"`
++	Provider                 string         `json:"provider,omitempty"`
++	Model                    string         `json:"model,omitempty"`
++	NodeKind                 string         `json:"node_kind,omitempty"`
++	IsFork                   bool           `json:"is_fork,omitempty"`
++	IsCompaction             bool           `json:"is_compaction,omitempty"`
++	IsSubagent               bool           `json:"is_subagent,omitempty"`
++	Metadata                 map[string]any `json:"metadata,omitempty"`
+ }
+ 
+ // SessionTreeInfo is an alias for SessionInfo for backward compatibility.
+@@ -947,6 +951,8 @@ func finalizeSessionInfo(info SessionInfo) (SessionInfo, bool) {
+ 	if info.SessionID == "" {
+ 		return SessionInfo{}, false
+ 	}
++	info.UnboundedSessionID = info.SessionID
++	info.UnboundedParentSessionID = info.ParentSessionID
+ 	info.SessionID = BoundSessionIdentity(info.SessionID)
+ 	if info.ParentSessionID != "" {
+ 		info.ParentSessionID = BoundSessionIdentity(info.ParentSessionID)
