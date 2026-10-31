@@ -1,0 +1,42 @@
+diff --git a/internal/runtime/executor/helps/gateway_egress.go b/internal/runtime/executor/helps/gateway_egress.go
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/internal/runtime/executor/helps/gateway_egress.go
+@@ -0,0 +1,36 @@
++package helps
++
++import (
++	"errors"
++	"net/http"
++	"net/url"
++)
++
++type GatewayRejectedTransport struct{}
++
++func (GatewayRejectedTransport) RoundTrip(*http.Request) (*http.Response, error) {
++	return nil, errors.New("gateway provider egress unavailable")
++}
++
++// GatewayGoogleTransport permits only fixed Google OAuth, identity and model
++// endpoints through the deployment's proxy, with no redirect or Host override.
++type GatewayGoogleTransport struct{ Base http.RoundTripper }
++
++func (t GatewayGoogleTransport) RoundTrip(req *http.Request) (*http.Response, error) {
++	if req == nil || req.URL == nil || req.URL.Scheme != "https" || req.URL.User != nil || req.URL.Port() != "" && req.URL.Port() != "443" || req.Host != "" && req.Host != req.URL.Host {
++		return nil, errors.New("gateway Google endpoint rejected")
++	}
++	switch req.URL.Hostname() {
++	case "oauth2.googleapis.com", "www.googleapis.com", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com", "daily-cloudcode-pa.sandbox.googleapis.com":
++	default:
++		return nil, errors.New("gateway Google endpoint rejected")
++	}
++	if t.Base == nil {
++		return nil, errors.New("gateway provider egress unavailable")
++	}
++	return t.Base.RoundTrip(req)
++}
++func ValidGatewayProxy(raw string) bool {
++	u, err := url.Parse(raw)
++	return err == nil && u.Hostname() != "" && (u.Scheme == "http" || u.Scheme == "https" || u.Scheme == "socks5" || u.Scheme == "socks5h")
++}
