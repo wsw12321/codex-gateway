@@ -253,15 +253,15 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ```
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
-`latest`。CLIProxyAPI 的构建证明 `v8.0.30` 的 peeled commit 正是
-`5be2cdab0869cbaa3d401891f740aebf7e15aa99`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.30-5be2cdab-f10e3cfd34208d91-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`latest`。CLIProxyAPI 的构建证明 `v8.0.48` 的 peeled commit 正是
+`dbb706215a3afd2f0ea3c96482d4233856466caa`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
+`v8.0.48-dbb70621-73ef6c2e8af5ecb0-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次切换、两个新模型与五个退役模型的一次性目录迁移和兼容回滚见 [CPA v8 操作流程](cpa-v8-cutover.md)。
 新增范围仅为 `claude-haiku-5-5` 与 `gemini-4-argon-high`；基础 Argon 的 `gemini` provider 和
 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
-v8.0.30 同步更新 CPA 源码、模型目录和价格；数据库迁移 `0035_cpa_v8_0_30_model_catalog.sql`
-必须在镜像切换前完成，回滚使用包含该迁移的兼容构建。
-本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.30-validation.md)。
+v8.0.48 保持模型授权与价格策略由 Gateway 控制；本候选不引入新的数据库迁移。回滚仍使用
+包含既有 `0035_cpa_v8_0_30_model_catalog.sql` 的 v8.0.30 兼容构建。
+候选补丁在目标 CPA commit 上完成文本应用检查；Go 构建、race、镜像和真实账号验收仍须由 CI 与维护窗口完成。回滚验证记录见 [v8.0.30 记录](cpa-v8.0.30-validation.md)。
 2026-10-12 安全更新使用 Go 1.26.9 构建，并将 CPA 的 `golang.org/x/net`
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。

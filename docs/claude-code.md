@@ -99,7 +99,7 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 | `claude-haiku-5-5`，输入 ≤100,000 | 0.10 | 0.50 | 0.01 | 0.125 | 0.20 |
 | `claude-haiku-5-5`，输入 >100,000 | 0.50 | 2.50 | 0.05 | 0.625 | 1 |
 
-模型 ID 和上下文限制对应当前 [CPA 来源锁](../deploy/codex-compat/source.lock.json) 中的 `v8.0.30` 目录。Haiku 4.5 的输入上下文上限为 `200000`；Fable、Opus、Sonnet 和 Haiku 5.5 为 `1000000`。Haiku 5.5 的最大完成为 `128000`，使用精确 ID `claude-haiku-5-5`。
+模型 ID 和上下文限制对应当前 [CPA 来源锁](../deploy/codex-compat/source.lock.json) 中的 `v8.0.48` 目录。Haiku 4.5 的输入上下文上限为 `200000`；Fable、Opus、Sonnet 和 Haiku 5.5 为 `1000000`。Haiku 5.5 的最大完成为 `128000`，使用精确 ID `claude-haiku-5-5`。
 
 五款均使用 `cache_write_mode=separate_by_ttl`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。Fable、Opus、Sonnet 的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 4.5 为 `200000`；这四款只配置 `service_tiers.standard.short`。
 

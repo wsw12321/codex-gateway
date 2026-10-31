@@ -1,11 +1,13 @@
 CLIProxyAPI
 ===========
 
-This distribution builds and runs CLIProxyAPI v8.0.30 from the immutable
+This distribution builds and runs CLIProxyAPI v8.0.48 from the immutable
 upstream commit:
 
   https://github.com/router-for-me/CLIProxyAPI
-  5be2cdab0869cbaa3d401891f740aebf7e15aa99
+  dbb706215a3afd2f0ea3c96482d4233856466caa
+  Gateway patch: deploy/codex-compat/cliproxy-v8.0.48-gateway.patch
+  SHA256: 73ef6c2e8af5ecb09f20006f9db1c016c16a9b5f5e32688ce9debd820a6d11f6
 
 CLIProxyAPI is licensed under the MIT License. Its copyright remains with the
 upstream authors and contributors. The license text supplied by the upstream
@@ -48,6 +50,7 @@ remains subject to its upstream terms. Documentation and product information:
   https://antigravity.google/
 
 The retired third-party Gemini CLI plugin is no longer included in this build.
+The prior v8.0.30 compatibility image remains the controlled rollback target.
 
 Expat
 =====

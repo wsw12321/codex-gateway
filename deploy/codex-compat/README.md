@@ -1,10 +1,10 @@
 # Pinned CPA build
 
-The default image builds CPA `v8.0.30` at
-`5be2cdab0869cbaa3d401891f740aebf7e15aa99`. The Dockerfile verifies the peeled
+The default image builds CPA `v8.0.48` at
+`dbb706215a3afd2f0ea3c96482d4233856466caa`. The Dockerfile verifies the peeled
 release tag, the full commit and `CLIPROXY_PATCH_SHA256` before applying
-`cliproxy-v8.0.30-gateway.patch`. The build uses Go 1.26.10 and retains the security
-dependency updates from the prior build. The old v7 patch is retained only for the
+`cliproxy-v8.0.48-gateway.patch`. The build uses Go 1.26.10 and retains the security
+dependency updates from the prior build. The prior v8.0.30 source lock, image and patch remain available as the
 controlled compatibility rollback described in the operations documentation.
 
 The local catalog is the exact `internal/registry/models/models.json` from
@@ -53,10 +53,11 @@ transport/quota regression list. Run
 runtime checks, including credential permissions, provider capabilities,
 management-key separation and exclusive refresh locking. These checks do not
 replace the maintenance-window tests with real accounts and a Gateway key.
-The v8.0.30 upgrade adds Haiku 5.5 and Argon-high, retires five upstream model IDs,
-and requires the `0035` catalog migration plus the offline pricing merge. Local
-checks and pending CI and real-account acceptance are recorded in
-[`cpa-v8.0.30-validation.md`](../../docs/cpa-v8.0.30-validation.md).
+The v8.0.48 candidate carries the reviewed combined Gateway patch and closure
+artifact. The model catalog remains pinned to the exact upstream SHA in
+`source.lock.json`; Gateway authorization and pricing stay policy-controlled.
+Patch replay and static checks are recorded in the stage 5 candidate review;
+Go/race/image and real-account acceptance remain CI and maintenance-window gates.
 
 Claude subscriptions use Gateway provider `anthropic`; the adapter maps it to
 CPA executor `claude` and OAuth flow `anthropic`. The independent mode-0600

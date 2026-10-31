@@ -26,12 +26,12 @@ relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.30-gateway.patch
-compat_patch_sha256=f10e3cfd34208d912a216a414807bcc6262f14389d4738d71141d7db40a3f876
+compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.48-gateway.patch
+compat_patch_sha256=73ef6c2e8af5ecb09f20006f9db1c016c16a9b5f5e32688ce9debd820a6d11f6
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.30-5be2cdab-f10e3cfd34208d91-cpa
+compat_image=codex-gateway-compat:v8.0.48-dbb70621-73ef6c2e8af5ecb0-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -56,15 +56,15 @@ test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" 
     fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
 jq -e --arg patch "$compat_patch_sha256" '
     .repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .tag == "v8.0.30" and
-    .commit == "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
-    .patch == "cliproxy-v8.0.30-gateway.patch" and
+    .tag == "v8.0.48" and
+    .commit == "dbb706215a3afd2f0ea3c96482d4233856466caa" and
+    .patch == "cliproxy-v8.0.48-gateway.patch" and
     .patch_sha256 == $patch and .go_version == "1.26.10" and
     .automatic_updates == false and
     .model_catalog.repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .model_catalog.commit == "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
+    .model_catalog.commit == "dbb706215a3afd2f0ea3c96482d4233856466caa" and
     .model_catalog.file == "internal/registry/models/models.json" and
-    .model_catalog.sha256 == "2a4bd5fd9a72ef5c42c746274a5eec13c65c7e0768b6f1d510e8e9a8994c76c8"
+    .model_catalog.sha256 == "32f663de911083339cf5347be74b0b4cbf1471bc1968362897cc94ebf021c306"
 ' "$root/deploy/codex-compat/source.lock.json" >/dev/null || \
     fail 'CPA source and reviewed local model provenance must remain locked'
 if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" "$compat_entrypoint"; then
@@ -875,9 +875,9 @@ jq -e \
 
 jq -e --arg patch "$compat_patch_sha256" '
   .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.30" and
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.48" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "5be2cdab0869cbaa3d401891f740aebf7e15aa99" and
+    "dbb706215a3afd2f0ea3c96482d4233856466caa" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
 test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
