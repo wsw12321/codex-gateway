@@ -1,0 +1,61 @@
+--- a/internal/watcher/events.go
++++ b/internal/watcher/events.go
+@@ -13,6 +13,7 @@
+ 	"time"
+ 
+ 	"github.com/fsnotify/fsnotify"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
+ 	log "github.com/sirupsen/logrus"
+ )
+ 
+@@ -65,6 +66,9 @@
+ }
+ 
+ func (w *Watcher) handleEvent(event fsnotify.Event) {
++	if coreauth.IsGatewayAccountStateFile(event.Name) {
++		return
++	}
+ 	// Filter only relevant events: config file or auth-dir JSON files.
+ 	configOps := fsnotify.Write | fsnotify.Create | fsnotify.Rename
+ 	normalizedName := w.normalizeAuthPath(event.Name)
+--- a/internal/watcher/clients.go
++++ b/internal/watcher/clients.go
+@@ -109,7 +109,7 @@
+ 						continue
+ 					}
+ 					name := entry.Name()
+-					if !strings.HasSuffix(strings.ToLower(name), ".json") {
++					if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 						continue
+ 					}
+ 					fullPath := filepath.Join(resolvedAuthDir, name)
+@@ -527,7 +527,7 @@
+ 			continue
+ 		}
+ 		name := entry.Name()
+-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
++		if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 			continue
+ 		}
+ 		authFileCount++
+--- a/internal/watcher/synthesizer/file.go
++++ b/internal/watcher/synthesizer/file.go
+@@ -50,7 +50,7 @@
+ 			continue
+ 		}
+ 		name := e.Name()
+-		if !strings.HasSuffix(strings.ToLower(name), ".json") {
++		if coreauth.IsGatewayAccountStateFile(name) || !strings.HasSuffix(strings.ToLower(name), ".json") {
+ 			continue
+ 		}
+ 		full := filepath.Join(ctx.AuthDir, name)
+@@ -81,6 +81,9 @@
+ // SynthesizeAuthFile generates Auth entries for one auth JSON file payload.
+ // It shares exactly the same mapping behavior as FileSynthesizer.Synthesize.
+ func SynthesizeAuthFile(ctx *SynthesisContext, fullPath string, data []byte) ([]*coreauth.Auth, error) {
++	if coreauth.IsGatewayAccountStateFile(fullPath) {
++		return nil, nil
++	}
+ 	return synthesizeFileAuths(ctx, fullPath, data)
+ }
+ 
