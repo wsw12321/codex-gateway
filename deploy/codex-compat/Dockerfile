@@ -39,7 +39,7 @@ RUN printf "%s  /tmp/cliproxy-multi-account.patch\n" "$CLIPROXY_PATCH_SHA256" | 
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
 RUN printf '%s  internal/registry/models/models.json\n' \
-    '2a4bd5fd9a72ef5c42c746274a5eec13c65c7e0768b6f1d510e8e9a8994c76c8' | sha256sum -c -
+    '32f663de911083339cf5347be74b0b4cbf1471bc1968362897cc94ebf021c306' | sha256sum -c -
 
 COPY deploy/codex-compat/legacy-credentials.test.txt /src/internal/watcher/synthesizer/gateway_legacy_credentials_test.go
 COPY deploy/codex-compat/entrypoint.sh /tmp/gateway-entrypoint.sh
