@@ -247,16 +247,17 @@ grep -Fq '.gateway-account-state' "$compat_patch" && \
     grep -Fq 'TestCodexGatewayQuotaHTTPTransports' "$compat_dockerfile" && \
     grep -Fq './sdk/cliproxy' "$compat_dockerfile" || \
     fail 'CLIProxyAPI must test persistent account controls, fail-closed state, and quota signals'
-grep -Fq 'codexQuotaRPCMethod          = "account/rateLimits/read"' "$compat_patch" && \
-    grep -Fq 'codexQuotaRequestMaxBodySize = 256' "$compat_patch" && \
-    grep -Fq 'internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the strict POST quota RPC contract'
-grep -Fq 'TestInternalUpstreamAccountQuotaRequiresExactRPCRequest' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountQuotaIgnoresPlanMetadata' "$compat_patch" && \
-    grep -Fq 'TestNormalizeUpstreamUsageSupportsNullableWindowsAndCeilsDuration' "$compat_patch" && \
-    grep -Fq 'TestQuotaSchemaErrorCodeRejectsUnrecognizedErrors' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountQuotaRejectsOversizedSensitiveResponse' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the quota RPC security regressions'
+grep -Fq 'QuotaExhausted bool' "$compat_patch" && \
+    grep -Fq 'TestGatewayQuotaSignalSurvivesErrorSnapshots' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountQuotaSignalAcrossOrdinaryCompactAndSSE' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountQuotaLocksDuplicatesRestartAndReplacement' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry explicit quota signaling and persistence regressions'
+grep -Fq 'TestGatewayAccountQuotaSignalAcrossOrdinaryCompactAndSSE' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountQuotaLocksDuplicatesRestartAndReplacement' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountReenableDiscardsOldQuotaThenLocksOnNewQuota' "$compat_patch" && \
+    grep -Fq 'TestGatewayAnthropicQuotaUsesOnlyObservedSignals' "$compat_patch" && \
+    grep -Fq 'TestGatewayAccountOrdinary429RecoversWithoutPersistentLock' "$compat_patch" || \
+    fail 'CLIProxyAPI patch must carry quota persistence, recovery, and provider-observation regressions'
 test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }
