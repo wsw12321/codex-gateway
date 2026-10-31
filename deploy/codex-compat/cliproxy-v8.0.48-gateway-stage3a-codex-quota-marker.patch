@@ -1,0 +1,76 @@
+--- a/internal/runtime/executor/openai_compat_executor.go
++++ b/internal/runtime/executor/openai_compat_executor.go
+@@ -1173,6 +1173,7 @@
+ 	msg                string
+ 	retryAfter         *time.Duration
+ 	credentialScoped   bool
++	quotaExhausted     bool
+ 	streamTruncated    bool
+ 	transientRateLimit bool
+ 	// diagnostic is a content-free detail for logs only; it never reaches clients.
+@@ -1188,6 +1189,7 @@
+ func (e statusErr) StatusCode() int            { return e.code }
+ func (e statusErr) RetryAfter() *time.Duration { return e.retryAfter }
+ func (e statusErr) IsCredentialScoped() bool   { return e.credentialScoped }
++func (e statusErr) QuotaExhausted() bool       { return e.quotaExhausted }
+ 
+ // LogDiagnostic lets upstream failure logs explain a sanitized client message.
+ func (e statusErr) LogDiagnostic() string { return e.diagnostic }
+--- a/internal/runtime/executor/codex_executor_terminal.go
++++ b/internal/runtime/executor/codex_executor_terminal.go
+@@ -157,7 +157,11 @@
+ 	if !ok || !codexTerminalStreamErrShouldHandle(body) {
+ 		return statusErr{}, nil, false
+ 	}
+-	return newCodexStatusErrWithCooling(http.StatusBadRequest, body, modelLevelCooling), body, true
++	status := http.StatusBadRequest
++	if failureStatus := codexTerminalFailureStatus(body); failureStatus == http.StatusUnauthorized || failureStatus == http.StatusForbidden {
++		status = failureStatus
++	}
++	return newCodexStatusErrWithCooling(status, body, modelLevelCooling), body, true
+ }
+ 
+ func codexTerminalFailureErr(eventData []byte) (statusErr, []byte, bool) {
+@@ -324,14 +328,15 @@
+ 
+ func newCodexStatusErrWithHeadersAndCooling(statusCode int, headers http.Header, body []byte, modelLevelCooling bool) statusErr {
+ 	errCode := statusCode
+-	isUsageLimit := isCodexUsageLimitError(body)
+-	credentialScoped := isUsageLimit && !modelLevelCooling
+-	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(body)
+-	if transientCapacity || isUsageLimit {
++	// Preserve the structured quota signal before normalizing the error body.
++	// Authentication failures must never create a durable quota lock.
++	quotaExhausted := statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden && isCodexUsageLimitError(body)
++	transientCapacity := !quotaExhausted && isCodexTransientCapacityError(body)
++	if transientCapacity || quotaExhausted {
+ 		errCode = http.StatusTooManyRequests
+ 	}
+ 	body = classifyCodexStatusError(errCode, body)
+-	err := statusErr{code: errCode, msg: string(body), credentialScoped: credentialScoped, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
++	err := statusErr{code: errCode, msg: string(body), quotaExhausted: quotaExhausted, credentialScoped: quotaExhausted && !modelLevelCooling, transientRateLimit: transientCapacity && errCode == http.StatusTooManyRequests}
+ 	// A usage_limit_reached body reset describes quota recovery and wins over
+ 	// the generic Retry-After header. Every other 429 honours the upstream
+ 	// header so per-turn admission limits cool until their real deadline.
+--- a/internal/runtime/executor/codex_websockets_errors.go
++++ b/internal/runtime/executor/codex_websockets_errors.go
+@@ -47,12 +47,16 @@
+ 
+ 	out := buildCodexWebsocketErrorPayload(payload, status)
+ 	headers := parseCodexWebsocketErrorHeaders(payload)
+-	isUsageLimit := isCodexUsageLimitError(out)
+-	transientCapacity := !isUsageLimit && isCodexTransientCapacityError(out)
++	quotaExhausted := status != http.StatusUnauthorized && status != http.StatusForbidden && isCodexUsageLimitError(out)
++	if quotaExhausted {
++		status = http.StatusTooManyRequests
++	}
++	transientCapacity := !quotaExhausted && isCodexTransientCapacityError(out)
+ 	statusError := statusErr{
+ 		code:               status,
+ 		msg:                string(out),
+-		credentialScoped:   isUsageLimit && !modelLevelCooling,
++		quotaExhausted:     quotaExhausted,
++		credentialScoped:   quotaExhausted && !modelLevelCooling,
+ 		transientRateLimit: transientCapacity && status == http.StatusTooManyRequests,
+ 	}
+ 	// Hint precedence: the quota body reset wins, then the connection-limit
