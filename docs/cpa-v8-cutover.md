@@ -1,6 +1,6 @@
 # CPA v8 切换、演练与回滚
 
-本次固定 CPA **v8.0.30 / 5be2cdab0869cbaa3d401891f740aebf7e15aa99**，
+本次固定 CPA **v8.0.48 / dbb706215a3afd2f0ea3c96482d4233856466caa**，
 管理面板 **v1.25.0 / b87b9487f63e08ad97b1fb4e7c17b4adb811b922**。
 CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；面板固定源码组件、
 依赖锁和同源资源摘要见 `deploy/cpa-panel/`。面板是去除配置、代理、权重、插件、任意请求

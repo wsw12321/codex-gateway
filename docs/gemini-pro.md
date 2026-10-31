@@ -1,6 +1,6 @@
 # 通过 Antigravity 订阅接入 Gemini
 
-当前默认链路为客户端 → Gateway → CPA v8.0.30 → Antigravity。Gateway 管理模型和账号权限、并发、
+当前默认链路为客户端 → Gateway → CPA v8.0.48 → Antigravity。Gateway 管理模型和账号权限、并发、
 配额与账单，CPA 管理 OAuth、供应商协议和刷新。`antigravity-bridge` 仅用于受控 legacy 回滚，
 不会随默认部署启动。当前升级步骤见 [CPA 切换与回滚](cpa-v8-cutover.md)。
 

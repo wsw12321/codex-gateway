@@ -55,7 +55,7 @@ Gateway subcommands: `serve` (default; runs migrations first), `migrate`, `boots
 
 ### Topology
 
-cloudflared → Caddy → `gateway` → `codex-compat` (CPA v8.0.30 + `deploy/codex-compat/cliproxy-v8.0.30-gateway.patch`) → Squid egress allowlist. No service publishes host ports.
+cloudflared → Caddy → `gateway` → `codex-compat` (CPA v8.0.48 + `deploy/codex-compat/cliproxy-v8.0.48-gateway.patch`) → Squid egress allowlist. No service publishes host ports.
 
 The gateway reaches CPA at `SIDECAR_URL` with a fixed internal bearer (`SIDECAR_API_KEY`). It strips client auth, cookies, and hop-by-hop headers first.
 

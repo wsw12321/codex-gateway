@@ -33,13 +33,13 @@ RUN git init \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
 ARG CLIPROXY_PATCH_SHA256
-COPY deploy/codex-compat/cliproxy-v8.0.30-gateway.patch /tmp/cliproxy-multi-account.patch
+COPY deploy/codex-compat/cliproxy-v8.0.48-gateway.patch /tmp/cliproxy-multi-account.patch
 RUN printf "%s  /tmp/cliproxy-multi-account.patch\n" "$CLIPROXY_PATCH_SHA256" | sha256sum -c - \
     && git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git diff --check
 RUN printf '%s  internal/registry/models/models.json\n' \
-    '2a4bd5fd9a72ef5c42c746274a5eec13c65c7e0768b6f1d510e8e9a8994c76c8' | sha256sum -c -
+    '32f663de911083339cf5347be74b0b4cbf1471bc1968362897cc94ebf021c306' | sha256sum -c -
 
 COPY deploy/codex-compat/legacy-credentials.test.txt /src/internal/watcher/synthesizer/gateway_legacy_credentials_test.go
 COPY deploy/codex-compat/entrypoint.sh /tmp/gateway-entrypoint.sh
@@ -79,7 +79,7 @@ RUN go test -count=1 \
 # hold manager locks, and simultaneous first requests must share one binding.
 # Watcher revisions must also preserve canonical account identity under updates.
 RUN go test -race -count=1 ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy
-# v8.0.30 stream finalization and asynchronous usage must not retain pooled
+# v8.0.48 stream finalization and asynchronous usage must not retain pooled
 # request state or let late interrupts affect the next response.
 RUN go test -race -count=1 ./internal/api/middleware ./internal/cache \
     ./internal/runtime/executor/helps ./sdk/cliproxy/usage ./sdk/api/handlers/openai

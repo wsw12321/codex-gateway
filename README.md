@@ -41,7 +41,7 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v8.0.30
+  CLIProxyAPI v8.0.48
       │ HTTP(S)_PROXY；无直接互联网路由
       ▼
   Squid 域名白名单出口
@@ -370,8 +370,8 @@ connector token 以精确 `0640` 保存为
 CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v8.0.30` / commit
-`5be2cdab0869cbaa3d401891f740aebf7e15aa99`。CPA 补丁和本地构建产物另行记录 SHA-256；
+锁定；CLIProxyAPI 固定为 `v8.0.48` / commit
+`dbb706215a3afd2f0ea3c96482d4233856466caa`。CPA 补丁和本地构建产物另行记录 SHA-256；
 镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级的源码、镜像与数据库验证状态见 [v8.0.30 验证记录](docs/cpa-v8.0.30-validation.md)。生产切换及真实 OAuth 账号验收
@@ -422,7 +422,7 @@ ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其�
 列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
 不得让两个 sidecar 共享同一组 refresh token。
 
-CPA 固定为 **v8.0.30**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
+CPA 固定为 **v8.0.48**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
 `legacy-bridge` profile。Owner 在 `/admin/cpa/` 进行 OAuth、导入、重新授权、刷新、删除
 和额度查询，复用 Gateway 会话；权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。
 管理面板使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。
