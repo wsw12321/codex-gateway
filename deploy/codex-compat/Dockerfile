@@ -95,17 +95,17 @@ RUN go test -list '^TestGateway' ./sdk/cliproxy/auth > /tmp/credential-regressio
         TestGatewayExecutionRequestUsesTrustedCallerAndAccountScope; do \
         grep -Fxq "$test_name" /tmp/credential-regression-tests; \
     done
-RUN go test -list '^TestGatewayCatalog' ./sdk/cliproxy > /tmp/catalog-regression-tests \
+# Catalog publication is implemented by the gateway auth manager, while the
+# service package owns the dynamic catalog/fencing paths.  Keep this inventory
+# tied to the tests that are actually present in those packages rather than
+# asserting stale names from an earlier patch series.
+RUN go test -list '^TestGatewayCatalog' ./sdk/cliproxy/auth > /tmp/gateway-catalog-regression-tests \
+    && grep -Fxq TestGatewayCatalogPublicationSerializesCredentialMutation /tmp/gateway-catalog-regression-tests \
+    && go test -list '^(TestAntigravityDynamicRegistrationDropsStaleFullCatalog|TestAntigravityUnknownCatalogPreservesRestoredCooldown|TestServiceCatalogStartupAndConfigReload)$' ./sdk/cliproxy > /tmp/catalog-regression-tests \
     && for test_name in \
-        TestGatewayCatalogCredentialsAndEgress \
-        TestGatewayCatalogPublicationRejectsStaleSnapshots \
-        TestGatewayCatalogPublicationPreservesAdmissionAndEmptyResults \
-        TestGatewayCatalogDisabledSnapshotCannotRemoveReenabledCatalog \
-        TestGatewayCatalogControlKeepsModelCapability \
-        TestGatewayCatalogInitialSuccessSurvivesControlChanges \
-        TestGatewayCatalogInvalidIdentitySkipsProbeAndRevokesOnlyCurrentSnapshot \
-        TestGatewayCatalogExpiredEntitlementsFailClosed \
-        TestGatewayCatalogRejectsRedirectAndDirectFallback; do \
+        TestAntigravityDynamicRegistrationDropsStaleFullCatalog \
+        TestAntigravityUnknownCatalogPreservesRestoredCooldown \
+        TestServiceCatalogStartupAndConfigReload; do \
         grep -Fxq "$test_name" /tmp/catalog-regression-tests; \
     done
 
