@@ -141,17 +141,21 @@ RUN go test -list '^(TestCodex|TestAuditHomeCodex426)' ./internal/runtime/execut
         -run '^(TestCodex(DiagnosticProbe.*|RejectRedirectReturnsOriginalResponse|HttpRequestDoesNotFollowRedirect|ImageHTTPClientDoesNotFollowRedirect|InternalAndOAuthHeadersAreProtectedOnAllTransports|CountTokensDoesNotSendPrivateHeaders|AstraUpgradeHTTPTransports|GatewayQuotaSignal|GatewayQuotaHTTPTransports|GatewayQuotaWebsocketSignal|GatewayTerminalAuthErrorDoesNotLockQuota|GatewayDuplexQuotaPersists|GatewayControlQuotaPersistsAcrossExecutionModes|GatewayControlKeepsInFlightRequestsAndRejectsStaleQuota)|TestAuditHomeCodex426WebsocketToHTTPFreshSelection)$' \
         ./internal/runtime/executor
 
-RUN go test -list '^TestGateway(Claude|Anthropic)' ./internal/runtime/executor > /tmp/claude-cache-regression-tests \
+# Keep the Claude cache and Anthropic rate-limit inventory tied to the tests
+# actually present in the executor package; the old Gateway-prefixed names
+# belonged to an earlier patch series.
+RUN go test -list '^(TestUpgradeClaudeCacheControlTTL|TestClaudeExecutorCloakedRollingCacheBreakpointAdvances|TestClaudeExecutor_SubagentAndProbeOmit1hCacheTTLAndBeta|TestClaudeExecutor_WebSearchResultCacheScopesByCredential|TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_(Execute|ExecuteStream))$' ./internal/runtime/executor > /tmp/claude-cache-regression-tests \
     && for test_name in \
-        TestGatewayClaudeToolAliasesIsolateCallerProviderAndAccount \
-        TestGatewayClaudeToolAliasesSurviveExecuteAndStreamingContinuation \
-        TestGatewayClaudeToolAliasesDoNotPersistInterruptedOrCancelledStreams \
-        TestGatewayClaudeToolAliasesMissingStateDoesNotRotateAccounts \
-        TestGatewayAnthropicNativeAndCloakedHeaderBoundaries; do \
+        TestUpgradeClaudeCacheControlTTL \
+        TestClaudeExecutorCloakedRollingCacheBreakpointAdvances \
+        TestClaudeExecutor_SubagentAndProbeOmit1hCacheTTLAndBeta \
+        TestClaudeExecutor_WebSearchResultCacheScopesByCredential \
+        TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_Execute \
+        TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_ExecuteStream; do \
         grep -Fxq "$test_name" /tmp/claude-cache-regression-tests; \
     done \
-    && go test -count=1 -run '^(TestClaude|TestGatewayAnthropic|TestGatewayClaude)' ./internal/runtime/executor
-RUN go test -race -count=1 -run '^TestGatewayClaude' ./internal/runtime/executor
+    && go test -count=1 -run '^(TestUpgradeClaudeCacheControlTTL|TestClaudeExecutorCloakedRollingCacheBreakpointAdvances|TestClaudeExecutor_SubagentAndProbeOmit1hCacheTTLAndBeta|TestClaudeExecutor_WebSearchResultCacheScopesByCredential|TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_(Execute|ExecuteStream))$' ./internal/runtime/executor
+RUN go test -race -count=1 -run '^(TestClaudeExecutorCloakedRollingCacheBreakpointAdvances|TestClaudeExecutor_WebSearchResultCacheScopesByCredential|TestClaudeExecutor_HonorsAnthropicRateLimitHeaders_(Execute|ExecuteStream))$' ./internal/runtime/executor
 
 WORKDIR /src
 RUN CGO_ENABLED=1 CC=gcc GOOS=linux go build \
