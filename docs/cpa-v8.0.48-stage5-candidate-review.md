@@ -8,7 +8,7 @@ source lock, patch and image remain the controlled rollback target.
 ## Artifacts
 
 - Final patch: `deploy/codex-compat/cliproxy-v8.0.48-gateway.patch`
-- Patch SHA-256: `a58dd57fa03655bd49d4c64b77dcd0ffe0f00eb5d8426cd4ece9af39a83d9180`
+- Patch SHA-256: `ff77cdabd75af88a3893f255db0be09c388996cc08a779075fa5d94e1adf8b83`
 - Upstream model catalog SHA-256:
   `32f663de911083339cf5347be74b0b4cbf1471bc1968362897cc94ebf021c306`
 - Candidate image label:
