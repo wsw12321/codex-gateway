@@ -60,6 +60,54 @@ func (s *Server) setGroupUpstreamPolicy(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, value)
 }
 
+type groupUpstreamAccessProvider struct {
+	store.GroupUpstreamAccountPolicy
+	Accounts    []userUpstreamAccountOption `json:"accounts"`
+	SyncWarning string                      `json:"sync_warning,omitempty"`
+}
+
+type groupUpstreamAccessResponse struct {
+	GroupID   string                        `json:"group_id"`
+	Providers []groupUpstreamAccessProvider `json:"providers"`
+}
+
+// groupUpstreamAccessJSON returns every provider's group account pool with
+// the selectable accounts in the same shape as user upstream access, so the
+// dashboard edits both with one scope editor.
+func (s *Server) groupUpstreamAccessJSON(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validGroupID(id) {
+		s.groupStoreError(w, r, "read group upstream access", store.ErrNotFound)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		s.groupStoreError(w, r, "read group upstream access", store.ErrInvalid)
+		return
+	}
+	response := groupUpstreamAccessResponse{GroupID: id, Providers: make([]groupUpstreamAccessProvider, 0, 3)}
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
+		policy, err := s.store.GetGroupUpstreamAccounts(r.Context(), id, provider)
+		if err != nil {
+			s.groupStoreError(w, r, "read group upstream access", err)
+			return
+		}
+		response.Providers = append(response.Providers, groupUpstreamAccessProvider{GroupUpstreamAccountPolicy: policy})
+	}
+
+	s.upstreamAccountSyncMu.Lock()
+	defer s.upstreamAccountSyncMu.Unlock()
+	for i := range response.Providers {
+		entry := &response.Providers[i]
+		accounts, warning, err := s.upstreamAccessAccountOptionsLocked(r.Context(), entry.Provider)
+		if err != nil {
+			internalError(s, w, r, "list group upstream account options", err)
+			return
+		}
+		entry.Accounts, entry.SyncWarning = accounts, warning
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 func (s *Server) groupUpstreamPolicy(w http.ResponseWriter, r *http.Request) {
 	value, err := s.store.GetGroupUpstreamAccounts(r.Context(), r.PathValue("id"), r.PathValue("provider"))
 	if err != nil {

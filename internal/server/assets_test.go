@@ -383,6 +383,18 @@ func TestGroupBillingDashboardBehavior(t *testing.T) {
 	}
 }
 
+func TestGroupUpstreamAccessDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/group_upstream_access_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("group upstream access dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
 func TestModelAccessDashboardIsOwnerOnlyAndSupportsBatchChanges(t *testing.T) {
 	t.Parallel()
 

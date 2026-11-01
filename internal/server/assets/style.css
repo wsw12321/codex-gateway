@@ -2240,14 +2240,14 @@ code {
 .user-upstream-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 1rem; }
 .user-upstream-card { min-width: 0; }
 .user-upstream-card .panel-heading { margin-bottom: 1rem; }
-.user-upstream-form { display: grid; gap: 1rem; }
-.user-upstream-form > p { margin: 0; }
-.user-upstream-form .muted { font-size: .88rem; line-height: 1.6; }
-.user-upstream-account-picker { display: grid; gap: .75rem; }
-.user-upstream-account-list { max-height: 22rem; overflow-y: auto; }
-.user-upstream-selection { color: var(--muted); font-size: .9rem; }
-.user-upstream-selection[data-empty="true"] { color: var(--danger); font-weight: 600; }
-.user-upstream-sync-warning { margin: 0 0 1rem; font-size: .88rem; }
+.upstream-scope-form { display: grid; gap: 1rem; }
+.upstream-scope-form > p { margin: 0; }
+.upstream-scope-form .muted { font-size: .88rem; line-height: 1.6; }
+.upstream-scope-picker { display: grid; gap: .75rem; }
+.upstream-scope-list { max-height: 22rem; overflow-y: auto; }
+.upstream-scope-selection { color: var(--muted); font-size: .9rem; }
+.upstream-scope-selection[data-empty="true"] { color: var(--danger); font-weight: 600; }
+.upstream-scope-sync-warning { margin: 0 0 1rem; font-size: .88rem; }
 @media (max-width: 900px) { .user-upstream-grid { grid-template-columns: minmax(0, 1fr); } }
 
 .model-access-grid {
@@ -2782,14 +2782,24 @@ dialog form {
 .billing-group-preferences label { display:flex; flex-direction:column; gap:.25rem; font-size:.8rem; }
 .billing-group-preferences input[type=number] { width:7rem; }
 .billing-group-preferences input[type=text] { width:14rem; }
-.group-upstream-settings, .group-account-statistics { border-top:1px solid var(--border); margin-top:1.2rem; padding-top:1rem; }
-.group-upstream-providers { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
-.group-upstream-provider { display:flex; flex-direction:column; gap:.45rem; padding:.75rem; border:1px solid var(--border); border-radius:.7rem; }
-.group-upstream-provider select[multiple] { min-height:6rem; }
+.group-upstream-settings, .group-account-statistics { border-top:1px solid var(--line); margin-top:1.2rem; padding-top:1rem; }
+.group-upstream-providers { display:grid; gap:.65rem; }
+.group-upstream-card { min-width:0; border:1px solid var(--line); border-radius:.7rem; overflow-wrap:anywhere; }
+.group-upstream-card > summary { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem .75rem; min-height:44px; padding:.6rem .9rem; cursor:pointer; list-style:none; }
+.group-upstream-card > summary::-webkit-details-marker { display:none; }
+.group-upstream-card > summary::before { content:""; flex:0 0 auto; width:.45rem; height:.45rem; border-right:2px solid var(--muted); border-bottom:2px solid var(--muted); transform:rotate(-45deg); transition:transform .15s ease; }
+.group-upstream-card[open] > summary::before { transform:rotate(45deg); }
+.group-upstream-card > summary .badge { margin-left:auto; }
+.group-upstream-card[open] > summary { border-bottom:1px solid var(--line); }
+.group-upstream-scope { color:var(--muted); font-size:.88rem; }
+.group-upstream-scope[data-empty="true"] { color:var(--danger); font-weight:600; }
+.group-upstream-body { display:grid; gap:.75rem; padding:.9rem; }
+.group-upstream-body > p { margin:0; }
+.group-upstream-body .upstream-scope-list { max-height:16rem; }
 .group-account-periods { display:flex; flex-wrap:wrap; gap:.5rem; }
-.group-account-period { display:flex; align-items:center; gap:.4rem; padding:.35rem .55rem; border:1px solid var(--border); border-radius:.5rem; }
+.group-account-period { display:flex; align-items:center; gap:.4rem; padding:.35rem .55rem; border:1px solid var(--line); border-radius:.5rem; }
 .group-account-stats { display:grid; gap:.4rem; margin-top:.75rem; }
-.group-account-stat-row { display:flex; justify-content:space-between; gap:1rem; padding:.55rem .7rem; background:var(--soft); border-radius:.45rem; }
+.group-account-stat-row { display:flex; justify-content:space-between; gap:1rem; padding:.55rem .7rem; background:var(--surface-soft); border-radius:.45rem; }
 @media (max-width:600px) { .group-account-stat-row { flex-direction:column; gap:.2rem; } }
 #group-detail > .panel-heading { flex-wrap: wrap; }
 #group-detail > .panel-heading > div:first-child { flex: 1 1 20rem; }

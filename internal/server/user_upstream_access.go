@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"time"
 
@@ -60,25 +61,39 @@ func (s *Server) userUpstreamAccessJSON(w http.ResponseWriter, r *http.Request) 
 	defer s.upstreamAccountSyncMu.Unlock()
 	for i := range response.Providers {
 		entry := &response.Providers[i]
-		if err := s.syncUpstreamAccountsLocked(r.Context(), entry.Provider); err != nil {
-			entry.SyncWarning = "upstream_account_sync_unavailable"
-			if s.logger != nil {
-				s.logger.Warn("user upstream account metadata sync failed", "provider", entry.Provider)
-			}
-		}
-		accounts, err := s.store.WithUpstreamProvider(entry.Provider).ListUpstreamAccounts(r.Context())
+		accounts, warning, err := s.upstreamAccessAccountOptionsLocked(r.Context(), entry.Provider)
 		if err != nil {
 			internalError(s, w, r, "list user upstream account options", err)
 			return
 		}
-		entry.Accounts = make([]userUpstreamAccountOption, 0, len(accounts))
-		for _, account := range accounts {
-			entry.Accounts = append(entry.Accounts, userUpstreamAccountOption{
-				ID: account.ID, DisplayName: account.DisplayName, EmailMasked: account.MaskedEmail, Status: account.Status,
-			})
-		}
+		entry.Accounts, entry.SyncWarning = accounts, warning
 	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+// upstreamAccessAccountOptionsLocked refreshes one provider's account metadata
+// and lists the choices offered by account-scope editors. A failed sidecar
+// sync falls back to the local snapshot with a warning. The caller holds
+// upstreamAccountSyncMu.
+func (s *Server) upstreamAccessAccountOptionsLocked(ctx context.Context, provider string) ([]userUpstreamAccountOption, string, error) {
+	warning := ""
+	if err := s.syncUpstreamAccountsLocked(ctx, provider); err != nil {
+		warning = "upstream_account_sync_unavailable"
+		if s.logger != nil {
+			s.logger.Warn("upstream account scope metadata sync failed", "provider", provider)
+		}
+	}
+	accounts, err := s.store.WithUpstreamProvider(provider).ListUpstreamAccounts(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	options := make([]userUpstreamAccountOption, 0, len(accounts))
+	for _, account := range accounts {
+		options = append(options, userUpstreamAccountOption{
+			ID: account.ID, DisplayName: account.DisplayName, EmailMasked: account.MaskedEmail, Status: account.Status,
+		})
+	}
+	return options, warning, nil
 }
 
 func (s *Server) setUserUpstreamAccess(w http.ResponseWriter, r *http.Request) {
