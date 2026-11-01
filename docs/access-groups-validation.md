@@ -91,6 +91,7 @@
 | `GET/PUT/DELETE /admin/groups/{id}` | 详情／编辑／归档空群组 |
 | `PUT /admin/groups/{id}/members` | `action: add/remove`、`user_ids`；或 `action: remove_all` 清空当前群组 |
 | `PUT /admin/billing/me/groups/{id}/preferences` | 当前用户设置群组 `priority`（1–100） |
+| `GET /admin/groups/{id}/upstream-access` | 一次返回三个服务商的群组账号池及可选账号，格式与用户账号权限接口一致 |
 | `PUT /admin/groups/{id}/upstream-accounts/{provider}` | 设置群组账号池 `all` 或 `selected` |
 | `GET /admin/groups/{id}/periods`、`GET /admin/groups/{id}/account-stats` | 群组周期及账号占比统计 |
 
@@ -149,6 +150,40 @@
 浏览器另外覆盖周期数默认值、有限期、无限期、到期状态、小于当前期号的拒绝、
 修改总数后保留群组和成员用量，以及成员上限的空值、零值及非法输入；桌面和
 移动端截图包括周期数表单、期限摘要及包含群组／个人／未覆盖金额的流水。
+
+### 群组账号池编辑器
+
+2026-11-01 起，群组详情中的账号池不再使用原生多选列表，改为与「账号权限」页面
+共用的范围编辑器。每个服务商一行，可折叠；摘要显示当前范围（全部账号、已选
+N 个、未选择账号）。展开后可按名称或脱敏邮箱搜索并勾选账号、查看账号状态，
+填写操作原因后各服务商单独保存。新接口 `GET /admin/groups/{id}/upstream-access`
+一次返回三个服务商的策略和可选账号；侧车同步失败时返回本地快照并带
+`sync_warning`。写入仍使用 `PUT /admin/groups/{id}/upstream-accounts/{provider}`。
+
+账号池仅约束由本群组额度支付的请求，并与成员的用户账号权限同时生效；选择空名单
+时，这类请求没有可用账号，会被拒绝。
+
+本次一并修复：
+
+- 加载失败时不再显示默认「全部账号」表单，避免保存后放宽或清空已有账号池。
+- 快速切换群组时，迟到的响应不会覆盖当前群组，旧表单也不能写入其他群组。
+- 保存前要求近期身份验证；响应丢失后重试沿用同一操作 ID；返回结果须与提交一致。
+- 必须填写操作原因；已归档群组只读。
+- 账号池和账号占比区域原先引用未定义的 CSS 变量，边框和背景一直未显示。
+
+验证均通过：
+
+- `node --test internal/server/testdata/group_upstream_access_ui_test.cjs`（10 项），
+  以及其余 18 个控制台 Node 回归文件。
+- 固定 Go 1.26.10 镜像：`gofmt -l .` 无输出、`go vet ./...`、`go test -count=1 ./...`、
+  `go test -race -count=1 ./internal/server`。
+- 一次性 PostgreSQL 17.6：`go test -count=1 -tags=integration -run 'Postgres|RouteRequiresOwner' ./internal/server`，
+  包括新增的 `TestGroupUpstreamAccessHTTPPostgresIntegration` 和既有的用户账号权限集成测试。
+- Playwright Chromium 131：`groups_access_browser.cjs` 和 `user_upstream_access_browser.cjs`，
+  另检查深色主题。`groups_access_browser.cjs` 自多群组改版起无法运行：旧账号池发出未拦截的
+  `/admin/antigravity-accounts` 请求，且脚本仍断言其他群组成员不可选。两处均已修正。
+- 截图：[账号池桌面](screenshots/groups-upstream-pool-desktop.png)、[移动端](screenshots/groups-upstream-pool-mobile.png)；
+  群组桌面及移动端截图同步更新。
 
 ## 发布
 

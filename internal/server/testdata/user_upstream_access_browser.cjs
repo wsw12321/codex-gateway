@@ -72,7 +72,7 @@ async function main() {
     const codex = card("codex"), agy = card("antigravity");
     assert.match(await page.locator("#user-upstream-target").textContent(), /张三/);
     assert.match(await agy.textContent(), /同步失败.*本地快照/s);
-    assert.match(await agy.locator(".user-upstream-selection").textContent(), /该类型全部禁用/);
+    assert.match(await agy.locator(".upstream-scope-selection").textContent(), /该类型全部禁用/);
     await codex.locator("select").selectOption("selected");
     await codex.locator('input[value="c1"]').check();
     await codex.locator('input[value="c2"]').check();

@@ -29,6 +29,18 @@ const updateExpiry = (group) => {
 };
 const account = {id: "a1b2c3d4e5f60718", email_masked: "a***@example.test", plan: "Pro", status: "available", can_manage: true,
   access_mode: "exclusive", authorized_user_ids: ["alice"], allocation_weight: 1, rolling_cost_usd: "42.5", rolling_cost_share: "1", target_share: "1"};
+const poolAccounts = {
+  codex: [{id: account.id, display_name: "团队主账号", email_masked: account.email_masked, status: "available"},
+    {id: "b2c3d4e5f6071829", display_name: "团队备用账号", email_masked: "b***@example.test", status: "unavailable"}],
+  antigravity: [{id: "c3d4e5f607182930", display_name: "Gemini 团队账号", email_masked: "g***@example.test", status: "available"}],
+  anthropic: [{id: "d4e5f60718293041", display_name: "Claude 团队账号", email_masked: "c***@example.test", status: "unknown"}],
+};
+const pools = {design: {anthropic: {mode: "selected", account_ids: []}}};
+const groupPool = (id) => ({group_id: id, providers: ["codex", "antigravity", "anthropic"].map((provider) => {
+  const policy = pools[id]?.[provider] || {mode: "all", account_ids: []};
+  return {group_id: id, provider, strategy: policy.mode, mode: policy.mode, account_ids: policy.account_ids, accounts: poolAccounts[provider],
+    ...(provider === "antigravity" ? {sync_warning: "upstream_account_sync_unavailable"} : {})};
+})});
 
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
@@ -73,6 +85,16 @@ async function main() {
         const body = request.postDataJSON(); writes.push({path: url.pathname, body});
         account.access_mode = body.mode; account.authorized_user_ids = body.user_ids;
         return send({mode: body.mode, user_ids: body.user_ids});
+      }
+      if (/^\/admin\/groups\/[^/]+\/upstream-access$/.test(url.pathname)) return send(groupPool(url.pathname.split("/")[3]));
+      if (/^\/admin\/groups\/[^/]+\/upstream-accounts\/[a-z]+$/.test(url.pathname) && request.method() === "PUT") {
+        const [, , , id, , provider] = url.pathname.split("/");
+        const body = request.postDataJSON(); writes.push({path: url.pathname, body});
+        if (!idempotency.has(body.operation_id)) {
+          (pools[id] ||= {})[provider] = {mode: body.mode, account_ids: [...body.account_ids]};
+          idempotency.set(body.operation_id, {group_id: id, provider, strategy: body.mode, mode: body.mode, account_ids: body.account_ids});
+        }
+        return send(idempotency.get(body.operation_id));
       }
       if (url.pathname === "/admin/groups" && request.method() === "GET") {
         if (delayOldList) {
@@ -145,7 +167,7 @@ async function main() {
     await page.getByLabel("选择用户 bob", {exact: true}).check();
     assert.match(await page.locator("#group-selected-count").textContent(), /2/);
     await page.locator("#group-member-search").fill("");
-    assert.equal(await page.getByLabel("选择用户 carol", {exact: true}).isDisabled(), true);
+    assert.equal(await page.getByLabel("选择用户 carol", {exact: true}).isDisabled(), false, "members of other groups can also join");
     await page.locator("#group-members-form input[name=reason]").fill("加入产品团队");
     await page.locator("#group-members-add").click();
     await page.waitForFunction(() => managedGroup?.member_count === 2 && !groupOperation);
@@ -240,6 +262,7 @@ async function main() {
     assert.equal(await page.evaluate(() => managedGroup.limit_usd), "150", "late reads cannot overwrite a completed mutation");
 
     await page.evaluate(async () => { await loadGroupDetail("design"); });
+    await page.locator('.group-upstream-card[data-provider="anthropic"]').waitFor();
     await page.screenshot({path: path.join(screenshots, "groups-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -257,6 +280,46 @@ async function main() {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png")});
     await page.locator("#group-form [data-close]").click();
+
+    await page.setViewportSize({width: 1440, height: 1080});
+    const pool = (provider) => page.locator(`.group-upstream-card[data-provider="${provider}"]`);
+    // Clip from a full-page capture so the sticky top bar cannot cover the section.
+    const poolShot = async (name) => {
+      const clip = await page.locator(".group-upstream-settings").evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        return {x: box.left + scrollX, y: box.top + scrollY, width: box.width, height: box.height};
+      });
+      await page.screenshot({path: path.join(screenshots, name), fullPage: true, clip});
+    };
+    assert.match(await pool("codex").locator("summary").textContent(), /Codex全部账号（默认）2 个账号/);
+    assert.match(await pool("anthropic").locator("summary").textContent(), /未选择账号/);
+    assert.equal(await pool("codex").locator("form").isVisible(), false, "provider rows start collapsed");
+    await pool("codex").locator("summary").click();
+    await pool("codex").locator("select").selectOption("selected");
+    await pool("codex").locator(`input[value="${account.id}"]`).check();
+    await pool("codex").locator('input[type="search"]').fill("b***");
+    assert.equal(await pool("codex").locator(`[data-account-id="${account.id}"]`).isVisible(), false);
+    await pool("codex").locator('input[type="search"]').fill("");
+    assert.equal(await pool("codex").locator(`input[value="${account.id}"]`).isChecked(), true);
+    assert.match(await pool("codex").locator("summary").textContent(), /已选 1 个账号/);
+    await pool("codex").locator('input[name="reason"]').fill("产品团队固定使用主账号");
+    await pool("antigravity").locator("summary").click();
+    assert.match(await pool("antigravity").textContent(), /同步失败.*本地快照/);
+    await pool("antigravity").locator("summary").click();
+    await poolShot("groups-upstream-pool-desktop.png");
+    await pool("codex").locator('button[type="submit"]').click();
+    await page.waitForFunction(() => !groupOperation && !groupUpstreamSaving);
+    assert.equal(writes.at(-1).path, "/admin/groups/design/upstream-accounts/codex");
+    assert.deepEqual({...writes.at(-1).body, operation_id: undefined}, {mode: "selected", account_ids: [account.id], reason: "产品团队固定使用主账号", operation_id: undefined});
+    assert.match(await pool("codex").locator(".form-message").textContent(), /账号池已保存/);
+    assert.equal(await pool("codex").locator('input[name="reason"]').inputValue(), "");
+    await page.evaluate(async () => { await loadGroupDetail("design"); });
+    await page.waitForFunction(() => !groupUpstreamLoading);
+    assert.equal(await pool("codex").locator("form").isVisible(), true, "an expanded row survives a refresh");
+    assert.equal(await pool("codex").locator("select").inputValue(), "selected");
+    await page.setViewportSize({width: 390, height: 844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await poolShot("groups-upstream-pool-mobile.png");
 
     await page.locator("#group-clear-selection").click();
     await page.locator("#group-member-search").fill("alice");

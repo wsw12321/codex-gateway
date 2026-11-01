@@ -81,11 +81,11 @@ function dashboard() {
   const card = (provider = "codex") => nodes.get("user-upstream-cards").children.find((card) => card.dataset?.provider === provider);
   const form = (provider = "codex") => card(provider).querySelector("form");
   const edit = (field, value, provider = "codex") => {
-    const node = field === "mode" ? form(provider).querySelector("select") : field === "search" ? form(provider).querySelector(".user-upstream-account-picker").querySelector("input") : form(provider).querySelector(`input[name="${field}"]`);
+    const node = field === "mode" ? form(provider).querySelector("select") : field === "search" ? form(provider).querySelector(".upstream-scope-picker").querySelector("input") : form(provider).querySelector(`input[name="${field}"]`);
     node.value = value; node.dispatch(field === "mode" ? "change" : "input");
   };
   const check = (id, selected, provider = "codex") => {
-    const node = form(provider).querySelectorAll(".user-upstream-account-choice").find((row) => row.dataset.accountId === id).querySelector("input");
+    const node = form(provider).querySelectorAll(".upstream-scope-choice").find((row) => row.dataset.accountId === id).querySelector("input");
     node.checked = selected; node.dispatch("change");
   };
   return {context, run, nodes, calls, nativeAPI, card, form, edit, check,
@@ -114,7 +114,7 @@ test("provider saves are independent, selected empty disables, and all submits a
   assert.deepEqual(JSON.parse(ui.writes()[0].options.body), {mode: "selected", account_ids: [], reason: "disable Gemini"});
   assert.match(ui.writes()[0].url, /\/member\/upstream-access\/antigravity$/);
   assert.equal(ui.form().querySelector('input[name="reason"]').value, "codex draft");
-  assert.match(ui.form().querySelector(".user-upstream-selection").textContent, /已选 2 个/);
+  assert.match(ui.form().querySelector(".upstream-scope-selection").textContent, /已选 2 个/);
   await ui.submit();
   assert.deepEqual(JSON.parse(ui.writes()[1].options.body).account_ids, ["c1", "c2"]);
   ui.edit("mode", "all"); ui.edit("reason", "restore default"); await ui.submit();
@@ -125,13 +125,13 @@ test("provider saves are independent, selected empty disables, and all submits a
 test("account filtering and mode toggles retain checked accounts and drafts", async () => {
   const ui = dashboard(); await ui.load();
   ui.edit("mode", "selected"); ui.check("c1", true); ui.edit("reason", "keep"); ui.edit("search", "be***");
-  const choices = ui.form().querySelectorAll(".user-upstream-account-choice");
+  const choices = ui.form().querySelectorAll(".upstream-scope-choice");
   assert.equal(choices[0].classList.contains("hidden"), true);
   assert.equal(choices[1].classList.contains("hidden"), false);
   ui.edit("mode", "all"); ui.edit("mode", "selected"); ui.edit("search", "");
   assert.equal(choices[0].querySelector("input").checked, true);
   await ui.run("loadUserUpstreamAccess()");
-  assert.match(ui.form().querySelector(".user-upstream-selection").textContent, /已选 1 个/);
+  assert.match(ui.form().querySelector(".upstream-scope-selection").textContent, /已选 1 个/);
   assert.equal(ui.form().querySelector('input[name="reason"]').value, "keep");
 });
 
@@ -141,7 +141,7 @@ test("validation and role protection prevent invalid writes", async () => {
   ui.edit("mode", "invalid"); ui.edit("reason", "test"); await ui.submit();
   assert.match(ui.form().textContent, /有效的账号范围/); assert.equal(ui.writes().length, 0);
   ui.run('state.user.role = "member"; syncUserUpstreamControls();');
-  assert.equal(ui.form().querySelector(".user-upstream-save").disabled, true);
+  assert.equal(ui.form().querySelector(".upstream-scope-save").disabled, true);
   await ui.submit(); assert.equal(ui.writes().length, 0);
 });
 
@@ -152,7 +152,7 @@ test("refresh replaces untouched settings and old detached forms cannot save for
   ui.context.api = async () => result;
   await ui.run("loadUserUpstreamAccess()");
   assert.equal(ui.form().querySelector("select").value, "selected");
-  assert.match(ui.form().querySelector(".user-upstream-selection").textContent, /已选 1 个/);
+  assert.match(ui.form().querySelector(".upstream-scope-selection").textContent, /已选 1 个/);
   const staleForm = ui.form();
   ui.context.api = original;
   await ui.run('selectUserUpstreamUser(userUpstreamSearch.users[1])');
