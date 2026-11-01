@@ -142,7 +142,8 @@ if test "$mode" = serving; then
     done
     printf '%s\n' 'header = "Authorization: Bearer synthetic-api-key-at-least-32-bytes-long"' > "$probe_dir/curl.conf"
     curl -fsS --config "$probe_dir/curl.conf" http://127.0.0.1:8318/internal/upstream-accounts/capabilities > "$probe_dir/capabilities"
-    jq -e '.protocol == "upstream_account_access_v1"' "$probe_dir/capabilities" >/dev/null
+    jq -e '.protocol == "upstream_account_access_v1" and
+        .group_upstream_account_scope == "group_upstream_account_scope_v1"' "$probe_dir/capabilities" >/dev/null
     attempt=0
     while :; do
         curl -fsS --config "$probe_dir/curl.conf" http://127.0.0.1:8318/internal/upstream-accounts > "$probe_dir/accounts"

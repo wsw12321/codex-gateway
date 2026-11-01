@@ -81,5 +81,12 @@ grep -Fq '"anthropic_messages_v1"' "$response_file" || {
     printf '%s\n' 'sidecar smoke test did not observe native Anthropic enforcement capability' >&2
     exit 1
 }
+for provider in upstream antigravity anthropic; do
+    request GET "/internal/${provider}-accounts/capabilities" ''
+    grep -Fq '"group_upstream_account_scope_v1"' "$response_file" || {
+        printf '%s\n' "sidecar smoke test did not observe group account scope enforcement for ${provider}" >&2
+        exit 1
+    }
+done
 printf '%s\n' 'sidecar account-list, model-list and account access capability smoke tests passed'
 printf '%s\n' 'Run JSON and streaming Responses through Gateway with a real user API key to verify generation and billing'

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -317,4 +318,174 @@ func TestUpstreamEligibilityReturnsPerAccountConcurrentLimits(t *testing.T) {
 	if len(result.Accounts) != 1 || result.Accounts[0].ID != "0123456789abcdef" || result.Accounts[0].ConcurrentLimit != 3 {
 		t.Fatalf("eligibility response=%s", w.Body.String())
 	}
+}
+
+func TestGroupUpstreamAllocationStaysWithinCurrentCandidates(t *testing.T) {
+	const first = "0123456789abcdef"
+	const second = "fedcba9876543210"
+	const outside = "aaaabbbbccccdddd"
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
+		for _, test := range []struct {
+			name       string
+			groups     [][]string
+			candidates any
+			omitIDs    bool
+			denied     string
+			zeroWeight string
+			wantID     string
+			queries    []string
+		}{
+			{name: "empty group", groups: [][]string{{}}, candidates: []string{outside}},
+			{name: "null group", groups: [][]string{nil}, candidates: []string{outside}},
+			{name: "user cannot use group account", groups: [][]string{{first}}, candidates: []string{first, outside}, denied: first, queries: []string{"eligible:" + first}},
+			{name: "group account draining", groups: [][]string{{first}}, candidates: []string{first, outside}, zeroWeight: first, queries: []string{"eligible:" + first, "select:" + first}},
+			{name: "group account missing from live candidates", groups: [][]string{{first}}, candidates: []string{outside}},
+			{name: "group and live candidate intersection", groups: [][]string{{first, second}}, candidates: []string{second, outside}, wantID: second, queries: []string{"eligible:" + second, "select:" + second}},
+			{name: "authorized selection", groups: [][]string{{first}}, candidates: []string{first, outside}, wantID: first, queries: []string{"eligible:" + first, "select:" + first}},
+			{name: "groups only protocol", groups: [][]string{{first}}, omitIDs: true, wantID: first, queries: []string{"eligible:" + first, "select:" + first}},
+			{name: "explicit empty live candidates", groups: [][]string{{first}}, candidates: []string{}},
+			{name: "explicit null live candidates", groups: [][]string{{first}}, candidates: nil},
+			{name: "next authorized group", groups: [][]string{{first}, {second}}, candidates: []string{first, second, outside}, denied: first, wantID: second, queries: []string{"eligible:" + first, "eligible:" + second, "select:" + second}},
+		} {
+			t.Run(provider+"/"+test.name, func(t *testing.T) {
+				var queries []string
+				s := groupAllocationTestServer(t, provider, test.denied, test.zeroWeight, &queries)
+				body := groupAllocationTestBody(t, test.groups, test.candidates, test.omitIDs)
+				r := allocationTestRequest(body)
+				r.URL.Path = groupAllocationTestPath(provider, "select")
+				w := httptest.NewRecorder()
+				s.selectUpstreamAccount(w, r)
+				if test.wantID == "" {
+					if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "upstream_concurrency_exceeded") {
+						t.Fatalf("unavailable group selected an account: status=%d body=%s", w.Code, w.Body)
+					}
+				} else if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != `{"account_id":"`+test.wantID+`"}` {
+					t.Fatalf("selection status=%d body=%s; want %s", w.Code, w.Body, test.wantID)
+				}
+				if !reflect.DeepEqual(queries, test.queries) {
+					t.Fatalf("candidate queries=%v; want %v", queries, test.queries)
+				}
+			})
+		}
+	}
+}
+
+func TestGroupUpstreamEligibilityStaysWithinCurrentCandidates(t *testing.T) {
+	const first = "0123456789abcdef"
+	const second = "fedcba9876543210"
+	const outside = "aaaabbbbccccdddd"
+	for _, provider := range []string{store.UpstreamProviderCodex, store.UpstreamProviderAntigravity, store.UpstreamProviderAnthropic} {
+		for _, test := range []struct {
+			name       string
+			groups     [][]string
+			candidates any
+			omitIDs    bool
+			denied     string
+			wantIDs    [][]string
+			queries    []string
+		}{
+			{name: "empty group", groups: [][]string{{}}, candidates: []string{outside}, wantIDs: [][]string{{}}},
+			{name: "null group", groups: [][]string{nil}, candidates: []string{outside}, wantIDs: [][]string{{}}},
+			{name: "disjoint candidates", groups: [][]string{{first}}, candidates: []string{outside}, wantIDs: [][]string{{}}},
+			{name: "intersection", groups: [][]string{{first, second}}, candidates: []string{second, outside}, wantIDs: [][]string{{second}}, queries: []string{"eligible:" + second}},
+			{name: "user denied", groups: [][]string{{first}}, candidates: []string{first, outside}, denied: first, wantIDs: [][]string{{}}, queries: []string{"eligible:" + first}},
+			{name: "groups only protocol", groups: [][]string{{first}}, omitIDs: true, wantIDs: [][]string{{first}}, queries: []string{"eligible:" + first}},
+			{name: "explicit empty candidates", groups: [][]string{{first}}, candidates: []string{}, wantIDs: [][]string{{}}},
+			{name: "explicit null candidates", groups: [][]string{{first}}, candidates: nil, wantIDs: [][]string{{}}},
+			{name: "each group intersects candidates", groups: [][]string{{first}, {second}}, candidates: []string{second, outside}, wantIDs: [][]string{{}, {second}}, queries: []string{"eligible:" + second}},
+		} {
+			t.Run(provider+"/"+test.name, func(t *testing.T) {
+				var queries []string
+				s := groupAllocationTestServer(t, provider, test.denied, "", &queries)
+				r := allocationTestRequest(groupAllocationTestBody(t, test.groups, test.candidates, test.omitIDs))
+				r.URL.Path = groupAllocationTestPath(provider, "eligible")
+				w := httptest.NewRecorder()
+				s.eligibleUpstreamAccounts(w, r)
+				var result struct {
+					Groups []struct {
+						GroupID  string                `json:"group_id"`
+						Accounts []struct{ ID string } `json:"accounts"`
+					} `json:"groups"`
+				}
+				if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &result) != nil || len(result.Groups) != len(test.groups) {
+					t.Fatalf("eligibility status=%d body=%s", w.Code, w.Body)
+				}
+				for i, group := range result.Groups {
+					gotIDs := make([]string, 0, len(group.Accounts))
+					for _, account := range group.Accounts {
+						gotIDs = append(gotIDs, account.ID)
+					}
+					if group.GroupID != fmt.Sprintf("00000000-0000-0000-0000-%012d", i+2) || group.Accounts == nil || !reflect.DeepEqual(gotIDs, test.wantIDs[i]) {
+						t.Fatalf("group %d eligibility=%+v; want %v", i, group, test.wantIDs[i])
+					}
+				}
+				if !reflect.DeepEqual(queries, test.queries) {
+					t.Fatalf("candidate queries=%v; want %v", queries, test.queries)
+				}
+			})
+		}
+	}
+}
+
+func groupAllocationTestBody(t *testing.T, pools [][]string, candidates any, omitIDs bool) string {
+	t.Helper()
+	groups := make([]map[string]any, 0, len(pools))
+	for i, ids := range pools {
+		groups = append(groups, map[string]any{"group_id": fmt.Sprintf("00000000-0000-0000-0000-%012d", i+2), "account_ids": ids})
+	}
+	request := map[string]any{"user_id": "00000000-0000-0000-0000-000000000001", "groups": groups}
+	if !omitIDs {
+		request["account_ids"] = candidates
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+func groupAllocationTestPath(provider, action string) string {
+	namespace := "upstream-accounts"
+	if provider != store.UpstreamProviderCodex {
+		namespace = provider + "-accounts"
+	}
+	return "/internal/" + namespace + "/" + action
+}
+
+func groupAllocationTestServer(t *testing.T, provider, denied, zeroWeight string, queries *[]string) *Server {
+	t.Helper()
+	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if args[len(args)-1].Value != provider {
+			t.Fatalf("provider=%v; want %s", args[len(args)-1].Value, provider)
+		}
+		selection := strings.Contains(query, "COALESCE(a.allocation_weight, 1)")
+		start, label := 1, "eligible:"
+		columns := []string{"id", "concurrent_limit"}
+		if selection {
+			start, label = 3, "select:"
+			columns = []string{"id", "weight", "cost"}
+		}
+		var ids []string
+		var rows [][]driver.Value
+		for _, arg := range args[start : len(args)-1] {
+			id := arg.Value.(string)
+			ids = append(ids, id)
+			if id == denied {
+				continue
+			}
+			if selection {
+				weight := int64(1)
+				if id == zeroWeight {
+					weight = 0
+				}
+				rows = append(rows, []driver.Value{id, weight, "0"})
+			} else {
+				rows = append(rows, []driver.Value{id, int64(3)})
+			}
+		}
+		*queries = append(*queries, label+strings.Join(ids, ","))
+		return &responsesWebSocketTestRows{columns: columns, values: rows}, nil
+	}}})
+	t.Cleanup(func() { _ = db.Close() })
+	return &Server{store: store.New(db), config: config.Config{SidecarToken: "sidecar-test-secret", AntigravityBridgeToken: "sidecar-test-secret"}}
 }

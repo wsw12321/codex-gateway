@@ -24,6 +24,7 @@ type ProviderAccountCapabilities struct {
 	Provider          string `json:"provider"`
 	Protocol          string `json:"protocol"`
 	AnthropicMessages string `json:"anthropic_messages,omitempty"`
+	GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
 	List              bool   `json:"list"`
 	Concurrency       bool   `json:"concurrency"`
 	Status            bool   `json:"status"`
@@ -295,6 +296,7 @@ func (c *Client) AccountCapabilities(ctx context.Context) (ProviderAccountCapabi
 	var response struct {
 		Protocol          string `json:"protocol"`
 		AnthropicMessages string `json:"anthropic_messages,omitempty"`
+		GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
 	}
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
 		return ProviderAccountCapabilities{}, err
@@ -302,7 +304,7 @@ func (c *Client) AccountCapabilities(ctx context.Context) (ProviderAccountCapabi
 	if response.Protocol != AccountAccessProtocolV1 || (c.anthropic && response.AnthropicMessages != AnthropicMessagesProtocolV1) {
 		return ProviderAccountCapabilities{}, &InternalAPIError{StatusCode: http.StatusServiceUnavailable, Code: "upstream_access_protocol_unavailable"}
 	}
-	return ProviderAccountCapabilities{Protocol: response.Protocol, AnthropicMessages: response.AnthropicMessages}, nil
+	return ProviderAccountCapabilities{Protocol: response.Protocol, AnthropicMessages: response.AnthropicMessages, GroupAccountScope: response.GroupAccountScope}, nil
 }
 
 // RequireAccountAccessCapability is the error-only form used by callers that
