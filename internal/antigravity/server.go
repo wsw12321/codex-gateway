@@ -138,20 +138,41 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if len(values) == 1 {
 				request.userID = values[0]
 			}
-			if raw := r.Header.Get("X-Codex-Gateway-Groups"); raw != "" && len(raw) <= 8192 {
-				var groups []allocationGroup
-				if json.Unmarshal([]byte(raw), &groups) != nil || len(groups) > 64 {
+			if values := r.Header.Values("X-Codex-Gateway-Groups"); len(values) > 0 {
+				if len(values) != 1 || len(values[0]) == 0 || len(values[0]) > 8192 || uniqueJSON([]byte(values[0])) != nil {
 					writeFailure(w, allocationFailure())
 					return
 				}
+				var rows []json.RawMessage
+				if json.Unmarshal([]byte(values[0]), &rows) != nil || len(rows) == 0 || len(rows) > 64 {
+					writeFailure(w, allocationFailure())
+					return
+				}
+				groups := make([]allocationGroup, 0, len(rows))
 				seen := map[string]bool{}
-				for _, group := range groups {
+				for _, row := range rows {
+					fields, valid := object(row)
+					var group allocationGroup
+					if !valid || len(fields) != 2 || fields["group_id"] == nil || fields["account_ids"] == nil || json.Unmarshal(row, &group) != nil {
+						writeFailure(w, allocationFailure())
+						return
+					}
 					parsed, err := uuid.Parse(group.GroupID)
 					if err != nil || parsed.String() != group.GroupID || seen[group.GroupID] || len(group.AccountIDs) > 256 {
 						writeFailure(w, allocationFailure())
 						return
 					}
+					accounts := map[string]bool{}
+					for _, id := range group.AccountIDs {
+						decoded, err := hex.DecodeString(id)
+						if err != nil || len(decoded) != 8 || hex.EncodeToString(decoded) != id || accounts[id] {
+							writeFailure(w, allocationFailure())
+							return
+						}
+						accounts[id] = true
+					}
 					seen[group.GroupID] = true
+					groups = append(groups, group)
 				}
 				request.groups = groups
 			}

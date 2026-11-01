@@ -220,6 +220,7 @@ func (m *AccountManager) Models(ctx context.Context) ([]string, *Failure) {
 }
 
 func (m *AccountManager) eligibleLimits(ctx context.Context, userID string, ids []string) (map[string]int64, *Failure) {
+	request, _ := ctx.Value(accountRequestKey{}).(accountRequest)
 	var eligible struct {
 		Accounts *[]struct {
 			ID    string `json:"id"`
@@ -234,6 +235,9 @@ func (m *AccountManager) eligibleLimits(ctx context.Context, userID string, ids 
 		} `json:"groups"`
 	}
 	if err := m.callback(ctx, "eligible", userID, ids, &eligible); err != nil || (eligible.Accounts == nil && eligible.Groups == nil) {
+		return nil, allocationFailure()
+	}
+	if (len(request.groups) > 0) != (eligible.Groups != nil) {
 		return nil, allocationFailure()
 	}
 	candidates := map[string]bool{}
@@ -255,19 +259,23 @@ func (m *AccountManager) eligibleLimits(ctx context.Context, userID string, ids 
 			limits[account.ID] = account.Limit
 		}
 	} else {
-		expected := map[string]bool{}
-		request, _ := ctx.Value(accountRequestKey{}).(accountRequest)
+		expected := map[string]map[string]bool{}
 		for _, group := range request.groups {
-			expected[group.GroupID] = true
+			pool := map[string]bool{}
+			for _, id := range group.AccountIDs {
+				pool[id] = true
+			}
+			expected[group.GroupID] = pool
 		}
 		seenGroups := map[string]bool{}
 		for _, group := range *eligible.Groups {
-			if !expected[group.GroupID] || seenGroups[group.GroupID] {
+			pool, exists := expected[group.GroupID]
+			if !exists || seenGroups[group.GroupID] {
 				return nil, allocationFailure()
 			}
 			seenGroups[group.GroupID] = true
 			for _, account := range group.Accounts {
-				if !candidates[account.ID] || account.Limit < 1 || account.Limit > 2147483647 {
+				if !candidates[account.ID] || !pool[account.ID] || account.Limit < 1 || account.Limit > 2147483647 {
 					return nil, allocationFailure()
 				}
 				if previous, exists := limits[account.ID]; exists {
@@ -490,7 +498,19 @@ func (m *AccountManager) callback(ctx context.Context, action, user string, ids 
 	payload := map[string]any{"user_id": user, "account_ids": ids}
 	if action == "eligible" {
 		if request, ok := ctx.Value(accountRequestKey{}).(accountRequest); ok && len(request.groups) > 0 {
-			payload["groups"] = request.groups
+			// Preserve empty layers and restrict the snapshot to this attempt's
+			// live candidates, including during retry after an account fails.
+			groups := make([]allocationGroup, 0, len(request.groups))
+			for _, group := range request.groups {
+				filtered := allocationGroup{GroupID: group.GroupID, AccountIDs: []string{}}
+				for _, id := range group.AccountIDs {
+					if containsString(ids, id) {
+						filtered.AccountIDs = append(filtered.AccountIDs, id)
+					}
+				}
+				groups = append(groups, filtered)
+			}
+			payload["groups"] = groups
 		}
 	}
 	body, _ := json.Marshal(payload)
@@ -603,7 +623,7 @@ func (m *AccountManager) serveInternal(w http.ResponseWriter, r *http.Request) b
 	defer m.mu.Unlock()
 	switch {
 	case r.URL.Path == "/internal/upstream-accounts/capabilities" && r.Method == http.MethodGet:
-		writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1"})
+		writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1", "group_upstream_account_scope": "group_upstream_account_scope_v1"})
 	case r.URL.Path == "/internal/upstream-accounts" && r.Method == http.MethodGet:
 		accounts := []map[string]any{}
 		for _, account := range m.accounts {

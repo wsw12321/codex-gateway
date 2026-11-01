@@ -187,6 +187,60 @@ N 个、未选择账号）。展开后可按名称或脱敏邮箱搜索并勾选
 
 ## 发布
 
+### 群组账号池执行修复（2026-11-01）
+
+代码审查及旧版本回归确认，账号池保存成功并不代表此前所有生成路径都执行了限制：
+CPA 入口直接删除了 `X-Codex-Gateway-Groups`，没有传入选路；Claude Messages 和
+Gemini 原生代理也遗漏了该头。网关的群组回调还允许在池内账号不可用后回退全局
+候选，而结算仍使用准入时绑定的群组，因此可能由群组支付未授权账号的费用。
+
+修复后，所有生成代理传递同一份准入账号池快照。CPA 在首次选择、已有会话、
+凭据刷新、固定账号及重试时，均将候选与账号池取交集，再执行原有的用户账号
+权限检查；空池或交集为空时拒绝执行。网关回调不再回退全局账号，并将群组池
+限制在当前模型和本次重试的候选内。Legacy Antigravity 同时拒绝会被旧实现忽略
+的空、重复或超长群组头，并校验回调账号属于对应群组池。
+
+带群组的生成请求逐次检查侧车能力
+`group_upstream_account_scope: "group_upstream_account_scope_v1"`；旧侧车缺失或
+返回其他版本时，网关返回 `upstream_access_protocol_unavailable`，不会转发生成。
+管理接口兼容解析该能力。个人支付请求沿用原有用户账号权限检查。
+
+账号池仍在受理事务中固定，之后编辑策略不改变已受理请求；资金来源和周期归属
+保持原规则。本次无需数据库迁移。网关、CPA 及使用中的 Legacy bridge 必须配套
+更新；由于旧网关严格解析能力响应，升级时应暂停接收请求后统一切换，避免混用。
+本次仅修改和验证代码，未部署或修改历史账单。
+
+验证记录：
+
+- 使用旧源码运行新增回归，复现组外全局账号被选中、Claude/Gemini 漏传账号池，
+  以及 Legacy bridge 忽略非法群组头。
+- Go 1.26.10：`go test -count=1 ./...`、`go vet ./...` 通过。
+- 选路回归覆盖三个服务商的账号池／用户权限交集、空池、零权重和当前重试候选。
+- 代理回归覆盖 Responses、compact、Gemini 原生和流式、Messages，以及旧侧车拒绝。
+- Legacy bridge 全包测试及新增群组回归竞态检查通过。
+- `go test -race -count=1 ./internal/proxy ./internal/server ./internal/antigravity`、
+  网关二进制构建、`gofmt` 和 `git diff --check` 通过。
+- CPA 的 `internal/api`、`sdk/api/handlers`、`sdk/cliproxy/auth` 全包测试通过；
+  群组入口、选路、已有会话、真实 JSON／流式执行重试的定向竞态测试通过。
+  CPA 二进制构建及固定上游源码的 `git apply --check` 通过，镜像校验值同步完成。
+- 本轮追加 `go test -race -count=1 ./...` 全仓竞态检查，以及固定 PostgreSQL 17.6
+  一次性容器中的 `go test -count=1 -tags=integration ./internal/store ./internal/server`，
+  均通过。测试数据库使用 tmpfs 和合成凭据，测试结束后已清理容器。
+- 网关、CPA、Legacy Antigravity bridge 的固定 Dockerfile 构建全部通过；CPA
+  镜像构建内的完整回归和竞态检查通过。`scripts/test-sidecar-image.sh` 和
+  `scripts/test-antigravity-image.sh` 隔离冒烟通过，三个 CPA 服务商及 bridge 都
+  强制检查新群组能力标记。测试没有外部网络、真实 OAuth 或生产数据卷。
+- 网关镜像以非 root、只读文件系统运行，在独立临时数据库中完成全部迁移并使
+  `/readyz` 返回 200；验证容器随后清理。镜像标签分别为：
+  `codex-gateway-gateway:group-scope-3d869841cf43a151`、
+  `codex-gateway-compat:v8.0.48-dbb70621-3d869841cf43a151-cpa`、
+  `codex-gateway-antigravity:agy1.2.4-group-scope-3d869841cf43a151`。
+- 部署脚本 Python 回归：共 167 项，166 项通过、1 项按配置跳过。在独立 `/tmp` 副本中
+  使用合成 `.env` 和密钥，direct／relay／shadowsocks 各自的基础及 OIDC 配置
+  共 6 种均通过 `validate-compose.sh` 和 `compose.sh config --quiet`。
+
+本轮只构建、验证和交付源码，未部署生产服务，也未推送镜像到 registry。
+
 本次周期数升级使用 `0031_group_period_limits.sql`。所有既有群组（含未来开始、
 周期已结束和已归档群组）都设为第 `1/1` 期，以迁移前保存的当前周期结束时间
 作为最终到期时间，保留原周期 ID、起止时间、额度、群组用量及成员用量。

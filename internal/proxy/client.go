@@ -262,12 +262,8 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
-	if len(options.Groups) > 0 {
-		encoded, _ := json.Marshal(options.Groups)
-		if len(encoded) > 8192 {
-			return nil, Result{}, protocolFailure(errors.New("upstream group context is too large"))
-		}
-		outgoing.Header.Set(gatewayGroupsHeader, string(encoded))
+	if err := setGroupAccountScope(outgoing.Header, options); err != nil {
+		return nil, Result{}, protocolFailure(err)
 	}
 
 	response, err := c.http.Do(outgoing)
@@ -509,17 +505,13 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))
 		}
-		if err := c.requireAccountAccessCapability(ctx); err != nil {
+		if err := c.requireAccountAccessCapability(ctx, len(options.Groups) > 0); err != nil {
 			return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "upstream_access_protocol_unavailable", Message: "上游账号权限服务不可用", Cause: err}
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)
 	}
-	if len(options.Groups) > 0 {
-		encoded, _ := json.Marshal(options.Groups)
-		if len(encoded) > 8192 {
-			return Result{}, protocolFailure(errors.New("upstream group context is too large"))
-		}
-		outgoing.Header.Set(gatewayGroupsHeader, string(encoded))
+	if err := setGroupAccountScope(outgoing.Header, options); err != nil {
+		return Result{}, protocolFailure(err)
 	}
 
 	response, err := c.http.Do(outgoing)

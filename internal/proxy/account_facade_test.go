@@ -129,7 +129,7 @@ func TestProviderAccountFacadeKeepsProviderPathsIsolated(t *testing.T) {
 		paths = append(paths, r.URL.Path)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"protocol":"upstream_account_access_v1","anthropic_messages":"anthropic_messages_v1"}`)
+		io.WriteString(w, `{"protocol":"upstream_account_access_v1","anthropic_messages":"anthropic_messages_v1","group_upstream_account_scope":"group_upstream_account_scope_v1"}`)
 	}))
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
@@ -137,11 +137,11 @@ func TestProviderAccountFacadeKeepsProviderPathsIsolated(t *testing.T) {
 		NewClientAccountAdapter("codex", New(base, "token")),
 		NewClientAccountAdapter("anthropic", NewCPAAnthropic(base, "token")),
 	)
-	if _, err := facade.Capabilities(context.Background(), "codex"); err != nil {
-		t.Fatalf("codex capabilities: %v", err)
+	if caps, err := facade.Capabilities(context.Background(), "codex"); err != nil || caps.GroupAccountScope != GroupUpstreamAccountScopeV1 {
+		t.Fatalf("codex capabilities: %+v, %v", caps, err)
 	}
-	if _, err := facade.Capabilities(context.Background(), "anthropic"); err != nil {
-		t.Fatalf("anthropic capabilities: %v", err)
+	if caps, err := facade.Capabilities(context.Background(), "anthropic"); err != nil || caps.GroupAccountScope != GroupUpstreamAccountScopeV1 {
+		t.Fatalf("anthropic capabilities: %+v, %v", caps, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

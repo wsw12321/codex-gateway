@@ -73,11 +73,13 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "GET /internal/upstream-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/capabilities
         grep -Fq "upstream_account_access_v1" /run/cliproxy/capabilities
+        grep -Fq "group_upstream_account_scope_v1" /run/cliproxy/capabilities
         {
             printf "GET /internal/anthropic-accounts/capabilities HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-capabilities
         grep -Fq "200 OK" /run/cliproxy/anthropic-capabilities
         grep -Fq "anthropic_messages_v1" /run/cliproxy/anthropic-capabilities
+        grep -Fq "group_upstream_account_scope_v1" /run/cliproxy/anthropic-capabilities
         {
             printf "GET /internal/anthropic-accounts HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nConnection: close\r\n\r\n"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/anthropic-accounts
@@ -116,6 +118,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/antigravity-capabilities
         grep -Fq "200 OK" /run/cliproxy/antigravity-capabilities
         grep -Fq "upstream_account_access_v1" /run/cliproxy/antigravity-capabilities
+        grep -Fq "group_upstream_account_scope_v1" /run/cliproxy/antigravity-capabilities
         {
             printf "POST /internal/gateway-management/antigravity/credentials HTTP/1.1\r\nHost: 127.0.0.1:8317\r\nAuthorization: Bearer AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
         } | nc -w 3 127.0.0.1 8317 > /run/cliproxy/management-wrong-key

@@ -116,7 +116,7 @@ index 50767c7d..17324800 100644
  golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
 diff --git a/internal/api/anthropic_gateway_internal.go b/internal/api/anthropic_gateway_internal.go
 new file mode 100644
-index 00000000..4e81af01
+index 00000000..0ac2fec4
 --- /dev/null
 +++ b/internal/api/anthropic_gateway_internal.go
 @@ -0,0 +1,68 @@
@@ -145,7 +145,7 @@ index 00000000..4e81af01
 +			c.Status(http.StatusServiceUnavailable)
 +			return
 +		}
-+		c.JSON(200, gin.H{"protocol": "upstream_account_access_v1", "anthropic_messages": "anthropic_messages_v1"})
++		c.JSON(200, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1", "anthropic_messages": "anthropic_messages_v1"})
 +	})
 +	group.POST("/:id/quota", s.getAnthropicAccountQuota)
 +}
@@ -2475,7 +2475,7 @@ index 00000000..ee462e59
 +}
 diff --git a/internal/api/codex_gateway_probe_test.go b/internal/api/codex_gateway_probe_test.go
 new file mode 100644
-index 00000000..ea8f70da
+index 00000000..ae8f0b26
 --- /dev/null
 +++ b/internal/api/codex_gateway_probe_test.go
 @@ -0,0 +1,239 @@
@@ -2670,7 +2670,7 @@ index 00000000..ea8f70da
 +		t.Fatal("diagnostic capability absent")
 +	}
 +	legacy := diagnosticTestRequest(t, server, http.MethodGet, "/internal/upstream-accounts/capabilities", "", nil, nil)
-+	if legacy.Code != 200 || strings.TrimSpace(legacy.Body.String()) != `{"protocol":"upstream_account_access_v1"}` {
++	if legacy.Code != 200 || strings.TrimSpace(legacy.Body.String()) != `{"group_upstream_account_scope":"group_upstream_account_scope_v1","protocol":"upstream_account_access_v1"}` {
 +		t.Fatalf("legacy capability changed: %s", legacy.Body.String())
 +	}
 +}
@@ -4095,7 +4095,7 @@ index 32a7c567..0b6ccd87 100644
  	for _, mw := range optionState.extraMiddleware {
  		engine.Use(mw)
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index e2b039a8..9695475c 100644
+index e2b039a8..936a7b7f 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
 @@ -127,6 +127,57 @@ func (s *Server) setupRoutes() {
@@ -4119,7 +4119,7 @@ index e2b039a8..9695475c 100644
 +				c.Status(http.StatusServiceUnavailable)
 +				return
 +			}
-+			c.JSON(http.StatusOK, gin.H{"protocol": "upstream_account_access_v1"})
++			c.JSON(http.StatusOK, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1"})
 +		})
 +		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
 +		internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
@@ -4138,7 +4138,7 @@ index e2b039a8..9695475c 100644
 +			c.Status(http.StatusServiceUnavailable)
 +			return
 +		}
-+		c.JSON(http.StatusOK, gin.H{"protocol": "upstream_account_access_v1"})
++		c.JSON(http.StatusOK, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1"})
 +	})
 +	agyAccounts.POST("/:id/quota", s.getAntigravityAccountQuota)
 +	agyAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
@@ -10717,8 +10717,155 @@ index 9df65e6b..503436c1 100644
  func TestAuthEqualIgnoresTemporalFields(t *testing.T) {
  	now := time.Now()
  	a := &coreauth.Auth{ID: "x", CreatedAt: now}
+diff --git a/sdk/api/handlers/gateway_account_scope.go b/sdk/api/handlers/gateway_account_scope.go
+new file mode 100644
+index 00000000..4cf3da2e
+--- /dev/null
++++ b/sdk/api/handlers/gateway_account_scope.go
+@@ -0,0 +1,75 @@
++package handlers
++
++import (
++	"encoding/json"
++	"io"
++	"strings"
++
++	"github.com/google/uuid"
++)
++
++// The header is a trusted admission capability, consumed before routing. Keep
++// an explicit empty scope distinct from an absent header so it cannot expand
++// into the provider's unrestricted candidate discovery.
++func decodeGatewayAccountScope(raw string) ([]string, bool) {
++	if len(raw) == 0 || len(raw) > 8192 {
++		return nil, false
++	}
++	var groups []json.RawMessage
++	if json.Unmarshal([]byte(raw), &groups) != nil || groups == nil || len(groups) > 64 {
++		return nil, false
++	}
++	ids := []string{}
++	seenIDs, seenGroups := map[string]bool{}, map[string]bool{}
++	for _, group := range groups {
++		decoder := json.NewDecoder(strings.NewReader(string(group)))
++		start, err := decoder.Token()
++		if err != nil || start != json.Delim('{') {
++			return nil, false
++		}
++		seen := map[string]bool{}
++		var groupID string
++		var accountIDs []string
++		for decoder.More() {
++			key, err := decoder.Token()
++			name, ok := key.(string)
++			if err != nil || !ok || seen[name] {
++				return nil, false
++			}
++			seen[name] = true
++			switch name {
++			case "group_id":
++				if decoder.Decode(&groupID) != nil {
++					return nil, false
++				}
++			case "account_ids":
++				if decoder.Decode(&accountIDs) != nil {
++					return nil, false
++				}
++			default:
++				return nil, false
++			}
++		}
++		end, err := decoder.Token()
++		if err != nil || end != json.Delim('}') || len(seen) != 2 || decoder.Decode(new(any)) != io.EOF {
++			return nil, false
++		}
++		parsed, err := uuid.Parse(groupID)
++		if err != nil || parsed.String() != groupID || seenGroups[groupID] || len(accountIDs) > 256 {
++			return nil, false
++		}
++		seenGroups[groupID] = true
++		groupIDs := map[string]bool{}
++		for _, id := range accountIDs {
++			if len(id) != 16 || groupIDs[id] || strings.Trim(id, "0123456789abcdef") != "" {
++				return nil, false
++			}
++			groupIDs[id] = true
++			if !seenIDs[id] {
++				ids = append(ids, id)
++				seenIDs[id] = true
++			}
++		}
++	}
++	return ids, true
++}
+diff --git a/sdk/api/handlers/gateway_account_scope_test.go b/sdk/api/handlers/gateway_account_scope_test.go
+new file mode 100644
+index 00000000..382ab555
+--- /dev/null
++++ b/sdk/api/handlers/gateway_account_scope_test.go
+@@ -0,0 +1,60 @@
++package handlers
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"reflect"
++	"strings"
++	"testing"
++
++	"github.com/gin-gonic/gin"
++	coreexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func TestGatewayGroupScopeIngressAndImmutableMetadata(t *testing.T) {
++	const groupID = "00000000-0000-0000-0000-000000000002"
++	for _, accounts := range []string{`["0123456789abcdef"]`, `[]`, `null`} {
++		c, _ := gin.CreateTestContext(httptest.NewRecorder())
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++		c.Request.Header.Set(GatewayUserHeader, "00000000-0000-0000-0000-000000000001")
++		c.Request.Header.Set(GatewayGroupsHeader, `[{"group_id":"`+groupID+`","account_ids":`+accounts+`}]`)
++		CaptureGatewayAffinityScope(c)
++		if c.IsAborted() || c.Request.Header.Get(GatewayGroupsHeader) != "" {
++			t.Fatal("valid admission scope was rejected or leaked")
++		}
++		ctx := context.WithValue(context.Background(), "gin", c)
++		first := requestExecutionMetadata(ctx)
++		ids, ok := first[coreexecutor.GatewayAccountScopeMetadataKey].([]string)
++		if !ok || ids == nil {
++			t.Fatalf("missing explicit scope for %s", accounts)
++		}
++		if len(ids) > 0 {
++			ids[0] = "ffffffffffffffff"
++			second := requestExecutionMetadata(ctx)
++			if !reflect.DeepEqual(second[coreexecutor.GatewayAccountScopeMetadataKey], []string{"0123456789abcdef"}) {
++				t.Fatal("caller mutated the admission scope")
++			}
++		}
++	}
++}
++
++func TestGatewayGroupScopeRejectsMalformedHeaders(t *testing.T) {
++	const row = `{"group_id":"00000000-0000-0000-0000-000000000002","account_ids":["0123456789abcdef"]}`
++	for _, values := range [][]string{
++		{""}, {"null"}, {"{}"}, {`["group"]`}, {"[" + row + "," + row + "]"},
++		{"[" + strings.ReplaceAll(row, "0123456789abcdef", "invalid") + "]"},
++		{"[" + strings.Replace(row, `"account_ids":`, `"account_ids":[],"account_ids":`, 1) + "]"},
++		{"[" + strings.Replace(row, `"group_id":`, `"Group_id":`, 1) + "]"},
++		{"[" + strings.Replace(row, `"account_ids":`, `"extra":true,"account_ids":`, 1) + "]"},
++		{strings.Repeat(" ", 8193)}, {"[" + row + "]", "[" + row + "]"},
++	} {
++		c, _ := gin.CreateTestContext(httptest.NewRecorder())
++		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
++		c.Request.Header[GatewayGroupsHeader] = values
++		CaptureGatewayAffinityScope(c)
++		if !c.IsAborted() || c.Request.Header.Get(GatewayGroupsHeader) != "" {
++			t.Fatalf("malformed scope was accepted or leaked: %.100q", values)
++		}
++	}
++}
 diff --git a/sdk/api/handlers/handlers.go b/sdk/api/handlers/handlers.go
-index 5e7d4383..d50da2b6 100644
+index 5e7d4383..45c283aa 100644
 --- a/sdk/api/handlers/handlers.go
 +++ b/sdk/api/handlers/handlers.go
 @@ -5,6 +5,7 @@ package handlers
@@ -10737,7 +10884,7 @@ index 5e7d4383..d50da2b6 100644
  	"github.com/gorilla/websocket"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
-@@ -55,6 +57,18 @@ type ErrorDetail struct {
+@@ -55,6 +57,19 @@ type ErrorDetail struct {
  
  const idempotencyKeyMetadataKey = "idempotency_key"
  
@@ -10749,14 +10896,15 @@ index 5e7d4383..d50da2b6 100644
 +	gatewayUserKey        = "__codex_gateway_user__"
 +	GatewayAffinityHeader = "X-Codex-Gateway-Affinity"
 +	// GatewayGroupsHeader is consumed at ingress and never forwarded.
-+	GatewayGroupsHeader = "X-Codex-Gateway-Groups"
-+	gatewayAffinityKey  = "__codex_gateway_affinity__"
++	GatewayGroupsHeader    = "X-Codex-Gateway-Groups"
++	gatewayAffinityKey     = "__codex_gateway_affinity__"
++	gatewayAccountScopeKey = "__codex_gateway_account_scope__"
 +)
 +
  const (
  	defaultStreamingKeepAliveSeconds = 0
  	defaultStreamingBootstrapRetries = 0
-@@ -286,10 +300,21 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
+@@ -286,10 +301,26 @@ func requestExecutionMetadata(ctx context.Context) map[string]any {
  		if traceCallback := logging.GinCPATraceIDCallback(ginCtx); traceCallback != nil {
  			meta[coreexecutor.SelectedAuthIndexCallbackMetadataKey] = traceCallback
  		}
@@ -10774,11 +10922,16 @@ index 5e7d4383..d50da2b6 100644
 +		if userID, ok := ginCtx.Get(gatewayUserKey); ok {
 +			meta[coreexecutor.GatewayUserIDMetadataKey] = userID
 +		}
++		if scope, ok := ginCtx.Get(gatewayAccountScopeKey); ok {
++			if ids, valid := scope.([]string); valid {
++				meta[coreexecutor.GatewayAccountScopeMetadataKey] = append([]string{}, ids...)
++			}
++		}
 +	}
  	if callerScope := requestCallerScope(ginCtx); callerScope != "" {
  		meta[coreexecutor.CallerScopeMetadataKey] = callerScope
  	}
-@@ -350,6 +375,11 @@ func requestCallerScope(ginCtx *gin.Context) string {
+@@ -350,6 +381,11 @@ func requestCallerScope(ginCtx *gin.Context) string {
  	if ginCtx == nil {
  		return ""
  	}
@@ -10790,7 +10943,7 @@ index 5e7d4383..d50da2b6 100644
  	value, exists := ginCtx.Get("userApiKey")
  	if !exists || value == nil {
  		return ""
-@@ -379,6 +409,70 @@ func callerScopeFromMetadata(meta map[string]any) string {
+@@ -379,6 +415,82 @@ func callerScopeFromMetadata(meta map[string]any) string {
  	return strings.TrimSpace(value)
  }
  
@@ -10801,8 +10954,20 @@ index 5e7d4383..d50da2b6 100644
 +	if c == nil || c.Request == nil {
 +		return
 +	}
-+	// Group context is Gateway-side admission state; the sidecar never needs it.
++	groupValues := c.Request.Header.Values(GatewayGroupsHeader)
 +	c.Request.Header.Del(GatewayGroupsHeader)
++	if len(groupValues) > 0 {
++		if len(groupValues) != 1 {
++			abortInvalidGatewayUser(c)
++			return
++		}
++		scope, valid := decodeGatewayAccountScope(groupValues[0])
++		if !valid {
++			abortInvalidGatewayUser(c)
++			return
++		}
++		c.Set(gatewayAccountScopeKey, scope)
++	}
 +	userValues := c.Request.Header.Values(GatewayUserHeader)
 +	c.Request.Header.Del(GatewayUserHeader)
 +	if len(userValues) > 0 {
@@ -10899,7 +11064,7 @@ index 742c1573..a8090c51 100644
  	if routeDecision.ExecutorPluginID != "" {
  		return h.countWithPluginExecutor(ctx, handlerType, modelName, originalRequestedModel, rawJSON, alt, routeDecision.ExecutorPluginID, execOptions)
 diff --git a/sdk/api/handlers/handlers_metadata_test.go b/sdk/api/handlers/handlers_metadata_test.go
-index bf5d47aa..8e3a60e4 100644
+index bf5d47aa..9c520fdc 100644
 --- a/sdk/api/handlers/handlers_metadata_test.go
 +++ b/sdk/api/handlers/handlers_metadata_test.go
 @@ -95,6 +95,91 @@ func TestRequestExecutionMetadataIncludesHashedCallerScope(t *testing.T) {
@@ -11031,7 +11196,7 @@ index bf5d47aa..8e3a60e4 100644
 +		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 +		c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
 +		c.Request.Header[http.CanonicalHeaderKey(GatewayUserHeader)] = values
-+		c.Request.Header.Set(GatewayGroupsHeader, `["group"]`)
++		c.Request.Header.Set(GatewayGroupsHeader, `[{"group_id":"00000000-0000-0000-0000-000000000002","account_ids":[]}]`)
 +		CaptureGatewayAffinityScope(c)
 +		if len(c.Request.Header.Values(GatewayUserHeader)) != 0 {
 +			t.Fatal("user identity header not consumed")
@@ -15779,6 +15944,220 @@ index 39449b41..85ed9aac 100644
  
  	if err.Code != "code" || err.Message != "message" || err.Retryable || err.HTTPStatus != http.StatusRequestTimeout {
  		t.Fatalf("unexpected error fields: %#v", err)
+diff --git a/sdk/cliproxy/auth/gateway_account_scope.go b/sdk/cliproxy/auth/gateway_account_scope.go
+new file mode 100644
+index 00000000..f2a55f9d
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_account_scope.go
+@@ -0,0 +1,38 @@
++package auth
++
++import (
++	"strings"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// Filter before every affinity lookup and again after refreshing the manager
++// snapshot. This covers new selection, existing bindings, pinned credentials,
++// retries, and provider fallback without widening an admitted group's pool.
++func scopedGatewayAccounts(opts cliproxyexecutor.Options, candidates []*Auth) ([]*Auth, error) {
++	raw, scoped := opts.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey]
++	if !scoped {
++		return candidates, nil
++	}
++	ids, ok := raw.([]string)
++	if !ok || len(ids) > 16384 {
++		return nil, gatewayAllocationUnavailable()
++	}
++	allowed := make(map[string]bool, len(ids))
++	for _, id := range ids {
++		if len(id) != 16 || strings.Trim(id, "0123456789abcdef") != "" {
++			return nil, gatewayAllocationUnavailable()
++		}
++		allowed[id] = true
++	}
++	result := make([]*Auth, 0, len(candidates))
++	for _, candidate := range candidates {
++		if allowed[gatewayAccountResultIndex(candidate)] {
++			result = append(result, candidate)
++		}
++	}
++	if len(result) == 0 {
++		return nil, gatewayConcurrencyExceeded()
++	}
++	return result, nil
++}
+diff --git a/sdk/cliproxy/auth/gateway_account_scope_test.go b/sdk/cliproxy/auth/gateway_account_scope_test.go
+new file mode 100644
+index 00000000..33edada8
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_account_scope_test.go
+@@ -0,0 +1,164 @@
++package auth
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"fmt"
++	"net/http"
++	"strings"
++	"testing"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func TestGatewayGroupScopeRestrictsNewAndBoundAccounts(t *testing.T) {
++	for _, provider := range []string{"codex", "antigravity", "claude"} {
++		t.Run(provider, func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			if provider == "antigravity" {
++				dir := t.TempDir()
++				auths = []*Auth{mappedAntigravity(t, dir, "scope-google-a"), mappedAntigravity(t, dir, "scope-google-b")}
++				auths[0].ID, auths[1].ID = "google-a.json", "google-b.json"
++			} else if provider == "claude" {
++				m := NewManager(nil, nil, nil)
++				if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++					t.Fatal(err)
++				}
++				auths = []*Auth{gatewayAnthropicTestAuth(t, m, "claude-a.json", gatewayAnthropicOrganization), gatewayAnthropicTestAuth(t, m, "claude-b.json", "cccccccc-cccc-4ccc-8ccc-cccccccccccc")}
++			}
++			a, b := gatewayAccountResultIndex(auths[0]), gatewayAccountResultIndex(auths[1])
++			want := a
++			s.client.Transport = rawGatewayTransport(func(r *http.Request) (*http.Response, error) {
++				var request struct {
++					AccountIDs []string `json:"account_ids"`
++				}
++				if json.NewDecoder(r.Body).Decode(&request) != nil {
++					t.Fatal("invalid callback")
++				}
++				if want == b {
++					for _, id := range request.AccountIDs {
++						if id != b {
++							t.Fatalf("out-of-pool candidate sent to callback: %v", request.AccountIDs)
++						}
++					}
++				}
++				if strings.HasSuffix(r.URL.Path, "/eligible") {
++					accounts := []map[string]any{}
++					for _, id := range request.AccountIDs {
++						accounts = append(accounts, map[string]any{"id": id, "concurrent_limit": 1})
++					}
++					body, _ := json.Marshal(map[string]any{"accounts": accounts})
++					return allocationResponse(200, string(body)), nil
++				}
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, want)), nil
++			})
++			opts := allocationOptions("group-bound-session")
++			if first, err := s.Pick(context.Background(), provider, "gateway-model", opts, auths); err != nil || first.ID != auths[0].ID {
++				t.Fatalf("initial binding = %v, %v", first, err)
++			}
++			want = b
++			opts.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey] = []string{b}
++			if got, err := s.Pick(context.Background(), provider, "gateway-model", opts, auths); err != nil || got.ID != auths[1].ID {
++				t.Fatalf("out-of-pool binding retained = %v, %v", got, err)
++			}
++			// A new selection and a manager refresh must obey the same capability.
++			opts.Headers.Set("Session_id", "new-group-session")
++			ctx := context.WithValue(context.Background(), gatewayAllocationRefreshKey{}, func() ([]*Auth, error) { return auths, nil })
++			if got, err := s.Pick(ctx, provider, "gateway-model", opts, auths); err != nil || got.ID != auths[1].ID {
++				t.Fatalf("new/refresh selection widened pool = %v, %v", got, err)
++			}
++			// Retry after exhausting the only admitted account cannot use A.
++			_, err := s.Pick(context.Background(), provider, "gateway-model", opts, auths[:1])
++			var apiErr *Error
++			if !errors.As(err, &apiErr) || apiErr.HTTPStatus != http.StatusTooManyRequests {
++				t.Fatalf("retry escaped pool: %v", err)
++			}
++		})
++	}
++}
++
++func TestGatewayGroupScopeEmptyAndPinnedFailClosed(t *testing.T) {
++	m, allowed, _ := newGatewayAccountTestManager(t)
++	outside := gatewayRegisterAccount(t, m, "scope-outside.json", "scope-outside-account")
++	s, _ := allocationFixture(t)
++	m.SetSelector(s)
++	s.client.Transport = rawGatewayTransport(func(*http.Request) (*http.Response, error) {
++		t.Fatal("unavailable group scope reached callback")
++		return nil, nil
++	})
++	for _, scope := range [][]string{nil, {}, {gatewayAccountResultIndex(allowed)}} {
++		opts := allocationOptions("scope-pinned")
++		opts.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey] = scope
++		opts.Metadata[cliproxyexecutor.PinnedAuthMetadataKey] = outside.ID
++		if _, err := m.SelectAuth(context.Background(), "codex", "gateway-model", opts); err == nil {
++			t.Fatal("pin bypassed admission scope")
++		}
++	}
++}
++
++func TestGatewayGroupScopeRechecksDerivedBindings(t *testing.T) {
++	for _, mode := range []string{"body-derived", "lcp"} {
++		t.Run(mode, func(t *testing.T) {
++			s, auths := allocationFixture(t)
++			opts := allocationOptions("")
++			opts.OriginalRequest = []byte(`{"messages":[{"role":"user","content":"same conversation"}]}`)
++			if mode == "lcp" {
++				opts.SourceFormat = "openai"
++				opts.Metadata[cliproxyexecutor.CallerScopeMetadataKey] = "group-caller"
++			}
++			selected := auths[0]
++			s.client.Transport = gatewayAllocationTransport(func(*http.Request) (*http.Response, error) {
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, gatewayAccountResultIndex(selected))), nil
++			})
++			if _, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths); err != nil {
++				t.Fatal(err)
++			}
++			selected = auths[1]
++			opts.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey] = []string{gatewayAccountResultIndex(selected)}
++			if got, err := s.Pick(context.Background(), "codex", "gateway-model", opts, auths); err != nil || got.ID != selected.ID {
++				t.Fatalf("derived binding escaped scope = %v, %v", got, err)
++			}
++		})
++	}
++}
++
++func TestGatewayGroupScopeExecutionFailover(t *testing.T) {
++	for _, stream := range []bool{false, true} {
++		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
++			m, a, _ := newGatewayAccountTestManager(t)
++			gatewayRegisterAccount(t, m, "outside-retry-"+a.ID, "outside-retry-account")
++			e := &gatewayAllocationExecutor{gatewayPolicyExecutor: gatewayPolicyExecutor{id: "codex"}, failedID: a.ID}
++			m.RegisterExecutor(e)
++			s, _ := allocationFixture(t)
++			m.SetSelector(s)
++			callbacks := 0
++			s.client.Transport = gatewayAllocationTransport(func(r *http.Request) (*http.Response, error) {
++				callbacks++
++				var body struct {
++					AccountIDs []string `json:"account_ids"`
++				}
++				if json.NewDecoder(r.Body).Decode(&body) != nil || len(body.AccountIDs) != 1 || body.AccountIDs[0] != a.Index {
++					t.Fatalf("retry escaped group pool: %v", body.AccountIDs)
++				}
++				return allocationResponse(200, fmt.Sprintf(`{"account_id":%q}`, a.Index)), nil
++			})
++			opts := allocationOptions("group-failover")
++			opts.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey] = []string{a.Index}
++			request := cliproxyexecutor.Request{Model: "gateway-model"}
++			if stream {
++				opts.Stream = true
++				result, _ := m.ExecuteStream(context.Background(), []string{"codex"}, request, opts)
++				if result != nil {
++					for range result.Chunks {
++					}
++				}
++			} else {
++				_, _ = m.Execute(context.Background(), []string{"codex"}, request, opts)
++			}
++			if calls := e.Calls(); len(calls) != 1 || calls[0] != a.ID || callbacks != 1 {
++				t.Fatalf("out-of-pool account executed: calls=%v callbacks=%d", calls, callbacks)
++			}
++		})
++	}
++}
 diff --git a/sdk/cliproxy/auth/gateway_account_state.go b/sdk/cliproxy/auth/gateway_account_state.go
 new file mode 100644
 index 00000000..9611139d
@@ -16659,10 +17038,10 @@ index 00000000..774ed31a
 +}
 diff --git a/sdk/cliproxy/auth/gateway_allocation_selector.go b/sdk/cliproxy/auth/gateway_allocation_selector.go
 new file mode 100644
-index 00000000..f595f832
+index 00000000..45562da2
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_allocation_selector.go
-@@ -0,0 +1,400 @@
+@@ -0,0 +1,408 @@
 +package auth
 +
 +import (
@@ -16762,6 +17141,10 @@ index 00000000..f595f832
 +		return nil, gatewayAllocationUnavailable()
 +	}
 +	var err error
++	auths, err = scopedGatewayAccounts(opts, auths)
++	if err != nil {
++		return nil, err
++	}
 +	auths, err = s.eligibleAccounts(ctx, userID, auths)
 +	if err != nil {
 +		return nil, err
@@ -16790,6 +17173,10 @@ index 00000000..f595f832
 +		if err != nil {
 +			return nil, gatewayAllocationUnavailable()
 +		}
++	}
++	auths, err = scopedGatewayAccounts(opts, auths)
++	if err != nil {
++		return nil, err
 +	}
 +	auths, err = s.eligibleAccounts(ctx, userID, auths)
 +	if err != nil {
@@ -18561,7 +18948,7 @@ index 00000000..0bb58eef
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency.go b/sdk/cliproxy/auth/gateway_concurrency.go
 new file mode 100644
-index 00000000..3e70f370
+index 00000000..e8501140
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency.go
 @@ -0,0 +1,288 @@
@@ -18822,7 +19209,7 @@ index 00000000..3e70f370
 +	req.Metadata = cloneRequestMetadata(req.Metadata)
 +	// Cache identities come from authenticated options and the selected account,
 +	// never from a previous attempt or request-supplied metadata.
-+	for _, key := range []string{cliproxyexecutor.GatewayUserIDMetadataKey, cliproxyexecutor.CallerScopeMetadataKey, cliproxyexecutor.UpstreamAccountIndexMetadataKey} {
++	for _, key := range []string{cliproxyexecutor.GatewayUserIDMetadataKey, cliproxyexecutor.GatewayAccountScopeMetadataKey, cliproxyexecutor.CallerScopeMetadataKey, cliproxyexecutor.UpstreamAccountIndexMetadataKey} {
 +		delete(req.Metadata, key)
 +	}
 +	if caller, ok := opts.Metadata[cliproxyexecutor.CallerScopeMetadataKey].(string); ok && caller != "" {
@@ -19454,10 +19841,10 @@ index 00000000..7fe0b0e2
 +}
 diff --git a/sdk/cliproxy/auth/gateway_concurrency_test.go b/sdk/cliproxy/auth/gateway_concurrency_test.go
 new file mode 100644
-index 00000000..76a6c28c
+index 00000000..ae6265d7
 --- /dev/null
 +++ b/sdk/cliproxy/auth/gateway_concurrency_test.go
-@@ -0,0 +1,288 @@
+@@ -0,0 +1,292 @@
 +package auth
 +
 +import (
@@ -19718,6 +20105,7 @@ index 00000000..76a6c28c
 +	candidate := codexOAuthDedupeAuth("caller-scope.json", "scope-account", "2026-10-08T00:00:00Z")
 +	untrusted := map[string]any{
 +		cliproxyexecutor.GatewayUserIDMetadataKey:        "forged-user",
++		cliproxyexecutor.GatewayAccountScopeMetadataKey:  []string{"forged-account"},
 +		cliproxyexecutor.CallerScopeMetadataKey:          "forged-caller",
 +		cliproxyexecutor.UpstreamAccountIndexMetadataKey: "forged-account",
 +		"unrelated": "preserved",
@@ -19735,12 +20123,15 @@ index 00000000..76a6c28c
 +	if untrusted[cliproxyexecutor.CallerScopeMetadataKey] != "forged-caller" || prepared.Metadata["unrelated"] != "preserved" {
 +		t.Fatal("preparing request mutated input metadata or dropped unrelated fields")
 +	}
++	if _, exists := prepared.Metadata[cliproxyexecutor.GatewayAccountScopeMetadataKey]; exists {
++		t.Fatal("selection-only account scope leaked into executor metadata")
++	}
 +	prepared = gatewayExecutionRequest(nil, request, trusted)
 +	if _, exists := prepared.Metadata[cliproxyexecutor.UpstreamAccountIndexMetadataKey]; exists {
 +		t.Fatal("missing account retained an untrusted account cache scope")
 +	}
 +	prepared = gatewayExecutionRequest(candidate, request, cliproxyexecutor.Options{})
-+	for _, key := range []string{cliproxyexecutor.GatewayUserIDMetadataKey, cliproxyexecutor.CallerScopeMetadataKey, cliproxyexecutor.UpstreamAccountIndexMetadataKey} {
++	for _, key := range []string{cliproxyexecutor.GatewayUserIDMetadataKey, cliproxyexecutor.GatewayAccountScopeMetadataKey, cliproxyexecutor.CallerScopeMetadataKey, cliproxyexecutor.UpstreamAccountIndexMetadataKey} {
 +		if _, exists := prepared.Metadata[key]; exists {
 +			t.Fatalf("missing trusted options retained %s", key)
 +		}
@@ -20496,10 +20887,10 @@ index 48dd5a69..acd7d5e5 100644
  	}
  	if m.credentialQuotaShadow != nil {
 diff --git a/sdk/cliproxy/executor/types.go b/sdk/cliproxy/executor/types.go
-index a1032861..873aa331 100644
+index a1032861..bc714e0c 100644
 --- a/sdk/cliproxy/executor/types.go
 +++ b/sdk/cliproxy/executor/types.go
-@@ -36,16 +36,35 @@ const (
+@@ -36,16 +36,37 @@ const (
  	PinnedAuthMetadataKey = "pinned_auth_id"
  	// SelectionIDMetadataKey stores the per-selection ID generated for a plugin scheduler pick.
  	SelectionIDMetadataKey = "selection_id"
@@ -20513,8 +20904,11 @@ index a1032861..873aa331 100644
  	// SelectedAuthCallbackMetadataKey carries an optional callback invoked with the selected auth ID.
  	SelectedAuthCallbackMetadataKey = "selected_auth_callback"
  	// SelectedAuthIndexMetadataKey stores the stable index of the auth selected by the scheduler.
-+	GatewayUserIDMetadataKey     = "gateway_user_id"
- 	SelectedAuthIndexMetadataKey = "selected_auth_index"
+-	SelectedAuthIndexMetadataKey = "selected_auth_index"
++	GatewayUserIDMetadataKey = "gateway_user_id"
++	// GatewayAccountScopeMetadataKey carries the immutable admission-time account pool.
++	GatewayAccountScopeMetadataKey = "gateway_account_scope"
++	SelectedAuthIndexMetadataKey   = "selected_auth_index"
  	// SelectedAuthIndexCallbackMetadataKey carries an optional callback invoked with the selected auth index.
  	SelectedAuthIndexCallbackMetadataKey = "selected_auth_index_callback"
  	// FinalizedResponseFormatCallbackMetadataKey carries an optional callback invoked with the effective response_format after payload rules.

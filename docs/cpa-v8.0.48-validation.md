@@ -24,7 +24,7 @@
   `dbb706215a3afd2f0ea3c96482d4233856466caa`；Go **1.26.10**，与上游 `go.mod` 要求一致。
 - 补丁：`deploy/codex-compat/cliproxy-v8.0.48-gateway.patch`，摘要记录在
   [source.lock.json](../deploy/codex-compat/source.lock.json)，镜像标签为
-  `codex-gateway-compat:v8.0.48-dbb70621-dfa7fe36e765f172-cpa`。v8.0.30 补丁保留作为回滚输入。
+  `codex-gateway-compat:v8.0.48-dbb70621-3d869841cf43a151-cpa`。v8.0.30 补丁保留作为回滚输入。
 - 依赖：上游已自带 go-git/v6 `v6.0.0-alpha.5`、go-billy/v6 `v6.0.0-alpha.2`、`golang.org/x/crypto v0.57.0`、
   `x/net v0.60.0`、`x/text v0.42.0`；补丁只把 `klauspost/compress` 从上游的 `v1.17.4` 升到 `v1.18.7`。
 - 模型目录：`internal/registry/models/models.json` SHA-256

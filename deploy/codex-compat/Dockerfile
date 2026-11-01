@@ -91,9 +91,16 @@ RUN go test -list '^TestGateway' ./sdk/cliproxy/auth > /tmp/credential-regressio
         TestGatewayLateExecutionResultsRespectAllVersions \
         TestGatewayCatalogPublicationSerializesCredentialMutation \
         TestGatewayLateUnauthorizedDoesNotRefreshReplacement \
+        TestGatewayGroupScopeRestrictsNewAndBoundAccounts \
+        TestGatewayGroupScopeEmptyAndPinnedFailClosed \
+        TestGatewayGroupScopeRechecksDerivedBindings \
+        TestGatewayGroupScopeExecutionFailover \
         TestGatewayExecutionRequestUsesTrustedCallerAndAccountScope; do \
         grep -Fxq "$test_name" /tmp/credential-regression-tests; \
     done
+RUN go test -list '^TestGatewayGroupScope' ./sdk/api/handlers > /tmp/group-scope-ingress-tests \
+    && grep -Fxq TestGatewayGroupScopeIngressAndImmutableMetadata /tmp/group-scope-ingress-tests \
+    && grep -Fxq TestGatewayGroupScopeRejectsMalformedHeaders /tmp/group-scope-ingress-tests
 RUN go test -list '^TestGatewayCatalog' ./sdk/cliproxy > /tmp/catalog-regression-tests \
     && for test_name in \
         TestGatewayCatalogCredentialsAndEgress \

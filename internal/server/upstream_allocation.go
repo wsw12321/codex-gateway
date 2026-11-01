@@ -55,6 +55,25 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_candidates", "候选账号列表无效")
 		return
 	}
+	// account_ids is the sidecar's current model/attempt candidate set. Group
+	// snapshots may contain unsupported or already-tried accounts, so neither
+	// eligibility nor selection may expand beyond that set. The groups-only
+	// protocol remains supported; an explicit empty/null set stays empty.
+	if request.accountIDsProvided && len(request.Groups) > 0 {
+		candidates := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			candidates[id] = true
+		}
+		for i, group := range request.Groups {
+			filtered := make([]string, 0, len(group.AccountIDs))
+			for _, id := range group.AccountIDs {
+				if candidates[id] {
+					filtered = append(filtered, id)
+				}
+			}
+			request.Groups[i].AccountIDs = filtered
+		}
+	}
 	if eligibility {
 		if len(request.Groups) == 0 {
 			allowed, err := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), userID, ids)
@@ -112,9 +131,9 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 				break
 			}
 		}
-		if id == "" && err == nil && len(request.AccountIDs) > 0 {
-			id, err = s.accountStore(r).SelectUpstreamAccount(r.Context(), userID, request.AccountIDs, time.Now().UTC())
-		}
+		// A group-bound request must fail when its authorized pools are
+		// exhausted. Falling back to account_ids would spend group funds on an
+		// account outside the admission-time pool.
 		if id == "" && err == nil {
 			err = store.ErrNoUpstreamAccount
 		}
@@ -290,6 +309,9 @@ type upstreamSelectionRequest struct {
 	UserID     string
 	AccountIDs []string
 	Groups     []upstreamSelectionGroup
+	// Distinguish the groups-only protocol from an explicitly empty candidate
+	// list, which must not restore the group's full snapshot.
+	accountIDsProvided bool
 }
 
 func decodeUpstreamSelectionRequest(r *http.Request) (upstreamSelectionRequest, error) {
@@ -319,8 +341,11 @@ func decodeUpstreamSelectionRequest(r *http.Request) (upstreamSelectionRequest, 
 	if raw, ok := fields["user_id"]; !ok || json.Unmarshal(raw, &out.UserID) != nil {
 		return out, errors.New("request field missing or invalid")
 	}
-	if raw, ok := fields["account_ids"]; ok && json.Unmarshal(raw, &out.AccountIDs) != nil {
-		return out, errors.New("request field missing or invalid")
+	if raw, ok := fields["account_ids"]; ok {
+		out.accountIDsProvided = true
+		if json.Unmarshal(raw, &out.AccountIDs) != nil {
+			return out, errors.New("request field missing or invalid")
+		}
 	}
 	if raw, ok := fields["groups"]; ok {
 		if json.Unmarshal(raw, &out.Groups) != nil {
