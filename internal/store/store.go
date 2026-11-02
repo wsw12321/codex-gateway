@@ -68,7 +68,11 @@ func (s *Store) upstreamProviderName() string {
 }
 
 func (s *Store) validUpstreamProvider() bool {
-	switch s.upstreamProviderName() {
+	return isUpstreamProvider(s.upstreamProviderName())
+}
+
+func isUpstreamProvider(provider string) bool {
+	switch provider {
 	case UpstreamProviderCodex, UpstreamProviderAntigravity, UpstreamProviderAnthropic:
 		return true
 	default:

@@ -881,22 +881,56 @@
 
           <section class="view owner-only hidden" data-section="user-upstream-access" aria-labelledby="user-upstream-title">
             <div class="section-head">
-              <div><p class="eyebrow">USER ACCOUNT ACCESS</p><h2 id="user-upstream-title">账号权限</h2><p>按用户分别设置 Codex 与 Antigravity 的账号范围，两类独立保存；Owner 的普通模型请求同样受限。</p></div>
+              <div><p class="eyebrow">USER ACCOUNT ACCESS</p><h2 id="user-upstream-title">账号权限</h2><p>勾选多个用户和多个账号后批量启用或禁用；Codex、Antigravity 与 Claude 分别生效，Owner 的普通模型请求同样受限。</p></div>
               <button id="user-upstream-refresh" type="button" class="secondary">刷新账号与设置</button>
             </div>
-            <article class="panel user-upstream-target-panel">
-              <div class="user-search">
-                <label for="user-upstream-user-search">搜索并选择用户</label>
-                <div class="user-search-control">
-                  <input id="user-upstream-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="user-upstream-user-search-results" aria-describedby="user-upstream-user-search-status" disabled>
-                  <div id="user-upstream-user-search-results" class="user-search-results hidden" role="listbox" aria-label="用户搜索结果"></div>
-                </div>
-                <small id="user-upstream-user-search-status" role="status" aria-live="polite">打开页面后加载用户。</small>
-              </div>
-              <p class="user-upstream-target">当前管理：<strong id="user-upstream-target">尚未选择用户</strong></p>
-            </article>
             <p id="user-upstream-message" class="form-message hidden" role="status" aria-live="polite"></p>
-            <div id="user-upstream-cards" class="user-upstream-grid"><p class="empty">选择用户后设置账号权限。</p></div>
+            <div class="user-upstream-grid">
+              <article class="panel user-upstream-picker" aria-labelledby="user-upstream-users-title">
+                <div class="panel-heading"><h3 id="user-upstream-users-title">选择用户</h3><span id="user-upstream-user-count" class="badge" role="status" aria-live="polite">已选 0 人</span></div>
+                <label>搜索用户<input id="user-upstream-user-search" type="search" placeholder="用户名、显示名或拼音" autocomplete="off" aria-controls="user-upstream-user-list" disabled></label>
+                <div class="user-upstream-selection-actions">
+                  <label class="billing-batch-select-all"><input id="user-upstream-user-select-all" class="billing-batch-checkbox" type="checkbox" disabled>全选当前搜索结果</label>
+                  <button id="user-upstream-user-clear" type="button" class="secondary" disabled>清空选择</button>
+                </div>
+                <div id="user-upstream-user-list" class="user-check-list" role="group" aria-label="批量设置的用户"><p class="empty">打开页面后加载用户。</p></div>
+              </article>
+              <article class="panel user-upstream-picker" aria-labelledby="user-upstream-accounts-title">
+                <div class="panel-heading"><h3 id="user-upstream-accounts-title">选择账号</h3><span id="user-upstream-account-count" class="badge" role="status" aria-live="polite">已选 0 个账号</span></div>
+                <label>搜索账号<input id="user-upstream-account-search" type="search" placeholder="名称或脱敏邮箱" autocomplete="off" aria-controls="user-upstream-account-list" disabled></label>
+                <div class="user-upstream-selection-actions">
+                  <label class="billing-batch-select-all"><input id="user-upstream-account-select-all" class="billing-batch-checkbox" type="checkbox" disabled>全选当前搜索结果</label>
+                  <button id="user-upstream-account-clear" type="button" class="secondary" disabled>清空选择</button>
+                </div>
+                <div id="user-upstream-account-list" class="user-check-list" role="group" aria-label="批量设置的账号"><p class="empty">打开页面后加载账号。</p></div>
+              </article>
+            </div>
+            <article class="panel user-upstream-matrix-panel" aria-labelledby="user-upstream-matrix-title">
+              <div class="panel-heading"><div><h3 id="user-upstream-matrix-title">当前权限</h3><p>所选用户对所选账号的当前权限；“全部”表示该用户使用全部账号（默认）。</p></div></div>
+              <div id="user-upstream-matrix"><p class="empty">勾选用户和账号后显示当前权限。</p></div>
+            </article>
+            <article class="panel">
+              <form id="user-upstream-batch-form" class="user-upstream-batch-form">
+                <label>批量操作
+                  <select id="user-upstream-action" name="action" disabled>
+                    <option value="enable">启用所选账号</option>
+                    <option value="disable">禁用所选账号</option>
+                    <option value="all">恢复为全部账号（默认）</option>
+                  </select>
+                </label>
+                <fieldset id="user-upstream-providers" class="user-upstream-providers hidden">
+                  <legend>恢复的账号类型</legend>
+                  <label><input id="user-upstream-provider-codex" type="checkbox" value="codex" disabled>Codex</label>
+                  <label><input id="user-upstream-provider-antigravity" type="checkbox" value="antigravity" disabled>Antigravity</label>
+                  <label><input id="user-upstream-provider-anthropic" type="checkbox" value="anthropic" disabled>Claude</label>
+                </fieldset>
+                <p id="user-upstream-preview" class="user-upstream-preview" role="status" aria-live="polite">请先勾选用户。</p>
+                <p class="muted">禁用“全部账号”用户的某个账号时，该用户会改为“仅指定账号”，今后新增账号不会自动加入。启用后仍须满足账号专属授权、模型权限、账号状态、额度及并发限制；可选择当前不可用的已登记账号。已有会话的下一次请求使用新权限，正在执行的请求继续完成。</p>
+                <label>操作原因<input id="user-upstream-reason" name="reason" required maxlength="500" autocomplete="off" placeholder="说明调整原因" disabled></label>
+                <button id="user-upstream-submit" type="submit" disabled>执行批量操作</button>
+                <p class="form-message hidden" role="status" aria-live="polite"></p>
+              </form>
+            </article>
           </section>
 
           <section class="view owner-only hidden" data-section="model-access" aria-labelledby="model-access-title">

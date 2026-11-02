@@ -105,15 +105,14 @@ let billingBatchGeneration = 0;
 let billingBatchRefreshing = false;
 let globalUserSearch = null;
 let recoveryUserSearch = null;
-let userUpstreamSearch = null;
-let userUpstreamUsersReady = false;
-let userUpstreamUsersSequence = 0;
+let userUpstreamUsers = [];
+let userUpstreamReady = false;
 let userUpstreamSequence = 0;
-let userUpstreamUser = null;
 let userUpstreamLoading = false;
-let userUpstreamProviders = [];
-const userUpstreamDrafts = new Map();
-const userUpstreamOperations = new Map();
+let userUpstreamSnapshot = null;
+let userUpstreamSaving = null;
+const userUpstreamSelectedUsers = new Set();
+const userUpstreamSelectedAccounts = new Set();
 let modelAccessModels = [];
 let modelAccessUsers = [];
 let modelAccessUserEntries = [];
@@ -3505,109 +3504,6 @@ function createUserPicker(id, onSelect, describe = () => "") {
   return new UserPicker(id, onSelect, describe);
 }
 
-function userUpstreamMessage(message = "", kind = "error") {
-  const node = byId("user-upstream-message");
-  if (!node) return;
-  node.textContent = message;
-  node.dataset.kind = kind;
-  node.classList.toggle("hidden", !message);
-}
-
-function resetUserUpstreamAccess() {
-  userUpstreamUsersSequence++;
-  userUpstreamSequence++;
-  userUpstreamUsersReady = false;
-  userUpstreamUser = null;
-  userUpstreamLoading = false;
-  userUpstreamProviders = [];
-  userUpstreamDrafts.clear();
-  userUpstreamOperations.clear();
-  userUpstreamSearch?.reset();
-  byId("user-upstream-cards")?.replaceChildren(emptyState("选择用户后设置账号权限。"));
-  if (byId("user-upstream-target")) byId("user-upstream-target").textContent = "尚未选择用户";
-  userUpstreamMessage();
-  syncUserUpstreamControls();
-}
-
-function syncUserUpstreamControls() {
-  const owner = !loggingOut && state?.user?.role === "owner";
-  const busy = userUpstreamOperations.size > 0;
-  const search = byId("user-upstream-user-search");
-  if (search) search.disabled = !owner || busy || !userUpstreamUsersReady;
-  const refresh = byId("user-upstream-refresh");
-  if (refresh) refresh.disabled = !owner || busy || userUpstreamLoading;
-  for (const form of all(".user-upstream-form")) {
-    syncUpstreamScopeForm(form, !owner || userUpstreamLoading, userUpstreamOperations.has(form.dataset.provider));
-  }
-}
-
-async function loadUserUpstreamUsers() {
-  const identityCurrent = groupIdentityCurrent();
-  if (!identityCurrent() || userUpstreamOperations.size) return;
-  const sequence = ++userUpstreamUsersSequence;
-  const current = () => identityCurrent() && sequence === userUpstreamUsersSequence;
-  userUpstreamUsersReady = false;
-  userUpstreamSearch?.unavailable("正在加载用户…");
-  try {
-    const result = await api("/admin/billing/users", undefined, current);
-    if (!current()) return;
-    if (!Array.isArray(result.users)) throw new Error("用户列表响应格式无效。");
-    userUpstreamUsersReady = true;
-    userUpstreamSearch?.setUsers(result.users.filter((user) => user.status !== "pending"));
-    userUpstreamMessage();
-  } catch (error) {
-    if (current()) {
-      userUpstreamSearch?.unavailable("用户列表加载失败，请刷新重试");
-      userUpstreamMessage(`用户加载失败：${friendlyError(error)}`);
-    }
-  } finally {
-    if (current()) syncUserUpstreamControls();
-  }
-}
-
-async function selectUserUpstreamUser(user) {
-  if (loggingOut || state?.user?.role !== "owner" || userUpstreamOperations.size || !user?.id || user.status === "pending") return;
-  if (userUpstreamUser?.id === user.id) return;
-  userUpstreamSequence++;
-  userUpstreamUser = {...user};
-  userUpstreamDrafts.clear();
-  userUpstreamProviders = [];
-  byId("user-upstream-target").textContent = `${user.display_name || user.username || user.id}（${user.username || user.id}）`;
-  await loadUserUpstreamAccess();
-}
-
-async function loadUserUpstreamAccess() {
-  const identityCurrent = groupIdentityCurrent();
-  const userID = userUpstreamUser?.id;
-  if (!identityCurrent() || !userID || userUpstreamOperations.size) return;
-  const sequence = ++userUpstreamSequence;
-  const current = () => identityCurrent() && sequence === userUpstreamSequence && userUpstreamUser?.id === userID;
-  userUpstreamLoading = true;
-  userUpstreamMessage("正在同步账号并加载权限…", "ok");
-  if (!userUpstreamProviders.length) byId("user-upstream-cards").replaceChildren(emptyState("正在加载账号权限…"));
-  syncUserUpstreamControls();
-  try {
-    const result = await api(`/admin/users/${encodeURIComponent(userID)}/upstream-access`, undefined, current);
-    if (!current()) return;
-    const rows = upstreamScopeRows(result.providers);
-    if (result.user_id !== userID || !rows) throw new Error("账号权限响应格式无效，请刷新重试。");
-    userUpstreamProviders = rows;
-    for (const row of rows) userUpstreamDrafts.set(row.provider, upstreamScopeDraft(row, userUpstreamDrafts.get(row.provider)));
-    renderUserUpstreamCards();
-    userUpstreamMessage();
-  } catch (error) {
-    if (current()) {
-      userUpstreamMessage(`账号权限加载失败：${friendlyError(error)}；已有输入已保留。`);
-      if (!userUpstreamProviders.length) byId("user-upstream-cards").replaceChildren(emptyState("暂无可编辑的账号权限，请刷新重试。"));
-    }
-  } finally {
-    if (current()) {
-      userUpstreamLoading = false;
-      syncUserUpstreamControls();
-    }
-  }
-}
-
 const upstreamScopeProviders = ["codex", "antigravity", "anthropic"];
 const upstreamScopeProviderNames = {codex: "Codex", antigravity: "Antigravity", anthropic: "Claude"};
 
@@ -3694,70 +3590,398 @@ function syncUpstreamScopeForm(form, disabled, saving) {
   form.setAttribute("aria-busy", String(saving));
 }
 
-function renderUserUpstreamCards() {
-  byId("user-upstream-cards").replaceChildren(...userUpstreamProviders.map((row) => {
-    const name = upstreamScopeProviderNames[row.provider];
-    const form = upstreamScopeForm(row, userUpstreamDrafts.get(row.provider), {
-      name, subject: "账号权限", className: "user-upstream-form", dataset: {userId: userUpstreamUser.id},
-      emptyText: "该类型全部禁用", noAccountsText: "暂无已登记账号；空名单会禁用该类型。",
-      note: "勾选后仍须满足账号专属授权、模型权限、账号状态、额度及并发限制。可选择当前不可用的已登记账号。",
-      onSubmit: (form) => saveUserUpstreamAccess(row.provider, form),
-    });
-    return element("article", {className: "panel user-upstream-card", dataset: {provider: row.provider}},
-      element("div", {className: "panel-heading"}, element("h3", {text: name}), element("span", {className: "badge", text: `${row.accounts.length} 个账号`})),
-      row.sync_warning ? element("p", {className: "callout upstream-scope-sync-warning", attributes: {role: "status"}, text: "账号同步失败，当前显示本地快照；仍可保存权限，账号状态可能已变化。"}) : null,
-      form);
-  }));
+function userUpstreamMessage(message = "", kind = "error") {
+  const node = byId("user-upstream-message");
+  if (!node) return;
+  node.textContent = message;
+  node.dataset.kind = kind;
+  node.classList.toggle("hidden", !message);
+}
+
+function resetUserUpstreamAccess() {
+  userUpstreamSequence++;
+  userUpstreamReady = false;
+  userUpstreamLoading = false;
+  userUpstreamUsers = [];
+  userUpstreamSnapshot = null;
+  userUpstreamSaving = null;
+  userUpstreamSelectedUsers.clear();
+  userUpstreamSelectedAccounts.clear();
+  for (const id of ["user-upstream-user-search", "user-upstream-account-search", "user-upstream-reason"]) {
+    if (byId(id)) byId(id).value = "";
+  }
+  if (byId("user-upstream-action")) byId("user-upstream-action").value = "enable";
+  for (const provider of upstreamScopeProviders) {
+    if (byId(`user-upstream-provider-${provider}`)) byId(`user-upstream-provider-${provider}`).checked = false;
+  }
+  byId("user-upstream-user-list")?.replaceChildren(emptyState("打开页面后加载用户。"));
+  byId("user-upstream-account-list")?.replaceChildren(emptyState("打开页面后加载账号。"));
+  byId("user-upstream-matrix")?.replaceChildren(emptyState("勾选用户和账号后显示当前权限。"));
+  setLocalMessage(byId("user-upstream-batch-form"));
+  userUpstreamMessage();
   syncUserUpstreamControls();
 }
 
-async function saveUserUpstreamAccess(provider, form) {
+// Validates the batch read and indexes explicit rules by user and provider.
+// Returns null when the response cannot be trusted.
+function userUpstreamSnapshotFrom(response) {
+  const providers = response?.providers;
+  if (!Array.isArray(providers) || providers.length !== upstreamScopeProviders.length ||
+      !upstreamScopeProviders.every((provider) => providers.filter((row) => row?.provider === provider).length === 1) ||
+      providers.some((row) => !Array.isArray(row.accounts) || row.accounts.some((account) => typeof account?.id !== "string")) ||
+      !Array.isArray(response.rules)) {
+    return null;
+  }
+  const rules = new Map();
+  for (const rule of response.rules) {
+    if (typeof rule?.user_id !== "string" || !upstreamScopeProviders.includes(rule.provider) ||
+        !["all", "selected"].includes(rule.mode) || !Array.isArray(rule.account_ids)) return null;
+    rules.set(`${rule.user_id}:${rule.provider}`, {mode: rule.mode, account_ids: [...rule.account_ids].sort()});
+  }
+  return {providers: upstreamScopeProviders.map((provider) => providers.find((row) => row.provider === provider)), rules};
+}
+
+function userUpstreamRule(snapshot, userID, provider) {
+  return snapshot?.rules.get(`${userID}:${provider}`) || {mode: "all", account_ids: []};
+}
+
+function userUpstreamAccountProviders(snapshot) {
+  const owners = new Map();
+  for (const row of snapshot?.providers || []) for (const account of row.accounts) owners.set(account.id, row.provider);
+  return owners;
+}
+
+function userUpstreamAllows(snapshot, userID, provider, accountID) {
+  const rule = userUpstreamRule(snapshot, userID, provider);
+  return rule.mode === "all" || rule.account_ids.includes(accountID);
+}
+
+// Mirrors nextUserUpstreamAccess in the store so the preview matches what a
+// batch writes. The server recomputes every change and remains authoritative.
+function userUpstreamBatchPlan(snapshot, userIDs, action, accountIDs, providers) {
+  const owners = userUpstreamAccountProviders(snapshot);
+  const selected = new Map();
+  if (action !== "all") {
+    for (const id of accountIDs) {
+      const provider = owners.get(id);
+      if (!provider) continue;
+      if (!selected.has(provider)) selected.set(provider, new Set());
+      selected.get(provider).add(id);
+    }
+  }
+  const targets = upstreamScopeProviders.filter((provider) => action === "all" ? providers.includes(provider) : selected.has(provider));
+  const plan = {providers: targets, changes: [], unchanged: 0, converted: 0, emptied: 0};
+  for (const userID of userIDs) {
+    for (const provider of targets) {
+      const previous = userUpstreamRule(snapshot, userID, provider);
+      const chosen = selected.get(provider) || new Set();
+      let next;
+      if (action === "all" || action === "enable" && previous.mode === "all") {
+        next = {mode: "all", account_ids: []};
+      } else if (action === "enable") {
+        next = {mode: "selected", account_ids: [...new Set([...previous.account_ids, ...chosen])].sort()};
+      } else {
+        const base = previous.mode === "all" ? snapshot.providers.find((row) => row.provider === provider).accounts.map((account) => account.id) : previous.account_ids;
+        next = {mode: "selected", account_ids: base.filter((id) => !chosen.has(id)).sort()};
+      }
+      if (next.mode === previous.mode && next.account_ids.join() === previous.account_ids.join()) {
+        plan.unchanged++;
+        continue;
+      }
+      plan.changes.push({user_id: userID, provider, previous, next});
+      if (previous.mode === "all" && next.mode === "selected") plan.converted++;
+      if (next.mode === "selected" && !next.account_ids.length) plan.emptied++;
+    }
+  }
+  return plan;
+}
+
+function userUpstreamDraft() {
+  const action = byId("user-upstream-action")?.value || "enable";
+  return {
+    action,
+    userIDs: [...userUpstreamSelectedUsers].sort(),
+    accountIDs: action === "all" ? [] : [...userUpstreamSelectedAccounts].sort(),
+    providers: action === "all" ? upstreamScopeProviders.filter((provider) => byId(`user-upstream-provider-${provider}`)?.checked).sort() : [],
+  };
+}
+
+function userUpstreamPreviewText(draft, plan) {
+  if (!draft.userIDs.length) return "请先勾选用户。";
+  if (draft.action === "all" && !draft.providers.length) return "请选择要恢复的账号类型。";
+  if (draft.action !== "all" && !draft.accountIDs.length) return "请勾选账号。";
+  if (!plan.changes.length) return "所选用户均已是目标状态，无需修改。";
+  const users = new Set(plan.changes.map((change) => change.user_id)).size;
+  let text = `将修改 ${plan.changes.length} 项设置（${users} 人）`;
+  if (plan.converted) text += `；其中 ${plan.converted} 项将从「全部账号」改为「仅指定账号」，今后新增账号不会自动加入`;
+  if (plan.emptied) text += `；${plan.emptied} 项将禁用该类型全部账号`;
+  if (plan.unchanged) text += `；${plan.unchanged} 项已是目标状态，将跳过`;
+  return `${text}。`;
+}
+
+function userUpstreamUserMatches() {
+  return matchingUsers(byId("user-upstream-user-search")?.value || "", userUpstreamUsers);
+}
+
+function userUpstreamAccountMatches() {
+  const query = (byId("user-upstream-account-search")?.value || "").trim().toLocaleLowerCase();
+  return (userUpstreamSnapshot?.providers || []).flatMap((row) => row.accounts.filter((account) => !query ||
+    [account.display_name, account.email_masked, account.id].filter(Boolean).join(" ").toLocaleLowerCase().includes(query)));
+}
+
+function userUpstreamAccountName(account) {
+  return account.display_name || account.email_masked || account.id;
+}
+
+function userUpstreamUserName(user) {
+  return user.display_name || user.username || user.id;
+}
+
+function syncUserUpstreamSelectAll(id, matches, selected) {
+  const node = byId(id);
+  if (!node) return;
+  const count = matches.filter((item) => selected.has(item.id)).length;
+  node.checked = matches.length > 0 && count === matches.length;
+  node.indeterminate = count > 0 && count < matches.length;
+}
+
+function syncUserUpstreamControls() {
+  const owner = !loggingOut && state?.user?.role === "owner";
+  const locked = !owner || !userUpstreamReady || userUpstreamLoading || Boolean(userUpstreamSaving);
+  const draft = userUpstreamDraft();
+  const plan = userUpstreamSnapshot ? userUpstreamBatchPlan(userUpstreamSnapshot, draft.userIDs, draft.action, draft.accountIDs, draft.providers) : null;
+  for (const id of ["user-upstream-user-search", "user-upstream-account-search", "user-upstream-action", "user-upstream-reason",
+    ...upstreamScopeProviders.map((provider) => `user-upstream-provider-${provider}`)]) {
+    if (byId(id)) byId(id).disabled = locked;
+  }
+  for (const list of ["user-upstream-user-list", "user-upstream-account-list"]) {
+    if (byId(list)) for (const input of all("input", byId(list))) input.disabled = locked;
+  }
+  const userMatches = userUpstreamReady ? userUpstreamUserMatches() : [];
+  const accountMatches = userUpstreamReady ? userUpstreamAccountMatches() : [];
+  syncUserUpstreamSelectAll("user-upstream-user-select-all", userMatches, userUpstreamSelectedUsers);
+  syncUserUpstreamSelectAll("user-upstream-account-select-all", accountMatches, userUpstreamSelectedAccounts);
+  if (byId("user-upstream-user-select-all")) byId("user-upstream-user-select-all").disabled = locked || !userMatches.length;
+  if (byId("user-upstream-account-select-all")) byId("user-upstream-account-select-all").disabled = locked || !accountMatches.length;
+  if (byId("user-upstream-user-clear")) byId("user-upstream-user-clear").disabled = locked || !userUpstreamSelectedUsers.size;
+  if (byId("user-upstream-account-clear")) byId("user-upstream-account-clear").disabled = locked || !userUpstreamSelectedAccounts.size;
+  if (byId("user-upstream-user-count")) byId("user-upstream-user-count").textContent = `已选 ${userUpstreamSelectedUsers.size} 人`;
+  if (byId("user-upstream-account-count")) byId("user-upstream-account-count").textContent = `已选 ${userUpstreamSelectedAccounts.size} 个账号`;
+  byId("user-upstream-providers")?.classList.toggle("hidden", draft.action !== "all");
+  const preview = byId("user-upstream-preview");
+  if (preview) {
+    preview.textContent = plan ? userUpstreamPreviewText(draft, plan) : "正在加载账号权限…";
+    preview.dataset.warning = String(Boolean(plan?.converted || plan?.emptied));
+  }
+  const refresh = byId("user-upstream-refresh");
+  if (refresh) refresh.disabled = !owner || userUpstreamLoading || Boolean(userUpstreamSaving);
+  const submit = byId("user-upstream-submit");
+  if (submit) {
+    submit.disabled = locked || !plan?.changes.length;
+    submit.textContent = userUpstreamSaving ? "保存中…" : "执行批量操作";
+  }
+  byId("user-upstream-batch-form")?.setAttribute("aria-busy", String(Boolean(userUpstreamSaving)));
+}
+
+function userUpstreamUserSummary(user) {
+  return upstreamScopeProviders.map((provider) => {
+    const rule = userUpstreamRule(userUpstreamSnapshot, user.id, provider);
+    const total = userUpstreamSnapshot.providers.find((row) => row.provider === provider).accounts.length;
+    const scope = rule.mode === "all" ? "全部" : rule.account_ids.length ? `${rule.account_ids.length}/${total}` : "已禁用";
+    return `${upstreamScopeProviderNames[provider]} ${scope}`;
+  }).join(" · ");
+}
+
+function renderUserUpstreamUsers() {
+  const list = byId("user-upstream-user-list");
+  if (!userUpstreamReady) return;
+  const rows = userUpstreamUserMatches().map((user) => {
+    const checkbox = element("input", {type: "checkbox", attributes: {value: user.id, "aria-label": `选择用户 ${user.username || user.id}`}});
+    checkbox.checked = userUpstreamSelectedUsers.has(user.id);
+    checkbox.addEventListener("change", () => {
+      if (userUpstreamSaving || userUpstreamLoading) return;
+      if (checkbox.checked) userUpstreamSelectedUsers.add(user.id); else userUpstreamSelectedUsers.delete(user.id);
+      renderUserUpstreamAccounts();
+      renderUserUpstreamMatrix();
+      syncUserUpstreamControls();
+    });
+    return element("label", {className: "user-check-row user-upstream-user", dataset: {userId: user.id}}, checkbox,
+      element("span", {}, element("strong", {text: userUpstreamUserName(user)}), element("small", {text: user.username || user.id}),
+        element("small", {className: "user-upstream-summary", text: userUpstreamUserSummary(user)})));
+  });
+  list.replaceChildren(...(rows.length ? rows : [emptyState(userUpstreamUsers.length ? "没有匹配的用户；已有勾选会保留。" : "暂无可设置的用户。")]));
+}
+
+function renderUserUpstreamAccounts() {
+  const list = byId("user-upstream-account-list");
+  if (!userUpstreamReady) return;
+  const matches = new Set(userUpstreamAccountMatches().map((account) => account.id));
+  const users = [...userUpstreamSelectedUsers];
+  const groups = userUpstreamSnapshot.providers.map((row) => {
+    const name = upstreamScopeProviderNames[row.provider];
+    const rows = row.accounts.filter((account) => matches.has(account.id)).map((account) => {
+      const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${userUpstreamAccountName(account)}`}});
+      checkbox.checked = userUpstreamSelectedAccounts.has(account.id);
+      checkbox.addEventListener("change", () => {
+        if (userUpstreamSaving || userUpstreamLoading) return;
+        if (checkbox.checked) userUpstreamSelectedAccounts.add(account.id); else userUpstreamSelectedAccounts.delete(account.id);
+        renderUserUpstreamMatrix();
+        syncUserUpstreamControls();
+      });
+      const allowed = users.filter((userID) => userUpstreamAllows(userUpstreamSnapshot, userID, row.provider, account.id)).length;
+      return element("label", {className: "user-check-row user-upstream-account", dataset: {accountId: account.id, provider: row.provider}}, checkbox,
+        element("span", {}, element("strong", {text: userUpstreamAccountName(account)}),
+          element("small", {text: account.email_masked || "未提供脱敏邮箱"}),
+          element("small", {text: [upstreamFinalStatusLabels[account.status] || "状态未知", users.length ? `已允许 ${allowed} / ${users.length} 人` : ""].filter(Boolean).join(" · ")})));
+    });
+    return element("section", {className: "user-upstream-account-group", dataset: {provider: row.provider}},
+      element("div", {className: "user-upstream-account-group-heading"}, element("strong", {text: name}), element("span", {className: "badge", text: `${row.accounts.length} 个账号`})),
+      row.sync_warning ? element("p", {className: "callout upstream-scope-sync-warning", attributes: {role: "status"}, text: "账号同步失败，当前显示本地快照；仍可保存权限，账号状态可能已变化。"}) : null,
+      ...(rows.length ? rows : [element("p", {className: "empty user-upstream-account-empty", text: row.accounts.length ? "没有匹配的账号；已有勾选会保留。" : "暂无已登记账号。"})]));
+  });
+  list.replaceChildren(...groups);
+}
+
+const userUpstreamMatrixCellLimit = 2000;
+
+function renderUserUpstreamMatrix() {
+  const host = byId("user-upstream-matrix");
+  if (!host || !userUpstreamReady) return;
+  const users = userUpstreamUsers.filter((user) => userUpstreamSelectedUsers.has(user.id));
+  const accounts = userUpstreamSnapshot.providers.flatMap((row) => row.accounts
+    .filter((account) => userUpstreamSelectedAccounts.has(account.id)).map((account) => ({...account, provider: row.provider})));
+  if (!users.length || !accounts.length) {
+    host.replaceChildren(emptyState("勾选用户和账号后显示当前权限。"));
+    return;
+  }
+  if (users.length * accounts.length > userUpstreamMatrixCellLimit) {
+    host.replaceChildren(emptyState(`所选范围过大（${users.length} 人 × ${accounts.length} 个账号），请缩小选择后查看明细；批量操作仍可执行。`));
+    return;
+  }
+  const head = element("tr", {}, element("th", {text: "用户", attributes: {scope: "col"}}), ...accounts.map((account) =>
+    element("th", {attributes: {scope: "col"}}, element("small", {text: upstreamScopeProviderNames[account.provider]}), element("span", {text: userUpstreamAccountName(account)}))));
+  const rows = users.map((user) => element("tr", {}, element("th", {text: userUpstreamUserName(user), attributes: {scope: "row"}}), ...accounts.map((account) => {
+    const rule = userUpstreamRule(userUpstreamSnapshot, user.id, account.provider);
+    const allowed = rule.mode === "all" || rule.account_ids.includes(account.id);
+    return element("td", {className: "user-upstream-cell", dataset: {allowed: String(allowed)}, text: allowed ? (rule.mode === "all" ? "允许（全部）" : "允许") : "禁用"});
+  })));
+  host.replaceChildren(element("div", {className: "table-wrap user-upstream-matrix", attributes: {tabindex: "0", role: "region", "aria-label": "所选用户与账号的当前权限"}},
+    element("table", {}, element("thead", {}, head), element("tbody", {}, ...rows))));
+}
+
+function renderUserUpstreamAccess() {
+  renderUserUpstreamUsers();
+  renderUserUpstreamAccounts();
+  renderUserUpstreamMatrix();
+  syncUserUpstreamControls();
+}
+
+async function loadUserUpstreamAccess() {
   const identityCurrent = groupIdentityCurrent();
-  const userID = userUpstreamUser?.id;
-  const draft = userUpstreamDrafts.get(provider);
-  if (!identityCurrent() || !userID || form.dataset.userId !== userID || !draft || userUpstreamLoading || userUpstreamOperations.has(provider)) return;
-  if (!["all", "selected"].includes(draft.mode)) { setLocalMessage(form, "请选择有效的账号范围。"); return; }
-  const reason = draft.reason.trim();
-  if (!reason) { setLocalMessage(form, "必须填写操作原因。"); return; }
-  const payload = {mode: draft.mode, account_ids: draft.mode === "selected" ? [...draft.selected].sort() : [], reason};
-  const operation = {userID, provider, payload};
-  const sequence = userUpstreamSequence;
-  const current = () => identityCurrent() && userUpstreamUser?.id === userID && sequence === userUpstreamSequence && userUpstreamOperations.get(provider) === operation;
-  userUpstreamOperations.set(provider, operation);
-  userUpstreamSearch?.close();
-  setLocalMessage(form);
+  if (!identityCurrent() || userUpstreamSaving) return;
+  const sequence = ++userUpstreamSequence;
+  const current = () => identityCurrent() && sequence === userUpstreamSequence;
+  userUpstreamLoading = true;
+  userUpstreamMessage("正在同步账号并加载权限…", "ok");
   syncUserUpstreamControls();
   try {
-    const result = await sensitiveAction(() => {
-      requireCurrentRequest(current);
-      return api(`/admin/users/${encodeURIComponent(userID)}/upstream-access/${provider}`, {method: "PUT", body: JSON.stringify(payload)}, current);
-    }, current);
+    const [users, access] = await Promise.all([
+      api("/admin/billing/users", undefined, current),
+      api("/admin/upstream-access/users", undefined, current),
+    ]);
     if (!current()) return;
-    if (result.user_id !== userID || result.provider !== provider || result.mode !== payload.mode ||
-        !Array.isArray(result.account_ids) || JSON.stringify([...result.account_ids].sort()) !== JSON.stringify(payload.account_ids)) {
-      throw new Error("保存结果与提交内容不一致，请刷新后核对。");
-    }
-    Object.assign(userUpstreamProviders.find((row) => row.provider === provider), result);
-    draft.reason = "";
-    draft.dirty = false;
-    form.querySelector('input[name="reason"]').value = "";
-    setLocalMessage(form, "已保存；已有会话的下一次请求使用新权限，正在执行的请求继续完成。", "ok");
+    const snapshot = userUpstreamSnapshotFrom(access);
+    if (!Array.isArray(users?.users) || !snapshot) throw new Error("账号权限响应格式无效，请刷新重试。");
+    userUpstreamUsers = users.users.filter((user) => user.status !== "pending");
+    userUpstreamSnapshot = snapshot;
+    userUpstreamReady = true;
+    // Selections survive a refresh unless their user or account is gone.
+    const userIDs = new Set(userUpstreamUsers.map((user) => user.id));
+    const accountIDs = userUpstreamAccountProviders(snapshot);
+    let pruned = false;
+    for (const id of userUpstreamSelectedUsers) if (!userIDs.has(id)) { userUpstreamSelectedUsers.delete(id); pruned = true; }
+    for (const id of userUpstreamSelectedAccounts) if (!accountIDs.has(id)) { userUpstreamSelectedAccounts.delete(id); pruned = true; }
+    userUpstreamMessage(pruned ? "部分已选用户或账号已不存在，已从选择中移除。" : "", "ok");
+    renderUserUpstreamAccess();
   } catch (error) {
-    if (current()) setLocalMessage(form, `保存未确认：${friendlyError(error)}；输入已保留，请核对后重试。`);
+    if (current()) userUpstreamMessage(`账号权限加载失败：${friendlyError(error)}${userUpstreamReady ? "；已保留上次加载的数据和选择。" : ""}`);
   } finally {
     if (current()) {
-      userUpstreamOperations.delete(provider);
+      userUpstreamLoading = false;
       syncUserUpstreamControls();
     }
   }
 }
 
+async function saveUserUpstreamBatch(form) {
+  const identityCurrent = groupIdentityCurrent();
+  if (!identityCurrent() || !userUpstreamReady || userUpstreamLoading || userUpstreamSaving) return;
+  const draft = userUpstreamDraft();
+  if (!["enable", "disable", "all"].includes(draft.action)) { setLocalMessage(form, "请选择有效的批量操作。"); return; }
+  const reason = byId("user-upstream-reason").value.trim();
+  const plan = userUpstreamBatchPlan(userUpstreamSnapshot, draft.userIDs, draft.action, draft.accountIDs, draft.providers);
+  if (!plan.changes.length) { setLocalMessage(form, userUpstreamPreviewText(draft, plan)); return; }
+  if (!reason) { setLocalMessage(form, "必须填写操作原因。"); return; }
+  if ((plan.converted || plan.emptied) && !window.confirm(`${userUpstreamPreviewText(draft, plan)}\n确定继续？`)) return;
+  const payload = {user_ids: draft.userIDs, action: draft.action, account_ids: draft.accountIDs, providers: draft.providers, reason};
+  const operation = {payload};
+  const sequence = userUpstreamSequence;
+  const current = () => identityCurrent() && sequence === userUpstreamSequence && userUpstreamSaving === operation;
+  userUpstreamSaving = operation;
+  setLocalMessage(form);
+  syncUserUpstreamControls();
+  try {
+    const result = await sensitiveAction(() => {
+      requireCurrentRequest(current);
+      return api("/admin/upstream-access/users", {method: "PUT", body: JSON.stringify(payload)}, current);
+    }, current);
+    if (!current()) return;
+    const expected = new Set(payload.user_ids.flatMap((userID) => plan.providers.map((provider) => `${userID}:${provider}`)));
+    const rows = Array.isArray(result?.access) ? result.access : [];
+    if (rows.length !== expected.size || rows.some((row) => !expected.delete(`${row?.user_id}:${row?.provider}`) ||
+        !["all", "selected"].includes(row.mode) || !Array.isArray(row.account_ids))) {
+      throw new Error("保存结果与提交内容不一致，请刷新后核对。");
+    }
+    for (const row of rows) userUpstreamSnapshot.rules.set(`${row.user_id}:${row.provider}`, {mode: row.mode, account_ids: [...row.account_ids].sort()});
+    byId("user-upstream-reason").value = "";
+    setLocalMessage(form, `已更新 ${Number(result.changed_count) || 0} 项设置；已有会话的下一次请求使用新权限，正在执行的请求继续完成。`, "ok");
+  } catch (error) {
+    if (current()) {
+      setLocalMessage(form, error.status === 409
+        ? "用户或账号已变化，请刷新后重试；输入已保留。"
+        : `保存未确认：${friendlyError(error)}；输入已保留，请核对后重试。`);
+    }
+  } finally {
+    if (current()) {
+      userUpstreamSaving = null;
+      renderUserUpstreamAccess();
+    }
+  }
+}
+
+function selectUserUpstreamMatches(selected, matches, checked) {
+  if (!userUpstreamReady || userUpstreamLoading || userUpstreamSaving) return;
+  for (const item of matches) {
+    if (checked) selected.add(item.id); else selected.delete(item.id);
+  }
+  renderUserUpstreamAccess();
+}
+
 function bindUserUpstreamAccess() {
-  userUpstreamSearch = createUserSearch("user-upstream-user-search", selectUserUpstreamUser);
-  byId("user-upstream-refresh")?.addEventListener("click", async () => {
-    if (userUpstreamOperations.size) return;
-    if (!userUpstreamUsersReady) await loadUserUpstreamUsers();
-    if (userUpstreamUser) await loadUserUpstreamAccess();
+  byId("user-upstream-refresh")?.addEventListener("click", () => loadUserUpstreamAccess());
+  byId("user-upstream-user-search")?.addEventListener("input", () => { renderUserUpstreamUsers(); syncUserUpstreamControls(); });
+  byId("user-upstream-account-search")?.addEventListener("input", () => { renderUserUpstreamAccounts(); syncUserUpstreamControls(); });
+  byId("user-upstream-user-select-all")?.addEventListener("change", (event) =>
+    selectUserUpstreamMatches(userUpstreamSelectedUsers, userUpstreamUserMatches(), event.currentTarget.checked));
+  byId("user-upstream-account-select-all")?.addEventListener("change", (event) =>
+    selectUserUpstreamMatches(userUpstreamSelectedAccounts, userUpstreamAccountMatches(), event.currentTarget.checked));
+  byId("user-upstream-user-clear")?.addEventListener("click", () => selectUserUpstreamMatches(userUpstreamSelectedUsers, [...userUpstreamSelectedUsers].map((id) => ({id})), false));
+  byId("user-upstream-account-clear")?.addEventListener("click", () => selectUserUpstreamMatches(userUpstreamSelectedAccounts, [...userUpstreamSelectedAccounts].map((id) => ({id})), false));
+  byId("user-upstream-action")?.addEventListener("change", () => syncUserUpstreamControls());
+  for (const provider of upstreamScopeProviders) byId(`user-upstream-provider-${provider}`)?.addEventListener("change", () => syncUserUpstreamControls());
+  byId("user-upstream-batch-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    return saveUserUpstreamBatch(event.currentTarget);
   });
 }
 
@@ -8649,7 +8873,6 @@ function routeFromHash(focusContent = true) {
   if (!state) return;
   billingUserSearch?.close();
   globalUserSearch?.close();
-  userUpstreamSearch?.close();
   const requested = location.hash.slice(1);
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
   const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
@@ -8684,7 +8907,7 @@ function routeFromHash(focusContent = true) {
   }
   if (section === "model-multipliers") loadModelMultipliers();
   if (section === "model-pricing") loadModelPrices();
-  if (section === "user-upstream-access" && !userUpstreamUsersReady) loadUserUpstreamUsers();
+  if (section === "user-upstream-access" && !userUpstreamReady) loadUserUpstreamAccess();
   if (section === "invitations") {
     const current = invitationOwnerCurrent();
     Promise.all([loadInvitations(invitationOffset), loadInvitationGroups(current)]).catch((error) => {

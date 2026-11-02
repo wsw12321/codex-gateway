@@ -23,7 +23,8 @@ func TestUserUpstreamAccessOwnerNavigation(t *testing.T) {
 	for _, required := range []string{
 		`href="#user-upstream-access" data-view="user-upstream-access" class="owner-only hidden"`,
 		`class="view owner-only hidden" data-section="user-upstream-access"`,
-		`id="user-upstream-user-search"`, `id="user-upstream-cards"`,
+		`id="user-upstream-user-search"`, `id="user-upstream-user-list"`, `id="user-upstream-account-list"`,
+		`id="user-upstream-matrix"`, `id="user-upstream-batch-form"`,
 		`Owner 的普通模型请求同样受限`,
 	} {
 		if !strings.Contains(string(indexHTML), required) {

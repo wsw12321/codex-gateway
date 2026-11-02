@@ -211,6 +211,8 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))
 	s.mux.Handle("GET /admin/users/{user_id}/upstream-access", s.requireSession(s.ownerOnly(http.HandlerFunc(s.userUpstreamAccessJSON))))
 	s.mux.Handle("PUT /admin/users/{user_id}/upstream-access/{provider}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUserUpstreamAccess)))))
+	s.mux.Handle("GET /admin/upstream-access/users", s.requireSession(s.ownerOnly(http.HandlerFunc(s.userUpstreamAccessBatchJSON))))
+	s.mux.Handle("PUT /admin/upstream-access/users", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUserUpstreamAccessBatch)))))
 	s.mux.Handle("GET /admin/upstream-accounts/concurrency", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountConcurrency))))
 	s.mux.Handle("GET /admin/information", s.requireSession(s.ownerOnly(http.HandlerFunc(s.informationJSON))))
 	s.mux.Handle("POST /admin/information/preview", s.browserOrigin(s.requireSession(s.ownerOnly(http.HandlerFunc(s.previewInformationCleanup)))))

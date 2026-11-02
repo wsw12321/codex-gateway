@@ -1,8 +1,26 @@
 # 用户上游账号权限
 
-Owner 在管理台“账号权限”选择用户后，分别保存 Codex、Antigravity 的账号范围。
-用户选择器复用现有用户名、显示名和拼音搜索；账号列表显示名称、脱敏邮箱和状态。
-两类配置、操作原因和保存互不影响。保存须通过近期二次验证，并在同一事务中写入审计。
+Owner 在管理台“账号权限”页面同时勾选多个用户和多个账号，再批量启用、禁用或
+恢复为全部账号。页面只加载一次用户和账号：用户列表复用用户名、显示名和拼音搜索，
+每行显示 Codex、Antigravity、Claude 三类当前范围（如 `Codex 2/3 · Claude 已禁用`）；
+账号按类型分组，显示名称、脱敏邮箱、状态及所选用户中已允许的人数。
+“当前权限”矩阵列出所选用户 × 所选账号的允许／禁用（超过 2000 格时仅提示缩小范围）。
+搜索不清除已有勾选，“全选当前搜索结果”只作用于匹配项。
+
+批量操作对每个所选用户、每个涉及的类型（启用／禁用取所选账号的类型，恢复全部
+由 Owner 勾选类型）计算新范围。设 `A` 为本类型所选账号：
+
+| 操作 | 当前为“全部账号” | 当前为“仅指定账号” S |
+| --- | --- | --- |
+| 启用所选账号 | 不变 | `selected`，S ∪ A |
+| 禁用所选账号 | `selected`，该类型全部已登记账号 − A | `selected`，S − A |
+| 恢复为全部账号 | 不变 | `all`，空名单 |
+
+禁用会把“全部账号”用户改为“仅指定账号”，今后新增账号不会自动加入；禁用某类型
+全部账号会留下空名单，即禁用该类型。页面实时预览将修改的项数、其中由“全部账号”
+转换和被整类禁用的项数，以及已是目标状态而跳过的项数；出现转换或整类禁用时
+提交前再次确认。保存须填写原因并通过近期二次验证，整批在一个事务内完成，
+只写入并审计实际变化的项；任一目标无效则整批回滚，输入保留。
 
 | 模式 | 行为 |
 | --- | --- |
@@ -18,9 +36,55 @@ Owner 发起普通模型请求时同样受限；既有模型鉴别和内部运�
 
 允许选择当前不可用的已登记账号。元数据同步或账号下线不会清除名单；
 同步失败时管理页显示本地快照和提示，仍可保存权限。
-过滤账号列表不丢失勾选；保存期间固定目标用户及类型，重复提交和迟到响应不会错写。
+保存期间锁定选择和表单并固定提交内容，重复提交、迟到响应和身份切换不会错写；
+刷新会保留仍存在的勾选，并提示已移除的用户或账号。
 
-## 接口
+## 批量接口
+
+`GET /admin/upstream-access/users` 要求 Owner 会话且不能带查询参数。它先同步三类账号
+元数据（失败时回退本地快照并附 `sync_warning`），再返回全部非待审批用户的显式规则；
+没有规则的用户即为 `all`：
+
+```json
+{
+  "providers": [
+    {"provider": "codex", "accounts": [{"id": "0123456789abcdef", "display_name": "team-primary", "email_masked": "u***@example.test", "status": "available"}]},
+    {"provider": "antigravity", "accounts": [], "sync_warning": "upstream_account_sync_unavailable"},
+    {"provider": "anthropic", "accounts": []}
+  ],
+  "rules": [
+    {"user_id": "00000000-0000-0000-0000-000000000001", "provider": "codex", "mode": "selected", "account_ids": []}
+  ]
+}
+```
+
+`PUT /admin/upstream-access/users` 要求同源、Owner 和近期二次验证。请求必须包含且仅包含：
+
+```json
+{"user_ids":["00000000-0000-0000-0000-000000000001"],"action":"disable","account_ids":["0123456789abcdef"],"providers":[],"reason":"停用团队主账号"}
+```
+
+- `action` 为 `enable`、`disable` 或 `all`。启用／禁用要求非空 `account_ids` 和空
+  `providers`，类型由账号决定，可跨类型；`all` 要求非空 `providers` 和空 `account_ids`。
+- `user_ids` 为 1–1000 个规范 UUID，`account_ids` 至多 1000 个；三个数组均不能为
+  `null` 或含重复值。原因去除首尾空白后为 1–500 字符。
+- 未知账号返回 `400 invalid_resource`；任一用户不存在或待审批返回
+  `409 resource_conflict`。两者均整批回滚。
+
+成功返回每个目标用户 × 类型写入后的范围（含未变化项）及计数：
+
+```json
+{"access":[{"user_id":"…","provider":"codex","mode":"selected","account_ids":["…"]}],"target_count":1,"changed_count":1,"converted_count":1}
+```
+
+事务先取 `upstream_accounts` 表锁，再按 ID 顺序锁定涉及类型的全部账号，最后按 ID
+顺序以 `FOR NO KEY UPDATE` 锁定用户，避免与单用户保存、账号专属授权及审计外键
+形成锁环。每个变化项写一条 `user.upstream_access_changed` 审计，字段与单用户保存
+相同，另含 `batch_action`。
+
+## 单用户接口
+
+页面不再使用以下单用户接口；它们保持不变，供脚本和兼容使用。
 
 `GET /admin/users/{user_id}/upstream-access` 要求 Owner 会话，返回：
 
@@ -94,6 +158,8 @@ Antigravity 请求测试覆盖撤权及权限查询失败后拒绝下一次请�
 
 前端回归涵盖独立保存、拼音搜索、账号过滤保留勾选、重复提交、迟到 GET/PUT/401、
 身份切换、退出清理和过期表单。模拟浏览器实际操作了密码二次验证与两类保存。
+以上前端记录针对当时的单用户页面；2026-11-02 起页面改为批量模式，其接口、
+前端回归和截图验证见[账号权限批量设置验证](user-upstream-access-batch-validation.md)。
 
 ```sh
 go test -count=1 ./...
@@ -107,8 +173,8 @@ PLAYWRIGHT_MODULE=/path/to/playwright PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/ch
   node internal/server/testdata/user_upstream_access_browser.cjs
 ```
 
-截图使用合成用户、脱敏邮箱和模拟上游；桌面为 1440×1080、移动端为 390×844，
-移动端已检查无横向溢出：
+当前截图为批量页面，使用合成用户、脱敏邮箱和模拟上游；桌面为 1440×1080、
+移动端为 390×844，移动端已检查无横向溢出：
 
 - [桌面账号权限](screenshots/user-upstream-access-desktop.png)
 - [移动端账号权限](screenshots/user-upstream-access-mobile.png)

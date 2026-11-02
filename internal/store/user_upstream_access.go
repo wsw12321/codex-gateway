@@ -132,42 +132,74 @@ func (s *Store) SetUserUpstreamAccess(ctx context.Context, params SetUserUpstrea
 			params.UserID, result.Provider).Scan(&previousMode, &previousAccounts); err != nil {
 			return mapDBError("read previous user upstream access", err)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO user_upstream_access(user_id,provider,mode,updated_at)
-			VALUES($1,$2,$3,$4) ON CONFLICT(user_id,provider) DO UPDATE SET mode=EXCLUDED.mode,updated_at=EXCLUDED.updated_at`,
-			params.UserID, result.Provider, params.Mode, params.At); err != nil {
-			return mapDBError("set user upstream access", err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM user_upstream_access_accounts WHERE user_id=$1 AND provider=$2`, params.UserID, result.Provider); err != nil {
-			return mapDBError("replace user upstream accounts", err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO user_upstream_access_accounts(user_id,provider,upstream_account_id)
-			SELECT $1,$2,value FROM jsonb_array_elements_text($3::jsonb)`, params.UserID, result.Provider, string(encoded)); err != nil {
-			return mapDBError("set user upstream accounts", err)
-		}
-		var previousIDs []string
-		if err := json.Unmarshal([]byte(previousAccounts), &previousIDs); err != nil {
+		previous := UserUpstreamAccess{UserID: params.UserID, Provider: result.Provider, Mode: previousMode}
+		if err := json.Unmarshal([]byte(previousAccounts), &previous.AccountIDs); err != nil {
 			return fmt.Errorf("decode previous user upstream access: %w", err)
 		}
-		previousJSON, _ := json.Marshal(previousIDs)
-		metadata, err := marshalSafeMetadata(map[string]any{
-			"provider": result.Provider, "previous_mode": previousMode,
-			"previous_account_count": len(previousIDs), "previous_accounts_sha256": fmt.Sprintf("%x", sha256.Sum256(previousJSON)),
-			"mode": params.Mode, "account_count": len(params.AccountIDs),
-			"accounts_sha256": fmt.Sprintf("%x", sha256.Sum256(encoded)), "reason": params.Reason,
-		})
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO audit_events
-			(occurred_at,actor_user_id,actor_session_id,event_type,severity,success,source_ip,subject_type,subject_id,request_id,metadata)
-			VALUES($1,$2,$3,'user.upstream_access_changed','info',true,$4::inet,'user',$5,$6,$7::jsonb)`,
-			params.At, params.ActorUserID, valueOrNil(params.ActorSessionID), valueOrNil(params.SourceIP), params.UserID, valueOrNil(params.RequestID), metadata)
-		return mapDBError("audit user upstream access", err)
+		return replaceUserUpstreamAccessTx(ctx, tx, userUpstreamAccessWrite{
+			Reason: params.Reason, ActorUserID: params.ActorUserID, ActorSessionID: params.ActorSessionID,
+			RequestID: params.RequestID, SourceIP: params.SourceIP, At: params.At,
+		}, previous, result, nil)
 	})
 	if err != nil {
 		return UserUpstreamAccess{}, err
 	}
 	return result, nil
+}
+
+// userUpstreamAccessWrite is the audit context shared by single and batch
+// account-scope edits.
+type userUpstreamAccessWrite struct {
+	Reason         string
+	ActorUserID    string
+	ActorSessionID string
+	RequestID      string
+	SourceIP       string
+	At             time.Time
+}
+
+// replaceUserUpstreamAccessTx replaces one provider's rule and members, then
+// audits the change in the same transaction. Callers already hold the user
+// lock and the locks on every account in next.AccountIDs.
+func replaceUserUpstreamAccessTx(ctx context.Context, tx *sql.Tx, write userUpstreamAccessWrite, previous, next UserUpstreamAccess, extra map[string]any) error {
+	if previous.AccountIDs == nil {
+		previous.AccountIDs = []string{}
+	}
+	if next.AccountIDs == nil {
+		next.AccountIDs = []string{}
+	}
+	encoded, _ := json.Marshal(next.AccountIDs)
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_upstream_access(user_id,provider,mode,updated_at)
+		VALUES($1,$2,$3,$4) ON CONFLICT(user_id,provider) DO UPDATE SET mode=EXCLUDED.mode,updated_at=EXCLUDED.updated_at`,
+		next.UserID, next.Provider, next.Mode, write.At); err != nil {
+		return mapDBError("set user upstream access", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_upstream_access_accounts WHERE user_id=$1 AND provider=$2`, next.UserID, next.Provider); err != nil {
+		return mapDBError("replace user upstream accounts", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_upstream_access_accounts(user_id,provider,upstream_account_id)
+		SELECT $1,$2,value FROM jsonb_array_elements_text($3::jsonb)`, next.UserID, next.Provider, string(encoded)); err != nil {
+		return mapDBError("set user upstream accounts", err)
+	}
+	previousJSON, _ := json.Marshal(previous.AccountIDs)
+	fields := map[string]any{
+		"provider": next.Provider, "previous_mode": previous.Mode,
+		"previous_account_count": len(previous.AccountIDs), "previous_accounts_sha256": fmt.Sprintf("%x", sha256.Sum256(previousJSON)),
+		"mode": next.Mode, "account_count": len(next.AccountIDs),
+		"accounts_sha256": fmt.Sprintf("%x", sha256.Sum256(encoded)), "reason": write.Reason,
+	}
+	for key, value := range extra {
+		fields[key] = value
+	}
+	metadata, err := marshalSafeMetadata(fields)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO audit_events
+		(occurred_at,actor_user_id,actor_session_id,event_type,severity,success,source_ip,subject_type,subject_id,request_id,metadata)
+		VALUES($1,$2,$3,'user.upstream_access_changed','info',true,$4::inet,'user',$5,$6,$7::jsonb)`,
+		write.At, write.ActorUserID, valueOrNil(write.ActorSessionID), valueOrNil(write.SourceIP), next.UserID, valueOrNil(write.RequestID), metadata)
+	return mapDBError("audit user upstream access", err)
 }
 
 // Keep eligibility, concurrency admission, and fresh allocation identical.
