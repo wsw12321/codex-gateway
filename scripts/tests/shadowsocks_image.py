@@ -276,9 +276,9 @@ if __name__ == "__main__":
         if built:
             command("docker", "build", "--file", str(ROOT / "deploy/shadowsocks/Dockerfile"),
                     "--tag", image,
-                    *(argument for key in ("MIHOMO_IMAGE", "GOLANG_IMAGE", "RUNTIME_IMAGE")
+                    *(argument for key in ("GOLANG_IMAGE", "RUNTIME_IMAGE")
                       for argument in ("--build-arg", key + "=" + locked[key])),
-                    str(ROOT), timeout=600)
+                    str(ROOT), timeout=1800)
         run(locked["SQUID_IMAGE"], locked["MIHOMO_IMAGE"], image)
     finally:
         if built:

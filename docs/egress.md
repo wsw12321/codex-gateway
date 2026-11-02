@@ -107,7 +107,8 @@ CODEX_RELAY_PORT=3128
 ## 隔离与凭据
 
 Mihomo 使用官方 [v1.19.32](https://github.com/MetaCubeX/mihomo/releases/tag/v1.19.32)
-的摘要锁定镜像中的二进制；构建工具和运行基础镜像也沿用镜像锁。
+的固定源码，应用 `deploy/shadowsocks/upstream/` 中锁定的依赖安全补丁后构建；
+构建工具和运行基础镜像沿用镜像锁。上游预编译镜像只用于回归测试的合成 SS 服务。
 SS 服务以非 root 身份运行、根文件系统只读、丢弃全部 capabilities，
 不发布宿主机端口，不启用 TUN 或控制 API。
 

@@ -139,14 +139,20 @@ SOFTWARE.
 Mihomo v1.19.32
 ================
 
-The optional Shadowsocks egress image includes the unmodified Mihomo binary
-from the official MetaCubeX/mihomo v1.19.32 image. Its registry digest is
-recorded in deploy/images.lock.env; the source tag is in deploy/images.sources.
-Upstream source and build instructions:
+The account-egress and optional Shadowsocks egress images build Mihomo v1.19.32
+from upstream commit 88dcbf7f1614a67c3b36b848ee3592dfa92ada36 with reviewed
+dependency security updates and the repository's locked Go toolchain. Source
+provenance is recorded in deploy/shadowsocks/upstream/source.lock.env; build.sh
+and mihomo-v1.19.32-dependencies.patch in that directory reproduce the binary.
+The dependency updates include klauspost/compress v1.18.7, golang.org/x/crypto
+v0.57.0, golang.org/x/net v0.60.0 and golang.org/x/text v0.42.0. The official
+image pinned in deploy/images.lock.env is used only as a synthetic test server;
+its precompiled binary is not shipped in these application images.
+Upstream source:
 
   https://github.com/MetaCubeX/mihomo/tree/v1.19.32
 
 Mihomo is licensed under GNU GPL version 3. The exact upstream license is
 included at deploy/shadowsocks/upstream/LICENSE and installed in the image at
 /usr/share/licenses/mihomo/LICENSE. The gateway application and the separate
-ss-egress startup helper do not link to Mihomo.
+account-egress and ss-egress startup helpers do not link to Mihomo.

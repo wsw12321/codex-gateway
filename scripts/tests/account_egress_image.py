@@ -166,9 +166,9 @@ class AccountSandbox:
 def run(helper=None):
     images = dict(line.split("=", 1) for line in (ROOT / "deploy/images.lock.env").read_text().splitlines() if line and not line.startswith("#"))
     if not helper:
-        helper = "codex-gateway-account-egress:1.19.32-v1"
+        helper = "codex-gateway-account-egress:1.19.32-v2"
         args = ["docker", "build", "-f", str(ROOT / "deploy/account-egress/Dockerfile"), "-t", helper]
-        for key in ("MIHOMO_IMAGE", "GOLANG_IMAGE", "RUNTIME_IMAGE"):
+        for key in ("GOLANG_IMAGE", "RUNTIME_IMAGE"):
             args += ["--build-arg", f"{key}={images[key]}"]
         result = subprocess.run(args + [str(ROOT)], check=False)
         if result.returncode:

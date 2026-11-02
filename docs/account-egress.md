@@ -37,6 +37,11 @@ Antigravity、Anthropic 的账号表格选择每个账号的出口。多个账�
 首次应用可能短暂显示待应用；Gateway 每 5 秒重新协调一次，运行时或 Gateway 重启后
 会自动恢复，不需要重填节点。默认全局出口和 OIDC 不依赖该运行时的就绪状态。
 
+`account-egress` 与可选的 `ss-egress` 使用 Mihomo v1.19.32 的固定源码，
+应用已锁定的依赖安全补丁，并由仓库锁定的 Go 工具链构建。源码来源、补丁和
+构建脚本见 `deploy/shadowsocks/upstream/`。镜像版本升级为 `1.19.32-v2`，
+升级时需重新构建或拉取 CI 产物。
+
 ## 网络边界
 
 ```text

@@ -43,7 +43,7 @@ class PullCIImagesTests(unittest.TestCase):
                 "antigravity-bridge": {
                     "image": f"codex-gateway-antigravity:agy1.2.4-{REVISION}"
                 },
-                "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v1"},
+                "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v2"},
             }
         }
         self.env = dict(

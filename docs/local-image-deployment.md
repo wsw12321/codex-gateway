@@ -28,7 +28,7 @@ docker save \
   "codex-gateway-gateway:${gateway_tag}" \
   "$compat_image" \
   "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
-  "codex-gateway-account-egress:1.19.32-v1" \
+  "codex-gateway-account-egress:1.19.32-v2" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
 ```

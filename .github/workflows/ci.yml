@@ -49,6 +49,7 @@ jobs:
           set -eu
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
           test "$(jq -r .go_version deploy/codex-compat/source.lock.json)" = "$GO_VERSION"
+          test "$(sed -n 's/^GO_VERSION=//p' deploy/shadowsocks/upstream/source.lock.env)" = "$GO_VERSION"
           go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
           grep -Fxq "GOLANG_IMAGE|$go_image" deploy/images.sources
           grep -Fxq "CLIPROXY_GOLANG_IMAGE|$go_image" deploy/images.sources
@@ -244,7 +245,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/cpa-migrate/*.sh deploy/egress/*.sh deploy/relay/wg-codex; do
+          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/cpa-migrate/*.sh deploy/egress/*.sh deploy/shadowsocks/upstream/*.sh deploy/relay/wg-codex; do
             case "$(sed -n '1p' "$script")" in
               '#!/bin/sh') sh -n "$script" ;;
               '#!/sbin/openrc-run') sh -n "$script" ;;
@@ -305,7 +306,7 @@ jobs:
           done < "$build_output"
           exit 1
       - name: Verify per-account Shadowsocks routing and hot updates
-        run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v1
+        run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v2
       - name: Verify sidecar runtime without site credentials
         run: ./scripts/test-sidecar-image.sh
       - name: Verify Antigravity keyring isolation without a Google account

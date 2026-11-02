@@ -745,12 +745,11 @@ cliproxy_golang_image=$(lock_value CLIPROXY_GOLANG_IMAGE)
 runtime_image=$(lock_value RUNTIME_IMAGE)
 cliproxy_runtime_image=$(lock_value CLIPROXY_RUNTIME_IMAGE)
 squid_image=$(lock_value SQUID_IMAGE)
-mihomo_image=$(lock_value MIHOMO_IMAGE)
 
 # Dynamic account exits have separate control and data subnets. Only Squid can
 # send CONNECTs; only Gateway receives the control credential. No Docker socket,
 # OAuth volume, database secret or externally published listener is permitted.
-jq -e --arg mihomo "$mihomo_image" --arg golang "$golang_image" \
+jq -e --arg golang "$golang_image" \
     --arg runtime "$runtime_image" --arg root "$root" --arg secret "$secret_dir/egress_control_key" '
   .networks.account_egress_data.internal == true and
   .networks.account_egress_data.ipam.config == [{"subnet":"172.28.60.0/24"}] and
@@ -769,9 +768,9 @@ jq -e --arg mihomo "$mihomo_image" --arg golang "$golang_image" \
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "egress_control_key")) | .key] | sort) ==
     ["account-egress", "gateway"] and
   (.services["account-egress"] |
-    .image == "codex-gateway-account-egress:1.19.32-v1" and
+    .image == "codex-gateway-account-egress:1.19.32-v2" and
     .build.context == $root and .build.dockerfile == "deploy/account-egress/Dockerfile" and
-    .build.args.MIHOMO_IMAGE == $mihomo and .build.args.GOLANG_IMAGE == $golang and .build.args.RUNTIME_IMAGE == $runtime and
+    .build.args == {"GOLANG_IMAGE":$golang,"RUNTIME_IMAGE":$runtime} and
     .read_only == true and (.user | test("^10004:[1-9][0-9]*$")) and
     .init == true and .pids_limit == 128 and
     .privileged != true and .network_mode == null and .pid == null and .ipc == null and
@@ -792,7 +791,7 @@ jq -e --arg mihomo "$mihomo_image" --arg golang "$golang_image" \
 
 # The optional transport must not give an application container an alternate
 # proxy or credential path. Its sole client is Squid on a private subnet.
-jq -e --arg mode "$egress_mode" --arg mihomo "$mihomo_image" \
+jq -e --arg mode "$egress_mode" \
     --arg golang "$golang_image" --arg runtime "$runtime_image" --arg root "$root" '
   if $mode == "shadowsocks" then
     .networks.ss_internal.internal == true and
@@ -808,10 +807,9 @@ jq -e --arg mode "$egress_mode" --arg mihomo "$mihomo_image" \
     (.secrets.shadowsocks_password.file | type == "string" and startswith("/")) and
     .services.gateway.user as $gateway_user |
     (.services["ss-egress"] |
-      .image == "codex-gateway-ss-egress:1.19.32-v1" and
+      .image == "codex-gateway-ss-egress:1.19.32-v2" and
       .build.context == $root and .build.dockerfile == "deploy/shadowsocks/Dockerfile" and
-      .build.args == {"MIHOMO_IMAGE":$mihomo,"GOLANG_IMAGE":$golang,"RUNTIME_IMAGE":$runtime} and
-      ($mihomo | startswith("docker.io/metacubex/mihomo:v1.19.32@sha256:")) and
+      .build.args == {"GOLANG_IMAGE":$golang,"RUNTIME_IMAGE":$runtime} and
       .user == ("10003:" + ($gateway_user | split(":")[1])) and
       .read_only == true and .init == true and .restart == "unless-stopped" and
       .pids_limit == 128 and ((.privileged // false) == false) and

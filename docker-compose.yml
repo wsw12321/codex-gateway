@@ -281,12 +281,11 @@ services:
 
   account-egress:
     <<: *common-security
-    image: codex-gateway-account-egress:1.19.32-v1
+    image: codex-gateway-account-egress:1.19.32-v2
     build:
       context: .
       dockerfile: deploy/account-egress/Dockerfile
       args:
-        MIHOMO_IMAGE: ${MIHOMO_IMAGE:?Run ./scripts/lock-images.sh first}
         GOLANG_IMAGE: ${GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
         RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
     read_only: true
