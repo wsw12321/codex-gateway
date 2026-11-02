@@ -202,6 +202,7 @@ def run(squid_image, mihomo_image, runtime_image):
         config = config.replace("172.28.40.3/32", "127.0.0.3/32")
         config = config.replace("172.28.30.2/32", "127.0.0.8/32")
         config = config.replace("http_port 3128", "http_port 127.0.0.1:3128")
+        config = config.replace("http_port 172.28.30.4:3129", "http_port 127.0.0.1:3130")
         config += (f"\ntcp_outgoing_address {SQUID_IP} codex_clients\n"
                    f"tcp_outgoing_address {SQUID_IP} antigravity_clients\n"
                    "connect_timeout 2 seconds\nforward_timeout 5 seconds\n"

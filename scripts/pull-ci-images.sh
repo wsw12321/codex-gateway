@@ -15,19 +15,19 @@ test -f "$manifest" || fail "manifest not found: $manifest"
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
 command -v docker >/dev/null 2>&1 || fail 'Docker is required'
 
-# Accept only the three digest-pinned application images from one GHCR repo.
+# Accept only the four digest-pinned application images from one GHCR repo.
 jq -e '
   .schema_version == 1 and
   (.revision | type == "string" and test("^[0-9a-f]{40}$")) and
   (.repository | type == "string" and test("^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9_.-]*$")) and
   .platform == "linux/amd64" and
-  (.images | keys | sort) == ["antigravity-bridge", "codex-compat", "gateway"] and
+  (.images | keys | sort) == ["account-egress", "antigravity-bridge", "codex-compat", "gateway"] and
   (.images | all(.[]; type == "string"))
 ' "$manifest" >/dev/null || fail 'invalid deployment manifest'
 
 revision=$(jq -er '.revision' "$manifest")
 repository=$(jq -er '.repository' "$manifest")
-for service in gateway codex-compat antigravity-bridge; do
+for service in gateway codex-compat antigravity-bridge account-egress; do
     jq -e --arg service "$service" --arg prefix "ghcr.io/$repository/$service@sha256:" '
       .images[$service] | startswith($prefix) and
       (ltrimstr($prefix) | test("^[0-9a-f]{64}$"))
@@ -49,14 +49,14 @@ jq -e --arg revision "$revision" '
 
 # Finish every pull before changing the local tags used by Compose. Running
 # containers are unaffected; deployment remains an explicit separate command.
-for service in gateway codex-compat antigravity-bridge; do
+for service in gateway codex-compat antigravity-bridge account-egress; do
     image=$(jq -er --arg service "$service" '.images[$service]' "$manifest")
     docker pull --platform linux/amd64 "$image"
     platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
     test "$platform" = linux/amd64 || fail "unexpected platform for $service: $platform"
 done
 
-for service in gateway codex-compat antigravity-bridge; do
+for service in gateway codex-compat antigravity-bridge account-egress; do
     image=$(jq -er --arg service "$service" '.images[$service]' "$manifest")
     local_image=$(jq -er --arg service "$service" '.services[$service].image' "$config")
     docker tag "$image" "$local_image"

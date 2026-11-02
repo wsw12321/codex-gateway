@@ -167,6 +167,7 @@ def run(image):
             config = config.replace("10.77.0.1/32", "127.0.0.1/32")
             config = config.replace("http_port 10.77.0.2:3128", "http_port 127.0.0.1:3128")
             config = config.replace("http_port 3128", "http_port 127.0.0.1:3128")
+            config = config.replace("http_port 172.28.30.4:3129", "http_port 127.0.0.1:3130")
             config += "\nconnect_timeout 2 seconds\nforward_timeout 5 seconds\npeer_connect_timeout 1 seconds\ndead_peer_timeout 1 seconds\n"
             paths[label] = Path(directory) / f"{label}.conf"
             paths[label].write_text(config)

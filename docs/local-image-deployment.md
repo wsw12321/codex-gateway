@@ -12,7 +12,7 @@
 git status --short
 git rev-parse HEAD
 DOCKER_DEFAULT_PLATFORM=linux/amd64 \
-  ./scripts/compose.sh build gateway codex-compat antigravity-bridge
+  ./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
 ```
 
 不使用 Antigravity 时可省略 `antigravity-bridge`。
@@ -23,10 +23,12 @@ DOCKER_DEFAULT_PLATFORM=linux/amd64 \
 
 ```sh
 gateway_tag=<完整Git-SHA或正式版本>
+compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["codex-compat"].image')
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
-  "codex-gateway-compat:v8.0.48-dbb70621-3d869841cf43a151-cpa" \
+  "$compat_image" \
   "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
+  "codex-gateway-account-egress:1.19.32-v1" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
 ```
@@ -41,9 +43,10 @@ docker save \
 cd /opt/codex-gateway
 git fetch --tags --prune
 git checkout --detach <与本地相同的完整Git-SHA>
+./scripts/bootstrap-secrets.sh
 ./scripts/validate-compose.sh
 ./scripts/compose.sh up -d --no-build \
-  postgres egress-allowlist codex-compat gateway caddy cloudflared
+  postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 
@@ -57,6 +60,9 @@ git checkout --detach <与本地相同的完整Git-SHA>
 模型鉴定流程还需同时升级 Gateway 与兼容层，并应用
 `0019_model_identification_diagnostics.sql`。旧兼容层不支持独立诊断协议时，页面会明确
 报告版本不兼容；鉴定的真实上游冒烟需由 Owner 单独发起，并会消耗所选账号额度。
+
+账号独立出口需要同时交付 `account-egress`，由新版 Gateway 自动应用保存的节点。
+升级前增补控制密钥及应用状态说明见[账号独立出口](account-egress.md)。
 
 完成本次配套升级后，后续仅更新 Gateway 时执行：
 

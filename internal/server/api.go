@@ -236,6 +236,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	provider := store.UpstreamProviderCodex
 	if upstreams.IsAntigravityModel(model) {
 		provider = store.UpstreamProviderAntigravity
+		if !s.legacyEgressAllowed(w, r) {
+			return
+		}
 	}
 	if prepared.anthropic {
 		provider = store.UpstreamProviderAnthropic

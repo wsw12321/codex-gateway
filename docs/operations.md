@@ -255,7 +255,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建证明 `v8.0.48` 的 peeled commit 正是
 `dbb706215a3afd2f0ea3c96482d4233856466caa`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.48-dbb70621-3d869841cf43a151-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`v8.0.48-dbb70621-0ad73a791d9d916d-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
@@ -358,8 +358,8 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat antigravity-bridge
-./scripts/compose.sh up -d postgres egress-allowlist codex-compat gateway caddy cloudflared
+./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 
@@ -1243,13 +1243,13 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
    `GATEWAY_SECRET_GID` 更新为新部署用户的主组并将 service secret 设为该组；
    不复制 `.device-login.lock`、`.antigravity-login.lock`、容器、PostgreSQL
    volume、OAuth 文件或 Keyring 数据。
-4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway、兼容层和 Bridge。核对
+4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway、兼容层、Bridge 和账号出口运行时。核对
    `.env` 中版本字段与 `git rev-parse HEAD`，不要使用 `local/dev/unknown`：
 
    ```sh
    ./scripts/bootstrap-secrets.sh
    ./scripts/validate-compose.sh
-   ./scripts/compose.sh build gateway codex-compat antigravity-bridge
+   ./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
    ```
 
 5. 确认新服务器的 `postgres_data` 是首次创建的空命名卷，只启动 PostgreSQL，
@@ -1282,7 +1282,7 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
    `ANTIGRAVITY_MODEL_ROUTES_JSON={}`。
 
    ```sh
-   ./scripts/compose.sh up -d postgres egress-allowlist codex-compat antigravity-bridge gateway caddy
+   ./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat antigravity-bridge gateway caddy
    ./scripts/compose.sh ps
    ./scripts/compose.sh up -d cloudflared
    ```

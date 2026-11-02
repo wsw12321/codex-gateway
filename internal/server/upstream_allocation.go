@@ -55,6 +55,9 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_candidates", "候选账号列表无效")
 		return
 	}
+	if isAntigravityAccountRequest(r) && !s.legacyEgressAllowed(w, r) {
+		return
+	}
 	// account_ids is the sidecar's current model/attempt candidate set. Group
 	// snapshots may contain unsupported or already-tried accounts, so neither
 	// eligibility nor selection may expand beyond that set. The groups-only

@@ -7,7 +7,10 @@ export type Account = {
   cliproxy_status: string;
   gateway_quota_status: string;
   status: string;
+  egress_server_id?: string;
+  egress_server_name?: string;
 };
+export type EgressServer = {id: string; name: string};
 export type OAuth = { id: string; url: string; expires_in: number };
 export type QuotaSnapshot = {quota: Quota[]; observed_at?: string; cooldown_until?: string; windows?: {window: string; used_percent?: number; reset_at?: string; status: string}[]};
 export type Quota = { model: string; remaining_fraction?: number; reset_time?: string; observed_at?: string; cooldown_until?: string };
@@ -30,13 +33,20 @@ async function request<T>(path: string, method = 'GET', data?: unknown): Promise
 export const api = {
   accounts: (provider: Provider) => request<{ accounts: Account[]; sync_warning?: string }>(`${provider}/accounts?all=true`),
   status: (provider: Provider, id: string, enabled: boolean) => request(`${provider}/accounts/${id}/status`, 'PUT', { enabled }),
-  begin: async (provider: Provider) => { const oauth = await request<OAuth>(`${provider}/oauth`, 'POST', {}); authorizationURL(oauth.url, provider); return oauth; },
+  begin: async (provider: Provider, egressID?: string) => { const oauth = await request<OAuth>(`${provider}/oauth`, 'POST', egressID === undefined ? {} : {egress_server_id: egressID}); authorizationURL(oauth.url, provider); return oauth; },
   poll: (id: string) => request<{ status: 'ok' | 'wait' | 'error' }>(`oauth/${id}/status`),
   callback: (id: string, code: string, state: string) => request(`oauth/${id}/callback`, 'POST', { code, state }),
   refresh: (provider: Provider, id: string) => request(`${provider}/accounts/${id}/refresh`, 'POST', {}),
   quota: (provider: Provider, id: string) => request<QuotaSnapshot>(`${provider}/accounts/${id}/quota`, 'POST', {}),
   remove: (provider: Provider, id: string) => request(`${provider}/accounts/${id}`, 'DELETE', {}),
-  import: (provider: Provider, credentials: Record<string, string>) => request(`${provider}/credentials`, 'POST', credentials),
+  import: (provider: Provider, credentials: Record<string, string>, egressID?: string) => request(`${provider}/credentials`, 'POST', {...credentials, ...(egressID === undefined ? {} : {egress_server_id: egressID})}),
+  egressServers: async (): Promise<EgressServer[]> => {
+    const response = await fetch('/admin/egress-servers', {credentials: 'same-origin', redirect: 'error'});
+    if (!response.ok) throw new Error('出口服务器列表加载失败，请刷新后重试');
+    const result = await response.json();
+    if (!Array.isArray(result.servers)) throw new Error('出口服务器响应格式异常');
+    return result.servers;
+  },
 };
 
 export function callbackFields(raw: string): { code: string; state: string } {

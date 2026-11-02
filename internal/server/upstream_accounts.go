@@ -126,6 +126,9 @@ type upstreamAccountDTO struct {
 	TargetShare         string     `json:"target_share"`
 	AccessMode          string     `json:"access_mode"`
 	AuthorizedUserIDs   []string   `json:"authorized_user_ids"`
+	EgressServerID      string     `json:"egress_server_id"`
+	EgressServerName    string     `json:"egress_server_name"`
+	EgressRevision      int64      `json:"egress_revision"`
 }
 
 type upstreamAccountsResponse struct {
@@ -214,6 +217,21 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	for _, item := range access {
 		accessByID[item.AccountID] = item
 	}
+	egressBindings := map[string]store.EgressBinding{}
+	egressNames := map[string]string{}
+	if s.config.EgressControlKey != "" {
+		egressState, err := s.store.EgressSnapshot(r.Context())
+		if err != nil {
+			internalError(s, w, r, "read account egress bindings", err)
+			return
+		}
+		for _, binding := range egressState.Bindings {
+			egressBindings[binding.AccountID] = binding
+		}
+		for _, node := range egressState.Nodes {
+			egressNames[node.ID] = node.Name
+		}
+	}
 	response := upstreamAccountsResponse{
 		AllocationFrom: allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
 		Until: query.Until, All: query.All, SyncWarning: syncWarning,
@@ -242,7 +260,10 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
-			AccessMode: accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
+			EgressServerID:   egressBindings[*row.AccountID].NodeID,
+			EgressServerName: egressNames[egressBindings[*row.AccountID].NodeID],
+			EgressRevision:   egressBindings[*row.AccountID].Revision,
+			AccessMode:       accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
 			AllocationWeight: allocation.AllocationWeight, ConcurrentLimit: row.ConcurrentLimit, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
 			ID: *row.AccountID, DisplayName: row.DisplayName, EmailMasked: row.MaskedEmail, Plan: row.Plan,

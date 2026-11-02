@@ -1,7 +1,7 @@
 # GitHub Actions 构建，服务器免登录拉取
 
 适用于 `linux/amd64` 服务器。代码推送到 `main` 后，现有 `ci` 工作流构建
-Gateway、Codex 兼容层和 Antigravity Bridge，运行测试及漏洞扫描。全部 CI
+Gateway、Codex 兼容层、Antigravity Bridge 和账号出口运行时，运行测试及漏洞扫描。全部 CI
 检查通过后，`publish-images` 才将同一批镜像推送到 GitHub Container Registry
 （GHCR），不会重新构建，也不会连接生产服务器。
 
@@ -15,12 +15,13 @@ PR 和其他分支的手动运行不会发布镜像。
 `packages: write` 权限，不需要配置 PAT、服务器 SSH 密钥或生产环境 secret。
 如果账户或组织限制了 Actions/Packages，需要在相应设置中允许该工作流发布。
 
-三个镜像地址如下，`<完整 Git SHA>` 对应本次 CI 的提交：
+四个镜像地址如下，`<完整 Git SHA>` 对应本次 CI 的提交：
 
 ```text
 ghcr.io/wsw12321/codex-gateway/gateway:sha-<完整 Git SHA>
 ghcr.io/wsw12321/codex-gateway/codex-compat:sha-<完整 Git SHA>
 ghcr.io/wsw12321/codex-gateway/antigravity-bridge:sha-<完整 Git SHA>
+ghcr.io/wsw12321/codex-gateway/account-egress:sha-<完整 Git SHA>
 ```
 
 其他 GitHub 仓库运行时，地址中的 `wsw12321/codex-gateway` 自动替换为该仓库的
@@ -30,14 +31,14 @@ ghcr.io/wsw12321/codex-gateway/antigravity-bridge:sha-<完整 Git SHA>
 `upload-test*.bin` 已在 Git 和 Docker 的忽略规则中排除。流水线使用临时生成的
 非生产配置，不挂载生产 OAuth volume。
 
-## 2. 首次发布后，将三个镜像包设为 Public
+## 2. 首次发布后，将四个镜像包设为 Public
 
 GitHub 新建镜像包默认是 Private，即使代码仓库本身是公开的，也需要检查包的
 可见性。首次 `publish-images` 成功后：
 
 1. 打开 GitHub 个人主页的 **Packages**。
 2. 分别打开 `codex-gateway/gateway`、`codex-gateway/codex-compat`、
-   `codex-gateway/antigravity-bridge`。
+   `codex-gateway/antigravity-bridge`、`codex-gateway/account-egress`。
 3. 进入 **Package settings → Danger Zone → Change visibility → Public**。
 
 完成后，服务器无需 `docker login` 即可下载。包会一直保持公开，后续版本不必重复
@@ -48,7 +49,7 @@ GitHub 新建镜像包默认是 Private，即使代码仓库本身是公开的�
 
 在成功运行的 **Actions → ci → Artifacts** 下载
 `deployment-images-<完整 Git SHA>`，解压获得 `deployment-images.json`。
-它只包含提交号、平台和三个镜像的 SHA256 digest，体积很小，可以从电脑上传：
+它只包含提交号、平台和四个镜像的 SHA256 digest，体积很小，可以从电脑上传：
 
 ```sh
 scp deployment-images.json wsw@45.91.81.12:/tmp/deployment-images.json
@@ -76,7 +77,7 @@ sed -i \
 ./scripts/pull-ci-images.sh ~/tmp/deployment-images.json
 ```
 
-脚本会检查提交号、版本配置、镜像仓库路径、digest 和架构，然后拉取三个镜像并
+脚本会检查提交号、版本配置、镜像仓库路径、digest 和架构，然后拉取四个镜像并
 标记为现有 Compose 使用的本地名称。只有全部拉取成功后才更新本地标签，不重启
 服务。若 Docker 需要 sudo，在调用脚本前加 `sudo`。
 
@@ -89,9 +90,10 @@ sed -i \
 完成备份、排空和版本对应的迁移准备，然后执行。已有 v8.0.30 升至 v8.0.48（以及 v8.0.20 升至 v8.0.30）需要执行模型目录与价格迁移；凭据迁移范围和回滚步骤见该文档的补丁升级步骤。
 
 ```sh
+./scripts/bootstrap-secrets.sh
 ./scripts/validate-compose.sh
 ./scripts/compose.sh up -d --no-build --pull never \
-  postgres egress-allowlist codex-compat gateway caddy cloudflared
+  postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 

@@ -116,7 +116,7 @@ index 50767c7d..17324800 100644
  golang.org/x/time v0.14.0 h1:MRx4UaLrDotUKUdCIqzPC48t1Y9hANFKIRpNx+Te8PI=
 diff --git a/internal/api/anthropic_gateway_internal.go b/internal/api/anthropic_gateway_internal.go
 new file mode 100644
-index 00000000..0ac2fec4
+index 00000000..f6fcafd3
 --- /dev/null
 +++ b/internal/api/anthropic_gateway_internal.go
 @@ -0,0 +1,68 @@
@@ -145,7 +145,7 @@ index 00000000..0ac2fec4
 +			c.Status(http.StatusServiceUnavailable)
 +			return
 +		}
-+		c.JSON(200, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1", "anthropic_messages": "anthropic_messages_v1"})
++		c.JSON(200, s.gatewayAccountCapabilities(true))
 +	})
 +	group.POST("/:id/quota", s.getAnthropicAccountQuota)
 +}
@@ -2972,12 +2972,42 @@ index 00000000..17183967
 +		t.Fatal("replacement unblocked account")
 +	}
 +}
+diff --git a/internal/api/gateway_egress_capabilities_test.go b/internal/api/gateway_egress_capabilities_test.go
+new file mode 100644
+index 00000000..7da3e468
+--- /dev/null
++++ b/internal/api/gateway_egress_capabilities_test.go
+@@ -0,0 +1,24 @@
++package api
++
++import (
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"testing"
++)
++
++func TestGatewayEgressCapabilityRequiresEnabledTransport(t *testing.T) {
++	server := &Server{cfg: &config.Config{}}
++	for _, anthropic := range []bool{false, true} {
++		if _, ok := server.gatewayAccountCapabilities(anthropic)["account_egress"]; ok {
++			t.Fatal("advertised unsupported routing")
++		}
++		server.cfg.GatewayAccountEgress = true
++		out := server.gatewayAccountCapabilities(anthropic)
++		if out["account_egress"] != "account_egress_v1" || out["group_upstream_account_scope"] != "group_upstream_account_scope_v1" {
++			t.Fatal("missing capability")
++		}
++		if anthropic && out["anthropic_messages"] != "anthropic_messages_v1" {
++			t.Fatal("lost provider capability")
++		}
++		server.cfg.GatewayAccountEgress = false
++	}
++}
 diff --git a/internal/api/gateway_management.go b/internal/api/gateway_management.go
 new file mode 100644
-index 00000000..affb90f1
+index 00000000..2779046f
 --- /dev/null
 +++ b/internal/api/gateway_management.go
-@@ -0,0 +1,219 @@
+@@ -0,0 +1,256 @@
 +package api
 +
 +import (
@@ -2989,6 +3019,7 @@ index 00000000..affb90f1
 +	"net/url"
 +	"os"
 +	"strings"
++	"sync"
 +
 +	"github.com/gin-gonic/gin"
 +	management "github.com/router-for-me/CLIProxyAPI/v8/internal/api/handlers/management"
@@ -3081,12 +3112,27 @@ index 00000000..affb90f1
 +	req.ContentLength = int64(len(data))
 +	next.Request = req
 +	next.Params = c.Params
++	for key, value := range c.Keys {
++		next.Set(key, value)
++	}
 +	handler(next)
 +	return w
 +}
 +
++var gatewayOAuthRegistrations sync.Map
++
 +func (s *Server) gatewayOAuthBegin(c *gin.Context) {
 +	provider := c.Param("provider")
++	var onboarding struct {
++		RegistrationID string `json:"registration_id"`
++		EgressProxyURL string `json:"egress_proxy_url,omitempty"`
++	}
++	if s.cfg != nil && s.cfg.GatewayAccountEgress {
++		if management.DecodeGatewayJSON(c, &onboarding, 16384, "registration_id", "egress_proxy_url") != nil || management.PrepareGatewayOnboarding(c, s.cfg, provider, onboarding.RegistrationID, onboarding.EgressProxyURL) != nil {
++			c.JSON(503, gin.H{"status": "error"})
++			return
++		}
++	}
 +	handler := s.mgmt.RequestCodexToken
 +	if provider == "anthropic" {
 +		handler = s.mgmt.RequestAnthropicToken
@@ -3103,6 +3149,9 @@ index 00000000..affb90f1
 +	if result.status != 200 || json.Unmarshal(result.body.Bytes(), &payload) != nil || payload.URL == "" || payload.State == "" {
 +		c.JSON(502, gin.H{"status": "error"})
 +		return
++	}
++	if onboarding.RegistrationID != "" {
++		gatewayOAuthRegistrations.Store(payload.State, onboarding.RegistrationID)
 +	}
 +	c.JSON(200, payload)
 +}
@@ -3153,7 +3202,14 @@ index 00000000..affb90f1
 +	} else if complete {
 +		result = "ok"
 +	}
-+	c.JSON(200, gin.H{"status": result})
++	out := gin.H{"status": result}
++	if registration, ok := gatewayOAuthRegistrations.Load(state); ok {
++		if id := management.GatewayOnboardingAccountID(registration.(string)); id != "" {
++			out["account_id"] = id
++			out["status"] = "ok"
++		}
++	}
++	c.JSON(200, out)
 +}
 +
 +func (s *Server) gatewayCredentialQuota(c *gin.Context) {
@@ -3196,6 +3252,17 @@ index 00000000..affb90f1
 +		}
 +	}
 +	c.JSON(200, gin.H{"status": "ok", "quota": quota})
++}
++
++func (s *Server) gatewayAccountCapabilities(anthropic bool) gin.H {
++	out := gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1"}
++	if anthropic {
++		out["anthropic_messages"] = "anthropic_messages_v1"
++	}
++	if s.cfg != nil && s.cfg.GatewayAccountEgress {
++		out["account_egress"] = "account_egress_v1"
++	}
++	return out
 +}
 diff --git a/internal/api/gateway_management_test.go b/internal/api/gateway_management_test.go
 new file mode 100644
@@ -3310,11 +3377,62 @@ index 6d291bac..c403bc02 100644
 +	})
 +	return header + "." + base64.RawURLEncoding.EncodeToString(payloadBytes) + "."
 +}
+diff --git a/internal/api/handlers/management/auth_files_fields.go b/internal/api/handlers/management/auth_files_fields.go
+index 6352f5ca..9cd0b307 100644
+--- a/internal/api/handlers/management/auth_files_fields.go
++++ b/internal/api/handlers/management/auth_files_fields.go
+@@ -990,6 +990,10 @@ func (h *Handler) mergeExistingAuthFileMetadata(record *coreauth.Auth) {
+ }
+ 
+ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (string, error) {
++	if coreauth.GatewayRegistration(ctx) != "" {
++		h.gatewayRegistrationMu.Lock()
++		defer h.gatewayRegistrationMu.Unlock()
++	}
+ 	if record == nil {
+ 		return "", fmt.Errorf("token record is nil")
+ 	}
+@@ -1010,7 +1014,27 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
+ 			return "", fmt.Errorf("post-auth hook failed: %w", err)
+ 		}
+ 	}
+-	savedPath, errSave := store.Save(coreauth.WithAuthCreationIntent(ctx), record)
++	pendingDirectory, pendingErr := h.stageGatewayRegistration(ctx, record)
++	if pendingErr != nil {
++		return "", pendingErr
++	}
++	var savedPath string
++	save := func() error {
++		if pendingDirectory != "" {
++			if err := h.checkGatewayRegistrationBaseline(pendingDirectory, record); err != nil {
++				return err
++			}
++		}
++		var err error
++		savedPath, err = store.Save(coreauth.WithAuthCreationIntent(ctx), record)
++		return err
++	}
++	var errSave error
++	if pendingDirectory != "" {
++		errSave = h.authManager.WithCredentialFileMutation(ctx, record.ID, save)
++	} else {
++		errSave = save()
++	}
+ 	if errSave != nil {
+ 		return savedPath, errSave
+ 	}
+@@ -1054,5 +1078,6 @@ func (h *Handler) saveTokenRecord(ctx context.Context, record *coreauth.Auth) (s
+ 			return savedPath, fmt.Errorf("register persisted auth failed: %w", errReg)
+ 		}
+ 	}
++	h.finishGatewayRegistration(ctx, record, pendingDirectory)
+ 	return savedPath, nil
+ }
 diff --git a/internal/api/handlers/management/auth_files_provider_oauth.go b/internal/api/handlers/management/auth_files_provider_oauth.go
-index 52a70422..9aa27c27 100644
+index 52a70422..42671121 100644
 --- a/internal/api/handlers/management/auth_files_provider_oauth.go
 +++ b/internal/api/handlers/management/auth_files_provider_oauth.go
-@@ -38,6 +38,7 @@ type antigravityOAuthService interface {
+@@ -38,12 +38,14 @@ type antigravityOAuthService interface {
  	BuildAuthURL(state, redirectURI string) string
  	ExchangeCodeForTokens(ctx context.Context, code, redirectURI string) (*antigravity.TokenResponse, error)
  	FetchUserInfo(ctx context.Context, accessToken string) (string, error)
@@ -3322,7 +3440,14 @@ index 52a70422..9aa27c27 100644
  	FetchProjectID(ctx context.Context, accessToken string) (string, error)
  }
  
-@@ -184,6 +185,12 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
++	ctx = coreauth.WithGatewayRegistration(ctx, coreauth.GatewayRegistration(c.Request.Context()))
+ 
+ 	fmt.Println("Initializing Claude authentication...")
+ 
+@@ -184,6 +186,12 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
  			Metadata: metadata,
  		}
  		applySessionProxyToAuthRecord(record, sessionProxyURL)
@@ -3335,7 +3460,23 @@ index 52a70422..9aa27c27 100644
  		if errGuard := claimOAuthSessionCommit(state, "anthropic"); errGuard != nil {
  			return
  		}
-@@ -578,7 +585,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -208,6 +216,7 @@ func (h *Handler) RequestAnthropicToken(c *gin.Context) {
+ func (h *Handler) RequestCodexToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
++	ctx = coreauth.WithGatewayRegistration(ctx, coreauth.GatewayRegistration(c.Request.Context()))
+ 
+ 	fmt.Println("Initializing Codex authentication...")
+ 
+@@ -486,6 +495,7 @@ func authGrantFingerprint(auth *coreauth.Auth) string {
+ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+ 	ctx := context.Background()
+ 	ctx = PopulateAuthContext(ctx, c)
++	ctx = coreauth.WithGatewayRegistration(ctx, coreauth.GatewayRegistration(c.Request.Context()))
+ 
+ 	fmt.Println("Initializing Antigravity authentication...")
+ 
+@@ -578,7 +588,7 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  			return
  		}
  
@@ -3344,7 +3485,7 @@ index 52a70422..9aa27c27 100644
  		if errInfo != nil {
  			log.Errorf("Failed to fetch user info: %s", redactSessionProxyInString(errInfo.Error(), sessionProxyURL))
  			SetOAuthSessionError(state, "Failed to fetch user info")
-@@ -609,12 +616,13 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -609,12 +619,13 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  
  		now := time.Now()
  		metadata := map[string]any{
@@ -3364,7 +3505,7 @@ index 52a70422..9aa27c27 100644
  		}
  		if email != "" {
  			metadata["email"] = email
-@@ -640,6 +648,22 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
+@@ -640,6 +651,22 @@ func (h *Handler) RequestAntigravityToken(c *gin.Context) {
  		if errGuard := claimOAuthSessionCommit(state, "antigravity"); errGuard != nil {
  			return
  		}
@@ -3389,10 +3530,10 @@ index 52a70422..9aa27c27 100644
  			log.Errorf("Failed to save token to file: %v", errSave)
 diff --git a/internal/api/handlers/management/gateway_anthropic.go b/internal/api/handlers/management/gateway_anthropic.go
 new file mode 100644
-index 00000000..29cc4c23
+index 00000000..980b49bd
 --- /dev/null
 +++ b/internal/api/handlers/management/gateway_anthropic.go
-@@ -0,0 +1,120 @@
+@@ -0,0 +1,127 @@
 +package management
 +
 +import (
@@ -3416,7 +3557,11 @@ index 00000000..29cc4c23
 +	}
 +	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 +	defer cancel()
-+	profile, err := claude.NewClaudeAuth(h.cfg).FetchOAuthProfile(ctx, token)
++	routeCfg, _, routeErr := coreauth.ResolveGatewayEgress(ctx, h.cfg, a)
++	if routeErr != nil {
++		return routeErr
++	}
++	profile, err := claude.NewClaudeAuth(routeCfg).FetchOAuthProfile(ctx, token)
 +	if err != nil || profile == nil {
 +		return errors.New("identity unavailable")
 +	}
@@ -3460,18 +3605,20 @@ index 00000000..29cc4c23
 +		return
 +	}
 +	var input struct {
-+		RefreshToken string `json:"refresh_token"`
-+		AccessToken  string `json:"access_token,omitempty"`
-+		IDToken      string `json:"id_token,omitempty"`
++		RegistrationID string `json:"registration_id,omitempty"`
++		EgressProxyURL string `json:"egress_proxy_url,omitempty"`
++		RefreshToken   string `json:"refresh_token"`
++		AccessToken    string `json:"access_token,omitempty"`
++		IDToken        string `json:"id_token,omitempty"`
 +	}
-+	if DecodeGatewayJSON(c, &input, 128<<10, "refresh_token", "access_token", "id_token") != nil || (strings.TrimSpace(input.RefreshToken) == "" && strings.TrimSpace(input.AccessToken) == "") || len(input.RefreshToken) > 32768 || len(input.AccessToken) > 32768 {
++	if DecodeGatewayJSON(c, &input, 128<<10, "refresh_token", "access_token", "id_token", "registration_id", "egress_proxy_url") != nil || (strings.TrimSpace(input.RefreshToken) == "" && strings.TrimSpace(input.AccessToken) == "") || len(input.RefreshToken) > 32768 || len(input.AccessToken) > 32768 {
 +		gatewayCredentialError(c, 400)
 +		return
 +	}
 +	// Rotate when a refresh token is present, even if the access token works.
 +	// Access-only exports still require a fresh upstream profile verification.
 +	a := &coreauth.Auth{Provider: "claude", Metadata: map[string]any{"type": "claude", "refresh_token": input.RefreshToken, "access_token": input.AccessToken}}
-+	ctx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
++	ctx, cancel := context.WithTimeout(coreauth.WithGatewayRegistration(c.Request.Context(), input.RegistrationID), 45*time.Second)
 +	defer cancel()
 +	var err error
 +	if strings.TrimSpace(input.RefreshToken) != "" {
@@ -3494,7 +3641,8 @@ index 00000000..29cc4c23
 +		gatewayCredentialError(c, 503)
 +		return
 +	}
-+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
++	id, _ := coreauth.GatewayOAuthAccountIndex(a)
++	c.JSON(http.StatusOK, gin.H{"status": "ok", "account_id": id})
 +}
 +
 +func (h *Handler) GatewayAnthropicQuota(c *gin.Context) {
@@ -3566,10 +3714,10 @@ index 00000000..fe6ccbfb
 +}
 diff --git a/internal/api/handlers/management/gateway_credentials.go b/internal/api/handlers/management/gateway_credentials.go
 new file mode 100644
-index 00000000..0f310431
+index 00000000..a55e9e2a
 --- /dev/null
 +++ b/internal/api/handlers/management/gateway_credentials.go
-@@ -0,0 +1,273 @@
+@@ -0,0 +1,292 @@
 +package management
 +
 +import (
@@ -3649,14 +3797,18 @@ index 00000000..0f310431
 +		return
 +	}
 +	var input struct {
-+		RefreshToken string `json:"refresh_token"`
-+		AccessToken  string `json:"access_token,omitempty"`
-+		IDToken      string `json:"id_token,omitempty"`
++		RegistrationID string `json:"registration_id,omitempty"`
++		EgressProxyURL string `json:"egress_proxy_url,omitempty"`
++		RefreshToken   string `json:"refresh_token"`
++		AccessToken    string `json:"access_token,omitempty"`
++		IDToken        string `json:"id_token,omitempty"`
 +	}
-+	if DecodeGatewayJSON(c, &input, 128<<10, "refresh_token", "access_token", "id_token") != nil || strings.TrimSpace(input.RefreshToken) == "" || len(input.RefreshToken) > 32768 {
++	if DecodeGatewayJSON(c, &input, 128<<10, "refresh_token", "access_token", "id_token", "registration_id", "egress_proxy_url") != nil || strings.TrimSpace(input.RefreshToken) == "" || len(input.RefreshToken) > 32768 {
 +		gatewayCredentialError(c, 400)
 +		return
 +	}
++	ctx := coreauth.WithGatewayRegistration(c.Request.Context(), input.RegistrationID)
++	c.Request = c.Request.WithContext(ctx)
 +	a := &coreauth.Auth{Provider: provider, Metadata: map[string]any{"type": provider, "refresh_token": input.RefreshToken}}
 +	var err error
 +	if provider == "codex" {
@@ -3670,7 +3822,12 @@ index 00000000..0f310431
 +	}
 +	if provider == "antigravity" {
 +		token, _ := a.Metadata["access_token"].(string)
-+		svc := antigravity.NewAntigravityAuth(h.cfg, nil)
++		routeCfg, _, routeErr := coreauth.ResolveGatewayEgress(c.Request.Context(), h.cfg, a)
++		if routeErr != nil {
++			gatewayCredentialError(c, 503)
++			return
++		}
++		svc := antigravity.NewAntigravityAuth(routeCfg, nil)
 +		email, subject, err := svc.FetchVerifiedIdentity(c.Request.Context(), token)
 +		if err != nil {
 +			gatewayCredentialError(c, 502)
@@ -3722,7 +3879,7 @@ index 00000000..0f310431
 +		gatewayCredentialError(c, 503)
 +		return
 +	}
-+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
++	c.JSON(http.StatusOK, gin.H{"status": "ok", "account_id": id})
 +}
 +
 +func (h *Handler) gatewayCredential(c *gin.Context) (*coreauth.Auth, error) {
@@ -3768,7 +3925,12 @@ index 00000000..0f310431
 +	}
 +	if a.Provider == "antigravity" {
 +		token, _ := refreshed.Metadata["access_token"].(string)
-+		_, subject, err := antigravity.NewAntigravityAuth(h.cfg, nil).FetchVerifiedIdentity(c.Request.Context(), token)
++		routeCfg, _, routeErr := coreauth.ResolveGatewayEgress(c.Request.Context(), h.cfg, refreshed)
++		if routeErr != nil {
++			gatewayCredentialError(c, 503)
++			return
++		}
++		_, subject, err := antigravity.NewAntigravityAuth(routeCfg, nil).FetchVerifiedIdentity(c.Request.Context(), token)
 +		if err != nil || subject != a.Metadata["google_subject"] {
 +			_, _ = h.authManager.SetGatewayAccountEnabled(c.Param("id"), false)
 +			gatewayCredentialError(c, 409)
@@ -3786,7 +3948,12 @@ index 00000000..0f310431
 +	}
 +	token, _ := a.Metadata["access_token"].(string)
 +	project, _ := a.Metadata["project_id"].(string)
-+	quota, err := antigravity.NewAntigravityAuth(h.cfg, nil).FetchGatewayQuota(c.Request.Context(), token, project)
++	routeCfg, _, routeErr := coreauth.ResolveGatewayEgress(c.Request.Context(), h.cfg, a)
++	if routeErr != nil {
++		gatewayCredentialError(c, 503)
++		return
++	}
++	quota, err := antigravity.NewAntigravityAuth(routeCfg, nil).FetchGatewayQuota(c.Request.Context(), token, project)
 +	if err != nil {
 +		gatewayCredentialError(c, 502)
 +		return
@@ -3877,6 +4044,629 @@ index 00000000..7b2611cc
 +		}
 +	}
 +}
+diff --git a/internal/api/handlers/management/gateway_egress.go b/internal/api/handlers/management/gateway_egress.go
+new file mode 100644
+index 00000000..23a9fda9
+--- /dev/null
++++ b/internal/api/handlers/management/gateway_egress.go
+@@ -0,0 +1,303 @@
++package management
++
++import (
++	"context"
++	"crypto/sha256"
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"os"
++	"path/filepath"
++	"sync"
++	"time"
++
++	"github.com/gin-gonic/gin"
++	"github.com/google/uuid"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/watcher/synthesizer"
++	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++var gatewayCompletedRegistrations sync.Map
++
++// PrepareGatewayOnboarding accepts only Gateway's authenticated management input.
++func PrepareGatewayOnboarding(c *gin.Context, cfg *config.Config, provider, registration, proxy string) error {
++	if cfg == nil || !cfg.GatewayAccountEgress {
++		return nil
++	}
++	if _, err := uuid.Parse(registration); err != nil {
++		return errors.New("registration required")
++	}
++	ctx := coreauth.WithGatewayRegistration(c.Request.Context(), registration)
++	routeCfg, _, err := coreauth.ResolveGatewayEgress(ctx, cfg, &coreauth.Auth{Provider: provider})
++	if err != nil || proxy != "" && proxy != routeCfg.ProxyURL {
++		return coreauth.ErrGatewayEgressUnavailable
++	}
++	c.Request = c.Request.WithContext(ctx)
++	c.Set(oauthSessionProxyURLContextKey, routeCfg.ProxyURL)
++	return nil
++}
++
++func GatewayOnboardingAccountID(registration string) string {
++	value, _ := gatewayCompletedRegistrations.Load(registration)
++	id, _ := value.(string)
++	return id
++}
++
++type gatewayPendingRegistration struct {
++	RegistrationID string          `json:"registration_id"`
++	Provider       string          `json:"provider"`
++	ID             string          `json:"id"`
++	FileName       string          `json:"file_name"`
++	Credential     json.RawMessage `json:"credential"`
++	Baseline       string          `json:"baseline"`
++}
++
++func writeGatewayPending(path string, data []byte) error {
++	f, err := os.CreateTemp(filepath.Dir(path), ".pending-")
++	if err != nil {
++		return err
++	}
++	name := f.Name()
++	defer os.Remove(name)
++	if err = f.Chmod(0600); err == nil {
++		_, err = f.Write(data)
++	}
++	if err == nil {
++		err = f.Sync()
++	}
++	closeErr := f.Close()
++	if err == nil {
++		err = closeErr
++	}
++	if err != nil {
++		return err
++	}
++	if err = os.Rename(name, path); err != nil {
++		return err
++	}
++	dir, err := os.Open(filepath.Dir(path))
++	if err != nil {
++		return err
++	}
++	defer dir.Close()
++	return dir.Sync()
++}
++
++// stageGatewayRegistration persists verified credentials outside the watcher's
++// .json namespace before publishing the database binding. Retrying the same
++// durable registration is idempotent after crashes or lost acknowledgements.
++func (h *Handler) stageGatewayRegistration(ctx context.Context, record *coreauth.Auth) (string, error) {
++	cfg := h.configSnapshot()
++	registration := coreauth.GatewayRegistration(ctx)
++	if cfg == nil || !cfg.GatewayAccountEgress || registration == "" {
++		return "", nil
++	}
++	if parsed, err := uuid.Parse(registration); err != nil || parsed.String() != registration {
++		return "", errors.New("invalid registration")
++	}
++	if record.FileName == "" || filepath.Base(record.FileName) != record.FileName {
++		return "", errors.New("invalid credential path")
++	}
++	if !coreauth.ApplyGatewayOAuthAccountIdentity(record, record.Metadata) {
++		return "", errors.New("verified account identity required")
++	}
++	directory := filepath.Join(cfg.AuthDir, ".gateway-egress-pending", registration)
++	if err := os.MkdirAll(directory, 0700); err != nil {
++		return "", err
++	}
++	staged := record.Clone()
++	if staged.Attributes == nil {
++		staged.Attributes = map[string]string{}
++	}
++	temporaryPath := filepath.Join(directory, ".credential-"+uuid.NewString()+".pending")
++	defer os.Remove(temporaryPath)
++	defer os.Remove(temporaryPath + ".lock")
++	staged.Attributes["path"] = temporaryPath
++	staged.ProxyURL = ""
++	delete(staged.Metadata, "proxy_url")
++	delete(staged.Attributes, "gateway_egress_revision")
++	delete(record.Metadata, "proxy_url")
++	record.ProxyURL = ""
++	delete(record.Attributes, "gateway_egress_revision")
++	store := sdkauth.NewFileTokenStore()
++	store.SetBaseDir(directory)
++	path, err := store.Save(coreauth.WithAuthCreationIntent(ctx), staged)
++	if err != nil {
++		return "", err
++	}
++	f, err := os.Open(path)
++	if err != nil {
++		return "", err
++	}
++	err = f.Sync()
++	_ = f.Close()
++	if err != nil {
++		return "", err
++	}
++	credential, err := os.ReadFile(path)
++	if err != nil {
++		return "", err
++	}
++	manifestPath := filepath.Join(directory, "operation.pending")
++	if existing, readErr := os.ReadFile(manifestPath); readErr == nil {
++		var pending gatewayPendingRegistration
++		if json.Unmarshal(existing, &pending) != nil || pending.RegistrationID != registration || pending.Provider != record.Provider || pending.ID != record.ID || pending.FileName != record.FileName || gatewayCredentialFingerprint(pending.Credential) != gatewayCredentialFingerprint(credential) {
++			return "", errors.New("registration credential changed")
++		}
++		// A retry retains the first baseline. Resnapshotting here could make
++		// an older staged token replace a newer canonical refresh.
++	} else if !os.IsNotExist(readErr) {
++		return "", readErr
++	} else {
++		baseline, readErr := os.ReadFile(filepath.Join(cfg.AuthDir, record.FileName))
++		if readErr != nil && !os.IsNotExist(readErr) {
++			return "", readErr
++		}
++		manifest, marshalErr := json.Marshal(gatewayPendingRegistration{RegistrationID: registration, Provider: record.Provider, ID: record.ID, FileName: record.FileName, Credential: credential, Baseline: gatewayCredentialFingerprint(baseline)})
++		if marshalErr != nil {
++			return "", marshalErr
++		}
++		if err = writeGatewayPending(manifestPath, manifest); err != nil {
++			return "", err
++		}
++	}
++	if err = h.commitGatewayRegistration(ctx, cfg, record); err != nil {
++		return "", err
++	}
++	return directory, nil
++}
++
++func (h *Handler) finishGatewayRegistration(ctx context.Context, record *coreauth.Auth, directory string) {
++	if directory == "" {
++		return
++	}
++	if id, ok := coreauth.GatewayOAuthAccountIndex(record); ok {
++		gatewayCompletedRegistrations.Store(coreauth.GatewayRegistration(ctx), id)
++	}
++	_ = os.RemoveAll(directory)
++}
++
++func (h *Handler) recoverGatewayRegistrations() {
++	h.recoverGatewayRegistrationsOnce()
++	ticker := time.NewTicker(5 * time.Second)
++	defer ticker.Stop()
++	for range ticker.C {
++		h.recoverGatewayRegistrationsOnce()
++	}
++}
++
++func (h *Handler) recoverGatewayRegistrationsOnce() {
++	cfg := h.configSnapshot()
++	if cfg == nil || !cfg.GatewayAccountEgress {
++		return
++	}
++	entries, err := os.ReadDir(filepath.Join(cfg.AuthDir, ".gateway-egress-pending"))
++	if err != nil {
++		return
++	}
++	for _, entry := range entries {
++		if !entry.IsDir() {
++			continue
++		}
++		registration := entry.Name()
++		parsed, err := uuid.Parse(registration)
++		if err != nil || parsed.String() != registration {
++			continue
++		}
++		directory := filepath.Join(cfg.AuthDir, ".gateway-egress-pending", registration)
++		raw, err := os.ReadFile(filepath.Join(directory, "operation.pending"))
++		if err != nil || len(raw) > 256<<10 {
++			continue
++		}
++		var pending gatewayPendingRegistration
++		if json.Unmarshal(raw, &pending) != nil || pending.RegistrationID != registration || filepath.Base(pending.FileName) != pending.FileName {
++			continue
++		}
++		data := pending.Credential
++		if len(data) == 0 || len(data) > 256<<10 {
++			continue
++		}
++		target := filepath.Join(cfg.AuthDir, pending.FileName)
++		current, _ := os.ReadFile(target)
++		alreadyPersisted := gatewayCredentialFingerprint(current) != pending.Baseline
++		if alreadyPersisted && gatewayCredentialFingerprint(current) != gatewayCredentialFingerprint(data) {
++			// A later login or refresh owns the canonical credential.
++			continue
++		}
++		records, err := synthesizer.SynthesizeAuthFile(&synthesizer.SynthesisContext{Config: cfg, AuthDir: cfg.AuthDir, Now: time.Now(), IDGenerator: synthesizer.NewStableIDGenerator()}, target, data)
++		if err != nil || len(records) != 1 {
++			continue
++		}
++		record := records[0]
++		record.ID = pending.ID
++		record.FileName = pending.FileName
++		ctx := coreauth.WithGatewayRegistration(context.Background(), registration)
++		if alreadyPersisted {
++			if h.commitGatewayRegistration(ctx, cfg, record) == nil {
++				if h.registerAuthFromFile(ctx, target, nil) == nil {
++					h.finishGatewayRegistration(ctx, record, directory)
++				}
++			}
++			continue
++		}
++		if _, err = h.saveTokenRecord(ctx, record); err == nil {
++			_ = h.upsertAuthRecord(ctx, record)
++		}
++	}
++}
++
++// Fingerprint only credential generations; control metadata may change while a
++// registration is pending without making its verified tokens stale.
++func gatewayCredentialFingerprint(raw []byte) string {
++	if len(raw) == 0 {
++		return ""
++	}
++	var metadata map[string]any
++	if json.Unmarshal(raw, &metadata) != nil {
++		return "invalid"
++	}
++	selected := map[string]any{}
++	for _, key := range []string{"access_token", "refresh_token", "id_token", "account_id", "google_subject", "gateway_anthropic_subject", "siwc", "accessToken", "refreshToken", "idToken"} {
++		if value, ok := metadata[key]; ok {
++			selected[key] = value
++		}
++	}
++	data, _ := json.Marshal(selected)
++	digest := sha256.Sum256(data)
++	return hex.EncodeToString(digest[:])
++}
++
++func (h *Handler) commitGatewayRegistration(ctx context.Context, cfg *config.Config, record *coreauth.Auth) error {
++	if h.gatewayRegistrationCommit != nil {
++		return h.gatewayRegistrationCommit(ctx, cfg, record)
++	}
++	return coreauth.CommitGatewayRegistration(ctx, cfg, record)
++}
++
++// checkGatewayRegistrationBaseline runs only under the manager's credential
++// mutation gate, immediately before the canonical store write.
++func (h *Handler) checkGatewayRegistrationBaseline(directory string, record *coreauth.Auth) error {
++	cfg := h.configSnapshot()
++	if cfg == nil {
++		return coreauth.ErrGatewayEgressUnavailable
++	}
++	raw, err := os.ReadFile(filepath.Join(directory, "operation.pending"))
++	if err != nil {
++		return err
++	}
++	var pending gatewayPendingRegistration
++	if json.Unmarshal(raw, &pending) != nil || pending.ID != record.ID || pending.FileName != record.FileName {
++		return coreauth.ErrGatewayEgressUnavailable
++	}
++	current, err := os.ReadFile(filepath.Join(cfg.AuthDir, record.FileName))
++	if err != nil && !os.IsNotExist(err) {
++		return err
++	}
++	fingerprint := gatewayCredentialFingerprint(current)
++	if fingerprint != pending.Baseline && fingerprint != gatewayCredentialFingerprint(pending.Credential) {
++		return errors.New("canonical credential changed during registration")
++	}
++	return nil
++}
+diff --git a/internal/api/handlers/management/gateway_egress_race_test.go b/internal/api/handlers/management/gateway_egress_race_test.go
+new file mode 100644
+index 00000000..1453aaec
+--- /dev/null
++++ b/internal/api/handlers/management/gateway_egress_race_test.go
+@@ -0,0 +1,142 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/google/uuid"
++	codexauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/codex"
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++// Registration acknowledgements may stall while a refresh persists a newer
++// credential generation. Recovery must compare at the canonical write, and a
++// replay must retain its first baseline rather than adopting the newer tokens.
++func TestGatewayEgressRecoveryPreservesRefreshDuringRegistrationCallback(t *testing.T) {
++	for _, partition := range []string{"outer", "siwc"} {
++		t.Run(partition, func(t *testing.T) {
++			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++			defer cancel()
++			directory := t.TempDir()
++			cfg := &config.Config{AuthDir: directory, GatewayAccountEgress: true}
++			cfg.Routing.Strategy = "gateway-allocation"
++			store := sdkauth.NewFileTokenStore()
++			store.SetBaseDir(directory)
++			manager := coreauth.NewManager(store, nil, nil)
++			base, err := manager.Register(ctx, &coreauth.Auth{
++				ID: "primary.json", FileName: "primary.json", Provider: "codex", Status: coreauth.StatusActive,
++				Metadata: map[string]any{
++					"type": "codex", "account_id": "synthetic-account",
++					"access_token": "original-access", "refresh_token": "original-refresh",
++					"siwc": map[string]any{"access_token": "original-siwc-access", "refresh_token": "original-siwc-refresh"},
++				},
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			canonicalPath := filepath.Join(directory, "primary.json")
++			original, err := os.ReadFile(canonicalPath)
++			if err != nil {
++				t.Fatal(err)
++			}
++			originalFingerprint := gatewayCredentialFingerprint(original)
++			entered, released := make(chan struct{}), make(chan struct{})
++			var enterOnce, releaseOnce sync.Once
++			release := func() { releaseOnce.Do(func() { close(released) }) }
++			defer release()
++			var calls, publications atomic.Int32
++			h := &Handler{cfg: cfg, authManager: manager, tokenStore: store}
++			h.gatewayRegistrationCommit = func(context.Context, *config.Config, *coreauth.Auth) error {
++				if calls.Add(1) == 1 {
++					return coreauth.ErrGatewayEgressUnavailable
++				}
++				enterOnce.Do(func() { close(entered) })
++				<-released
++				return nil
++			}
++			h.postAuthPersistHook = func(context.Context, *coreauth.Auth) error {
++				publications.Add(1)
++				return nil
++			}
++			registration := uuid.NewString()
++			registrationContext := coreauth.WithGatewayRegistration(ctx, registration)
++			pending := base.Clone()
++			if partition == "outer" {
++				pending.Metadata["access_token"], pending.Metadata["refresh_token"] = "pending-access", "pending-refresh"
++			} else {
++				pending.Metadata["siwc"] = map[string]any{"access_token": "pending-siwc-access", "refresh_token": "pending-siwc-refresh"}
++			}
++			if _, err := h.stageGatewayRegistration(registrationContext, pending); err == nil {
++				t.Fatal("unacknowledged registration unexpectedly committed")
++			}
++			recoveryDone := make(chan struct{})
++			go func() {
++				defer close(recoveryDone)
++				h.recoverGatewayRegistrationsOnce()
++			}()
++			select {
++			case <-entered:
++			case <-ctx.Done():
++				t.Fatal("recovery did not reach the registration callback")
++			}
++			latest := base.Clone()
++			if partition == "outer" {
++				latest.Metadata["access_token"], latest.Metadata["refresh_token"] = "newer-access", "newer-refresh"
++			} else {
++				latest.Metadata["siwc"] = map[string]any{"access_token": "newer-siwc-access", "refresh_token": "newer-siwc-refresh"}
++			}
++			latest.CodexRefreshPatch = codexauth.NewCredentialRefreshPatch(base.Metadata, latest.Metadata, partition == "outer", partition == "siwc")
++			refreshDone := make(chan error, 1)
++			go func() {
++				_, err := manager.UpdateRefreshedAuth(ctx, base, latest)
++				refreshDone <- err
++			}()
++			select {
++			case err := <-refreshDone:
++				if err != nil {
++					t.Fatal(err)
++				}
++			case <-ctx.Done():
++				t.Fatal("registration callback blocked credential refresh persistence")
++			}
++			newer, err := os.ReadFile(canonicalPath)
++			if err != nil || gatewayCredentialFingerprint(newer) == originalFingerprint {
++				t.Fatal("concurrent refresh did not persist a new credential generation")
++			}
++			release()
++			select {
++			case <-recoveryDone:
++			case <-ctx.Done():
++				t.Fatal("recovery did not finish after acknowledgement")
++			}
++			got, err := os.ReadFile(canonicalPath)
++			if err != nil || gatewayCredentialFingerprint(got) != gatewayCredentialFingerprint(newer) {
++				t.Fatal("recovery overwrote a refresh persisted during its callback")
++			}
++			manifestPath := filepath.Join(directory, ".gateway-egress-pending", registration, "operation.pending")
++			manifest, err := os.ReadFile(manifestPath)
++			if err != nil {
++				t.Fatal("conflicting staged credentials were discarded")
++			}
++			var operation gatewayPendingRegistration
++			if json.Unmarshal(manifest, &operation) != nil || operation.Baseline != originalFingerprint {
++				t.Fatal("recovery replaced the first pending baseline")
++			}
++			if publications.Load() != 0 || GatewayOnboardingAccountID(registration) != "" {
++				t.Fatal("conflicting recovery was published as complete")
++			}
++			h.recoverGatewayRegistrationsOnce()
++			if calls.Load() != 2 {
++				t.Fatal("stale replay attempted to recommit after the credential changed")
++			}
++		})
++	}
++}
+diff --git a/internal/api/handlers/management/gateway_egress_test.go b/internal/api/handlers/management/gateway_egress_test.go
+new file mode 100644
+index 00000000..c8ca9d8d
+--- /dev/null
++++ b/internal/api/handlers/management/gateway_egress_test.go
+@@ -0,0 +1,87 @@
++package management
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++func TestGatewayEgressStagesBeforeRegistrationAndNeverActivatesFailure(t *testing.T) {
++	directory := t.TempDir()
++	cfg := &config.Config{AuthDir: directory, GatewayAccountEgress: true}
++	cfg.Routing.Strategy = "gateway-allocation"
++	h := &Handler{cfg: cfg}
++	t.Setenv("CLIPROXY_API_KEY_FILE", filepath.Join(directory, "missing-key"))
++	registration := "19c287cc-b938-4d0a-87e3-e4649892c68c"
++	ctx := coreauth.WithGatewayRegistration(context.Background(), registration)
++	record := &coreauth.Auth{ID: "primary.json", FileName: "primary.json", Provider: "codex", Metadata: map[string]any{"type": "codex", "account_id": "synthetic-account", "refresh_token": "rotated-synthetic-refresh", "access_token": "synthetic-access"}}
++	if _, err := h.stageGatewayRegistration(ctx, record); err == nil {
++		t.Fatal("commit without acknowledgement")
++	}
++	if _, err := os.Stat(filepath.Join(directory, "primary.json")); !os.IsNotExist(err) {
++		t.Fatal("credential became active before commit")
++	}
++	path := filepath.Join(directory, ".gateway-egress-pending", registration, "operation.pending")
++	data, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	var pending gatewayPendingRegistration
++	if json.Unmarshal(data, &pending) != nil || pending.RegistrationID != registration || !strings.Contains(string(pending.Credential), "rotated-synthetic-refresh") {
++		t.Fatal("rotated credential not durable")
++	}
++	info, err := os.Stat(path)
++	if err != nil || info.Mode().Perm() != 0600 {
++		t.Fatal("pending credential permissions")
++	}
++	entries, _ := os.ReadDir(filepath.Dir(path))
++	if len(entries) != 1 || entries[0].Name() != "operation.pending" {
++		t.Fatalf("unwatched envelope expected: %v", entries)
++	}
++	if GatewayOnboardingAccountID(registration) != "" {
++		t.Fatal("uncommitted registration reported success")
++	}
++}
++
++func TestGatewayEgressRejectsUnsafePendingPaths(t *testing.T) {
++	h := &Handler{cfg: &config.Config{AuthDir: t.TempDir(), GatewayAccountEgress: true}}
++	for _, registration := range []string{"../outside", "not-a-uuid"} {
++		ctx := coreauth.WithGatewayRegistration(context.Background(), registration)
++		if _, err := h.stageGatewayRegistration(ctx, &coreauth.Auth{FileName: "primary.json"}); err == nil {
++			t.Fatal("accepted invalid registration")
++		}
++	}
++}
++
++func TestGatewayEgressRecoveryCannotReplaceNewerCredential(t *testing.T) {
++	directory := t.TempDir()
++	cfg := &config.Config{AuthDir: directory, GatewayAccountEgress: true}
++	cfg.Routing.Strategy = "gateway-allocation"
++	h := &Handler{cfg: cfg}
++	t.Setenv("CLIPROXY_API_KEY_FILE", filepath.Join(directory, "missing-key"))
++	path := filepath.Join(directory, "primary.json")
++	old := `{"type":"codex","account_id":"synthetic-account","refresh_token":"old-refresh","access_token":"old-access"}`
++	if err := os.WriteFile(path, []byte(old), 0600); err != nil {
++		t.Fatal(err)
++	}
++	record := &coreauth.Auth{ID: "primary.json", FileName: "primary.json", Provider: "codex", Metadata: map[string]any{"type": "codex", "account_id": "synthetic-account", "refresh_token": "pending-refresh", "access_token": "pending-access"}}
++	ctx := coreauth.WithGatewayRegistration(context.Background(), "19c287cc-b938-4d0a-87e3-e4649892c68c")
++	if _, err := h.stageGatewayRegistration(ctx, record); err == nil {
++		t.Fatal("expected unavailable registration")
++	}
++	newer := `{"type":"codex","account_id":"synthetic-account","refresh_token":"newer-refresh","access_token":"newer-access"}`
++	if err := os.WriteFile(path, []byte(newer), 0600); err != nil {
++		t.Fatal(err)
++	}
++	h.recoverGatewayRegistrationsOnce()
++	got, err := os.ReadFile(path)
++	if err != nil || string(got) != newer {
++		t.Fatal("pending credential replaced a later login")
++	}
++}
+diff --git a/internal/api/handlers/management/handler.go b/internal/api/handlers/management/handler.go
+index 529c3a8b..b63bc58e 100644
+--- a/internal/api/handlers/management/handler.go
++++ b/internal/api/handlers/management/handler.go
+@@ -38,31 +38,33 @@ const attemptMaxIdleTime = 2 * time.Hour
+ 
+ // Handler aggregates config reference, persistence path and helpers.
+ type Handler struct {
+-	cfg                     *config.Config
+-	configFilePath          string
+-	mu                      sync.Mutex
+-	authStatusMu            sync.Mutex
+-	reloadMu                sync.Mutex
+-	reloadGeneration        uint64
+-	appliedReloadGeneration uint64
+-	attemptsMu              sync.Mutex
+-	failedAttempts          map[string]*attemptInfo // keyed by client IP
+-	authManager             *coreauth.Manager
+-	tokenStore              coreauth.Store
+-	localPassword           string
+-	allowRemoteOverride     bool
+-	envSecret               string
+-	logDir                  string
+-	postAuthHook            coreauth.PostAuthHook
+-	postAuthPersistHook     coreauth.PostAuthHook
+-	pluginHost              *pluginhost.Host
+-	configReloadHook        func(context.Context, *config.Config)
+-	pluginStoreRegistryURL  string
+-	pluginStoreHTTPClient   pluginstore.HTTPDoer
+-	pluginStoreRateLimiter  *pluginstore.GitHubRateLimiter
+-	pluginReleases          pluginReleaseCache
+-	siwcOAuthFactory        func(*config.Config) siwcOAuthService
+-	siwcCommitMu            sync.Mutex
++	cfg                       *config.Config
++	configFilePath            string
++	mu                        sync.Mutex
++	authStatusMu              sync.Mutex
++	reloadMu                  sync.Mutex
++	reloadGeneration          uint64
++	appliedReloadGeneration   uint64
++	attemptsMu                sync.Mutex
++	failedAttempts            map[string]*attemptInfo // keyed by client IP
++	authManager               *coreauth.Manager
++	tokenStore                coreauth.Store
++	localPassword             string
++	allowRemoteOverride       bool
++	envSecret                 string
++	logDir                    string
++	postAuthHook              coreauth.PostAuthHook
++	postAuthPersistHook       coreauth.PostAuthHook
++	pluginHost                *pluginhost.Host
++	configReloadHook          func(context.Context, *config.Config)
++	pluginStoreRegistryURL    string
++	pluginStoreHTTPClient     pluginstore.HTTPDoer
++	pluginStoreRateLimiter    *pluginstore.GitHubRateLimiter
++	pluginReleases            pluginReleaseCache
++	siwcOAuthFactory          func(*config.Config) siwcOAuthService
++	siwcCommitMu              sync.Mutex
++	gatewayRegistrationMu     sync.Mutex
++	gatewayRegistrationCommit func(context.Context, *config.Config, *coreauth.Auth) error
+ }
+ 
+ type configReloadSnapshot struct {
+@@ -85,6 +87,9 @@ func NewHandler(cfg *config.Config, configFilePath string, manager *coreauth.Man
+ 		envSecret:           envSecret,
+ 	}
+ 	h.startAttemptCleanup()
++	if cfg != nil && cfg.GatewayAccountEgress {
++		go h.recoverGatewayRegistrations()
++	}
+ 	return h
+ }
+ 
 diff --git a/internal/api/handlers/management/oauth_session_proxy_test.go b/internal/api/handlers/management/oauth_session_proxy_test.go
 index f73691a7..d9d76b9b 100644
 --- a/internal/api/handlers/management/oauth_session_proxy_test.go
@@ -4095,7 +4885,7 @@ index 32a7c567..0b6ccd87 100644
  	for _, mw := range optionState.extraMiddleware {
  		engine.Use(mw)
 diff --git a/internal/api/server_routes.go b/internal/api/server_routes.go
-index e2b039a8..936a7b7f 100644
+index e2b039a8..36e630ca 100644
 --- a/internal/api/server_routes.go
 +++ b/internal/api/server_routes.go
 @@ -127,6 +127,57 @@ func (s *Server) setupRoutes() {
@@ -4119,7 +4909,7 @@ index e2b039a8..936a7b7f 100644
 +				c.Status(http.StatusServiceUnavailable)
 +				return
 +			}
-+			c.JSON(http.StatusOK, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1"})
++			c.JSON(http.StatusOK, s.gatewayAccountCapabilities(false))
 +		})
 +		internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)
 +		internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
@@ -4138,7 +4928,7 @@ index e2b039a8..936a7b7f 100644
 +			c.Status(http.StatusServiceUnavailable)
 +			return
 +		}
-+		c.JSON(http.StatusOK, gin.H{"group_upstream_account_scope": "group_upstream_account_scope_v1", "protocol": "upstream_account_access_v1"})
++		c.JSON(http.StatusOK, s.gatewayAccountCapabilities(false))
 +	})
 +	agyAccounts.POST("/:id/quota", s.getAntigravityAccountQuota)
 +	agyAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)
@@ -4976,6 +5766,21 @@ index 00000000..3440e8f4
 +	scope, _ := ctx.Value(gatewayScopeKey{}).(string)
 +	return scope
 +}
+diff --git a/internal/config/config.go b/internal/config/config.go
+index faa54336..7cb9af15 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -12,6 +12,10 @@ type ServerResponseCompression = ResponseCompressionConfig
+ 
+ // Config represents the application's configuration, loaded from a YAML file.
+ type Config struct {
++	// GatewayAccountEgress enables authenticated, account-specific proxy resolution.
++	GatewayAccountEgress bool `yaml:"gateway-account-egress" json:"gateway-account-egress"`
++	// GatewayGlobalProxyURL retains the deployment route in resolved snapshots.
++	GatewayGlobalProxyURL string `yaml:"-" json:"-"`
+ 	// ServerResponseCompression is the JSON-visible mirror of the downstream
+ 	// response compression settings (YAML: server.response-compression).
+ 	ServerResponseCompression ResponseCompressionConfig `yaml:"-" json:"response-compression"`
 diff --git a/internal/config/gateway_entrypoint_test.go b/internal/config/gateway_entrypoint_test.go
 new file mode 100644
 index 00000000..20ce3d29
@@ -5088,10 +5893,10 @@ index 00000000..20ce3d29
 +}
 diff --git a/internal/config/testdata/gateway-entrypoint.sh b/internal/config/testdata/gateway-entrypoint.sh
 new file mode 100755
-index 00000000..2cba4520
+index 00000000..099b24d2
 --- /dev/null
 +++ b/internal/config/testdata/gateway-entrypoint.sh
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,148 @@
 +#!/bin/sh
 +set -eu
 +umask 077
@@ -5184,6 +5989,7 @@ index 00000000..2cba4520
 +host: "${listen_addr}"
 +port: ${listen_port}
 +auth-dir: "${auth_dir}"
++gateway-account-egress: true
 +proxy-url: "${proxy_url}"
 +# The Gateway is the only client. Keep its internal SSE uncompressed so usage
 +# and first-token timing are parsed from the stream as it is produced.
@@ -5678,12 +6484,18 @@ index 00000000..a719f7b0
 +	}
 +}
 diff --git a/internal/runtime/executor/antigravity_executor.go b/internal/runtime/executor/antigravity_executor.go
-index 5e95a512..077776af 100644
+index 5e95a512..4808f7f1 100644
 --- a/internal/runtime/executor/antigravity_executor.go
 +++ b/internal/runtime/executor/antigravity_executor.go
-@@ -439,18 +439,33 @@ func antigravityCredentialScope(prefix, secret string) string {
+@@ -438,19 +438,39 @@ func antigravityCredentialScope(prefix, secret string) string {
+ // The underlying Transport is always shared so keep-alive connections survive across
  // requests instead of forcing a fresh TCP + TLS handshake every time.
  func newAntigravityHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) (clientOut *http.Client) {
++	var resolveErr error
++	cfg, auth, resolveErr = cliproxyauth.ResolveGatewayEgress(ctx, cfg, auth)
++	if resolveErr != nil {
++		return &http.Client{Transport: helps.GatewayRejectedTransport{}}
++	}
  	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
 +	if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Routing.Strategy), "gateway-allocation") {
 +		client := &http.Client{Timeout: timeout, Transport: helps.GatewayRejectedTransport{}, CheckRedirect: codexRejectRedirect}
@@ -5717,7 +6529,7 @@ index 5e95a512..077776af 100644
  	if client.Transport == nil {
  		client.Transport = antigravityHTTP11Transport(auth, antigravityBaseTransport, cfg)
 diff --git a/internal/runtime/executor/antigravity_executor_auth.go b/internal/runtime/executor/antigravity_executor_auth.go
-index 6571930f..ecb2e2db 100644
+index 6571930f..434ac82e 100644
 --- a/internal/runtime/executor/antigravity_executor_auth.go
 +++ b/internal/runtime/executor/antigravity_executor_auth.go
 @@ -11,6 +11,7 @@ import (
@@ -5728,7 +6540,25 @@ index 6571930f..ecb2e2db 100644
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
  	sdkAuth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
  	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
-@@ -131,6 +132,20 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
+@@ -117,7 +118,16 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
+ 	}
+ 	refreshToken = strings.TrimSpace(refreshToken)
+ 
+-	result, errRefresh, _ := antigravityRefreshGroup.Do(refreshToken, func() (interface{}, error) {
++	flightKey := refreshToken
++	if e.cfg != nil && e.cfg.GatewayAccountEgress {
++		routedCfg, routedAuth, routeErr := cliproxyauth.ResolveGatewayEgress(ctx, e.cfg, auth)
++		if routeErr != nil {
++			return nil, routeErr
++		}
++		ctx = cliproxyauth.WithGatewayEgressSnapshot(ctx, routedCfg, routedAuth)
++		flightKey += "\x00" + routedAuth.Attributes["gateway_egress_revision"] + "\x00" + cliproxyauth.GatewayRegistration(ctx)
++	}
++	result, errRefresh, _ := antigravityRefreshGroup.Do(flightKey, func() (interface{}, error) {
+ 		// A caller may leave, but shared credential acquisition must still be bounded.
+ 		refreshCtx, cancelRefresh := context.WithTimeout(context.WithoutCancel(ctx), antigravityCredentialAcquisitionTimeout)
+ 		defer cancelRefresh()
+@@ -131,6 +141,20 @@ func (e *AntigravityExecutor) refreshToken(ctx context.Context, auth *cliproxyau
  		return auth, fmt.Errorf("antigravity token refresh failed: invalid single-flight result")
  	}
  
@@ -5875,16 +6705,38 @@ index c8029732..c94974bb 100644
  		return nil, fmt.Errorf("claude executor: request is nil")
  	}
 diff --git a/internal/runtime/executor/claude_executor_auth.go b/internal/runtime/executor/claude_executor_auth.go
-index bffc428c..28dcba5d 100644
+index bffc428c..6681c13a 100644
 --- a/internal/runtime/executor/claude_executor_auth.go
 +++ b/internal/runtime/executor/claude_executor_auth.go
-@@ -159,6 +159,16 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
+@@ -142,7 +142,11 @@ func (e *ClaudeExecutor) fetchClaudeOAuthProfile(ctx context.Context, auth *clip
+ 	}
+ 	profileCtx, cancelProfile := context.WithTimeout(ctx, claudeAccountProfileTimeout)
+ 	defer cancelProfile()
+-	service := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
++	cfg, routedAuth, routeErr := cliproxyauth.ResolveGatewayEgress(profileCtx, e.cfg, auth)
++	if routeErr != nil {
++		return nil, routeErr
++	}
++	service := claudeauth.NewClaudeAuthWithProxyURL(cfg, routedAuth.ProxyURL)
+ 	return service.FetchOAuthProfile(profileCtx, apiKey)
+ }
+ 
+@@ -154,19 +158,49 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
+ 	if auth == nil {
+ 		return nil, fmt.Errorf("claude executor: auth is nil")
+ 	}
++	cfg, routedAuth, egressErr := cliproxyauth.ResolveGatewayEgress(ctx, e.cfg, auth)
++	if egressErr != nil {
++		return nil, egressErr
++	}
+ 	refreshToken := claudeauth.ReadMetadataString(&auth.Metadata, "refresh_token")
+ 	if refreshToken == "" {
  		refreshToken = claudeauth.ReadMetadataString(&auth.Metadata, "refreshToken")
  	}
  	if refreshToken == "" {
 +		if subject := claudeauth.ReadMetadataString(&auth.Metadata, "gateway_anthropic_subject"); subject != "" {
 +			token := claudeauth.ReadMetadataString(&auth.Metadata, "access_token")
-+			profile, profileErr := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL).FetchOAuthProfile(ctx, token)
++			profile, profileErr := claudeauth.NewClaudeAuthWithProxyURL(cfg, routedAuth.ProxyURL).FetchOAuthProfile(ctx, token)
 +			if profileErr != nil || profile == nil || cliproxyauth.AnthropicIdentitySubject(profile.Account.UUID, profile.Organization.UUID) != subject {
 +				claudeauth.StoreMetadataValue(&auth.Metadata, "gateway_identity_conflict", true)
 +				auth.Disabled = true
@@ -5894,8 +6746,10 @@ index bffc428c..28dcba5d 100644
 +		}
  		return auth, nil
  	}
- 	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
-@@ -167,6 +177,22 @@ func (e *ClaudeExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (
+-	svc := claudeauth.NewClaudeAuthWithProxyURL(e.cfg, auth.ProxyURL)
++	svc := claudeauth.NewClaudeAuthWithProxyURL(cfg, routedAuth.ProxyURL)
+ 	td, err := svc.RefreshTokensWithRetry(ctx, refreshToken, 3)
+ 	if err != nil {
  		return nil, err
  	}
  	claudeauth.EnsureMetadataMap(&auth.Metadata)
@@ -6701,10 +7555,10 @@ index 00000000..2a75b1a9
 +}
 diff --git a/internal/runtime/executor/codex_diagnostic_probe.go b/internal/runtime/executor/codex_diagnostic_probe.go
 new file mode 100644
-index 00000000..c0284d14
+index 00000000..1310e425
 --- /dev/null
 +++ b/internal/runtime/executor/codex_diagnostic_probe.go
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,394 @@
 +package executor
 +
 +import (
@@ -6790,6 +7644,12 @@ index 00000000..c0284d14
 +	}
 +	// The ordinary transport helper falls back to direct routing for malformed
 +	// proxy configuration. A diagnostic must fail closed instead, before dialing.
++	resolvedCfg, routedAccount, routeErr := cliproxyauth.ResolveGatewayEgress(ctx, e.cfg, account)
++	account = routedAccount
++	if routeErr != nil {
++		return "", diagnosticError(http.StatusBadGateway, "probe_network_failed", "probing")
++	}
++	ctx = cliproxyauth.WithGatewayEgressSnapshot(ctx, resolvedCfg, account)
 +	proxyURL := strings.TrimSpace(account.ProxyURL)
 +	if proxyURL == "" && e != nil && e.cfg != nil {
 +		proxyURL = strings.TrimSpace(e.cfg.ProxyURL)
@@ -7546,7 +8406,7 @@ index 00000000..1ca915cd
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_executor_auth.go b/internal/runtime/executor/codex_executor_auth.go
-index dd1477d3..59b5d678 100644
+index dd1477d3..32171f51 100644
 --- a/internal/runtime/executor/codex_executor_auth.go
 +++ b/internal/runtime/executor/codex_executor_auth.go
 @@ -112,6 +112,11 @@ func resolveCodexAuthDiskPath(cfg *config.Config, auth *cliproxyauth.Auth) (stri
@@ -7577,7 +8437,20 @@ index dd1477d3..59b5d678 100644
  	var cfg *config.Config
  	if e != nil {
  		cfg = e.cfg
-@@ -373,6 +385,7 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
+@@ -313,7 +325,11 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
+ 		return auth, nil
+ 	}
+ 
+-	svc := codexauth.NewCodexAuthWithProxyURL(cfg, auth.ProxyURL)
++	routedCfg, routedAuth, egressErr := cliproxyauth.ResolveGatewayEgress(ctx, cfg, auth)
++	if egressErr != nil {
++		return nil, egressErr
++	}
++	svc := codexauth.NewCodexAuthWithProxyURL(routedCfg, routedAuth.ProxyURL)
+ 
+ 	outerRefreshed := false
+ 	var outerErr error
+@@ -373,6 +389,7 @@ func (e *CodexExecutor) refreshLocked(ctx context.Context, auth *cliproxyauth.Au
  				if td.RefreshToken != "" {
  					auth.Metadata["refresh_token"] = td.RefreshToken
  				}
@@ -8899,10 +9772,10 @@ index 00000000..745bfd4c
 +}
 diff --git a/internal/runtime/executor/codex_gateway_refresh_disk_test.go b/internal/runtime/executor/codex_gateway_refresh_disk_test.go
 new file mode 100644
-index 00000000..5fd60bd4
+index 00000000..fa58fe00
 --- /dev/null
 +++ b/internal/runtime/executor/codex_gateway_refresh_disk_test.go
-@@ -0,0 +1,73 @@
+@@ -0,0 +1,128 @@
 +package executor
 +
 +import (
@@ -8974,6 +9847,61 @@ index 00000000..5fd60bd4
 +	newIndex, valid := cliproxyauth.CodexOAuthAccountIndex(refreshed)
 +	if !valid || oldIndex == newIndex || refreshed.Metadata["account_id"] != "new-account" {
 +		t.Fatal("disk-rotation early return retained the previous credential's identity")
++	}
++}
++
++func TestGatewayRefreshKeepsCanonicalAuthRoutingFields(t *testing.T) {
++	proxyURL, cleanup := startCodexMockOAuthServers(t, makeTestCodexRefreshJWT("plus", "selected-account"))
++	defer cleanup()
++	cfg := &config.Config{GatewayAccountEgress: true}
++	cfg.Routing.Strategy = "gateway-allocation"
++	for _, provider := range []string{"codex", "claude"} {
++		t.Run(provider, func(t *testing.T) {
++			auth := &cliproxyauth.Auth{
++				ID: provider + ".json", Provider: provider,
++				Attributes: map[string]string{cliproxyauth.AttributeAuthKind: cliproxyauth.AuthKindOAuth},
++				Metadata:   map[string]any{"type": provider},
++			}
++			if provider == "codex" {
++				auth.Metadata["account_id"] = "selected-account"
++				auth.Metadata["refresh_token"] = "selected-refresh"
++				cliproxyauth.ApplyCodexOAuthAccountIdentity(auth, auth.Metadata)
++			} else {
++				auth.Metadata["account_uuid"] = "11111111-1111-4111-8111-111111111111"
++				auth.Metadata["organization_uuid"] = "22222222-2222-4222-8222-222222222222"
++				subject := cliproxyauth.AnthropicIdentitySubject("11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
++				m := cliproxyauth.NewManager(nil, nil, nil)
++				if err := m.LoadGatewayAccountState(t.TempDir()); err != nil {
++					t.Fatal(err)
++				}
++				if _, err := m.RegisterAnthropicIdentity(subject); err != nil {
++					t.Fatal(err)
++				}
++				auth.Metadata["gateway_anthropic_subject"] = subject
++				if !cliproxyauth.ApplyGatewayOAuthAccountIdentity(auth, auth.Metadata) {
++					t.Fatal("invalid synthetic identity")
++				}
++			}
++			routed := auth.Clone()
++			routed.ProxyURL = proxyURL
++			routed.Attributes["gateway_egress_revision"] = "binding-7"
++			routedCfg := *cfg
++			routedCfg.ProxyURL = proxyURL
++			ctx := cliproxyauth.WithGatewayEgressSnapshot(t.Context(), &routedCfg, routed)
++			var refreshed *cliproxyauth.Auth
++			var err error
++			if provider == "codex" {
++				refreshed, err = NewCodexExecutor(cfg).Refresh(ctx, auth)
++			} else {
++				refreshed, err = NewClaudeExecutor(cfg).Refresh(ctx, auth)
++			}
++			if err != nil {
++				t.Fatal(err)
++			}
++			if refreshed.ProxyURL != "" || refreshed.Attributes["gateway_egress_revision"] != "" {
++				t.Fatal("refresh returned transient transport credentials for persistence")
++			}
++		})
 +	}
 +}
 diff --git a/internal/runtime/executor/codex_openai_images.go b/internal/runtime/executor/codex_openai_images.go
@@ -9063,6 +9991,26 @@ index ae50a90c..2f784664 100644
  	}
  	if gotOriginator != codexOriginator {
  		t.Fatalf("Originator = %q, want %q", gotOriginator, codexOriginator)
+diff --git a/internal/runtime/executor/codex_websockets_connection.go b/internal/runtime/executor/codex_websockets_connection.go
+index be7e7805..948882cd 100644
+--- a/internal/runtime/executor/codex_websockets_connection.go
++++ b/internal/runtime/executor/codex_websockets_connection.go
+@@ -33,7 +33,14 @@ const (
+ )
+ 
+ func (e *CodexWebsocketsExecutor) dialCodexWebsocket(ctx context.Context, auth *cliproxyauth.Auth, wsURL string, headers http.Header) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
+-	dialer := newProxyAwareWebsocketDialer(ctx, e.cfg, auth)
++	cfg, routedAuth, routeErr := cliproxyauth.ResolveGatewayEgress(ctx, e.cfg, auth)
++	if routeErr != nil {
++		return nil, nil, nil, routeErr
++	}
++	if cfg != nil && cfg.GatewayAccountEgress {
++		ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
++	}
++	dialer := newProxyAwareWebsocketDialer(ctx, cfg, routedAuth)
+ 	dialer.HandshakeTimeout = codexResponsesWebsocketHandshakeTO
+ 	dialer.EnableCompression = true
+ 	if ctx == nil {
 diff --git a/internal/runtime/executor/codex_websockets_errors.go b/internal/runtime/executor/codex_websockets_errors.go
 index 7b993e42..594f8783 100644
 --- a/internal/runtime/executor/codex_websockets_errors.go
@@ -9373,6 +10321,57 @@ index e2b95b26..4b528900 100644
  
  	return headers
  }
+diff --git a/internal/runtime/executor/codex_websockets_session.go b/internal/runtime/executor/codex_websockets_session.go
+index 633ee1d8..dcffc560 100644
+--- a/internal/runtime/executor/codex_websockets_session.go
++++ b/internal/runtime/executor/codex_websockets_session.go
+@@ -710,6 +710,15 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
+ }
+ 
+ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context, auth *cliproxyauth.Auth, sess *codexWebsocketSession, authID string, wsURL string, headers http.Header, useSIWC bool) (*websocket.Conn, *websocketConnectionCloser, *http.Response, error) {
++	resolvedCfg, routedAuth, routeErr := cliproxyauth.ResolveGatewayEgress(ctx, e.cfg, auth)
++	auth = routedAuth
++	if routeErr != nil {
++		return nil, nil, nil, routeErr
++	}
++	ctx = cliproxyauth.WithGatewayEgressSnapshot(ctx, resolvedCfg, auth)
++	if e.cfg != nil && e.cfg.GatewayAccountEgress {
++		ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
++	}
+ 	if sess == nil {
+ 		conn, closer, resp, err := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
+ 		if conn != nil {
+@@ -717,7 +726,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
+ 		}
+ 		return conn, closer, resp, err
+ 	}
+-	proxyURL := executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth)
++	proxyURL := websocketEgressCacheKey(executionProxyURL(ctx, sess.effectiveConfig(authID, e.cfg), auth), auth)
+ 	if staleConn, staleCloser, staleAuthID, staleWSURL, staleLifecycle := detachMismatchedWebsocketSessionConn(sess, authID, wsURL, proxyURL, useSIWC); staleConn != nil {
+ 		staleLastEvent := sess.getLastEventType(staleConn)
+ 		logCodexWebsocketDisconnectedWithLastEvent(sess, sess.sessionID, staleAuthID, staleWSURL, "target_changed", staleLastEvent, nil)
+@@ -751,7 +760,7 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConnWithSIWC(ctx context.Context
+ 		return nil, nil, nil, errLoss
+ 	}
+ 
+-	dialProxyURL := executionProxyURL(ctx, e.cfg, auth)
++	dialProxyURL := websocketEgressCacheKey(executionProxyURL(ctx, e.cfg, auth), auth)
+ 	conn, closer, resp, errDial := e.dialCodexWebsocket(ctx, auth, wsURL, headers)
+ 	if errDial != nil {
+ 		return nil, closer, resp, errDial
+@@ -1219,3 +1228,12 @@ func closeCodexWebsocketSessionsInStoreForAuthID(store *codexWebsocketSessionSto
+ 		closeCodexWebsocketSession(toClose[i], reason)
+ 	}
+ }
++
++// Session identity includes the binding revision even when global egress keeps
++// the same deployment proxy URL after an account is bound and later unbound.
++func websocketEgressCacheKey(proxy string, auth *cliproxyauth.Auth) string {
++	if auth != nil && auth.Attributes["gateway_egress_revision"] != "" {
++		return proxy + "\x00egress:" + auth.Attributes["gateway_egress_revision"]
++	}
++	return proxy
++}
 diff --git a/internal/runtime/executor/codex_websockets_stream.go b/internal/runtime/executor/codex_websockets_stream.go
 index 4aa68f32..17d15e1e 100644
 --- a/internal/runtime/executor/codex_websockets_stream.go
@@ -9569,6 +10568,25 @@ index 00000000..974446c0
 +		t.Fatal(err)
 +	}
 +}
+diff --git a/internal/runtime/executor/helps/proxy_helpers.go b/internal/runtime/executor/helps/proxy_helpers.go
+index d98f7d49..319c263c 100644
+--- a/internal/runtime/executor/helps/proxy_helpers.go
++++ b/internal/runtime/executor/helps/proxy_helpers.go
+@@ -31,6 +31,14 @@ import (
+ //   - *http.Client: An HTTP client with configured proxy or transport
+ func NewProxyAwareHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyauth.Auth, timeout time.Duration) (clientOut *http.Client) {
+ 	defer func() { clientOut = httptransport.Decorate(ctx, clientOut) }()
++	var resolveErr error
++	cfg, auth, resolveErr = cliproxyauth.ResolveGatewayEgress(ctx, cfg, auth)
++	if resolveErr != nil {
++		return &http.Client{Transport: GatewayRejectedTransport{}}
++	}
++	if cfg != nil && cfg.GatewayAccountEgress {
++		ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
++	}
+ 	httpClient := &http.Client{}
+ 	if timeout > 0 {
+ 		httpClient.Timeout = timeout
 diff --git a/internal/runtime/executor/helps/usage_helpers.go b/internal/runtime/executor/helps/usage_helpers.go
 index a037cba6..e97ad92b 100644
 --- a/internal/runtime/executor/helps/usage_helpers.go
@@ -9583,10 +10601,10 @@ index a037cba6..e97ad92b 100644
  	isNativeKey := false
  	if nativeExplicit, ok := usage.IsNativeKeyFromContext(ctx); ok {
 diff --git a/internal/runtime/executor/helps/utls_client.go b/internal/runtime/executor/helps/utls_client.go
-index 1b497861..5f53225b 100644
+index 1b497861..e459a29a 100644
 --- a/internal/runtime/executor/helps/utls_client.go
 +++ b/internal/runtime/executor/helps/utls_client.go
-@@ -13,6 +13,7 @@ import (
+@@ -13,10 +13,12 @@ import (
  	"time"
  
  	tls "github.com/refraction-networking/utls"
@@ -9594,9 +10612,38 @@ index 1b497861..5f53225b 100644
  	internalcache "github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
  	"github.com/router-for-me/CLIProxyAPI/v8/internal/httpwire"
-@@ -438,6 +439,9 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/httptransport"
+ 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
+ 	log "github.com/sirupsen/logrus"
+@@ -321,8 +323,12 @@ func claudeCodeRequestHeaderOrder(_, requestTarget string) []string {
+ 	return claudeCodeMessagesHeaderOrder
+ }
+ 
+-func cachedClaudeCodeRoundTripper(proxyURL string) http.RoundTripper {
+-	return claudeCodeRoundTripperCache.GetOrAdd(proxyURL, func() http.RoundTripper {
++func cachedClaudeCodeRoundTripper(proxyURL string, revision ...string) http.RoundTripper {
++	key := proxyURL
++	if len(revision) > 0 && revision[0] != "" {
++		key += "\x00egress:" + revision[0]
++	}
++	return claudeCodeRoundTripperCache.GetOrAdd(key, func() http.RoundTripper {
+ 		return newClaudeCodeRoundTripper(proxyURL)
+ 	})
+ }
+@@ -437,7 +443,18 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 			clientOut.Transport = &tlsHandshakeTimeoutRoundTripper{base: clientOut.Transport, timeout: handshakeTimeout}
  		}
  	}()
++	var resolveErr error
++	cfg, auth, resolveErr = cliproxyauth.ResolveGatewayEgress(ctx, cfg, auth)
++	if resolveErr != nil {
++		return &http.Client{Transport: GatewayRejectedTransport{}}
++	}
++	if cfg != nil && cfg.GatewayAccountEgress {
++		ctx = cliproxyexecutor.WithoutRequestProxyURL(ctx)
++	}
  	proxyURL := effectiveProxyURL(ctx, cfg, auth)
 +	if cfg != nil && cfg.Routing.Strategy == "gateway-allocation" && auth != nil && auth.Provider == "claude" {
 +		proxyURL = cfg.ProxyURL
@@ -9604,7 +10651,20 @@ index 1b497861..5f53225b 100644
  
  	var ctxRoundTripper http.RoundTripper
  	if ctx != nil {
-@@ -467,5 +471,8 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+@@ -445,7 +462,11 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
+ 	}
+ 
+ 	var chromeRT http.RoundTripper = newUtlsRoundTripper(proxyURL)
+-	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL)
++	revision := ""
++	if auth != nil {
++		revision = auth.Attributes["gateway_egress_revision"]
++	}
++	var anthropicRT http.RoundTripper = cachedClaudeCodeRoundTripper(proxyURL, revision)
+ 	var standardTransport http.RoundTripper = http.DefaultTransport
+ 	if proxyURL != "" {
+ 		if transport := buildProxyTransport(proxyURL); transport != nil {
+@@ -467,5 +488,8 @@ func NewUtlsHTTPClient(ctx context.Context, cfg *config.Config, auth *cliproxyau
  	if timeout > 0 {
  		client.Timeout = timeout
  	}
@@ -9613,6 +10673,24 @@ index 1b497861..5f53225b 100644
 +	}
  	return client
  }
+diff --git a/internal/runtime/executor/helps/utls_client_test.go b/internal/runtime/executor/helps/utls_client_test.go
+index 1b85b0a4..735797b1 100644
+--- a/internal/runtime/executor/helps/utls_client_test.go
++++ b/internal/runtime/executor/helps/utls_client_test.go
+@@ -639,3 +639,13 @@ func summarizeClaudeCodeClientHelloSpec(t *testing.T, spec *tls.ClientHelloSpec)
+ 	summary.JA3MD5 = hex.EncodeToString(digest[:])
+ 	return summary
+ }
++
++func TestClaudeTransportCacheIsolatesGatewayRevision(t *testing.T) {
++	first := cachedClaudeCodeRoundTripper("http://egress-allowlist:3128", "global:1")
++	if first != cachedClaudeCodeRoundTripper("http://egress-allowlist:3128", "global:1") {
++		t.Fatal("same route revision did not reuse its transport")
++	}
++	if first == cachedClaudeCodeRoundTripper("http://egress-allowlist:3128", "global:3") {
++		t.Fatal("new route revision reused an old global transport")
++	}
++}
 diff --git a/internal/runtime/executor/openai_compat_executor.go b/internal/runtime/executor/openai_compat_executor.go
 index b9caea42..53ab88f9 100644
 --- a/internal/runtime/executor/openai_compat_executor.go
@@ -11909,7 +12987,7 @@ index c262a41b..6cf6aba4 100644
  	baseDir := t.TempDir()
  	store := NewFileTokenStore()
 diff --git a/sdk/cliproxy/antigravity_model_probes.go b/sdk/cliproxy/antigravity_model_probes.go
-index 06dfb967..eb0e4e06 100644
+index 06dfb967..362a2bd3 100644
 --- a/sdk/cliproxy/antigravity_model_probes.go
 +++ b/sdk/cliproxy/antigravity_model_probes.go
 @@ -29,7 +29,7 @@ type antigravityHintPersistRequest struct {
@@ -11921,8 +12999,25 @@ index 06dfb967..eb0e4e06 100644
  		return
  	}
  	if ctx == nil {
+@@ -216,9 +216,15 @@ func (s *Service) antigravityAccountProbeCurrent(probe *antigravityAccountProbe)
+ 		}
+ 	}
+ 	token, _ := current.Metadata["access_token"].(string)
++	s.cfgMu.RLock()
++	dynamicEgress := s.cfg != nil && s.cfg.GatewayAccountEgress
++	s.cfgMu.RUnlock()
++	// A live probe retains its chosen route. Account-route freshness is checked
++	// again before catalog publication, outside this tracking lock.
++	routeCurrent := dynamicEgress || s.antigravityCapabilityKey(current) == probe.routeKey
+ 	return !current.Disabled && current.Status != coreauth.StatusDisabled &&
+ 		antigravityAuthModelSettingsEqual(current, probe.auth) &&
+-		s.antigravityCapabilityKey(current) == probe.routeKey && strings.TrimSpace(token) == probe.token
++		routeCurrent && strings.TrimSpace(token) == probe.token
+ }
+ 
+ // Run after the manager/config mutation. New probes check current state while
 diff --git a/sdk/cliproxy/antigravity_models.go b/sdk/cliproxy/antigravity_models.go
-index 6c46f95f..86734220 100644
+index 6c46f95f..a91b8022 100644
 --- a/sdk/cliproxy/antigravity_models.go
 +++ b/sdk/cliproxy/antigravity_models.go
 @@ -26,6 +26,7 @@ import (
@@ -11933,7 +13028,7 @@ index 6c46f95f..86734220 100644
  	antigravityModelBaseURLDaily     = "https://daily-cloudcode-pa.googleapis.com"
  	antigravityModelsPath            = "/v1internal:fetchAvailableModels"
  	antigravityPersistedHintsMetaKey = "antigravity_capability_hints"
-@@ -105,11 +106,24 @@ func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints
+@@ -105,11 +106,37 @@ func (h antigravityModelCapabilityHints) clone() antigravityModelCapabilityHints
  
  // antigravityCapabilityKey isolates catalogs by account, project, route and client
  // fingerprint. Token rotation alone does not invalidate a successful catalog.
@@ -11944,22 +13039,35 @@ index 6c46f95f..86734220 100644
  	}
 -	return antigravityCapabilityKeyForRoute(auth, antigravityModelBaseURLs(auth)[0], s.antigravityModelFetchProxyURL(auth), antigravityModelUserAgent())
 +	userAgent := antigravityModelUserAgent()
-+	key := antigravityCapabilityKeyForRoute(auth, s.antigravityModelBaseURLs(auth)[0], s.antigravityModelFetchProxyURL(auth), userAgent)
 +	if s.gatewayAllocationEnabled() {
-+		key = gatewayAntigravityCapabilityKey(auth, s.antigravityModelFetchProxyURL(auth), userAgent)
++		s.cfgMu.RLock()
++		cfg := s.cfg
++		s.cfgMu.RUnlock()
++		if cfg != nil && cfg.GatewayAccountEgress {
++			resolved, routed, err := coreauth.ResolveGatewayEgress(context.Background(), cfg, auth)
++			if err != nil {
++				return gatewayAntigravityCapabilityKey(auth, "invalid://gateway-egress-unavailable", userAgent)
++			}
++			return gatewayAntigravityCapabilityKey(auth, resolved.ProxyURL, userAgent, routed.Attributes["gateway_egress_revision"])
++		}
++		return gatewayAntigravityCapabilityKey(auth, s.antigravityModelFetchProxyURL(auth), userAgent)
 +	}
-+	return key
++	return antigravityCapabilityKeyForRoute(auth, s.antigravityModelBaseURLs(auth)[0], s.antigravityModelFetchProxyURL(auth), userAgent)
 +}
 +
-+func gatewayAntigravityCapabilityKey(auth *coreauth.Auth, proxyURL, userAgent string) string {
++func gatewayAntigravityCapabilityKey(auth *coreauth.Auth, proxyURL, userAgent string, egressRevision ...string) string {
 +	key := antigravityCapabilityKeyForRoute(auth, antigravityModelBaseURLProd, proxyURL, userAgent)
 +	account, _ := coreauth.GatewayOAuthAccountIndex(auth)
 +	token, _ := auth.Metadata["access_token"].(string)
-+	return key + fmt.Sprintf("/%q/%d/%x", account, auth.CredentialVersion, sha256.Sum256([]byte(strings.TrimSpace(token))))
++	key += fmt.Sprintf("/%q/%d/%x", account, auth.CredentialVersion, sha256.Sum256([]byte(strings.TrimSpace(token))))
++	if len(egressRevision) > 0 && egressRevision[0] != "" {
++		key += fmt.Sprintf("/egress:%q", egressRevision[0])
++	}
++	return key
  }
  
  func antigravityCapabilityKeyForRoute(auth *coreauth.Auth, endpoint, proxy, userAgent string) string {
-@@ -126,8 +140,8 @@ func (s *Service) cachedAntigravityHints(auth *coreauth.Auth) antigravityModelCa
+@@ -126,8 +153,8 @@ func (s *Service) cachedAntigravityHints(auth *coreauth.Auth) antigravityModelCa
  	if auth == nil {
  		return antigravityModelCapabilityHints{}
  	}
@@ -11970,7 +13078,7 @@ index 6c46f95f..86734220 100644
  	return s.cachedAntigravityHintsForKey(auth, endpoint, key)
  }
  
-@@ -135,6 +149,12 @@ func (s *Service) cachedAntigravityHintsForKey(auth *coreauth.Auth, endpoint, ke
+@@ -135,6 +162,12 @@ func (s *Service) cachedAntigravityHintsForKey(auth *coreauth.Auth, endpoint, ke
  	antigravityCapabilityMu.RLock()
  	entry := antigravityCapabilityCache[key]
  	antigravityCapabilityMu.RUnlock()
@@ -11983,7 +13091,7 @@ index 6c46f95f..86734220 100644
  	if entry.hints.ModelIDs != nil {
  		return entry.hints.clone()
  	}
-@@ -163,7 +183,9 @@ func seedAntigravityCapabilityCacheLocked(cacheKey string, persisted antigravity
+@@ -163,7 +196,9 @@ func seedAntigravityCapabilityCacheLocked(cacheKey string, persisted antigravity
  }
  
  func (s *Service) persistedAntigravityHintsForAuth(auth *coreauth.Auth, endpoint string) (antigravityModelCapabilityHints, bool) {
@@ -11994,17 +13102,31 @@ index 6c46f95f..86734220 100644
  		return antigravityModelCapabilityHints{}, false
  	}
  	var current *coreauth.Auth
-@@ -349,12 +371,19 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -349,12 +384,33 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  	if ctx == nil {
  		ctx = context.Background()
  	}
 -	baseURLs, proxyURL := antigravityModelBaseURLs(auth), s.antigravityModelFetchProxyURL(auth)
 +	gateway := s.gatewayAllocationEnabled()
-+	baseURLs, proxyURL := s.antigravityModelBaseURLs(auth), s.antigravityModelFetchProxyURL(auth)
++	baseURLs := s.antigravityModelBaseURLs(auth)
++	s.cfgMu.RLock()
++	resolutionCfg := s.cfg
++	s.cfgMu.RUnlock()
++	proxyURL, egressRevision := "", ""
++	if resolutionCfg != nil && resolutionCfg.GatewayAccountEgress {
++		resolvedCfg, routedAuth, routeErr := coreauth.ResolveGatewayEgress(ctx, resolutionCfg, auth)
++		if routeErr != nil {
++			return "", antigravityModelCapabilityHints{}
++		}
++		proxyURL = resolvedCfg.ProxyURL
++		egressRevision = routedAuth.Attributes["gateway_egress_revision"]
++	} else {
++		proxyURL = s.antigravityModelFetchProxyURL(auth)
++	}
  	userAgent := antigravityModelUserAgent()
  	cacheKey := antigravityCapabilityKeyForRoute(auth, baseURLs[0], proxyURL, userAgent)
 +	if gateway {
-+		cacheKey = gatewayAntigravityCapabilityKey(auth, proxyURL, userAgent)
++		cacheKey = gatewayAntigravityCapabilityKey(auth, proxyURL, userAgent, egressRevision)
 +	}
  	accessToken, _ := auth.Metadata["access_token"].(string)
  	accessToken = strings.TrimSpace(accessToken)
@@ -12015,7 +13137,7 @@ index 6c46f95f..86734220 100644
  		return cacheKey, s.cachedAntigravityHintsForKey(auth, baseURLs[0], cacheKey)
  	}
  	failureKey := cacheKey + fmt.Sprintf("/%x", sha256.Sum256([]byte(accessToken)))
-@@ -372,7 +401,12 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -372,7 +428,12 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  			entry.lastUsed = now
  			antigravityCapabilityCache[cacheKey] = entry
  		}
@@ -12029,7 +13151,7 @@ index 6c46f95f..86734220 100644
  	}
  	if hints, cached := lookup(); cached {
  		return cacheKey, hints
-@@ -385,6 +419,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -385,6 +446,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  		}
  		ctx, finish, active := s.beginAntigravityAccountProbe(ctx, auth, cacheKey, failureKey, accessToken)
  		if !active {
@@ -12039,7 +13161,7 @@ index 6c46f95f..86734220 100644
  			return s.cachedAntigravityHintsForKey(auth, baseURLs[0], cacheKey), nil
  		}
  		defer finish()
-@@ -415,6 +452,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -415,6 +479,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  		defer antigravityCapabilityMu.Unlock()
  		current := antigravityCapabilityCache[cacheKey]
  		if ctx.Err() != nil || current.probeRevision != revision {
@@ -12049,7 +13171,7 @@ index 6c46f95f..86734220 100644
  			return current.hints.clone(), nil
  		}
  		now := antigravityNowFunc()
-@@ -438,6 +478,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -438,6 +505,9 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  		// Missing models (including legacy capability-only responses) are not a
  		// successful catalog. Preserve last success and increase the jittered backoff.
  		antigravityAuthFailureCache[failureKey] = nextAntigravityFailure(antigravityAuthFailureCache[failureKey], now, rand.Int64N)
@@ -12059,7 +13181,7 @@ index 6c46f95f..86734220 100644
  		retained := current.hints.clone()
  		if status == antigravityProbeStatusSuccess && len(hints.WebSearchModelIDs) > 0 {
  			retained.WebSearchModelIDs = hints.WebSearchModelIDs
-@@ -446,10 +489,16 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -446,10 +516,16 @@ func (s *Service) fetchAntigravityModelCapabilityHints(ctx context.Context, auth
  	})
  	select {
  	case <-ctx.Done():
@@ -12076,7 +13198,7 @@ index 6c46f95f..86734220 100644
  			hints, _ := lookup()
  			return cacheKey, hints
  		}
-@@ -461,9 +510,9 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -461,9 +537,9 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
  	if len(baseURLs) == 0 {
  		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
  	}
@@ -12088,19 +13210,27 @@ index 6c46f95f..86734220 100644
  		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
  	}
  	if transport != nil {
-@@ -512,6 +561,11 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
+@@ -512,6 +588,19 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
  }
  
  func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
 +	if s.gatewayAllocationEnabled() {
 +		s.cfgMu.RLock()
-+		defer s.cfgMu.RUnlock()
-+		return s.cfg.ProxyURL
++		cfg := s.cfg
++		s.cfgMu.RUnlock()
++		if cfg.GatewayAccountEgress {
++			resolved, _, err := coreauth.ResolveGatewayEgress(context.Background(), cfg, auth)
++			if err != nil {
++				return "invalid://gateway-egress-unavailable"
++			}
++			return resolved.ProxyURL
++		}
++		return cfg.ProxyURL
 +	}
  	if auth != nil {
  		if proxyURL := strings.TrimSpace(auth.ProxyURL); proxyURL != "" {
  			return proxyURL
-@@ -528,6 +582,13 @@ func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
+@@ -528,6 +617,13 @@ func (s *Service) antigravityModelFetchProxyURL(auth *coreauth.Auth) string {
  }
  
  func antigravityModelBaseURLs(auth *coreauth.Auth) []string {
@@ -12114,7 +13244,7 @@ index 6c46f95f..86734220 100644
  	if auth != nil && auth.Attributes != nil {
  		if raw := strings.TrimSpace(auth.Attributes["base_urls"]); raw != "" {
  			parts := strings.Split(raw, ",")
-@@ -679,6 +740,9 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
+@@ -679,6 +775,9 @@ func (s *Service) antigravityModelsForHintsWithConfig(auth *coreauth.Auth, hints
  }
  
  func (s *Service) asyncProbeAntigravityCapabilities(ctx context.Context, auth *coreauth.Auth, providerKey string) {
@@ -12124,7 +13254,7 @@ index 6c46f95f..86734220 100644
  	s.queueAntigravityModelRefresh(ctx, auth, providerKey)
  }
  
-@@ -889,3 +953,88 @@ func resolveAntigravityUpstreamModelID(modelID string, prefix string, aliasMap m
+@@ -889,3 +988,106 @@ func resolveAntigravityUpstreamModelID(modelID string, prefix string, aliasMap m
  	}
  	return unprefixed
  }
@@ -12174,7 +13304,25 @@ index 6c46f95f..86734220 100644
 +		return false
 +	}
 +	s.cfgMu.RLock()
-+	if s.cfg == nil || !strings.EqualFold(strings.TrimSpace(s.cfg.Routing.Strategy), "gateway-allocation") || gatewayAntigravityCapabilityKey(auth, s.cfg.ProxyURL, antigravityModelUserAgent()) != expectedKey {
++	cfg := s.cfg
++	s.cfgMu.RUnlock()
++	if cfg == nil {
++		return false
++	}
++	proxyURL, egressRevision := cfg.ProxyURL, ""
++	if cfg.GatewayAccountEgress {
++		resolved, routedAuth, routeErr := coreauth.ResolveGatewayEgress(ctx, cfg, auth)
++		if routeErr != nil {
++			proxyURL = "invalid://gateway-egress-unavailable"
++		} else {
++			proxyURL = resolved.ProxyURL
++			egressRevision = routedAuth.Attributes["gateway_egress_revision"]
++		}
++	}
++	// Route lookup must happen before taking registry/manager locks. Publish
++	// only if the route and configuration still match this probe snapshot.
++	s.cfgMu.RLock()
++	if s.cfg != cfg || !strings.EqualFold(strings.TrimSpace(s.cfg.Routing.Strategy), "gateway-allocation") || gatewayAntigravityCapabilityKey(auth, proxyURL, antigravityModelUserAgent(), egressRevision) != expectedKey {
 +		s.cfgMu.RUnlock()
 +		return false
 +	}
@@ -20425,6 +21573,382 @@ index 00000000..32888dbf
 +		})
 +	}
 +}
+diff --git a/sdk/cliproxy/auth/gateway_egress.go b/sdk/cliproxy/auth/gateway_egress.go
+new file mode 100644
+index 00000000..36945359
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_egress.go
+@@ -0,0 +1,211 @@
++package auth
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"net/http"
++	"net/url"
++	"os"
++	"strings"
++	"time"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++var ErrGatewayEgressUnavailable = errors.New("gateway account egress unavailable")
++
++type gatewayRegistrationContextKey struct{}
++
++type gatewayEgressSnapshotContextKey struct{}
++type gatewayEgressSnapshot struct{ provider, account, registration, proxy, global, revision string }
++
++// WithGatewayEgressSnapshot pins one account attempt across nested helpers. A
++// retry using a different account necessarily resolves a fresh snapshot.
++func WithGatewayEgressSnapshot(ctx context.Context, cfg *config.Config, account *Auth) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if cfg == nil || !cfg.GatewayAccountEgress || account == nil || account.Attributes["gateway_egress_revision"] == "" {
++		return ctx
++	}
++	id, _ := GatewayOAuthAccountIndex(account)
++	return context.WithValue(ctx, gatewayEgressSnapshotContextKey{}, gatewayEgressSnapshot{gatewayEgressProvider(account.Provider), id, GatewayRegistration(ctx), cfg.ProxyURL, cfg.GatewayGlobalProxyURL, account.Attributes["gateway_egress_revision"]})
++}
++
++// WithGatewayRegistration carries a server-authorized onboarding operation.
++func WithGatewayRegistration(ctx context.Context, registrationID string) context.Context {
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	return context.WithValue(ctx, gatewayRegistrationContextKey{}, registrationID)
++}
++
++func GatewayRegistration(ctx context.Context) string {
++	if ctx == nil {
++		return ""
++	}
++	value, _ := ctx.Value(gatewayRegistrationContextKey{}).(string)
++	return value
++}
++
++var gatewayEgressClient = &http.Client{
++	Timeout:       10 * time.Second,
++	Transport:     &http.Transport{Proxy: nil, MaxIdleConns: 16, MaxIdleConnsPerHost: 16, IdleConnTimeout: 30 * time.Second},
++	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
++}
++
++func gatewayEgressCall(ctx context.Context, path string, input, output any) error {
++	data, err := json.Marshal(input)
++	if err != nil {
++		return ErrGatewayEgressUnavailable
++	}
++	keyFile := os.Getenv("CLIPROXY_API_KEY_FILE")
++	if keyFile == "" {
++		keyFile = "/run/secrets/sidecar_api_key"
++	}
++	key, err := os.ReadFile(keyFile)
++	if err != nil || len(strings.TrimSpace(string(key))) < 16 {
++		return ErrGatewayEgressUnavailable
++	}
++	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://gateway:8080/internal/upstream-accounts/"+path, bytes.NewReader(data))
++	if err != nil {
++		return ErrGatewayEgressUnavailable
++	}
++	req.Header.Set("Content-Type", "application/json")
++	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(key)))
++	resp, err := gatewayEgressClient.Do(req)
++	if err != nil {
++		return ErrGatewayEgressUnavailable
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode != http.StatusOK {
++		return ErrGatewayEgressUnavailable
++	}
++	decoder := json.NewDecoder(io.LimitReader(resp.Body, 16385))
++	if decoder.Decode(output) != nil || decoder.Decode(&struct{}{}) != io.EOF {
++		return ErrGatewayEgressUnavailable
++	}
++	return nil
++}
++
++func gatewayEgressProvider(provider string) string {
++	if provider == "claude" {
++		return "anthropic"
++	}
++	return provider
++}
++
++// ResolveGatewayEgress rechecks durable routing for each operation. Uploaded
++// account proxy fields and request overrides are never trusted in Gateway mode.
++func ResolveGatewayEgress(ctx context.Context, cfg *config.Config, account *Auth) (*config.Config, *Auth, error) {
++	if cfg == nil || !cfg.GatewayAccountEgress || cfg.Routing.Strategy != "gateway-allocation" {
++		return cfg, account, nil
++	}
++	if ctx == nil {
++		ctx = context.Background()
++	}
++	if account == nil {
++		return nil, nil, ErrGatewayEgressUnavailable
++	}
++	provider := gatewayEgressProvider(account.Provider)
++	if provider != "codex" && provider != "antigravity" && provider != "anthropic" {
++		return cfg, account, nil
++	}
++	id, _ := GatewayOAuthAccountIndex(account)
++	registration := GatewayRegistration(ctx)
++	if snapshot, ok := ctx.Value(gatewayEgressSnapshotContextKey{}).(gatewayEgressSnapshot); ok && snapshot.provider == provider && (registration != "" && registration == snapshot.registration || registration == "" && snapshot.registration == "" && id != "" && id == snapshot.account) {
++		copiedCfg := *cfg
++		copiedCfg.ProxyURL = snapshot.proxy
++		copiedCfg.GatewayGlobalProxyURL = snapshot.global
++		copiedAuth := account.Clone()
++		copiedAuth.ProxyURL = snapshot.proxy
++		if copiedAuth.Attributes == nil {
++			copiedAuth.Attributes = map[string]string{}
++		}
++		copiedAuth.Attributes["gateway_egress_revision"] = snapshot.revision
++		return &copiedCfg, copiedAuth, nil
++	}
++
++	if id == "" && registration == "" {
++		return nil, nil, ErrGatewayEgressUnavailable
++	}
++	var output struct {
++		Mode     string `json:"mode"`
++		ProxyURL string `json:"proxy_url"`
++		Revision string `json:"revision"`
++	}
++	input := map[string]string{"provider": provider, "account_id": id}
++	if registration != "" {
++		input["registration_id"] = registration
++		delete(input, "account_id")
++	}
++	if gatewayEgressCall(ctx, "resolve-egress", input, &output) != nil || output.Revision == "" {
++		return nil, nil, ErrGatewayEgressUnavailable
++	}
++	selected := cfg.GatewayGlobalProxyURL
++	if selected == "" {
++		selected = cfg.ProxyURL
++	}
++	switch output.Mode {
++	case "global":
++		if output.ProxyURL != "" {
++			return nil, nil, ErrGatewayEgressUnavailable
++		}
++	case "account":
++		parsed, err := url.Parse(output.ProxyURL)
++		if err != nil || parsed.Scheme != "http" || parsed.Host != "egress-allowlist:3129" || parsed.User == nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
++			return nil, nil, ErrGatewayEgressUnavailable
++		}
++		selected = output.ProxyURL
++	default:
++		return nil, nil, ErrGatewayEgressUnavailable
++	}
++	clonedConfig := *cfg
++	if clonedConfig.GatewayGlobalProxyURL == "" {
++		clonedConfig.GatewayGlobalProxyURL = cfg.ProxyURL
++	}
++	clonedConfig.ProxyURL = selected
++	clonedAccount := account.Clone()
++	clonedAccount.ProxyURL = selected
++	if clonedAccount.Attributes == nil {
++		clonedAccount.Attributes = map[string]string{}
++	}
++	clonedAccount.Attributes["gateway_egress_revision"] = output.Revision
++	return &clonedConfig, clonedAccount, nil
++}
++
++func CommitGatewayRegistration(ctx context.Context, cfg *config.Config, account *Auth) error {
++	registration := GatewayRegistration(ctx)
++	if cfg == nil || !cfg.GatewayAccountEgress || registration == "" {
++		return nil
++	}
++	id, ok := GatewayOAuthAccountIndex(account)
++	if !ok {
++		return ErrGatewayEgressUnavailable
++	}
++	var output struct {
++		Status    string `json:"status"`
++		AccountID string `json:"account_id"`
++	}
++	if gatewayEgressCall(ctx, "register-egress", map[string]string{"registration_id": registration, "provider": gatewayEgressProvider(account.Provider), "account_id": id}, &output) != nil || output.Status != "committed" || output.AccountID != id {
++		return ErrGatewayEgressUnavailable
++	}
++	return nil
++}
++
++// WithCredentialFileMutation serializes a canonical credential write with refresh,
++// replacement and deletion. The callback must not call a manager mutation.
++func (m *Manager) WithCredentialFileMutation(ctx context.Context, id string, apply func() error) error {
++	if m == nil || strings.TrimSpace(id) == "" || apply == nil {
++		return ErrGatewayEgressUnavailable
++	}
++	release, err := m.lockAuthMutationContext(ctx, id)
++	if err != nil {
++		return err
++	}
++	defer release()
++	return apply()
++}
+diff --git a/sdk/cliproxy/auth/gateway_egress_test.go b/sdk/cliproxy/auth/gateway_egress_test.go
+new file mode 100644
+index 00000000..7ac2efe9
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_egress_test.go
+@@ -0,0 +1,153 @@
++package auth
++
++import (
++	"context"
++	"encoding/json"
++	"io"
++	"net/http"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++)
++
++type gatewayEgressRoundTripper func(*http.Request) (*http.Response, error)
++
++func (f gatewayEgressRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
++
++func gatewayEgressFixture(t *testing.T) (*config.Config, *Auth) {
++	t.Helper()
++	key := filepath.Join(t.TempDir(), "key")
++	if err := os.WriteFile(key, []byte("synthetic-sidecar-key-0123456789abcdef"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	t.Setenv("CLIPROXY_API_KEY_FILE", key)
++	cfg := &config.Config{GatewayAccountEgress: true}
++	cfg.Routing.Strategy = "gateway-allocation"
++	cfg.ProxyURL = "http://egress-allowlist:3128"
++	a := codexOAuthDedupeAuth("primary.json", "account-primary", "2026-08-20T10:00:00Z")
++	old := gatewayEgressClient
++	t.Cleanup(func() { gatewayEgressClient = old })
++	return cfg, a
++}
++
++func TestGatewayEgressRechecksBindingAndIsolatesSnapshots(t *testing.T) {
++	cfg, a := gatewayEgressFixture(t)
++	a.ProxyURL = "http://untrusted.invalid"
++	calls := 0
++	outputs := []string{`{"mode":"global","revision":"global:1"}`, `{"mode":"account","proxy_url":"http://route-v2:proof@egress-allowlist:3129","revision":"account:2"}`, `{"mode":"account","proxy_url":"http://route-v3:proof@egress-allowlist:3129","revision":"account:3"}`}
++	gatewayEgressClient = &http.Client{Transport: gatewayEgressRoundTripper(func(r *http.Request) (*http.Response, error) {
++		if r.URL.String() != "http://gateway:8080/internal/upstream-accounts/resolve-egress" || r.Header.Get("Authorization") != "Bearer synthetic-sidecar-key-0123456789abcdef" {
++			t.Fatal("untrusted callback")
++		}
++		var in map[string]string
++		if json.NewDecoder(r.Body).Decode(&in) != nil {
++			t.Fatal("body")
++		}
++		if in["provider"] != "codex" || in["account_id"] == "" {
++			t.Fatalf("input=%v", in)
++		}
++		out := outputs[calls]
++		calls++
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(out))}, nil
++	})}
++	previous := ""
++	for i := 0; i < 3; i++ {
++		resolved, snapshot, err := ResolveGatewayEgress(context.Background(), cfg, a)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if snapshot == a || resolved == cfg || snapshot.ProxyURL != resolved.ProxyURL {
++			t.Fatal("shared snapshot")
++		}
++		if i > 0 && previous == snapshot.ProxyURL {
++			t.Fatal("stale connection cache key")
++		}
++		previous = snapshot.ProxyURL
++	}
++	if a.ProxyURL != "http://untrusted.invalid" || cfg.ProxyURL != "http://egress-allowlist:3128" || calls != 3 {
++		t.Fatal("mutated authoritative auth/config")
++	}
++}
++
++func TestGatewayEgressRejectsMissingOrUnsafeResolution(t *testing.T) {
++	cfg, a := gatewayEgressFixture(t)
++	for _, body := range []string{`{"mode":"account","proxy_url":"http://evil.example:3129","revision":"1"}`, `{"mode":"account","proxy_url":"http://egress-allowlist:3129","revision":"1"}`, `{"mode":"global","proxy_url":"http://evil","revision":"1"}`, `{"mode":"unknown","revision":"1"}`, `{"mode":"global"}`, `{"mode":"global","revision":"1"} {}`} {
++		gatewayEgressClient = &http.Client{Transport: gatewayEgressRoundTripper(func(*http.Request) (*http.Response, error) {
++			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
++		})}
++		if _, _, err := ResolveGatewayEgress(context.Background(), cfg, a); err == nil {
++			t.Fatalf("accepted unsafe response %s", body)
++		}
++	}
++	gatewayEgressClient = &http.Client{Transport: gatewayEgressRoundTripper(func(*http.Request) (*http.Response, error) {
++		return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
++	})}
++	if _, _, err := ResolveGatewayEgress(context.Background(), cfg, a); err != ErrGatewayEgressUnavailable {
++		t.Fatal("must fail closed")
++	}
++}
++
++func TestGatewayEgressRegistrationPreservesProviderAndCommitsIdentity(t *testing.T) {
++	cfg, a := gatewayEgressFixture(t)
++	ctx := WithGatewayRegistration(context.Background(), "19c287cc-b938-4d0a-87e3-e4649892c68c")
++	gatewayEgressClient = &http.Client{Transport: gatewayEgressRoundTripper(func(r *http.Request) (*http.Response, error) {
++		var in map[string]string
++		_ = json.NewDecoder(r.Body).Decode(&in)
++		if in["registration_id"] != GatewayRegistration(ctx) {
++			t.Fatal("registration lost")
++		}
++		if strings.HasSuffix(r.URL.Path, "resolve-egress") {
++			if in["provider"] != "anthropic" || in["account_id"] != "" {
++				t.Fatalf("input=%v", in)
++			}
++			return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"mode":"global","revision":"onboarding:1"}`))}, nil
++		}
++		id, _ := GatewayOAuthAccountIndex(a)
++		if in["account_id"] != id || in["provider"] != "codex" {
++			t.Fatal("unverified identity")
++		}
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"status":"committed","account_id":"` + id + `"}`))}, nil
++	})}
++	if _, _, err := ResolveGatewayEgress(ctx, cfg, &Auth{Provider: "claude"}); err != nil {
++		t.Fatal(err)
++	}
++	if err := CommitGatewayRegistration(ctx, cfg, a); err != nil {
++		t.Fatal(err)
++	}
++	if _, _, err := ResolveGatewayEgress(context.Background(), cfg, &Auth{Provider: "codex"}); err == nil {
++		t.Fatal("anonymous operation accepted")
++	}
++}
++
++func TestGatewayEgressPinsOneAttemptAndRecoversOriginalGlobalRoute(t *testing.T) {
++	cfg, a := gatewayEgressFixture(t)
++	calls := 0
++	gatewayEgressClient = &http.Client{Transport: gatewayEgressRoundTripper(func(*http.Request) (*http.Response, error) {
++		calls++
++		body := `{"mode":"global","revision":"global:2"}`
++		if calls == 1 {
++			body = `{"mode":"account","proxy_url":"http://route-v1:proof@egress-allowlist:3129","revision":"account:1"}`
++		}
++		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body))}, nil
++	})}
++	bound, routed, err := ResolveGatewayEgress(context.Background(), cfg, a)
++	if err != nil {
++		t.Fatal(err)
++	}
++	ctx := WithGatewayEgressSnapshot(context.Background(), bound, routed)
++	pinned, _, err := ResolveGatewayEgress(ctx, cfg, a)
++	if err != nil || pinned.ProxyURL != bound.ProxyURL || calls != 1 {
++		t.Fatal("attempt changed between nested helpers")
++	}
++	global, _, err := ResolveGatewayEgress(context.Background(), bound, a)
++	if err != nil || global.ProxyURL != cfg.ProxyURL {
++		t.Fatal("global route reused resolved account proxy")
++	}
++	other := codexOAuthDedupeAuth("other.json", "other-account", "2026-08-20T10:00:00Z")
++	if _, _, err = ResolveGatewayEgress(ctx, cfg, other); err != nil || calls != 3 {
++		t.Fatal("retry account did not recheck routing")
++	}
++}
 diff --git a/sdk/cliproxy/auth/gateway_guardian_affinity_test.go b/sdk/cliproxy/auth/gateway_guardian_affinity_test.go
 new file mode 100644
 index 00000000..39a1c349
@@ -21126,10 +22650,10 @@ index 00000000..94aa61b3
 +}
 diff --git a/sdk/cliproxy/service_gateway_catalog_test.go b/sdk/cliproxy/service_gateway_catalog_test.go
 new file mode 100644
-index 00000000..bfd418d3
+index 00000000..a33fb874
 --- /dev/null
 +++ b/sdk/cliproxy/service_gateway_catalog_test.go
-@@ -0,0 +1,462 @@
+@@ -0,0 +1,526 @@
 +package cliproxy
 +
 +import (
@@ -21590,6 +23114,70 @@ index 00000000..bfd418d3
 +		if status == antigravityProbeStatusSuccess || redirected.Load() != 0 {
 +			t.Fatal("Gateway catalog fell back to a direct connection")
 +		}
++	}
++}
++
++func TestGatewayCatalogPublicationUsesAccountEgressRoute(t *testing.T) {
++	svc, account := gatewayCatalogFixture(t)
++	svc.cfg.GatewayAccountEgress = true
++	routedCfg := *svc.cfg
++	routedCfg.GatewayGlobalProxyURL = svc.cfg.ProxyURL
++	routedCfg.ProxyURL = "http://bound-route:synthetic@egress-allowlist:3129"
++	routed := account.Clone()
++	routed.Attributes["gateway_egress_revision"] = "bound-route"
++	ctx := coreauth.WithGatewayEgressSnapshot(t.Context(), &routedCfg, routed)
++	key := gatewayAntigravityCapabilityKey(account, routedCfg.ProxyURL, antigravityModelUserAgent(), "bound-route")
++	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{"gemini-3-flash": {}}, revision: 1}
++	antigravityCapabilityCache[key] = antigravityCapabilityCacheEntry{hints: hints.clone(), expiresAt: time.Now().Add(time.Hour)}
++	reg := registry.GetGlobalRegistry()
++	if !svc.applyGatewayAntigravityModelHints(ctx, account, hints, key, reg.ClientRegistrationEpoch(account.ID)) {
++		t.Fatal("account-route catalog was compared with global egress")
++	}
++	if models := reg.GetModelsForClient(account.ID); len(models) != 1 || models[0].ID != "gemini-3-flash" {
++		t.Fatalf("bound account catalog missing: %+v", models)
++	}
++	switchedCfg := routedCfg
++	switchedCfg.ProxyURL = "http://different-route:synthetic@egress-allowlist:3129"
++	switched := account.Clone()
++	switched.Attributes["gateway_egress_revision"] = "different-route"
++	switchedCtx := coreauth.WithGatewayEgressSnapshot(t.Context(), &switchedCfg, switched)
++	if svc.applyGatewayAntigravityModelHints(switchedCtx, account, hints, key, reg.ClientRegistrationEpoch(account.ID)) {
++		t.Fatal("old-route probe published after egress changed")
++	}
++}
++
++func TestGatewayCatalogAccountRouteKeepsCanonicalAuthSnapshot(t *testing.T) {
++	svc, account := gatewayCatalogFixture(t)
++	svc.cfg.GatewayAccountEgress = true
++	cfg := *svc.cfg
++	cfg.GatewayGlobalProxyURL = svc.cfg.ProxyURL
++	cfg.ProxyURL = "http://account-route:synthetic@egress-allowlist:3129"
++	routed := account.Clone()
++	routed.Attributes["gateway_egress_revision"] = "account-route"
++	ctx := coreauth.WithGatewayEgressSnapshot(t.Context(), &cfg, routed)
++	key := gatewayAntigravityCapabilityKey(account, cfg.ProxyURL, antigravityModelUserAgent(), "account-route")
++	hints := antigravityModelCapabilityHints{ModelIDs: map[string]struct{}{"gemini-3-flash": {}}, revision: 1}
++	antigravityCapabilityCache[key] = antigravityCapabilityCacheEntry{hints: hints.clone(), expiresAt: time.Now().Add(time.Hour)}
++	gotKey, got := svc.fetchAntigravityModelCapabilityHints(ctx, account)
++	if gotKey != key || got.ModelIDs == nil {
++		t.Fatal("account-route cache lost its canonical credential snapshot")
++	}
++	if _, present := account.Attributes["gateway_egress_revision"]; present {
++		t.Fatal("ephemeral routing metadata entered manager snapshot")
++	}
++	_, finish, active := svc.beginAntigravityAccountProbe(ctx, account, key, "synthetic-account-route-flight", "old-token")
++	defer finish()
++	if !active {
++		t.Fatal("bound account probe rejected the current canonical credential")
++	}
++}
++
++func TestGatewayCatalogKeyIsolatesGlobalRouteRevisions(t *testing.T) {
++	_, account := gatewayCatalogFixture(t)
++	before := gatewayAntigravityCapabilityKey(account, "http://egress-allowlist:3128", "synthetic-agent", "global:1")
++	after := gatewayAntigravityCapabilityKey(account, "http://egress-allowlist:3128", "synthetic-agent", "global:3")
++	if before == after {
++		t.Fatal("binding revision reused an earlier global-route catalog")
 +	}
 +}
 diff --git a/sdk/cliproxy/service_lifecycle.go b/sdk/cliproxy/service_lifecycle.go

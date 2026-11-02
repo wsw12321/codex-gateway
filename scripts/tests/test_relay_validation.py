@@ -212,6 +212,40 @@ else:
         result = self.validate()
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_account_egress_control_and_data_boundaries_fail_closed(self):
+        mutations = [
+            lambda c: c["networks"]["account_egress_control"].update(internal=False),
+            lambda c: c["services"]["codex-compat"]["networks"].update(account_egress_data={}),
+            lambda c: c["services"]["codex-compat"]["networks"].update(account_egress_control={}),
+            lambda c: c["services"]["account-egress"].update(read_only=False),
+            lambda c: c["services"]["account-egress"].update(user="0:1000"),
+            lambda c: c["services"]["account-egress"].update(cap_add=["NET_ADMIN"]),
+            lambda c: c["services"]["account-egress"].update(volumes=[{"type":"bind", "source":"/var/run/docker.sock", "target":"/var/run/docker.sock"}]),
+            lambda c: c["services"]["account-egress"]["networks"].update(compat_internal={}),
+            lambda c: c["services"]["account-egress"]["build"]["args"].update(MIHOMO_IMAGE="metacubex/mihomo:latest"),
+            lambda c: c["services"]["codex-compat"]["secrets"].append({"source":"egress_control_key"}),
+            lambda c: c["services"]["gateway"]["environment"].update(EGRESS_CONTROL_KEY="inline-secret"),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                self.gateway = copy.deepcopy(self.gateway_baseline)
+                mutate(self.gateway)
+                self.run_log.write_text("")
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.run_log.read_text(), "")
+
+    def test_account_listener_or_fallback_mutation_is_rejected(self):
+        for original, replacement in (
+            ("http_port 172.28.30.4:3129 name=account_routes", "http_port 3129"),
+            ("http_access deny account_route !codex_clients", "http_access allow account_route"),
+        ):
+            with self.subTest(original=original):
+                self.egress_config.write_text(self.egress_baseline.replace(original, replacement))
+                result = self.validate()
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.run_log.read_text(), "")
+
     def test_shadowsocks_security_mutations_fail_before_running_images(self):
         mutations = [
             lambda c: c["networks"]["ss_internal"].update(internal=False),

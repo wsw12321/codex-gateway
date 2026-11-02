@@ -89,6 +89,8 @@ services:
       DATABASE_URL_FILE: /run/secrets/database_url
       KEY_HMAC_PEPPER_FILE: /run/secrets/gateway_api_key_pepper
       API_KEY_ENCRYPTION_KEY_FILE: /run/secrets/gateway_api_key_encryption_key
+      EGRESS_CONTROL_URL: http://account-egress:17892
+      EGRESS_CONTROL_KEY_FILE: /run/secrets/egress_control_key
       TOKEN_HMAC_PEPPER_FILE: /run/secrets/gateway_session_secret
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
@@ -106,6 +108,7 @@ services:
       - gateway_session_secret
       - sidecar_api_key
       - cpa_management_key
+      - egress_control_key
     tmpfs:
       # Four concurrent 64 MiB request spools plus one body-sized margin for
       # filesystem/accounting overhead and cleanup overlap.
@@ -119,6 +122,8 @@ services:
         ipv4_address: 172.28.30.2
       antigravity_internal:
         ipv4_address: 172.28.40.2
+      account_egress_control:
+        ipv4_address: 172.28.70.2
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,7 +174,7 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v8.0.48-dbb70621-3d869841cf43a151-cpa
+    image: codex-gateway-compat:v8.0.48-dbb70621-0ad73a791d9d916d-cpa
     build:
       context: .
       dockerfile: deploy/codex-compat/Dockerfile
@@ -178,7 +183,7 @@ services:
         RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v8.0.48
         CLIPROXY_COMMIT: dbb706215a3afd2f0ea3c96482d4233856466caa
-        CLIPROXY_PATCH_SHA256: 3d869841cf43a151b7e32c67d0511aa1877a665ed11443235b603428bfd2e19e
+        CLIPROXY_PATCH_SHA256: 0ad73a791d9d916d1620bc1b535396e8d5da51c2834fa7f076c9a6c78c4d73e4
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true
@@ -274,6 +279,40 @@ services:
       retries: 3
       start_period: 60s
 
+  account-egress:
+    <<: *common-security
+    image: codex-gateway-account-egress:1.19.32-v1
+    build:
+      context: .
+      dockerfile: deploy/account-egress/Dockerfile
+      args:
+        MIHOMO_IMAGE: ${MIHOMO_IMAGE:?Run ./scripts/lock-images.sh first}
+        GOLANG_IMAGE: ${GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
+        RUNTIME_IMAGE: ${RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
+    read_only: true
+    user: "10004:${GATEWAY_SECRET_GID:-1000}"
+    init: true
+    pids_limit: 128
+    cap_drop:
+      - ALL
+    secrets:
+      - egress_control_key
+    tmpfs:
+      - /run/account-egress:rw,noexec,nosuid,nodev,size=32m,mode=0700,uid=10004,gid=10004
+      - /tmp:rw,noexec,nosuid,nodev,size=8m,mode=0700,uid=10004,gid=10004
+    networks:
+      account_egress_data:
+        ipv4_address: 172.28.60.3
+      account_egress_control:
+        ipv4_address: 172.28.70.3
+      egress_external: {}
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/account-egress", "healthcheck"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+
   egress-allowlist:
     <<: *common-security
     image: ${SQUID_IMAGE:?Run ./scripts/lock-images.sh first}
@@ -299,6 +338,8 @@ services:
         ipv4_address: 172.28.30.4
       antigravity_internal:
         ipv4_address: 172.28.40.4
+      account_egress_data:
+        ipv4_address: 172.28.60.2
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -337,6 +378,18 @@ networks:
         - subnet: 172.28.40.0/24
   egress_external:
     driver: bridge
+  account_egress_data:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.60.0/24
+  account_egress_control:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.28.70.0/24
 
 volumes:
   caddy_data: {}
@@ -362,6 +415,8 @@ secrets:
     file: ./deploy/secrets/sidecar_api_key
   cpa_management_key:
     file: ./deploy/secrets/cpa_management_key
+  egress_control_key:
+    file: ./deploy/secrets/egress_control_key
   antigravity_bridge_api_key:
     file: ./deploy/secrets/antigravity_bridge_api_key
   antigravity_keyring_password:

@@ -291,7 +291,7 @@ jobs:
           set -euo pipefail
           build_output=$(mktemp)
           trap 'rm -f "$build_output"' EXIT
-          if ./scripts/compose.sh --progress plain build gateway codex-compat antigravity-bridge 2>&1 | tee "$build_output"; then
+          if ./scripts/compose.sh --progress plain build gateway codex-compat antigravity-bridge account-egress 2>&1 | tee "$build_output"; then
             exit 0
           fi
           while IFS= read -r line; do
@@ -304,6 +304,8 @@ jobs:
             esac
           done < "$build_output"
           exit 1
+      - name: Verify per-account Shadowsocks routing and hot updates
+        run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v1
       - name: Verify sidecar runtime without site credentials
         run: ./scripts/test-sidecar-image.sh
       - name: Verify Antigravity keyring isolation without a Google account
@@ -336,6 +338,7 @@ jobs:
           set +a
           compat_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["codex-compat"].image')
           bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
+          account_egress_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["account-egress"].image')
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
@@ -348,6 +351,10 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
             --severity HIGH,CRITICAL "$bridge_image"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL "$account_egress_image"
       - name: Export tested images for publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash
@@ -358,7 +365,8 @@ jobs:
           ./scripts/compose.sh --profile legacy-bridge config --format json | jq '{
             gateway: .services.gateway.image,
             "codex-compat": .services["codex-compat"].image,
-            "antigravity-bridge": .services["antigravity-bridge"].image
+            "antigravity-bridge": .services["antigravity-bridge"].image,
+            "account-egress": .services["account-egress"].image
           }' > "$bundle/local-images.json"
           mapfile -t images < <(jq -er '.[]' "$bundle/local-images.json")
           docker save "${images[@]}" | gzip -1 > "$bundle/images.tar.gz"
@@ -409,7 +417,7 @@ jobs:
             platform: "linux/amd64",
             images: {}
           }' > deployment-images.json
-          for service in gateway codex-compat antigravity-bridge; do
+          for service in gateway codex-compat antigravity-bridge account-egress; do
             local_image=$(jq -er --arg service "$service" '.[$service]' ci-images/local-images.json)
             remote_image=ghcr.io/$repository/$service
             remote_tag=$remote_image:sha-$GITHUB_SHA
@@ -426,7 +434,7 @@ jobs:
             printf 'Published images for commit `%s` (linux/amd64).\n\n' "$GITHUB_SHA"
             jq -r '.images | to_entries[] | "- `" + .key + "`: `" + .value + "`"' deployment-images.json
             printf '\nDownload the deployment-images artifact and follow docs/ci-image-deployment.md.\n'
-            printf '\nFor anonymous pulls, set all three GHCR packages to Public after the first publication.\n'
+            printf '\nFor anonymous pulls, set all four GHCR packages to Public after the first publication.\n'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload deployment manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

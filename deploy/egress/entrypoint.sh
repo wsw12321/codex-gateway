@@ -82,8 +82,16 @@ if test "$egress_mode" = relay && test -z "$relay_ip"; then
 fi
 
 render_config() {
+    # PASSTHRU preserves only the internal per-route Basic credential. Squid
+    # needs no authentication helper: the isolated parent validates the token.
+    printf '%s\n' \
+        'cache_peer 172.28.60.3 parent 17891 0 no-query name=account_egress login=PASSTHRU' \
+        'cache_peer_access account_egress allow codex_clients account_route' \
+        'cache_peer_access account_egress deny all' \
+        'never_direct allow account_route'
     if test "$egress_mode" = direct; then
         printf '%s\n' '# Shared Codex/Antigravity relay disabled; preserve direct egress.'
+        printf '%s\n' 'never_direct deny all'
         return
     fi
     if test "$egress_mode" = shadowsocks; then
@@ -94,6 +102,7 @@ render_config() {
         printf 'cache_peer %s parent %s 0 no-query default name=codex_relay\n' "$relay_ip" "$relay_port"
     fi
     printf '%s\n' \
+        'cache_peer_access codex_relay deny account_route' \
         'cache_peer_access codex_relay allow codex_clients' \
         'cache_peer_access codex_relay allow antigravity_clients' \
         'cache_peer_access codex_relay deny all' \

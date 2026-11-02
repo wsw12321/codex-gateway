@@ -122,6 +122,48 @@ func TestCPAManagementImportRejectsPolicyAndMissingRefresh(t *testing.T) {
 	}
 }
 
+func TestCPAEgressSelectionCannotInjectPrivateManagementFields(t *testing.T) {
+	for _, body := range []string{
+		`{"egress_proxy_url":"http://attacker.invalid"}`,
+		`{"registration_id":"invented"}`,
+		`{"egress_server_id":true}`,
+	} {
+		r := httptest.NewRequest(http.MethodPost, "/admin/cpa/api/codex/oauth", strings.NewReader(body))
+		r.SetPathValue("provider", "codex")
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		(&Server{}).cpaOAuthBegin(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("body=%s status=%d", body, w.Code)
+		}
+	}
+}
+
+func TestCPACredentialProjectionDoesNotForwardBrowserRoutingPolicy(t *testing.T) {
+	base, _ := url.Parse("http://sidecar.invalid")
+	var got map[string]any
+	s := &Server{config: config.Config{SidecarURL: base, CPAManagementToken: "management-only"}, cpaAdmin: &cpaAdminState{client: &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"status":"ok","account_id":"0123456789abcdef"}`))}, nil
+	})}}}
+	r := httptest.NewRequest(http.MethodPost, "/admin/cpa/api/anthropic/credentials", strings.NewReader(`{"access_token":"credential","egress_server_id":"","proxy_url":"http://attacker.invalid","registration_id":"spoofed","egress_proxy_url":"http://attacker.invalid"}`))
+	r.SetPathValue("provider", "anthropic")
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.cpaImport(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if len(got) != 1 || got["access_token"] != "credential" {
+		t.Fatalf("browser policy reached CPA: %#v", got)
+	}
+	if strings.Contains(w.Body.String(), "credential") || !strings.Contains(w.Body.String(), "0123456789abcdef") {
+		t.Fatal("invalid projected response")
+	}
+}
+
 func TestCPAManagementDeleteMissingConcurrencyFailsClosed(t *testing.T) {
 	for _, missing := range []bool{true, false} {
 		var disabled, deleted bool

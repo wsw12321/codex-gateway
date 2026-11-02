@@ -60,6 +60,7 @@ Compose 中的服务职责如下：
 | `codex-compat` | 在同一 CPA 中维护 Codex/Antigravity OAuth、刷新和模型执行 | 无 |
 | `antigravity-bridge` | 仅在 `legacy-bridge` profile 中保留旧 AGY 传输供回滚 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
+| `account-egress` | 管理网站配置的按账号 SS 出口运行时 | 无 |
 
 所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
 Caddy、Gateway、PostgreSQL 和 sidecar 位于 Docker `internal` 网络；只有
@@ -85,6 +86,10 @@ sidecar，不进入数据库或备份。
   限额；默认 90 天，最长 365 天。
 
 ### 代理接口
+
+Owner 可在“出口服务器”管理 Shadowsocks 节点，为 Codex、Antigravity、Anthropic
+账号分别绑定出口；未绑定账号继承全局模式，绑定出口故障时不回退直连。
+配置、生效状态和升级步骤见[上游账号独立出口](docs/account-egress.md)。
 
 开放 Codex、AGY 所需的数据接口和 WebSocket 协商入口：
 
@@ -353,7 +358,7 @@ Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`�
 ```
 
 脚本以 `0640` 创建 PostgreSQL 口令、完整 DSN、API Key/token HMAC pepper、
-独立的 32 字节 API Key 加密密钥、Gateway 到两个上游的独立内部 Key 和 Keyring 口令，不输出内容。
+独立的 32 字节 API Key 加密密钥、Gateway 到两个上游及账号出口运行时的独立内部 Key 和 Keyring 口令，不输出内容。
 加密密钥以无填充 URL-safe Base64 保存在
 `deploy/secrets/gateway_api_key_encryption_key`，不得复制到 `.env`，也不得在没有
 密钥轮换方案时重新生成。在 Cloudflare Dashboard 创建
@@ -367,7 +372,7 @@ connector token 以精确 `0640` 保存为
 
 服务器资源较少或电脑上传镜像缓慢时，可以使用
 [GitHub Actions 构建并从 GHCR 免登录拉取](docs/ci-image-deployment.md)。
-CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
+CI 检查通过后发布四个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 固定为 `v8.0.48` / commit
@@ -379,8 +384,8 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat antigravity-bridge
-./scripts/compose.sh up -d postgres egress-allowlist codex-compat gateway caddy cloudflared
+./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 

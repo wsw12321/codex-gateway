@@ -27,6 +27,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin);
       const send = (body, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
+      if (url.pathname === "/admin/egress-servers") return send({servers: [{id: "11111111-1111-4111-8111-111111111111", name: "测试出口"}], version: 1, runtime: {ready: true, applied_version: 1}});
       if (url.pathname === "/static/theme.js") return route.fulfill({ contentType: "application/javascript", body: fs.readFileSync(path.join(assets, "../theme.js")) });
       if (url.pathname === "/static/favicon.svg") return route.fulfill({ contentType: "image/svg+xml", body: fs.readFileSync(path.join(assets, "../favicon.svg")) });
       if (url.pathname === "/admin/cpa/") return route.fulfill({ status: 200, contentType: "text/html", headers: { "Content-Security-Policy": csp }, body: fs.readFileSync(path.join(assets, "index.html")) });
@@ -63,7 +64,9 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.getByRole("status").filter({ hasText: "操作完成" }).waitFor();
     assert.deepEqual(writes.at(-1).body, { enabled: false });
 
+    await page.getByLabel("登录与导入使用的出口").selectOption("11111111-1111-4111-8111-111111111111");
     await page.getByRole("button", { name: "新增 / 重新授权" }).click();
+    assert.equal(writes.find(write => write.path.endsWith("/oauth")).body.egress_server_id, "11111111-1111-4111-8111-111111111111");
     await page.getByRole("link", { name: "打开供应商授权页面 ↗" }).waitFor();
     await page.getByLabel("授权回调地址").fill(`http://localhost:51121/oauth-callback?code=synthetic-code&state=${state}`);
     await page.getByRole("button", { name: "提交回调" }).click();
@@ -71,6 +74,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.getByRole("status").filter({ hasText: "授权完成" }).waitFor();
     assert.deepEqual(writes.find(write => write.path.endsWith("/callback")).body, { code: "synthetic-code", state });
 
+    await page.getByLabel("登录与导入使用的出口").selectOption("__preserve__");
     for (const failure of [false, true]) {
       importFails = failure;
       await page.locator('input[type="file"]').setInputFiles({ name: "fixture.json", mimeType: "application/json", buffer: Buffer.from(JSON.stringify({ refresh_token: "synthetic-refresh", access_token: "synthetic-access", proxy_url: "http://ignored.invalid", priority: 999 })) });

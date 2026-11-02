@@ -41,6 +41,8 @@ type Config struct {
 	SidecarURL         *url.URL
 	SidecarToken       string
 	CPAManagementToken string
+	EgressControlKey   string
+	EgressControlURL   *url.URL
 	// AntigravityTransport is cpa by default. legacy-bridge is reserved for
 	// the rehearsed rollback build and requires separate bridge credentials.
 	AntigravityTransport   string
@@ -126,6 +128,9 @@ func Load() (Config, error) {
 			UserRequestsPerDay: 20000,
 			GlobalConcurrent:   32,
 		},
+	}
+	if err := cfg.loadEgress(); err != nil {
+		return Config{}, err
 	}
 
 	if cfg.PublicURL, err = parseURL("GATEWAY_PUBLIC_URL", os.Getenv("GATEWAY_PUBLIC_URL")); err != nil {
@@ -229,6 +234,9 @@ func (c Config) Validate() error {
 		return errors.New("SIDECAR_URL must not contain credentials, query, or fragment")
 	}
 	if err := c.validateAntigravity(); err != nil {
+		return err
+	}
+	if err := c.validateEgress(); err != nil {
 		return err
 	}
 	if err := c.validateRetiredCodexPricing(); err != nil {

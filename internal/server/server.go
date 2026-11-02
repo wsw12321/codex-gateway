@@ -27,6 +27,8 @@ type Server struct {
 	antigravity           *gatewayproxy.Client
 	anthropic             *gatewayproxy.Client
 	cpaAdmin              *cpaAdminState
+	egressOnce            sync.Once
+	egressRuntime         *accountEgressRuntime
 	logger                *slog.Logger
 	mux                   *http.ServeMux
 	attempts              *attemptLimiter
@@ -109,6 +111,27 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	} else if cfg.AntigravityBridgeURL != nil {
 		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
 	}
+	requireAccountEgress := cfg.EgressControlKey != ""
+	if !requireAccountEgress {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		state, snapshotErr := repository.EgressSnapshot(ctx)
+		cancel()
+		if snapshotErr != nil {
+			s.identificationCancel()
+			return nil, errors.New("server: cannot verify account egress configuration")
+		}
+		for _, binding := range state.Bindings {
+			if binding.NodeID != "" {
+				requireAccountEgress = true
+				break
+			}
+		}
+	}
+	s.upstream.RequireAccountEgress(requireAccountEgress)
+	s.anthropic.RequireAccountEgress(requireAccountEgress)
+	if cfg.UsesCPAAntigravity() {
+		s.antigravity.RequireAccountEgress(requireAccountEgress)
+	}
 	s.routes()
 	return s, nil
 }
@@ -124,6 +147,7 @@ func (s *Server) Handler() http.Handler {
 }
 
 func (s *Server) routes() {
+	s.egressRoutes()
 	s.oidcRoutes()
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)

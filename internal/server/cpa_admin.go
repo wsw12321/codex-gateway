@@ -19,6 +19,7 @@ import (
 
 	"github.com/wsw/codex-gateway/internal/cpaprotocol"
 	"github.com/wsw/codex-gateway/internal/httpx"
+	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
@@ -28,11 +29,12 @@ var cpaAssets embed.FS
 const cpaOAuthTTL = 5 * time.Minute
 
 type cpaOAuthAttempt struct {
-	SessionID string
-	Provider  string
-	State     string
-	ExpiresAt time.Time
-	Submitted bool
+	SessionID      string
+	Provider       string
+	State          string
+	ExpiresAt      time.Time
+	Submitted      bool
+	RegistrationID string
 }
 
 type cpaAdminState struct {
@@ -178,6 +180,15 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 	if s.config.CPAManagementToken == "" || s.config.SidecarURL == nil || s.cpaAdmin == nil {
 		return errors.New("cpa management unavailable")
 	}
+	if s.config.EgressControlKey != "" {
+		if s.upstream == nil {
+			return errors.New("cpa account egress unavailable")
+		}
+		capabilities, err := s.upstream.AccountCapabilities(ctx)
+		if err != nil || capabilities.AccountEgress != gatewayproxy.AccountEgressProtocolV1 {
+			return errors.New("cpa account egress unavailable")
+		}
+	}
 	// A rollback activates the bridge as the sole Google credential refresher.
 	// Never mutate or refresh the stopped CPA credential set through this UI.
 	if strings.HasPrefix(path, "antigravity/") && !s.config.UsesCPAAntigravity() {
@@ -264,15 +275,29 @@ func (s *Server) cpaOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	var input struct{}
-	if !cpaJSON(w, r, &input, 128) {
+	var input struct {
+		EgressServerID *string `json:"egress_server_id"`
+	}
+	if !cpaJSON(w, r, &input, 256, "egress_server_id") {
 		return
+	}
+	registrationID, proxyURL, err := s.prepareCPAEgress(r, provider, input.EgressServerID)
+	if err != nil {
+		cpaError(w, r)
+		return
+	}
+	wire := map[string]string{}
+	if registrationID != "" {
+		wire["registration_id"] = registrationID
+	}
+	if proxyURL != "" {
+		wire["egress_proxy_url"] = proxyURL
 	}
 	var result struct {
 		URL   string `json:"url"`
 		State string `json:"state"`
 	}
-	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/oauth", input, &result); err != nil {
+	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/oauth", wire, &result); err != nil {
 		cpaError(w, r)
 		return
 	}
@@ -298,7 +323,7 @@ func (s *Server) cpaOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		cpaError(w, r)
 		return
 	}
-	s.cpaAdmin.attempts[id] = cpaOAuthAttempt{SessionID: sessionFrom(r.Context()).ID, Provider: provider, State: result.State, ExpiresAt: now.Add(cpaOAuthTTL)}
+	s.cpaAdmin.attempts[id] = cpaOAuthAttempt{SessionID: sessionFrom(r.Context()).ID, Provider: provider, State: result.State, ExpiresAt: now.Add(cpaOAuthTTL), RegistrationID: registrationID}
 	s.cpaAdmin.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "url": result.URL, "expires_in": int(cpaOAuthTTL.Seconds())})
 }
@@ -360,13 +385,18 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result struct {
-		Status string `json:"status"`
+		Status    string `json:"status"`
+		AccountID string `json:"account_id,omitempty"`
 	}
 	if err := s.cpaCall(r.Context(), http.MethodPost, a.Provider+"/oauth/status", map[string]string{"state": a.State}, &result); err != nil {
 		cpaError(w, r)
 		return
 	}
 	if result.Status != "ok" && result.Status != "wait" && result.Status != "error" {
+		cpaError(w, r)
+		return
+	}
+	if result.AccountID != "" && !validUpstreamAccountID(result.AccountID) {
 		cpaError(w, r)
 		return
 	}
@@ -377,9 +407,30 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 // Explicit fields reject CPA per-file proxy, priority, prefix and API-key
 // metadata that could bypass the Gateway's allocation and routing policy.
 type cpaCredentialImport struct {
-	RefreshToken string `json:"refresh_token,omitempty"`
-	AccessToken  string `json:"access_token,omitempty"`
-	IDToken      string `json:"id_token,omitempty"`
+	RefreshToken   string  `json:"refresh_token,omitempty"`
+	AccessToken    string  `json:"access_token,omitempty"`
+	IDToken        string  `json:"id_token,omitempty"`
+	EgressServerID *string `json:"egress_server_id,omitempty"`
+}
+
+// Only the Gateway creates registration IDs and proxy routes. A browser may
+// select a node ID, but cannot supply an internal proxy URL or route credential.
+func (s *Server) prepareCPAEgress(r *http.Request, provider string, nodeID *string) (string, string, error) {
+	if s.config.EgressControlKey == "" {
+		if nodeID != nil && *nodeID != "" {
+			return "", "", errors.New("egress unavailable")
+		}
+		return "", "", nil
+	}
+	registration, err := s.createEgressRegistration(r, provider, nodeID)
+	if err != nil {
+		return "", "", err
+	}
+	resolution, err := s.egressRegistrationResolution(r.Context(), registration.ID)
+	if err != nil {
+		return "", "", err
+	}
+	return registration.ID, resolution.ProxyURL, nil
 }
 
 func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
@@ -398,12 +449,19 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			input, err = anthropicCredentialImport(data)
 		}
+		if err == nil {
+			var choice struct {
+				EgressServerID *string `json:"egress_server_id"`
+			}
+			err = json.Unmarshal(data, &choice)
+			input.EgressServerID = choice.EgressServerID
+		}
 		if err != nil {
 			badJSON(w, r, errors.New("invalid Claude OAuth credentials"))
 			return
 		}
 	} else {
-		if !cpaJSON(w, r, &input, 128<<10, "refresh_token", "access_token", "id_token") {
+		if !cpaJSON(w, r, &input, 128<<10, "refresh_token", "access_token", "id_token", "egress_server_id") {
 			return
 		}
 	}
@@ -411,11 +469,40 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_cpa_credential", "必须提供可刷新的 OAuth 凭据")
 		return
 	}
-	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/credentials", input, nil); err != nil {
+	registrationID, proxyURL, err := s.prepareCPAEgress(r, provider, input.EgressServerID)
+	if err != nil {
 		cpaError(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	wire := map[string]string{}
+	if input.RefreshToken != "" {
+		wire["refresh_token"] = input.RefreshToken
+	}
+	if input.AccessToken != "" {
+		wire["access_token"] = input.AccessToken
+	}
+	if input.IDToken != "" {
+		wire["id_token"] = input.IDToken
+	}
+	if registrationID != "" {
+		wire["registration_id"] = registrationID
+	}
+	if proxyURL != "" {
+		wire["egress_proxy_url"] = proxyURL
+	}
+	var result struct {
+		Status    string `json:"status"`
+		AccountID string `json:"account_id,omitempty"`
+	}
+	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/credentials", wire, &result); err != nil {
+		cpaError(w, r)
+		return
+	}
+	if result.Status != "ok" || result.AccountID != "" && !validUpstreamAccountID(result.AccountID) {
+		cpaError(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 // The import is a data projection, never a CPA auth record upload. Discard

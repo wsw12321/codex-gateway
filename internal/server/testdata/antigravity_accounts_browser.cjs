@@ -36,6 +36,7 @@ async function main() {
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin);
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
+      if (url.pathname === "/admin/egress-servers") return send({servers: [], version: 1, runtime: {ready: true, applied_version: 1}});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");

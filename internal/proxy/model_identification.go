@@ -201,6 +201,11 @@ func (c *Client) ProbeModelIdentification(ctx context.Context, probe ModelIdenti
 }
 
 func (c *Client) diagnosticJSON(ctx context.Context, method, path string, body []byte, headers http.Header, destination any) error {
+	if c.requireEgress {
+		if err := c.RequireAccountAccessCapability(ctx); err != nil {
+			return err
+		}
+	}
 	target := *c.baseURL
 	target.Path = strings.TrimRight(target.Path, "/") + path
 	target.RawQuery, target.Fragment = "", ""

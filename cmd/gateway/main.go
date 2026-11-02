@@ -121,6 +121,7 @@ func serve(ctx context.Context, cfg config.Config, repository *store.Store, logg
 	maintenanceContext, cancelMaintenance := context.WithCancel(ctx)
 	defer cancelMaintenance()
 	go maintenance.Runner{Store: repository, Logger: logger, Timezone: "UTC"}.Run(maintenanceContext)
+	go handler.RunEgressSync(maintenanceContext)
 
 	serveErrors := make(chan error, 1)
 	go func() {

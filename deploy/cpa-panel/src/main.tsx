@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button } from '../upstream/Button';
 import { Card } from '../upstream/Card';
-import { api, callbackFields, importFields, type Account, type OAuth, type Provider, type QuotaSnapshot } from './api';
+import { api, callbackFields, importFields, type Account, type EgressServer, type OAuth, type Provider, type QuotaSnapshot } from './api';
 import './panel.css';
 
 function App() {
@@ -16,6 +16,10 @@ function App() {
   const [callback, setCallback] = useState('');
   const [quota, setQuota] = useState<QuotaSnapshot | null>(null);
   const [deleteID, setDeleteID] = useState('');
+  const [egressServers, setEgressServers] = useState<EgressServer[]>([]);
+  const [egressID, setEgressID] = useState('__preserve__');
+  const [egressReady, setEgressReady] = useState(false);
+  const selectedEgress = egressID === '__preserve__' ? undefined : egressID;
   const providerName = {codex: 'Codex', antigravity: 'Antigravity', anthropic: 'Claude'}[provider];
 
   async function refresh() {
@@ -31,6 +35,13 @@ function App() {
     catch (error) { setMessage(error instanceof Error ? error.message : '操作未完成'); }
     finally { setBusy(false); }
   }
+
+  useEffect(() => {
+    let active = true;
+    api.egressServers().then(result => { if (active) { setEgressServers(result); setEgressReady(true); } })
+      .catch(error => { if (active) setMessage(error.message); });
+    return () => { active = false; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -60,13 +71,17 @@ function App() {
     <p className="notice">凭据操作需要近期身份验证。若提示验证过期，请返回控制台验证后重试。账号共享、权重、权限和计费在水源喵控制台管理。</p>
     <div role="status" aria-live="polite" className="message">{message}</div>
     <Card title={`${providerName} 授权`}>
-      <div className="actions"><Button disabled={busy} onClick={() => run(async () => setOAuth(await api.begin(provider)), '请打开授权页面并完成登录')}>新增 / 重新授权</Button><label className="file-label">导入 OAuth 凭据<input type="file" accept="application/json,.json" disabled={busy} onChange={event => {
+      <label htmlFor="egress">登录与导入使用的出口</label><select id="egress" disabled={busy || !!oauth || !egressReady} value={egressID} onChange={event => setEgressID(event.target.value)}>
+        <option value="__preserve__">保留已有绑定；新账号继承全局出口</option><option value="">继承全局出口</option>
+        {egressServers.map(node => <option key={node.id} value={node.id}>{node.name}</option>)}
+      </select><p className="hint">服务器端授权与凭据校验使用所选出口，成功后自动绑定。浏览器授权页面使用本地网络。<a href="/#egress-servers">管理出口服务器 ↗</a></p>
+      <div className="actions"><Button disabled={busy || !egressReady} onClick={() => run(async () => setOAuth(await api.begin(provider, selectedEgress)), '请打开授权页面并完成登录')}>新增 / 重新授权</Button><label className="file-label">导入 OAuth 凭据<input type="file" accept="application/json,.json" disabled={busy || !egressReady} onChange={event => {
         const file = event.currentTarget.files?.[0]; event.currentTarget.value = '';
         if (!file) return;
         void run(async () => {
           if (file.size > 128 * 1024) throw new Error('凭据文件过大');
           const credentials = importFields(await file.text(), provider);
-          try { await api.import(provider, credentials); await refresh(); }
+          try { await api.import(provider, credentials, selectedEgress); await refresh(); }
           finally { for (const key of Object.keys(credentials)) credentials[key] = ''; }
         });
       }}/></label></div>
@@ -81,7 +96,7 @@ function App() {
     <Card title="账号" extra={<Button variant="secondary" size="sm" disabled={busy} onClick={() => run(refresh, '账号列表已更新')}>刷新列表</Button>}>
       {accounts.length === 0 && <p className="empty">暂无已登记账号</p>}
       <div className="accounts">{accounts.map(account => <article key={account.id}>
-        <div><h2>{account.display_name || account.email_masked || account.id}</h2><p>{account.email_masked} · <code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p></div>
+        <div><h2>{account.display_name || account.email_masked || account.id}</h2><p>{account.email_masked} · <code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p><p>出口：{account.egress_server_name || (account.egress_server_id ? '已绑定 SS 节点' : '继承全局出口')}</p></div>
         <div className="actions">
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.status(provider, account.id, account.gateway_manual_status !== 'enabled'); await refresh(); })}>{account.gateway_manual_status === 'enabled' ? '停用' : '启用'}</Button>
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.refresh(provider, account.id); await refresh(); })}>刷新凭据</Button>

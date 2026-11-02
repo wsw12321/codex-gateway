@@ -10,6 +10,12 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "deploy/egress/entrypoint.sh"
+ACCOUNT_RULES = [
+    "cache_peer 172.28.60.3 parent 17891 0 no-query name=account_egress login=PASSTHRU",
+    "cache_peer_access account_egress allow codex_clients account_route",
+    "cache_peer_access account_egress deny all",
+    "never_direct allow account_route",
+]
 
 
 class CodexRelayTests(unittest.TestCase):
@@ -31,14 +37,14 @@ class CodexRelayTests(unittest.TestCase):
             env=env, capture_output=True, text=True, timeout=5,
         )
 
-    def test_unconfigured_deployment_has_no_parent_or_direct_prohibition(self):
+    def test_unconfigured_global_mode_preserves_mandatory_account_parent(self):
         for ip in (None, ""):
             with self.subTest(ip=ip):
                 result = self.render(ip)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 directives = [line for line in result.stdout.splitlines()
                               if line.strip() and not line.lstrip().startswith("#")]
-                self.assertEqual(directives, [])
+                self.assertEqual(directives, ACCOUNT_RULES + ["never_direct deny all"])
 
     def test_enabled_relay_is_the_only_parent_and_required_for_both_clients(self):
         for ip in ("10.77.0.2", "127.0.0.1", "255.255.255.255", "0.0.0.0"):
@@ -49,8 +55,9 @@ class CodexRelayTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     directives = [line for line in result.stdout.splitlines()
                                   if line.strip() and not line.lstrip().startswith("#")]
-                    self.assertEqual(directives, [
+                    self.assertEqual(directives, ACCOUNT_RULES + [
                         f"cache_peer {ip} parent {expected} 0 no-query default name=codex_relay",
+                        "cache_peer_access codex_relay deny account_route",
                         "cache_peer_access codex_relay allow codex_clients",
                         "cache_peer_access codex_relay allow antigravity_clients",
                         "cache_peer_access codex_relay deny all",
@@ -100,8 +107,9 @@ class CodexRelayTests(unittest.TestCase):
     def test_explicit_direct_overrides_retained_relay_settings(self):
         result = self.render("10.77.0.2", "3128", mode="direct")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertNotIn("cache_peer", result.stdout)
-        self.assertNotIn("never_direct", result.stdout)
+        self.assertNotIn("name=codex_relay", result.stdout)
+        self.assertNotIn("10.77.0.2", result.stdout)
+        self.assertIn("never_direct allow account_route", result.stdout)
 
     def test_empty_mode_preserves_legacy_selection(self):
         for ip in (None, "", "10.77.0.2"):
@@ -118,10 +126,19 @@ class CodexRelayTests(unittest.TestCase):
             result = self.render(ip, mode="shadowsocks")
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("cache_peer 172.28.50.3 parent 17890 0", result.stdout)
-            self.assertEqual(result.stdout.count("cache_peer "), 1)
+            self.assertEqual(result.stdout.count("cache_peer "), 2)
             self.assertNotIn("10.77.0.2", result.stdout)
             self.assertIn("never_direct allow codex_clients", result.stdout)
             self.assertIn("never_direct allow antigravity_clients", result.stdout)
+
+    def test_account_parent_is_mandatory_before_global_rules_in_every_mode(self):
+        for mode in ("direct", "relay", "shadowsocks"):
+            result = self.render("10.77.0.2", mode=mode)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines()[:4], ACCOUNT_RULES)
+            if mode != "direct":
+                self.assertLess(result.stdout.index("cache_peer_access codex_relay deny account_route"),
+                                result.stdout.index("cache_peer_access codex_relay allow codex_clients"))
 
     def test_invalid_mode_fails_before_any_configuration(self):
         for mode in ("auto", "DIRECT", "direct ", "relay\n", "direct;true", "$(id)"):

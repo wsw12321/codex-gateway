@@ -12,6 +12,8 @@ import (
 // including affinity and retries, to the admission-time group account pool.
 const GroupUpstreamAccountScopeV1 = "group_upstream_account_scope_v1"
 
+const AccountEgressProtocolV1 = "account_egress_v1"
+
 // Check each dispatch, so replacing a sidecar with an old image cannot retain a
 // cached authorization capability. The endpoint uses the normal internal token.
 func (c *Client) requireAccountAccessCapability(ctx context.Context, groupScoped bool) error {
@@ -21,12 +23,16 @@ func (c *Client) requireAccountAccessCapability(ctx context.Context, groupScoped
 		Protocol          string `json:"protocol"`
 		AnthropicMessages string `json:"anthropic_messages,omitempty"`
 		GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
+		AccountEgress     string `json:"account_egress,omitempty"`
 	}
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
 		return err
 	}
 	if response.Protocol != AccountAccessProtocolV1 {
 		return errors.New("sidecar account access protocol unavailable")
+	}
+	if c.requireEgress && response.AccountEgress != AccountEgressProtocolV1 {
+		return errors.New("sidecar account egress protocol unavailable")
 	}
 	if c.anthropic && response.AnthropicMessages != AnthropicMessagesProtocolV1 {
 		return errors.New("sidecar Anthropic protocol unavailable")

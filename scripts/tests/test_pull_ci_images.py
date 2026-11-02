@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = "a" * 40
-SERVICES = ("gateway", "codex-compat", "antigravity-bridge")
+SERVICES = ("gateway", "codex-compat", "antigravity-bridge", "account-egress")
 
 
 @unittest.skipUnless(shutil.which("jq"), "jq is required")
@@ -43,6 +43,7 @@ class PullCIImagesTests(unittest.TestCase):
                 "antigravity-bridge": {
                     "image": f"codex-gateway-antigravity:agy1.2.4-{REVISION}"
                 },
+                "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v1"},
             }
         }
         self.env = dict(
@@ -108,7 +109,7 @@ elif args[0] != 'tag':
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             [call[0] for call in calls],
-            ["pull", "image", "pull", "image", "pull", "image", "tag", "tag", "tag"],
+            ["pull", "image"] * len(SERVICES) + ["tag"] * len(SERVICES),
         )
         for index, service in enumerate(SERVICES):
             self.assertEqual(
@@ -116,7 +117,7 @@ elif args[0] != 'tag':
                 ["pull", "--platform", "linux/amd64", self.manifest["images"][service]],
             )
             self.assertEqual(
-                calls[6 + index],
+                calls[len(SERVICES) * 2 + index],
                 ["tag", self.manifest["images"][service], self.config["services"][service]["image"]],
             )
 

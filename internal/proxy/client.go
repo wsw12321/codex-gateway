@@ -158,6 +158,16 @@ type Client struct {
 	antigravity    bool
 	cpaNative      bool
 	anthropic      bool
+	requireEgress  bool
+}
+
+// RequireAccountEgress is configured before serving requests. Every operation
+// then rechecks the marker, so replacing CPA with an older image cannot bypass
+// durable account bindings.
+func (c *Client) RequireAccountEgress(required bool) {
+	if c != nil {
+		c.requireEgress = required
+	}
 }
 
 type AllocationGroup struct {

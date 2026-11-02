@@ -25,6 +25,7 @@ async function main() {
     await page.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url()); assert.equal(url.origin, origin);
       const send = (body, type = 'application/json') => route.fulfill({status: 200, contentType: type, body: typeof body === 'string' ? body : JSON.stringify(body)});
+      if (url.pathname === "/admin/egress-servers") return send({servers: [], version: 1, runtime: {ready: true, applied_version: 1}});
       if (url.pathname === '/') return send(fs.readFileSync(path.join(assets, 'index.html'), 'utf8'), 'text/html');
       const filename = {'/static/app.js': ['application/javascript', null], '/static/style.css': ['text/css', 'style.css'], '/static/theme.js': ['application/javascript', 'theme.js'], '/static/favicon.svg': ['image/svg+xml', 'favicon.svg']}[url.pathname];
       if (filename) return send(filename[1] ? fs.readFileSync(path.join(assets, filename[1]), 'utf8') : app, filename[0]);

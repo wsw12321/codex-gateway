@@ -25,6 +25,7 @@ type ProviderAccountCapabilities struct {
 	Protocol          string `json:"protocol"`
 	AnthropicMessages string `json:"anthropic_messages,omitempty"`
 	GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
+	AccountEgress     string `json:"account_egress,omitempty"`
 	List              bool   `json:"list"`
 	Concurrency       bool   `json:"concurrency"`
 	Status            bool   `json:"status"`
@@ -297,6 +298,7 @@ func (c *Client) AccountCapabilities(ctx context.Context) (ProviderAccountCapabi
 		Protocol          string `json:"protocol"`
 		AnthropicMessages string `json:"anthropic_messages,omitempty"`
 		GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
+		AccountEgress     string `json:"account_egress,omitempty"`
 	}
 	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
 		return ProviderAccountCapabilities{}, err
@@ -304,7 +306,10 @@ func (c *Client) AccountCapabilities(ctx context.Context) (ProviderAccountCapabi
 	if response.Protocol != AccountAccessProtocolV1 || (c.anthropic && response.AnthropicMessages != AnthropicMessagesProtocolV1) {
 		return ProviderAccountCapabilities{}, &InternalAPIError{StatusCode: http.StatusServiceUnavailable, Code: "upstream_access_protocol_unavailable"}
 	}
-	return ProviderAccountCapabilities{Protocol: response.Protocol, AnthropicMessages: response.AnthropicMessages, GroupAccountScope: response.GroupAccountScope}, nil
+	if c.requireEgress && response.AccountEgress != AccountEgressProtocolV1 {
+		return ProviderAccountCapabilities{}, &InternalAPIError{StatusCode: http.StatusServiceUnavailable, Code: "upstream_egress_protocol_unavailable"}
+	}
+	return ProviderAccountCapabilities{Protocol: response.Protocol, AnthropicMessages: response.AnthropicMessages, GroupAccountScope: response.GroupAccountScope, AccountEgress: response.AccountEgress}, nil
 }
 
 // RequireAccountAccessCapability is the error-only form used by callers that

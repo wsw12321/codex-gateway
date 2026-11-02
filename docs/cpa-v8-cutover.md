@@ -67,8 +67,9 @@ go test -count=1 ./...
 go test -race -count=1 ./...
 go vet ./...
 ./scripts/validate-cpa-panel.sh
+./scripts/bootstrap-secrets.sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat antigravity-bridge
+./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
 ```
 
 race 需要 C 编译器；前端回归需要 Node。面板重建使用 Bun 1.3.14 和

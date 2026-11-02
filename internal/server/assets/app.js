@@ -20,11 +20,13 @@ const sectionTitles = {
   "user-upstream-access": "账号权限",
   "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
+  "egress-servers": "出口服务器",
   "antigravity-accounts": "上游账号",
   "anthropic-accounts": "Claude 账号",
   information: "数据维护",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
+ownerOnlySections.add("egress-servers");
 ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("anthropic-accounts");
 ownerOnlySections.add("model-access");
@@ -133,6 +135,12 @@ let modelIdentificationActiveRunID = "";
 let modelIdentificationActiveRun = null;
 let modelIdentificationRunReplaced = false;
 let modelIdentificationRecords = [];
+let egressServers = [];
+let egressLoaded = false;
+let egressSequence = 0;
+let egressDraftID = null;
+let egressOperation = null;
+let egressPollTimer = 0;
 let upstreamAccountRequestSequence = 0;
 let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
@@ -805,6 +813,7 @@ async function copyText(value) {
 }
 
 function clearSensitiveDOM() {
+  resetEgressServers();
   modelCatalogRequests.clear();
   all(".model-picker").forEach((host) => { host.modelPickerRequest = null; host.modelPicker = null; host.replaceChildren(); });
   resetProfile();
@@ -6854,6 +6863,9 @@ function syncUpstreamAccountControls() {
     const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && upstreamAccountSyncHealthy;
     button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
       loggingOut || state?.user?.role !== "owner";
+    // Gateway bindings remain editable when CPA no longer lists an account.
+    const egressForm = card.querySelector(".upstream-egress-form");
+    if (egressForm) for (const control of egressForm.querySelectorAll("select, button")) control.disabled = !account.id || !egressLoaded || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
     const pending = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "status";
     const gatewayBlocked = upstreamAccountManuallyBlocked(account);
     button.textContent = pending ? (upstreamAccountOperation.enabled ? "启用中…" : "禁用中…") :
@@ -7371,6 +7383,177 @@ function startUpstreamConcurrency() {
   sample();
 }
 
+function egressIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function egressMessage(message = "", kind = "error") {
+  const host = byId("egress-message");
+  if (!host) return;
+  host.textContent = message;
+  host.dataset.kind = kind;
+  host.classList.toggle("hidden", !message);
+}
+
+function resetEgressServers() {
+  egressSequence++;
+  globalThis.window?.clearTimeout(egressPollTimer);
+  egressServers = [];
+  egressLoaded = false;
+  egressOperation = null;
+  egressDraftID = null;
+  const form = byId("egress-form");
+  if (form) form.reset();
+  const dialog = byId("egress-dialog");
+  if (dialog?.open) dialog.close();
+  byId("egress-list")?.replaceChildren();
+  egressMessage();
+}
+
+function populateEgressSelect(select, selected = "") {
+  select.replaceChildren(element("option", {text: "继承全局出口", attributes: {value: ""}}),
+    ...egressServers.map((node) => element("option", {text: node.name, attributes: {value: node.id}})));
+  if (selected && !egressServers.some((node) => node.id === selected)) {
+    select.append(element("option", {text: "当前节点（配置尚未加载）", attributes: {value: selected}}));
+  }
+  select.value = selected;
+}
+
+async function loadEgressServers() {
+  if (loggingOut || state?.user?.role !== "owner") return;
+  const currentIdentity = egressIdentityCurrent();
+  const sequence = ++egressSequence;
+  const current = () => currentIdentity() && sequence === egressSequence;
+  const result = await api("/admin/egress-servers", undefined, current);
+  if (!current()) return;
+  if (!Array.isArray(result?.servers)) throw new Error("出口服务器响应格式异常。");
+  egressServers = result.servers;
+  egressLoaded = true;
+  renderEgressServers(result);
+  for (const select of all(".upstream-egress-select")) populateEgressSelect(select, select.value);
+  syncUpstreamAccountControls();
+  window.clearTimeout(egressPollTimer);
+  if (location.hash === "#egress-servers") {
+    egressPollTimer = window.setTimeout(() => {
+      if (currentIdentity()) loadEgressServers().catch((error) => { if (currentIdentity()) egressMessage(friendlyError(error)); });
+    }, 5000);
+  }
+}
+
+function renderEgressServers(result) {
+  const host = byId("egress-list");
+  if (!host) return;
+  const runtime = result.runtime || {};
+  const applied = runtime.ready && runtime.applied_version === result.version;
+  byId("egress-runtime").textContent = applied ? "出口配置已应用。此状态不代表远端节点或密码已通过连通性验证。" :
+    runtime.error_code ? "配置应用失败，后台将自动重试。相关账号的新请求暂不可用。" : "配置待应用。相关账号的新请求将在出口服务就绪后恢复。";
+  host.replaceChildren(...egressServers.map((node) => {
+    const nodeApplied = runtime.ready && (runtime.node_revisions?.[node.id] === node.revision || applied);
+    const edit = element("button", {type: "button", className: "secondary", text: "编辑"});
+    const remove = element("button", {type: "button", className: "secondary", text: "删除"});
+    edit.addEventListener("click", () => openEgressEditor(node));
+    remove.addEventListener("click", () => {
+      if (remove.dataset.confirm !== "true") { remove.dataset.confirm = "true"; remove.textContent = "确认删除"; return; }
+      runButton(remove, () => deleteEgressServer(node), "删除中…");
+    });
+    return element("article", {className: "panel egress-card"},
+      element("div", {className: "panel-heading"}, element("h3", {text: node.name}), element("span", {className: "status-badge", text: nodeApplied ? "已应用" : "待应用"})),
+      element("p", {className: "egress-address", text: `${node.server}:${node.port}`}),
+      element("p", {className: "muted", text: `SS · ${node.cipher} · UDP ${node.udp ? "开启" : "关闭"}`}),
+      element("div", {className: "actions"}, edit, remove));
+  }));
+  if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 节点后，可在上游账号设置中绑定。"));
+}
+
+function openEgressEditor(node = null) {
+  if (loggingOut || state?.user?.role !== "owner" || egressOperation) return;
+  const form = byId("egress-form");
+  form.reset();
+  egressDraftID = node?.id || "";
+  for (const name of ["name", "server", "port", "cipher"]) form.elements[name].value = node?.[name] ?? (name === "cipher" ? "aes-128-gcm" : "");
+  form.elements.udp.checked = Boolean(node?.udp);
+  form.elements.password.required = !node;
+  byId("egress-dialog-title").textContent = node ? "编辑出口服务器" : "新增出口服务器";
+  byId("egress-password-help").textContent = node ? "留空保留现有密码。" : "新增节点需要填写密码。";
+  setLocalMessage(form);
+  openDialog("egress-dialog");
+}
+
+async function saveEgressServer(event) {
+  if (egressOperation || egressDraftID === null) return;
+  const form = event.currentTarget;
+  const operation = {id: egressDraftID};
+  const currentIdentity = egressIdentityCurrent();
+  const current = () => currentIdentity() && egressOperation === operation;
+  const payload = {name: form.elements.name.value.trim(), server: form.elements.server.value.trim(),
+    port: Number(form.elements.port.value), cipher: form.elements.cipher.value, udp: form.elements.udp.checked};
+  if (form.elements.password.value) payload.password = form.elements.password.value;
+  egressOperation = operation;
+  try {
+    await sensitiveAction(() => api(`/admin/egress-servers${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
+      method: operation.id ? "PUT" : "POST", body: JSON.stringify(payload),
+    }, current), current);
+    if (!current()) return;
+    form.elements.password.value = "";
+    byId("egress-dialog").close();
+    egressMessage("节点已保存，应用状态见下方。", "ok");
+    await loadEgressServers();
+  } finally {
+    delete payload.password;
+    if (egressOperation === operation) egressOperation = null;
+  }
+}
+
+async function deleteEgressServer(node) {
+  if (egressOperation || loggingOut || state?.user?.role !== "owner") return;
+  const operation = {id: node.id};
+  egressOperation = operation;
+  const identity = egressIdentityCurrent();
+  const current = () => identity() && egressOperation === operation;
+  try {
+    await sensitiveAction(() => api(`/admin/egress-servers/${encodeURIComponent(node.id)}`, {method: "DELETE"}, current), current);
+    if (!current()) return;
+    egressMessage("节点已删除。", "ok");
+    await loadEgressServers();
+  } finally { if (egressOperation === operation) egressOperation = null; }
+}
+
+function upstreamEgressBlock(account) {
+  const select = element("select", {className: "upstream-egress-select", attributes: {"aria-label": "出口服务器"}});
+  populateEgressSelect(select, account.egress_server_id || "");
+  const button = element("button", {type: "submit", className: "secondary", text: "保存出口"});
+  select.disabled = button.disabled = !egressLoaded || !account.id || loggingOut || state?.user?.role !== "owner";
+  const form = element("form", {className: "upstream-egress-form tool-block"},
+    element("h4", {text: "出口服务器"}), element("label", {text: "该账号使用的出口"}, select), button,
+    element("p", {className: "muted", text: "节点故障时不会回退直连。修改影响后续请求，正在进行的请求继续完成。"}),
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveUpstreamEgress(account, form, select.value).catch((error) => { if (form.isConnected) setLocalMessage(form, friendlyError(error)); });
+  });
+  return form;
+}
+
+async function saveUpstreamEgress(account, form, nodeID) {
+  if (upstreamAccountOperation || !egressLoaded || upstreamAccountListLoading || !account.id || !upstreamAccounts.includes(account) || loggingOut || state?.user?.role !== "owner") return;
+  const identity = egressIdentityCurrent();
+  const operation = {id: account.id, kind: "egress"};
+  const provider = upstreamAccountProvider;
+  const current = () => identity() && upstreamAccountOperation === operation && upstreamAccountProvider === provider;
+  const path = upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/egress`);
+  upstreamAccountOperation = operation;
+  syncUpstreamAccountControls();
+  try {
+    await sensitiveAction(() => api(path, {method: "PUT", body: JSON.stringify({egress_server_id: nodeID || null})}, current), current);
+    if (!current()) return;
+    account.egress_server_id = nodeID || null;
+    setLocalMessage(form, "账号出口已保存。", "ok");
+  } finally {
+    if (upstreamAccountOperation === operation) { upstreamAccountOperation = null; syncUpstreamAccountControls(); }
+  }
+}
+
 function upstreamAccountCard(account) {
   const quotaResult = element("div", {
     className: "upstream-quota-result",
@@ -7410,6 +7593,7 @@ function upstreamAccountCard(account) {
       element("strong", {className: "upstream-concurrency-count", text: "暂不可用"}),
       element("small", {text: upstreamAccountLanguage("同一 root 的重叠请求共享名额", "同一 API Key 的同对话重叠请求共享名额；未识别的请求独占")}),
     ),
+    upstreamEgressBlock(account),
     upstreamAccessBlock(account),
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
@@ -8490,6 +8674,9 @@ function routeFromHash(focusContent = true) {
     });
   }
   syncVisiblePolling();
+  if (section === "egress-servers" || ["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) {
+    loadEgressServers().catch((error) => egressMessage(friendlyError(error)));
+  } else { window.clearTimeout(egressPollTimer); }
   if (section === "overview") loadOverview();
   if (section === "plans") {
     if (selectedBillingUserID() !== state?.user?.id) selectBillingUser(state.user).catch((error) => billingPlanMessage(friendlyError(error)));
@@ -8649,6 +8836,13 @@ function applyWebAuthnSupport() {
 }
 
 function bindUI() {
+  bindAsync("egress-refresh", "click", () => loadEgressServers(), "刷新中…", egressIdentityCurrent);
+  byId("egress-create").addEventListener("click", () => openEgressEditor());
+  bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
+  byId("egress-dialog").addEventListener("close", () => {
+    byId("egress-form").elements.password.value = "";
+    egressDraftID = null;
+  });
   bindUserUpstreamAccess();
   bindBrowserHandoff();
   bindNavigation();

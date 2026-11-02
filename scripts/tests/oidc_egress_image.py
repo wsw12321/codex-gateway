@@ -125,7 +125,8 @@ def run(image, log_dir):
         for original, replacement in (("172.28.30.3/32", f"{MODEL_SOURCES[0]}/32"),
                                       ("172.28.40.3/32", f"{MODEL_SOURCES[1]}/32"),
                                       ("172.28.30.2/32", f"{GATEWAY}/32"),
-                                      ("http_port 3128", "http_port 127.0.0.1:3128")):
+                                      ("http_port 3128", "http_port 127.0.0.1:3128"),
+                                      ("http_port 172.28.30.4:3129", "http_port 127.0.0.1:3130")):
             assert config.count(original) == 1, original
             config = config.replace(original, replacement)
         config += ("\nconnect_timeout 2 seconds\nforward_timeout 5 seconds\n"

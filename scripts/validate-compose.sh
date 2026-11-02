@@ -27,11 +27,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.48-gateway.patch
-compat_patch_sha256=3d869841cf43a151b7e32c67d0511aa1877a665ed11443235b603428bfd2e19e
+compat_patch_sha256=0ad73a791d9d916d1620bc1b535396e8d5da51c2834fa7f076c9a6c78c4d73e4
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.48-dbb70621-3d869841cf43a151-cpa
+compat_image=codex-gateway-compat:v8.0.48-dbb70621-0ad73a791d9d916d-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -103,6 +103,7 @@ test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
+        'http_access deny account_route !codex_clients' \
         'http_access allow CONNECT codex_clients codex_upstreams' \
         'http_access allow CONNECT codex_clients cpa_google_upstreams' \
         'http_access allow CONNECT codex_clients cpa_anthropic_upstreams' \
@@ -115,12 +116,20 @@ test "$(awk '$1 == "include" || $1 ~ /^(cache_peer|cache_peer_access|cache_peer_
     "$(printf '%s\n' 'include /run/codex-relay.conf' 'include /run/gateway-oidc.conf')" || fail 'egress must use only its generated relay routing fragment and OIDC fragment'
 relay_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'disabled relay fragment generation failed'
-test -z "$(printf '%s\n' "$relay_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
-    fail 'disabled relay must retain direct egress'
+account_rules=$(printf '%s\n' \
+    'cache_peer 172.28.60.3 parent 17891 0 no-query name=account_egress login=PASSTHRU' \
+    'cache_peer_access account_egress allow codex_clients account_route' \
+    'cache_peer_access account_egress deny all' \
+    'never_direct allow account_route')
+test "$(printf '%s\n' "$relay_rules" | awk 'NF && $1 !~ /^#/ { print }')" = \
+    "$(printf '%s\n' "$account_rules" 'never_direct deny all')" || \
+    fail 'global direct mode must retain mandatory account routing'
 relay_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'relay fragment generation failed'
 test "$relay_rules" = "$(printf '%s\n' \
+    "$account_rules" \
     'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
+    'cache_peer_access codex_relay deny account_route' \
     'cache_peer_access codex_relay allow codex_clients' \
     'cache_peer_access codex_relay allow antigravity_clients' \
     'cache_peer_access codex_relay deny all' \
@@ -129,14 +138,19 @@ test "$relay_rules" = "$(printf '%s\n' \
     'never_direct deny all')" || fail 'Codex and Antigravity must share a unique mandatory parent without direct fallback'
 direct_rules=$(EGRESS_MODE=direct OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'explicit direct fragment generation failed'
-test -z "$(printf '%s\n' "$direct_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
+test "$(printf '%s\n' "$direct_rules" | awk 'NF && $1 !~ /^#/ { print }')" = \
+    "$(printf '%s\n' "$account_rules" 'never_direct deny all')" || \
     fail 'explicit direct must ignore retained relay settings'
 ss_rules=$(EGRESS_MODE=shadowsocks OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'Shadowsocks fragment generation failed'
 # All routing permissions stay identical; only the unique parent changes.
 test "$ss_rules" = "$(printf '%s\n' "$relay_rules" | sed 's/cache_peer 10.77.0.2 parent 3128 /cache_peer 172.28.50.3 parent 17890 /')" || \
     fail 'Shadowsocks must use only Mihomo without direct fallback'
-unset relay_rules direct_rules ss_rules
+unset relay_rules direct_rules ss_rules account_rules
+test "$(awk '$1 == "http_port" { print }' "$egress_config")" = \
+    "$(printf '%s\n' 'http_port 3128' 'http_port 172.28.30.4:3129 name=account_routes')" && \
+    grep -Fxq 'acl account_route myportname account_routes' "$egress_config" || \
+    fail 'account egress requires its fixed named internal Squid listener'
 oidc_rules=$(EGRESS_MODE= OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP= CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-oidc-config) || \
     fail 'disabled OIDC fragment generation failed'
 test -z "$(printf '%s\n' "$oidc_rules" | awk 'NF && $1 !~ /^#/ { print }')" || \
@@ -149,8 +163,8 @@ test "$oidc_rules" = "$(printf '%s\n' \
     'always_direct allow gateway_oidc_clients')" || \
     fail 'OIDC must allow only the Gateway source to its exact Auth host without the model relay'
 unset oidc_rules
-test "$(awk '$1 == "http_access" || ($1 == "include" && $2 == "/run/gateway-oidc.conf") { print }' "$egress_config" | head -n 3)" = \
-    "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' 'include /run/gateway-oidc.conf')" || \
+test "$(awk '$1 == "http_access" || ($1 == "include" && $2 == "/run/gateway-oidc.conf") { print }' "$egress_config" | head -n 4)" = \
+    "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' 'http_access deny account_route !codex_clients' 'include /run/gateway-oidc.conf')" || \
     fail 'OIDC egress must follow the global CONNECT and TLS port denials'
 grep -Fxq 'logformat codex_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
     grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" && \
@@ -689,7 +703,7 @@ jq -e --arg mode "$egress_mode" '
   ([.services | to_entries[] | select(.value.networks.tunnel_external != null) | .key]) ==
     ["cloudflared"] and
   ([.services | to_entries[] | select(.value.networks.egress_external != null) | .key] | sort) ==
-    (if $mode == "shadowsocks" then ["egress-allowlist", "ss-egress"] else ["egress-allowlist"] end) and
+    (if $mode == "shadowsocks" then ["account-egress", "egress-allowlist", "ss-egress"] else ["account-egress", "egress-allowlist"] end) and
   .services.cloudflared.networks.edge_internal.ipv4_address == "172.28.10.4" and
   .services.caddy.networks.edge_internal.ipv4_address == "172.28.10.2" and
   .services.gateway.networks.compat_internal.ipv4_address == "172.28.30.2" and
@@ -732,6 +746,49 @@ runtime_image=$(lock_value RUNTIME_IMAGE)
 cliproxy_runtime_image=$(lock_value CLIPROXY_RUNTIME_IMAGE)
 squid_image=$(lock_value SQUID_IMAGE)
 mihomo_image=$(lock_value MIHOMO_IMAGE)
+
+# Dynamic account exits have separate control and data subnets. Only Squid can
+# send CONNECTs; only Gateway receives the control credential. No Docker socket,
+# OAuth volume, database secret or externally published listener is permitted.
+jq -e --arg mihomo "$mihomo_image" --arg golang "$golang_image" \
+    --arg runtime "$runtime_image" --arg root "$root" --arg secret "$secret_dir/egress_control_key" '
+  .networks.account_egress_data.internal == true and
+  .networks.account_egress_data.ipam.config == [{"subnet":"172.28.60.0/24"}] and
+  .networks.account_egress_control.internal == true and
+  .networks.account_egress_control.ipam.config == [{"subnet":"172.28.70.0/24"}] and
+  ([.services | to_entries[] | select(.value.networks.account_egress_data != null) | .key] | sort) ==
+    ["account-egress", "egress-allowlist"] and
+  ([.services | to_entries[] | select(.value.networks.account_egress_control != null) | .key] | sort) ==
+    ["account-egress", "gateway"] and
+  .services.gateway.networks.account_egress_control.ipv4_address == "172.28.70.2" and
+  .services["egress-allowlist"].networks.account_egress_data.ipv4_address == "172.28.60.2" and
+  .services.gateway.environment.EGRESS_CONTROL_URL == "http://account-egress:17892" and
+  .services.gateway.environment.EGRESS_CONTROL_KEY_FILE == "/run/secrets/egress_control_key" and
+  .services.gateway.environment.EGRESS_CONTROL_KEY == null and
+  .secrets.egress_control_key.file == $secret and
+  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "egress_control_key")) | .key] | sort) ==
+    ["account-egress", "gateway"] and
+  (.services["account-egress"] |
+    .image == "codex-gateway-account-egress:1.19.32-v1" and
+    .build.context == $root and .build.dockerfile == "deploy/account-egress/Dockerfile" and
+    .build.args.MIHOMO_IMAGE == $mihomo and .build.args.GOLANG_IMAGE == $golang and .build.args.RUNTIME_IMAGE == $runtime and
+    .read_only == true and (.user | test("^10004:[1-9][0-9]*$")) and
+    .init == true and .pids_limit == 128 and
+    .privileged != true and .network_mode == null and .pid == null and .ipc == null and
+    ((.ports // []) | length == 0) and ((.volumes // []) | length == 0) and
+    ((.devices // []) | length == 0) and ((.cap_add // []) | length == 0) and .cap_drop == ["ALL"] and
+    .security_opt == ["no-new-privileges:true"] and
+    (.networks | keys | sort) == ["account_egress_control", "account_egress_data", "egress_external"] and
+    .networks.account_egress_control.ipv4_address == "172.28.70.3" and
+    .networks.account_egress_data.ipv4_address == "172.28.60.3" and
+    ([.secrets[].source]) == ["egress_control_key"] and
+    ((.environment // {}) | length == 0) and
+    (.tmpfs | sort) == [
+      "/run/account-egress:rw,noexec,nosuid,nodev,size=32m,mode=0700,uid=10004,gid=10004",
+      "/tmp:rw,noexec,nosuid,nodev,size=8m,mode=0700,uid=10004,gid=10004"
+    ] and
+    .healthcheck.test == ["CMD", "/usr/local/bin/account-egress", "healthcheck"])
+' "$tmp" >/dev/null || fail 'account egress requires isolated control/data networks, pinned Mihomo and a dedicated file credential'
 
 # The optional transport must not give an application container an alternate
 # proxy or credential path. Its sole client is Squid on a private subnet.
@@ -827,8 +884,8 @@ jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" --arg mode "$egr
   (.services["egress-allowlist"] |
     squid_security and .network_mode == null and
     (.networks | keys | sort) ==
-      (if $mode == "shadowsocks" then ["antigravity_internal", "compat_internal", "egress_external", "ss_internal"]
-       else ["antigravity_internal", "compat_internal", "egress_external"] end) and
+      (if $mode == "shadowsocks" then ["account_egress_data", "antigravity_internal", "compat_internal", "egress_external", "ss_internal"]
+       else ["account_egress_data", "antigravity_internal", "compat_internal", "egress_external"] end) and
     .entrypoint == ["/usr/local/bin/codex-egress-entrypoint.sh"] and
     .command == ["-f", "/etc/squid/squid.conf", "-NYC"] and
     (.volumes | length == 2) and
@@ -928,6 +985,7 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
   ([.services.gateway.secrets[] | .source] | sort) == ([
     "cpa_management_key",
     "database_url",
+    "egress_control_key",
     "gateway_api_key_encryption_key",
     "gateway_api_key_pepper",
     "gateway_session_secret",
@@ -1027,6 +1085,7 @@ for secret_name in \
     gateway_session_secret \
     sidecar_api_key \
     cpa_management_key \
+    egress_control_key \
     antigravity_bridge_api_key \
     antigravity_keyring_password \
     database_url $optional_secret
@@ -1039,6 +1098,25 @@ do
         fail "secret must have mode 0640: $secret"
     test "$(stat -c '%g' "$secret")" = "$secret_gid" || \
         fail "secret group must match GATEWAY_SECRET_GID=$secret_gid: $secret"
+done
+
+python3 - "$secret_dir/egress_control_key" <<'PY' || fail 'invalid egress control credential'
+from pathlib import Path
+import sys
+raw = Path(sys.argv[1]).read_bytes()
+if len(raw) > 512:
+    raise SystemExit("egress control credential file is too large")
+if raw.endswith(b"\n"):
+    raw = raw[:-1]
+    if raw.endswith(b"\r"):
+        raw = raw[:-1]
+if len(raw) < 32 or any(value in raw for value in (b"\0", b"\r", b"\n", b" ", b"\t")):
+    raise SystemExit("egress control credential must be a private token of at least 32 bytes")
+PY
+for peer_secret in sidecar_api_key cpa_management_key; do
+    if cmp -s "$secret_dir/egress_control_key" "$secret_dir/$peer_secret"; then
+        fail 'egress control and CPA credentials must be distinct'
+    fi
 done
 
 api_key_encryption_key=$(cat "$secret_dir/gateway_api_key_encryption_key")

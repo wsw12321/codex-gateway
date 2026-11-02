@@ -40,6 +40,7 @@ async function main() {
       const req = route.request(), url = new URL(req.url());
       assert.equal(url.origin, origin);
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
+      if (url.pathname === "/admin/egress-servers") return send({servers: [], version: 1, runtime: {ready: true, applied_version: 1}});
       if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
@@ -53,8 +54,8 @@ async function main() {
       if (url.pathname === "/admin/usage/global") return send({summary: {usage: {tokens: 87654321, requests: 21456, actual_cost_usd: "246.12345", unpriced_tokens: 1200}, pricing_coverage: 0.987, active_users: 12, total_users: 16}});
       if (url.pathname === "/admin/alerts") return send({alerts: [{severity: "warning"}]});
       if (url.pathname === "/admin/monitoring") return send({sampled_at: new Date().toISOString(), recent: requests, failures: [requests[2]]});
-      if (/^\/admin\/(upstream|antigravity)-accounts(?:\/concurrency)?$/.test(url.pathname)) {
-        const provider = url.pathname.includes("antigravity") ? "antigravity" : "codex";
+      if (/^\/admin\/(upstream|antigravity|anthropic)-accounts(?:\/concurrency)?$/.test(url.pathname)) {
+        const provider = url.pathname.includes("antigravity") ? "antigravity" : url.pathname.includes("anthropic") ? "anthropic" : "codex";
         if (provider === "antigravity" && failAGY) return send({error: {message: "模拟 Antigravity 暂不可用"}}, 503);
         if (url.pathname.endsWith("concurrency")) return send({sampled_at: new Date().toISOString(), accounts: [1, 2].map((i) => ({id: `${provider}-${i}`, active_requests: i}))});
         return send({accounts: [account(provider, 1), account(provider, 2)], until: new Date().toISOString()});

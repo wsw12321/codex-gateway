@@ -3599,3 +3599,10 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
   .billing-source-control { align-items: stretch; }
   .subscription-list, .billing-plan-list { grid-template-columns: 1fr; }
 }
+/* Per-account Shadowsocks exits share the dashboard's responsive card layout. */
+.egress-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
+.egress-card { min-width: 0; }
+.egress-address { overflow-wrap: anywhere; }
+.upstream-egress-form { display: grid; gap: .65rem; }
+.upstream-egress-form select { width: 100%; }
+.upstream-egress-form button { justify-self: start; }
