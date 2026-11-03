@@ -145,9 +145,9 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: scripts/ci-go-tool.sh golang.org/x/vuln/cmd/govulncheck@v1.1.4 -- ./...
       - name: gosec
-        run: go run github.com/securego/gosec/v2/cmd/gosec@v2.22.8 ./...
+        run: scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- ./...
 
   supply-chain:
     runs-on: ubuntu-24.04
@@ -161,7 +161,7 @@ jobs:
           cache: true
       - name: License policy
         run: >-
-          go run github.com/google/go-licenses@v1.6.0 check ./...
+          scripts/ci-go-tool.sh github.com/google/go-licenses@v1.6.0 -- check ./...
           --allowed_licenses=Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT,MPL-2.0
       - name: Verify upstream notices and immutable sources
         shell: bash
@@ -198,7 +198,7 @@ jobs:
           fi
       - name: Generate CycloneDX SBOM
         run: >-
-          go run github.com/anchore/syft/cmd/syft@v1.30.0
+          scripts/ci-go-tool.sh github.com/anchore/syft/cmd/syft@v1.30.0 --
           dir:. -o cyclonedx-json=sbom.cdx.json
       - name: Upload SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
