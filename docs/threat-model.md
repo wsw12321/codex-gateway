@@ -82,6 +82,8 @@ A 保留两类容器的目标隔离；B 看到的是 A 的隧道地址，不再�
 | 伪造来源 IP 绕过限速 | origin 仅 Tunnel 可达；Caddy 与 Gateway 只信任各自上游的固定 `/32`，并重建 XFF | CF/XFF 伪造测试 |
 | 供应链 tag 漂移 | 基础镜像 manifest digest；CLIProxy tag 与 full commit 双校验；`agy` 固定版本化 URL、SHA512 和运行时版本；固定 CI 工具版本 | CI、lock diff 与镜像构建审阅 |
 | 明文内容进入日志/备份 | Caddy 无访问日志；debug/body 日志关闭；只备份数据库元数据且立即 age 加密 | 敏感字符串 canary 扫描 |
+| Owner 上传的图片成为脚本或嗅探载体 | 只收 PNG/JPEG 且声明类型须与解码格式一致；解码后重新编码，丢弃 EXIF、注释和附加数据；以固定 `Content-Type`、`nosniff` 和 `default-src 'none'` 返回；前端只渲染同源路径图片、`https://` 链接（`noopener noreferrer`），文字一律 `textContent` | `site_test.go`、`site_settings_ui_test.cjs` 的 SVG、HTML 伪装、附加脚本、EXIF 与链接负例 |
+| 匿名访问登录页接口放大数据库负载或获取收款码 | 交流群接口与群二维码使用 30 秒快照、图片按 SHA-256 缓存；收款码只在登录会话路由提供，关闭的卡片对非 Owner 返回 404 | 缓存读取计数、匿名与 Member 可见性测试 |
 | Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
 | 把 API Token 等价成本误当供应商实际账单 | 准入固化规则，ledger 不可变；界面/API 明示 ChatGPT/Antigravity 订阅、内部零价和兜底边界 | 计价、ledger 和文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
@@ -109,6 +111,8 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
   明细过期后仍可按 ledger 对账。
 - 安全审计保留 365 天。
 - 请求和响应正文不落库，因此不进入 `pg_dump`。
+- 站点设置的文字和重新编码后的图片（含收款码）存于数据库，随加密备份保留；
+  删除图片即从当前库移除，旧备份按备份保留期过期。
 - OAuth volume 永不备份；灾备后重新登录。
 - Antigravity Keyring 不进入数据库备份或计划迁机复制；灾备后通过隔离登录脚本重建。
 - PostgreSQL 每日 03:00 UTC 生成本地 age 密文，保留最近 14 组；每月至少在
@@ -137,6 +141,9 @@ Bearer；它们不接受任意上游请求参数。任何 OAuth 文件下载接�
 - 本版本不支持 API Key 加密密钥轮换。数据库备份不包含该部署 secret；密钥丢失或
   被替换后，HMAC 认证资料仍无法用于还原明文，新 Key 的查看操作会失败。
 - 各 Plus/Pro 账号自身配额和服务限制不可由 Gateway 保证；应 fail closed 并告警。
+- 充值完全人工：网关不核验付款，也不把付款与账户自动对应。Owner 会话被攻破后
+  可替换收款码，引导用户付款给他人；写入要求近期二次验证，每次替换记录
+  `site.image_updated` 审计及图片 SHA-256。收款码随数据库进入加密备份。
 
 ## 安全验收
 

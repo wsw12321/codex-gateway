@@ -21,12 +21,14 @@ const sectionTitles = {
   "model-identification": "模型鉴别",
   "upstream-accounts": "上游账号",
   "egress-servers": "出口服务器",
+  "site-settings": "站点设置",
   "antigravity-accounts": "上游账号",
   "anthropic-accounts": "Claude 账号",
   information: "数据维护",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("egress-servers");
+ownerOnlySections.add("site-settings");
 ownerOnlySections.add("antigravity-accounts");
 ownerOnlySections.add("anthropic-accounts");
 ownerOnlySections.add("model-access");
@@ -140,6 +142,14 @@ let egressSequence = 0;
 let egressDraftID = null;
 let egressOperation = null;
 let egressPollTimer = 0;
+let siteContent = null;
+let siteContentSequence = 0;
+let siteSettingsResult = null;
+let siteSettingsBase = null;
+let siteSettingsRevision = 0;
+let siteSettingsSequence = 0;
+let siteSettingsOperation = null;
+let siteSettingsLoaded = false;
 let upstreamAccountRequestSequence = 0;
 let upstreamAccounts = [];
 let upstreamAccountSyncHealthy = false;
@@ -813,6 +823,8 @@ async function copyText(value) {
 
 function clearSensitiveDOM() {
   resetEgressServers();
+  resetSiteContent();
+  resetSiteSettings();
   modelCatalogRequests.clear();
   all(".model-picker").forEach((host) => { host.modelPickerRequest = null; host.modelPicker = null; host.replaceChildren(); });
   resetProfile();
@@ -3007,6 +3019,7 @@ function syncBillingSourceControls() {
     if (control.dataset.billingPrioritySave) control.classList.toggle("hidden", !self);
   });
   byId("billing-source-readonly").classList.toggle("hidden", self || !state);
+  renderSiteRecharge();
 }
 
 function billingSourceOperationCurrent(operation) {
@@ -7743,6 +7756,305 @@ async function deleteEgressServer(node) {
   } finally { if (egressOperation === operation) egressOperation = null; }
 }
 
+const siteImageSlots = ["community_qr", "recharge_wechat", "recharge_alipay"];
+const siteTextFields = ["community_title", "community_qq_group", "community_join_url", "community_note", "recharge_contact", "recharge_note"];
+
+function siteLink(value) {
+  return typeof value === "string" && /^https:\/\/[^\s/]+\S*$/i.test(value) ? value : "";
+}
+
+// Site images are always served by the gateway itself (CSP img-src 'self').
+function siteImage(image, alt) {
+  if (typeof image?.url !== "string" || !/^\/(?!\/)/.test(image.url)) return null;
+  return element("img", {className: "site-image", attributes: {src: image.url, alt, width: image.width, height: image.height, loading: "lazy", decoding: "async"}});
+}
+
+function renderSiteCommunity(host, community) {
+  if (!host) return;
+  if (!community) {
+    host.replaceChildren();
+    hide(host);
+    return;
+  }
+  const title = community.title || "加入交流群";
+  const body = element("div", {className: "site-community-body"},
+    element("p", {className: "eyebrow", text: "COMMUNITY"}), element("h3", {text: title}));
+  if (community.note) body.append(element("p", {className: "site-text", text: community.note}));
+  const actions = element("div", {className: "site-community-actions"});
+  if (community.qq_group) {
+    body.append(element("p", {className: "site-community-group"}, element("span", {text: "QQ 群号"}), element("strong", {text: community.qq_group})));
+    const copy = element("button", {type: "button", className: "secondary", text: "复制群号"});
+    copy.addEventListener("click", () => runButton(copy, async () => {
+      await copyText(community.qq_group);
+      announce("QQ 群号已复制。");
+      notice("QQ 群号已复制。", "ok");
+    }, "复制中…"));
+    actions.append(copy);
+  }
+  const link = siteLink(community.join_url);
+  if (link) {
+    actions.append(element("a", {className: "button", attributes: {href: link, target: "_blank", rel: "noopener noreferrer"}},
+      "一键加群 ", element("span", {text: "↗", attributes: {"aria-hidden": "true"}})));
+  }
+  if (actions.childElementCount) body.append(actions);
+  const qr = siteImage(community.qr_image, `${title}二维码`);
+  host.replaceChildren(body, qr && element("figure", {className: "site-community-qr"}, qr, element("figcaption", {text: "扫码加群"})));
+  host.classList.toggle("has-image", Boolean(qr));
+  show(host);
+}
+
+function billingViewingSelf() {
+  return Boolean(state?.user?.id) && selectedBillingUserID() === state.user.id;
+}
+
+// Recharge instructions are only meaningful for the signed-in user's own
+// account; the Owner viewing someone else's billing does not see them.
+function renderSiteRecharge() {
+  const recharge = siteContent?.recharge;
+  const visible = Boolean(recharge) && billingViewingSelf();
+  byId("plans-recharge-hint")?.classList.toggle("hidden", !visible);
+  const host = byId("billing-recharge");
+  if (!host) return;
+  host.classList.toggle("hidden", !visible);
+  if (!visible) return;
+  byId("billing-recharge-username").textContent = state.user.username || "—";
+  const contact = recharge.contact ? `客服：${recharge.contact}。` : "";
+  const group = siteContent.community?.qq_group ? `交流群号：${siteContent.community.qq_group}。` : "";
+  byId("billing-recharge-contact").textContent = `${contact}${group}确认金额与到账时间后再付款。`;
+  const note = byId("billing-recharge-note");
+  note.textContent = recharge.note || "";
+  note.classList.toggle("hidden", !recharge.note);
+  const methods = Array.isArray(recharge.methods) ? recharge.methods : [];
+  byId("billing-recharge-methods").replaceChildren(...methods.map((method) => {
+    const image = siteImage(method.image, `${method.label}收款码`);
+    return image && element("figure", {className: "site-recharge-method"}, image, element("figcaption", {text: method.label}));
+  }).filter(Boolean));
+}
+
+function resetSiteContent() {
+  siteContentSequence++;
+  siteContent = null;
+  renderSiteCommunity(byId("overview-community"), null);
+  renderSiteRecharge();
+  byId("billing-recharge-methods")?.replaceChildren();
+  if (byId("billing-recharge-username")) byId("billing-recharge-username").textContent = "—";
+}
+
+async function loadPublicCommunity() {
+  try {
+    const result = await api("/site/community");
+    renderSiteCommunity(byId("auth-community"), result?.community || null);
+  } catch (_) {
+    renderSiteCommunity(byId("auth-community"), null);
+  }
+}
+
+async function loadSiteContent() {
+  if (loggingOut || !state?.user?.id) return;
+  const generation = identityGeneration;
+  const actorID = state.user.id;
+  const sequence = ++siteContentSequence;
+  const current = () => sequence === siteContentSequence && generation === identityGeneration && !loggingOut && state?.user?.id === actorID;
+  const result = await api("/admin/site", undefined, current);
+  if (!current()) return;
+  siteContent = {community: result?.community || null, recharge: result?.recharge || null};
+  renderSiteCommunity(byId("overview-community"), siteContent.community);
+  renderSiteRecharge();
+}
+
+function siteSettingsIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function siteSettingsStatus(message) {
+  const host = byId("site-settings-status");
+  if (host) host.textContent = message;
+}
+
+function siteImageHost(slot) {
+  return all(`[data-site-image-slot="${slot}"]`)[0];
+}
+
+function siteImageMessage(host, message = "", kind = "error") {
+  const target = host?.querySelector("[data-site-image-message]");
+  if (!target) return;
+  target.textContent = message;
+  target.dataset.kind = kind;
+  target.setAttribute("role", kind === "error" ? "alert" : "status");
+  target.classList.toggle("hidden", !message);
+}
+
+function renderSiteImageSlot(slot, image) {
+  const host = siteImageHost(slot);
+  if (!host) return;
+  const preview = siteImage(image, "当前图片预览");
+  host.querySelector("[data-site-image-preview]").replaceChildren(preview || element("span", {className: "muted", text: "未上传"}));
+  const remove = host.querySelector("[data-site-image-remove]");
+  remove.disabled = !image;
+  remove.dataset.confirm = "";
+  remove.textContent = "移除";
+}
+
+function resetSiteSettings() {
+  siteSettingsSequence++;
+  siteSettingsResult = null;
+  siteSettingsBase = null;
+  siteSettingsRevision = 0;
+  siteSettingsOperation = null;
+  siteSettingsLoaded = false;
+  const form = byId("site-settings-form");
+  if (form) {
+    form.reset();
+    setLocalMessage(form);
+  }
+  for (const slot of siteImageSlots) {
+    renderSiteImageSlot(slot, null);
+    siteImageMessage(siteImageHost(slot));
+  }
+  siteSettingsStatus("打开页面后加载站点设置。");
+}
+
+// The form keeps the revision it was filled from. An image write advances the
+// revision too; it is adopted only while the text fields are still unchanged,
+// so a text edit saved from another tab cannot be silently overwritten.
+function applySiteSettings(result, fillForm) {
+  if (!result?.settings || !Number.isInteger(result.revision)) throw new Error("站点设置响应格式异常。");
+  siteSettingsResult = result;
+  if (fillForm) {
+    siteSettingsBase = result.settings;
+    siteSettingsRevision = result.revision;
+    const form = byId("site-settings-form");
+    for (const name of ["community_enabled", "recharge_enabled"]) form.elements[name].checked = result.settings[name] === true;
+    for (const name of siteTextFields) form.elements[name].value = result.settings[name] ?? "";
+  } else if (JSON.stringify(result.settings) === JSON.stringify(siteSettingsBase)) {
+    siteSettingsRevision = result.revision;
+  }
+  for (const slot of siteImageSlots) renderSiteImageSlot(slot, result.images?.[slot] || null);
+  siteSettingsStatus(siteSettingsRevision === result.revision
+    ? `版本 ${result.revision} · 更新于 ${formatDateTime(result.updated_at, "—")}`
+    : "文字设置已在其他页面修改，请刷新设置后再保存。");
+}
+
+async function loadSiteSettings() {
+  if (loggingOut || state?.user?.role !== "owner") return;
+  const identity = siteSettingsIdentityCurrent();
+  const sequence = ++siteSettingsSequence;
+  const current = () => identity() && sequence === siteSettingsSequence;
+  siteSettingsStatus("正在加载站点设置…");
+  try {
+    const result = await api("/admin/site-settings", undefined, current);
+    if (!current()) return;
+    applySiteSettings(result, true);
+    siteSettingsLoaded = true;
+  } catch (error) {
+    if (current()) siteSettingsStatus(`站点设置加载失败：${friendlyError(error)}`);
+    throw error;
+  }
+}
+
+async function saveSiteSettings(event) {
+  if (siteSettingsOperation) return;
+  if (!siteSettingsLoaded) throw new Error("站点设置尚未加载，请先刷新设置。");
+  const form = event.currentTarget;
+  const payload = {revision: siteSettingsRevision};
+  for (const name of ["community_enabled", "recharge_enabled"]) payload[name] = form.elements[name].checked;
+  for (const name of siteTextFields) payload[name] = form.elements[name].value.trim();
+  if (payload.community_enabled && !payload.community_qq_group && !payload.community_join_url) {
+    throw new Error("开启交流群时，请至少填写 QQ 群号或加群链接。");
+  }
+  const operation = {};
+  const identity = siteSettingsIdentityCurrent();
+  const current = () => identity() && siteSettingsOperation === operation;
+  siteSettingsOperation = operation;
+  try {
+    const result = await sensitiveAction(() => api("/admin/site-settings", {method: "PUT", body: JSON.stringify(payload)}, current), current);
+    if (!current()) return;
+    applySiteSettings(result, true);
+    setLocalMessage(form, "已保存，各页面立即显示新内容。", "ok");
+    loadSiteContent().catch(() => {});
+  } finally {
+    if (siteSettingsOperation === operation) siteSettingsOperation = null;
+  }
+}
+
+async function writeSiteImage(host, request, message) {
+  if (siteSettingsOperation) return;
+  if (!siteSettingsLoaded) throw new Error("站点设置尚未加载，请先刷新设置。");
+  const operation = {};
+  const identity = siteSettingsIdentityCurrent();
+  const current = () => identity() && siteSettingsOperation === operation;
+  siteSettingsOperation = operation;
+  try {
+    const result = await sensitiveAction(() => request(current), current);
+    if (!current()) return;
+    applySiteSettings(result, false);
+    siteImageMessage(host, message, "ok");
+    loadSiteContent().catch(() => {});
+  } finally {
+    if (siteSettingsOperation === operation) siteSettingsOperation = null;
+  }
+}
+
+async function uploadSiteImage(host) {
+  const slot = host.dataset.siteImageSlot;
+  const input = host.querySelector("[data-site-image-file]");
+  const file = input.files?.[0];
+  if (!file) throw new Error("请先选择图片。");
+  if (!["image/png", "image/jpeg"].includes(file.type)) throw new Error("仅支持 PNG 或 JPEG 图片。");
+  if (file.size > 5 * 1024 * 1024) throw new Error("图片不能超过 5 MiB。");
+  await writeSiteImage(host, (current) => api(`/admin/site-settings/images/${encodeURIComponent(slot)}`, {
+    method: "PUT", body: file, headers: {"Content-Type": file.type},
+  }, current), "图片已上传并立即生效。");
+  input.value = "";
+}
+
+async function removeSiteImage(host) {
+  const slot = host.dataset.siteImageSlot;
+  await writeSiteImage(host, (current) => api(`/admin/site-settings/images/${encodeURIComponent(slot)}`, {method: "DELETE"}, current), "图片已移除。");
+}
+
+async function runSiteImageAction(button, action, busyLabel) {
+  const host = button.closest("[data-site-image-slot]");
+  if (button.dataset.busy === "true" || siteSettingsOperation) return;
+  siteImageMessage(host);
+  setBusy(button, true, busyLabel);
+  try {
+    await action(host);
+  } catch (error) {
+    if (error.code !== "stale_request") siteImageMessage(host, friendlyError(error));
+  } finally {
+    setBusy(button, false);
+    // setBusy restores the label captured before the request; resync the slot.
+    const slot = host.dataset.siteImageSlot;
+    renderSiteImageSlot(slot, siteSettingsResult?.images?.[slot] || null);
+  }
+}
+
+function bindSiteSettings() {
+  bindAsync("site-settings-refresh", "click", () => loadSiteSettings(), "刷新中…", siteSettingsIdentityCurrent);
+  bindAsync("site-settings-form", "submit", saveSiteSettings, "保存中…", siteSettingsIdentityCurrent);
+  for (const host of all("[data-site-image-slot]")) {
+    const upload = host.querySelector("[data-site-image-upload]");
+    const remove = host.querySelector("[data-site-image-remove]");
+    upload.addEventListener("click", () => runSiteImageAction(upload, uploadSiteImage, "上传中…"));
+    remove.addEventListener("click", () => {
+      if (remove.dataset.confirm !== "true") {
+        remove.dataset.confirm = "true";
+        remove.textContent = "确认移除";
+        return;
+      }
+      runSiteImageAction(remove, removeSiteImage, "移除中…");
+    });
+  }
+  byId("billing-recharge-copy").addEventListener("click", (event) => runButton(event.currentTarget, async () => {
+    if (!state?.user?.username) return;
+    await copyText(state.user.username);
+    announce("用户名已复制。");
+    notice("用户名已复制，付款时请粘贴到备注。", "ok");
+  }, "复制中…"));
+}
+
 function upstreamEgressBlock(account) {
   const select = element("select", {className: "upstream-egress-select", attributes: {"aria-label": "出口服务器"}});
   populateEgressSelect(select, account.egress_server_id || "");
@@ -8906,6 +9218,7 @@ function routeFromHash(focusContent = true) {
     loadBillingPlans().catch((error) => billingPlanMessage(friendlyError(error)));
   }
   if (section === "model-multipliers") loadModelMultipliers();
+  if (section === "site-settings" && !siteSettingsLoaded) loadSiteSettings().catch(() => {});
   if (section === "model-pricing") loadModelPrices();
   if (section === "user-upstream-access" && !userUpstreamReady) loadUserUpstreamAccess();
   if (section === "invitations") {
@@ -8938,6 +9251,8 @@ async function loadDashboard() {
     loadBillingDashboard().catch((error) => {
       notice(`额度与订阅加载失败：${friendlyError(error)}`, "error");
     }),
+    // Community and recharge cards are optional; a failure leaves them hidden.
+    loadSiteContent().catch(() => {}),
   ];
   if (state.user.role === "owner") {
     tasks.push(
@@ -9067,6 +9382,7 @@ function bindUI() {
     egressDraftID = null;
   });
   bindUserUpstreamAccess();
+  bindSiteSettings();
   bindBrowserHandoff();
   bindNavigation();
   bindOverview();
@@ -9315,6 +9631,7 @@ function bindUI() {
 
 async function start() {
   bindUI();
+  loadPublicCommunity();
   const autoOIDCLogin = takeOIDCRequest("login");
   oidcLinkRequested = takeOIDCRequest("link");
   const oidcVerified = takeOIDCRequest("verified");

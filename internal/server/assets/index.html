@@ -140,6 +140,7 @@
         </form>
         <a class="back-link" href="/">返回登录</a>
       </section>
+      <aside id="auth-community" class="panel site-community-card site-community-auth hidden" aria-label="交流群"></aside>
         </div>
       </div>
       <footer class="auth-footer"><span>水源喵中转站 · 灵感在此汇流</span><span>由吾水阁连接彼此</span></footer>
@@ -174,6 +175,7 @@
           <p id="nav-management" class="nav-group-title">管理</p>
           <a href="#egress-servers" data-view="egress-servers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8m-4 0v4m-2-2 2 2 2-2"/></svg>出口服务器</a>
           <a href="#invitations" data-view="invitations" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="15" rx="2"/><path d="m3 6 9 7 9-7"/></svg>邀请管理</a>
+          <a href="#site-settings" data-view="site-settings" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4zm4 4h8m-8 3h5"/></svg>站点设置</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5"/></svg>请求监控</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1m5-11h5m-5 11h5"/></svg>上游账号</a>
           <a href="/admin/cpa/" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 3a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2"/></svg>CPA 授权管理</a>
@@ -222,6 +224,7 @@
               <article><span>最近 7 天请求</span><strong id="metric-requests">—</strong><small>本人用量 · <b id="metric-tokens">—</b> Token</small><button class="text-button" type="button" data-overview-usage>查看使用记录</button></article>
               <article><span>最近 7 天错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small><button class="text-button" type="button" data-overview-usage>查看请求结果</button></article>
             </div>
+            <article id="overview-community" class="panel site-community-card hidden" aria-label="交流群"></article>
             <article class="panel overview-recent-panel">
               <div class="panel-heading"><div><h2>最近请求</h2><p id="overview-usage-updated" class="overview-updated">本人最近 7 天 · 最近 5 条</p></div><button class="text-button" type="button" data-overview-usage>全部记录</button></div>
               <div id="overview-recent-requests" class="overview-recent-list" aria-live="polite" aria-busy="true">正在加载请求…</div>
@@ -407,6 +410,7 @@
               <p id="billing-plan-message" class="form-message hidden" role="status" aria-live="polite"></p>
               <p id="billing-plan-pending" class="billing-plan-pending hidden" role="status">有一笔操作结果待确认。请保留本页，仅重试原操作。<button id="billing-plan-resume" type="button" class="secondary">查看原操作</button></p>
               <p id="billing-plan-readonly" class="muted hidden">正在查看其他用户，购买和续费仅供本人操作。</p>
+              <p id="plans-recharge-hint" class="muted hidden">现金余额不足？<a href="#billing">前往额度与订阅页查看充值方式</a></p>
               <div id="billing-plans" class="billing-plan-list" aria-live="polite">正在加载套餐…</div>
             </article>
 
@@ -432,6 +436,16 @@
               <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
               <article class="billing-order-card"><span>扣费顺序</span><strong>群组 → 个人来源优先级</strong><small>群组在剩余额度和成员本期上限内优先支付；剩余费用使用允许扣费的个人来源。实际分摊以结算流水为准。</small></article>
             </div>
+            <article id="billing-recharge" class="panel site-recharge-card hidden" aria-labelledby="billing-recharge-title">
+              <div class="panel-heading"><div><p class="eyebrow">RECHARGE</p><h3 id="billing-recharge-title">充值现金余额</h3><p>扫码付款后，由管理员核对并为你的账户入账。</p></div></div>
+              <ol class="site-recharge-steps">
+                <li><strong>付款时务必在备注中填写你的用户名：</strong><span class="site-recharge-username"><code id="billing-recharge-username">—</code><button id="billing-recharge-copy" type="button" class="text-button">复制用户名</button></span><small>未备注用户名的付款难以核对，可能延迟到账。</small></li>
+                <li><strong>充值需要管理员确认后才会到账。</strong><small>到账后，余额与结算流水会显示在本页。</small></li>
+                <li><strong>建议付款前先在交流群联系客服确认。</strong><small id="billing-recharge-contact">确认金额与到账时间后再付款。</small></li>
+              </ol>
+              <p id="billing-recharge-note" class="site-text hidden"></p>
+              <div id="billing-recharge-methods" class="site-recharge-methods"></div>
+            </article>
 
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
             <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；优先级数字越小越先扣费；同优先级订阅优先于余额，再按周期天数、剩余额度降序排列。剩余周期额度不结转。</p>
@@ -1074,6 +1088,58 @@
             <p id="egress-message" class="form-message hidden" role="alert"></p>
             <p id="egress-runtime" class="muted" aria-live="polite">正在加载出口配置…</p>
             <div id="egress-list" class="egress-list" aria-live="polite"></div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="site-settings" aria-labelledby="site-settings-title">
+            <div class="section-head"><div><p class="eyebrow">OWNER · SITE</p><h2 id="site-settings-title">站点设置</h2><p>编辑登录页与概览页的交流群卡片，以及额度与订阅页的充值卡片。</p></div><button id="site-settings-refresh" type="button" class="secondary">刷新设置</button></div>
+            <p class="callout" role="note"><strong>充值不会自动到账。</strong>用户付款后，请先核对付款备注中的用户名与金额，再到额度与订阅页为该用户充值。</p>
+            <p id="site-settings-status" class="muted" aria-live="polite">打开页面后加载站点设置。</p>
+            <form id="site-settings-form" class="site-settings-form" autocomplete="off">
+              <fieldset class="panel site-settings-group">
+                <legend>交流群</legend>
+                <label class="check-label"><input name="community_enabled" type="checkbox">在登录页和概览页显示交流群卡片</label>
+                <label>卡片标题<input name="community_title" maxlength="40" placeholder="加入交流群"></label>
+                <label>QQ 群号<input name="community_qq_group" inputmode="numeric" pattern="[1-9][0-9]{4,11}" maxlength="12" placeholder="5–12 位数字"></label>
+                <label>加群链接（可选）<input name="community_join_url" type="url" maxlength="500" placeholder="https://qm.qq.com/…" spellcheck="false"></label>
+                <label>说明（可选）<textarea name="community_note" maxlength="500" rows="3" placeholder="例如：使用问题、公告与客服都在群里"></textarea></label>
+                <p class="muted">开启时至少填写 QQ 群号或加群链接。群二维码在登录页公开显示。</p>
+              </fieldset>
+              <fieldset class="panel site-settings-group">
+                <legend>充值</legend>
+                <label class="check-label"><input name="recharge_enabled" type="checkbox">在额度与订阅页显示充值卡片</label>
+                <p class="muted">卡片固定提示三点：付款备注填写用户名；管理员确认后到账；建议先在交流群联系客服确认。收款码仅向已登录用户显示。</p>
+                <label>客服联系方式（可选）<input name="recharge_contact" maxlength="80" placeholder="例如：群主 @水源喵"></label>
+                <label>补充说明（可选）<textarea name="recharge_note" maxlength="1000" rows="4" placeholder="例如：最低充值 10 元，通常 24 小时内到账"></textarea></label>
+              </fieldset>
+              <p class="form-message hidden" role="alert"></p>
+              <div class="actions"><button type="submit">保存文字设置</button></div>
+            </form>
+            <article class="panel site-images-panel" aria-labelledby="site-images-title">
+              <div class="panel-heading"><div><h3 id="site-images-title">图片</h3><p>仅支持 PNG 或 JPEG，最大 5 MiB、4096×4096 像素。上传后立即生效；服务器会重新编码图片并去除 EXIF 等元数据。</p></div></div>
+              <div class="site-image-grid">
+                <div class="site-image-slot" data-site-image-slot="community_qr">
+                  <h4>交流群二维码</h4>
+                  <div class="site-image-preview" data-site-image-preview><span class="muted">未上传</span></div>
+                  <label>选择图片<input type="file" accept="image/png,image/jpeg" data-site-image-file></label>
+                  <p class="form-message hidden" data-site-image-message></p>
+                  <div class="actions"><button type="button" data-site-image-upload>上传</button><button type="button" class="secondary" data-site-image-remove>移除</button></div>
+                </div>
+                <div class="site-image-slot" data-site-image-slot="recharge_wechat">
+                  <h4>微信收款码</h4>
+                  <div class="site-image-preview" data-site-image-preview><span class="muted">未上传</span></div>
+                  <label>选择图片<input type="file" accept="image/png,image/jpeg" data-site-image-file></label>
+                  <p class="form-message hidden" data-site-image-message></p>
+                  <div class="actions"><button type="button" data-site-image-upload>上传</button><button type="button" class="secondary" data-site-image-remove>移除</button></div>
+                </div>
+                <div class="site-image-slot" data-site-image-slot="recharge_alipay">
+                  <h4>支付宝收款码</h4>
+                  <div class="site-image-preview" data-site-image-preview><span class="muted">未上传</span></div>
+                  <label>选择图片<input type="file" accept="image/png,image/jpeg" data-site-image-file></label>
+                  <p class="form-message hidden" data-site-image-message></p>
+                  <div class="actions"><button type="button" data-site-image-upload>上传</button><button type="button" class="secondary" data-site-image-remove>移除</button></div>
+                </div>
+              </div>
+            </article>
           </section>
 
           <section class="view owner-only hidden" data-section="upstream-accounts" aria-labelledby="upstream-accounts-title">

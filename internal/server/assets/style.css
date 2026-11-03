@@ -3628,3 +3628,44 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 .upstream-egress-form { display: grid; gap: .65rem; }
 .upstream-egress-form select { width: 100%; }
 .upstream-egress-form button { justify-self: start; }
+/* Owner-maintained community (QQ group) and manual recharge cards. */
+.site-community-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; align-items: center; margin-bottom: 1rem; }
+.site-community-card.has-image { grid-template-columns: minmax(0, 1fr) auto; }
+.site-community-body .eyebrow { margin-bottom: .45rem; }
+.site-community-body h3 { margin: 0 0 .4rem; font-size: 1.12rem; }
+.site-text { margin: 0 0 .8rem; color: var(--muted); white-space: pre-line; }
+.site-community-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: .6rem; margin: 0 0 .8rem; }
+.site-community-group span { color: var(--muted); font-size: .84rem; font-weight: 600; }
+.site-community-group strong { font-size: 1.35rem; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
+.site-community-actions { display: flex; flex-wrap: wrap; gap: .6rem; }
+.site-community-qr, .site-recharge-method { display: grid; justify-items: center; gap: .4rem; margin: 0; min-width: 0; }
+.site-community-qr figcaption, .site-recharge-method figcaption { color: var(--muted); font-size: .82rem; font-weight: 600; }
+/* QR codes need a light backing to stay scannable in dark mode. */
+.site-image { display: block; width: 100%; height: auto; border: 1px solid var(--line); border-radius: 12px; background: #ffffff; }
+.site-community-qr .site-image { width: 132px; }
+.site-community-auth { padding: 1.35rem 1.5rem; border-radius: 18px; }
+.site-community-auth .site-community-body h3 { font-size: 1.05rem; }
+.site-recharge-card { margin-bottom: 1rem; }
+.site-recharge-card .panel-heading p { margin: .35rem 0 0; color: var(--muted); }
+.site-recharge-steps { display: grid; gap: .75rem; margin: 0 0 1rem; padding-left: 1.4rem; }
+.site-recharge-steps small { display: block; margin-top: .15rem; color: var(--muted); }
+.site-recharge-username { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-left: .25rem; }
+.site-recharge-username code { font-size: .95rem; font-weight: 700; }
+.site-recharge-methods { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 11rem), 13.5rem)); gap: 1rem; }
+.site-settings-form { display: grid; gap: 1rem; margin-bottom: 1rem; }
+.site-settings-group { display: grid; gap: .85rem; margin: 0; }
+.site-settings-group legend { padding: 0 .35rem; color: var(--text); font-weight: 700; }
+.site-settings-group .muted { margin: 0; font-size: .84rem; }
+.site-settings-form textarea { display: block; width: 100%; margin-top: .35rem; border: 1px solid var(--line); border-radius: 8px; padding: .58rem .72rem; color: var(--text); background: var(--bg-elevated); font: inherit; resize: vertical; }
+.site-settings-form textarea::placeholder { color: var(--faint); }
+.site-image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 1rem; }
+.site-image-slot { display: grid; align-content: start; gap: .65rem; min-width: 0; border: 1px solid var(--line); border-radius: 14px; padding: 1rem; background: var(--bg-elevated); }
+.site-image-slot h4 { margin: 0; }
+.site-image-slot .form-message { margin: 0; }
+.site-image-preview { display: grid; place-items: center; min-height: 9rem; border: 1px dashed var(--line-strong); border-radius: 10px; padding: .5rem; }
+.site-image-preview .site-image { width: auto; max-width: 100%; max-height: 15rem; }
+@media (max-width: 600px) {
+  .site-community-card.has-image { grid-template-columns: minmax(0, 1fr); }
+  .site-community-qr { justify-self: start; }
+  .site-community-auth { padding: 1.15rem; }
+}

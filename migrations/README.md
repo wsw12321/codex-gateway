@@ -51,6 +51,10 @@ Current migrations:
   subscription scopes, and admission snapshots untouched. The conditional
   rollback in `scripts/rollback-cpa-model-config.sql` applies only the newest
   cutover table present.
+- `internal/store/migrations/0040_site_settings.sql` — Owner-edited community
+  (QQ group) and manual recharge instructions, plus fixed-slot PNG/JPEG images
+  re-encoded by the gateway. Both sections start disabled. No payment is
+  verified or credited by this table.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

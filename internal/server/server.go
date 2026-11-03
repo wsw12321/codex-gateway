@@ -60,6 +60,8 @@ type Server struct {
 	browserHandoffRepo      browserHandoffRepository
 	browserHandoffs         *browserHandoffStore
 	browserHandoffOnce      sync.Once
+	siteRepo                siteRepository
+	site                    siteCache
 
 	oidc      oidcProvider
 	oidcRepo  oidcRepository
@@ -148,6 +150,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) routes() {
 	s.egressRoutes()
+	s.siteRoutes()
 	s.oidcRoutes()
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /readyz", s.ready)
