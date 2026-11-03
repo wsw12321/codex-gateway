@@ -28,6 +28,7 @@ func (s *Server) anthropicAccountRoutes() {
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/status", write(s.setUpstreamAccountStatus))
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/allocation-weight", write(s.setUpstreamAccountAllocationWeight))
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/concurrent-limit", write(s.setUpstreamAccountConcurrentLimit))
+	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/alias", write(s.setUpstreamAccountAlias))
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/access", write(s.setUpstreamAccountAccess))
 }
 

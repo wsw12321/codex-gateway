@@ -545,7 +545,7 @@ function captureUpstreamAccountUIState() {
     const row = upstreamAccountRowState(card.dataset.accountId);
     const details = card.querySelector(".upstream-account-details");
     if (details) row.expanded = details.open;
-    for (const [field, selector] of [["weight", ".upstream-allocation-input"], ["limit", ".upstream-concurrency-limit-input"]]) {
+    for (const [field, selector] of [["weight", ".upstream-allocation-input"], ["limit", ".upstream-concurrency-limit-input"], ["alias", ".upstream-alias-input"]]) {
       const input = card.querySelector(selector);
       if (input && input.value !== input.dataset.savedValue) row.drafts[field] = input.value;
       else delete row.drafts[field];
@@ -580,17 +580,18 @@ function filterUpstreamAccountCards() {
   const rows = Array.from(container.querySelectorAll(".upstream-account-card[data-account-id]"));
   const byID = new Map(upstreamAccounts.map((account, index) => [account.id, {account, index}]));
   const metadata = (row) => byID.get(row.dataset.accountId);
+  const name = (account) => String(account.alias || account.display_name || account.email_masked || "");
   rows.sort((left, right) => {
     const a = metadata(left), b = metadata(right);
     if (!a || !b) return 0;
-    if (saved.sort === "name") return String(a.account.display_name || a.account.email_masked || "").localeCompare(String(b.account.display_name || b.account.email_masked || ""), "zh-CN") || a.index - b.index;
+    if (saved.sort === "name") return name(a.account).localeCompare(name(b.account), "zh-CN") || a.index - b.index;
     if (saved.sort === "cost") return compareUpstreamAccountCosts(b.account.rolling_cost_usd, a.account.rolling_cost_usd) || a.index - b.index;
     return a.index - b.index;
   });
   let visible = 0;
   for (const row of rows) {
     const account = metadata(row)?.account;
-    const matches = account && (!query || `${account.display_name || ""} ${account.email_masked || ""}`.toLocaleLowerCase().includes(query)) &&
+    const matches = account && (!query || upstreamAccountSearchText(account).includes(query)) &&
       (saved.status === "all" || upstreamFinalStatus(account) === saved.status);
     row.classList.toggle("hidden", !matches);
     if (matches) visible++;
@@ -3544,10 +3545,10 @@ function upstreamScopeForm(row, draft, {name, subject, className, dataset, empty
     element("option", {text: "全部账号（默认）", attributes: {value: "all"}}),
     element("option", {text: "仅指定账号", attributes: {value: "selected"}}));
   mode.value = draft.mode;
-  const search = element("input", {type: "search", attributes: {placeholder: "名称或脱敏邮箱", autocomplete: "off", "aria-label": `搜索 ${name} 账号`}});
+  const search = element("input", {type: "search", attributes: {placeholder: "别名、名称或脱敏邮箱", autocomplete: "off", "aria-label": `搜索 ${name} 账号`}});
   search.value = draft.search;
   const choices = row.accounts.map((account) => {
-    const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${account.display_name || account.email_masked || account.id}`}});
+    const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${upstreamAccountLabel(account)}`}});
     checkbox.checked = draft.selected.has(account.id);
     checkbox.addEventListener("change", () => {
       if (checkbox.checked) draft.selected.add(account.id); else draft.selected.delete(account.id);
@@ -3555,8 +3556,8 @@ function upstreamScopeForm(row, draft, {name, subject, className, dataset, empty
       update();
     });
     return element("label", {className: "user-check-row upstream-scope-choice", dataset: {
-      accountId: account.id, search: [account.display_name, account.email_masked, account.id].filter(Boolean).join(" ").toLocaleLowerCase(),
-    }}, checkbox, element("span", {}, element("strong", {text: account.display_name || account.email_masked || account.id}),
+      accountId: account.id, search: upstreamAccountSearchText(account),
+    }}, checkbox, element("span", {}, element("strong", {text: upstreamAccountLabel(account)}),
       element("small", {text: account.email_masked || "未提供脱敏邮箱"}),
       element("small", {text: upstreamFinalStatusLabels[account.status] || "状态未知"})));
   });
@@ -3739,11 +3740,17 @@ function userUpstreamUserMatches() {
 function userUpstreamAccountMatches() {
   const query = (byId("user-upstream-account-search")?.value || "").trim().toLocaleLowerCase();
   return (userUpstreamSnapshot?.providers || []).flatMap((row) => row.accounts.filter((account) => !query ||
-    [account.display_name, account.email_masked, account.id].filter(Boolean).join(" ").toLocaleLowerCase().includes(query)));
+    upstreamAccountSearchText(account).includes(query)));
 }
 
-function userUpstreamAccountName(account) {
-  return account.display_name || account.email_masked || account.id;
+// An alias sits beside, never replaces, what the account showed before, so
+// two accounts given the same alias stay distinguishable.
+function upstreamAccountLabel(account, base = account?.display_name || account?.email_masked || account?.id || "") {
+  return account?.alias ? `${account.alias}（${base}）` : base;
+}
+
+function upstreamAccountSearchText(account) {
+  return [account.alias, account.display_name, account.email_masked, account.id].filter(Boolean).join(" ").toLocaleLowerCase();
 }
 
 function userUpstreamUserName(user) {
@@ -3833,7 +3840,7 @@ function renderUserUpstreamAccounts() {
   const groups = userUpstreamSnapshot.providers.map((row) => {
     const name = upstreamScopeProviderNames[row.provider];
     const rows = row.accounts.filter((account) => matches.has(account.id)).map((account) => {
-      const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${userUpstreamAccountName(account)}`}});
+      const checkbox = element("input", {type: "checkbox", attributes: {value: account.id, "aria-label": `选择 ${name} 账号 ${upstreamAccountLabel(account)}`}});
       checkbox.checked = userUpstreamSelectedAccounts.has(account.id);
       checkbox.addEventListener("change", () => {
         if (userUpstreamSaving || userUpstreamLoading) return;
@@ -3843,7 +3850,7 @@ function renderUserUpstreamAccounts() {
       });
       const allowed = users.filter((userID) => userUpstreamAllows(userUpstreamSnapshot, userID, row.provider, account.id)).length;
       return element("label", {className: "user-check-row user-upstream-account", dataset: {accountId: account.id, provider: row.provider}}, checkbox,
-        element("span", {}, element("strong", {text: userUpstreamAccountName(account)}),
+        element("span", {}, element("strong", {text: upstreamAccountLabel(account)}),
           element("small", {text: account.email_masked || "未提供脱敏邮箱"}),
           element("small", {text: [upstreamFinalStatusLabels[account.status] || "状态未知", users.length ? `已允许 ${allowed} / ${users.length} 人` : ""].filter(Boolean).join(" · ")})));
     });
@@ -3872,7 +3879,7 @@ function renderUserUpstreamMatrix() {
     return;
   }
   const head = element("tr", {}, element("th", {text: "用户", attributes: {scope: "col"}}), ...accounts.map((account) =>
-    element("th", {attributes: {scope: "col"}}, element("small", {text: upstreamScopeProviderNames[account.provider]}), element("span", {text: userUpstreamAccountName(account)}))));
+    element("th", {attributes: {scope: "col"}}, element("small", {text: upstreamScopeProviderNames[account.provider]}), element("span", {text: upstreamAccountLabel(account)}))));
   const rows = users.map((user) => element("tr", {}, element("th", {text: userUpstreamUserName(user), attributes: {scope: "row"}}), ...accounts.map((account) => {
     const rule = userUpstreamRule(userUpstreamSnapshot, user.id, account.provider);
     const allowed = rule.mode === "all" || rule.account_ids.includes(account.id);
@@ -6573,7 +6580,7 @@ async function loadGroupAccountStats(group) {
     [...groupAccountSelectedPeriods].forEach((id) => query.append("period_id", id));
     const result = await api(`/admin/groups/${encodeURIComponent(group.id)}/account-stats?${query}`);
     const rows = Array.isArray(result?.accounts) ? result.accounts : Array.isArray(result?.stats) ? result.stats : [];
-    const rendered = rows.length ? rows.map((item) => element("div", {className: "group-account-stat-row"}, element("strong", {text: item.display_name || item.email_masked || item.upstream_account_id || item.account_id}), element("span", {text: `群组支付 ${formatUSD(item.group_charged_usd)} / 总成本 ${formatUSD(item.actual_cost_usd)} · 占比 ${item.share == null ? "—" : formatPercent(item.share)}`}))) : [element("p", {className: "muted", text: "所选周期暂无账号统计。"})];
+    const rendered = rows.length ? rows.map((item) => element("div", {className: "group-account-stat-row"}, element("strong", {text: upstreamAccountLabel(item, item.display_name || item.email_masked || item.upstream_account_id || item.account_id)}), element("span", {text: `群组支付 ${formatUSD(item.group_charged_usd)} / 总成本 ${formatUSD(item.actual_cost_usd)} · 占比 ${item.share == null ? "—" : formatPercent(item.share)}`}))) : [element("p", {className: "muted", text: "所选周期暂无账号统计。"})];
     if (result?.data_complete === false) rendered.unshift(element("p", {className: "form-message", text: "部分账单历史已清理，统计数据不完整。"}));
     host.replaceChildren(...rendered);
   } catch (error) { host.replaceChildren(element("p", {className: "muted", text: `统计加载失败：${friendlyError(error)}`})); }
@@ -6799,7 +6806,7 @@ async function openUpstreamAccess(account) {
   const form = byId("upstream-access-form");
   form.reset();
   form.elements.mode.value = account.access_mode || "shared";
-  byId("upstream-access-account").textContent = account.email_masked || account.id;
+  byId("upstream-access-account").textContent = upstreamAccountLabel(account, account.email_masked || account.id);
   renderUpstreamAccessUsers();
   openDialog("upstream-access-dialog");
 }
@@ -7066,7 +7073,7 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
     if (!current()) return;
     upstreamAccountRowState(account.id, provider).quota = {result: response.result, receivedAt};
     renderUpstreamQuota(account, container, response.result, receivedAt);
-    announce(`已查询 ${account.email_masked || "该上游账号"} 的官方额度。`);
+    announce(`已查询 ${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 的官方额度。`);
   } catch (error) {
     if (!current()) return;
     container.dataset.state = "error";
@@ -7103,6 +7110,15 @@ function syncUpstreamAccountControls() {
     // Gateway bindings remain editable when CPA no longer lists an account.
     const egressForm = card.querySelector(".upstream-egress-form");
     if (egressForm) for (const control of egressForm.querySelectorAll("select, button")) control.disabled = !account.id || !egressLoaded || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
+    // Aliases are Gateway-owned too, so they need neither CPA nor a healthy sync.
+    const aliasInput = card.querySelector(".upstream-alias-input");
+    const aliasButton = card.querySelector(".upstream-alias-save");
+    if (aliasInput && aliasButton) {
+      const savingAlias = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "alias";
+      aliasInput.disabled = aliasButton.disabled = !account.id || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
+      aliasButton.textContent = savingAlias ? "保存中…" : "保存别名";
+      aliasButton.setAttribute("aria-busy", String(savingAlias));
+    }
     const pending = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "status";
     const gatewayBlocked = upstreamAccountManuallyBlocked(account);
     button.textContent = pending ? (upstreamAccountOperation.enabled ? "启用中…" : "禁用中…") :
@@ -7205,8 +7221,9 @@ async function saveUpstreamConcurrentLimit(account, form) {
     input.value = String(response.concurrent_limit);
     input.dataset.savedValue = input.value;
     delete upstreamAccountRowState(account.id).drafts.limit;
-    setUpstreamAccountMessage("upstream-account-action-message", `${account.email_masked || "该上游账号"} 并发对话上限已保存为 ${operation.limit}。`, "ok");
-    announce(`已保存 ${account.email_masked || "该上游账号"} 的并发对话上限。`);
+    const label = upstreamAccountLabel(account, account.email_masked || "该上游账号");
+    setUpstreamAccountMessage("upstream-account-action-message", `${label} 并发对话上限已保存为 ${operation.limit}。`, "ok");
+    announce(`已保存 ${label} 的并发对话上限。`);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
   } catch (error) {
     if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
@@ -7216,6 +7233,78 @@ async function saveUpstreamConcurrentLimit(account, form) {
   } finally {
     if (upstreamAccountOperation === operation) { upstreamAccountOperation = null; syncUpstreamAccountControls(); }
   }
+}
+
+// Mirrors store.NormalizeUpstreamAccountAlias on an already-trimmed value.
+function validUpstreamAccountAlias(value) {
+  return [...value].length <= 40 && !value.includes("@") &&
+    !/[\p{Cc}\u2028\u2029\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/u.test(value);
+}
+
+async function saveUpstreamAccountAlias(account, form) {
+  if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
+      !account.id || !upstreamAccounts.includes(account)) return;
+  const input = form.querySelector(".upstream-alias-input");
+  const alias = String(input.value || "").trim();
+  if (!validUpstreamAccountAlias(alias)) {
+    input.setAttribute("aria-invalid", "true");
+    setLocalMessage(form, "别名最多 40 个字符，不能包含 @、换行或控制字符。");
+    return;
+  }
+  input.setAttribute("aria-invalid", "false");
+  setLocalMessage(form);
+  const operation = {id: account.id, kind: "alias", alias};
+  upstreamAccountOperation = operation;
+  upstreamAccountRequestSequence++;
+  setUpstreamAccountMessage("upstream-account-action-message");
+  setUpstreamAccountMessage("upstream-account-refresh-message");
+  syncUpstreamAccountControls();
+  let confirmed = false;
+  try {
+    const response = await sensitiveAction(() => {
+      if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
+        throw new DOMException("操作已取消。", "AbortError");
+      }
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/alias`), {
+        method: "PUT", body: JSON.stringify({alias: operation.alias}),
+      }, () => upstreamAccountOperation === operation && !loggingOut && state?.user?.role === "owner");
+    });
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (response?.id !== account.id || response.alias !== operation.alias) throw new Error("别名响应格式异常，请刷新列表确认结果。");
+    confirmed = true;
+    account.alias = response.alias;
+    input.value = response.alias;
+    input.dataset.savedValue = input.value;
+    delete upstreamAccountRowState(account.id).drafts.alias;
+    const message = response.alias ? `别名已保存：${upstreamAccountLabel(account)}。` : `已清除 ${upstreamAccountLabel(account)} 的别名。`;
+    setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
+    announce(message);
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
+  } catch (error) {
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    upstreamAccountSyncHealthy = false;
+    setUpstreamAccountMessage(confirmed ? "upstream-account-refresh-message" : "upstream-account-action-message",
+      `${confirmed ? "操作已成功，但列表刷新失败" : "别名保存未确认"}：${friendlyError(error)} 请刷新列表后再试。`);
+  } finally {
+    if (upstreamAccountOperation === operation) { upstreamAccountOperation = null; syncUpstreamAccountControls(); }
+  }
+}
+
+function upstreamAliasBlock(account) {
+  const input = element("input", {
+    type: "text", className: "upstream-alias-input",
+    attributes: {placeholder: "例如：主力 Plus", autocomplete: "off"},
+  });
+  input.dataset.savedValue = account.alias || "";
+  input.value = upstreamAccountRowState(account.id).drafts.alias ?? input.dataset.savedValue;
+  const button = element("button", {type: "submit", className: "secondary upstream-alias-save", text: "保存别名"});
+  const form = element("form", {className: "upstream-alias-form", attributes: {novalidate: ""}},
+    element("label", {}, element("span", {text: "账号别名"}), input), button,
+    element("small", {className: "upstream-control-impact", text: "仅管理员可见；选择账号时与原名称一起显示。留空保存即清除。"}),
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
+  );
+  form.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamAccountAlias(account, form); });
+  return form;
 }
 
 async function changeUpstreamAccountStatus(account) {
@@ -7250,7 +7339,7 @@ async function changeUpstreamAccountStatus(account) {
     account.gateway_quota_status = response.gateway_quota_status;
     syncUpstreamAccountControls();
     const enabledMessage = account.allocation_weight === 0 ? upstreamAccountLanguage("系数仍为 0，停止接收新对话；已有有效绑定继续使用。", "系数仍为 0，停止接收新请求；已开始的请求继续执行。") : upstreamAccountLanguage("已恢复参与分流；若额度仍不足，将再次锁定。", "手动开关已启用；账号就绪且限流冷却结束后参与请求分配。");
-    const message = `${account.email_masked || "该上游账号"} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
+    const message = `${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -7310,7 +7399,7 @@ async function saveUpstreamAllocationWeight(account, form) {
     input.dataset.savedValue = input.value;
     delete upstreamAccountRowState(account.id).drafts.weight;
     syncUpstreamAccountControls();
-    const message = `${account.email_masked || "该上游账号"} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? upstreamAccountLanguage("停止接收新对话，已有有效绑定继续使用。", "停止接收新请求，已开始的请求继续执行。") : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
+    const message = `${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? upstreamAccountLanguage("停止接收新对话，已有有效绑定继续使用。", "停止接收新请求，已开始的请求继续执行。") : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -8124,6 +8213,7 @@ function upstreamAccountCard(account) {
     element("div", {className: "upstream-account-full-status"}, ...badges.slice(0, 3)),
     ...(account.display_name ? [element("p", {className: "upstream-account-name", text: `账号名称：${account.display_name}`})] : []),
     element("p", {className: "muted", text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
+    upstreamAliasBlock(account),
     element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
       element("span", {text: upstreamAccountLanguage("活跃 root 对话数", "活跃对话名额")}),
       element("strong", {className: "upstream-concurrency-count", text: "暂不可用"}),
@@ -8143,11 +8233,12 @@ function upstreamAccountCard(account) {
     // Detached details can emit a final toggle after logout; do not recreate cleared state.
     if (details.isConnected && generation === identityGeneration && state?.user?.role === "owner" && !loggingOut) upstreamAccountRowState(account.id, provider).expanded = details.open;
   });
+  const identity = [account.alias, account.display_name, account.email_masked || "邮箱不可用"].filter(Boolean);
   return element("article", {className: "panel upstream-account-card", dataset: {accountId: account.id || ""}},
     element("div", {className: "upstream-account-summary"},
       element("div", {className: "upstream-account-identity"},
-        element("h3", {text: account.display_name || account.email_masked || "邮箱不可用"}),
-        ...(account.display_name ? [element("p", {text: account.email_masked || "邮箱不可用"})] : []),
+        element("h3", {text: identity[0]}),
+        ...(identity.length > 1 ? [element("p", {text: identity.slice(1).join(" · ")})] : []),
       ),
       badges[3],
       element("div", {className: "upstream-summary-metrics"},
@@ -8680,9 +8771,10 @@ async function loadModelIdentificationOptions() {
   const select = byId("model-identification-account");
   select.replaceChildren(element("option", {text: "请选择上游账号", attributes: {value: ""}}),
     ...accounts.map((account) => {
+      const label = upstreamAccountLabel(account, account.masked_email || account.id);
       const option = element("option", {
-        text: `${account.masked_email || account.id} · 日常分流：${upstreamFinalStatusLabels[account.status] || "状态未知"}`,
-        attributes: {value: account.id},
+        text: `${label} · 日常分流：${upstreamFinalStatusLabels[account.status] || "状态未知"}`,
+        dataset: {label}, attributes: {value: account.id},
       });
       return option;
     }));
@@ -8835,7 +8927,7 @@ function renderModelIdentifications(items) {
   }
   container.replaceChildren(...records.map((item) => {
     const account = all("option", byId("model-identification-account")).find((option) => option.value === item.account_id);
-    const label = account?.textContent?.split(" · ")[0] || item.account_id;
+    const label = account?.dataset.label || item.account_id;
     const card = element("article", {className: "panel model-identification-result"},
       element("h3", {text: `${label} · ${item.requested_model}`}));
     if (item.run_status === "failed") card.append(element("p", {className: "model-identification-failure", text: `本次失败：${modelIdentificationFailureLabels[item.run_error_code] || "运行失败"}。${item.conclusion ? "下方保留仍在有效期内的上次结论。" : "未产生新结论。"}`}));

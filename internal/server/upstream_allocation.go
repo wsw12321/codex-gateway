@@ -18,6 +18,8 @@ import (
 const (
 	upstreamAllocationRequestBytes = 8 << 10
 	upstreamWeightRequestBytes     = 256
+	// Forty characters may each arrive as a 12-byte escaped surrogate pair.
+	upstreamAliasRequestBytes = 1 << 10
 )
 
 // Only the compatibility service may choose a new binding. Candidate discovery
@@ -187,6 +189,41 @@ func (s *Server) setUpstreamAccountConcurrentLimit(w http.ResponseWriter, r *htt
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": account.ID, "concurrent_limit": account.ConcurrentLimit})
+}
+
+func (s *Server) setUpstreamAccountAlias(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validUpstreamAccountID(id) {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_account_not_found", "上游账号不存在")
+		return
+	}
+	if !strictJSONRequest(r) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_alias_request", "账号别名请求必须为 JSON，且不能包含查询参数")
+		return
+	}
+	var alias *string
+	if err := decodeSingleJSONField(r, upstreamAliasRequestBytes, "alias", &alias); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	var err error
+	if alias != nil {
+		*alias, err = store.NormalizeUpstreamAccountAlias(*alias)
+	}
+	if alias == nil || err != nil {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_account_alias", "账号别名最多 40 个字符，不能包含 @、换行或控制字符")
+		return
+	}
+	account, err := s.accountStore(r).SetUpstreamAccountAlias(r.Context(), store.SetUpstreamAccountAliasParams{
+		AccountID: id, Alias: *alias, At: time.Now().UTC(),
+		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
+		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
+	})
+	if err != nil {
+		s.storeWriteError(w, r, "set upstream account alias", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": account.ID, "alias": account.Alias})
 }
 
 func (s *Server) setUpstreamAccountAccess(w http.ResponseWriter, r *http.Request) {

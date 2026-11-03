@@ -40,6 +40,7 @@ func TestAntigravityAccountRoutesRequireSession(t *testing.T) {
 		{http.MethodPut, "/0123456789abcdef/status"},
 		{http.MethodPut, "/0123456789abcdef/allocation-weight"},
 		{http.MethodPut, "/0123456789abcdef/concurrent-limit"},
+		{http.MethodPut, "/0123456789abcdef/alias"},
 		{http.MethodPut, "/0123456789abcdef/access"},
 	} {
 		r := httptest.NewRequest(route.method, "https://gateway.test/admin/antigravity-accounts"+route.path, strings.NewReader(`{}`))

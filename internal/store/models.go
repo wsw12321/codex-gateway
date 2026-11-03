@@ -350,6 +350,7 @@ type GlobalPricingBreakdownRow struct {
 type UpstreamAccount struct {
 	ID               string
 	DisplayName      string
+	Alias            string
 	MaskedEmail      string
 	Plan             string
 	Status           string
@@ -377,6 +378,7 @@ type UpstreamAccountSnapshot struct {
 type UpstreamAccountSummary struct {
 	AccountID          *string
 	DisplayName        string
+	Alias              string
 	MaskedEmail        string
 	Plan               string
 	Status             string

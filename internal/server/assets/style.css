@@ -1375,6 +1375,28 @@ code {
   margin: 0;
 }
 
+.upstream-alias-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: .65rem;
+  margin: .65rem 0 1rem;
+}
+
+.upstream-alias-form label {
+  min-width: 0;
+}
+
+.upstream-alias-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.upstream-alias-form .form-message {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .upstream-allocation-input,
 .upstream-concurrency-limit-input {
   width: 100%;
@@ -3035,9 +3057,11 @@ dialog form {
   .upstream-summary-metrics strong { font-size: .82rem; }
   .upstream-summary-metrics .upstream-concurrency-count { overflow-wrap: anywhere; }
   .upstream-allocation-form,
-  .upstream-concurrency-limit-form { grid-template-columns: minmax(0, 1fr); }
+  .upstream-concurrency-limit-form,
+  .upstream-alias-form { grid-template-columns: minmax(0, 1fr); }
   .upstream-allocation-form button,
-  .upstream-concurrency-limit-form button { width: 100%; }
+  .upstream-concurrency-limit-form button,
+  .upstream-alias-form button { width: 100%; }
 }
 
 /* Grouped navigation, accessible mobile drawer, and compact record details. */

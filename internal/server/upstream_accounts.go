@@ -101,6 +101,7 @@ type upstreamAccountUsageDTO struct {
 type upstreamAccountDTO struct {
 	ID                  string     `json:"id"`
 	DisplayName         string     `json:"display_name,omitempty"`
+	Alias               string     `json:"alias"`
 	EmailMasked         string     `json:"email_masked"`
 	Plan                string     `json:"plan"`
 	Status              string     `json:"status"`
@@ -266,7 +267,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			AccessMode:       accountAccess.Mode, AuthorizedUserIDs: accountAccess.UserIDs,
 			AllocationWeight: allocation.AllocationWeight, ConcurrentLimit: row.ConcurrentLimit, RollingCostUSD: allocation.CostUSD,
 			RollingCostShare: allocation.CostShare, TargetShare: allocation.TargetShare,
-			ID: *row.AccountID, DisplayName: row.DisplayName, EmailMasked: row.MaskedEmail, Plan: row.Plan,
+			ID: *row.AccountID, DisplayName: row.DisplayName, Alias: row.Alias, EmailMasked: row.MaskedEmail, Plan: row.Plan,
 			Status: finalStatus, CliproxyStatus: cliproxyStatus, GatewayManualStatus: gatewayManualStatus,
 			GatewayQuotaStatus: gatewayQuotaStatus, CanManage: manageable[*row.AccountID], LastSyncedAt: row.LastSyncedAt,
 			RequestCount: usage.RequestCount, ErrorCount: usage.ErrorCount,

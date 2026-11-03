@@ -51,7 +51,7 @@ const group = (id = "g1", extra = {}) => ({id, name: `预算组 ${id}`, members:
 const snapshot = (groupID = "g1") => ({group_id: groupID, providers: [
   {group_id: groupID, provider: "codex", strategy: "all", mode: "all", account_ids: [], accounts: [
     {id: "c1", display_name: "主账号", email_masked: "al***@example.test", status: "available"},
-    {id: "c2", display_name: "备用账号", email_masked: "be***@example.test", status: "unavailable"},
+    {id: "c2", display_name: "备用账号", alias: "冷备", email_masked: "be***@example.test", status: "unavailable"},
   ]},
   {group_id: groupID, provider: "antigravity", strategy: "selected", mode: "selected", account_ids: ["a1"], sync_warning: "upstream_account_sync_unavailable", accounts: [
     {id: "a1", display_name: "Gemini 账号", email_masked: "ge***@example.test", status: "unknown"},
@@ -265,4 +265,13 @@ test("save freezes pool controls and an identity reset drops a pending save", as
   assert.equal(ui.run("groupUpstreamDrafts.size"), 0);
   assert.equal(ui.run("groupUpstreamSaving"), "");
   assert.equal(ui.host().children.length, 0);
+});
+
+test("the shared picker shows an alias beside the original name and searches it", async () => {
+  const ui = dashboard(); await ui.select();
+  const choices = ui.form().querySelectorAll(".upstream-scope-choice");
+  assert.deepEqual(choices.map((choice) => choice.querySelector("strong").textContent), ["主账号", "冷备（备用账号）"]);
+  assert.equal(choices[1].querySelector("input").getAttribute("aria-label"), "选择 Codex 账号 冷备（备用账号）");
+  ui.edit("search", "冷备");
+  assert.deepEqual(choices.map((choice) => choice.classList.contains("hidden")), [true, false]);
 });

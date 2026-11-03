@@ -119,6 +119,20 @@ test("all existing accounts can be selected regardless of daily routing status",
   assert.equal(run.disabled, false);
 });
 
+test("account options and result titles show an alias beside the masked email", async () => {
+  const ui = dashboard();
+  ui.context.api = async () => ({reference_version: "2026.09.5", accounts: [
+    {id: "aliased", alias: "主力 Plus", masked_email: "a***@example.com", status: "available"},
+    {id: "plain", masked_email: "b***@example.com", status: "available"},
+  ]});
+  await ui.run("loadModelIdentificationOptions()");
+  const account = ui.nodes.get("model-identification-account");
+  assert.deepEqual(account.options.slice(1).map((option) => option.textContent),
+    ["主力 Plus（a***@example.com） · 日常分流：可用", "b***@example.com · 日常分流：可用"]);
+  ui.run('renderModelIdentifications([{account_id:"aliased",requested_model:"gpt-6-sol",run_status:"completed"}]);');
+  assert.match(ui.nodes.get("model-identification-results").textContent, /^主力 Plus（a\*\*\*@example\.com） · gpt-6-sol/);
+});
+
 test("refresh preserves selections across status changes and clears deleted accounts", async () => {
   const ui = dashboard();
   let status = "available";

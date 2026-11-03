@@ -246,7 +246,7 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 					if !strings.Contains(query, "UPDATE upstream_accounts") || args[1].Value != weight {
 						t.Fatalf("unexpected write query %s %+v", query, args)
 					}
-					return &upstreamAuditRows{columns: make([]string, 10), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, weight, int64(1)}}, nil
+					return &upstreamAuditRows{columns: make([]string, 11), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, weight, int64(1), ""}}, nil
 				}}})
 				defer db.Close()
 				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -261,6 +261,95 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 					if json.Unmarshal(w.Body.Bytes(), &result) != nil || w.Code != 200 || result["id"] != "0123456789abcdef" || result["allocation_weight"] != float64(weight) || len(result) != 2 {
 						t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 					}
+				}
+			})
+		}
+	}
+}
+
+func aliasTestRequest(body string) *http.Request {
+	r := statusTestRequest(body)
+	r.URL.Path = "/admin/upstream-accounts/0123456789abcdef/alias"
+	return r
+}
+
+func TestUpstreamAliasRejectsInvalidRequests(t *testing.T) {
+	for _, body := range []string{
+		``, `{}`, `null`, `[]`, `{"alias":null}`, `{"alias":1}`, `{"alias":true}`, `{"Alias":"a"}`,
+		`{"alias":"a","alias":"b"}`, `{"alias":"a","token":"sensitive-canary"}`, `{"alias":"a"}{}`,
+		`{"alias":"sensitive-canary@example.com"}`, `{"alias":"line\nbreak"}`, `{"alias":"‮evil"}`,
+		`{"alias":"` + strings.Repeat("号", 41) + `"}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			(&Server{}).setUpstreamAccountAlias(w, aliasTestRequest(body))
+			if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "sensitive-canary") {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+	for _, mutate := range []func(*http.Request){
+		func(r *http.Request) { r.Header.Del("Content-Type") },
+		func(r *http.Request) { r.URL.RawQuery = "alias=a" },
+	} {
+		r := aliasTestRequest(`{"alias":"a"}`)
+		mutate(r)
+		w := httptest.NewRecorder()
+		(&Server{}).setUpstreamAccountAlias(w, r)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("protocol status=%d", w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	(&Server{}).setUpstreamAccountAlias(w, aliasTestRequest(`{"alias":"`+strings.Repeat("x", 1100)+`"}`))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status=%d", w.Code)
+	}
+	r := aliasTestRequest(`{"alias":"a"}`)
+	r.SetPathValue("id", "INVALID")
+	w = httptest.NewRecorder()
+	(&Server{}).setUpstreamAccountAlias(w, r)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("id status=%d", w.Code)
+	}
+}
+
+func TestUpstreamAliasSavesNormalizedValueAndHidesDatabaseFailure(t *testing.T) {
+	for _, test := range []struct{ body, want string }{
+		{`{"alias":"  主力 Plus  "}`, "主力 Plus"},
+		{`{"alias":""}`, ""},
+	} {
+		for _, fail := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/failure=%v", test.body, fail), func(t *testing.T) {
+				now := time.Now().UTC()
+				var written driver.Value
+				db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+					if fail {
+						return nil, errors.New("database sensitive-canary")
+					}
+					if strings.Contains(query, "FOR UPDATE") {
+						return &upstreamAuditRows{columns: []string{"alias"}, values: []driver.Value{"旧别名"}}, nil
+					}
+					if !strings.Contains(query, "SET alias = $2") {
+						t.Fatalf("unexpected write query %s %+v", query, args)
+					}
+					written = args[1].Value
+					return &upstreamAuditRows{columns: make([]string, 11), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, int64(1), int64(1), written}}, nil
+				}}})
+				defer db.Close()
+				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+				w := httptest.NewRecorder()
+				server.setUpstreamAccountAlias(w, aliasTestRequest(test.body))
+				if fail {
+					if w.Code != 500 || strings.Contains(w.Body.String(), "sensitive-canary") {
+						t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+					}
+					return
+				}
+				var result map[string]any
+				if json.Unmarshal(w.Body.Bytes(), &result) != nil || w.Code != 200 || written != test.want ||
+					result["id"] != "0123456789abcdef" || result["alias"] != test.want || len(result) != 2 {
+					t.Fatalf("status=%d written=%q body=%s", w.Code, written, w.Body.String())
 				}
 			})
 		}

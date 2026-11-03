@@ -48,6 +48,7 @@ func (s *Server) antigravityAccountRoutes() {
 	s.mux.Handle("PUT /admin/antigravity-accounts/{id}/status", write(s.setUpstreamAccountStatus))
 	s.mux.Handle("PUT /admin/antigravity-accounts/{id}/allocation-weight", write(s.setUpstreamAccountAllocationWeight))
 	s.mux.Handle("PUT /admin/antigravity-accounts/{id}/concurrent-limit", write(s.setUpstreamAccountConcurrentLimit))
+	s.mux.Handle("PUT /admin/antigravity-accounts/{id}/alias", write(s.setUpstreamAccountAlias))
 	s.mux.Handle("PUT /admin/antigravity-accounts/{id}/access", write(s.setUpstreamAccountAccess))
 }
 

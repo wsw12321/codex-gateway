@@ -55,6 +55,10 @@ Current migrations:
   (QQ group) and manual recharge instructions, plus fixed-slot PNG/JPEG images
   re-encoded by the gateway. Both sections start disabled. No payment is
   verified or credited by this table.
+- `internal/store/migrations/0041_upstream_account_alias.sql` — Owner-chosen
+  upstream account aliases shown beside the synchronized name or masked email.
+  Empty for existing accounts; synchronization never overwrites them, and the
+  constraint rejects `@` so a full email cannot be stored as an alias.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

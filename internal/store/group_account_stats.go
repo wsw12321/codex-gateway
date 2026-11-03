@@ -21,6 +21,7 @@ type GroupAccountStat struct {
 	AccountID       string  `json:"account_id"`
 	Provider        string  `json:"provider"`
 	DisplayName     string  `json:"display_name,omitempty"`
+	Alias           string  `json:"alias,omitempty"`
 	EmailMasked     string  `json:"email_masked,omitempty"`
 	GroupChargedUSD string  `json:"group_charged_usd"`
 	ActualCostUSD   string  `json:"actual_cost_usd"`
@@ -104,18 +105,18 @@ func (s *Store) GroupAccountStats(ctx context.Context, groupID string, periodIDs
     nums AS (SELECT l.upstream_account_id account_id,COALESCE(sum(l.group_charged_usd),0)::numeric(30,12)::text charged FROM billing_ledger_entries l WHERE l.group_id=$1 AND l.group_period_id IN (SELECT id FROM selected) AND l.entry_type='usage_charge' GROUP BY l.upstream_account_id),
     dens AS (SELECT l.upstream_account_id account_id,COALESCE(sum(l.actual_cost_usd),0)::numeric(30,12)::text cost FROM billing_ledger_entries l WHERE l.entry_type='usage_charge' AND l.upstream_account_id IS NOT NULL AND EXISTS (SELECT 1 FROM selected sw WHERE COALESCE(l.usage_requested_at,l.created_at)>=sw.starts_at AND COALESCE(l.usage_requested_at,l.created_at)<sw.ends_at) GROUP BY l.upstream_account_id),
     combined AS (SELECT COALESCE(n.account_id,d.account_id) account_id,COALESCE(n.charged,'0') charged,COALESCE(d.cost,'0') cost FROM nums n FULL OUTER JOIN dens d ON d.account_id=n.account_id)
-    SELECT c.account_id,a.provider,a.display_name,a.masked_email,c.charged,c.cost FROM combined c JOIN upstream_accounts a ON a.id=c.account_id ORDER BY a.provider,a.id`, gid, encoded)
+    SELECT c.account_id,a.provider,a.display_name,a.alias,a.masked_email,c.charged,c.cost FROM combined c JOIN upstream_accounts a ON a.id=c.account_id ORDER BY a.provider,a.id`, gid, encoded)
 	if err != nil {
 		return nil, mapDBError("calculate group account statistics", err)
 	}
 	defer rows.Close()
 	result := []GroupAccountStat{}
 	for rows.Next() {
-		var id, provider, displayName, emailMasked, charged, cost string
-		if err := rows.Scan(&id, &provider, &displayName, &emailMasked, &charged, &cost); err != nil {
+		var id, provider, displayName, alias, emailMasked, charged, cost string
+		if err := rows.Scan(&id, &provider, &displayName, &alias, &emailMasked, &charged, &cost); err != nil {
 			return nil, err
 		}
-		v := GroupAccountStat{AccountID: id, Provider: provider, GroupChargedUSD: charged, ActualCostUSD: cost, DisplayName: displayName, EmailMasked: emailMasked, DataComplete: !incomplete}
+		v := GroupAccountStat{AccountID: id, Provider: provider, GroupChargedUSD: charged, ActualCostUSD: cost, DisplayName: displayName, Alias: alias, EmailMasked: emailMasked, DataComplete: !incomplete}
 		if r, ok := new(big.Rat).SetString(cost); ok && r.Sign() > 0 {
 			n, _ := new(big.Rat).SetString(charged)
 			q := new(big.Rat).Quo(n, r).FloatString(12)

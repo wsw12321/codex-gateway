@@ -282,7 +282,8 @@ func TestUpstreamAccountsFallsBackToDurableLocalSummary(t *testing.T) {
 		t.Fatal(err)
 	}
 	if payload.SyncWarning != "upstream_account_sync_unavailable" || len(payload.Accounts) != 1 ||
-		payload.Accounts[0].ID != "0123456789abcdef" || payload.Accounts[0].RequestCount != 3 || payload.Accounts[0].CanManage {
+		payload.Accounts[0].ID != "0123456789abcdef" || payload.Accounts[0].RequestCount != 3 || payload.Accounts[0].CanManage ||
+		payload.Accounts[0].Alias != "主力 Plus" {
 		t.Fatalf("fallback payload = %+v", payload)
 	}
 }
@@ -479,12 +480,12 @@ func (upstreamSummaryConn) QueryContext(_ context.Context, query string, _ []dri
 	}
 	return &upstreamAuditRows{
 		columns: []string{
-			"upstream_account_id", "display_name", "masked_email", "plan", "status", "concurrent_limit", "last_synced_at",
+			"upstream_account_id", "display_name", "alias", "masked_email", "plan", "status", "concurrent_limit", "last_synced_at",
 			"request_count", "error_count", "input_tokens", "cached_input_tokens",
 			"cache_write_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens", "output_tokens", "reasoning_tokens", "equivalent_cost_usd",
 		},
 		values: []driver.Value{
-			"0123456789abcdef", "", "u***@example.com", "plus", "available", int64(1),
+			"0123456789abcdef", "", "主力 Plus", "u***@example.com", "plus", "available", int64(1),
 			time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC),
 			int64(3), int64(1), int64(100), int64(20), int64(10), int64(0), int64(0), int64(30), int64(5), "0.125",
 		},

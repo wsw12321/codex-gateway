@@ -70,7 +70,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	var lastSynced sql.NullTime
 	err := row.Scan(&value.ID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 		&lastSynced, &value.CreatedAt, &value.UpdatedAt, &value.AllocationWeight,
-		&value.ConcurrentLimit)
+		&value.ConcurrentLimit, &value.Alias)
 	if lastSynced.Valid {
 		value.LastSyncedAt = &lastSynced.Time
 	}
@@ -78,7 +78,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 }
 
 const upstreamAccountColumns = `id, display_name, masked_email, plan, status,
-	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit`
+	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit, alias`
 
 // EnsureUpstreamAccount creates a metadata-free placeholder for a recognized,
 // opaque tracing ID. Synchronization later replaces its display metadata. It
@@ -351,7 +351,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		UNION SELECT upstream_account_id FROM usage_totals
 		UNION SELECT upstream_account_id FROM ledger_totals
 	)
-	SELECT d.upstream_account_id, COALESCE(a.display_name, ''), COALESCE(a.masked_email, ''),
+	SELECT d.upstream_account_id, COALESCE(a.display_name, ''), COALESCE(a.alias, ''), COALESCE(a.masked_email, ''),
 		COALESCE(a.plan, 'unknown'), COALESCE(a.status, 'unattributed'),
 		COALESCE(a.concurrent_limit, 1), a.last_synced_at, COALESCE(u.request_count, 0), COALESCE(u.error_count, 0),
 		COALESCE(u.input_tokens, 0), COALESCE(u.cached_input_tokens, 0),
@@ -375,7 +375,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		var value UpstreamAccountSummary
 		var accountID sql.NullString
 		var lastSynced sql.NullTime
-		if err := rows.Scan(&accountID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
+		if err := rows.Scan(&accountID, &value.DisplayName, &value.Alias, &value.MaskedEmail, &value.Plan, &value.Status,
 			&value.ConcurrentLimit, &lastSynced, &value.RequestCount, &value.ErrorCount, &value.InputTokens,
 			&value.CachedInputTokens, &value.CacheWriteTokens, &value.CacheWrite5mTokens, &value.CacheWrite1hTokens, &value.OutputTokens,
 			&value.ReasoningTokens, &value.EquivalentCostUSD); err != nil {

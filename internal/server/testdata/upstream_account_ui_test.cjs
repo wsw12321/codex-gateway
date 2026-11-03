@@ -102,6 +102,10 @@ function dashboard(accounts = [account()], extra = {}, provider = "codex") {
     change: (index = 0) => run(`changeUpstreamAccountStatus(upstreamAccounts[${index}])`),
     saveWeight: (index = 0) => run(`saveUpstreamAllocationWeight(upstreamAccounts[${index}], all(".upstream-allocation-form")[${index}])`),
     saveLimit: (index = 0) => run(`saveUpstreamConcurrentLimit(upstreamAccounts[${index}], all(".upstream-concurrency-limit-form")[${index}])`),
+    aliasInput: (index = 0) => root.querySelectorAll(".upstream-alias-input")[index],
+    aliasButton: (index = 0) => root.querySelectorAll(".upstream-alias-save")[index],
+    aliasForm: (index = 0) => root.querySelectorAll(".upstream-alias-form")[index],
+    saveAlias: (index = 0) => run(`saveUpstreamAccountAlias(upstreamAccounts[${index}], all(".upstream-alias-form")[${index}])`),
     load: () => run('loadUpstreamAccounts(new URLSearchParams("all=true"))'),
   };
 }
@@ -700,4 +704,103 @@ test("clearing account state prevents a late unauthorized response from logging 
   assert.equal(ui.run("state.user.id"), "owner-2");
   assert.equal(ui.cards().length, 0);
   assert.equal(ui.node("upstream-account-refresh-message").textContent, "");
+});
+
+test("an alias leads the card heading, keeps the original label beside it, and is searchable", () => {
+  const ui = dashboard([
+    account("plain"),
+    {...account("named"), display_name: "slot-1"},
+    {...account("aliased"), display_name: "slot-2", alias: "主力 Plus"},
+    {...account("alias-only"), alias: "备用"},
+  ]);
+  const identity = (index) => {
+    const host = ui.cards()[index].querySelector(".upstream-account-identity");
+    return [host.querySelector("h3").textContent, host.querySelector("p")?.textContent];
+  };
+  assert.deepEqual(identity(0), ["plain@example.test", undefined]);
+  assert.deepEqual(identity(1), ["slot-1", "named@example.test"]);
+  assert.deepEqual(identity(2), ["主力 Plus", "slot-2 · aliased@example.test"]);
+  assert.deepEqual(identity(3), ["备用", "alias-only@example.test"]);
+  assert.deepEqual([0, 1, 2, 3].map((index) => ui.aliasInput(index).value), ["", "", "主力 Plus", "备用"]);
+  ui.run('upstreamAccountUIState().search = "主力"; filterUpstreamAccountCards();');
+  assert.deepEqual(ui.cards().map((card) => card.classList.contains("hidden")), [true, true, false, true]);
+});
+
+test("aliases stay editable for gateway-only accounts and follow ownership and pending operations", async () => {
+  const ui = dashboard([account("historical", "unavailable", false)], {sync_warning: "sync_failed"});
+  assert.equal(ui.button().disabled, true);
+  assert.equal(ui.aliasInput().disabled, false);
+  assert.equal(ui.aliasButton().disabled, false);
+  ui.run('state.user.role = "member"; syncUpstreamAccountControls();');
+  assert.equal(ui.aliasInput().disabled, true);
+  ui.run('state.user.role = "owner"; upstreamAccountOperation = {id: "historical", kind: "alias"}; syncUpstreamAccountControls();');
+  assert.equal(ui.aliasButton().disabled, true);
+  assert.equal(ui.aliasButton().textContent, "保存中…");
+});
+
+test("unsafe aliases are rejected locally without issuing requests", async () => {
+  const ui = dashboard();
+  let calls = 0;
+  ui.api(async () => { calls++; throw new Error("must not request"); });
+  for (const invalid of ["owner@example.test", "x".repeat(41), "line\nbreak", "tab\there", "\u202eevil", "a\u2028b"]) {
+    ui.aliasInput().value = invalid;
+    await ui.saveAlias();
+    assert.equal(ui.aliasInput().attributes["aria-invalid"], "true", JSON.stringify(invalid));
+    assert.match(ui.aliasForm().querySelector(".form-message").textContent, /最多 40 个字符/);
+  }
+  assert.equal(calls, 0);
+});
+
+test("alias save trims, confirms, refreshes, and an empty value clears it", async () => {
+  const ui = dashboard();
+  const writes = [];
+  let stored = "";
+  ui.api(async (url, options) => {
+    if (!options) return {accounts: [{...account(), alias: stored}]};
+    const body = JSON.parse(options.body);
+    writes.push({url, method: options.method, body});
+    stored = body.alias;
+    return {id: "account-1", alias: body.alias};
+  });
+  ui.aliasInput().value = "  主力 Plus  ";
+  await ui.saveAlias();
+  ui.aliasInput().value = "   ";
+  await ui.saveAlias();
+  ui.aliasInput().value = "😀".repeat(40);
+  await ui.saveAlias();
+  assert.deepEqual(writes.map((write) => [write.url, write.method, write.body.alias]), [
+    ["/admin/upstream-accounts/account-1/alias", "PUT", "主力 Plus"],
+    ["/admin/upstream-accounts/account-1/alias", "PUT", ""],
+    ["/admin/upstream-accounts/account-1/alias", "PUT", "😀".repeat(40)],
+  ]);
+  assert.equal(ui.cards()[0].querySelector("h3").textContent, "😀".repeat(40));
+  assert.equal(ui.aliasInput().value, "😀".repeat(40));
+  assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
+});
+
+test("alias save messages name the account by alias and original label", async () => {
+  const ui = dashboard();
+  let stored = "";
+  ui.api(async (_, options) => {
+    if (options) { stored = JSON.parse(options.body).alias; return {id: "account-1", alias: stored}; }
+    return {accounts: [{...account(), alias: stored}]};
+  });
+  ui.aliasInput().value = "主力";
+  await ui.saveAlias();
+  assert.equal(ui.node("upstream-account-action-message").textContent, "别名已保存：主力（account-1@example.test）。");
+  ui.aliasInput().value = "";
+  await ui.saveAlias();
+  assert.equal(ui.node("upstream-account-action-message").textContent, "已清除 account-1@example.test 的别名。");
+});
+
+test("a mismatched alias confirmation is not shown as saved and drafts survive refresh", async () => {
+  const ui = dashboard();
+  ui.api(async (_, options) => options ? {id: "account-1", alias: "other"} : {accounts: [account()]});
+  ui.aliasInput().value = "主力";
+  await ui.saveAlias();
+  assert.equal(ui.run("upstreamAccounts[0].alias"), undefined);
+  assert.match(ui.node("upstream-account-action-message").textContent, /别名保存未确认/);
+  assert.equal(ui.aliasInput().value, "主力");
+  await ui.load();
+  assert.equal(ui.aliasInput().value, "主力", "an unsaved alias draft survives a list refresh");
 });

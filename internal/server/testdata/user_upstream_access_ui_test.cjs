@@ -50,7 +50,7 @@ const snapshot = () => ({
   providers: [
     {provider: "codex", accounts: [
       {id: "c1", display_name: "主账号", email_masked: "al***@example.test", status: "available"},
-      {id: "c2", display_name: "备用账号", email_masked: "be***@example.test", status: "unavailable"},
+      {id: "c2", display_name: "备用账号", alias: "冷备", email_masked: "be***@example.test", status: "unavailable"},
     ]},
     {provider: "antigravity", sync_warning: "upstream_account_sync_unavailable",
       accounts: [{id: "a1", display_name: "Gemini 账号", email_masked: "ge***@example.test", status: "unknown"}]},
@@ -360,4 +360,15 @@ test("save failures keep input, conflicts ask for a refresh, and mismatched resu
   assert.equal(ui.node("user-upstream-submit").disabled, false);
   ui.context.api = original; await ui.submit();
   assert.equal(ui.writes().length, 1);
+});
+
+test("account rows and matrix headers show an alias beside the original name and search it", async () => {
+  const ui = dashboard(); await ui.load();
+  assert.equal(ui.accountRow("c1").querySelector("strong").textContent, "主账号");
+  assert.equal(ui.accountRow("c2").querySelector("strong").textContent, "冷备（备用账号）");
+  ui.selectUsers("second");
+  ui.selectAccounts("c2");
+  assert.match(ui.node("user-upstream-matrix").textContent, /冷备（备用账号）/);
+  ui.set("user-upstream-account-search", "冷备");
+  assert.deepEqual(ui.json("userUpstreamAccountMatches().map((account) => account.id)"), ["c2"]);
 });

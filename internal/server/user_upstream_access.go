@@ -15,6 +15,7 @@ const userUpstreamAccessRequestBytes = 512 << 10
 type userUpstreamAccountOption struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
+	Alias       string `json:"alias"`
 	EmailMasked string `json:"email_masked"`
 	Status      string `json:"status"`
 }
@@ -90,7 +91,7 @@ func (s *Server) upstreamAccessAccountOptionsLocked(ctx context.Context, provide
 	options := make([]userUpstreamAccountOption, 0, len(accounts))
 	for _, account := range accounts {
 		options = append(options, userUpstreamAccountOption{
-			ID: account.ID, DisplayName: account.DisplayName, EmailMasked: account.MaskedEmail, Status: account.Status,
+			ID: account.ID, DisplayName: account.DisplayName, Alias: account.Alias, EmailMasked: account.MaskedEmail, Status: account.Status,
 		})
 	}
 	return options, warning, nil

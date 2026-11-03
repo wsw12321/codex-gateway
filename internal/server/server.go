@@ -226,6 +226,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/status", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountStatus)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/allocation-weight", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAllocationWeight)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/concurrent-limit", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountConcurrentLimit)))))
+	s.mux.Handle("PUT /admin/upstream-accounts/{id}/alias", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAlias)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/model-catalog", s.requireSession(http.HandlerFunc(s.sessionModelCatalog)))

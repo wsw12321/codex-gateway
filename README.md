@@ -432,6 +432,10 @@ Owner 可在控制台“上游账号”页禁用或重新启用账号，操作�
 时间恢复。重新启用直接清除账号和模型冷却，已有请求及 SSE 不受禁用影响。
 控制状态随现有 OAuth 卷持久保存；具体排查及单 sidecar 切换要求见
 [运维文档](docs/operations.md) 和 [验证记录](docs/upstream-account-control-validation.md)。
+每个账号还可在“账号详情与设置”中填写最多 40 字的别名（不能含 `@`，留空即清除）。
+别名由 Gateway 保存，账号同步不会覆盖；卡片标题、搜索以及账号权限、群组账号池、
+模型鉴定等选择列表显示为“别名（原名称或脱敏邮箱）”，见
+[别名验证记录](docs/upstream-account-alias-validation.md)。
 
 ```sh
 ./scripts/codex-device-login.sh

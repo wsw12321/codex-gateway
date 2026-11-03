@@ -37,6 +37,7 @@ func (s *Server) modelIdentificationStorage() modelIdentificationRepository {
 
 type modelIdentificationAccountOption struct {
 	ID          string `json:"id"`
+	Alias       string `json:"alias"`
 	MaskedEmail string `json:"masked_email"`
 	Status      string `json:"status"`
 }
@@ -82,7 +83,31 @@ func (s *Server) modelIdentificationOptions(w http.ResponseWriter, r *http.Reque
 		s.modelIdentificationOptionsError(w, r, err)
 		return
 	}
+	if err := s.addModelIdentificationAliases(r.Context(), options.Accounts); err != nil {
+		internalError(s, w, r, "list model identification account aliases", err)
+		return
+	}
 	writeJSON(w, http.StatusOK, options)
+}
+
+// The sidecar lists the accounts; aliases are Gateway-owned. An account not
+// yet stored by the gateway cannot have an alias.
+func (s *Server) addModelIdentificationAliases(ctx context.Context, options []modelIdentificationAccountOption) error {
+	if s.store == nil || len(options) == 0 {
+		return nil
+	}
+	accounts, err := s.store.ListUpstreamAccounts(ctx)
+	if err != nil {
+		return err
+	}
+	aliases := make(map[string]string, len(accounts))
+	for _, account := range accounts {
+		aliases[account.ID] = account.Alias
+	}
+	for i := range options {
+		options[i].Alias = aliases[options[i].ID]
+	}
+	return nil
 }
 
 func (s *Server) resolveModelIdentificationOptions(ctx context.Context, accountID string) (modelIdentificationOptionsDTO, error) {
