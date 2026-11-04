@@ -34,6 +34,7 @@ type fakeGroupRepository struct {
 	put     *store.PutGroupParams
 	members *store.SetGroupMembersParams
 	archive *store.ArchiveGroupParams
+	usage   *store.SetGroupAccountUsageVisibilityParams
 }
 
 func (f *fakeGroupRepository) ListGroups(context.Context) ([]store.GroupSummary, error) {
@@ -60,6 +61,11 @@ func (f *fakeGroupRepository) ArchiveGroup(_ context.Context, p store.ArchiveGro
 	f.archive = &p
 	return f.group, f.err
 }
+func (f *fakeGroupRepository) SetGroupAccountUsageVisibility(_ context.Context, p store.SetGroupAccountUsageVisibilityParams) (store.Group, error) {
+	f.calls++
+	f.usage = &p
+	return f.group, f.err
+}
 
 type groupHandlerEndpoint struct {
 	name, method, path string
@@ -76,6 +82,7 @@ func groupHandlerWriteEndpoints() []groupHandlerEndpoint {
 		{"members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "add", "user_ids": []string{groupHandlerMemberID}}},
 		{"archive", http.MethodDelete, "/admin/groups/" + groupHandlerTestID, map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget "}},
 		{"remove all members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "remove_all"}},
+		{"account usage", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/account-usage-visibility", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "enabled": true}},
 	}
 }
 
@@ -239,6 +246,14 @@ func TestGroupWriteRoutesCarryAuthenticatedAttribution(t *testing.T) {
 				write = repo.archive.BillingWriteParams
 				if repo.archive.GroupID != groupHandlerTestID {
 					t.Fatalf("archive params: %+v", repo.archive)
+				}
+			case "account usage":
+				if repo.usage == nil {
+					t.Fatal("account usage write not called")
+				}
+				write = repo.usage.BillingWriteParams
+				if repo.usage.GroupID != groupHandlerTestID || !repo.usage.Enabled {
+					t.Fatalf("account usage params: %+v", repo.usage)
 				}
 			}
 			if write.OperationID != groupHandlerOperationID || write.Reason != "approved budget" || write.ActorUserID != "self-1" || write.ActorSessionID != "session-1" || write.RequestID == "" || write.RequestID != w.Header().Get(httpx.RequestIDHeader) || write.SourceIP != "192.0.2.30" || write.At.Before(now) || write.At.After(time.Now()) {

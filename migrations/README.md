@@ -59,6 +59,10 @@ Current migrations:
   upstream account aliases shown beside the synchronized name or masked email.
   Empty for existing accounts; synchronization never overwrites them, and the
   constraint rejects `@` so a full email cannot be stored as an alias.
+- `internal/store/migrations/0042_group_account_usage_visibility.sql` — Owner
+  opt-in per group that lets members read the five-hour and weekly usage of
+  the accounts in the group's selected Codex and Claude pools. Every existing
+  group starts disabled; "all accounts" pools never expose accounts.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

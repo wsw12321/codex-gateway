@@ -77,6 +77,7 @@ async function main() {
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
+      if (url.pathname === "/admin/billing/me/account-usage") return send({groups: []});
       if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-5.6"}, {id: "claude-sonnet"}]});
       if (url.pathname === "/admin/usage") return send({summary: {requests: 0}, requests: []});
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: [{id: account.id, active_requests: 0}]});

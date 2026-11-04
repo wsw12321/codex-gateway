@@ -85,6 +85,7 @@ A 保留两类容器的目标隔离；B 看到的是 A 的隧道地址，不再�
 | Owner 上传的图片成为脚本或嗅探载体 | 只收 PNG/JPEG 且声明类型须与解码格式一致；解码后重新编码，丢弃 EXIF、注释和附加数据；以固定 `Content-Type`、`nosniff` 和 `default-src 'none'` 返回；前端只渲染同源路径图片、`https://` 链接（`noopener noreferrer`），文字一律 `textContent` | `site_test.go`、`site_settings_ui_test.cjs` 的 SVG、HTML 伪装、附加脚本、EXIF 与链接负例 |
 | 匿名访问登录页接口放大数据库负载或获取收款码 | 交流群接口与群二维码使用 30 秒快照、图片按 SHA-256 缓存；收款码只在登录会话路由提供，关闭的卡片对非 Owner 返回 404 | 缓存读取计数、匿名与 Member 可见性测试 |
 | Member 枚举其他用户用量 | 全员接口在查询前强制 Owner 角色，只返回按用户/模型聚合而非其他用户的请求级元数据 | Member 403 与 Owner 聚合测试 |
+| Member 借群组用量接口探查上游账号或放大 ChatGPT 请求 | 默认关闭，由 Owner 按群组开启；账号集合只由会话用户的群组成员关系、“指定账号”池推出，请求不带账号 ID；“全部账号”池、Antigravity、已归档和已到期群组不展示；响应只含别名和用量窗口，不含账号 ID、邮箱、套餐和成本；Codex 读取按账号缓存 1 分钟并合并并发，与 Owner 额度查询共用 5 秒限流，实时查询写审计 | `group_account_usage_test.go`、两个 `group_account_usage*_integration_test.go` 的可见性、去标识与缓存测试 |
 | 把 API Token 等价成本误当供应商实际账单 | 准入固化规则，ledger 不可变；界面/API 明示 ChatGPT/Antigravity 订阅、内部零价和兜底边界 | 计价、ledger 和文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
 

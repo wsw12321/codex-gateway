@@ -20,6 +20,7 @@ type groupRepository interface {
 	PutGroup(context.Context, store.PutGroupParams) (store.Group, error)
 	SetGroupMembers(context.Context, store.SetGroupMembersParams) (store.Group, error)
 	ArchiveGroup(context.Context, store.ArchiveGroupParams) (store.Group, error)
+	SetGroupAccountUsageVisibility(context.Context, store.SetGroupAccountUsageVisibilityParams) (store.Group, error)
 }
 
 type groupInput struct {
@@ -38,6 +39,11 @@ type groupMembersInput struct {
 	billingOperationInput
 	Action  string   `json:"action"`
 	UserIDs []string `json:"user_ids"`
+}
+
+type groupAccountUsageInput struct {
+	billingOperationInput
+	Enabled *bool `json:"enabled"`
 }
 
 func (s *Server) groupStorage() groupRepository {
@@ -217,6 +223,39 @@ func (s *Server) archiveGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.groupStoreError(w, r, "archive group", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, group)
+}
+
+// setGroupAccountUsageVisibility toggles whether members may read the usage
+// windows of the accounts in this group's selected account pools.
+func (s *Server) setGroupAccountUsageVisibility(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validGroupID(id) {
+		s.groupStoreError(w, r, "set group account usage visibility", store.ErrNotFound)
+		return
+	}
+	var input groupAccountUsageInput
+	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	if validateBillingOperation(input.OperationID, input.Reason) != nil || input.Enabled == nil {
+		s.groupStoreError(w, r, "set group account usage visibility", store.ErrInvalid)
+		return
+	}
+	repository := s.groupStorage()
+	if repository == nil {
+		internalError(s, w, r, "set group account usage visibility", errors.New("group repository unavailable"))
+		return
+	}
+	group, err := repository.SetGroupAccountUsageVisibility(r.Context(), store.SetGroupAccountUsageVisibilityParams{
+		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
+		GroupID:            id, Enabled: *input.Enabled,
+	})
+	if err != nil {
+		s.groupStoreError(w, r, "set group account usage visibility", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, group)

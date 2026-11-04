@@ -34,6 +34,9 @@ type Server struct {
 	attempts              *attemptLimiter
 	quotas                *upstreamQuotaLimiter
 	quotaOnce             sync.Once
+	accountUsages         *accountUsageCache
+	accountUsageOnce      sync.Once
+	accountUsageRead      accountUsageReader
 	upstreamAccountSyncMu sync.Mutex
 	// activeAttributions contains short-lived account observations received
 	// from upstream response headers while a request is still streaming.  The
@@ -56,6 +59,7 @@ type Server struct {
 	identificationCancel    context.CancelFunc
 	identificationWG        sync.WaitGroup
 	groupRepo               groupRepository
+	groupAccountUsageRepo   groupAccountUsageRepository
 	informationRepo         informationRepository
 	browserHandoffRepo      browserHandoffRepository
 	browserHandoffs         *browserHandoffStore
@@ -240,6 +244,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/billing/me/subscriptions/{subscription_id}/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSubscriptionPreferences))))
 	s.mux.Handle("PUT /admin/billing/me/cash/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingCashPreferences))))
 	s.mux.Handle("PUT /admin/billing/me/groups/{group_id}/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setMyGroupPreference))))
+	s.mux.Handle("GET /admin/billing/me/account-usage", s.requireSession(http.HandlerFunc(s.myAccountUsage)))
 	s.mux.Handle("GET /admin/billing/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingSettings))))
 	s.mux.Handle("PUT /admin/billing/settings/cash-models", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateCashModels)))))
 	s.mux.Handle("GET /admin/billing/model-multipliers", s.requireSession(s.ownerOnly(http.HandlerFunc(s.billingModelMultipliers))))
@@ -255,6 +260,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/groups/{id}/upstream-access", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupUpstreamAccessJSON))))
 	s.mux.Handle("GET /admin/groups/{id}/upstream-accounts/{provider}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupUpstreamPolicy))))
 	s.mux.Handle("PUT /admin/groups/{id}/upstream-accounts/{provider}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupUpstreamPolicy)))))
+	s.mux.Handle("PUT /admin/groups/{id}/account-usage-visibility", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupAccountUsageVisibility)))))
 	s.mux.Handle("GET /admin/groups/{id}/periods", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupPeriods))))
 	s.mux.Handle("GET /admin/groups/{id}/account-stats", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupAccountStats))))
 	s.mux.Handle("GET /admin/groups/{id}/usage-periods", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupPeriods))))

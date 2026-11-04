@@ -872,6 +872,18 @@
                 <div id="group-metrics" class="metrics compact"></div>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
+                  <form id="group-account-usage-form" class="group-account-usage-form">
+                    <label class="switch-control" for="group-account-usage-enabled">
+                      <input id="group-account-usage-enabled" name="enabled" type="checkbox">
+                      <span><strong>允许成员查看用量</strong><small>成员可在“额度与订阅”页查看本群组指定账号的 5 小时与每周用量，仅显示账号别名。只对选择“指定账号”的 Codex、Claude 账号池生效；“全部账号”和 Antigravity 不展示。</small></span>
+                    </label>
+                    <p id="group-account-usage-effect" class="group-account-usage-effect" role="status" aria-live="polite">正在读取账号池…</p>
+                    <div class="group-account-usage-actions">
+                      <label>操作原因<input name="reason" maxlength="500" autocomplete="off" placeholder="说明开启或关闭的原因"></label>
+                      <button type="submit" class="secondary">保存设置</button>
+                    </div>
+                    <p class="form-message hidden" role="alert"></p>
+                  </form>
                   <div id="group-upstream-providers" class="group-upstream-providers"></div>
                 </section>
                 <section class="group-account-statistics" aria-labelledby="group-account-stats-title">

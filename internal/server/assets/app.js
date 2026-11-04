@@ -6228,6 +6228,9 @@ function resetGroupManagement() {
   byId("group-upstream-providers")?.replaceChildren();
   byId("group-account-periods")?.replaceChildren();
   byId("group-account-stats")?.replaceChildren();
+  resetGroupAccountUsageForm();
+  memberAccountUsage = null;
+  memberAccountUsageSequence++;
   byId("upstream-access-account").textContent = "—";
   groupMessage();
   for (const id of ["group-dialog", "upstream-access-dialog"]) {
@@ -6364,8 +6367,109 @@ function renderBillingGroup(group, detail = {}) {
         element("article", {}, element("span", {text: "本用户本期上限剩余"}), element("strong", {text: group.member_limit_usd == null ? "不限" : formatUSD(memberRemaining, "数据不可用")})),
       ), controls,
       element("p", {className: "muted", text: `${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}。${groupModelLabel(group)}。群组优先支付；群组额度不可用时回退下一个群组或个人额度。`}),
+      element("section", {className: "billing-account-usage hidden", dataset: {groupId: group.id}, attributes: {"aria-live": "polite"}}),
     );
     host.append(card);
+  }
+  host.append(element("p", {className: "form-message billing-account-usage-status hidden", attributes: {role: "status"}}));
+  // Usage belongs to the signed-in member only; an Owner viewing another
+  // user's billing never loads it. Lightweight DOM harnesses have no fetch.
+  if (self && typeof fetch === "function") void loadMemberAccountUsage();
+  else memberAccountUsageSequence++;
+}
+
+let memberAccountUsage = null;
+let memberAccountUsageSequence = 0;
+// Ledger paging re-renders the group cards; reuse a recent result instead of
+// asking for every account again. The server caches upstream reads as well.
+const memberAccountUsageReuseMS = 30 * 1000;
+const memberAccountUsageErrors = {
+  usage_rate_limited: "查询过于频繁，请稍后刷新",
+  usage_timeout: "查询超时，请稍后刷新",
+  account_disabled: "账号已停用，暂时无法查询",
+  usage_unavailable: "暂时无法获取用量",
+};
+
+async function loadMemberAccountUsage(force = false) {
+  const userID = state?.user?.id;
+  if (!userID || loggingOut || selectedBillingUserID() !== userID) return;
+  if (!force && memberAccountUsage?.userID === userID && Date.now() - memberAccountUsage.receivedAt < memberAccountUsageReuseMS) {
+    renderMemberAccountUsage();
+    return;
+  }
+  const sequence = ++memberAccountUsageSequence;
+  const generation = identityGeneration;
+  const current = () => sequence === memberAccountUsageSequence && generation === identityGeneration && !loggingOut &&
+    state?.user?.id === userID && selectedBillingUserID() === userID;
+  try {
+    const result = await api("/admin/billing/me/account-usage", undefined, current);
+    if (!current()) return;
+    if (!Array.isArray(result?.groups)) throw new Error("账号用量响应格式无效。");
+    memberAccountUsage = {userID, groups: result.groups, receivedAt: Date.now()};
+    renderMemberAccountUsage();
+  } catch (error) {
+    if (!current()) return;
+    renderMemberAccountUsage(`账号用量刷新失败：${friendlyError(error)}`);
+  }
+}
+
+function memberAccountUsageLabel(account, accounts) {
+  if (account.alias) return account.alias;
+  const sameProvider = accounts.filter((item) => item.provider === account.provider);
+  return `${upstreamScopeProviderNames[account.provider] || "账号"} 账号 ${sameProvider.indexOf(account) + 1}`;
+}
+
+function memberAccountUsageWindow(label, window) {
+  const used = Number.isInteger(window?.used_percent) && window.used_percent >= 0 && window.used_percent <= 100 ? window.used_percent : null;
+  return element("div", {className: "billing-account-usage-window"},
+    element("div", {className: "billing-account-usage-window-head"}, element("span", {text: label}), element("strong", {text: used == null ? "未知" : `已用 ${used}%`})),
+    used == null ? null : element("progress", {className: "subscription-progress", attributes: {value: used, max: 100, "aria-label": `${label}已用比例`}}),
+    element("small", {text: `重置：${formatDateTime(window?.reset_at, "未知")}`}),
+  );
+}
+
+function memberAccountUsageCard(account, accounts) {
+  const cooling = account.cooldown_until && new Date(account.cooldown_until).getTime() > Date.now();
+  const [status, label] = account.error_code ? ["failed", memberAccountUsageErrors[account.error_code] || memberAccountUsageErrors.usage_unavailable]
+    : account.limited ? ["stale", cooling ? `冷却至 ${formatDateTime(account.cooldown_until)}` : "已达限额"] : ["ok", "正常"];
+  const observed = account.source === "observed";
+  return element("article", {className: "billing-account-usage-card", dataset: {provider: account.provider}},
+    element("header", {}, element("strong", {text: memberAccountUsageLabel(account, accounts)}), element("span", {className: "status-badge", text: label, dataset: {status}})),
+    ...(account.error_code ? [] : [
+      element("div", {className: "billing-account-usage-windows"},
+        memberAccountUsageWindow("5 小时", account.five_hour), memberAccountUsageWindow("每周", account.seven_day)),
+      element("small", {className: "muted", text: observed ? `观测于 ${formatDateTime(account.updated_at, "暂无观测")}` : `查询于 ${formatDateTime(account.updated_at, "未知时间")}`}),
+    ]),
+  );
+}
+
+function renderMemberAccountUsage(errorMessage = "") {
+  const host = byId("billing-group");
+  if (!host) return;
+  const usage = memberAccountUsage?.userID === state?.user?.id ? memberAccountUsage : null;
+  const groups = new Map((usage?.groups || []).map((group) => [group.group_id, group]));
+  let shown = 0;
+  for (const section of all(".billing-account-usage", host)) {
+    const accounts = Array.isArray(groups.get(section.dataset.groupId)?.accounts) ? groups.get(section.dataset.groupId).accounts : [];
+    section.classList.toggle("hidden", !accounts.length);
+    if (!accounts.length) { section.replaceChildren(); continue; }
+    shown++;
+    const refresh = element("button", {type: "button", className: "secondary", text: "刷新用量"});
+    refresh.addEventListener("click", () => runButton(refresh, () => loadMemberAccountUsage(true), "刷新中…"));
+    section.replaceChildren(
+      element("div", {className: "billing-account-usage-head"},
+        element("div", {}, element("h5", {text: "账号用量"}), element("small", {className: "muted", text: `更新于 ${formatDateTime(new Date(usage.receivedAt))}`})),
+        refresh),
+      ...(errorMessage ? [element("p", {className: "form-message", text: errorMessage, dataset: {kind: "error"}, attributes: {role: "alert"}})] : []),
+      element("div", {className: "billing-account-usage-list"}, ...accounts.map((account) => memberAccountUsageCard(account, accounts))),
+      element("p", {className: "muted billing-account-usage-note", text: "群组管理员开启后可见。Codex 为实时查询，约 1 分钟内复用结果；Claude 为最近一次请求时观测到的快照，没有新请求时不会更新。"}),
+    );
+  }
+  const status = host.querySelector(".billing-account-usage-status");
+  if (status) {
+    status.textContent = shown ? "" : errorMessage;
+    status.dataset.kind = "error";
+    status.classList.toggle("hidden", Boolean(shown) || !errorMessage);
   }
 }
 
@@ -6436,6 +6540,7 @@ function renderGroupDetail(group) {
   show("group-detail");
   renderGroupList();
   renderGroupMembers();
+  renderGroupAccountUsage();
   // Keep the synchronous group rendering usable in lightweight DOM harnesses;
   // the dashboard browser always exposes fetch for these optional panels.
   if (typeof fetch === "function") {
@@ -6466,6 +6571,7 @@ async function loadGroupUpstreamAccess(group) {
     groupUpstreamRows = rows;
     for (const row of rows) groupUpstreamDrafts.set(row.provider, upstreamScopeDraft(row, groupUpstreamDrafts.get(row.provider)));
     renderGroupUpstreamCards();
+    renderGroupAccountUsageEffect();
   } catch (error) {
     if (!current()) return;
     // Never fall back to an editable default form: saving it could widen or
@@ -6535,6 +6641,7 @@ async function saveGroupUpstreamAccess(provider, form) {
       throw new Error("保存结果与提交内容不一致，请刷新后核对。");
     }
     Object.assign(groupUpstreamRows.find((row) => row.provider === provider), {mode: result.mode, account_ids: result.account_ids});
+    renderGroupAccountUsageEffect();
     draft.reason = "";
     draft.dirty = false;
     form.querySelector('input[name="reason"]').value = "";
@@ -6547,6 +6654,86 @@ async function saveGroupUpstreamAccess(provider, form) {
       syncGroupControls();
     }
   }
+}
+
+// Member usage is shown only for providers with five-hour and weekly windows.
+const groupAccountUsageProviders = ["codex", "anthropic"];
+
+function groupAccountUsageEffect(rows = groupUpstreamRows) {
+  const shown = [], hidden = [];
+  for (const row of rows) {
+    const name = upstreamScopeProviderNames[row.provider] || row.provider;
+    const count = Array.isArray(row.account_ids) ? row.account_ids.length : 0;
+    if (!groupAccountUsageProviders.includes(row.provider)) hidden.push(`${name}（不支持）`);
+    else if (row.mode !== "selected") hidden.push(`${name}（全部账号）`);
+    else if (!count) hidden.push(`${name}（未选择账号）`);
+    else shown.push(`${name}（指定 ${count} 个账号）`);
+  }
+  return {shown, hidden};
+}
+
+function resetGroupAccountUsageForm() {
+  const form = byId("group-account-usage-form");
+  if (!form) return;
+  form.reset?.();
+  for (const key of ["groupId", "dirty", "operationId", "operationPayload"]) delete form.dataset[key];
+  setBusy(form, false);
+  setLocalMessage(form);
+  const effect = byId("group-account-usage-effect");
+  if (effect) {
+    effect.textContent = "正在读取账号池…";
+    delete effect.dataset.active;
+  }
+}
+
+// Keeps an unsaved checkbox change while the same group is re-rendered.
+function renderGroupAccountUsage() {
+  const form = byId("group-account-usage-form");
+  const checkbox = form?.elements?.enabled;
+  if (!checkbox) return;
+  const group = managedGroup;
+  if (form.dataset.groupId !== (group?.id || "")) {
+    resetGroupAccountUsageForm();
+    form.dataset.groupId = group?.id || "";
+  }
+  if (form.dataset.dirty !== "true") checkbox.checked = Boolean(group?.account_usage_visible);
+  renderGroupAccountUsageEffect();
+  syncGroupControls();
+}
+
+function renderGroupAccountUsageEffect() {
+  const host = byId("group-account-usage-effect");
+  if (!host) return;
+  const group = managedGroup;
+  if (!group || groupUpstreamGroupID !== group.id || !groupUpstreamRows.length) {
+    host.textContent = "正在读取账号池…";
+    delete host.dataset.active;
+    return;
+  }
+  const {shown, hidden} = groupAccountUsageEffect();
+  const enabled = Boolean(group.account_usage_visible);
+  const suffix = hidden.length ? `；不展示：${hidden.join("、")}` : "";
+  host.textContent = shown.length
+    ? `${enabled ? "已开启，成员可查看" : "未开启。开启后成员可查看"}：${shown.join("、")}${suffix}。`
+    : `${enabled ? "已开启，但" : "未开启。"}当前没有选择“指定账号”的 Codex 或 Claude 账号池，成员看不到任何账号${suffix}。`;
+  host.dataset.active = String(enabled && shown.length > 0);
+}
+
+async function saveGroupAccountUsage(event) {
+  const form = event.currentTarget;
+  const group = managedGroup;
+  if (!group || group.archived_at || groupOperation || loggingOut || state?.user?.role !== "owner" || form.dataset.groupId !== group.id) return;
+  const enabled = Boolean(form.elements.enabled.checked);
+  const reason = String(form.elements.reason.value || "").trim();
+  if (!reason) throw new Error("必须填写操作原因。");
+  const result = await groupMutation(form, `/admin/groups/${encodeURIComponent(group.id)}/account-usage-visibility`, "PUT", {enabled, reason});
+  if (!result) return;
+  if (result.id !== group.id || result.account_usage_visible !== enabled) throw new Error("保存结果与提交内容不一致，请刷新后核对。");
+  form.elements.reason.value = "";
+  delete form.dataset.dirty;
+  managedGroup = {...group, account_usage_visible: enabled};
+  renderGroupAccountUsage();
+  await refreshGroupsAfterWrite(group.id, enabled ? "已允许成员查看用量；成员刷新“额度与订阅”页即可看到。" : "已关闭成员查看用量。");
 }
 
 async function loadGroupAccountPeriods(group) {
@@ -6641,6 +6828,10 @@ function syncGroupControls() {
   const pools = byId("group-upstream-providers");
   for (const form of pools ? all(".group-upstream-form", pools) : []) {
     syncUpstreamScopeForm(form, unavailable || groupUpstreamLoading, groupUpstreamSaving === form.dataset.provider);
+  }
+  const usageForm = byId("group-account-usage-form");
+  for (const control of usageForm?.elements ? [usageForm.elements.enabled, usageForm.elements.reason, usageForm.querySelector("button[type=submit]")] : []) {
+    if (control) control.disabled = unavailable || usageForm.dataset.busy === "true";
   }
 }
 
@@ -6884,6 +7075,8 @@ function bindGroupUI() {
   bindAsync("group-members-remove", "click", () => changeGroupMembers("remove"), "处理中…", groupIdentityCurrent);
   bindAsync("group-members-remove-all", "click", removeAllGroupMembers, "移除中…", groupIdentityCurrent);
   bindAsync("group-archive", "click", archiveSelectedGroup, "处理中…", groupIdentityCurrent);
+  byId("group-account-usage-form").elements.enabled.addEventListener("change", () => { byId("group-account-usage-form").dataset.dirty = "true"; });
+  bindAsync("group-account-usage-form", "submit", saveGroupAccountUsage, "保存中…", groupIdentityCurrent);
   byId("upstream-access-form").elements.mode.addEventListener("change", renderUpstreamAccessUsers);
   byId("upstream-access-search").addEventListener("input", renderUpstreamAccessUsers);
   byId("upstream-access-select-visible").addEventListener("click", () => {

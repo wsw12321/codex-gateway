@@ -513,6 +513,10 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	resultCode = "ok"
 	resultStatus = http.StatusOK
 	success = true
+	if s.accountClient(r) == s.upstream {
+		// Group members may see this account's usage; reuse the fresh result.
+		s.accountUsageCache().store(accountUsageKey(store.UpstreamProviderCodex, accountID), codexAccountUsage(quota, now), accountUsageCodexTTL)
+	}
 	writeJSON(w, http.StatusOK, quota)
 }
 

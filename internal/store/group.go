@@ -51,6 +51,7 @@ type GroupSummary struct {
 	CreatedAt           time.Time  `json:"created_at"`
 	UpdatedAt           time.Time  `json:"updated_at"`
 	ModelIDs            []string   `json:"model_ids"`
+	AccountUsageVisible bool       `json:"account_usage_visible"`
 }
 
 type GroupMember struct {
@@ -113,13 +114,14 @@ const groupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd
 	((SELECT count(*) FROM group_memberships gm WHERE gm.group_id=g.id)
 	 + (SELECT count(*) FROM billing_accounts ba WHERE ba.group_id=g.id
 		AND NOT EXISTS (SELECT 1 FROM group_memberships gm2 WHERE gm2.group_id=g.id AND gm2.user_id=ba.user_id)))::int,
-	g.archived_at, g.created_at, g.updated_at, g.model_ids`
+	g.archived_at, g.created_at, g.updated_at, g.model_ids, g.account_usage_visible`
 
+// Schemas without group_memberships predate account usage visibility as well.
 const legacyGroupSummaryColumns = `g.id, g.name, g.limit_usd::text, g.member_limit_usd::text, p.used_usd::text,
 	GREATEST(g.limit_usd-p.used_usd,0)::numeric(30,12)::text, g.period, g.custom_days, g.starts_at,
 	p.id, p.starts_at, p.ends_at, g.period_count, g.current_period_number, g.expires_at,
 	(SELECT count(*) FROM billing_accounts a WHERE a.group_id=g.id),
-	g.archived_at, g.created_at, g.updated_at, g.model_ids`
+	g.archived_at, g.created_at, g.updated_at, g.model_ids, false`
 
 func scanGroupSummary(row rowScanner) (GroupSummary, error) {
 	var g GroupSummary
@@ -127,7 +129,7 @@ func scanGroupSummary(row rowScanner) (GroupSummary, error) {
 	err := row.Scan(&g.ID, &g.Name, &g.LimitUSD, &g.MemberLimitUSD, &g.UsedUSD, &g.RemainingUSD,
 		&g.Period, &g.CustomDays, &g.StartsAt, &g.PeriodID, &g.PeriodStartsAt,
 		&g.PeriodEndsAt, &g.PeriodCount, &g.CurrentPeriodNumber, &g.ExpiresAt,
-		&g.MemberCount, &g.ArchivedAt, &g.CreatedAt, &g.UpdatedAt, &models)
+		&g.MemberCount, &g.ArchivedAt, &g.CreatedAt, &g.UpdatedAt, &models, &g.AccountUsageVisible)
 	if err == nil {
 		err = json.Unmarshal(models, &g.ModelIDs)
 		if g.ModelIDs == nil {

@@ -2828,6 +2828,27 @@ dialog form {
 .billing-group-preferences input[type=text] { width:14rem; }
 .group-upstream-settings, .group-account-statistics { border-top:1px solid var(--line); margin-top:1.2rem; padding-top:1rem; }
 .group-upstream-providers { display:grid; gap:.65rem; }
+.group-account-usage-form { display:grid; gap:.6rem; margin-bottom:.9rem; }
+.group-account-usage-effect { margin:0; color:var(--muted); font-size:.86rem; overflow-wrap:anywhere; }
+.group-account-usage-effect[data-active="true"] { color:var(--success); }
+.group-account-usage-actions { display:flex; flex-wrap:wrap; align-items:end; gap:.6rem; }
+.group-account-usage-actions label { display:flex; flex:1 1 16rem; flex-direction:column; gap:.25rem; font-size:.8rem; }
+.billing-account-usage { margin-top:.9rem; padding-top:.8rem; border-top:1px dashed var(--line); }
+.billing-account-usage-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:.6rem; }
+.billing-account-usage-head h5 { margin:0; font-size:.95rem; }
+.billing-account-usage-head small { display:block; }
+.billing-account-usage-list { display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap:.6rem; margin-top:.65rem; }
+.billing-account-usage-card { display:grid; gap:.55rem; min-width:0; padding:.75rem; border:1px solid var(--line); border-radius:.65rem; background:var(--surface-soft); }
+.billing-account-usage-card header { display:flex; align-items:center; justify-content:space-between; gap:.6rem; }
+.billing-account-usage-card header strong { min-width:0; overflow-wrap:anywhere; }
+.billing-account-usage-card > small { color:var(--muted); }
+.billing-account-usage-windows { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:.75rem; }
+.billing-account-usage-window { display:grid; gap:.3rem; min-width:0; }
+.billing-account-usage-window-head { display:flex; justify-content:space-between; gap:.5rem; font-size:.85rem; }
+.billing-account-usage-window-head strong { font-variant-numeric:tabular-nums; }
+.billing-account-usage-window small { color:var(--muted); font-size:.78rem; }
+.billing-account-usage-note { margin:.55rem 0 0; font-size:.78rem; }
+@media (max-width:420px) { .billing-account-usage-windows { grid-template-columns:minmax(0, 1fr); } }
 .group-upstream-card { min-width:0; border:1px solid var(--line); border-radius:.7rem; overflow-wrap:anywhere; }
 .group-upstream-card > summary { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem .75rem; min-height:44px; padding:.6rem .9rem; cursor:pointer; list-style:none; }
 .group-upstream-card > summary::-webkit-details-marker { display:none; }
