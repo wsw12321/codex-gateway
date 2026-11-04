@@ -117,6 +117,7 @@ func TestCPAV848ModelMigrationPostgresIntegration(t *testing.T) {
 	}
 	rule := pricing.Models["gpt-5.4"]
 	requestID := "cpa-v848-settled-before-cutover"
+	billingIntegrationFundingLayerSchema(t, ctx, s)
 	params := billingIntegrationAdmission(user, device, key, requestID, now)
 	params.Usage.Model, params.Billing.Model = retired, retired
 	params.Usage.PricingRuleVersion, params.Billing.PricingRuleVersion = config.PricingSchemaV2, config.PricingSchemaV2

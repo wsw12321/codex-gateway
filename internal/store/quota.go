@@ -135,16 +135,13 @@ func (s *Store) AdmitRequest(ctx context.Context, params AdmitRequestParams) (Re
 			return err
 		}
 		if params.Billing != nil {
-			value, billingErr := reserveBillingTx(ctx, tx, *params.Billing)
+			// The reservation snapshots every funding layer's account pool in
+			// the same transaction that locks the groups and binds the funds.
+			billing := *params.Billing
+			billing.UpstreamProvider = params.UpstreamProvider
+			value, billingErr := reserveBillingTx(ctx, tx, billing)
 			if billingErr != nil {
 				return billingErr
-			}
-			if value.GroupID != nil {
-				group, snapshotErr := snapshotGroupUpstreamAllocationGroupTx(ctx, tx, *value.GroupID, params.UpstreamProvider)
-				if snapshotErr != nil {
-					return snapshotErr
-				}
-				value.AllocationGroups = cloneUpstreamAllocationGroups([]UpstreamAllocationGroup{group})
 			}
 			admission.Billing = &value
 		}

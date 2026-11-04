@@ -196,6 +196,7 @@ func TestInformationSubscriptionAndGroupPostgresIntegration(t *testing.T) {
 	old := cutoff.AddDate(0, 0, -5)
 	actor := globalUsageIntegrationUser(t, ctx, s, "information-sub-actor", UserRoleMember)
 	active, device, key := billingIntegrationPrincipal(t, ctx, s, "information-sub-active")
+	billingIntegrationFundingAccount(t, ctx, s)
 	ended, _, _ := billingIntegrationPrincipal(t, ctx, s, "information-sub-ended")
 	sub, err := s.PutSubscription(ctx, PutSubscriptionParams{Name: "Test subscription", ModelIDs: billingIntegrationSubscriptionModels(t, ctx, s),
 		BillingWriteParams: billingIntegrationWrite(t, actor.ID, "active monthly subscription", old),

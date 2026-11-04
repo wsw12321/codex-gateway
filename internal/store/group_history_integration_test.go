@@ -19,6 +19,7 @@ func TestGroupMemberUsageSurvivesHistoryCleanupPostgresIntegration(t *testing.T)
 	old := now.Add(-100 * 24 * time.Hour)
 	actor := globalUsageIntegrationUser(t, ctx, s, "group-cleanup-actor", UserRoleMember)
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "group-cleanup-member")
+	billingIntegrationFundingAccount(t, ctx, s)
 	cap := "10"
 	group, err := s.PutGroup(ctx, PutGroupParams{
 		BillingWriteParams: billingIntegrationWrite(t, actor.ID, "long group cycle", old),

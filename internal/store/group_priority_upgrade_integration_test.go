@@ -180,9 +180,19 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 			}
 		}
 	}
+	// Rule 4 admission also reads per-user account access for group pools.
+	for _, migration := range migrations {
+		if migration.Name == "0030_user_upstream_access.sql" {
+			if _, err := s.db.ExecContext(ctx, migration.SQL); err != nil {
+				t.Fatalf("apply account-access helper schema: %v", err)
+			}
+		}
+	}
+	billingIntegrationFundingLayerSchema(t, ctx, s)
+	billingIntegrationFundingAccount(t, ctx, s)
 	newID := "priority-upgrade-new-" + id
 	newReservation := billingIntegrationReserveAndComplete(t, ctx, s, u, d, k, newID, now, 5000000, "1", "billing-priced-model")
-	if newReservation.FundingRuleVersion != 3 {
+	if newReservation.FundingRuleVersion != 4 {
 		t.Fatal("new admission did not adopt group priority")
 	}
 	settled, err = s.SettleBilling(ctx, newID, now.Add(2*time.Second))

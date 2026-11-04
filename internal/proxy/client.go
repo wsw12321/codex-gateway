@@ -170,9 +170,30 @@ func (c *Client) RequireAccountEgress(required bool) {
 	}
 }
 
+// AllocationGroup is one admission funding layer. A group layer carries its
+// account pool; the final personal layer (PersonalLayerID, AllAccounts) is
+// limited only by CPA's per-user eligibility callback.
 type AllocationGroup struct {
-	GroupID    string   `json:"group_id"`
-	AccountIDs []string `json:"account_ids"`
+	GroupID     string   `json:"group_id"`
+	AccountIDs  []string `json:"account_ids"`
+	AllAccounts bool     `json:"all_accounts,omitempty"`
+}
+
+// PersonalLayerID identifies the personal funding layer on the wire.
+const PersonalLayerID = "00000000-0000-0000-0000-000000000000"
+
+// MarshalJSON emits exactly the keys CPA accepts for each layer kind.
+func (g AllocationGroup) MarshalJSON() ([]byte, error) {
+	if g.AllAccounts {
+		return json.Marshal(struct {
+			GroupID     string `json:"group_id"`
+			AllAccounts bool   `json:"all_accounts"`
+		}{g.GroupID, true})
+	}
+	return json.Marshal(struct {
+		GroupID    string   `json:"group_id"`
+		AccountIDs []string `json:"account_ids"`
+	}{g.GroupID, g.AccountIDs})
 }
 
 type ForwardOptions struct {
@@ -515,7 +536,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))
 		}
-		if err := c.requireAccountAccessCapability(ctx, len(options.Groups) > 0); err != nil {
+		if err := c.prepareAccountScope(ctx, &options); err != nil {
 			return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "upstream_access_protocol_unavailable", Message: "上游账号权限服务不可用", Cause: err}
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)
@@ -864,9 +885,6 @@ func sanitizeUpstreamFailure(response *http.Response) *Failure {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
 		return &Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_reauthentication_required", Message: "上游 Codex 登录已失效，需要管理员重新认证", RetryAfter: retryAfter}
-	case http.StatusTooManyRequests:
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
-		return &Failure{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "upstream_rate_limited", Message: "上游当前已达到使用限制", RetryAfter: max(retryAfter, 60)}
 	}
 
 	var value struct {
@@ -879,6 +897,16 @@ func sanitizeUpstreamFailure(response *http.Response) *Failure {
 	body, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err == nil {
 		_ = json.Unmarshal(body, &value)
+	}
+	// CPA reports its own allocation outcomes with stable codes. Only those
+	// codes are trusted here; every other 429 is an upstream usage limit.
+	switch {
+	case response.StatusCode == http.StatusTooManyRequests && value.Error.Code == "upstream_concurrency_exceeded":
+		return &Failure{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "upstream_concurrency_exceeded", Message: "暂无可用的上游账号，请稍后重试", RetryAfter: max(retryAfter, 5)}
+	case response.StatusCode == http.StatusTooManyRequests:
+		return &Failure{Status: http.StatusTooManyRequests, Type: "rate_limit_error", Code: "upstream_rate_limited", Message: "上游当前已达到使用限制", RetryAfter: max(retryAfter, 60)}
+	case response.StatusCode == http.StatusServiceUnavailable && value.Error.Code == "gateway_allocation_unavailable":
+		return &Failure{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "upstream_allocation_unavailable", Message: "暂时无法分配可用的上游账号，请稍后重试或联系 Owner", RetryAfter: retryAfter}
 	}
 	message := safeUpstreamMessage(value.Error.Message)
 	if message == "" {

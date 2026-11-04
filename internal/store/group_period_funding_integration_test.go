@@ -18,6 +18,7 @@ func TestGroupExpiryFundingPostgresIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "group-expiry-funding")
+	billingIntegrationFundingAccount(t, ctx, s)
 	write := func() BillingWriteParams { return billingIntegrationWrite(t, user.ID, "group expiry funding", now) }
 	g, err := s.PutGroup(ctx, PutGroupParams{BillingWriteParams: write(), Name: "Single cycle", LimitUSD: "10", Period: "day"})
 	if err != nil {

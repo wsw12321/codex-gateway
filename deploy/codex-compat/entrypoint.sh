@@ -112,13 +112,13 @@ request-log: false
 error-logs-max-files: 0
 usage-statistics-enabled: false
 request-retry: 0
-max-retry-credentials: 2
+max-retry-credentials: 4
 max-retry-interval: 0
 passthrough-headers: false
 ws-auth: true
 streaming:
   send-keepalive-before-ft: false
-  # The patched auth manager owns the shared two-account bootstrap budget.
+  # The patched auth manager owns the shared four-account bootstrap budget.
   # A handler-layer retry would allocate a fresh budget and exceed that cap.
   bootstrap-retries: 0
 routing:

@@ -63,6 +63,11 @@ Current migrations:
   opt-in per group that lets members read the five-hour and weekly usage of
   the accounts in the group's selected Codex and Claude pools. Every existing
   group starts disabled; "all accounts" pools never expose accounts.
+- `internal/store/migrations/0043_billing_reservation_layers.sql` — funding
+  rule 4: admission snapshots every usable funding source as an ordered layer
+  (groups by priority, then personal) with its account pool, and settlement
+  charges the first layer whose pool contains the account that served the
+  request. Rules 1-3 settle unchanged.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

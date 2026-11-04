@@ -95,12 +95,20 @@ RUN go test -list '^TestGateway' ./sdk/cliproxy/auth > /tmp/credential-regressio
         TestGatewayGroupScopeEmptyAndPinnedFailClosed \
         TestGatewayGroupScopeRechecksDerivedBindings \
         TestGatewayGroupScopeExecutionFailover \
-        TestGatewayExecutionRequestUsesTrustedCallerAndAccountScope; do \
+        TestGatewayExecutionRequestUsesTrustedCallerAndAccountScope \
+        TestGatewayFundingLayersSelectInBillingOrder \
+        TestGatewayFundingLayersSkipFullAccountsBeforeSelection \
+        TestGatewayFundingLayersHeldConversationKeepsItsAccount \
+        TestGatewayFundingLayersSlotRaceSpendsNoAttemptAndFourAccountsMax \
+        TestGatewayDisableDropsIdleHolds \
+        TestGatewayHoldRequiresConversationAndMovesWithIt; do \
         grep -Fxq "$test_name" /tmp/credential-regression-tests; \
     done
 RUN go test -list '^TestGatewayGroupScope' ./sdk/api/handlers > /tmp/group-scope-ingress-tests \
     && grep -Fxq TestGatewayGroupScopeIngressAndImmutableMetadata /tmp/group-scope-ingress-tests \
-    && grep -Fxq TestGatewayGroupScopeRejectsMalformedHeaders /tmp/group-scope-ingress-tests
+    && grep -Fxq TestGatewayGroupScopeRejectsMalformedHeaders /tmp/group-scope-ingress-tests \
+    && grep -Fxq TestGatewayGroupScopeLayersKeepBillingOrder /tmp/group-scope-ingress-tests \
+    && grep -Fxq TestGatewayGroupScopeRejectsMalformedLayers /tmp/group-scope-ingress-tests
 RUN go test -list '^TestGatewayCatalog' ./sdk/cliproxy > /tmp/catalog-regression-tests \
     && for test_name in \
         TestGatewayCatalogCredentialsAndEgress \

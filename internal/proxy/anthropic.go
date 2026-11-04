@@ -66,7 +66,7 @@ func (c *Client) ForwardMessages(ctx context.Context, w http.ResponseWriter, inc
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid user"))
 		}
-		if err := c.requireAccountAccessCapability(ctx, len(options.Groups) > 0); err != nil {
+		if err := c.prepareAccountScope(ctx, &options); err != nil {
 			return Result{}, &Failure{Status: 503, Type: "api_error", Code: "upstream_access_protocol_unavailable", Message: "Claude 账号权限服务不可用", Cause: err}
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)

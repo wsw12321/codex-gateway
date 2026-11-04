@@ -28,6 +28,7 @@ func TestGroupPriorityBillingPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	billingIntegrationModelScopes(t, ctx, s, "billing-priced-model", "gpt-v2-priced", "lifecycle-model")
+	billingIntegrationFundingAccount(t, ctx, s)
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	suffix := fmt.Sprint(now.UnixNano())
@@ -89,7 +90,7 @@ func TestGroupPriorityBillingPostgresIntegration(t *testing.T) {
 			}
 		}
 		r := complete(u, d, k, "only", 1, 20)
-		if r.FundingRuleVersion != 3 || r.GroupPeriodID == nil || r.CashLotCutoff != nil || r.DayPeriodID != nil || r.WeekPeriodID != nil || r.MonthPeriodID != nil {
+		if r.FundingRuleVersion != 4 || r.GroupPeriodID == nil || r.CashLotCutoff != nil || r.DayPeriodID != nil || r.WeekPeriodID != nil || r.MonthPeriodID != nil {
 			t.Fatalf("group-only bindings = %+v", r)
 		}
 		settled := settle(r, "20", "0", "0")

@@ -20,6 +20,7 @@ func TestBillingModelScopesPostgresIntegration(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	s.now = func() time.Time { return now }
 	user, device, key := billingIntegrationPrincipal(t, ctx, s, "model-scopes")
+	billingIntegrationFundingAccount(t, ctx, s)
 	write := func(reason string) BillingWriteParams {
 		return billingIntegrationWrite(t, user.ID, reason, now)
 	}

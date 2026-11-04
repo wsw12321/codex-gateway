@@ -227,7 +227,14 @@ func (s *Store) SetGroupUpstreamAccountPolicy(ctx context.Context, p SetGroupUps
 type UpstreamAllocationGroup struct {
 	GroupID    string   `json:"group_id"`
 	AccountIDs []string `json:"account_ids"`
+	// AllAccounts marks the personal funding layer: it is not narrowed to a
+	// pool, so CPA's per-user eligibility callback alone decides its accounts.
+	AllAccounts bool `json:"all_accounts,omitempty"`
 }
+
+// PersonalFundingLayerID identifies the personal funding layer, which always
+// follows every group layer. No user group can have the nil UUID.
+const PersonalFundingLayerID = "00000000-0000-0000-0000-000000000000"
 
 // cloneUpstreamAllocationGroups makes the admission-time account-pool
 // capability independent from the backing slices.  A request may outlive an
@@ -240,8 +247,9 @@ func cloneUpstreamAllocationGroups(groups []UpstreamAllocationGroup) []UpstreamA
 	result := make([]UpstreamAllocationGroup, len(groups))
 	for i, group := range groups {
 		result[i] = UpstreamAllocationGroup{
-			GroupID:    group.GroupID,
-			AccountIDs: append([]string(nil), group.AccountIDs...),
+			GroupID:     group.GroupID,
+			AccountIDs:  append([]string(nil), group.AccountIDs...),
+			AllAccounts: group.AllAccounts,
 		}
 	}
 	return result

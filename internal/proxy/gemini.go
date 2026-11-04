@@ -76,7 +76,7 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 		if !gatewayUserPattern.MatchString(options.UserID) {
 			return Result{}, protocolFailure(errors.New("invalid upstream user identity"))
 		}
-		if err := c.requireAccountAccessCapability(ctx, len(options.Groups) > 0); err != nil {
+		if err := c.prepareAccountScope(ctx, &options); err != nil {
 			return Result{}, &Failure{Status: http.StatusServiceUnavailable, Type: "server_error", Code: "upstream_access_protocol_unavailable", Message: "上游账号权限服务不可用", Cause: err}
 		}
 		outgoing.Header.Set(gatewayUserHeader, options.UserID)

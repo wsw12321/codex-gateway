@@ -827,10 +827,12 @@ func (s *Store) ArchiveGroup(ctx context.Context, params ArchiveGroupParams) (Gr
 	})
 }
 
-// userGroupTx returns the highest-priority currently usable group. Membership
-// rows are authoritative; the legacy billing_accounts mirror remains a read
-// fallback for databases upgraded from the single-group schema.
-func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, models ...string) (*GroupSummary, error) {
+// userFundingGroupsTx returns every currently usable group in membership
+// priority order, plus the first unexpired model-allowed group for Retry-After
+// when none is usable. Membership rows are authoritative; the legacy
+// billing_accounts mirror remains a read fallback for databases upgraded from
+// the single-group schema. All member groups are locked in id order.
+func userFundingGroupsTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, models ...string) ([]GroupSummary, *GroupSummary, error) {
 	type membership struct {
 		id       string
 		priority int
@@ -838,7 +840,7 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 	members := []membership{}
 	var membershipTable bool
 	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('group_memberships') IS NOT NULL`).Scan(&membershipTable); err != nil {
-		return nil, mapDBError("check user group memberships schema", err)
+		return nil, nil, mapDBError("check user group memberships schema", err)
 	}
 	var rows *sql.Rows
 	var err error
@@ -846,27 +848,27 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		rows, err = tx.QueryContext(ctx, `SELECT group_id, priority FROM group_memberships WHERE user_id=$1 ORDER BY priority, group_id`, userID)
 	}
 	if err != nil {
-		return nil, mapDBError("read user group memberships", err)
+		return nil, nil, mapDBError("read user group memberships", err)
 	} else if membershipTable {
 		for rows.Next() {
 			var m membership
 			if err := rows.Scan(&m.id, &m.priority); err != nil {
 				_ = rows.Close()
-				return nil, err
+				return nil, nil, err
 			}
 			members = append(members, m)
 		}
 		if err := rows.Close(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if err := rows.Err(); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	if len(members) == 0 {
 		var legacy sql.NullString
 		if err := tx.QueryRowContext(ctx, `SELECT group_id FROM billing_accounts WHERE user_id=$1`, userID).Scan(&legacy); err != nil {
-			return nil, mapDBError("read legacy user group", err)
+			return nil, nil, mapDBError("read legacy user group", err)
 		}
 		if legacy.Valid {
 			members = []membership{{id: legacy.String, priority: 100}}
@@ -883,7 +885,7 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 	sort.Strings(ids)
 	for _, id := range ids {
 		if err := lockGroupTx(ctx, tx, id); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	byID := map[string]GroupSummary{}
@@ -894,7 +896,7 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		}
 		g, err := rollGroupTx(ctx, tx, m.id, at)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if g.ArchivedAt == nil {
 			byID[m.id] = g
@@ -904,9 +906,11 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 	if len(models) > 0 {
 		model = models[0]
 	}
+	var usable []GroupSummary
+	used := map[string]bool{}
 	for _, m := range members {
 		g, ok := byID[m.id]
-		if !ok {
+		if !ok || used[m.id] {
 			continue
 		}
 		if model != "" && !groupModelAllowed(&g, model) {
@@ -919,14 +923,15 @@ func userGroupTx(ctx context.Context, tx *sql.Tx, userID string, at time.Time, m
 		if groupPeriodActive(&g, at) && billingPositive(g.RemainingUSD) {
 			rem, err := groupMemberRemainingTx(ctx, tx, g.PeriodID, userID, g.MemberLimitUSD)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if rem == nil || billingPositive(*rem) {
-				return &g, nil
+				used[m.id] = true
+				usable = append(usable, g)
 			}
 		}
 	}
-	return fallback, nil
+	return usable, fallback, nil
 }
 
 func requireGroupQuota(g *GroupSummary, at time.Time) error {

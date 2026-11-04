@@ -302,6 +302,11 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			writeInsufficientQuota(w, r, insufficient.RetryAfter)
 			return
 		}
+		var noAccount *store.NoUpstreamAccountError
+		if errors.As(err, &noAccount) {
+			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_account_unavailable", "可用的扣费来源均没有可用的上游账号，请联系 Owner")
+			return
+		}
 		var exceeded *store.QuotaExceededError
 		if errors.As(err, &exceeded) {
 			retry := int(math.Ceil(exceeded.RetryAfter.Seconds()))
@@ -317,10 +322,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	usageStore := s.store.WithUpstreamProvider(provider)
 	allocationGroups := []gatewayproxy.AllocationGroup{}
 	if r.Method == http.MethodPost && key.UserID != "" && admission.Billing != nil {
-		if admission.Billing.GroupID != nil && admission.Billing.AllocationGroups == nil {
-			// A group-bound request must carry its admission snapshot. Never
-			// silently fall back to CPA's live account discovery when the
-			// capability is absent.
+		if len(admission.Billing.AllocationGroups) == 0 {
+			// Every funded request carries its admission funding layers. Never
+			// silently fall back to CPA's live account discovery without them.
 			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
 			_ = s.store.ReleaseRequest(ctx, requestID, time.Now().UTC())
 			cancel()
@@ -330,6 +334,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		for _, group := range admission.Billing.AllocationGroups {
 			allocationGroups = append(allocationGroups, gatewayproxy.AllocationGroup{
 				GroupID: group.GroupID, AccountIDs: append([]string(nil), group.AccountIDs...),
+				AllAccounts: group.AllAccounts,
 			})
 		}
 	}
@@ -520,6 +525,14 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	_ = s.store.RecordAPIKeyUse(writeCtx, key.ID, key.DeviceID, completedAt)
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
+	}
+	if len(allocationGroups) > 1 && result.UpstreamAccountID == "" && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
+		// Settlement fell back to the first funding layer: which source pays
+		// depends on the serving account, so the Owner must see the gap.
+		_, _ = s.store.CreateAlert(writeCtx, store.CreateAlertParams{
+			Type: "billing_attribution_missing", Severity: "warning", UserID: key.UserID, RequestID: requestID,
+			DedupeKey: "billing_attribution_missing", Title: "上游账号归因缺失，已按第一扣费来源结算",
+		})
 	}
 	if result.AbortStream {
 		// Do not send a clean EOF for an incomplete Gemini response: AGY may
@@ -719,6 +732,8 @@ func (s *Server) createUpstreamAlert(ctx context.Context, userID, requestID stri
 		alertType, title = "upstream_rate_limit", "上游已达到使用限制"
 	case "upstream_unavailable", "upstream_timeout", "upstream_stream_error":
 		alertType, title = "sidecar_unhealthy", "Codex 兼容层或上游不可用"
+	case "upstream_concurrency_exceeded", "upstream_allocation_unavailable":
+		alertType, title = "upstream_account_unavailable", "扣费来源的上游账号均不可用或并发已满"
 	default:
 		return
 	}

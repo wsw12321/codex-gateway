@@ -1989,6 +1989,47 @@ func billingIntegrationSubscriptionModels(t *testing.T, ctx context.Context, rep
 // billingIntegrationModelScopes mirrors startup with an explicit deployment
 // catalog before any request is admitted. Callers must include every cash-funded
 // test model up front: later catalog synchronization must not expand saved scopes.
+// billingIntegrationFundingAccount registers a shared Codex account so "all
+// accounts" group pools are non-empty: rule 4 admission skips a group whose
+// pool has no account the user may use.
+func billingIntegrationFundingAccount(t *testing.T, ctx context.Context, repository *Store) {
+	t.Helper()
+	if _, err := repository.db.ExecContext(ctx, `INSERT INTO upstream_accounts(id,provider,status,access_mode)
+		VALUES('f0f0f0f0f0f0f0f0','codex','available','shared') ON CONFLICT (id) DO NOTHING`); err != nil {
+		t.Fatalf("register funding fixture account: %v", err)
+	}
+}
+
+// billingIntegrationFundingLayerSchema installs the rule 4 funding-layer
+// schema that current admission needs when a test replays an older prefix.
+func billingIntegrationFundingLayerSchema(t *testing.T, ctx context.Context, repository *Store) {
+	t.Helper()
+	migrations, err := EmbeddedMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, migration := range migrations {
+		if migration.Name != "0043_billing_reservation_layers.sql" {
+			continue
+		}
+		if _, err := repository.db.ExecContext(ctx, migration.SQL); err != nil {
+			t.Fatalf("apply funding-layer helper schema: %v", err)
+		}
+		// Record it only where the replay keeps a migration ledger.
+		var ledger bool
+		if err := repository.db.QueryRowContext(ctx, `SELECT to_regclass('schema_migrations') IS NOT NULL`).Scan(&ledger); err != nil {
+			t.Fatal(err)
+		}
+		if ledger {
+			if _, err := repository.db.ExecContext(ctx, `INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)`, migration.Name, migration.Checksum[:]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	t.Fatal("funding-layer migration missing")
+}
+
 func billingIntegrationModelScopes(t *testing.T, ctx context.Context, repository *Store, models ...string) {
 	t.Helper()
 	if err := repository.SyncModelAccessCatalog(ctx, models); err != nil {

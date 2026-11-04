@@ -39,6 +39,14 @@ type InsufficientFundsError struct {
 
 func (e *InsufficientFundsError) Error() string { return "billing: insufficient quota" }
 
+// NoUpstreamAccountError reports funded admission where no funding source may
+// use any upstream account of the requested provider.
+type NoUpstreamAccountError struct{}
+
+func (e *NoUpstreamAccountError) Error() string {
+	return "billing: no upstream account for funding sources"
+}
+
 type BillingSettings struct {
 	USDPerCNY       string    `json:"usd_per_cny"`
 	ModelIDs        []string  `json:"model_ids"`
@@ -184,7 +192,10 @@ type BillingReservationParams struct {
 	PricingSnapshot          []byte
 	CacheWriteMode           string
 	RequestedServiceTier     string
-	Now                      time.Time
+	// UpstreamProvider selects the account-pool namespace of every funding
+	// layer. Empty means Codex.
+	UpstreamProvider string
+	Now              time.Time
 }
 
 type BillingReservation struct {
@@ -238,9 +249,9 @@ type BillingReservation struct {
 	CreatedAt                        time.Time              `json:"created_at"`
 	SettledAt                        *time.Time             `json:"settled_at,omitempty"`
 
-	// AllocationGroups is an in-memory admission snapshot. It is populated
-	// before a request is forwarded and intentionally is not re-read from
-	// mutable group policy afterward.
+	// AllocationGroups is the in-memory copy of the admission funding layers,
+	// in billing order, forwarded to CPA. It is never re-read from mutable
+	// group policy afterward.
 	AllocationGroups []UpstreamAllocationGroup `json:"allocation_groups,omitempty"`
 }
 
@@ -527,19 +538,9 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	).Scan(&balance, &nextSequence, &disabled.Day, &disabled.Week, &disabled.Month, &disabled.Cash, &cashPriority); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
-	group, err := userGroupTx(ctx, tx, params.UserID, params.Now, params.Model)
+	groups, group, err := userFundingGroupsTx(ctx, tx, params.UserID, params.Now, params.Model)
 	if err != nil {
 		return BillingReservation{}, err
-	}
-	var groupID, groupPeriodID any
-	if groupPeriodActive(group, params.Now) && billingPositive(group.RemainingUSD) && groupModelAllowed(group, params.Model) {
-		memberRemaining, err := groupMemberRemainingTx(ctx, tx, group.PeriodID, params.UserID, group.MemberLimitUSD)
-		if err != nil {
-			return BillingReservation{}, err
-		}
-		if memberRemaining == nil || billingPositive(*memberRemaining) {
-			groupID, groupPeriodID = group.ID, group.PeriodID
-		}
 	}
 	if _, err := rollBillingSubscriptionsTx(ctx, tx, params.UserID, params.Now); err != nil {
 		return BillingReservation{}, err
@@ -555,7 +556,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	if err != nil {
 		return BillingReservation{}, err
 	}
-	if params.BillingMode != BillingModeInternalZero && len(sources) == 0 && groupPeriodID == nil {
+	if params.BillingMode != BillingModeInternalZero && len(sources) == 0 && len(groups) == 0 {
 		retry, err := billingFundingRetryTx(ctx, tx, params.UserID, params.Model, params.Now)
 		if err != nil {
 			return BillingReservation{}, err
@@ -574,6 +575,19 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			}
 		}
 		return BillingReservation{}, &InsufficientFundsError{RetryAfter: retry}
+	}
+	layers, err := fundingLayersTx(ctx, tx, params, groups, len(sources) > 0)
+	if err != nil {
+		return BillingReservation{}, err
+	}
+	if len(layers) == 0 {
+		return BillingReservation{}, &NoUpstreamAccountError{}
+	}
+	// group_id is provisional under rule 4: the first group layer until
+	// settlement binds the layer whose pool served the request.
+	var groupID, groupPeriodID any
+	if layers[0].groupID != "" {
+		groupID, groupPeriodID = layers[0].groupID, layers[0].groupPeriodID
 	}
 	if err := snapshotModelPriceTx(ctx, tx, &params); err != nil {
 		return BillingReservation{}, err
@@ -594,7 +608,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			 pricing_snapshot, cache_write_mode, requested_service_tier,
 			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id, pricing_multiplier, funding_rule_version, ordered_funding_sources)
 		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
-			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,3,$23::jsonb)
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,4,$23::jsonb)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
 		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
@@ -608,6 +622,13 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 	}
 	if err := recordBillingFundingSourcesTx(ctx, tx, reservation); err != nil {
 		return BillingReservation{}, err
+	}
+	if err := recordFundingLayersTx(ctx, tx, reservation, layers); err != nil {
+		return BillingReservation{}, err
+	}
+	reservation.AllocationGroups = make([]UpstreamAllocationGroup, 0, len(layers))
+	for _, layer := range layers {
+		reservation.AllocationGroups = append(reservation.AllocationGroups, layer.allocationGroup())
 	}
 	return reservation, nil
 }
@@ -2002,7 +2023,32 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	if _, err := tx.ExecContext(ctx, `SELECT 1 FROM billing_accounts WHERE user_id = $1 FOR UPDATE`, pre.UserID); err != nil {
 		return BillingReservation{}, mapDBError("lock billing account", err)
 	}
-	if err := lockBoundGroupPeriodTx(ctx, tx, pre.GroupID, pre.GroupPeriodID); err != nil {
+	// Rule 4 binds the paying layer from the account that served the request.
+	// Terminal usage never changes its account, so it is read before locking
+	// every candidate group (in id order, each before its period).
+	var layerCandidates []fundingLayer
+	var personalLayer bool
+	var layerAccount string
+	if pre.FundingRuleVersion == 4 && pre.State == "reserved" {
+		layers, err := readFundingLayersTx(ctx, tx, requestID)
+		if err != nil {
+			return BillingReservation{}, err
+		}
+		var account sql.NullString
+		if err := tx.QueryRowContext(ctx, `SELECT upstream_account_id FROM usage_requests
+			WHERE request_id = $1 AND state <> 'in_progress'`, requestID).Scan(&account); err != nil {
+			return BillingReservation{}, mapDBError("read terminal usage account", err)
+		}
+		layerAccount = account.String
+		layerCandidates, personalLayer, _ = settlementLayerCandidates(layers, layerAccount)
+		locking := append([]fundingLayer(nil), layerCandidates...)
+		sort.Slice(locking, func(i, j int) bool { return locking[i].groupID < locking[j].groupID })
+		for _, layer := range locking {
+			if err := lockBoundGroupPeriodTx(ctx, tx, &layer.groupID, &layer.groupPeriodID); err != nil {
+				return BillingReservation{}, err
+			}
+		}
+	} else if err := lockBoundGroupPeriodTx(ctx, tx, pre.GroupID, pre.GroupPeriodID); err != nil {
 		return BillingReservation{}, err
 	}
 	reservation, err := scanBillingReservation(tx.QueryRowContext(ctx,
@@ -2032,6 +2078,14 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 		&inputTokens, &cachedTokens, &cacheWriteTokens, &cacheWriteTokensPresent,
 		&outputTokens, &upstreamAccountID, &cacheWrite5mTokens, &cacheWrite1hTokens, &cacheWriteTTLPresent); err != nil {
 		return BillingReservation{}, mapDBError("read terminal usage for billing", err)
+	}
+	if reservation.FundingRuleVersion == 4 {
+		if pre.State != "reserved" || upstreamAccountID.String != layerAccount {
+			return BillingReservation{}, fmt.Errorf("rule 4 settlement snapshot changed: %w", ErrConflict)
+		}
+		if err := bindSettlementLayerTx(ctx, tx, &reservation, layerCandidates, personalLayer); err != nil {
+			return BillingReservation{}, err
+		}
 	}
 	var decision config.PricingDecision
 	pricingFallbackReason := ""

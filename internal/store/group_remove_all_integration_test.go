@@ -43,6 +43,7 @@ func TestGroupRemoveAllPostgresIntegration(t *testing.T) {
 	t.Run("preserves accounts usage other groups and in-flight funding", func(t *testing.T) {
 		group, other := create("Clear with history"), create("Unaffected group")
 		user, device, key := billingIntegrationPrincipal(t, ctx, s, "remove-all-history")
+		billingIntegrationFundingAccount(t, ctx, s)
 		outsider := globalUsageIntegrationUser(t, ctx, s, "remove-all-outsider", UserRoleMember)
 		add(group, user.ID)
 		add(other, outsider.ID)

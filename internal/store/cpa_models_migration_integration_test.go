@@ -151,6 +151,7 @@ func TestCPAV8ModelMigrationPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestID := "cpa-migration-historical-reservation"
+	billingIntegrationFundingLayerSchema(t, ctx, s)
 	params := billingIntegrationAdmission(user, device, key, requestID, now)
 	params.Usage.Model = retiredModel
 	params.Usage.PricingRuleVersion = config.PricingSchemaV2

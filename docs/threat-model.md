@@ -88,6 +88,7 @@ A 保留两类容器的目标隔离；B 看到的是 A 的隧道地址，不再�
 | Member 借群组用量接口探查上游账号或放大 ChatGPT 请求 | 默认关闭，由 Owner 按群组开启；账号集合只由会话用户的群组成员关系、“指定账号”池推出，请求不带账号 ID；“全部账号”池、Antigravity、已归档和已到期群组不展示；响应只含别名和用量窗口，不含账号 ID、邮箱、套餐和成本；Codex 读取按账号缓存 1 分钟并合并并发，与 Owner 额度查询共用 5 秒限流，实时查询写审计 | `group_account_usage_test.go`、两个 `group_account_usage*_integration_test.go` 的可见性、去标识与缓存测试 |
 | 把 API Token 等价成本误当供应商实际账单 | 准入固化规则，ledger 不可变；界面/API 明示 ChatGPT/Antigravity 订阅、内部零价和兜底边界 | 计价、ledger 和文案测试 |
 | 意外产生 Platform 费用 | 无 Platform Key、无自动回退；上游失效时 fail closed | 503/502 契约测试 |
+| CPA 归因决定扣费层而误扣群组额度 | 准入固化每层账号池；结算只在包含该账号的预授权层中选择，账号缺失时回退第一层并告警；CPA 只能按层内账号选号，个人层仍受每用户资格回调约束 | `TestFundingLayersPostgresIntegration`、`TestFundingLayersGatewayPostgresIntegration`、CPA 分层选号测试 |
 
 ## 容器权限
 

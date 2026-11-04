@@ -27,11 +27,11 @@ relay_service=$root/deploy/relay/wg-codex
 compat_dockerfile=$root/deploy/codex-compat/Dockerfile
 compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
 compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.48-gateway.patch
-compat_patch_sha256=0ad73a791d9d916d1620bc1b535396e8d5da51c2834fa7f076c9a6c78c4d73e4
+compat_patch_sha256=cb038168680fe81257d940469afd7c782b0cb937d8c913a825cbdfebfce36097
 bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
 bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
 agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.48-dbb70621-0ad73a791d9d916d-cpa
+compat_image=codex-gateway-compat:v8.0.48-dbb70621-cb038168680fe812-cpa
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -210,8 +210,8 @@ grep -Fq './internal/watcher' "$compat_dockerfile" && \
     grep -Fq './internal/auth/codex' "$compat_dockerfile" && \
     grep -Fq './sdk/auth' "$compat_dockerfile" || \
     fail 'codex-compat image must test OAuth redirects, stable-index, and duplicate-file reconciliation'
-grep -Eq '^max-retry-credentials:[[:space:]]*2[[:space:]]*$' "$compat_entrypoint" || \
-    fail 'codex-compat must cap each request at two credentials'
+grep -Eq '^max-retry-credentials:[[:space:]]*4[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must cap each request at four credentials'
 grep -Eq '^request-retry:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^max-retry-interval:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must not allocate handler-layer request retry attempts'

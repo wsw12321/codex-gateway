@@ -115,6 +115,7 @@ func TestGeminiOfficialModelsMigrationPostgresIntegration(t *testing.T) {
 		},
 	}
 	snapshot := billingIntegrationV2Snapshot(t, oldModel, rule)
+	billingIntegrationFundingLayerSchema(t, ctx, s)
 	requestIDs := []string{"gemini-before-migration-settled", "gemini-before-migration-inflight"}
 	for index, requestID := range requestIDs {
 		params := billingIntegrationAdmission(user, device, key, requestID, now)

@@ -132,7 +132,7 @@ func recordBillingFundingSourcesTx(ctx context.Context, tx *sql.Tx, reservation 
 }
 
 func billingSettlementSources(reservation BillingReservation) ([]BillingFundingSource, error) {
-	if reservation.FundingRuleVersion == 3 {
+	if reservation.FundingRuleVersion == 3 || reservation.FundingRuleVersion == 4 {
 		seen := make(map[string]bool)
 		for _, source := range reservation.OrderedFundingSources {
 			key := source.PeriodID

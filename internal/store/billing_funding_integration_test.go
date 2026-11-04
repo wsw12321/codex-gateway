@@ -58,7 +58,7 @@ func TestOrderedMultiSubscriptionFundingPostgresIntegration(t *testing.T) {
 	for _, source := range r.OrderedFundingSources {
 		ids = append(ids, source.SubscriptionID)
 	}
-	if r.FundingRuleVersion != 3 || !reflect.DeepEqual(ids, wantIDs) {
+	if r.FundingRuleVersion != 4 || !reflect.DeepEqual(ids, wantIDs) {
 		t.Fatalf("ordered sources = %v, want %v; version %d", ids, wantIDs, r.FundingRuleVersion)
 	}
 	// Disable spending, replace the first subscription's model and period, add

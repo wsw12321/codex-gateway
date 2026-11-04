@@ -255,7 +255,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建证明 `v8.0.48` 的 peeled commit 正是
 `dbb706215a3afd2f0ea3c96482d4233856466caa`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.48-dbb70621-0ad73a791d9d916d-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`v8.0.48-dbb70621-cb038168680fe812-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
@@ -575,6 +575,29 @@ Owner 在“群组额度”创建或编辑群组时，可设置“单个成员�
 
 本次多群组迁移完成代码、迁移、界面、文档及验证后再部署；生产切换期间不得让旧网关
 继续写入 membership 或账务数据。
+
+### 扣费层回退迁移与升级（0043）
+
+新规则（funding rule 4）在准入时把每个可用群组的账号池和个人来源排成有序扣费层，
+结算按实际服务的账号选择付费层；CPA 同时开始按层选号、跳过并发已满的账号、每请求
+最多尝试 4 个账号，并让对话在每次成功请求后继续占用账号名额 5 分钟。
+
+1. 备份数据库，记录未结算请求数。两个镜像都构建并验证后再切换。
+2. 新 CPA 只在独立的 `/internal/*-accounts/funding-layers` 路由声明分层能力，原能力
+   响应字节不变，所以新旧网关都能使用新 CPA；新网关遇到没有该路由（404）的旧 CPA
+   时只发送第一层，与升级前行为一致。CPA 和网关可以任意先后重建，建议一次
+   `./scripts/compose.sh -f deploy/oidc.override.yml up -d` 同时切换。
+3. 网关启动时执行 forward-only 迁移 `0043_billing_reservation_layers.sql`。迁移前受理
+   的请求仍按 rule 3 及其原群组结算，新请求写入 rule 4 和 `billing_reservation_layers`。
+4. 用测试用户核对：群组账号池为空或只有不可用账号时，请求回退到下一个群组或个人
+   来源；`usage_requests.upstream_account_id` 与 `billing_ledger_entries.group_id` 一致
+   反映付费层；CPA 日志中 1–2 ms 的 429 和 503 不再连续出现。
+5. 每个账号的并发上限现在按“最近 5 分钟内活跃的对话数”计算，控制台并发数包含保持
+   中的空闲对话，必要时调高账号并发上限。保持状态只在 CPA 内存中，重启后清空。
+6. 回退：迁移后旧网关拒绝启动，网关回退需恢复迁移前备份；单独回退 CPA 镜像无需改
+   网关配置，新网关会自动只发第一层。告警 `upstream_account_unavailable` 表示扣费
+   来源的账号均不可用或已满，`billing_attribution_missing` 表示多层请求缺少账号归因、
+   已按第一层结算。
 
 ### 群组优先扣费迁移与升级
 

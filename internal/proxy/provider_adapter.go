@@ -117,6 +117,9 @@ func (m TrustedRequestMetadata) Validate() error {
 		return errors.New("invalid trusted affinity scope")
 	}
 	if len(m.Groups) > 0 {
+		if err := validateFundingLayers(m.Groups); err != nil {
+			return err
+		}
 		encoded, err := json.Marshal(m.Groups)
 		if err != nil || len(encoded) > 8192 {
 			return errors.New("trusted group context is too large")
