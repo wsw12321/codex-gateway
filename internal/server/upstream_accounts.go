@@ -130,6 +130,9 @@ type upstreamAccountDTO struct {
 	EgressServerID      string     `json:"egress_server_id"`
 	EgressServerName    string     `json:"egress_server_name"`
 	EgressRevision      int64      `json:"egress_revision"`
+	// QuotaGuard is the Gateway-owned 5h/weekly safety state; nil for
+	// providers without those windows.
+	QuotaGuard *upstreamQuotaGuardDTO `json:"quota_guard"`
 }
 
 type upstreamAccountsResponse struct {
@@ -141,6 +144,9 @@ type upstreamAccountsResponse struct {
 	SyncWarning     string                   `json:"sync_warning,omitempty"`
 	Accounts        []upstreamAccountDTO     `json:"accounts"`
 	Unattributed    *upstreamAccountUsageDTO `json:"unattributed,omitempty"`
+	// QuotaGuardSafetyPercent is the global threshold, present for providers
+	// the quota guard covers.
+	QuotaGuardSafetyPercent *int `json:"quota_guard_safety_percent,omitempty"`
 }
 
 func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
@@ -218,6 +224,20 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	for _, item := range access {
 		accessByID[item.AccountID] = item
 	}
+	var quotaGuardPercent *int
+	var quotaGuards map[string]store.UpstreamQuotaGuardState
+	if !isAntigravityAccountRequest(r) {
+		settings, states, err := s.accountStore(r).ListUpstreamQuotaGuards(r.Context(), allocationUntil)
+		if err != nil {
+			internalError(s, w, r, "list upstream quota guards", err)
+			return
+		}
+		quotaGuardPercent = &settings.SafetyPercent
+		quotaGuards = make(map[string]store.UpstreamQuotaGuardState, len(states))
+		for _, state := range states {
+			quotaGuards[state.AccountID] = state
+		}
+	}
 	egressBindings := map[string]store.EgressBinding{}
 	egressNames := map[string]string{}
 	if s.config.EgressControlKey != "" {
@@ -235,7 +255,7 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	}
 	response := upstreamAccountsResponse{
 		AllocationFrom: allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
-		Until: query.Until, All: query.All, SyncWarning: syncWarning,
+		Until: query.Until, All: query.All, SyncWarning: syncWarning, QuotaGuardSafetyPercent: quotaGuardPercent,
 		Accounts: make([]upstreamAccountDTO, 0, len(rows)),
 	}
 	if !query.All {
@@ -260,7 +280,13 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 				finalStatus = "unknown"
 			}
 		}
+		var quotaGuard *upstreamQuotaGuardDTO
+		if quotaGuards != nil {
+			state, present := quotaGuards[*row.AccountID]
+			quotaGuard = upstreamQuotaGuardView(state, present)
+		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
+			QuotaGuard:       quotaGuard,
 			EgressServerID:   egressBindings[*row.AccountID].NodeID,
 			EgressServerName: egressNames[egressBindings[*row.AccountID].NodeID],
 			EgressRevision:   egressBindings[*row.AccountID].Revision,
@@ -515,7 +541,9 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	success = true
 	if s.accountClient(r) == s.upstream {
 		// Group members may see this account's usage; reuse the fresh result.
-		s.accountUsageCache().store(accountUsageKey(store.UpstreamProviderCodex, accountID), codexAccountUsage(quota, now), accountUsageCodexTTL)
+		usage := codexAccountUsage(quota, now)
+		s.accountUsageCache().store(accountUsageKey(store.UpstreamProviderCodex, accountID), usage, accountUsageCodexTTL)
+		s.recordUpstreamQuotaReading(r.Context(), store.UpstreamProviderCodex, accountID, usage)
 	}
 	writeJSON(w, http.StatusOK, quota)
 }

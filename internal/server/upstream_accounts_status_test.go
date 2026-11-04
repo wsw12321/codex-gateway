@@ -166,8 +166,13 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 		{name: "expired verification", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, age: 6 * time.Minute, code: "recent_identity_verification_required", wantStatus: 403},
 		{name: "verified owner reaches handler", origin: "https://gateway.example", cookie: true, role: store.UserRoleOwner, verified: true, code: "invalid_json", wantStatus: 400},
 	} {
-		for _, control := range []string{"status", "allocation-weight", "concurrent-limit", "alias", "access"} {
-			t.Run(test.name+"/"+control, func(t *testing.T) {
+		for _, control := range []string{
+			"/admin/upstream-accounts/0123456789abcdef/status", "/admin/upstream-accounts/0123456789abcdef/allocation-weight",
+			"/admin/upstream-accounts/0123456789abcdef/concurrent-limit", "/admin/upstream-accounts/0123456789abcdef/alias",
+			"/admin/upstream-accounts/0123456789abcdef/access", "/admin/upstream-accounts/0123456789abcdef/quota-guard",
+			"/admin/upstream-quota-guard",
+		} {
+			t.Run(test.name+control, func(t *testing.T) {
 				now := time.Now().UTC()
 				var verified driver.Value
 				if test.verified {
@@ -186,7 +191,7 @@ func TestUpstreamStatusRouteProtectsOriginRoleAndRecentVerification(t *testing.T
 				server := &Server{store: store.New(db), mux: http.NewServeMux(), config: config.Config{RPOrigins: []string{"https://gateway.example"}, ReauthMaxAge: 5 * time.Minute, TokenPepper: []byte(strings.Repeat("p", 32))}}
 				server.routes()
 				r := statusTestRequest(`{}`)
-				r.URL.Path = "/admin/upstream-accounts/0123456789abcdef/" + control
+				r.URL.Path = control
 				r.Header.Set("Origin", test.origin)
 				r.Header.Set("Sec-Fetch-Site", test.site)
 				if test.cookie {
@@ -212,7 +217,7 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 			summaryStarted, releaseSummary := make(chan struct{}), make(chan struct{})
 			capture := &upstreamAuditCapture{}
 			db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-				if strings.Contains(query, "a.access_mode") || strings.Contains(query, "WITH account_costs AS") {
+				if strings.Contains(query, "a.access_mode") || strings.Contains(query, "WITH account_costs AS") || strings.Contains(query, "upstream_quota_guard_") {
 					return (upstreamSummaryConn{}).QueryContext(ctx, query, args)
 				}
 				if strings.Contains(query, "WITH usage_source AS") {

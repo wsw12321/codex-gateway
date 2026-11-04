@@ -143,7 +143,8 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candid
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$3::uuid AND status='active')
 		  AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))
-		  AND `+userUpstreamAccessPredicate("$3", providerArg, "a.id"), args...)
+		  AND `+userUpstreamAccessPredicate("$3", providerArg, "a.id")+`
+		  AND NOT `+upstreamQuotaGuardHeld("c.id", "$2"), args...)
 	if err != nil {
 		return "", mapDBError("read upstream allocation snapshot", err)
 	}
@@ -251,8 +252,13 @@ func (s *Store) ListUpstreamAccountAllocations(ctx context.Context, at time.Time
 	} else {
 		at = at.UTC()
 	}
+	// An account held back by the quota guard receives no new traffic, so it
+	// has no target share until it reopens.
+	// #nosec G202 -- the guard predicate is fixed SQL over a column and placeholder name; every value is a bound parameter.
 	rows, err := s.db.QueryContext(ctx, `WITH account_costs AS (
-		SELECT a.id, a.allocation_weight, a.status,
+		SELECT a.id, a.allocation_weight,
+			CASE WHEN a.status = 'available' AND NOT `+upstreamQuotaGuardHeld("a.id", "$2")+`
+				THEN 'available' ELSE 'unavailable' END status,
 			COALESCE(sum(l.actual_cost_usd), 0::numeric) cost
 		FROM upstream_accounts a
 		LEFT JOIN billing_ledger_entries l ON l.upstream_account_id = a.id

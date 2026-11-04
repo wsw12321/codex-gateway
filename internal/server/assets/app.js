@@ -473,6 +473,44 @@ const upstreamGatewayQuotaStatusLabels = {
 const upstreamFinalStatusLabels = {
   available: "可用", unavailable: "不可用", unknown: "状态未知",
 };
+// Gateway-owned 5h/weekly safety state, independent of the CPA statuses.
+const upstreamQuotaGuardLabels = {
+  available: "有剩余额度", limited: "达到限额", unknown: "额度状态未知",
+};
+const upstreamQuotaWindowNames = {five_hour: "5 小时额度", seven_day: "周额度"};
+
+function upstreamQuotaGuardStatus(account) {
+  const guard = account?.quota_guard;
+  return guard && typeof guard === "object" && ["available", "limited"].includes(guard.status) ? guard.status : "unknown";
+}
+
+function upstreamQuotaGuardBadge(account) {
+  const value = upstreamQuotaGuardStatus(account);
+  const badge = statusBadge(value);
+  badge.textContent = upstreamQuotaGuardLabels[value];
+  badge.classList.add("upstream-account-quota-guard-status");
+  return badge;
+}
+
+function upstreamQuotaGuardDetail(account) {
+  const guard = account?.quota_guard;
+  const status = upstreamQuotaGuardStatus(account);
+  if (status === "unknown") return "";
+  const manual = guard.source === "manual" ? "手动设置 · " : "";
+  if (status === "limited") {
+    const window = upstreamQuotaWindowNames[guard.limited_window] || "额度";
+    const reset = guard.reset_at ? `${window} ${formatDateTime(guard.reset_at)} 刷新` : `${window}刷新时间未知`;
+    return `${manual}${reset} · ${guard.restore_at ? `${formatDateTime(guard.restore_at)} 自动恢复` : "需手动恢复"}`;
+  }
+  const windows = [["five_hour", guard.five_hour], ["seven_day", guard.seven_day]]
+    .filter(([, window]) => window && Number.isInteger(window.used_percent) && window.used_percent >= 0 && window.used_percent <= 100)
+    .map(([name, window]) => {
+      const reset = window.reset_at ? new Date(window.reset_at) : null;
+      return reset && reset.getTime() <= Date.now() ? `${upstreamQuotaWindowNames[name]}已刷新` : `${upstreamQuotaWindowNames[name]}剩余 ${100 - window.used_percent}%`;
+    });
+  if (!windows.length) return `${manual}尚未查询额度；账号接收请求后自动检查`;
+  return `${manual}${windows.join(" · ")} · ${formatDateTime(guard.observed_at, "时间未知")} 查询`;
+}
 
 function upstreamAccountAPI(path) {
   return upstreamAccountProvider === "codex" ? path : path.replace("/admin/upstream-accounts", `/admin/${upstreamAccountProvider}-accounts`);
@@ -529,6 +567,12 @@ function clearUpstreamAccountUIState() {
     if (node) node.textContent = "";
   }
   byId("upstream-account-no-match")?.classList.add("hidden");
+  const guardForm = byId("upstream-quota-guard-form");
+  if (guardForm?.elements?.safety_percent) {
+    guardForm.elements.safety_percent.value = "";
+    delete guardForm.elements.safety_percent.dataset.savedValue;
+    setLocalMessage(guardForm);
+  }
   for (const [id, value] of [["upstream-account-search", ""], ["upstream-account-status-filter", "all"], ["upstream-account-sort", "default"]]) {
     const input = byId(id);
     if (input) input.value = value;
@@ -592,7 +636,7 @@ function filterUpstreamAccountCards() {
   for (const row of rows) {
     const account = metadata(row)?.account;
     const matches = account && (!query || upstreamAccountSearchText(account).includes(query)) &&
-      (saved.status === "all" || upstreamFinalStatus(account) === saved.status);
+      (saved.status === "all" || (saved.status === "quota_limited" ? upstreamQuotaGuardStatus(account) === "limited" : upstreamFinalStatus(account) === saved.status));
     row.classList.toggle("hidden", !matches);
     if (matches) visible++;
   }
@@ -623,6 +667,7 @@ function bindUpstreamAccountUI() {
     });
   }
   restoreUpstreamAccountFilters();
+  bindAsync("upstream-quota-guard-form", "submit", saveUpstreamQuotaGuardSettings, "保存中…", siteSettingsIdentityCurrent);
 }
 
 // Both provider pages use the same manager, including guarded writes and reauthentication.
@@ -679,6 +724,11 @@ function selectUpstreamAccountProvider(section) {
   setUpstreamAccountMessage("upstream-account-action-message");
   setUpstreamAccountMessage("upstream-account-refresh-message");
   setLocalMessage(byId("upstream-account-filter"));
+  const guardForm = byId("upstream-quota-guard-form");
+  if (guardForm) {
+    guardForm.classList.toggle("hidden", provider === "antigravity");
+    setLocalMessage(guardForm);
+  }
   byId("upstream-account-period").textContent = "—";
   byId("upstream-allocation-period").textContent = "近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。";
   byId("upstream-account-list").replaceChildren(emptyState("正在加载账号和本地统计…"));
@@ -7296,6 +7346,22 @@ function syncUpstreamAccountControls() {
     const quotaBadge = card.querySelector(".upstream-account-quota-status");
     const note = card.querySelector(".upstream-account-manage-note");
     if (!account || !button) continue;
+    // The quota guard is Gateway-owned: it needs neither CPA nor a healthy sync.
+    const guardStatus = upstreamQuotaGuardStatus(account);
+    for (const guardBadge of card.querySelectorAll(".upstream-account-quota-guard-status")) {
+      guardBadge.dataset.status = guardStatus;
+      guardBadge.textContent = upstreamQuotaGuardLabels[guardStatus];
+    }
+    const guardRow = card.querySelector(".upstream-quota-guard");
+    if (guardRow) {
+      guardRow.dataset.status = guardStatus;
+      guardRow.querySelector(".upstream-quota-guard-detail").textContent = upstreamQuotaGuardDetail(account);
+      const guardButton = guardRow.querySelector(".upstream-quota-guard-button");
+      const switchingGuard = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "quota_guard";
+      guardButton.disabled = !account.id || guardStatus === "unknown" || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
+      guardButton.textContent = switchingGuard ? "切换中…" : guardStatus === "limited" ? "恢复有剩余额度" : "设为达到限额";
+      guardButton.setAttribute("aria-busy", String(switchingGuard));
+    }
     const knownStatus = upstreamStatusKnown(account) && ["available", "unavailable"].includes(account.status);
     const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && upstreamAccountSyncHealthy;
     button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
@@ -7354,7 +7420,7 @@ function syncUpstreamAccountControls() {
     allocationState.dataset.draining = String(account.allocation_weight === 0);
     const allocationUnit = upstreamAccountLanguage("新对话", "新请求");
     allocationState.textContent = account.allocation_weight === 0 ? upstreamAccountLanguage("停止接收新对话 · 已有有效绑定继续使用", "停止接收新请求 · 已开始的请求继续执行") :
-      (finalStatus === "available" ? `参与${allocationUnit}分配` : finalStatus === "unknown" ? `状态未知 · 暂停${allocationUnit}分配` : `账号不可用 · 暂不参与${allocationUnit}分配`);
+      (finalStatus === "available" ? (guardStatus === "limited" ? `达到限额 · 暂停${allocationUnit}分配` : `参与${allocationUnit}分配`) : finalStatus === "unknown" ? `状态未知 · 暂停${allocationUnit}分配` : `账号不可用 · 暂不参与${allocationUnit}分配`);
     const summaryState = card.querySelector(".upstream-summary-allocation-state");
     if (summaryState) {
       summaryState.textContent = allocationState.textContent;
@@ -7498,6 +7564,84 @@ function upstreamAliasBlock(account) {
   );
   form.addEventListener("submit", (event) => { event.preventDefault(); saveUpstreamAccountAlias(account, form); });
   return form;
+}
+
+async function changeUpstreamQuotaGuard(account) {
+  if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
+      !account.id || !upstreamAccounts.includes(account) || upstreamQuotaGuardStatus(account) === "unknown") return;
+  const operation = {id: account.id, kind: "quota_guard", limited: upstreamQuotaGuardStatus(account) !== "limited"};
+  upstreamAccountOperation = operation;
+  upstreamAccountRequestSequence++;
+  setUpstreamAccountMessage("upstream-account-action-message");
+  setUpstreamAccountMessage("upstream-account-refresh-message");
+  syncUpstreamAccountControls();
+  let confirmed = false;
+  try {
+    const response = await sensitiveAction(() => {
+      if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") {
+        throw new DOMException("操作已取消。", "AbortError");
+      }
+      return api(upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota-guard`), {
+        method: "PUT", body: JSON.stringify({limited: operation.limited}),
+      }, () => upstreamAccountOperation === operation && !loggingOut && state?.user?.role === "owner");
+    });
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    if (response?.id !== account.id || upstreamQuotaGuardStatus(response) !== (operation.limited ? "limited" : "available")) {
+      throw new Error("额度状态响应格式异常，请刷新列表确认结果。");
+    }
+    confirmed = true;
+    account.quota_guard = response.quota_guard;
+    syncUpstreamAccountControls();
+    const label = upstreamAccountLabel(account, account.email_masked || "该上游账号");
+    const message = operation.limited ?
+      `${label} 已设为达到限额，后续请求不再分配到此账号${response.quota_guard.restore_at ? `，${formatDateTime(response.quota_guard.restore_at)} 自动恢复` : "，需手动恢复"}。` :
+      `${label} 已恢复为有剩余额度；下次自动查询仍按实际额度判断。`;
+    setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
+    announce(message);
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
+  } catch (error) {
+    if (upstreamAccountOperation !== operation || loggingOut || state?.user?.role !== "owner") return;
+    upstreamAccountSyncHealthy = false;
+    setUpstreamAccountMessage(confirmed ? "upstream-account-refresh-message" : "upstream-account-action-message",
+      `${confirmed ? "操作已成功，但列表刷新失败" : "额度状态切换未确认"}：${friendlyError(error)} 请刷新列表后再试。`);
+  } finally {
+    if (upstreamAccountOperation === operation) { upstreamAccountOperation = null; syncUpstreamAccountControls(); }
+  }
+}
+
+function renderUpstreamQuotaGuardSettings(percent) {
+  const form = byId("upstream-quota-guard-form");
+  if (!form?.elements?.safety_percent) return;
+  form.classList.toggle("hidden", upstreamAccountProvider === "antigravity");
+  if (!Number.isInteger(percent)) return;
+  const input = form.elements.safety_percent;
+  // A list refresh must not discard an unsaved edit.
+  if (input.dataset.savedValue === undefined || input.value === input.dataset.savedValue) input.value = String(percent);
+  input.dataset.savedValue = String(percent);
+}
+
+async function saveUpstreamQuotaGuardSettings(event) {
+  const form = event.currentTarget;
+  const input = form.elements.safety_percent;
+  const raw = String(input.value || "").trim();
+  const percent = Number(raw);
+  if (!/^\d{1,2}$/.test(raw) || percent > 50) {
+    input.setAttribute("aria-invalid", "true");
+    throw new Error("请输入 0 至 50 的整数百分比。");
+  }
+  input.setAttribute("aria-invalid", "false");
+  const identity = siteSettingsIdentityCurrent();
+  const provider = upstreamAccountProvider;
+  const current = () => identity() && upstreamAccountProvider === provider;
+  const result = await sensitiveAction(() => api("/admin/upstream-quota-guard", {
+    method: "PUT", body: JSON.stringify({safety_percent: percent}),
+  }, current), current);
+  if (!current()) return;
+  if (result?.safety_percent !== percent) throw new Error("保存结果异常，请刷新列表确认。");
+  delete input.dataset.savedValue;
+  renderUpstreamQuotaGuardSettings(result.safety_percent);
+  setLocalMessage(form, `已保存为 ${percent}%，立即按各账号最近一次额度重新判断。`, "ok");
+  if (!upstreamAccountOperation) await loadUpstreamAccounts(upstreamAccountQueryFromForm());
 }
 
 async function changeUpstreamAccountStatus(account) {
@@ -8401,9 +8545,20 @@ function upstreamAccountCard(account) {
   });
   statusButton.addEventListener("click", () => changeUpstreamAccountStatus(account));
   const badges = upstreamAccountStatusBadges(account);
+  const guarded = Boolean(account.quota_guard);
+  let guardRow = null;
+  if (guarded) {
+    const guardButton = element("button", {
+      type: "button", className: "secondary upstream-quota-guard-button",
+      attributes: {"aria-describedby": "upstream-quota-guard-help"},
+    });
+    guardButton.addEventListener("click", () => changeUpstreamQuotaGuard(account));
+    guardRow = element("div", {className: "upstream-quota-guard"},
+      element("span", {className: "upstream-quota-guard-detail"}), guardButton);
+  }
   const details = element("details", {className: "upstream-account-details"},
     element("summary", {text: "账号详情与设置"}),
-    element("div", {className: "upstream-account-full-status"}, ...badges.slice(0, 3)),
+    element("div", {className: "upstream-account-full-status"}, ...(guarded ? [upstreamQuotaGuardBadge(account)] : []), ...badges.slice(0, 3)),
     ...(account.display_name ? [element("p", {className: "upstream-account-name", text: `账号名称：${account.display_name}`})] : []),
     element("p", {className: "muted", text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
     upstreamAliasBlock(account),
@@ -8433,7 +8588,7 @@ function upstreamAccountCard(account) {
         element("h3", {text: identity[0]}),
         ...(identity.length > 1 ? [element("p", {text: identity.slice(1).join(" · ")})] : []),
       ),
-      badges[3],
+      element("div", {className: "upstream-summary-status"}, ...(guarded ? [upstreamQuotaGuardBadge(account)] : []), badges[3]),
       element("div", {className: "upstream-summary-metrics"},
         element("div", {}, element("span", {text: "并发 / 上限"}), element("strong", {},
           element("span", {className: "upstream-concurrency-count", text: "暂不可用"}),
@@ -8442,6 +8597,7 @@ function upstreamAccountCard(account) {
       ),
       statusButton,
     ),
+    ...(guardRow ? [guardRow] : []),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
     element("p", {className: "upstream-summary-allocation-state hidden"}),
     element("small", {className: "upstream-status-impact", text: "禁用后停止分配新请求，已开始的请求继续执行。"}),
@@ -8501,6 +8657,7 @@ function renderUpstreamAccounts(result, query) {
   const allocationWindow = result?.allocation_from && result?.allocation_until ?
     `近 24 小时：${formatDateTime(result.allocation_from)} 至 ${formatDateTime(result.allocation_until)} · ` : "";
   byId("upstream-allocation-period").textContent = `${allocationWindow}独立于历史统计筛选；费用占比以所有已归因账号费用为分母。`;
+  renderUpstreamQuotaGuardSettings(result?.quota_guard_safety_percent);
   syncUpstreamAccountControls();
   renderUpstreamConcurrency();
   filterUpstreamAccountCards();

@@ -286,6 +286,17 @@ func TestUpstreamAccountsFallsBackToDurableLocalSummary(t *testing.T) {
 		payload.Accounts[0].Alias != "主力 Plus" {
 		t.Fatalf("fallback payload = %+v", payload)
 	}
+	// The Gateway-owned quota guard is local state and survives a sidecar outage.
+	guard := payload.Accounts[0].QuotaGuard
+	if guard == nil || guard.Status != "limited" || guard.LimitedWindow != "five_hour" || guard.FiveHour == nil ||
+		guard.FiveHour.UsedPercent != 96 || guard.RestoreAt == nil || guard.ResetAt == nil ||
+		!guard.RestoreAt.Equal(guard.ResetAt.Add(5*time.Minute)) || guard.NextCheckAt == nil {
+		t.Fatalf("quota guard = %+v", guard)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &raw); err != nil || raw["quota_guard_safety_percent"] != float64(5) {
+		t.Fatalf("safety percent missing: %s", response.Body.String())
+	}
 }
 
 func TestUpstreamAllocationWindowIsIndependentOfHistoryFilter(t *testing.T) {
@@ -295,6 +306,9 @@ func TestUpstreamAllocationWindowIsIndependentOfHistoryFilter(t *testing.T) {
 	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
 		if strings.Contains(query, "a.access_mode") {
 			return &upstreamAuditRows{columns: []string{"id", "mode", "users"}, values: []driver.Value{"0123456789abcdef", "shared", "[]"}}, nil
+		}
+		if strings.Contains(query, "upstream_quota_guard_") && !strings.Contains(query, "WITH account_costs AS") {
+			return (upstreamSummaryConn{}).QueryContext(ctx, query, args)
 		}
 		if strings.Contains(query, "WITH account_costs AS") {
 			allocationFrom, allocationUntil = args[0].Value.(time.Time), args[1].Value.(time.Time)
@@ -474,6 +488,19 @@ func (upstreamSummaryConn) QueryContext(_ context.Context, query string, _ []dri
 	}
 	if strings.Contains(query, "WITH account_costs AS") {
 		return &upstreamAuditRows{columns: []string{"id", "allocation_weight", "cost", "cost_share", "target_share"}, values: []driver.Value{"0123456789abcdef", int64(20), "0.25", "1", "1"}}, nil
+	}
+	if strings.Contains(query, "FROM upstream_quota_guard_settings") {
+		return &upstreamAuditRows{columns: []string{"safety_percent", "revision", "updated_at"}, values: []driver.Value{int64(5), int64(1), time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)}}, nil
+	}
+	if strings.Contains(query, "FROM upstream_quota_guard_states") {
+		now := time.Now().UTC().Truncate(time.Second)
+		return &upstreamAuditRows{
+			columns: []string{"account_id", "status", "source", "limited_window", "reset_at", "restore_at", "changed_at", "observed_at",
+				"five_hour_used_percent", "five_hour_reset_at", "seven_day_used_percent", "seven_day_reset_at", "auto_checked_at", "next_check_at"},
+			values: []driver.Value{"0123456789abcdef", "limited", "auto", "five_hour", now.Add(time.Hour), now.Add(time.Hour + 5*time.Minute),
+				now.Add(-time.Minute), now.Add(-time.Minute), int64(96), now.Add(time.Hour), int64(40), now.Add(72 * time.Hour),
+				now.Add(-time.Minute), now.Add(time.Hour + 5*time.Minute)},
+		}, nil
 	}
 	if !strings.Contains(query, "WITH usage_source AS") {
 		return nil, errors.New("unexpected summary query")

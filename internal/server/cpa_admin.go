@@ -575,6 +575,11 @@ func (s *Server) cpaAccountOperation(w http.ResponseWriter, r *http.Request, ope
 			return
 		}
 	}
+	if provider == "anthropic" && operation == "quota" {
+		if usage, ok := anthropicAccountUsage(result.ObservedAt, result.CooldownUntil, result.Windows, time.Now()); ok {
+			s.recordUpstreamQuotaReading(r.Context(), store.UpstreamProviderAnthropic, id, usage)
+		}
+	}
 	writeJSON(w, http.StatusOK, result)
 }
 

@@ -1166,9 +1166,17 @@
             </div>
             <div class="upstream-account-toolbar">
               <label>搜索账号<input id="upstream-account-search" type="search" placeholder="别名、名称或脱敏邮箱" autocomplete="off"></label>
-              <label>账号状态<select id="upstream-account-status-filter"><option value="all">全部状态</option><option value="available">可用</option><option value="unavailable">不可用</option><option value="unknown">未知</option></select></label>
+              <label>账号状态<select id="upstream-account-status-filter"><option value="all">全部状态</option><option value="available">可用</option><option value="unavailable">不可用</option><option value="unknown">未知</option><option value="quota_limited">达到限额</option></select></label>
               <label>排序<select id="upstream-account-sort"><option value="default">默认顺序</option><option value="name">名称</option><option value="cost">近 24 小时费用</option></select></label>
             </div>
+            <form id="upstream-quota-guard-form" class="upstream-quota-guard-form" novalidate>
+              <label>剩余用量保险额度
+                <span class="upstream-quota-guard-input"><input name="safety_percent" type="text" inputmode="numeric" maxlength="2" autocomplete="off" aria-describedby="upstream-quota-guard-help"><span aria-hidden="true">%</span></span>
+              </label>
+              <button type="submit" class="secondary">保存</button>
+              <p id="upstream-quota-guard-help" class="muted">全局设置，默认 5%。5 小时或周额度剩余不超过此比例时，账号标记为“达到限额”并停止分配，额度刷新 5 分钟后自动恢复为“有剩余额度”。只在账号接收请求时查询额度，同一账号至少间隔 10 分钟；余量越多查询越少。卡片上的按钮可手动切换，下一次自动查询仍按实际额度判断。</p>
+              <p class="form-message hidden" role="alert"></p>
+            </form>
             <details class="upstream-management-help">
             <summary>分配、并发与额度说明</summary>
             <p id="upstream-account-control-help" class="callout" role="note">手动禁用或明确额度耗尽后，账号将持续退出分流，直到 Owner 重新启用。重新启用会清除冷却并直接恢复分流；若额度仍不足，将再次锁定。普通限流仍会在冷却后自动重试，已开始的请求不受禁用影响。</p>

@@ -978,6 +978,24 @@ Gateway 只识别固定 HTTP 状态与错误码组合，错误 JSON 最多读取
 sidecar 镜像标签、补丁 SHA256 与校验脚本必须一致。套餐兼容修复自身无需额外数据库
 迁移；当前模型鉴定流程还需应用 `0019_model_identification_diagnostics.sql`。
 
+Gateway 的“剩余用量保险额度”与前述 CPA 额度锁定相互独立。
+
+- **存储：** 状态保存在 Gateway 数据库的 `upstream_quota_guard_states`，全局比例在
+  `upstream_quota_guard_settings`。它不写 CPA 控制状态，也不会解除 CPA 的额度锁定。
+- **生效方式：** 只在 `/internal/{upstream,anthropic}-accounts/{eligible,select}`
+  中排除“达到限额”的账号。恢复时间一到，账号立即重新参与分流，不依赖定时任务。
+- **检查失败：** 只记录固定告警 `upstream quota guard check failed`，`code` 为额度接口
+  的固定错误码。状态保持不变，10 分钟后随下一次请求重试。
+- **审计事件：**
+  - 每次自动查询 ChatGPT 额度：`upstream_account.quota_queried`，`metadata.via=quota_guard`，
+    无执行人。
+  - 自动或查询结果引起的状态变化：`upstream_quota_guard.limited` 或
+    `upstream_quota_guard.restored`。
+  - 手动切换：`upstream_quota_guard.manual_set`。
+  - 修改比例：`upstream_quota_guard.settings_updated`。
+  - 按刷新时间自动恢复不产生审计事件。
+- **回滚：** 迁移 `0044` 只能前进；回滚到旧版二进制前须先恢复迁移前备份。
+
 模型鉴定需同时升级 Gateway 与 `codex-compat`。Owner 通过近期验证后，选择指定账号
 和可尝试模型，任务依次执行准备、逐题探针、答案校验、评分和保存。诊断直接使用所选
 账号，跳过日常分流的授权、权重、禁用、额度、冷却和并发限制，不改变账号控制状态，

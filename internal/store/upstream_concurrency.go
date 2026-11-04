@@ -102,6 +102,7 @@ func (s *Store) EligibleUpstreamAccountLimits(ctx context.Context, userID string
 		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(
 			SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
 		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+`
+		AND NOT `+upstreamQuotaGuardHeld("c.id", "now()")+`
 		ORDER BY c.id`, args...)
 	if err != nil {
 		return nil, mapDBError("read upstream account eligibility limits", err)

@@ -684,6 +684,13 @@ nav a.active {
   background: rgb(var(--danger-rgb) / 7%);
 }
 
+.upstream-account-quota-guard-status[data-status="limited"] {
+  border-color: rgb(var(--danger-rgb) / 35%);
+  color: var(--danger);
+  background: rgb(var(--danger-rgb) / 7%);
+}
+
+.upstream-account-quota-guard-status[data-status="unknown"],
 .upstream-account-status[data-status="unknown"],
 .upstream-account-cliproxy-status[data-status="unknown"],
 .upstream-account-manual-status[data-status="unknown"],
@@ -3046,6 +3053,22 @@ dialog form {
   align-items: center;
 }
 .upstream-account-summary h3 { margin: 0; font-size: 1rem; }
+.upstream-summary-status { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; min-width: 0; }
+.upstream-quota-guard { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem; margin-top: .5rem; }
+.upstream-quota-guard-detail { min-width: 0; color: var(--muted); font-size: .8rem; }
+.upstream-quota-guard[data-status="limited"] .upstream-quota-guard-detail { color: var(--danger); }
+.upstream-quota-guard-form {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: .4rem 1rem;
+  align-items: end;
+  margin-bottom: .65rem;
+}
+.upstream-quota-guard-input { display: flex; align-items: center; gap: .35rem; margin-top: .35rem; }
+.upstream-quota-guard-input input { width: 4.5rem; margin-top: 0; }
+.upstream-quota-guard-form > button { justify-self: start; }
+.upstream-quota-guard-form > .muted { margin: 0; font-size: .76rem; }
+.upstream-quota-guard-form > .form-message { grid-column: 1 / -1; margin: 0; }
 .upstream-summary-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
 .upstream-summary-metrics > div > span { display: block; color: var(--muted); font-size: .75rem; }
 .upstream-summary-metrics strong { font-size: .9rem; font-variant-numeric: tabular-nums; }
@@ -3068,6 +3091,9 @@ dialog form {
   .upstream-provider-switch { margin-bottom: .65rem; }
   .upstream-account-toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
   .upstream-account-toolbar > label:first-child { grid-column: 1 / -1; }
+  .upstream-quota-guard-form { grid-template-columns: auto auto; }
+  .upstream-quota-guard-form > .muted { grid-column: 1 / -1; }
+  .upstream-quota-guard-input input { min-height: 44px; }
   .upstream-account-toolbar input,
   .upstream-account-toolbar select,
   .upstream-account-card button { min-height: 44px; }

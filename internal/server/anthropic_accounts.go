@@ -30,6 +30,7 @@ func (s *Server) anthropicAccountRoutes() {
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/concurrent-limit", write(s.setUpstreamAccountConcurrentLimit))
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/alias", write(s.setUpstreamAccountAlias))
 	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/access", write(s.setUpstreamAccountAccess))
+	s.mux.Handle("PUT /admin/anthropic-accounts/{id}/quota-guard", write(s.setUpstreamAccountQuotaGuard))
 }
 
 func (s *Server) requireAnthropicAccounts(next http.Handler) http.Handler {

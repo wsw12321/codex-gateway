@@ -226,6 +226,7 @@ func (s *Server) readAccountUsage(ctx context.Context, provider, accountID strin
 		}
 		return accountUsage{}, code, accountUsageFailureTTL
 	}
+	s.recordUpstreamQuotaReading(ctx, provider, accountID, usage)
 	if provider == store.UpstreamProviderCodex {
 		return usage, "", accountUsageCodexTTL
 	}
@@ -253,40 +254,17 @@ func (s *Server) readCodexAccountUsage(ctx context.Context, accountID string) (a
 		return accountUsage{}, "usage_unavailable"
 	}
 	now := time.Now().UTC()
-	release, _, accepted := s.upstreamQuotaLimiter().begin(accountID, now)
-	if !accepted {
+	quota, code := s.queryCodexQuota(ctx, accountID, "group_account_usage")
+	switch code {
+	case "":
+		return codexAccountUsage(quota, now), ""
+	case "upstream_account_disabled":
+		return accountUsage{}, "account_disabled"
+	case "upstream_quota_query_rate_limited", "upstream_quota_rate_limited":
 		return accountUsage{}, "usage_rate_limited"
-	}
-	defer release()
-	queryCtx, cancel := context.WithTimeout(ctx, upstreamQuotaTimeout)
-	quota, err := s.upstream.QueryUpstreamAccountQuota(queryCtx, accountID)
-	cancel()
-	resultCode, resultStatus := "ok", http.StatusOK
-	if err != nil {
-		resultCode, resultStatus = upstreamManagementErrorDetails(err)
-	}
-	auditCtx, cancelAudit := context.WithTimeout(ctx, 3*time.Second)
-	_, _ = s.store.AppendAuditEvent(auditCtx, store.AppendAuditEventParams{
-		OccurredAt: time.Now().UTC(), ActorUserID: userFrom(ctx).ID,
-		ActorSessionID: sessionFrom(ctx).ID, EventType: "upstream_account.quota_queried",
-		Severity: "info", Success: err == nil, SourceIP: safeIP(ctx),
-		SubjectType: "upstream_account", SubjectID: accountID,
-		RequestID: httpx.RequestID(ctx), Metadata: map[string]any{
-			"duration_ms": time.Since(now).Milliseconds(), "result_code": resultCode,
-			"http_status": resultStatus, "via": "group_account_usage",
-		},
-	})
-	cancelAudit()
-	if err != nil {
-		switch resultCode {
-		case "upstream_account_disabled":
-			return accountUsage{}, "account_disabled"
-		case "upstream_quota_rate_limited":
-			return accountUsage{}, "usage_rate_limited"
-		}
+	default:
 		return accountUsage{}, "usage_unavailable"
 	}
-	return codexAccountUsage(quota, now), ""
 }
 
 // codexAccountUsage keeps only the default codex bucket; additional

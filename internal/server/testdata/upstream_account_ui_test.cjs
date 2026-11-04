@@ -77,6 +77,10 @@ function dashboard(accounts = [account()], extra = {}, provider = "codex") {
   }
   const filter = nodes.get("upstream-account-filter");
   filter.elements = {range: {value: "all"}};
+  const guardForm = new TestElement("form");
+  guardForm.elements = {safety_percent: new TestElement("input")};
+  guardForm.elements.safety_percent.value = "";
+  nodes.set("upstream-quota-guard-form", guardForm);
   const submit = new TestElement("button");
   submit.type = "submit";
   filter.append(submit);
@@ -803,4 +807,127 @@ test("a mismatched alias confirmation is not shown as saved and drafts survive r
   assert.equal(ui.aliasInput().value, "主力");
   await ui.load();
   assert.equal(ui.aliasInput().value, "主力", "an unsaved alias draft survives a list refresh");
+});
+
+function guarded(id, quota_guard, extra = {}) {
+  return {...account(id), quota_guard, ...extra};
+}
+
+const futureReset = "2099-01-01T08:00:00Z";
+const futureRestore = "2099-01-01T08:05:00Z";
+
+test("the quota guard status leads the badges and shows its reset and restore times", () => {
+  const ui = dashboard([
+    guarded("limited", {status: "limited", source: "auto", limited_window: "five_hour", reset_at: futureReset, restore_at: futureRestore,
+      five_hour: {used_percent: 96, reset_at: futureReset}, seven_day: {used_percent: 30, reset_at: futureReset}}),
+    guarded("open", {status: "available", source: "auto", observed_at: "2099-01-01T06:00:00Z",
+      five_hour: {used_percent: 40, reset_at: futureReset}, seven_day: {used_percent: 75, reset_at: "2000-01-01T00:00:00Z"}}),
+    guarded("held", {status: "limited", source: "manual", reset_at: null, restore_at: null}),
+    guarded("unchecked", {status: "available", source: "auto"}),
+  ]);
+  const [limited, open, held, unchecked] = ui.cards();
+  const summary = limited.querySelector(".upstream-summary-status").children;
+  assert.ok(summary[0].classList.contains("upstream-account-quota-guard-status"));
+  assert.equal(summary[0].textContent, "达到限额");
+  assert.equal(summary[0].dataset.status, "limited");
+  assert.ok(summary[1].classList.contains("upstream-account-status"));
+  assert.ok(limited.querySelector(".upstream-account-full-status").children[0].classList.contains("upstream-account-quota-guard-status"));
+  const detail = limited.querySelector(".upstream-quota-guard-detail").textContent;
+  assert.match(detail, /^5 小时额度 .+ 刷新 · .+ 自动恢复$/);
+  assert.equal(limited.querySelector(".upstream-quota-guard-button").textContent, "恢复有剩余额度");
+  assert.equal(limited.querySelector(".upstream-allocation-state").textContent, "达到限额 · 暂停新对话分配");
+  assert.equal(open.querySelector(".upstream-account-quota-guard-status").textContent, "有剩余额度");
+  assert.match(open.querySelector(".upstream-quota-guard-detail").textContent, /^5 小时额度剩余 60% · 周额度已刷新 · .+ 查询$/);
+  assert.equal(open.querySelector(".upstream-quota-guard-button").textContent, "设为达到限额");
+  assert.equal(held.querySelector(".upstream-quota-guard-detail").textContent, "手动设置 · 额度刷新时间未知 · 需手动恢复");
+  assert.equal(unchecked.querySelector(".upstream-quota-guard-detail").textContent, "尚未查询额度；账号接收请求后自动检查");
+  for (const card of ui.cards()) assert.equal(card.querySelector(".upstream-quota-guard-button").disabled, false);
+  ui.run('state.user.role = "member"; syncUpstreamAccountControls();');
+  assert.equal(limited.querySelector(".upstream-quota-guard-button").disabled, true);
+});
+
+test("accounts without a quota guard show no guard controls", () => {
+  const ui = dashboard([account()], {}, "antigravity");
+  const card = ui.cards()[0];
+  assert.equal(card.querySelector(".upstream-account-quota-guard-status"), null);
+  assert.equal(card.querySelector(".upstream-quota-guard"), null);
+  assert.equal(ui.node("upstream-quota-guard-form").classList.contains("hidden"), true);
+});
+
+test("the quota guard switch stays available without a healthy CPA sync and confirms before refreshing", async () => {
+  const ui = dashboard([guarded("account-1", {status: "available", source: "auto"})], {sync_warning: "upstream_account_sync_unavailable"});
+  const card = ui.cards()[0];
+  assert.equal(ui.button().disabled, true);
+  assert.equal(card.querySelector(".upstream-quota-guard-button").disabled, false);
+  const writes = [];
+  const pending = deferred();
+  ui.api(async (url, options) => {
+    if (!options) return {accounts: [guarded("account-1", {status: "limited", source: "manual", reset_at: futureReset, restore_at: futureRestore, limited_window: "five_hour"})]};
+    writes.push([url, options.method, options.body]);
+    return pending.promise;
+  });
+  const done = ui.run("changeUpstreamQuotaGuard(upstreamAccounts[0])");
+  assert.equal(card.querySelector(".upstream-quota-guard-button").textContent, "切换中…");
+  assert.equal(card.querySelector(".upstream-quota-guard-button").disabled, true);
+  assert.equal(ui.aliasButton().disabled, true);
+  pending.resolve({id: "account-1", quota_guard: {status: "limited", source: "manual", reset_at: futureReset, restore_at: futureRestore, limited_window: "five_hour"}});
+  await done;
+  assert.deepEqual(writes, [["/admin/upstream-accounts/account-1/quota-guard", "PUT", '{"limited":true}']]);
+  assert.equal(ui.node("upstream-account-action-message").dataset.kind, "ok");
+  assert.match(ui.node("upstream-account-action-message").textContent, /^account-1@example\.test 已设为达到限额，后续请求不再分配到此账号，.+ 自动恢复。$/);
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-quota-guard-status").textContent, "达到限额");
+  assert.equal(ui.cards()[0].querySelector(".upstream-quota-guard-button").textContent, "恢复有剩余额度");
+});
+
+test("a mismatched quota guard confirmation is not reported as switched", async () => {
+  const ui = dashboard([guarded("account-1", {status: "limited", source: "auto", reset_at: futureReset, restore_at: futureRestore})], {}, "anthropic");
+  const writes = [];
+  ui.api(async (url, options) => {
+    writes.push([url, options?.body]);
+    return {id: "account-1", quota_guard: {status: "limited"}};
+  });
+  await ui.run("changeUpstreamQuotaGuard(upstreamAccounts[0])");
+  assert.deepEqual(writes, [["/admin/anthropic-accounts/account-1/quota-guard", '{"limited":false}']]);
+  assert.match(ui.node("upstream-account-action-message").textContent, /^额度状态切换未确认：/);
+  assert.equal(ui.cards()[0].querySelector(".upstream-account-quota-guard-status").textContent, "达到限额");
+});
+
+test("the status filter can show only limited accounts", () => {
+  const ui = dashboard([
+    guarded("limited", {status: "limited", source: "auto", reset_at: futureReset, restore_at: futureRestore}),
+    guarded("open", {status: "available", source: "auto"}),
+  ]);
+  ui.run('upstreamAccountUIState().status = "quota_limited"; filterUpstreamAccountCards();');
+  const visible = ui.cards().filter((card) => !card.classList.contains("hidden")).map((card) => card.dataset.accountId);
+  assert.deepEqual(visible, ["limited"]);
+});
+
+test("the safety percentage loads, validates locally, saves once, and keeps unsaved edits", async () => {
+  const ui = dashboard([guarded("account-1", {status: "available", source: "auto"})], {quota_guard_safety_percent: 5});
+  const form = ui.node("upstream-quota-guard-form");
+  const input = form.elements.safety_percent;
+  assert.equal(input.value, "5");
+  input.value = "8";
+  ui.run("renderUpstreamQuotaGuardSettings(5)");
+  assert.equal(input.value, "8");
+  const writes = [];
+  ui.api(async (url, options) => {
+    if (!options) return {accounts: [guarded("account-1", {status: "available", source: "auto"})], quota_guard_safety_percent: 12};
+    writes.push([url, options.method, options.body]);
+    return {safety_percent: 12, revision: 2};
+  });
+  input.value = "51";
+  await assert.rejects(ui.run("saveUpstreamQuotaGuardSettings({currentTarget: byId('upstream-quota-guard-form')})"), /0 至 50/);
+  input.value = "4.5";
+  await assert.rejects(ui.run("saveUpstreamQuotaGuardSettings({currentTarget: byId('upstream-quota-guard-form')})"), /0 至 50/);
+  assert.equal(input.attributes["aria-invalid"], "true");
+  assert.deepEqual(writes, []);
+  input.value = "12";
+  await ui.run("saveUpstreamQuotaGuardSettings({currentTarget: byId('upstream-quota-guard-form')})");
+  assert.deepEqual(writes, [["/admin/upstream-quota-guard", "PUT", '{"safety_percent":12}']]);
+  assert.equal(input.value, "12");
+  assert.equal(input.dataset.savedValue, "12");
+  ui.run("clearUpstreamAccountUIState()");
+  assert.equal(input.value, "");
+  assert.equal(input.dataset.savedValue, undefined);
 });

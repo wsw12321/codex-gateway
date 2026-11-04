@@ -68,6 +68,11 @@ Current migrations:
   (groups by priority, then personal) with its account pool, and settlement
   charges the first layer whose pool contains the account that served the
   request. Rules 1-3 settle unchanged.
+- `internal/store/migrations/0044_upstream_quota_guard.sql` — Gateway-owned
+  quota guard: a global safety percentage (default 5) and, per Codex or Claude
+  account, the last five-hour and weekly reading, the limited state with its
+  restore time (reset + 5 minutes) and the automatic check schedule. Accounts
+  start without a row and are therefore available.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

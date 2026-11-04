@@ -37,6 +37,10 @@ type Server struct {
 	accountUsages         *accountUsageCache
 	accountUsageOnce      sync.Once
 	accountUsageRead      accountUsageReader
+	quotaGuardRepo        upstreamQuotaGuardRepository
+	quotaGuardRead        upstreamQuotaGuardReader
+	quotaGuards           *upstreamQuotaGuardScheduler
+	quotaGuardOnce        sync.Once
 	upstreamAccountSyncMu sync.Mutex
 	// activeAttributions contains short-lived account observations received
 	// from upstream response headers while a request is still streaming.  The
@@ -96,6 +100,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 		upstream: gatewayproxy.New(cfg.SidecarURL, cfg.SidecarToken),
 		logger:   logger, mux: http.NewServeMux(), attempts: newAttemptLimiter(), quotas: newUpstreamQuotaLimiter(),
 		monitoringRepo:          repository,
+		quotaGuardRepo:          repository,
 		modelAccessRepo:         repository,
 		modelIdentificationRepo: repository,
 		browserHandoffRepo:      repository,
@@ -232,6 +237,8 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/concurrent-limit", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountConcurrentLimit)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/alias", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAlias)))))
 	s.mux.Handle("PUT /admin/upstream-accounts/{id}/access", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountAccess)))))
+	s.mux.Handle("PUT /admin/upstream-accounts/{id}/quota-guard", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamAccountQuotaGuard)))))
+	s.mux.Handle("PUT /admin/upstream-quota-guard", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setUpstreamQuotaGuardSettings)))))
 	s.mux.Handle("GET /admin/alerts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.alertsJSON))))
 	s.mux.Handle("GET /admin/model-catalog", s.requireSession(http.HandlerFunc(s.sessionModelCatalog)))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))

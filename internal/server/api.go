@@ -354,6 +354,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			}
 		}
 		s.rememberActiveAttribution(requestID, accountID)
+		s.noteUpstreamQuotaUse(accountID)
 	}
 	onConversation := func(conversationHash string) {
 		s.rememberActiveConversation(requestID, conversationHash)
