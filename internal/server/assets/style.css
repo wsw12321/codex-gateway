@@ -3990,6 +3990,17 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
 .group-select:hover { border-color: var(--line-strong); background: var(--surface-soft); }
 .group-select[aria-pressed="true"] { border-color: var(--accent); background: var(--selected); box-shadow: inset 3px 0 var(--accent); }
 .group-select strong { font-size: .98rem; }
+.group-browser { display: grid; gap: .75rem; min-width: 0; }
+.group-list-tools { display: grid; gap: .55rem; border: 1px solid var(--line); border-radius: var(--radius-md); padding: .85rem 1rem; background: var(--surface); box-shadow: var(--shadow-sm); }
+.group-list-tools input[type="search"] { margin-top: .3rem; }
+.group-archived-toggle { color: var(--text); font-size: .86rem; font-weight: 500; cursor: pointer; }
+.group-archived-toggle input { width: 1.05rem; height: 1.05rem; min-height: 0; margin: 0; }
+.group-list-status { margin: 0; color: var(--muted); font-size: .78rem; }
+.group-list-status:empty { display: none; }
+.group-select[data-archived="true"] { border-style: dashed; background: var(--surface-soft); }
+.group-select[data-archived="true"] strong { color: var(--muted); }
+.group-select[data-archived="true"][aria-pressed="true"] { border-style: solid; }
+#group-detail > .panel-heading > .button-group { flex-wrap: wrap; justify-content: flex-end; }
 .user-check-row { transition: background-color 120ms ease; }
 .user-check-row:hover { background: var(--hover); }
 
@@ -4019,6 +4030,9 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
   .upstream-provider-switch { display: flex; overflow-x: auto; }
   .upstream-provider-switch a { flex: 1 0 auto; justify-content: center; }
   .billing-source-control .billing-priority-label input { min-height: 44px; }
+  .group-archived-toggle { min-height: 44px; }
+  #group-detail > .panel-heading > .button-group { flex: 1 1 100%; justify-content: flex-start; }
+  #group-detail > .panel-heading > .button-group > button { flex: 1 1 auto; }
 }
 @media (pointer: coarse) {
   .theme-switcher button { min-width: 44px; min-height: 44px; }

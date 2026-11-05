@@ -20,6 +20,7 @@ type groupRepository interface {
 	PutGroup(context.Context, store.PutGroupParams) (store.Group, error)
 	SetGroupMembers(context.Context, store.SetGroupMembersParams) (store.Group, error)
 	ArchiveGroup(context.Context, store.ArchiveGroupParams) (store.Group, error)
+	RenameGroup(context.Context, store.RenameGroupParams) (store.Group, error)
 	SetGroupAccountUsageVisibility(context.Context, store.SetGroupAccountUsageVisibilityParams) (store.Group, error)
 }
 
@@ -39,6 +40,20 @@ type groupMembersInput struct {
 	billingOperationInput
 	Action  string   `json:"action"`
 	UserIDs []string `json:"user_ids"`
+}
+
+type groupRenameInput struct {
+	billingOperationInput
+	Name *string `json:"name"`
+}
+
+// groupListItem adds a response-time pinyin index so Owners can find Chinese
+// group names by full pinyin or initials. It is derived, never persisted.
+type groupListItem struct {
+	store.GroupSummary
+	PinyinFull     string `json:"pinyin_full"`
+	PinyinInitials string `json:"pinyin_initials"`
+	SearchIndex    string `json:"search_index"`
 }
 
 type groupAccountUsageInput struct {
@@ -67,10 +82,13 @@ func (s *Server) groupsJSON(w http.ResponseWriter, r *http.Request) {
 		s.groupStoreError(w, r, "list groups", err)
 		return
 	}
-	if groups == nil {
-		groups = []store.GroupSummary{}
+	items := make([]groupListItem, 0, len(groups))
+	for _, group := range groups {
+		full, initials := pinyinForText(group.Name), pinyinInitialsForText(group.Name)
+		items = append(items, groupListItem{GroupSummary: group, PinyinFull: full, PinyinInitials: initials,
+			SearchIndex: strings.Join([]string{strings.ToLower(strings.TrimSpace(group.Name)), full, initials}, " ")})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+	writeJSON(w, http.StatusOK, map[string]any{"groups": items})
 }
 
 func (s *Server) groupJSON(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +241,43 @@ func (s *Server) archiveGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.groupStoreError(w, r, "archive group", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, group)
+}
+
+// renameGroup changes only the display name of an active group.
+func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validGroupID(id) {
+		s.groupStoreError(w, r, "rename group", store.ErrNotFound)
+		return
+	}
+	var input groupRenameInput
+	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	if validateBillingOperation(input.OperationID, input.Reason) != nil || input.Name == nil {
+		s.groupStoreError(w, r, "rename group", store.ErrInvalid)
+		return
+	}
+	name := strings.TrimSpace(*input.Name)
+	if name == "" || len([]rune(name)) > 120 {
+		s.groupStoreError(w, r, "rename group", store.ErrInvalid)
+		return
+	}
+	repository := s.groupStorage()
+	if repository == nil {
+		internalError(s, w, r, "rename group", errors.New("group repository unavailable"))
+		return
+	}
+	group, err := repository.RenameGroup(r.Context(), store.RenameGroupParams{
+		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
+		GroupID:            id, Name: name,
+	})
+	if err != nil {
+		s.groupStoreError(w, r, "rename group", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, group)

@@ -866,9 +866,16 @@
             <p class="callout">群组优先支付，金额不超过群组剩余额度及成员本期剩余上限；余下费用使用个人额度。群组到期、耗尽、额度为零、成员达到上限或周期未开始时回退个人；所有来源均不可用时拒绝新请求。在总周期数内自动换期，剩余额度不结转；0 期表示无限期。</p>
             <p id="groups-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <div class="groups-layout">
-              <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
+              <div class="group-browser">
+                <div class="group-list-tools" role="search" aria-label="筛选群组">
+                  <label>搜索群组<input id="group-search" type="search" autocomplete="off" placeholder="群组名称或拼音" aria-controls="group-list" aria-describedby="group-list-status"></label>
+                  <label class="check-label group-archived-toggle"><input id="group-show-archived" type="checkbox" aria-controls="group-list">显示已归档群组</label>
+                  <p id="group-list-status" class="group-list-status" role="status" aria-live="polite"></p>
+                </div>
+                <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
+              </div>
               <article id="group-detail" class="panel hidden">
-                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
+                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-rename" type="button" class="secondary">重命名</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
                 <div id="group-metrics" class="metrics compact"></div>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
@@ -1445,6 +1452,18 @@
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存群组</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="group-rename-dialog" aria-labelledby="group-rename-title">
+    <form id="group-rename-form">
+      <div class="dialog-heading"><p class="eyebrow">RENAME GROUP</p><h2 id="group-rename-title">重命名群组</h2><p id="group-rename-current">—</p></div>
+      <input name="group_id" type="hidden">
+      <label>新名称<input name="name" required maxlength="120" autocomplete="off"></label>
+      <p class="muted">只修改群组名称；额度、周期、可用模型、成员、账号池和历史用量都保持不变。已归档群组不能改名。</p>
+      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存名称</button></div>
     </form>
   </dialog>
 

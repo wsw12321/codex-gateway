@@ -34,6 +34,7 @@ type fakeGroupRepository struct {
 	put     *store.PutGroupParams
 	members *store.SetGroupMembersParams
 	archive *store.ArchiveGroupParams
+	rename  *store.RenameGroupParams
 	usage   *store.SetGroupAccountUsageVisibilityParams
 }
 
@@ -61,6 +62,11 @@ func (f *fakeGroupRepository) ArchiveGroup(_ context.Context, p store.ArchiveGro
 	f.archive = &p
 	return f.group, f.err
 }
+func (f *fakeGroupRepository) RenameGroup(_ context.Context, p store.RenameGroupParams) (store.Group, error) {
+	f.calls++
+	f.rename = &p
+	return f.group, f.err
+}
 func (f *fakeGroupRepository) SetGroupAccountUsageVisibility(_ context.Context, p store.SetGroupAccountUsageVisibilityParams) (store.Group, error) {
 	f.calls++
 	f.usage = &p
@@ -81,6 +87,7 @@ func groupHandlerWriteEndpoints() []groupHandlerEndpoint {
 		{"update", http.MethodPut, "/admin/groups/" + groupHandlerTestID, groupBody()},
 		{"members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "add", "user_ids": []string{groupHandlerMemberID}}},
 		{"archive", http.MethodDelete, "/admin/groups/" + groupHandlerTestID, map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget "}},
+		{"rename", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/name", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "name": "  Research Lab  "}},
 		{"remove all members", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/members", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "action": "remove_all"}},
 		{"account usage", http.MethodPut, "/admin/groups/" + groupHandlerTestID + "/account-usage-visibility", map[string]any{"operation_id": groupHandlerOperationID, "reason": " approved budget ", "enabled": true}},
 	}
@@ -246,6 +253,14 @@ func TestGroupWriteRoutesCarryAuthenticatedAttribution(t *testing.T) {
 				write = repo.archive.BillingWriteParams
 				if repo.archive.GroupID != groupHandlerTestID {
 					t.Fatalf("archive params: %+v", repo.archive)
+				}
+			case "rename":
+				if repo.rename == nil {
+					t.Fatal("rename not called")
+				}
+				write = repo.rename.BillingWriteParams
+				if repo.rename.GroupID != groupHandlerTestID || repo.rename.Name != "Research Lab" {
+					t.Fatalf("rename params: %+v", repo.rename)
 				}
 			case "account usage":
 				if repo.usage == nil {
@@ -699,5 +714,92 @@ func TestGroupQuotaHTTPResponseHasStableCodeAndRetryAfter(t *testing.T) {
 				t.Fatal("quota response leaked internal group ID")
 			}
 		})
+	}
+}
+
+func TestGroupRenameRejectsMissingBlankAndOverlongNames(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		value  any
+		remove bool
+	}{
+		{name: "missing", remove: true}, {name: "null"}, {name: "blank", value: " \t "},
+		{name: "number", value: 42}, {name: "too long", value: strings.Repeat("组", 121)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+			repo := &fakeGroupRepository{}
+			s.groupRepo = repo
+			body := map[string]any{"operation_id": groupHandlerOperationID, "reason": "rename", "name": tc.value}
+			if tc.remove {
+				delete(body, "name")
+			}
+			r := groupHandlerRequest(t, groupHandlerEndpoint{method: http.MethodPut, path: "/admin/groups/" + groupHandlerTestID + "/name", body: body})
+			addBillingSourceTestSession(t, r)
+			w := httptest.NewRecorder()
+			s.Handler().ServeHTTP(w, r)
+			if w.Code != http.StatusBadRequest || repo.calls != 0 {
+				t.Fatalf("status=%d body=%s calls=%d", w.Code, w.Body.String(), repo.calls)
+			}
+		})
+	}
+	now := time.Now()
+	s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+	repo := &fakeGroupRepository{group: store.Group{GroupSummary: store.GroupSummary{ID: groupHandlerTestID, Name: strings.Repeat("组", 120)}, Members: []store.GroupMember{}}}
+	s.groupRepo = repo
+	r := groupHandlerRequest(t, groupHandlerEndpoint{method: http.MethodPut, path: "/admin/groups/" + groupHandlerTestID + "/name", body: map[string]any{
+		"operation_id": groupHandlerOperationID, "reason": "rename", "name": strings.Repeat("组", 120),
+	}})
+	addBillingSourceTestSession(t, r)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || repo.rename == nil || len([]rune(repo.rename.Name)) != 120 {
+		t.Fatalf("120-character name: status=%d body=%s rename=%+v", w.Code, w.Body.String(), repo.rename)
+	}
+}
+
+func TestGroupRenameMapsArchivedConflict(t *testing.T) {
+	now := time.Now()
+	s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+	s.groupRepo = &fakeGroupRepository{err: fmt.Errorf("%w: group is archived", store.ErrConflict)}
+	r := groupHandlerRequest(t, groupHandlerEndpoint{method: http.MethodPut, path: "/admin/groups/" + groupHandlerTestID + "/name", body: map[string]any{
+		"operation_id": groupHandlerOperationID, "reason": "rename", "name": "新名称",
+	}})
+	addBillingSourceTestSession(t, r)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "group_operation_conflict") {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupListIncludesDerivedPinyinSearchIndex(t *testing.T) {
+	now := time.Now()
+	s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &now)
+	archivedAt := now.Add(-time.Hour)
+	s.groupRepo = &fakeGroupRepository{groups: []store.GroupSummary{
+		{ID: groupHandlerTestID, Name: "海华 Team", ModelIDs: []string{}},
+		{ID: groupHandlerMemberID, Name: "Archive", ArchivedAt: &archivedAt, ModelIDs: []string{}},
+	}}
+	r := groupHandlerRequest(t, groupHandlerEndpoint{method: http.MethodGet, path: "/admin/groups"})
+	addBillingSourceTestSession(t, r)
+	w := httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	var body struct {
+		Groups []map[string]any `json:"groups"`
+	}
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &body) != nil || len(body.Groups) != 2 {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	first := body.Groups[0]
+	if first["id"] != groupHandlerTestID || first["name"] != "海华 Team" || first["pinyin_full"] != "haihuateam" || first["pinyin_initials"] != "hhteam" {
+		t.Fatalf("group search fields: %+v", first)
+	}
+	if index, _ := first["search_index"].(string); !strings.Contains(index, "海华 team") || !strings.Contains(index, "haihuateam") || !strings.Contains(index, "hhteam") {
+		t.Fatalf("search index: %q", index)
+	}
+	if body.Groups[1]["archived_at"] == nil {
+		t.Fatalf("archived groups stay in the list so the dashboard can reveal them: %+v", body.Groups[1])
 	}
 }

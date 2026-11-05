@@ -383,6 +383,18 @@ func TestGroupBillingDashboardBehavior(t *testing.T) {
 	}
 }
 
+func TestGroupListDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/group_list_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("group list dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
 func TestGroupUpstreamAccessDashboardBehavior(t *testing.T) {
 	t.Parallel()
 	node, err := exec.LookPath("node")

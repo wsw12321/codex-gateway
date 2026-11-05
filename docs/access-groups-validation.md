@@ -90,8 +90,9 @@ CPA 在剩余各层中按顺序选号并跳过并发已满的账号；结算由�
 | `PUT /admin/model-access/users` | `models × user_ids` 或全部用户批量写入 |
 | `PUT /admin/model-access/defaults` | 多模型注册默认值 |
 | `PUT /admin/upstream-accounts/{id}/access` | `mode`、`user_ids`、`reason` |
-| `GET/POST /admin/groups` | 列表／创建群组 |
+| `GET/POST /admin/groups` | 列表／创建群组；列表项附带按名称派生的 `pinyin_full`、`pinyin_initials`、`search_index` |
 | `GET/PUT/DELETE /admin/groups/{id}` | 详情／编辑／归档空群组 |
+| `PUT /admin/groups/{id}/name` | 只修改群组名称：`name`（1–120 字符）、`reason`、`operation_id`；已归档群组返回 409，见[群组管理](group-management-validation.md) |
 | `PUT /admin/groups/{id}/members` | `action: add/remove`、`user_ids`；或 `action: remove_all` 清空当前群组 |
 | `PUT /admin/billing/me/groups/{id}/preferences` | 当前用户设置群组 `priority`（1–100） |
 | `GET /admin/groups/{id}/upstream-access` | 一次返回三个服务商的群组账号池及可选账号，格式与用户账号权限接口一致 |

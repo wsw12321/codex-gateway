@@ -94,6 +94,14 @@ type ArchiveGroupParams struct {
 	GroupID string
 }
 
+// RenameGroupParams changes only a group's display name. Limits, periods,
+// models and members are untouched, so a rename can never replay stale values.
+type RenameGroupParams struct {
+	BillingWriteParams
+	GroupID string
+	Name    string
+}
+
 func groupPeriodDuration(period string, customDays int) (time.Duration, error) {
 	if period == "custom" {
 		// time.Duration must hold the complete period without overflowing.
@@ -410,6 +418,13 @@ func (s *Store) ListGroups(ctx context.Context) ([]GroupSummary, error) {
 // return the original response even after membership and period changes.
 func (s *Store) groupWrite(ctx context.Context, params BillingWriteParams, action string, values []string,
 	apply func(*sql.Tx) (Group, error)) (Group, error) {
+	return s.groupWriteWithAudit(ctx, params, action, values, nil, apply)
+}
+
+// groupWriteWithAudit is groupWrite with action-specific audit metadata. apply
+// may fill auditExtra inside the transaction; the shared keys always win.
+func (s *Store) groupWriteWithAudit(ctx context.Context, params BillingWriteParams, action string, values []string,
+	auditExtra map[string]any, apply func(*sql.Tx) (Group, error)) (Group, error) {
 	var result Group
 	if err := validateBillingWrite(params); err != nil {
 		return result, err
@@ -448,7 +463,14 @@ func (s *Store) groupWrite(ctx context.Context, params BillingWriteParams, actio
 		if _, err := tx.ExecContext(ctx, `UPDATE group_operations SET response=$2::jsonb WHERE operation_id=$1`, params.OperationID, string(encoded)); err != nil {
 			return mapDBError("finish group operation", err)
 		}
-		return appendBillingAuditTx(ctx, tx, params, "group."+action, "group", result.ID, map[string]any{"reason": strings.TrimSpace(params.Reason), "operation_id": params.OperationID, "member_count": result.MemberCount, "model_ids": result.ModelIDs})
+		metadata := map[string]any{}
+		for key, value := range auditExtra {
+			metadata[key] = value
+		}
+		for key, value := range map[string]any{"reason": strings.TrimSpace(params.Reason), "operation_id": params.OperationID, "member_count": result.MemberCount, "model_ids": result.ModelIDs} {
+			metadata[key] = value
+		}
+		return appendBillingAuditTx(ctx, tx, params, "group."+action, "group", result.ID, metadata)
 	})
 	return result, err
 }
@@ -822,6 +844,39 @@ func (s *Store) ArchiveGroup(ctx context.Context, params ArchiveGroupParams) (Gr
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE group_usage_periods SET closed_at=COALESCE(closed_at,$2) WHERE id=$1`, g.PeriodID, params.At); err != nil {
 			return Group{}, mapDBError("close archived group period", err)
+		}
+		return groupDetailTx(ctx, tx, params.GroupID)
+	})
+}
+
+// RenameGroup updates the display name of an active group. Archived groups
+// stay read-only. The audit event records both the previous and new name.
+func (s *Store) RenameGroup(ctx context.Context, params RenameGroupParams) (Group, error) {
+	var err error
+	params.GroupID, err = canonicalGroupID(strings.TrimSpace(params.GroupID))
+	if err != nil {
+		return Group{}, err
+	}
+	params.Name = strings.TrimSpace(params.Name)
+	if params.Name == "" || len([]rune(params.Name)) > 120 {
+		return Group{}, fmt.Errorf("%w: group name is required (maximum 120 characters)", ErrInvalid)
+	}
+	params.At = normalizedBillingTime(params.At, s.now)
+	audit := map[string]any{"name": params.Name}
+	return s.groupWriteWithAudit(ctx, params.BillingWriteParams, "rename", []string{params.GroupID, params.Name}, audit, func(tx *sql.Tx) (Group, error) {
+		if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {
+			return Group{}, err
+		}
+		g, err := rollGroupTx(ctx, tx, params.GroupID, params.At)
+		if err != nil {
+			return Group{}, err
+		}
+		if g.ArchivedAt != nil {
+			return Group{}, fmt.Errorf("%w: group is archived", ErrConflict)
+		}
+		audit["previous_name"] = g.Name
+		if _, err := tx.ExecContext(ctx, `UPDATE user_groups SET name=$2,updated_at=$3 WHERE id=$1`, params.GroupID, params.Name, params.At); err != nil {
+			return Group{}, mapDBError("rename group", err)
 		}
 		return groupDetailTx(ctx, tx, params.GroupID)
 	})
