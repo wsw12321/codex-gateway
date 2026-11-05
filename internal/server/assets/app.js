@@ -1571,7 +1571,7 @@ function renderOverviewBilling(detail) {
   byId("overview-subscriptions").replaceChildren(...(active.length ? active.map((subscription) =>
     element("div", {}, element("span", {text: subscription.name || "订阅"}), element("b", {text: formatUSD(subscription.remaining_usd, "数据不可用")}))) : [element("small", {text: "当前没有有效订阅"})]));
   const expiries = active.map((subscription) => subscription.expires_at).filter(Boolean).sort((a, b) => new Date(a) - new Date(b));
-  byId("overview-next-expiry").textContent = expiries.length ? `最近到期：${formatDateTime(expiries[0])}` : active.some((subscription) => subscription.period_count !== 0 && !subscription.expires_at) ? "到期时间：数据不可用" : active.length ? "有效订阅均为无限期" : "当前没有有效订阅";
+  byId("overview-next-expiry").textContent = expiries.length ? `最近到期：${formatDateTime(expiries[0])}` : active.some((subscription) => subscription.period_count !== 0 && !subscription.expires_at) ? "到期时间：数据不可用" : active.length ? "有效订阅均为无限期" : "可在套餐页面购买订阅";
   byId("overview-billing-updated").textContent = `本人余额 · ${overviewUpdated()}`;
 }
 

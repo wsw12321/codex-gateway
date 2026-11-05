@@ -44,6 +44,9 @@ async function fixture(browser, options = {}) {
     }
     if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
     if (url.pathname === "/auth/oidc/config") return send({enabled: true});
+    if (url.pathname === "/site/community") return send({community: null});
+    if (url.pathname === "/admin/site") return send({community: null, recharge: null});
+    if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-example"}]});
     if (url.pathname === "/admin/state") return signedIn ? send(state) : send({error: {message: "请先登录"}}, 401);
     if (url.pathname === "/auth/password/login") { writes.push(request.postDataJSON()); signedIn = true; return send({ok: true}); }
     if (url.pathname === "/admin/billing/me") return send(billing);
