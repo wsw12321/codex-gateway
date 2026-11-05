@@ -1,6 +1,7 @@
 "use strict";
 
-// Optional browser regression for the group list filters and rename dialog.
+// Optional browser regression for the group list filters and renaming through
+// the shared group editor.
 // Every request is intercepted; groups and users are synthetic.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -14,7 +15,7 @@ const origin = "http://127.0.0.1:8765";
 const initialState = {user: {id: "owner", username: "owner", display_name: "团队管理员", role: "owner", status: "active"},
   recently_verified: true, login_methods: {password: true}, devices: [], projects: [], api_keys: [], passkeys: []};
 const base = {period: "month", custom_days: 0, limit_usd: "100.000000000000", used_usd: "20.000000000000", remaining_usd: "80.000000000000",
-  member_limit_usd: null, member_count: 0, period_count: 0, current_period_number: 1, expires_at: null, model_ids: [],
+  member_limit_usd: null, member_count: 0, period_count: 0, current_period_number: 1, expires_at: null, model_ids: ["gpt-5.6"],
   starts_at: "2026-09-01T08:00:00Z", period_starts_at: "2026-09-01T08:00:00Z", period_ends_at: "2026-10-02T08:00:00Z"};
 const groups = [
   {...base, id: "design", name: "产品设计团队", pinyin_full: "chanpinshejituandui", pinyin_initials: "cpsjtd", member_count: 2},
@@ -52,10 +53,13 @@ async function main() {
         const group = groups.find((item) => item.id === match[1]);
         if (match[2] === "/upstream-access") return send(pool(group.id));
         if (match[2] === "/periods") return send({periods: []});
-        if (match[2] === "/name" && request.method() === "PUT") {
+        if (!match[2] && request.method() === "PUT") {
           const body = request.postDataJSON(); writes.push({path: url.pathname, body});
           if (group.archived_at) return send({error: {code: "group_operation_conflict", message: "群组已归档"}}, 409);
-          group.name = body.name; group.pinyin_full = ""; group.pinyin_initials = "";
+          const {operation_id: _operation, reason: _reason, ...fields} = body;
+          Object.assign(group, fields);
+          // The server derives the pinyin index from the current name.
+          delete group.pinyin_full; delete group.pinyin_initials;
           return send(detail(group));
         }
         if (!match[2] && request.method() === "GET") return send(detail(group));
@@ -81,8 +85,7 @@ async function main() {
     assert.deepEqual(await names(), ["春季活动组"], "initials find archived groups once shown");
     await page.locator('#group-list .group-select').first().click();
     await page.waitForFunction(() => managedGroup?.id === "pilot");
-    assert.equal(await page.locator("#group-rename").isDisabled(), true, "archived groups cannot be renamed");
-    assert.equal(await page.locator("#group-edit").isDisabled(), true);
+    assert.equal(await page.locator("#group-edit").isDisabled(), true, "archived groups cannot be edited or renamed");
     await page.screenshot({path: path.join(screenshots, "group-list-archived-desktop.png"), fullPage: true});
 
     await page.locator("#group-search").fill("");
@@ -97,30 +100,32 @@ async function main() {
     assert.match(await page.locator("#group-list").textContent(), /没有名称匹配“不存在”的未归档群组/);
     await page.locator("#group-search").fill("");
 
-    await page.locator("#group-rename").click();
-    const dialog = page.locator("#group-rename-dialog");
+    assert.equal(await page.locator("#group-edit").textContent(), "编辑群组");
+    await page.locator("#group-edit").click();
+    const dialog = page.locator("#group-dialog");
     assert.equal(await dialog.isVisible(), true);
+    assert.equal(await page.locator("#group-dialog-title").textContent(), "编辑群组");
     assert.equal(await dialog.locator('input[name="name"]').inputValue(), "产品设计团队");
-    assert.match(await page.locator("#group-rename-current").textContent(), /当前名称：产品设计团队/);
+    await page.waitForFunction(() => byId("group-form").dataset.modelIDsLoaded === "true");
     await dialog.locator('input[name="name"]').fill("  设计与体验团队  ");
     await dialog.locator('input[name="reason"]').fill("部门调整");
-    await page.screenshot({path: path.join(screenshots, "group-rename-desktop.png")});
+    await dialog.evaluate((node) => { document.activeElement?.blur(); node.scrollTop = 0; });
+    // Headless frames may not have started the dialog's entrance animation yet.
+    await page.screenshot({path: path.join(screenshots, "group-rename-desktop.png"), animations: "disabled"});
     await dialog.locator('button[type="submit"]').click();
-    await page.waitForFunction(() => !byId("group-rename-dialog").open && managedGroup?.name === "设计与体验团队");
+    await page.waitForFunction(() => !byId("group-dialog").open && managedGroup?.name === "设计与体验团队");
     assert.equal(writes.length, 1);
-    assert.equal(writes[0].path, "/admin/groups/design/name");
-    assert.deepEqual(Object.keys(writes[0].body).sort(), ["name", "operation_id", "reason"]);
+    assert.equal(writes[0].path, "/admin/groups/design");
     assert.equal(writes[0].body.name, "设计与体验团队");
-    assert.match(await page.locator("#groups-message").textContent(), /群组已重命名为“设计与体验团队”/);
+    assert.deepEqual([writes[0].body.limit_usd, writes[0].body.member_limit_usd, writes[0].body.period, writes[0].body.period_count, "starts_at" in writes[0].body],
+      ["100", null, "month", 0, false], "a rename resends the current settings without restarting the period");
+    assert.deepEqual(writes[0].body.model_ids, ["gpt-5.6"]);
+    assert.match(await page.locator("#groups-message").textContent(), /群组已保存/);
     assert.equal(await page.locator("#group-detail-name").textContent(), "设计与体验团队");
     assert.deepEqual(await names(), ["设计与体验团队", "研发效能组", "Ops On-call"]);
-
-    await page.locator("#group-rename").click();
-    await dialog.locator('input[name="reason"]').fill("无变化");
-    await dialog.locator('button[type="submit"]').click();
-    assert.match(await dialog.locator(".form-message").textContent(), /新名称与当前名称相同/);
-    assert.equal(writes.length, 1, "unchanged names are not sent");
-    await dialog.locator("[data-close]").click();
+    await page.locator("#group-search").fill("体验");
+    assert.deepEqual(await names(), ["设计与体验团队"], "the new name is searchable right away");
+    await page.locator("#group-search").fill("");
 
     for (const width of [390, 320]) {
       await page.setViewportSize({width, height: 844});
@@ -130,7 +135,7 @@ async function main() {
     await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
     await page.screenshot({path: path.join(screenshots, "group-list-mobile.png")});
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({browser: browser.version(), checks: "archived hidden by default, archived toggle and reselection, name/pinyin/initials search, rename dialog payload and refresh, unchanged and archived rename guards, 320/390/1440 overflow", screenshots}));
+    console.log(JSON.stringify({browser: browser.version(), checks: "archived hidden by default, archived toggle and reselection, name/pinyin/initials search, rename through the group editor without restarting the period, archived edit guard, 320/390/1440 overflow", screenshots}));
   } finally {
     await browser.close();
   }

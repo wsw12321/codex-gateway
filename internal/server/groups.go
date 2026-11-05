@@ -20,7 +20,6 @@ type groupRepository interface {
 	PutGroup(context.Context, store.PutGroupParams) (store.Group, error)
 	SetGroupMembers(context.Context, store.SetGroupMembersParams) (store.Group, error)
 	ArchiveGroup(context.Context, store.ArchiveGroupParams) (store.Group, error)
-	RenameGroup(context.Context, store.RenameGroupParams) (store.Group, error)
 	SetGroupAccountUsageVisibility(context.Context, store.SetGroupAccountUsageVisibilityParams) (store.Group, error)
 }
 
@@ -40,11 +39,6 @@ type groupMembersInput struct {
 	billingOperationInput
 	Action  string   `json:"action"`
 	UserIDs []string `json:"user_ids"`
-}
-
-type groupRenameInput struct {
-	billingOperationInput
-	Name *string `json:"name"`
 }
 
 // groupListItem adds a response-time pinyin index so Owners can find Chinese
@@ -241,43 +235,6 @@ func (s *Server) archiveGroup(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.groupStoreError(w, r, "archive group", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, group)
-}
-
-// renameGroup changes only the display name of an active group.
-func (s *Server) renameGroup(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	if !validGroupID(id) {
-		s.groupStoreError(w, r, "rename group", store.ErrNotFound)
-		return
-	}
-	var input groupRenameInput
-	if err := decodeJSON(w, r, &input, 16<<10); err != nil {
-		badJSON(w, r, err)
-		return
-	}
-	if validateBillingOperation(input.OperationID, input.Reason) != nil || input.Name == nil {
-		s.groupStoreError(w, r, "rename group", store.ErrInvalid)
-		return
-	}
-	name := strings.TrimSpace(*input.Name)
-	if name == "" || len([]rune(name)) > 120 {
-		s.groupStoreError(w, r, "rename group", store.ErrInvalid)
-		return
-	}
-	repository := s.groupStorage()
-	if repository == nil {
-		internalError(s, w, r, "rename group", errors.New("group repository unavailable"))
-		return
-	}
-	group, err := repository.RenameGroup(r.Context(), store.RenameGroupParams{
-		BillingWriteParams: s.billingWriteParams(r, input.OperationID, strings.TrimSpace(input.Reason)),
-		GroupID:            id, Name: name,
-	})
-	if err != nil {
-		s.groupStoreError(w, r, "rename group", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, group)

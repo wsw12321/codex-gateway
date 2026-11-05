@@ -1,7 +1,7 @@
 "use strict";
 
 // Group list filtering (archived groups hidden by default, name / pinyin
-// search) and the dedicated rename action, exercised in a stub DOM.
+// search) and renaming through the shared group editor, in a stub DOM.
 const assert = require("node:assert/strict");
 const {randomUUID} = require("node:crypto");
 const {readFileSync} = require("node:fs");
@@ -55,14 +55,13 @@ const groups = () => [
 function dashboard(list = groups()) {
   const nodes = new Map();
   const node = (id) => { if (!nodes.has(id)) { const element = new Element(); element.id = id; nodes.set(id, element); } return nodes.get(id); };
-  const rename = node("group-rename-form");
-  rename.elements = Object.fromEntries(["group_id", "name", "reason"].map((name) => [name, new Element("input")]));
-  rename.reset = () => Object.values(rename.elements).forEach((input) => { input.value = ""; });
+  const editor = node("group-form");
+  editor.elements = Object.fromEntries(["group_id", "name", "limit_usd", "member_limit_usd", "period", "period_count", "custom_days", "starts_at", "reason"].map((name) => [name, new Element("input")]));
+  editor.reset = () => Object.values(editor.elements).forEach((input) => { input.value = ""; });
   const dialogs = {opened: [], closed: []};
-  node("group-rename-dialog").close = () => { dialogs.closed.push("group-rename-dialog"); };
-  for (const id of ["group-form", "group-members-form", "upstream-access-form"]) node(id).reset = () => {};
+  node("group-dialog").close = () => { dialogs.closed.push("group-dialog"); };
+  for (const id of ["group-members-form", "upstream-access-form"]) node(id).reset = () => {};
   // bindGroupUI also wires the unrelated group forms; give them inert fields.
-  node("group-form").elements = {period: new Element("select")};
   node("upstream-access-form").elements = {mode: new Element("select")};
   node("group-account-usage-form").elements = {enabled: new Element("input")};
   const context = vm.createContext({
@@ -75,6 +74,8 @@ function dashboard(list = groups()) {
   const run = (code) => vm.runInContext(code, context);
   run('state = {user: {id: "owner", role: "owner"}, recently_verified: true};');
   context.openDialog = (id) => { dialogs.opened.push(id); };
+  // The model picker is not under test; leaving it unloaded keeps model_ids omitted.
+  context.loadFormModelPicker = async () => {};
   context.sensitiveAction = async (operation) => operation();
   const state = {groups: list, writes: [], reads: []};
   context.api = async (url, options) => {
@@ -83,7 +84,10 @@ function dashboard(list = groups()) {
       state.writes.push({url, method: options.method, body});
       const id = decodeURIComponent(url.split("/")[3]);
       const group = state.groups.find((item) => item.id === id);
-      if (url.endsWith("/name")) group.name = body.name;
+      const {operation_id: _operation, reason: _reason, ...fields} = body;
+      Object.assign(group, fields);
+      // The server derives the pinyin index from the current name on every list read.
+      if ("name" in fields) for (const key of ["pinyin_full", "pinyin_initials", "search_index"]) delete group[key];
       return {...group, members: []};
     }
     state.reads.push(url);
@@ -97,7 +101,7 @@ function dashboard(list = groups()) {
   const names = () => cards().map((card) => card.children[0].textContent);
   const search = (value) => { node("group-search").value = value; node("group-search").dispatch("input"); };
   const showArchived = async (checked) => { node("group-show-archived").checked = checked; await node("group-show-archived").dispatch("change"); };
-  return {node, run, context, state, dialogs, rename, cards, names, search, showArchived, selected: () => run("managedGroup?.id ?? null")};
+  return {node, run, context, state, dialogs, editor, cards, names, search, showArchived, selected: () => run("managedGroup?.id ?? null")};
 }
 
 test("archived groups are hidden by default and revealed by the checkbox", async () => {
@@ -140,11 +144,11 @@ test("hiding archived groups moves the selection to a visible group", async () =
   await ui.showArchived(true);
   await ui.run('loadGroupDetail("history")');
   assert.equal(ui.selected(), "history");
-  assert.equal(ui.node("group-rename").disabled, true, "archived groups cannot be renamed");
+  assert.equal(ui.node("group-edit").disabled, true, "archived groups cannot be edited or renamed");
   ui.search("ops");
   await ui.showArchived(false);
   assert.equal(ui.selected(), "ops", "the first group still matching the search is chosen");
-  assert.equal(ui.node("group-rename").disabled, false);
+  assert.equal(ui.node("group-edit").disabled, false);
 });
 
 test("a preferred archived group is not reselected while archived groups are hidden", async () => {
@@ -169,55 +173,43 @@ test("only archived groups leave an explanatory empty list and no detail", async
   assert.equal(empty.node("group-list-status").textContent, "");
 });
 
-test("rename sends only the trimmed name and reason, then reloads the list", async () => {
+test("renaming reuses the group editor and keeps the current settings", async () => {
   const ui = dashboard();
   await ui.run("loadGroups()");
-  ui.node("group-rename").dispatch("click");
-  assert.deepEqual(ui.dialogs.opened, ["group-rename-dialog"]);
-  assert.equal(ui.rename.elements.group_id.value, "design");
-  assert.equal(ui.rename.elements.name.value, "产品设计团队");
-  assert.equal(ui.node("group-rename-current").textContent, "当前名称：产品设计团队");
-  ui.rename.elements.name.value = "  设计与体验团队  ";
-  ui.rename.elements.reason.value = "部门调整";
-  await ui.rename.dispatch("submit");
+  ui.node("group-edit").dispatch("click");
+  assert.deepEqual(ui.dialogs.opened, ["group-dialog"]);
+  assert.equal(ui.node("group-dialog-title").textContent, "编辑群组");
+  assert.equal(ui.editor.elements.name.value, "产品设计团队");
+  ui.editor.elements.name.value = "  设计与体验团队  ";
+  ui.editor.elements.reason.value = "部门调整";
+  await ui.editor.dispatch("submit");
   assert.equal(ui.state.writes.length, 1);
   const write = ui.state.writes[0];
-  assert.equal(write.url, "/admin/groups/design/name");
+  assert.equal(write.url, "/admin/groups/design");
   assert.equal(write.method, "PUT");
-  assert.deepEqual(Object.keys(write.body).sort(), ["name", "operation_id", "reason"]);
   assert.equal(write.body.name, "设计与体验团队");
-  assert.equal(write.body.reason, "部门调整");
-  assert.deepEqual(ui.dialogs.closed, ["group-rename-dialog"]);
-  assert.equal(ui.node("groups-message").textContent, "群组已重命名为“设计与体验团队”。");
+  // Only the name changed: the editor resends the loaded values, never a new start.
+  assert.equal(write.body.limit_usd, "100");
+  assert.equal(write.body.member_limit_usd, null);
+  assert.equal(write.body.period, "month");
+  assert.equal(write.body.custom_days, 0);
+  assert.equal(write.body.period_count, 1);
+  assert.equal("starts_at" in write.body, false);
+  assert.equal("model_ids" in write.body, false, "unloaded model picker leaves the model range unchanged");
+  assert.deepEqual(ui.dialogs.closed, ["group-dialog"]);
+  assert.equal(ui.node("groups-message").textContent, "群组已保存。");
   assert.deepEqual(ui.names(), ["设计与体验团队", "Ops Team"]);
   assert.equal(ui.selected(), "design");
+  ui.search("sheji");
+  assert.deepEqual(ui.names(), [], "the stale pinyin index of the old name is replaced on reload");
 });
 
-test("invalid, unchanged or reasonless renames never write", async () => {
-  const ui = dashboard();
-  await ui.run("loadGroups()");
-  for (const [name, reason, message] of [["   ", "x", /不能为空/], ["产品设计团队", "x", /相同/], ["组".repeat(121), "x", /最多 120/], ["新名称", "  ", /操作原因/]]) {
-    ui.node("group-rename").dispatch("click");
-    ui.rename.elements.name.value = name;
-    ui.rename.elements.reason.value = reason;
-    await ui.rename.dispatch("submit");
-    assert.match(ui.rename.querySelector(".form-message")?.textContent || ui.run("byId('notice').textContent"), message, name);
-  }
-  ui.node("group-rename").dispatch("click");
-  ui.rename.elements.name.value = "组".repeat(120);
-  ui.rename.elements.reason.value = "上限";
-  await ui.rename.dispatch("submit");
-  assert.equal(ui.state.writes.length, 1, "only the valid 120-character rename is sent");
-});
-
-test("rename is unavailable for archived groups and identity reset clears filters", async () => {
+test("archived groups never open the editor and identity reset clears filters", async () => {
   const ui = dashboard();
   await ui.run("loadGroups()");
   await ui.showArchived(true);
   await ui.run('loadGroupDetail("history")');
-  ui.dialogs.opened.length = 0;
-  ui.run("openGroupRename(managedGroup)");
-  assert.deepEqual(ui.dialogs.opened, [], "archived groups never open the rename dialog");
+  assert.equal(ui.node("group-edit").disabled, true);
   ui.search("ops");
   ui.run("resetGroupManagement()");
   assert.equal(ui.run("groupListQuery"), "");
@@ -225,5 +217,13 @@ test("rename is unavailable for archived groups and identity reset clears filter
   assert.equal(ui.node("group-search").value, "");
   assert.equal(ui.node("group-show-archived").checked, false);
   assert.equal(ui.node("group-list-status").textContent, "");
-  assert.equal(ui.node("group-rename-current").textContent, "—");
+});
+
+test("search ignores group IDs", async () => {
+  const ui = dashboard([summary("6f2a9d5e-0c39-4a5c-9c8e-1f2d3c4b5a69", "研发效能组", {pinyin_full: "yanfaxiaonengzu", pinyin_initials: "yfxnz"})]);
+  await ui.run("loadGroups()");
+  ui.search("6f2a");
+  assert.deepEqual(ui.names(), []);
+  ui.search("yfx");
+  assert.deepEqual(ui.names(), ["研发效能组"]);
 });

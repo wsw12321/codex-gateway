@@ -263,7 +263,6 @@ func (s *Server) routes() {
 	s.mux.Handle("POST /admin/groups", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putGroup)))))
 	s.mux.Handle("PUT /admin/groups/{id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.putGroup)))))
 	s.mux.Handle("PUT /admin/groups/{id}/members", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupMembers)))))
-	s.mux.Handle("PUT /admin/groups/{id}/name", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.renameGroup)))))
 	s.mux.Handle("DELETE /admin/groups/{id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.archiveGroup)))))
 	s.mux.Handle("GET /admin/groups/{id}/upstream-access", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupUpstreamAccessJSON))))
 	s.mux.Handle("GET /admin/groups/{id}/upstream-accounts/{provider}", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupUpstreamPolicy))))

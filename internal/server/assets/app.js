@@ -6291,17 +6291,10 @@ function resetGroupManagement() {
   memberAccountUsageSequence++;
   byId("upstream-access-account").textContent = "—";
   groupMessage();
-  for (const id of ["group-dialog", "group-rename-dialog", "upstream-access-dialog"]) {
+  for (const id of ["group-dialog", "upstream-access-dialog"]) {
     if (byId(id).open) byId(id).close();
   }
   renderBillingGroup(null);
-  const renameForm = byId("group-rename-form");
-  renameForm.reset?.();
-  delete renameForm.dataset.operationId;
-  delete renameForm.dataset.operationPayload;
-  setBusy(renameForm, false);
-  setLocalMessage(renameForm);
-  byId("group-rename-current").textContent = "—";
   for (const id of ["group-form", "group-members-form", "upstream-access-form"]) {
     const form = byId(id);
     form.reset();
@@ -6546,18 +6539,11 @@ function groupMessage(message = "", isError = false) {
   host.classList.toggle("hidden", !message);
 }
 
-function groupSearchIndex(group) {
-  return [group?.name, group?.search_index, group?.pinyin_full, group?.pinyin_initials]
-    .filter((value) => value != null).join(" ").toLocaleLowerCase();
-}
-
-// Matches the user pickers: every whitespace-separated term must appear in the
-// name or in the server-derived full-pinyin / initials index.
+// Reuses the user-picker matcher over the name and server-derived pinyin only;
+// the group ID is left out so short queries do not match every UUID.
 function groupMatchesSearch(group, query = groupListQuery) {
-  const terms = String(query || "").trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-  if (!terms.length) return true;
-  const index = groupSearchIndex(group);
-  return terms.every((term) => index.includes(term));
+  const {name, search_index, pinyin_full, pinyin_initials} = group || {};
+  return userMatchesSearch({name, search_index, pinyin_full, pinyin_initials}, query);
 }
 
 function groupListedByArchive(group) {
@@ -6943,7 +6929,6 @@ function syncGroupControls() {
   byId("group-members-remove-all").disabled = unavailable || members.size === 0 || byId("group-members-remove-all").dataset.busy === "true";
   byId("group-archive").disabled = unavailable || members.size > 0;
   byId("group-edit").disabled = unavailable;
-  byId("group-rename").disabled = unavailable;
   byId("group-invitation-create").disabled = unavailable;
   byId("group-create").disabled = groupOperation;
   byId("groups-refresh").disabled = groupOperation;
@@ -6978,39 +6963,9 @@ function openGroupEditor(group = null) {
   loadFormModelPicker("group-models", "manageable", selectedGroupModels, {defaultAll: selectedGroupModels === undefined}).then(() => {
     if (byId("group-form") === form) form.dataset.modelIDsLoaded = "true";
   });
-  byId("group-dialog-title").textContent = group ? "编辑群组额度" : "创建群组";
+  byId("group-dialog-title").textContent = group ? "编辑群组" : "创建群组";
   syncGroupPeriodInput();
   openDialog("group-dialog");
-}
-
-function openGroupRename(group = managedGroup) {
-  if (!group || group.archived_at || groupOperation || state?.user?.role !== "owner") return;
-  const form = byId("group-rename-form");
-  form.reset?.();
-  delete form.dataset.operationId;
-  delete form.dataset.operationPayload;
-  setLocalMessage(form);
-  form.elements.group_id.value = group.id;
-  form.elements.name.value = group.name || "";
-  byId("group-rename-current").textContent = `当前名称：${group.name || "—"}`;
-  openDialog("group-rename-dialog");
-}
-
-async function saveGroupRename(event) {
-  const form = event.currentTarget;
-  const id = form.elements.group_id.value;
-  const group = managedGroup?.id === id ? managedGroup : managedGroups.find((item) => item.id === id);
-  if (!group) throw new Error("群组已变化，请关闭后重新选择群组。");
-  if (group.archived_at) throw new Error("已归档群组不能改名。");
-  const name = String(form.elements.name.value || "").trim();
-  if (!name) throw new Error("群组名称不能为空。");
-  if ([...name].length > 120) throw new Error("群组名称最多 120 个字符。");
-  if (name === group.name) throw new Error("新名称与当前名称相同。");
-  const reason = billingReason(form);
-  const result = await groupMutation(form, `/admin/groups/${encodeURIComponent(id)}/name`, "PUT", {name, reason});
-  if (!result) return;
-  byId("group-rename-dialog").close();
-  await refreshGroupsAfterWrite(result.id || id, `群组已重命名为“${result.name || name}”。`);
 }
 
 function syncGroupPeriodInput() {
@@ -7082,7 +7037,7 @@ async function saveGroup(event) {
   const group = await groupMutation(form, id ? `/admin/groups/${encodeURIComponent(id)}` : "/admin/groups", id ? "PUT" : "POST", payload);
   if (!group) return;
   byId("group-dialog").close();
-  await refreshGroupsAfterWrite(group.id, "群组额度已保存。");
+  await refreshGroupsAfterWrite(group.id, "群组已保存。");
 }
 
 async function changeGroupMembers(action) {
@@ -7215,7 +7170,6 @@ async function saveUpstreamAccess(event) {
 function bindGroupUI() {
   byId("group-create").addEventListener("click", () => openGroupEditor());
   byId("group-edit").addEventListener("click", () => openGroupEditor(managedGroup));
-  byId("group-rename").addEventListener("click", () => openGroupRename(managedGroup));
   byId("group-search").addEventListener("input", () => { groupListQuery = byId("group-search").value; renderGroupList(); });
   // applyGroupListFilters handles its own errors; returning it lets callers await the reselection.
   byId("group-show-archived").addEventListener("change", () => { groupShowArchived = byId("group-show-archived").checked; return applyGroupListFilters(); });
@@ -7229,7 +7183,6 @@ function bindGroupUI() {
   byId("group-members-form").addEventListener("submit", (event) => event.preventDefault());
   bindAsync("groups-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
   bindAsync("group-form", "submit", saveGroup, "保存中…", groupIdentityCurrent);
-  bindAsync("group-rename-form", "submit", saveGroupRename, "保存中…", groupIdentityCurrent);
   bindAsync("group-members-add", "click", () => changeGroupMembers("add"), "处理中…", groupIdentityCurrent);
   bindAsync("group-members-remove", "click", () => changeGroupMembers("remove"), "处理中…", groupIdentityCurrent);
   bindAsync("group-members-remove-all", "click", removeAllGroupMembers, "移除中…", groupIdentityCurrent);

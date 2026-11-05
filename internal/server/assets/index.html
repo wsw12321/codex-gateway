@@ -875,7 +875,7 @@
                 <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
               </div>
               <article id="group-detail" class="panel hidden">
-                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-rename" type="button" class="secondary">重命名</button><button id="group-edit" type="button" class="secondary">编辑额度</button></div></div>
+                <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑群组</button></div></div>
                 <div id="group-metrics" class="metrics compact"></div>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
@@ -1448,22 +1448,10 @@
       <label>总周期数（0 表示无限期）<input name="period_count" required type="number" min="0" max="99" step="1" value="1" inputmode="numeric" autocomplete="off"></label>
       <label>周期起点（本地时间，可留空）<input name="starts_at" type="datetime-local" step="1"></label>
       <p class="muted">周期数为 0–99 的整数，新建默认 1 期；有限总期数不得小于当前期号。仅修改数量保留当前周期和用量，并沿原时间轴调整到期时间；延长后的期限覆盖当前时间才恢复。到期后保留群组和成员，并回退个人额度。</p>
-      <p class="muted">成员上限与群组共用周期，留空表示不限，0 表示不使用群组额度。周期起点创建时留空立即开始，编辑时留空保留。仅修改额度或成员上限保留累计；修改周期或起点关闭旧期、从第 1 期重开，过去起点选择包含当前时刻的周期作为第 1 期，成员计数随新周期归零。</p>
+      <p class="muted">成员上限与群组共用周期，留空表示不限，0 表示不使用群组额度。周期起点创建时留空立即开始，编辑时留空保留。仅修改名称、额度或成员上限保留当前周期和累计；修改周期或起点关闭旧期、从第 1 期重开，过去起点选择包含当前时刻的周期作为第 1 期，成员计数随新周期归零。</p>
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存群组</button></div>
-    </form>
-  </dialog>
-
-  <dialog id="group-rename-dialog" aria-labelledby="group-rename-title">
-    <form id="group-rename-form">
-      <div class="dialog-heading"><p class="eyebrow">RENAME GROUP</p><h2 id="group-rename-title">重命名群组</h2><p id="group-rename-current">—</p></div>
-      <input name="group_id" type="hidden">
-      <label>新名称<input name="name" required maxlength="120" autocomplete="off"></label>
-      <p class="muted">只修改群组名称；额度、周期、可用模型、成员、账号池和历史用量都保持不变。已归档群组不能改名。</p>
-      <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
-      <p class="form-message hidden" role="alert"></p>
-      <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">保存名称</button></div>
     </form>
   </dialog>
 
