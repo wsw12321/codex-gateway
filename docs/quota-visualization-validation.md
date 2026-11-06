@@ -1,6 +1,6 @@
 # 额度数据时间、刷新与可视化验证
 
-本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总、群组用量可视化、群组指定账号额度。
+本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总、群组用量可视化、群组指定账号额度、上游账号额度线形图。
 
 ## 额度数据时间与刷新
 
@@ -118,6 +118,23 @@ Antigravity（没有 5 小时/周窗口）不展示。保存账号池后自动�
 提取，行为不变）：Codex 每账号 1 分钟内只向上游查询一次、失败缓存 10 秒，Claude 只读
 CPA 快照；单次最多等待 20 秒，超时读取在后台继续填充缓存。最多 64 个账号。
 
+## 上游账号额度线形图
+
+Codex 与 Claude 账号卡片在“剩余用量保险额度”状态行下方新增两条线形图（5 小时额度、
+周额度），数据来自账号列表已返回的 `quota_guard.five_hour/seven_day`（网关在账号接收
+请求时自动读取，或 Owner 查询后记录），无需额外请求：
+
+- 每条显示“已用 N%”、进度条、“剩余 M% · 重置时间”；已用 ≥ 90% 时进度条改用警示色，
+  并与“达到限额”标签同时出现，不只靠颜色；
+- 重置时间已过的窗口显示“已重置，等待下次读取”且不画进度条，避免把过期读数当作当前额度；
+- 旁边标注“额度读取于：…（精确到秒）”，未读取过时显示“尚未读取额度”；按钮“查询额度”
+  （Claude 为“刷新状态”）执行与详情中相同的即时查询，成功后立即用新读数更新线形图与
+  状态行，不必重载列表；
+- 账号详情里的“官方即时额度”与 Claude 观测窗口也各自附带进度条。
+
+Antigravity 没有 5 小时/周窗口，不显示。只改前端展示，不新增接口；即时查询仍走原有
+接口、限流与审计。
+
 ## 验证
 
 ```sh
@@ -125,38 +142,54 @@ gofmt -l .
 go vet ./...
 go test -count=1 ./...
 node --test internal/server/testdata/quota_visualization_ui_test.cjs
+TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmode=disable' \
+  go test -count=1 -tags=integration -run 'Group|Usage' ./internal/store ./internal/server
 node internal/server/testdata/quota_visualization_browser.cjs   # 需要 Playwright，生成截图
 ```
 
-```sh
-TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmode=disable' \
-  go test -count=1 -tags=integration -run 'TestSummarizeUsageByModel' ./internal/store
-go test -count=1 -run 'TestUsageModels' ./internal/server
-TEST_DATABASE_URL=… go test -count=1 -tags=integration -run 'TestGroupUsageBreakdown' ./internal/store
-go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
-```
+存储集成测试：
 
-群组用量集成测试覆盖：已移出成员保留本期用量、非成员只计入合计、周期开始前的成本与
-不在账号池且群组未支付的账号不计入、群组仅支付过的账号标记为不在账号池、新周期从零
-开始且旧周期仍可按 ID 查询、其他群组的周期或未知周期返回 404、非法 ID 返回 400。
-接口单元测试确认成员 403、只接受单个非空 `period_id`、错误映射且不外泄内部信息。
-`TestGroupPoolAccountUsageIsOwnerOnlyAndNamesAccounts` 确认成员 403、拒绝查询参数、
-返回账号身份与窗口、失败账号只给固定错误码、第二次读取命中缓存；集成测试确认只列出
-“指定账号”的 Codex 与 Claude 账号（Codex 在前），忽略 Antigravity 与“全部账号”池。
+- `TestSummarizeUsageByModelPostgresIntegration`：按扣款排序、失败与进行中计数、窗口外及
+  其他用户不计入、模型筛选，以及各模型合计与 `SummarizeUsageRequests` 一致（12 位小数）。
+- `TestGroupUsageBreakdownPostgresIntegration`：已移出成员保留本期用量、非成员只计入合计、
+  周期开始前的成本与不在账号池且群组未支付的账号不计入、群组仅支付过的账号标记为不在
+  账号池、新周期从零开始且旧周期仍可按 ID 查询、其他群组的周期或未知周期返回 404、
+  非法 ID 返回 400；`ListGroupPoolAccounts` 只列出“指定账号”的 Codex 与 Claude 账号
+  （Codex 在前），忽略 Antigravity 与“全部账号”池。
 
-存储集成测试确认按扣款排序、失败与进行中计数、窗口外及其他用户不计入、模型筛选，
-以及各模型合计与 `SummarizeUsageRequests` 一致（精确到 12 位小数）。接口单元测试
-确认未登录 401、默认 24 小时窗口、成员不能查看他人、Owner 可指定用户、非法区间 400、
-存储错误不外泄。
+接口单元测试：
 
-`quota_visualization_ui_test.cjs` 覆盖：时间格式含秒、刷新按钮调用对应读取、账务读取中/
-成功/失败三种状态、群组卡片刷新、概览余额单独刷新且身份不一致时报错、群组详情时间
-随重置清空；十进制精确求和；线形图按金额定宽、颜色按实体固定、悬停与点击显示金额、
-超过 7 项合并为“其他”；使用统计默认只读模型汇总、展开时才读一次请求明细、失败时
-标注“加载失败”；群组卡片的成员与已移出成员分段、未归属差额、成员上限进度、账号条中
-非群组用户纹理与同一用户同色、超过 7 人合并、周期切换与加载失败；指定账号额度的
-进度条、失败原因、未知窗口不画条、空账号池说明与重置。浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，并逐页点击刷新
-按钮确认只读取对应接口。
+- `TestUsageModels*`：未登录 401、默认 24 小时窗口、成员不能查看他人、Owner 可指定用户、
+  非法区间 400、存储错误不外泄。
+- `TestGroupUsageBreakdownIsOwnerOnlyAndPassesThePeriod`：成员 403、只接受单个非空
+  `period_id`、错误映射且不外泄内部信息。
+- `TestGroupPoolAccountUsageIsOwnerOnlyAndNamesAccounts`：成员 403、拒绝查询参数、返回
+  账号身份与窗口、失败账号只给固定错误码、第二次读取命中缓存。原有
+  `TestMyAccountUsage*` 在提取 `collectAccountUsage` 后保持通过。
+
+`quota_visualization_ui_test.cjs`（`TestQuotaVisualizationUI` 调用）覆盖：
+
+- 数据时间含秒、刷新按钮调用对应读取、账务读取中/成功/失败三种状态、群组卡片刷新、
+  概览余额单独刷新且身份不一致时报错、群组详情时间随重置清空；
+- 十进制精确求和；线形图按金额定宽、颜色按实体固定、悬停与点击显示金额、超过 7 项合并；
+- 使用统计默认只读模型汇总、展开时才读一次请求明细、失败时标注“加载失败”；
+- 群组卡片：成员与已移出成员分段、未归属差额、成员上限进度、非群组用户纹理与同一用户
+  同色、超过 7 人合并、周期切换与加载失败；指定账号额度的进度条、失败原因、未知窗口
+  不画条、空账号池说明与重置；
+- 上游账号线形图：警示色、过期窗口、读取时间、刷新按钮调用即时查询、读数未变时不重建、
+  Codex 分钟窗口与 Claude 窗口名映射、查询后更新线形图但不改动服务端维护的限额状态、
+  详情窗口进度条。
+
+浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，逐页点击刷新按钮并确认只读取
+对应接口；以生产环境的 CSP（`style-src 'self'`，无内联样式）提供页面并把 CSP 报错视为
+失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。
+
+验证环境中观察到的两个与本改动无关的既有现象：
+
+- 在 Claude Code 等设置了 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`、`ANTHROPIC_BASE_URL`
+  的终端里，`TestClientConfigurator` 会把这些变量当作冲突配置而失败；取消这两个变量后通过。
+- `TestBillingAdmissionSnapshotsGroupUpstreamPolicyPostgresIntegration` 使用固定用户名，
+  在同一数据库重复运行会因用户名冲突失败；在新建的数据库上通过。
 
 截图（`docs/screenshots/quota-visualization/`）：
 
@@ -166,6 +199,4 @@ go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
 - `upstream-accounts-freshness-desktop.png`
 - `usage-models-desktop.png`、`usage-models-mobile.png`、`usage-details-expanded-desktop.png`
 - `group-usage-visual-desktop.png`、`group-usage-visual-mobile.png`、`group-account-quota-desktop.png`
-
-浏览器脚本以生产环境的 CSP（`style-src 'self'`，无内联样式）提供页面，并把 CSP
-报错视为失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。
+- `upstream-account-quota-bars-desktop.png`、`upstream-account-quota-bars-mobile.png`

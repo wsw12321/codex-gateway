@@ -483,11 +483,11 @@ function formatDataTime(value, fallback = "未知时间") {
  * balance. `at` is the moment the response arrived (or the upstream's own
  * observation time when one is reported); `label` names what the time means.
  */
-function quotaFreshness({at = null, label = "数据时间", pending = "", onRefresh = null, refreshLabel = "刷新", subject = "额度", className = ""} = {}) {
+function quotaFreshness({at = null, label = "数据时间", pending = "", empty = "", onRefresh = null, refreshLabel = "刷新", subject = "额度", className = ""} = {}) {
   const valid = at && !Number.isNaN(new Date(at).getTime());
   const time = element("time", {
     className: "quota-freshness-time",
-    text: pending || (valid ? `${label}：${formatDataTime(at)}` : `${label}：尚未加载`),
+    text: pending || (valid ? `${label}：${formatDataTime(at)}` : empty || `${label}：尚未加载`),
     attributes: {datetime: valid && !pending ? new Date(at).toISOString() : null},
   });
   const node = element("div", {className: ["quota-freshness", className].filter(Boolean).join(" "), dataset: {state: pending ? "loading" : valid ? "ready" : "empty"}}, time);
@@ -718,6 +718,71 @@ function upstreamQuotaGuardDetail(account) {
     });
   if (!windows.length) return `${manual}尚未查询额度；账号接收请求后自动检查`;
   return `${manual}${windows.join(" · ")} · ${formatDateTime(guard.observed_at, "时间未知")} 查询`;
+}
+
+// Summary-card quota bars: the latest 5-hour and weekly readings the Gateway
+// holds for the account (from automatic checks or the Owner's last query).
+const upstreamQuotaBarProviders = ["codex", "anthropic"];
+
+function upstreamQuotaBar(label, window, now = Date.now()) {
+  const used = Number.isInteger(window?.used_percent) && window.used_percent >= 0 && window.used_percent <= 100 ? window.used_percent : null;
+  const reset = window?.reset_at ? new Date(window.reset_at) : null;
+  const refreshed = Boolean(reset && !Number.isNaN(reset.getTime()) && reset.getTime() <= now);
+  const level = used == null || refreshed ? "unknown" : used >= 90 ? "high" : "normal";
+  return element("div", {className: "upstream-quota-bar", dataset: {level}},
+    element("div", {className: "upstream-quota-bar-head"}, element("span", {text: label}),
+      element("strong", {text: used == null ? "未知" : refreshed ? "已重置" : `已用 ${used}%`})),
+    used == null || refreshed ? element("div", {className: "upstream-quota-bar-empty", attributes: {"aria-hidden": "true"}})
+      : element("progress", {className: "subscription-progress", attributes: {value: used, max: 100, "aria-label": `${label}已用比例`}}),
+    element("small", {text: used == null ? "尚无读数" : refreshed ? `${formatDateTime(reset)} 已重置，等待下次读取` : `剩余 ${100 - used}% · ${formatDateTime(reset, "重置时间未知")} 重置`}));
+}
+
+function renderUpstreamQuotaBars(host, account) {
+  if (!host) return;
+  const guard = account?.quota_guard && typeof account.quota_guard === "object" ? account.quota_guard : {};
+  // Rebuild only when the readings change, so periodic control syncs keep focus.
+  const signature = JSON.stringify([guard.five_hour ?? null, guard.seven_day ?? null, guard.observed_at ?? null]);
+  if (host.dataset.signature === signature && host.children?.length) return;
+  host.dataset.signature = signature;
+  host.replaceChildren(
+    upstreamQuotaBar("5 小时额度", guard.five_hour), upstreamQuotaBar("周额度", guard.seven_day),
+    quotaFreshness({at: guard.observed_at, label: "额度读取于", empty: "尚未读取额度", onRefresh: host.queryQuota,
+      refreshLabel: upstreamAccountProvider === "anthropic" ? "刷新状态" : "查询额度", subject: "该账号的 5 小时与周额度"}));
+}
+
+// Folds a live quota result into the account's readings so the summary bars
+// show what was just read. Codex reports minutes per window; Claude names them.
+function upstreamQuotaReadings(provider, result, receivedAt) {
+  const readings = {observed_at: new Date(receivedAt).toISOString()};
+  if (provider === "anthropic") {
+    if (result?.observed_at) readings.observed_at = result.observed_at;
+    for (const window of Array.isArray(result?.windows) ? result.windows : []) {
+      const used = Number(window?.used_percent);
+      if (!["five_hour", "seven_day"].includes(window?.window) || window.used_percent == null || !Number.isFinite(used) || used < 0 || used > 100) continue;
+      readings[window.window] = {used_percent: Math.round(used), reset_at: window.reset_at || null};
+    }
+    return readings;
+  }
+  const limits = result?.rateLimits && typeof result.rateLimits === "object" ? result.rateLimits : {};
+  for (const window of [limits.primary, limits.secondary]) {
+    if (!window || !Number.isInteger(window.usedPercent)) continue;
+    const name = {300: "five_hour", 10080: "seven_day"}[window.windowDurationMins];
+    if (!name) continue;
+    readings[name] = {used_percent: window.usedPercent,
+      reset_at: Number.isSafeInteger(window.resetsAt) && window.resetsAt > 0 ? new Date(window.resetsAt * 1000).toISOString() : null};
+  }
+  return readings;
+}
+
+function applyUpstreamQuotaReadings(account, provider, result, receivedAt) {
+  if (!account || !upstreamQuotaBarProviders.includes(provider)) return;
+  const readings = upstreamQuotaReadings(provider, result, receivedAt);
+  account.quota_guard = {...(account.quota_guard && typeof account.quota_guard === "object" ? account.quota_guard : {status: "unknown"}), ...readings};
+  const list = byId("upstream-account-list");
+  const card = list ? all(".upstream-account-card", list).find((node) => node.dataset.accountId === account.id) : null;
+  renderUpstreamQuotaBars(card?.querySelector(".upstream-quota-bars"), account);
+  const detail = card?.querySelector(".upstream-quota-guard-detail");
+  if (detail) detail.textContent = upstreamQuotaGuardDetail(account);
 }
 
 function upstreamAccountAPI(path) {
@@ -7876,9 +7941,10 @@ function upstreamQuotaWindow(bucketLabel, windowLabel, quotaWindow) {
     : null;
   const used = usedPercent == null ? "上游未返回" : `${usedPercent}%`;
   const remaining = usedPercent == null ? "上游未返回" : `${100 - usedPercent}%`;
-  return element("article", {className: "upstream-quota-window"},
+  return element("article", {className: "upstream-quota-window", dataset: {level: usedPercent == null ? "unknown" : usedPercent >= 90 ? "high" : "normal"}},
     element("strong", {text: `${bucketLabel} · ${windowLabel} · ${formatUpstreamQuotaDuration(value.windowDurationMins)}`}),
     element("span", {text: `已用 ${used} · 剩余 ${remaining}`}),
+    usedPercent == null ? null : element("progress", {className: "subscription-progress", attributes: {value: usedPercent, max: 100, "aria-label": `${bucketLabel}${windowLabel}已用比例`}}),
     element("small", {text: `重置：${formatUpstreamQuotaReset(value.resetsAt)}`}),
   );
 }
@@ -7971,9 +8037,11 @@ function renderAnthropicQuota(container, result) {
     element("div", {className: "upstream-quota-windows"}, ...["five_hour", "seven_day"].map(name => {
       const value = windows.find(item => item.window === name);
       const used = value?.used_percent;
-      return element("article", {className: "upstream-quota-window"},
+      const known = Number.isFinite(used) && used >= 0 && used <= 100;
+      return element("article", {className: "upstream-quota-window", dataset: {level: !known ? "unknown" : used >= 90 ? "high" : "normal"}},
         element("strong", {text: name === "five_hour" ? "五小时窗口" : "七天窗口"}),
-        element("span", {text: Number.isFinite(used) && used >= 0 && used <= 100 ? `已用 ${used}% · 剩余 ${100 - used}%` : "额度：未知"}),
+        element("span", {text: known ? `已用 ${used}% · 剩余 ${100 - used}%` : "额度：未知"}),
+        known ? element("progress", {className: "subscription-progress", attributes: {value: used, max: 100, "aria-label": `${name === "five_hour" ? "五小时窗口" : "七天窗口"}已用比例`}}) : null,
         element("small", {text: `重置：${formatDateTime(value?.reset_at, "未知")}`}),
         element("small", {text: `状态：${({allowed: "可用", allowed_warning: "接近限额", rejected: "达到限额", unknown: "未知"})[value?.status] || "未知"}`}),
       );
@@ -8002,6 +8070,7 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
       if (!response || !Array.isArray(response.windows)) throw new Error("Claude 状态快照格式异常。");
       upstreamAccountRowState(account.id, provider).quota = {result: response, receivedAt: new Date()};
       renderAnthropicQuota(container, response);
+      applyUpstreamQuotaReadings(account, provider, response, new Date());
       announce("Claude 状态快照已刷新。");
       return;
     }
@@ -8012,6 +8081,7 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
     if (!current()) return;
     upstreamAccountRowState(account.id, provider).quota = {result: response.result, receivedAt};
     renderUpstreamQuota(account, container, response.result, receivedAt);
+    applyUpstreamQuotaReadings(account, provider, response.result, receivedAt);
     announce(`已查询 ${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 的官方额度。`);
   } catch (error) {
     if (!current()) return;
@@ -8052,6 +8122,7 @@ function syncUpstreamAccountControls() {
     if (guardRow) {
       guardRow.dataset.status = guardStatus;
       guardRow.querySelector(".upstream-quota-guard-detail").textContent = upstreamQuotaGuardDetail(account);
+      renderUpstreamQuotaBars(card.querySelector(".upstream-quota-bars"), account);
       const guardButton = guardRow.querySelector(".upstream-quota-guard-button");
       const switchingGuard = upstreamAccountOperation?.id === account.id && upstreamAccountOperation.kind === "quota_guard";
       guardButton.disabled = !account.id || guardStatus === "unknown" || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
@@ -9351,6 +9422,12 @@ function upstreamAccountCard(account) {
     guardRow = element("div", {className: "upstream-quota-guard"},
       element("span", {className: "upstream-quota-guard-detail"}), guardButton);
   }
+  const quotaBars = upstreamQuotaBarProviders.includes(upstreamAccountProvider) && account.id
+    ? element("div", {className: "upstream-quota-bars", attributes: {"aria-label": "5 小时与周额度"}}) : null;
+  if (quotaBars) {
+    quotaBars.queryQuota = () => loadUpstreamQuota(account, quotaBlock, quotaResult);
+    renderUpstreamQuotaBars(quotaBars, account);
+  }
   const details = element("details", {className: "upstream-account-details"},
     element("summary", {text: "账号详情与设置"}),
     element("div", {className: "upstream-account-full-status"}, ...(guarded ? [upstreamQuotaGuardBadge(account)] : []), ...badges.slice(0, 3)),
@@ -9393,6 +9470,7 @@ function upstreamAccountCard(account) {
       statusButton,
     ),
     ...(guardRow ? [guardRow] : []),
+    ...(quotaBars ? [quotaBars] : []),
     element("p", {className: "upstream-account-manage-note hidden muted"}),
     element("p", {className: "upstream-summary-allocation-state hidden"}),
     element("small", {className: "upstream-status-impact", text: "禁用后停止分配新请求，已开始的请求继续执行。"}),

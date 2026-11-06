@@ -453,3 +453,81 @@ test("the owner sees each selected account's 5-hour and weekly bars with when th
   ui.run(`resetGroupManagement()`);
   assert.equal(ui.node("group-account-quota-time").textContent, "数据时间：尚未加载");
 });
+
+test("upstream account cards draw the latest 5-hour and weekly readings as line bars", async () => {
+  const ui = dashboard();
+  const hour = 3600 * 1000;
+  ui.context.account = {id: "0123456789abcdef", quota_guard: {status: "available", observed_at: "2026-11-06T05:53:07Z",
+    five_hour: {used_percent: 97, reset_at: new Date(Date.now() + 2 * hour).toISOString()},
+    seven_day: {used_percent: 41, reset_at: new Date(Date.now() - hour).toISOString()}}};
+  ui.context.queried = 0;
+  const host = ui.run(`(() => { const host = element("div", {className: "upstream-quota-bars"}); host.queryQuota = async () => { queried++; }; renderUpstreamQuotaBars(host, account); return host; })()`);
+  const [five, week] = host.querySelectorAll(".upstream-quota-bar");
+  assert.equal(five.dataset.level, "high", "near-exhausted windows are flagged");
+  assert.match(five.textContent, /^5 小时额度已用 97%剩余 3% · .* 重置$/);
+  assert.equal(five.querySelector("progress").attributes.value, "97");
+  assert.equal(week.dataset.level, "unknown");
+  assert.match(week.textContent, /^周额度已重置.* 已重置，等待下次读取$/, "a passed reset never shows a stale bar");
+  assert.equal(week.querySelector("progress"), null);
+  assert.match(host.querySelector(".quota-freshness-time").textContent, /^额度读取于：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:07$/);
+  const refresh = host.querySelector(".quota-refresh");
+  assert.equal(refresh.textContent, "查询额度");
+  await refresh.dispatch("click");
+  assert.equal(ui.run("queried"), 1, "the bar refresh runs the live quota query");
+
+  const first = host.children[0];
+  ui.run(`renderUpstreamQuotaBars(null, account)`); // a card without bars is a no-op
+  ui.context.host = host;
+  ui.run(`renderUpstreamQuotaBars(host, account)`);
+  assert.equal(host.children[0], first, "unchanged readings keep the existing bars");
+
+  ui.context.account = {id: "1123456789abcdef", quota_guard: {status: "available"}};
+  ui.run(`renderUpstreamQuotaBars(host, account)`);
+  assert.equal(host.querySelector(".quota-freshness-time").textContent, "尚未读取额度");
+  assert.deepEqual(host.querySelectorAll(".upstream-quota-bar").map((bar) => bar.textContent), ["5 小时额度未知尚无读数", "周额度未知尚无读数"]);
+});
+
+test("a live quota query refreshes the summary bars from Codex minutes or Claude window names", () => {
+  const ui = dashboard();
+  const at = new Date("2026-11-06T06:00:00Z");
+  ui.context.at = at;
+  const codex = ui.run(`upstreamQuotaReadings("codex", {rateLimits: {primary: {usedPercent: 40, windowDurationMins: 300, resetsAt: 1800000000},
+    secondary: {usedPercent: 25, windowDurationMins: 10080, resetsAt: 1800600000}}}, at)`);
+  assert.deepEqual(JSON.parse(JSON.stringify(codex)), {observed_at: "2026-11-06T06:00:00.000Z",
+    five_hour: {used_percent: 40, reset_at: new Date(1800000000 * 1000).toISOString()},
+    seven_day: {used_percent: 25, reset_at: new Date(1800600000 * 1000).toISOString()}});
+  const claude = ui.run(`upstreamQuotaReadings("anthropic", {observed_at: "2026-11-06T05:58:00Z", windows: [
+    {window: "five_hour", used_percent: 41.6, reset_at: "2026-11-06T09:00:00Z"}, {window: "seven_day", used_percent: null}]}, at)`);
+  assert.deepEqual(JSON.parse(JSON.stringify(claude)), {observed_at: "2026-11-06T05:58:00Z", five_hour: {used_percent: 42, reset_at: "2026-11-06T09:00:00Z"}});
+
+  const card = new Element("article");
+  card.className = "upstream-account-card";
+  card.dataset.accountId = "0123456789abcdef";
+  const bars = new Element("div");
+  bars.className = "upstream-quota-bars";
+  card.append(bars);
+  ui.node("upstream-account-list").append(card);
+  ui.context.account = {id: "0123456789abcdef", quota_guard: {status: "limited", source: "manual"}};
+  ui.run(`upstreamAccountProvider = "codex"; applyUpstreamQuotaReadings(account, "codex", {rateLimits: {primary: {usedPercent: 55, windowDurationMins: 300}}}, at)`);
+  assert.equal(ui.context.account.quota_guard.status, "limited", "the guard state stays server-owned");
+  assert.equal(ui.context.account.quota_guard.five_hour.used_percent, 55);
+  assert.match(bars.textContent, /^5 小时额度已用 55%剩余 45% · 重置时间未知 重置周额度未知尚无读数额度读取于：/);
+
+  ui.run(`applyUpstreamQuotaReadings(account, "antigravity", {}, at)`);
+  assert.equal(ui.context.account.quota_guard.five_hour.used_percent, 55, "Antigravity has no windows to apply");
+});
+
+test("live quota windows in the account details carry the same bars", () => {
+  const ui = dashboard();
+  const window = ui.run(`upstreamQuotaWindow("额度桶 codex", "主窗口", {usedPercent: 92, windowDurationMins: 300, resetsAt: 1800000000})`);
+  assert.equal(window.dataset.level, "high");
+  assert.equal(window.querySelector("progress").attributes.value, "92");
+  const unknown = ui.run(`upstreamQuotaWindow("额度桶 codex", "次窗口", {})`);
+  assert.equal(unknown.querySelector("progress"), null);
+  ui.run(`upstreamAccountProvider = "anthropic"`);
+  const container = new Element("div");
+  ui.context.container = container;
+  ui.run(`renderAnthropicQuota(container, {observed_at: "2026-11-06T05:58:00Z", windows: [{window: "five_hour", used_percent: 30, status: "allowed"}]})`);
+  assert.deepEqual(container.querySelectorAll("progress").map((bar) => bar.attributes.value), ["30"]);
+  assert.match(container.textContent, /观测时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:00/);
+});

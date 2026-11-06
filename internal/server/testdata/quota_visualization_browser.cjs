@@ -138,6 +138,10 @@ async function main() {
           accounts: url.pathname === "/admin/upstream-accounts" ? codexAccounts : []});
       }
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: at(0), accounts: []});
+      if (url.pathname === "/admin/upstream-accounts/2123456789abcdef/quota" && request.method() === "POST") {
+        return send({id: 6, result: {rateLimits: {limitId: "codex", primary: {usedPercent: 12, windowDurationMins: 300, resetsAt: Math.floor((now + 4 * hour) / 1000)},
+          secondary: {usedPercent: 57, windowDurationMins: 10080, resetsAt: Math.floor((now + 90 * hour) / 1000)}, rateLimitReachedType: null}}});
+      }
       if (url.pathname === "/admin/alerts") return send({alerts: []});
       if (url.pathname === "/admin/groups" && request.method() === "GET") return send({groups: [group]});
       if (url.pathname === "/admin/groups/research" && request.method() === "GET") return send({...group, members});
@@ -158,6 +162,8 @@ async function main() {
       return send({error: {type: "invalid_request_error", code: "not_found", message: "未模拟的请求"}}, 404);
     });
     const capture = async (selector, name) => {
+      // Park the pointer so hover styles never leak into a screenshot.
+      await page.mouse.move(0, 0);
       await page.evaluate(() => { document.activeElement?.blur(); window.scrollTo(0, 0); });
       // Clip from a full-page capture so the sticky top bar cannot cover the section.
       const clip = await page.locator(selector).first().evaluate((node) => {
@@ -281,6 +287,24 @@ async function main() {
     await page.waitForFunction(() => !upstreamAccountListLoading);
     await noOverflow("upstream desktop");
     await capture("#upstream-account-manager", "upstream-accounts-freshness-desktop.png");
+
+    // Every card shows the latest 5-hour and weekly readings as bars.
+    const bars = (id) => page.locator(`[data-account-id="${id}"] .upstream-quota-bars`);
+    assert.match(await bars("0123456789abcdef").textContent(), /^5 小时额度已用 38%剩余 62% · .*周额度已用 64%剩余 36% · .*额度读取于：2026\/11\/06 13:53:00查询额度$/);
+    assert.equal(await bars("1123456789abcdef").locator(".upstream-quota-bar").first().getAttribute("data-level"), "high");
+    assert.match(await bars("2123456789abcdef").textContent(), /尚无读数.*尚未读取额度/);
+    await bars("2123456789abcdef").locator(".quota-refresh").click();
+    await page.waitForFunction(() => /已用 12%/.test(document.querySelector('[data-account-id="2123456789abcdef"] .upstream-quota-bars').textContent));
+    assert.match(await bars("2123456789abcdef").textContent(), /^5 小时额度已用 12%.*周额度已用 57%.*额度读取于：2026\/11\/06 14:00:00/);
+    assert.match(await page.locator('[data-account-id="2123456789abcdef"] .upstream-quota-guard-detail').textContent(), /^5 小时额度剩余 88% · 周额度剩余 43% · /);
+    await page.locator('[data-account-id="2123456789abcdef"] .upstream-account-details summary').click();
+    assert.equal(await page.locator('[data-account-id="2123456789abcdef"] .upstream-quota-window progress').count(), 2, "detail windows carry bars too");
+    await page.locator('[data-account-id="2123456789abcdef"] .upstream-account-details summary').click();
+    await capture("#upstream-account-list", "upstream-account-quota-bars-desktop.png");
+    await page.setViewportSize({width: 390, height: 844});
+    await noOverflow("upstream mobile");
+    await capture('[data-account-id="0123456789abcdef"]', "upstream-account-quota-bars-mobile.png");
+    await page.setViewportSize({width: 1440, height: 1000});
 
     assert.deepEqual(errors, []);
     if (unexpected.length) console.log(`unmocked requests answered 404: ${[...new Set(unexpected)].join(", ")}`);

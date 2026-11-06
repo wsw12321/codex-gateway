@@ -4145,6 +4145,22 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 .group-account-quota .billing-account-usage-card > small { color: var(--muted); font-size: .78rem; }
 .group-usage-account header small, .group-usage-account-summary { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
 
+/* Upstream accounts: 5-hour and weekly readings as line bars on every card. */
+.upstream-quota-bars { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) minmax(0, auto); align-items: end; gap: .5rem 1rem; margin-top: .65rem; }
+.upstream-quota-bar { display: grid; gap: .25rem; min-width: 0; }
+.upstream-quota-bar-head { display: flex; justify-content: space-between; gap: .5rem; font-size: .82rem; }
+.upstream-quota-bar-head strong { font-variant-numeric: tabular-nums; }
+.upstream-quota-bar small { color: var(--muted); font-size: .76rem; font-variant-numeric: tabular-nums; }
+.upstream-quota-bar-empty { height: .45rem; border-radius: 1rem; background: var(--line); opacity: .6; }
+.upstream-quota-bars > .quota-freshness { flex-direction: column; align-items: flex-end; gap: 0; margin-top: 0; text-align: right; }
+[data-level="high"] > .subscription-progress::-webkit-progress-value { background: var(--warning); }
+[data-level="high"] > .subscription-progress::-moz-progress-bar { background: var(--warning); }
+.upstream-quota-window progress { display: block; margin-top: .35rem; }
+@media (max-width: 720px) {
+  .upstream-quota-bars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .upstream-quota-bars > .quota-freshness { grid-column: 1 / -1; flex-direction: row; align-items: center; text-align: left; }
+}
+
 /* Quota freshness: when the numbers on screen were read, with a refresh beside it. */
 .quota-freshness { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .65rem; min-width: 0; margin-top: .35rem; }
 .quota-freshness .quota-freshness-time, .quota-freshness > small { display: inline; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; font-variant-numeric: tabular-nums; }
