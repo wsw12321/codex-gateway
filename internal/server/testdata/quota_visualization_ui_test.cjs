@@ -64,7 +64,8 @@ function dashboard({role = "owner", userID = "self"} = {}) {
   };
   for (const id of ["group-form", "group-members-form", "upstream-access-form", "group-account-usage-form"]) {
     node(id).reset = () => {};
-    node(id).elements = {enabled: new Element("input"), reason: new Element("input")};
+    // Named form controls are created on first use, like a parsed form.
+    node(id).elements = new Proxy({}, {get: (fields, name) => typeof name === "string" ? (fields[name] ??= new Element("input")) : undefined});
   }
   const context = vm.createContext({
     document: {getElementById: node, createElement: (tag) => new Element(tag), addEventListener() {}, querySelectorAll: (selector) => root.querySelectorAll(selector), querySelector: (selector) => root.querySelector(selector)},
@@ -303,4 +304,117 @@ test("model usage follows the drilled-down user and reports failures beside the 
   await ui.run(`loadUsageModels()`);
   assert.equal(ui.node("usage-model-rows").textContent, "最近 24 小时没有请求记录。");
   assert.equal(ui.node("usage-models-share").querySelector(".share-bar-detail").textContent, "最近 24 小时没有请求。");
+});
+
+const breakdown = (extra = {}) => ({
+  group_id: "g1", current_period: true, data_complete: true,
+  period: {id: "p2", starts_at: "2026-11-01T00:00:00Z", ends_at: "2026-12-02T00:00:00Z"},
+  periods: [{id: "p2", starts_at: "2026-11-01T00:00:00Z", ends_at: "2026-12-02T00:00:00Z"}, {id: "p1", starts_at: "2026-10-01T00:00:00Z", ends_at: "2026-11-01T00:00:00Z"}],
+  limit_usd: "100.000000000000", member_limit_usd: "40.000000000000", used_usd: "50.000000000000", remaining_usd: "50.000000000000",
+  members: [
+    {user_id: "alice", username: "alice", display_name: "Alice", current_member: true, group_used_usd: "30.000000000000"},
+    {user_id: "bob", username: "bob", display_name: "", current_member: true, group_used_usd: "12.000000000000"},
+    {user_id: "carol", username: "carol", display_name: "陈卡罗", current_member: false, group_used_usd: "5.000000000000"},
+    {user_id: "dave", username: "dave", display_name: "Dave", current_member: true, group_used_usd: "0.000000000000"},
+  ],
+  accounts: [
+    {account_id: "codex-a", provider: "codex", alias: "Codex 主力", in_pool: true, total_cost_usd: "50.000000000000", member_cost_usd: "42.000000000000",
+      non_member_cost_usd: "8.000000000000", group_charged_usd: "37.000000000000", members: [{user_id: "alice", cost_usd: "30.000000000000"}, {user_id: "bob", cost_usd: "12.000000000000"}]},
+    {account_id: "claude-a", provider: "anthropic", email_masked: "c***@example.test", in_pool: false, total_cost_usd: "0.000000000000", member_cost_usd: "0.000000000000",
+      non_member_cost_usd: "0.000000000000", group_charged_usd: "0.000000000000", members: []},
+  ], ...extra,
+});
+
+test("the group usage card splits the quota by member and each account by members versus outsiders", () => {
+  const ui = dashboard();
+  ui.context.result = breakdown();
+  ui.run(`renderGroupUsageBreakdown(result, new Date(2026, 10, 6, 12, 0, 0))`);
+  assert.equal(ui.node("group-usage-time").textContent, "数据时间：2026/11/06 12:00:00");
+  const body = ui.node("group-usage-body");
+  const [quota, accounts] = body.querySelectorAll(".share-bar");
+  const quotaSegments = quota.querySelectorAll(".share-bar-segment");
+  assert.deepEqual(quotaSegments.map((node) => node.attributes.title), [
+    "Alice：US$30.00（30.0%）", "bob：US$12.00（12.0%）", "陈卡罗（已移出）：US$5.00（5.0%）", "未归属成员：US$3.00（3.0%）",
+  ]);
+  assert.deepEqual(quotaSegments.map((node) => node.dataset.width), ["30.000", "12.000", "5.000", "3.000"]);
+  assert.match(quota.querySelector(".share-bar-legend").textContent, /剩余额度US\$50\.0050\.0%$/);
+  quotaSegments[0].dispatch("click");
+  assert.equal(quota.querySelector(".share-bar-detail").textContent, "Alice：本期群组支付 US$30.00，占群组额度 30.0%，占已用 60.0%");
+  assert.match(body.textContent, /已用 US\$50\.00 \/ 额度 US\$100\.00（50\.0%） · 剩余 US\$50\.00/);
+
+  const accountSegments = accounts.querySelectorAll(".share-bar-segment");
+  assert.deepEqual(accountSegments.map((node) => node.attributes.title), ["Alice：US$30.00（60.0%）", "bob：US$12.00（24.0%）", "非群组用户：US$8.00（16.0%）"]);
+  assert.equal(accountSegments[2].dataset.tone, "outside");
+  // One user keeps one color in every bar of the card.
+  assert.equal(accountSegments[0].dataset.tone, quotaSegments[0].dataset.tone);
+  assert.equal(accountSegments[1].dataset.tone, quotaSegments[1].dataset.tone);
+  assert.notEqual(quotaSegments[0].dataset.tone, quotaSegments[1].dataset.tone);
+  const cards = body.querySelectorAll(".group-usage-account");
+  assert.match(cards[0].textContent, /^Codex 主力Codex账号池总成本 US\$50\.00 · 群组成员 84\.0% · 非群组用户 16\.0% · 群组支付 US\$37\.00/);
+  assert.match(cards[1].textContent, /^c\*\*\*@example\.testClaude不在账号池 · 本周期群组曾支付本周期暂无用量/);
+
+  const limits = body.querySelectorAll(".group-usage-member-limit");
+  assert.deepEqual(limits.map((row) => row.textContent), [
+    "AliceUS$30.00 / US$40.00", "bobUS$12.00 / US$40.00", "陈卡罗（已移出）US$5.00 / US$40.00", "DaveUS$0.00 / US$40.00",
+  ]);
+  assert.equal(limits[0].querySelector("progress").attributes.value, "75.00");
+
+  const select = ui.node("group-usage-period");
+  const options = select.children.map((option) => option.textContent);
+  assert.equal(options.length, 2);
+  assert.match(options[0], /^2026\/1[01]\/\d{2} \d{2}:\d{2} — 2026\/1[12]\/\d{2} \d{2}:\d{2}（当前）$/);
+  assert.match(options[1], /^2026\/(09|10)\/\d{2} \d{2}:\d{2} — 2026\/1[01]\/\d{2} \d{2}:\d{2}$/);
+  assert.equal(select.value, "p2");
+  assert.equal(select.disabled, false);
+});
+
+test("the group usage card hides member caps without a limit and explains an empty account pool", () => {
+  const ui = dashboard();
+  ui.context.result = breakdown({member_limit_usd: null, accounts: [], data_complete: false, used_usd: "47.000000000000"});
+  ui.run(`renderGroupUsageBreakdown(result)`);
+  const body = ui.node("group-usage-body");
+  assert.equal(body.querySelectorAll(".group-usage-member-limit").length, 0);
+  assert.match(body.textContent, /群组未指定账号池，且本周期没有由群组额度支付的账号请求。/);
+  assert.match(body.textContent, /部分账务历史已清理/);
+  assert.equal(body.querySelectorAll(".share-bar")[0].querySelectorAll(".share-bar-segment").length, 3, "no unattributed part when members add up");
+});
+
+test("users beyond the color slots share one exact 其他成员 segment", () => {
+  const ui = dashboard();
+  const members = Array.from({length: 9}, (_, index) => ({user_id: `u${index}`, username: `user${index}`, current_member: true, group_used_usd: `${9 - index}.000000000001`}));
+  ui.context.result = breakdown({members, used_usd: "45.000000000009", accounts: []});
+  ui.run(`renderGroupUsageBreakdown(result)`);
+  const segments = ui.node("group-usage-body").querySelectorAll(".share-bar")[0].querySelectorAll(".share-bar-segment");
+  assert.equal(segments.length, 7);
+  assert.equal(segments[6].attributes.title, "其他成员（3 人）：US$6.000000000003（6.0%）");
+  assert.equal(segments[6].dataset.tone, "other");
+  assert.equal(new Set(segments.slice(0, 6).map((node) => node.dataset.tone)).size, 6, "six distinct slots");
+});
+
+test("the group usage card loads the chosen period and reports failures beside its data time", async () => {
+  const ui = dashboard();
+  ui.run(`bindGroupUI()`);
+  ui.context.respond = async () => breakdown();
+  ui.run(`managedGroup = {id: "g1", members: []}`);
+  await ui.run(`loadGroupUsageBreakdown()`);
+  assert.equal(ui.calls.at(-1).url, "/admin/groups/g1/usage-breakdown");
+  assert.match(ui.node("group-usage-time").textContent, /^数据时间：/);
+
+  const select = ui.node("group-usage-period");
+  select.value = "p1";
+  select.dispatch("change");
+  await settle();
+  assert.equal(ui.calls.at(-1).url, "/admin/groups/g1/usage-breakdown?period_id=p1");
+  select.value = "p2";
+  select.dispatch("change");
+  await settle();
+  assert.equal(ui.calls.at(-1).url, "/admin/groups/g1/usage-breakdown", "the newest period follows the group");
+
+  ui.context.respond = async () => breakdown({group_id: "other"});
+  await assert.rejects(ui.run(`loadGroupUsageBreakdown()`), /群组用量响应格式无效/);
+  assert.equal(ui.node("group-usage-time").textContent, "数据时间：加载失败");
+  assert.match(ui.node("group-usage-body").textContent, /用量加载失败/);
+  ui.run(`resetGroupManagement()`);
+  assert.equal(ui.node("group-usage-time").textContent, "数据时间：尚未加载");
+  assert.equal(ui.node("group-usage-body").textContent, "选择群组后加载。");
 });

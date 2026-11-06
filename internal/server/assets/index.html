@@ -904,6 +904,14 @@
                 <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑群组</button></div></div>
                 <div class="quota-freshness group-detail-freshness"><time id="group-detail-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="group-detail-refresh" type="button" class="text-button quota-refresh" aria-label="刷新本群组额度">刷新额度</button></div>
                 <div id="group-metrics" class="metrics compact"></div>
+                <section id="group-usage-visual" class="group-usage-visual" aria-labelledby="group-usage-visual-title" aria-busy="false">
+                  <div class="panel-heading"><div><h4 id="group-usage-visual-title">用量可视化</h4><p class="muted">群组额度中各成员的支付占比，以及账号池中群组成员与非群组用户的用量占比。悬停或点击色块查看具体额度。</p></div></div>
+                  <div class="group-usage-visual-tools">
+                    <label>统计周期<select id="group-usage-period"><option value="">当前周期</option></select></label>
+                    <div class="quota-freshness"><time id="group-usage-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="group-usage-refresh" type="button" class="text-button quota-refresh" aria-label="刷新群组用量可视化">刷新</button></div>
+                  </div>
+                  <div id="group-usage-body" class="group-usage-body" aria-live="polite"><p class="muted">选择群组后加载。</p></div>
+                </section>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
                   <form id="group-account-usage-form" class="group-account-usage-form">

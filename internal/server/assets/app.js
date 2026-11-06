@@ -6599,6 +6599,10 @@ let groupUpstreamLoading = false;
 let groupUpstreamSaving = "";
 let groupAccountPeriods = [];
 let groupAccountSelectedPeriods = new Set();
+// The usage chart keeps its last response per group; "" selects the current period.
+let groupUsage = null;
+let groupUsageSequence = 0;
+let groupUsagePeriodID = "";
 // Group list filters live only in page memory and reset with the identity.
 let groupListQuery = "";
 let groupShowArchived = false;
@@ -6641,6 +6645,7 @@ function resetGroupManagement() {
   byId("group-upstream-providers")?.replaceChildren();
   byId("group-account-periods")?.replaceChildren();
   byId("group-account-stats")?.replaceChildren();
+  resetGroupUsage();
   resetGroupAccountUsageForm();
   memberAccountUsage = null;
   memberAccountUsageSequence++;
@@ -6996,7 +7001,10 @@ async function loadGroupDetail(id) {
 }
 
 function renderGroupDetail(group, receivedAt = new Date()) {
-  if (managedGroup?.id !== group.id) groupSelectedUsers.clear();
+  if (managedGroup?.id !== group.id) {
+    groupSelectedUsers.clear();
+    groupUsagePeriodID = "";
+  }
   managedGroup = group;
   setQuotaFreshness("group-detail-time", receivedAt);
   byId("group-detail-name").textContent = group.name;
@@ -7012,6 +7020,8 @@ function renderGroupDetail(group, receivedAt = new Date()) {
   if (typeof fetch === "function") {
     void loadGroupUpstreamAccess(group);
     void loadGroupAccountPeriods(group);
+    // Failures are shown inside the card next to its data time.
+    loadGroupUsageBreakdown(group).catch(() => {});
   }
 }
 
@@ -7222,6 +7232,191 @@ async function loadGroupAccountPeriods(group) {
     periodsHost.replaceChildren(...rows);
     await loadGroupAccountStats(group);
   } catch (error) { periodsHost.replaceChildren(element("p", {className: "muted", text: `周期加载失败：${friendlyError(error)}`})); }
+}
+
+function groupUsageUserName(member) {
+  const name = member?.display_name || member?.username || "未知用户";
+  return member?.current_member === false ? `${name}（已移出）` : name;
+}
+
+// One color per user across every bar of the card. With more users than
+// slots, the six largest keep a color and the rest share a neutral one.
+function groupUsageSlots(result) {
+  const totals = new Map();
+  const add = (id, value) => { if (id) totals.set(id, (totals.get(id) || 0) + Math.max(0, Number(value) || 0)); };
+  for (const member of result.members) add(member.user_id, member.group_used_usd);
+  for (const account of result.accounts) for (const user of account.members || []) add(user.user_id, user.cost_usd);
+  const ranked = [...totals].filter(([, value]) => value > 0).sort((a, b) => b[1] - a[1]).map(([id]) => id);
+  return shareSlots(ranked.length <= shareBarSlotCount ? ranked : ranked.slice(0, shareBarSlotCount - 1));
+}
+
+// Turns [{user_id, amount}] into bar items: users with a slot appear on their
+// own, everyone else is summed exactly into one "其他成员" item.
+function groupUsageItems(entries, slots, names, describe) {
+  const items = [], rest = [];
+  for (const entry of entries) {
+    if (!(Number(entry.amount) > 0)) continue;
+    const label = names.get(entry.user_id) || "未知用户";
+    if (!slots.has(entry.user_id)) { rest.push({...entry, label}); continue; }
+    items.push({key: entry.user_id, label, value: Number(entry.amount), exact: entry.amount, amount: formatUSD(entry.amount),
+      tone: slots.get(entry.user_id), detail: describe?.(label, entry.amount)});
+  }
+  items.sort((a, b) => b.value - a.value);
+  if (rest.length) {
+    const exact = sumDecimals(rest.map((entry) => entry.amount)) || "0";
+    const label = `其他成员（${rest.length} 人）`;
+    items.push({key: "__other_members__", label, value: Number(exact), exact, amount: formatUSD(exact), tone: "other",
+      detail: `${describe ? describe(label, exact) : `${label}：${formatUSD(exact)}`}：${rest.map((entry) => `${entry.label} ${formatUSD(entry.amount)}`).join("、")}`});
+  }
+  return items;
+}
+
+function groupUsageAccountName(account) {
+  return account.alias || account.display_name || account.email_masked || account.account_id || "未知账号";
+}
+
+function groupUsageQuotaBlock(result, slots, names) {
+  const limit = Number(result.limit_usd) || 0;
+  const used = result.used_usd;
+  const ofLimit = (amount) => formatSharePercent(Number(amount), limit);
+  const ofUsed = (amount) => formatSharePercent(Number(amount), Number(used) || 0);
+  const items = groupUsageItems(result.members.map((member) => ({user_id: member.user_id, amount: member.group_used_usd})), slots, names,
+    (label, amount) => `${label}：本期群组支付 ${formatUSD(amount)}，占群组额度 ${ofLimit(amount)}，占已用 ${ofUsed(amount)}`);
+  // Charges settled before member counters existed have no user; keep them
+  // visible so the parts still add up to the group's used amount.
+  const attributed = sumDecimals(result.members.map((member) => member.group_used_usd));
+  const unattributedUnits = attributed == null ? null : decimalUnits(used) - decimalUnits(attributed);
+  if (unattributedUnits != null && unattributedUnits > 0n) {
+    const exact = decimalString(unattributedUnits);
+    items.push({key: "__unattributed__", label: "未归属成员", value: Number(exact), exact, amount: formatUSD(exact), tone: "other",
+      detail: `未归属成员：${formatUSD(exact)}，为成员计数启用前结算的群组费用`});
+  }
+  return element("div", {className: "group-usage-block"},
+    element("div", {className: "group-usage-block-head"}, element("h5", {text: "群组额度构成"}),
+      element("small", {text: `已用 ${formatUSD(used)} / 额度 ${formatUSD(result.limit_usd)}（${ofLimit(used)}） · 剩余 ${formatUSD(result.remaining_usd)}`})),
+    shareBar({label: "群组额度中各成员的支付占比", items, scale: limit, slots,
+      remainder: {label: "剩余额度", amount: formatUSD(result.remaining_usd)}, emptyText: "本周期尚未使用群组额度。"}));
+}
+
+function groupUsageMemberLimits(result, slots) {
+  if (result.member_limit_usd == null) return null;
+  const limit = Number(result.member_limit_usd) || 0;
+  const rows = result.members.filter((member) => member.current_member || Number(member.group_used_usd) > 0).map((member) => {
+    const used = Number(member.group_used_usd) || 0;
+    const ratio = limit > 0 ? Math.min(100, used / limit * 100) : 100;
+    return element("li", {className: "group-usage-member-limit"},
+      element("span", {className: "group-usage-member-name"},
+        element("span", {className: "usage-model-swatch", dataset: {tone: slots.get(member.user_id) || "other"}, attributes: {"aria-hidden": "true"}}),
+        element("span", {text: groupUsageUserName(member)})),
+      element("strong", {text: `${formatUSD(member.group_used_usd)} / ${formatUSD(result.member_limit_usd)}`}),
+      element("progress", {className: "subscription-progress", attributes: {value: ratio.toFixed(2), max: 100, "aria-label": `${groupUsageUserName(member)}本期成员上限已用比例`}}));
+  });
+  return element("div", {className: "group-usage-block"},
+    element("div", {className: "group-usage-block-head"}, element("h5", {text: "成员上限使用"}),
+      element("small", {text: `每位成员本期最多使用群组额度 ${formatUSD(result.member_limit_usd)}`})),
+    rows.length ? element("ul", {className: "group-usage-member-limits"}, ...rows) : element("p", {className: "muted", text: "暂无成员。"}));
+}
+
+function groupUsageAccountsBlock(result, slots, names) {
+  const accounts = result.accounts;
+  const cards = accounts.map((account) => {
+    const total = Number(account.total_cost_usd) || 0;
+    const describe = (label, amount) => `${label}：在此账号本周期成本 ${formatUSD(amount)}，占 ${formatSharePercent(Number(amount), total)}`;
+    const items = groupUsageItems((account.members || []).map((user) => ({user_id: user.user_id, amount: user.cost_usd})), slots, names, describe);
+    if (Number(account.non_member_cost_usd) > 0) {
+      items.push({key: "__outside__", label: "非群组用户", value: Number(account.non_member_cost_usd), exact: account.non_member_cost_usd,
+        amount: formatUSD(account.non_member_cost_usd), tone: "outside", detail: describe("非群组用户", account.non_member_cost_usd)});
+    }
+    const provider = upstreamScopeProviderNames[account.provider] || account.provider;
+    return element("article", {className: "group-usage-account", dataset: {accountId: account.account_id}},
+      element("header", {},
+        element("strong", {text: groupUsageAccountName(account)}),
+        element("span", {className: "badge", text: provider}),
+        element("small", {text: account.in_pool ? "账号池" : "不在账号池 · 本周期群组曾支付"})),
+      element("small", {className: "group-usage-account-summary", text: total > 0
+        ? `总成本 ${formatUSD(account.total_cost_usd)} · 群组成员 ${formatSharePercent(Number(account.member_cost_usd), total)} · 非群组用户 ${formatSharePercent(Number(account.non_member_cost_usd), total)} · 群组支付 ${formatUSD(account.group_charged_usd)}`
+        : "本周期暂无用量"}),
+      shareBar({label: `${groupUsageAccountName(account)}的成员与非群组用户用量占比`, items, slots, emptyText: "本周期暂无用量。"}));
+  });
+  return element("div", {className: "group-usage-block"},
+    element("div", {className: "group-usage-block-head"}, element("h5", {text: "账号池用量构成"}),
+      element("small", {text: "按本周期起止时间统计各账号的已结算成本（含模型倍率），区分群组成员与非群组用户。"})),
+    result.data_complete === false ? element("p", {className: "form-message", text: "部分账务历史已清理，账号统计可能不完整。", dataset: {kind: "error"}}) : null,
+    cards.length ? element("div", {className: "group-usage-accounts"}, ...cards)
+      : element("p", {className: "muted", text: "群组未指定账号池，且本周期没有由群组额度支付的账号请求。"}));
+}
+
+function renderGroupUsagePeriods(result) {
+  const select = byId("group-usage-period");
+  if (!select) return;
+  const periods = Array.isArray(result?.periods) ? result.periods : [];
+  const current = result?.current_period ? result.period?.id : periods[0]?.id;
+  select.replaceChildren(...periods.map((period) => {
+    const option = element("option", {text: `${formatDateTime(period.starts_at)} — ${formatDateTime(period.ends_at)}${period.id === current ? "（当前）" : ""}`});
+    option.value = period.id;
+    option.selected = period.id === result.period?.id;
+    return option;
+  }));
+  if (!periods.length) select.replaceChildren(element("option", {text: "当前周期"}));
+  select.value = result?.period?.id || "";
+  select.disabled = periods.length < 2;
+}
+
+function renderGroupUsageBreakdown(result, receivedAt = new Date()) {
+  const body = byId("group-usage-body");
+  if (!body) return;
+  setQuotaFreshness("group-usage-time", receivedAt);
+  renderGroupUsagePeriods(result);
+  const names = new Map(result.members.map((member) => [member.user_id, groupUsageUserName(member)]));
+  const slots = groupUsageSlots(result);
+  body.replaceChildren(...[
+    element("p", {className: "group-usage-period-label muted", text: result.current_period ? "正在查看当前周期，额度随新请求变化。" : "正在查看历史周期，数据已随周期结束固定。"}),
+    groupUsageQuotaBlock(result, slots, names),
+    groupUsageMemberLimits(result, slots),
+    groupUsageAccountsBlock(result, slots, names),
+  ].filter(Boolean));
+}
+
+async function loadGroupUsageBreakdown(group = managedGroup, periodID = groupUsagePeriodID) {
+  const body = byId("group-usage-body");
+  if (!body || !group?.id) return;
+  const identityCurrent = groupIdentityCurrent();
+  const sequence = ++groupUsageSequence;
+  const current = () => identityCurrent() && sequence === groupUsageSequence && managedGroup?.id === group.id;
+  if (groupUsage?.groupID !== group.id) {
+    groupUsage = null;
+    body.replaceChildren(element("p", {className: "muted", text: "正在加载用量…"}));
+  }
+  byId("group-usage-visual").setAttribute("aria-busy", "true");
+  setQuotaFreshness("group-usage-time", null, {pending: "正在刷新…"});
+  try {
+    const query = periodID ? `?${new URLSearchParams({period_id: periodID})}` : "";
+    const result = await api(`/admin/groups/${encodeURIComponent(group.id)}/usage-breakdown${query}`, undefined, current);
+    if (!current()) return;
+    if (result?.group_id !== group.id || !Array.isArray(result.members) || !Array.isArray(result.accounts)) throw new Error("群组用量响应格式无效。");
+    groupUsage = {groupID: group.id, result, receivedAt: new Date()};
+    renderGroupUsageBreakdown(result, groupUsage.receivedAt);
+  } catch (error) {
+    if (!current()) return;
+    setQuotaFreshness("group-usage-time", null, {pending: "数据时间：加载失败"});
+    body.replaceChildren(element("p", {className: "muted", text: `用量加载失败：${friendlyError(error)}`}));
+    throw error;
+  } finally {
+    if (current()) byId("group-usage-visual").setAttribute("aria-busy", "false");
+  }
+}
+
+function resetGroupUsage() {
+  groupUsageSequence++;
+  groupUsage = null;
+  groupUsagePeriodID = "";
+  setQuotaFreshness("group-usage-time", null);
+  byId("group-usage-body")?.replaceChildren(element("p", {className: "muted", text: "选择群组后加载。"}));
+  const select = byId("group-usage-period");
+  if (select) {
+    select.replaceChildren(element("option", {text: "当前周期"}));
+    select.disabled = true;
+  }
 }
 
 async function loadGroupAccountStats(group) {
@@ -7542,6 +7737,13 @@ function bindGroupUI() {
   byId("group-members-form").addEventListener("submit", (event) => event.preventDefault());
   bindAsync("groups-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
   bindAsync("groups-list-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
+  byId("group-usage-refresh")?.addEventListener("click", (event) => runButton(event.currentTarget, () => loadGroupUsageBreakdown(), "刷新中…"));
+  byId("group-usage-period")?.addEventListener("change", (event) => {
+    const value = event.currentTarget.value;
+    // Periods are newest first; picking the newest follows the group into its next period.
+    groupUsagePeriodID = groupUsage?.result?.periods?.[0]?.id === value ? "" : value;
+    loadGroupUsageBreakdown().catch(() => {});
+  });
   bindAsync("group-detail-refresh", "click", async () => {
     if (!managedGroup?.id) return;
     await loadGroupDetail(managedGroup.id);

@@ -65,6 +65,7 @@ type Server struct {
 	groupRepo               groupRepository
 	groupAccountUsageRepo   groupAccountUsageRepository
 	usageModelRepo          usageModelRepository
+	groupUsageBreakdownRepo groupUsageBreakdownRepository
 	informationRepo         informationRepository
 	browserHandoffRepo      browserHandoffRepository
 	browserHandoffs         *browserHandoffStore
@@ -272,6 +273,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/groups/{id}/account-usage-visibility", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setGroupAccountUsageVisibility)))))
 	s.mux.Handle("GET /admin/groups/{id}/periods", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupPeriods))))
 	s.mux.Handle("GET /admin/groups/{id}/account-stats", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupAccountStats))))
+	s.mux.Handle("GET /admin/groups/{id}/usage-breakdown", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupUsageBreakdownJSON))))
 	s.mux.Handle("GET /admin/groups/{id}/usage-periods", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupPeriods))))
 	s.mux.Handle("GET /admin/groups/{id}/account-statistics", s.requireSession(s.ownerOnly(http.HandlerFunc(s.groupAccountStats))))
 	s.mux.Handle("GET /admin/model-access/models", s.requireSession(s.ownerOnly(http.HandlerFunc(s.modelAccessModels))))

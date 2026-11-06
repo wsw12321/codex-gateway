@@ -1,6 +1,6 @@
 # 额度数据时间、刷新与可视化验证
 
-本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总。
+本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总、群组用量可视化。
 
 ## 额度数据时间与刷新
 
@@ -55,6 +55,47 @@
 账务关联，因此各模型之和等于同区间汇总；最多返回 200 个模型，合计仍覆盖全部模型。
 只读查询，不新增迁移。
 
+## 群组用量可视化（Owner）
+
+“群组额度”详情的指标卡下方新增“用量可视化”卡片，可在最近 24 个周期间切换（默认当前
+周期，选择最新周期时跟随群组进入下一期），旁边标注数据时间与刷新按钮：
+
+- **群组额度构成**：一条线代表本期群组额度，按成员支付金额分色，未用部分为浅色“剩余
+  额度”。已移出群组但本期用过群组额度的成员标注“（已移出）”；若成员计数之和小于群组
+  已用（成员计数启用前结算的费用），差额显示为灰色“未归属成员”。悬停或点击色块显示
+  “本期群组支付、占群组额度、占已用”。
+- **成员上限使用**：设置了单个成员周期上限时，列出每位成员“已用 / 上限”及进度条。
+- **账号池用量构成**：对“指定账号”池中的账号，以及本周期由群组额度支付过的其他账号，
+  按周期起止时间统计已结算成本（`actual_cost_usd`，含模型倍率，与上游账号页一致），
+  每个账号一条线：群组成员各自一色，非群组用户为灰色斜纹（纹理与“其他成员”的纯灰
+  区分，不依赖颜色）。账号卡注明是否在账号池，以及总成本、成员与非群组占比、群组支付。
+  账号池为“全部账号”时不展开全部账号，只显示群组实际支付过的账号。
+
+颜色按用户固定：同一用户在额度条与各账号条中颜色相同。调色板为 7 个分类色（亮/暗两套，
+已用 dataviz 校验器在 `#ffffff` 与 `#14262a` 表面验证相邻色 CVD ΔE ≥ 8.4、正常视觉
+ΔE ≥ 19.3）；超过 7 个用户时，用量最大的 6 人保留颜色，其余合并为“其他成员（N 人）”，
+金额按十进制精确相加。亮色模式下 3 个色块对比度低于 3:1，因此每条线都附带列出姓名、
+金额与占比的图例。
+
+新增 `GET /admin/groups/{id}/usage-breakdown?period_id=…`（Owner；`period_id` 可省略，
+其他查询参数返回 400）。存储层 `GroupUsageBreakdown` 先通过 `GetGroup` 滚动周期，
+成员用量取自 `group_member_usage`（与成员上限计数同源，不受账务清理影响），账号成本
+取自 `billing_ledger_entries`。只读，不新增迁移，不改变计费、权限或选号。响应：
+
+```json
+{"group_id":"…","period":{"id":"…","starts_at":"…","ends_at":"…"},"current_period":true,
+ "limit_usd":"100.000000000000","member_limit_usd":"40.000000000000",
+ "used_usd":"62.400000000000","remaining_usd":"37.600000000000","data_complete":true,
+ "members":[{"user_id":"…","username":"alice","display_name":"Alice","current_member":true,"group_used_usd":"24.100000000000"}],
+ "accounts":[{"account_id":"…","provider":"codex","alias":"团队主账号","in_pool":true,
+   "total_cost_usd":"71.300000000000","member_cost_usd":"52.900000000000",
+   "non_member_cost_usd":"18.400000000000","group_charged_usd":"48.200000000000",
+   "members":[{"user_id":"…","cost_usd":"24.100000000000"}]}],
+ "periods":[{"id":"…","starts_at":"…","ends_at":"…"}]}
+```
+
+非群组用户只返回合计，不列出其身份。
+
 ## 验证
 
 ```sh
@@ -69,7 +110,14 @@ node internal/server/testdata/quota_visualization_browser.cjs   # 需要 Playwri
 TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmode=disable' \
   go test -count=1 -tags=integration -run 'TestSummarizeUsageByModel' ./internal/store
 go test -count=1 -run 'TestUsageModels' ./internal/server
+TEST_DATABASE_URL=… go test -count=1 -tags=integration -run 'TestGroupUsageBreakdown' ./internal/store
+go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
 ```
+
+群组用量集成测试覆盖：已移出成员保留本期用量、非成员只计入合计、周期开始前的成本与
+不在账号池且群组未支付的账号不计入、群组仅支付过的账号标记为不在账号池、新周期从零
+开始且旧周期仍可按 ID 查询、其他群组的周期或未知周期返回 404、非法 ID 返回 400。
+接口单元测试确认成员 403、只接受单个非空 `period_id`、错误映射且不外泄内部信息。
 
 存储集成测试确认按扣款排序、失败与进行中计数、窗口外及其他用户不计入、模型筛选，
 以及各模型合计与 `SummarizeUsageRequests` 一致（精确到 12 位小数）。接口单元测试
@@ -80,7 +128,8 @@ go test -count=1 -run 'TestUsageModels' ./internal/server
 成功/失败三种状态、群组卡片刷新、概览余额单独刷新且身份不一致时报错、群组详情时间
 随重置清空；十进制精确求和；线形图按金额定宽、颜色按实体固定、悬停与点击显示金额、
 超过 7 项合并为“其他”；使用统计默认只读模型汇总、展开时才读一次请求明细、失败时
-标注“加载失败”。浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，并逐页点击刷新
+标注“加载失败”；群组卡片的成员与已移出成员分段、未归属差额、成员上限进度、账号条中
+非群组用户纹理与同一用户同色、超过 7 人合并、周期切换与加载失败。浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，并逐页点击刷新
 按钮确认只读取对应接口。
 
 截图（`docs/screenshots/quota-visualization/`）：
@@ -90,6 +139,7 @@ go test -count=1 -run 'TestUsageModels' ./internal/server
 - `groups-quota-freshness-desktop.png`
 - `upstream-accounts-freshness-desktop.png`
 - `usage-models-desktop.png`、`usage-models-mobile.png`、`usage-details-expanded-desktop.png`
+- `group-usage-visual-desktop.png`、`group-usage-visual-mobile.png`
 
 浏览器脚本以生产环境的 CSP（`style-src 'self'`，无内联样式）提供页面，并把 CSP
 报错视为失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。

@@ -67,6 +67,26 @@ const usageRequests = Array.from({length: 4}, (_, index) => ({request_id: `req-$
   model: ["gpt-5.6", "claude-sonnet-5", "gpt-5.6-mini", "gemini-3-pro"][index], state: "completed", http_status: 200,
   input_tokens: 1200 * (index + 1), output_tokens: 300, device_id: "", api_key_id: "", key_prefix: "cgk_v1_demo"}));
 
+const periodRefs = [{id: "period-2", starts_at: group.period_starts_at, ends_at: group.period_ends_at},
+  {id: "period-1", starts_at: "2026-10-01T00:00:00Z", ends_at: "2026-11-01T00:00:00Z"}];
+const groupBreakdown = {group_id: "research", current_period: true, data_complete: true, period: periodRefs[0], periods: periodRefs,
+  limit_usd: group.limit_usd, member_limit_usd: group.member_limit_usd, used_usd: group.used_usd, remaining_usd: group.remaining_usd,
+  members: [
+    ...members.map(({user_id, username, display_name, used_usd}) => ({user_id, username, display_name, current_member: true, group_used_usd: used_usd})),
+    {user_id: "erin", username: "erin", display_name: "Erin", current_member: false, group_used_usd: "11.000000000000"},
+  ].sort((a, b) => Number(b.group_used_usd) - Number(a.group_used_usd)),
+  accounts: [
+    {account_id: "0123456789abcdef", provider: "codex", alias: "团队主账号", in_pool: true, total_cost_usd: "71.300000000000", member_cost_usd: "52.900000000000",
+      non_member_cost_usd: "18.400000000000", group_charged_usd: "48.200000000000",
+      members: [{user_id: "alice", cost_usd: "24.100000000000"}, {user_id: "bob", cost_usd: "18.300000000000"}, {user_id: "carol", cost_usd: "6.500000000000"}, {user_id: "erin", cost_usd: "4.000000000000"}]},
+    {account_id: "1123456789abcdef", provider: "codex", alias: "团队备用账号", in_pool: true, total_cost_usd: "16.700000000000", member_cost_usd: "6.500000000000",
+      non_member_cost_usd: "10.200000000000", group_charged_usd: "6.500000000000",
+      members: [{user_id: "carol", cost_usd: "2.500000000000"}, {user_id: "erin", cost_usd: "4.000000000000"}]},
+  ]};
+const previousBreakdown = {...groupBreakdown, current_period: false, period: periodRefs[1], used_usd: "91.000000000000", remaining_usd: "9.000000000000",
+  members: groupBreakdown.members.map((member) => ({...member, group_used_usd: member.user_id === "alice" ? "40.000000000000" : member.group_used_usd})), accounts: []};
+const breakdownQueries = [];
+
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
   const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
@@ -123,6 +143,10 @@ async function main() {
       }
       if (url.pathname === "/admin/groups/research/periods") return send({periods: [{id: "period-2", starts_at: group.period_starts_at, ends_at: group.period_ends_at, used_usd: group.used_usd, group_charged_usd: group.used_usd}]});
       if (url.pathname === "/admin/groups/research/account-stats") return send({group_id: "research", accounts: [], data_complete: true});
+      if (url.pathname === "/admin/groups/research/usage-breakdown") {
+        breakdownQueries.push(url.search);
+        return send(url.searchParams.get("period_id") === "period-1" ? previousBreakdown : groupBreakdown);
+      }
       unexpected.push(`${request.method()} ${url.pathname}`);
       return send({error: {type: "invalid_request_error", code: "not_found", message: "未模拟的请求"}}, 404);
     });
@@ -181,8 +205,34 @@ async function main() {
     assert.match(await page.locator("#group-detail-time").textContent(), dataTime);
     await page.locator("#group-detail-refresh").click();
     await page.locator("#groups-message").filter({hasText: "本群组额度已刷新"}).waitFor();
+    await page.waitForFunction(() => document.getElementById("group-usage-time").dataset.state === "ready");
     await noOverflow("groups desktop");
     await capture(".groups-layout", "groups-quota-freshness-desktop.png");
+
+    // Group usage card: members' share of the group quota and of each pooled account.
+    const quotaBar = page.locator("#group-usage-body .share-bar").first();
+    assert.equal(await quotaBar.locator(".share-bar-segment").count(), 4, "members with usage plus the removed member");
+    await quotaBar.locator(".share-bar-segment").first().hover();
+    assert.match(await quotaBar.locator(".share-bar-detail").textContent(), /^Alice：本期群组支付 US\$24\.10，占群组额度 24\.1%，占已用 \d+\.\d%$/);
+    const mainAccount = page.locator('.group-usage-account[data-account-id="0123456789abcdef"]');
+    assert.match(await mainAccount.textContent(), /总成本 US\$71\.30 · 群组成员 74\.2% · 非群组用户 25\.8%/);
+    const outside = mainAccount.locator('.share-bar-segment[data-tone="outside"]');
+    await outside.click();
+    assert.match(await mainAccount.locator(".share-bar-detail").textContent(), /^非群组用户：在此账号本周期成本 US\$18\.40，占 25\.8%$/);
+    const tones = await page.locator("#group-usage-body .share-bar").evaluateAll((bars) => bars.map((bar) => [...bar.querySelectorAll(".share-bar-segment")].map((node) => node.dataset.tone)));
+    assert.equal(tones[1][0], tones[0][0], "Alice keeps one color across bars");
+    await noOverflow("group usage desktop");
+    await capture("#group-usage-visual", "group-usage-visual-desktop.png");
+    await page.setViewportSize({width: 390, height: 844});
+    await noOverflow("group usage mobile");
+    await capture("#group-usage-visual", "group-usage-visual-mobile.png");
+    await page.setViewportSize({width: 1440, height: 1000});
+    await page.locator("#group-usage-period").selectOption("period-1");
+    await page.waitForFunction(() => /历史周期/.test(document.getElementById("group-usage-body").textContent));
+    assert.equal(breakdownQueries.at(-1), "?period_id=period-1");
+    await page.locator("#group-usage-period").selectOption("period-2");
+    await page.waitForFunction(() => /当前周期/.test(document.getElementById("group-usage-body").textContent));
+    assert.equal(breakdownQueries.at(-1), "", "the newest period follows the group");
 
     // Usage: the 24-hour per-model charges come first; the request list is opt-in.
     const usageStart = reads.length;

@@ -4058,7 +4058,11 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
 [data-tone="5"] { --share-color: var(--share-5); }
 [data-tone="6"] { --share-color: var(--share-6); }
 [data-tone="7"] { --share-color: var(--share-7); }
-[data-tone="other"] { --share-color: var(--share-other); }
+[data-tone="other"], [data-tone="outside"] { --share-color: var(--share-other); }
+/* Non-group users get the neutral gray plus a 45° texture, so they never read as "其他成员". */
+.share-bar-segment[data-tone="outside"], .share-bar-segment[data-tone="outside"]:hover, [data-tone="outside"] .share-bar-swatch {
+  background: repeating-linear-gradient(45deg, var(--share-other) 0 3px, color-mix(in srgb, var(--share-other) 35%, transparent) 3px 6px);
+}
 .share-bar { display: grid; gap: .45rem; min-width: 0; margin: 0; }
 .share-bar-track { display: flex; gap: 2px; height: .75rem; overflow: hidden; border-radius: 4px; background: var(--line); }
 .share-bar-segment, .share-bar-segment:hover, .share-bar-segment:disabled {
@@ -4112,6 +4116,31 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
   .usage-models-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .usage-models-metrics article:first-child { grid-column: 1 / -1; }
 }
+
+/* Group usage card: quota composition, member caps and account pool shares. */
+.group-usage-visual { display: grid; gap: .8rem; margin-top: 1rem; padding: 1rem; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.group-usage-visual > .panel-heading { margin: 0; }
+.group-usage-visual > .panel-heading h4 { margin: 0; }
+.group-usage-visual > .panel-heading p { margin: .25rem 0 0; font-size: .8rem; }
+.group-usage-visual-tools { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: .5rem 1rem; }
+.group-usage-visual-tools label { display: grid; gap: .25rem; min-width: min(100%, 18rem); font-size: .82rem; }
+.group-usage-visual-tools .quota-freshness { margin-top: 0; }
+.group-usage-body { display: grid; gap: 1.1rem; min-width: 0; }
+.group-usage-period-label { margin: 0; font-size: .8rem; }
+.group-usage-block { display: grid; gap: .55rem; min-width: 0; }
+.group-usage-block-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .75rem; }
+.group-usage-block-head h5 { margin: 0; font-size: .92rem; }
+.group-usage-block-head small { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+.group-usage-member-limits { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 15rem), 1fr)); gap: .5rem .9rem; margin: 0; padding: 0; list-style: none; }
+.group-usage-member-limit { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .25rem .6rem; font-size: .82rem; }
+.group-usage-member-limit progress { grid-column: 1 / -1; }
+.group-usage-member-limit strong { font-weight: 600; font-variant-numeric: tabular-nums; }
+.group-usage-member-name { display: inline-flex; align-items: center; gap: .4rem; min-width: 0; overflow-wrap: anywhere; }
+.group-usage-accounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: .65rem; }
+.group-usage-account { display: grid; align-content: start; gap: .45rem; min-width: 0; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-soft); }
+.group-usage-account header { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; }
+.group-usage-account header strong { min-width: 0; overflow-wrap: anywhere; }
+.group-usage-account header small, .group-usage-account-summary { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
 
 /* Quota freshness: when the numbers on screen were read, with a refresh beside it. */
 .quota-freshness { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .65rem; min-width: 0; margin-top: .35rem; }
