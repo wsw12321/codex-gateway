@@ -1,0 +1,35 @@
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    working_dir: /workspaces/codex-gateway
+    volumes:
+      - ..:/workspaces/codex-gateway:cached
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/home/vscode/.cache/go-build
+    command: sleep infinity
+    environment:
+      TEST_DATABASE_URL: postgres://gateway:codespaces-test-only@postgres:5432/gateway_test?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: docker.io/library/postgres:17.6-alpine3.22@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    environment:
+      POSTGRES_DB: gateway_test
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: codespaces-test-only
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=scram-sha-256
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=gateway --dbname=gateway_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  go-mod-cache:
+  go-build-cache:
