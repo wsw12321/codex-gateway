@@ -24,14 +24,17 @@ RUN test "$(dpkg --print-architecture)" = amd64 \
 
 FROM ${RUNTIME_IMAGE}
 # Debian now publishes the fixed Expat binary. Require the security updates
-# for Expat, Brotli and jq as well as the inherited Perl package (DLA-4821-1).
+# for Expat, Brotli and jq as well as the inherited Perl package (DLA-4821-1)
+# and APT (CVE-2026-109518, fixed in bookworm-security 2.6.2).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libexpat1 libbrotli1 ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq libjq1 perl-base util-linux \
+    && apt-get install -y --no-install-recommends libexpat1 libbrotli1 ca-certificates dbus-daemon dbus-bin gnome-keyring libsecret-tools libglib2.0-bin libpcre2-8-0 curl jq libjq1 perl-base util-linux apt libapt-pkg6.0 \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libexpat1)" ge '2.5.0-1+deb12u5' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libbrotli1)" ge '1.0.9-2+deb12u1' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' jq)" ge '1.6-2.1+deb12u3' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libjq1)" ge '1.6-2.1+deb12u3' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge '2.6.2' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg6.0)" ge '2.6.2' \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10002 antigravity \
     && useradd --system --no-create-home --uid 10002 --gid 10002 --shell /usr/sbin/nologin antigravity \

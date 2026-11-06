@@ -9,6 +9,9 @@ dpkg --compare-versions "$(dpkg-query -W -f='${Version}' jq)" ge '1.6-2.1+deb12u
 dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libjq1)" ge '1.6-2.1+deb12u3'
 # DLA-4821-1 fixes the Perl package inherited from the locked Debian image.
 dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4'
+# CVE-2026-109518 is fixed in the bookworm-security APT 2.6.2.
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge '2.6.2'
+dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg6.0)" ge '2.6.2'
 
 # Sent over Docker stdin by test-antigravity-image.sh. All fixtures and the fake
 # executable live in private tmpfs; the only persistent mount is the keyring.

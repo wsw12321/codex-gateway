@@ -18,6 +18,13 @@ docker run --rm --network none --read-only --cap-drop ALL \
             printf "%s\n" "perl-base lacks DLA-4821-1 security fixes" >&2
             exit 1
         fi
+        # Reject the vulnerable APT (CVE-2026-109518) inherited from the pinned base image.
+        for package in apt libapt-pkg6.0; do
+            if ! dpkg --compare-versions "$(dpkg-query -W -f="\${Version}" "$package")" ge "2.6.2"; then
+                printf "%s\n" "$package lacks the CVE-2026-109518 security fix" >&2
+                exit 1
+            fi
+        done
         umask 077
         export CLIPROXY_API_KEY_FILE=/run/cliproxy/synthetic-key
         printf "%s\n" AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA > "$CLIPROXY_API_KEY_FILE"

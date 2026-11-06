@@ -4,10 +4,13 @@ ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-20260824-slim@sha256:8820086
 FROM ${RUNTIME_IMAGE} AS runtime-base
 # Keep the reviewed glibc runtime. Netcat powers
 # the TCP probes without placing the internal API key in process arguments.
-# Explicitly upgrade perl-base: the pinned base predates DLA-4821-1.
+# Explicitly upgrade perl-base (DLA-4821-1) and APT (CVE-2026-109518, fixed in
+# bookworm-security 2.6.2): the pinned base predates both security updates.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd perl-base util-linux \
+    && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd perl-base util-linux apt libapt-pkg6.0 \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge '2.6.2' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg6.0)" ge '2.6.2' \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 cliproxy \
     && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \
