@@ -204,6 +204,28 @@ func TestGroupUsageBreakdownPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// The Owner's pool view lists selected Codex and Claude accounts, Codex
+	// first, regardless of the member visibility switch.
+	agy := account(UpstreamProviderAntigravity, "breakdown-agy", "")
+	if _, err := s.SetGroupUpstreamAccounts(ctx, SetGroupUpstreamAccountsParams{BillingWriteParams: write(), GroupID: group.ID,
+		Provider: UpstreamProviderAntigravity, Strategy: "selected", AccountIDs: []string{agy}}); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := s.ListGroupPoolAccounts(ctx, group.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 2 || pool[0] != (GroupPoolAccount{Provider: UpstreamProviderCodex, AccountID: poolCodex, Alias: "Codex 主力"}) ||
+		pool[1].Provider != UpstreamProviderAnthropic || pool[1].AccountID != poolClaude {
+		t.Fatalf("pool accounts = %+v", pool)
+	}
+	if empty, err := s.ListGroupPoolAccounts(ctx, other.ID); err != nil || len(empty) != 0 {
+		t.Fatalf("all-accounts pools = %+v %v", empty, err)
+	}
+	if _, err := s.ListGroupPoolAccounts(ctx, uuid.NewString()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown group err = %v", err)
+	}
 	for name, test := range map[string]struct {
 		group, period string
 		want          error

@@ -4140,6 +4140,9 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 .group-usage-account { display: grid; align-content: start; gap: .45rem; min-width: 0; padding: .75rem; border: 1px solid var(--line); border-radius: .65rem; background: var(--surface-soft); }
 .group-usage-account header { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; }
 .group-usage-account header strong { min-width: 0; overflow-wrap: anywhere; }
+.group-account-quota { padding-top: .9rem; border-top: 1px dashed var(--line); }
+.group-account-quota .quota-freshness, .group-account-quota .billing-account-usage-list { margin-top: 0; }
+.group-account-quota .billing-account-usage-card > small { color: var(--muted); font-size: .78rem; }
 .group-usage-account header small, .group-usage-account-summary { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
 
 /* Quota freshness: when the numbers on screen were read, with a refresh beside it. */

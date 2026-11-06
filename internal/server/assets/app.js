@@ -6603,6 +6603,8 @@ let groupAccountSelectedPeriods = new Set();
 let groupUsage = null;
 let groupUsageSequence = 0;
 let groupUsagePeriodID = "";
+let groupPoolUsage = null;
+let groupPoolUsageSequence = 0;
 // Group list filters live only in page memory and reset with the identity.
 let groupListQuery = "";
 let groupShowArchived = false;
@@ -7022,6 +7024,7 @@ function renderGroupDetail(group, receivedAt = new Date()) {
     void loadGroupAccountPeriods(group);
     // Failures are shown inside the card next to its data time.
     loadGroupUsageBreakdown(group).catch(() => {});
+    loadGroupPoolUsage(group).catch(() => {});
   }
 }
 
@@ -7118,6 +7121,7 @@ async function saveGroupUpstreamAccess(provider, form) {
     }
     Object.assign(groupUpstreamRows.find((row) => row.provider === provider), {mode: result.mode, account_ids: result.account_ids});
     renderGroupAccountUsageEffect();
+    loadGroupPoolUsage().catch(() => {});
     draft.reason = "";
     draft.dirty = false;
     form.querySelector('input[name="reason"]').value = "";
@@ -7406,10 +7410,72 @@ async function loadGroupUsageBreakdown(group = managedGroup, periodID = groupUsa
   }
 }
 
+function groupPoolUsageName(account) {
+  return account.alias || account.display_name || account.email_masked || account.account_id || "未知账号";
+}
+
+// The Owner's card for one pooled account: the member card's 5-hour and
+// weekly bars, named by alias, display name or masked email.
+function groupPoolUsageCard(account) {
+  const cooling = account.cooldown_until && new Date(account.cooldown_until).getTime() > Date.now();
+  const [status, label] = account.error_code ? ["failed", memberAccountUsageErrors[account.error_code] || memberAccountUsageErrors.usage_unavailable]
+    : account.limited ? ["stale", cooling ? `冷却至 ${formatDateTime(account.cooldown_until)}` : "已达限额"] : ["ok", "正常"];
+  const identity = [upstreamScopeProviderNames[account.provider] || account.provider, account.alias || account.display_name ? account.email_masked : ""].filter(Boolean).join(" · ");
+  return element("article", {className: "billing-account-usage-card", dataset: {provider: account.provider, accountId: account.account_id}},
+    element("header", {}, element("strong", {text: groupPoolUsageName(account)}), element("span", {className: "status-badge", text: label, dataset: {status}})),
+    element("small", {className: "muted", text: identity}),
+    ...(account.error_code ? [] : [
+      element("div", {className: "billing-account-usage-windows"},
+        memberAccountUsageWindow("5 小时", account.five_hour), memberAccountUsageWindow("每周", account.seven_day)),
+      element("small", {className: "muted", text: account.source === "observed" ? `观测于 ${formatDataTime(account.updated_at, "暂无观测")}` : `查询于 ${formatDataTime(account.updated_at, "未知时间")}`}),
+    ]));
+}
+
+function renderGroupPoolUsage(result, receivedAt = new Date()) {
+  setQuotaFreshness("group-account-quota-time", receivedAt);
+  const accounts = Array.isArray(result?.accounts) ? result.accounts : [];
+  const list = byId("group-account-quota-list");
+  if (!accounts.length) {
+    list.replaceChildren(element("p", {className: "muted", text: "群组没有为 Codex 或 Claude 指定账号；“全部账号”池与 Antigravity 不展示 5 小时与每周额度。"}));
+    return;
+  }
+  list.replaceChildren(...accounts.map(groupPoolUsageCard),
+    ...(result.truncated ? [element("p", {className: "muted", text: "账号较多，仅显示前 64 个。"})] : []));
+}
+
+async function loadGroupPoolUsage(group = managedGroup) {
+  const list = byId("group-account-quota-list");
+  if (!list || !group?.id) return;
+  const identityCurrent = groupIdentityCurrent();
+  const sequence = ++groupPoolUsageSequence;
+  const current = () => identityCurrent() && sequence === groupPoolUsageSequence && managedGroup?.id === group.id;
+  if (groupPoolUsage?.groupID !== group.id) {
+    groupPoolUsage = null;
+    list.replaceChildren(element("p", {className: "muted", text: "正在读取账号额度…"}));
+  }
+  setQuotaFreshness("group-account-quota-time", null, {pending: "正在刷新…"});
+  try {
+    const result = await api(`/admin/groups/${encodeURIComponent(group.id)}/account-usage`, undefined, current);
+    if (!current()) return;
+    if (result?.group_id !== group.id || !Array.isArray(result.accounts)) throw new Error("账号额度响应格式无效。");
+    groupPoolUsage = {groupID: group.id, result, receivedAt: new Date()};
+    renderGroupPoolUsage(result, groupPoolUsage.receivedAt);
+  } catch (error) {
+    if (!current()) return;
+    setQuotaFreshness("group-account-quota-time", null, {pending: "数据时间：加载失败"});
+    list.replaceChildren(element("p", {className: "muted", text: `账号额度加载失败：${friendlyError(error)}`}));
+    throw error;
+  }
+}
+
 function resetGroupUsage() {
   groupUsageSequence++;
   groupUsage = null;
   groupUsagePeriodID = "";
+  groupPoolUsageSequence++;
+  groupPoolUsage = null;
+  setQuotaFreshness("group-account-quota-time", null);
+  byId("group-account-quota-list")?.replaceChildren();
   setQuotaFreshness("group-usage-time", null);
   byId("group-usage-body")?.replaceChildren(element("p", {className: "muted", text: "选择群组后加载。"}));
   const select = byId("group-usage-period");
@@ -7738,6 +7804,7 @@ function bindGroupUI() {
   bindAsync("groups-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
   bindAsync("groups-list-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
   byId("group-usage-refresh")?.addEventListener("click", (event) => runButton(event.currentTarget, () => loadGroupUsageBreakdown(), "刷新中…"));
+  byId("group-account-quota-refresh")?.addEventListener("click", (event) => runButton(event.currentTarget, () => loadGroupPoolUsage(), "刷新中…"));
   byId("group-usage-period")?.addEventListener("change", (event) => {
     const value = event.currentTarget.value;
     // Periods are newest first; picking the newest follows the group into its next period.

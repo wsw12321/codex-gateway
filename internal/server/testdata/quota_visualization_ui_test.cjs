@@ -418,3 +418,38 @@ test("the group usage card loads the chosen period and reports failures beside i
   assert.equal(ui.node("group-usage-time").textContent, "数据时间：尚未加载");
   assert.equal(ui.node("group-usage-body").textContent, "选择群组后加载。");
 });
+
+const poolUsage = (extra = {}) => ({group_id: "g1", truncated: false, accounts: [
+  {account_id: "codex-a", provider: "codex", alias: "团队主账号", email_masked: "a***@example.test", source: "live", updated_at: "2026-11-06T06:00:05Z", limited: false,
+    five_hour: {used_percent: 38, reset_at: "2026-11-06T09:00:00Z"}, seven_day: {used_percent: 64, reset_at: "2026-11-10T00:00:00Z"}},
+  {account_id: "codex-b", provider: "codex", email_masked: "b***@example.test", error_code: "usage_rate_limited", limited: false},
+  {account_id: "claude-a", provider: "anthropic", display_name: "claude-a", source: "observed", updated_at: "2026-11-06T05:50:00Z", limited: true,
+    cooldown_until: "2099-01-01T00:00:00Z", five_hour: {used_percent: 100, reset_at: "2026-11-06T07:00:00Z"}, seven_day: {used_percent: null}},
+], ...extra});
+
+test("the owner sees each selected account's 5-hour and weekly bars with when they were read", async () => {
+  const ui = dashboard();
+  ui.run(`managedGroup = {id: "g1", members: []}`);
+  ui.context.respond = async () => poolUsage();
+  await ui.run(`loadGroupPoolUsage()`);
+  assert.equal(ui.calls.at(-1).url, "/admin/groups/g1/account-usage");
+  assert.match(ui.node("group-account-quota-time").textContent, /^数据时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/);
+  const cards = ui.node("group-account-quota-list").children;
+  assert.equal(cards.length, 3);
+  assert.match(cards[0].textContent, /^团队主账号正常Codex · a\*\*\*@example\.test5 小时已用 38%重置：.*每周已用 64%重置：.*查询于 \d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:05$/);
+  assert.deepEqual(cards[0].querySelectorAll("progress").map((bar) => bar.attributes.value), ["38", "64"]);
+  assert.equal(cards[1].textContent, "b***@example.test查询过于频繁，请稍后刷新Codex", "failures show a fixed reason and no bars");
+  assert.match(cards[2].textContent, /^claude-a冷却至 .*Claude5 小时已用 100%.*每周未知重置：.*观测于 /);
+  assert.equal(cards[2].querySelectorAll("progress").length, 1, "an unknown window has no bar");
+
+  ui.context.respond = async () => poolUsage({accounts: []});
+  await ui.run(`loadGroupPoolUsage()`);
+  assert.match(ui.node("group-account-quota-list").textContent, /群组没有为 Codex 或 Claude 指定账号/);
+
+  ui.context.respond = async () => { throw new Error("上游超时"); };
+  await assert.rejects(ui.run(`loadGroupPoolUsage()`), /上游超时/);
+  assert.equal(ui.node("group-account-quota-time").textContent, "数据时间：加载失败");
+  assert.match(ui.node("group-account-quota-list").textContent, /账号额度加载失败：上游超时/);
+  ui.run(`resetGroupManagement()`);
+  assert.equal(ui.node("group-account-quota-time").textContent, "数据时间：尚未加载");
+});

@@ -1,6 +1,6 @@
 # 额度数据时间、刷新与可视化验证
 
-本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总、群组用量可视化。
+本记录覆盖管理台额度展示的一组改动：额度数据时间与刷新、使用统计按模型汇总、群组用量可视化、群组指定账号额度。
 
 ## 额度数据时间与刷新
 
@@ -96,6 +96,28 @@
 
 非群组用户只返回合计，不列出其身份。
 
+### 指定账号额度（5 小时 / 每周）
+
+用量卡片底部列出群组“指定账号”的 Codex、Claude 账号池中每个账号的 5 小时与每周已用
+比例（线形进度条）、重置时间、状态（正常、已达限额、冷却至某时、查询失败原因）以及
+“查询于/观测于”时间，旁边是本次读取的数据时间与“刷新额度”。“全部账号”池与
+Antigravity（没有 5 小时/周窗口）不展示。保存账号池后自动重新读取。
+
+新增 `GET /admin/groups/{id}/account-usage`（Owner，不接受查询参数）。与成员的
+`/admin/billing/me/account-usage` 不同，它不受“允许成员查看用量”开关、归档或到期
+影响，并返回账号 ID、别名、名称与脱敏邮箱，便于 Owner 对照账号页：
+
+```json
+{"group_id":"…","truncated":false,"accounts":[{"account_id":"…","provider":"codex",
+  "alias":"团队主账号","email_masked":"a***@example.test","source":"live",
+  "updated_at":"…","limited":false,
+  "five_hour":{"used_percent":38,"reset_at":"…"},"seven_day":{"used_percent":64,"reset_at":"…"}}]}
+```
+
+读取复用成员视图的共享缓存与合并逻辑（`collectAccountUsage`，从 `myAccountUsage`
+提取，行为不变）：Codex 每账号 1 分钟内只向上游查询一次、失败缓存 10 秒，Claude 只读
+CPA 快照；单次最多等待 20 秒，超时读取在后台继续填充缓存。最多 64 个账号。
+
 ## 验证
 
 ```sh
@@ -118,6 +140,9 @@ go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
 不在账号池且群组未支付的账号不计入、群组仅支付过的账号标记为不在账号池、新周期从零
 开始且旧周期仍可按 ID 查询、其他群组的周期或未知周期返回 404、非法 ID 返回 400。
 接口单元测试确认成员 403、只接受单个非空 `period_id`、错误映射且不外泄内部信息。
+`TestGroupPoolAccountUsageIsOwnerOnlyAndNamesAccounts` 确认成员 403、拒绝查询参数、
+返回账号身份与窗口、失败账号只给固定错误码、第二次读取命中缓存；集成测试确认只列出
+“指定账号”的 Codex 与 Claude 账号（Codex 在前），忽略 Antigravity 与“全部账号”池。
 
 存储集成测试确认按扣款排序、失败与进行中计数、窗口外及其他用户不计入、模型筛选，
 以及各模型合计与 `SummarizeUsageRequests` 一致（精确到 12 位小数）。接口单元测试
@@ -129,7 +154,8 @@ go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
 随重置清空；十进制精确求和；线形图按金额定宽、颜色按实体固定、悬停与点击显示金额、
 超过 7 项合并为“其他”；使用统计默认只读模型汇总、展开时才读一次请求明细、失败时
 标注“加载失败”；群组卡片的成员与已移出成员分段、未归属差额、成员上限进度、账号条中
-非群组用户纹理与同一用户同色、超过 7 人合并、周期切换与加载失败。浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，并逐页点击刷新
+非群组用户纹理与同一用户同色、超过 7 人合并、周期切换与加载失败；指定账号额度的
+进度条、失败原因、未知窗口不画条、空账号池说明与重置。浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，并逐页点击刷新
 按钮确认只读取对应接口。
 
 截图（`docs/screenshots/quota-visualization/`）：
@@ -139,7 +165,7 @@ go test -count=1 -run 'TestGroupUsageBreakdown' ./internal/server
 - `groups-quota-freshness-desktop.png`
 - `upstream-accounts-freshness-desktop.png`
 - `usage-models-desktop.png`、`usage-models-mobile.png`、`usage-details-expanded-desktop.png`
-- `group-usage-visual-desktop.png`、`group-usage-visual-mobile.png`
+- `group-usage-visual-desktop.png`、`group-usage-visual-mobile.png`、`group-account-quota-desktop.png`
 
 浏览器脚本以生产环境的 CSP（`style-src 'self'`，无内联样式）提供页面，并把 CSP
 报错视为失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。

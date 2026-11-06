@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"strings"
@@ -179,37 +180,137 @@ func (s *Server) myAccountUsage(w http.ResponseWriter, r *http.Request) {
 	if len(accounts) > maxMyAccountUsageAccounts {
 		accounts = accounts[:maxMyAccountUsageAccounts]
 	}
-	cache := s.accountUsageCache()
-	// Shared reads outlive this request; keep its values for audit attribution.
-	background := context.WithoutCancel(r.Context())
-	entries := make(map[string]*accountUsageEntry, len(accounts))
+	targets := make([]accountUsageTarget, 0, len(accounts))
 	for _, account := range accounts {
-		key := accountUsageKey(account.Provider, account.AccountID)
-		if entries[key] == nil {
-			provider, accountID := account.Provider, account.AccountID
-			entries[key] = cache.lookup(key, func() (accountUsage, string, time.Duration) {
-				return s.readAccountUsage(background, provider, accountID)
-			})
-		}
+		targets = append(targets, accountUsageTarget{provider: account.Provider, accountID: account.AccountID})
 	}
-	wait, cancel := context.WithTimeout(r.Context(), accountUsageWait)
-	defer cancel()
+	results := s.collectAccountUsage(r.Context(), targets)
 	response := myAccountUsageResponse{Groups: []myAccountUsageGroup{}}
 	for _, account := range accounts {
 		item := myAccountUsageAccount{Provider: account.Provider, Alias: account.Alias}
-		entry := entries[accountUsageKey(account.Provider, account.AccountID)]
-		select {
-		case <-entry.ready:
-			item.accountUsage, item.ErrorCode = entry.usage, entry.code
-		case <-wait.Done():
-			// The read continues and fills the cache for the next refresh.
-			item.ErrorCode = "usage_timeout"
-		}
+		result := results[accountUsageKey(account.Provider, account.AccountID)]
+		item.accountUsage, item.ErrorCode = result.usage, result.code
 		if last := len(response.Groups) - 1; last < 0 || response.Groups[last].GroupID != account.GroupID {
 			response.Groups = append(response.Groups, myAccountUsageGroup{GroupID: account.GroupID, GroupName: account.GroupName, Accounts: []myAccountUsageAccount{}})
 		}
 		group := &response.Groups[len(response.Groups)-1]
 		group.Accounts = append(group.Accounts, item)
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+type accountUsageTarget struct{ provider, accountID string }
+
+// accountUsageResult is one account's usage or its fixed error code.
+type accountUsageResult struct {
+	usage accountUsage
+	code  string
+}
+
+// collectAccountUsage starts or joins one shared read per distinct account
+// and waits at most accountUsageWait in total. A read still running when the
+// wait ends reports usage_timeout and keeps filling the cache for the next
+// refresh. Results are keyed by accountUsageKey.
+func (s *Server) collectAccountUsage(ctx context.Context, targets []accountUsageTarget) map[string]accountUsageResult {
+	cache := s.accountUsageCache()
+	// Shared reads outlive this request; keep its values for audit attribution.
+	background := context.WithoutCancel(ctx)
+	entries := make(map[string]*accountUsageEntry, len(targets))
+	for _, target := range targets {
+		key := accountUsageKey(target.provider, target.accountID)
+		if entries[key] == nil {
+			provider, accountID := target.provider, target.accountID
+			entries[key] = cache.lookup(key, func() (accountUsage, string, time.Duration) {
+				return s.readAccountUsage(background, provider, accountID)
+			})
+		}
+	}
+	wait, cancel := context.WithTimeout(ctx, accountUsageWait)
+	defer cancel()
+	results := make(map[string]accountUsageResult, len(entries))
+	for key, entry := range entries {
+		select {
+		case <-entry.ready:
+			results[key] = accountUsageResult{usage: entry.usage, code: entry.code}
+		case <-wait.Done():
+			results[key] = accountUsageResult{code: "usage_timeout"}
+		}
+	}
+	return results
+}
+
+type groupPoolUsageRepository interface {
+	ListGroupPoolAccounts(context.Context, string) ([]store.GroupPoolAccount, error)
+}
+
+func (s *Server) groupPoolUsageStorage() groupPoolUsageRepository {
+	if s.groupPoolUsageRepo != nil {
+		return s.groupPoolUsageRepo
+	}
+	if s.store != nil {
+		return s.store
+	}
+	return nil
+}
+
+// groupPoolUsageAccount is the Owner's view of one pooled account: unlike the
+// member view it names the account, since the Owner manages it.
+type groupPoolUsageAccount struct {
+	AccountID   string `json:"account_id"`
+	Provider    string `json:"provider"`
+	Alias       string `json:"alias,omitempty"`
+	DisplayName string `json:"display_name,omitempty"`
+	EmailMasked string `json:"email_masked,omitempty"`
+	accountUsage
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+type groupPoolUsageResponse struct {
+	GroupID   string                  `json:"group_id"`
+	Accounts  []groupPoolUsageAccount `json:"accounts"`
+	Truncated bool                    `json:"truncated"`
+}
+
+// groupPoolAccountUsage returns the five-hour and weekly windows of every
+// account in the group's selected Codex and Claude pools for the Owner,
+// whether or not members may see them. Reads share the member cache, so an
+// Owner looking never adds upstream requests beyond its TTL.
+func (s *Server) groupPoolAccountUsage(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validGroupID(id) {
+		s.groupStoreError(w, r, "read group pool account usage", store.ErrNotFound)
+		return
+	}
+	if r.URL.RawQuery != "" {
+		s.groupStoreError(w, r, "read group pool account usage", store.ErrInvalid)
+		return
+	}
+	repository := s.groupPoolUsageStorage()
+	if repository == nil {
+		internalError(s, w, r, "read group pool account usage", errors.New("group repository unavailable"))
+		return
+	}
+	accounts, err := repository.ListGroupPoolAccounts(r.Context(), id)
+	if err != nil {
+		s.groupStoreError(w, r, "read group pool account usage", err)
+		return
+	}
+	response := groupPoolUsageResponse{GroupID: id, Accounts: make([]groupPoolUsageAccount, 0, len(accounts))}
+	if len(accounts) > maxMyAccountUsageAccounts {
+		accounts, response.Truncated = accounts[:maxMyAccountUsageAccounts], true
+	}
+	targets := make([]accountUsageTarget, 0, len(accounts))
+	for _, account := range accounts {
+		targets = append(targets, accountUsageTarget{provider: account.Provider, accountID: account.AccountID})
+	}
+	results := s.collectAccountUsage(r.Context(), targets)
+	for _, account := range accounts {
+		result := results[accountUsageKey(account.Provider, account.AccountID)]
+		response.Accounts = append(response.Accounts, groupPoolUsageAccount{
+			AccountID: account.AccountID, Provider: account.Provider, Alias: account.Alias,
+			DisplayName: account.DisplayName, EmailMasked: account.EmailMasked,
+			accountUsage: result.usage, ErrorCode: result.code,
+		})
 	}
 	writeJSON(w, http.StatusOK, response)
 }

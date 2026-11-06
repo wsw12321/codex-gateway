@@ -91,3 +91,50 @@ func (s *Store) ListGroupAccountUsageTargets(ctx context.Context, userID string)
 	}
 	return result, rows.Err()
 }
+
+// GroupPoolAccount is one account of a group's selected Codex or Claude pool,
+// with the identity an Owner may see.
+type GroupPoolAccount struct {
+	Provider    string
+	AccountID   string
+	Alias       string
+	DisplayName string
+	EmailMasked string
+}
+
+// ListGroupPoolAccounts returns the accounts of the group's explicitly
+// selected Codex and Claude pools, Codex first. It ignores the member
+// visibility switch, archive state and expiry: it serves the Owner's view of
+// the pool. "All accounts" pools and Antigravity contribute nothing.
+func (s *Store) ListGroupPoolAccounts(ctx context.Context, groupID string) ([]GroupPoolAccount, error) {
+	gid, err := canonicalGroupID(strings.TrimSpace(groupID))
+	if err != nil {
+		return nil, err
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM user_groups WHERE id=$1)`, gid).Scan(&exists); err != nil {
+		return nil, mapDBError("check group pool accounts group", err)
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ga.provider,a.id,a.alias,a.display_name,a.masked_email
+		FROM group_upstream_account_policies p
+		JOIN group_upstream_accounts ga ON ga.group_id=p.group_id AND ga.provider=p.provider
+		JOIN upstream_accounts a ON a.id=ga.upstream_account_id AND a.provider=ga.provider
+		WHERE p.group_id=$1 AND p.strategy='selected' AND p.provider IN ($2,$3)
+		ORDER BY CASE p.provider WHEN $2 THEN 0 ELSE 1 END,a.id`, gid, UpstreamProviderCodex, UpstreamProviderAnthropic)
+	if err != nil {
+		return nil, mapDBError("list group pool accounts", err)
+	}
+	defer rows.Close()
+	result := []GroupPoolAccount{}
+	for rows.Next() {
+		var value GroupPoolAccount
+		if err := rows.Scan(&value.Provider, &value.AccountID, &value.Alias, &value.DisplayName, &value.EmailMasked); err != nil {
+			return nil, fmt.Errorf("scan group pool account: %w", err)
+		}
+		result = append(result, value)
+	}
+	return result, rows.Err()
+}

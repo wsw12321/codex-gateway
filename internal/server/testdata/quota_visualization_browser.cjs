@@ -86,6 +86,12 @@ const groupBreakdown = {group_id: "research", current_period: true, data_complet
 const previousBreakdown = {...groupBreakdown, current_period: false, period: periodRefs[1], used_usd: "91.000000000000", remaining_usd: "9.000000000000",
   members: groupBreakdown.members.map((member) => ({...member, group_used_usd: member.user_id === "alice" ? "40.000000000000" : member.group_used_usd})), accounts: []};
 const breakdownQueries = [];
+const groupPoolUsage = {group_id: "research", truncated: false, accounts: [
+  {account_id: "0123456789abcdef", provider: "codex", alias: "团队主账号", email_masked: "a***@example.test", source: "live", updated_at: at(-40 * 1000), limited: false,
+    five_hour: {used_percent: 38, reset_at: at(3 * hour)}, seven_day: {used_percent: 64, reset_at: at(100 * hour)}},
+  {account_id: "1123456789abcdef", provider: "codex", alias: "团队备用账号", email_masked: "b***@example.test", source: "live", updated_at: at(-40 * 1000), limited: true,
+    five_hour: {used_percent: 97, reset_at: at(2 * hour)}, seven_day: {used_percent: 41, reset_at: at(80 * hour)}},
+]};
 
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
@@ -143,6 +149,7 @@ async function main() {
       }
       if (url.pathname === "/admin/groups/research/periods") return send({periods: [{id: "period-2", starts_at: group.period_starts_at, ends_at: group.period_ends_at, used_usd: group.used_usd, group_charged_usd: group.used_usd}]});
       if (url.pathname === "/admin/groups/research/account-stats") return send({group_id: "research", accounts: [], data_complete: true});
+      if (url.pathname === "/admin/groups/research/account-usage") return send(groupPoolUsage);
       if (url.pathname === "/admin/groups/research/usage-breakdown") {
         breakdownQueries.push(url.search);
         return send(url.searchParams.get("period_id") === "period-1" ? previousBreakdown : groupBreakdown);
@@ -221,8 +228,14 @@ async function main() {
     assert.match(await mainAccount.locator(".share-bar-detail").textContent(), /^非群组用户：在此账号本周期成本 US\$18\.40，占 25\.8%$/);
     const tones = await page.locator("#group-usage-body .share-bar").evaluateAll((bars) => bars.map((bar) => [...bar.querySelectorAll(".share-bar-segment")].map((node) => node.dataset.tone)));
     assert.equal(tones[1][0], tones[0][0], "Alice keeps one color across bars");
+    // Selected accounts: 5-hour and weekly bars with the time each was read.
+    await page.waitForFunction(() => document.getElementById("group-account-quota-time").dataset.state === "ready");
+    const pooled = page.locator("#group-account-quota-list .billing-account-usage-card");
+    assert.equal(await pooled.count(), 2);
+    assert.match(await pooled.nth(1).textContent(), /^团队备用账号已达限额Codex · b\*\*\*@example\.test5 小时已用 97%.*每周已用 41%.*查询于 2026\/11\/06 13:59:20$/);
     await noOverflow("group usage desktop");
     await capture("#group-usage-visual", "group-usage-visual-desktop.png");
+    await capture("#group-account-quota", "group-account-quota-desktop.png");
     await page.setViewportSize({width: 390, height: 844});
     await noOverflow("group usage mobile");
     await capture("#group-usage-visual", "group-usage-visual-mobile.png");

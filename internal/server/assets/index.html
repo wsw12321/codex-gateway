@@ -911,6 +911,11 @@
                     <div class="quota-freshness"><time id="group-usage-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="group-usage-refresh" type="button" class="text-button quota-refresh" aria-label="刷新群组用量可视化">刷新</button></div>
                   </div>
                   <div id="group-usage-body" class="group-usage-body" aria-live="polite"><p class="muted">选择群组后加载。</p></div>
+                  <div id="group-account-quota" class="group-usage-block group-account-quota" aria-labelledby="group-account-quota-title">
+                    <div class="group-usage-block-head"><h5 id="group-account-quota-title">指定账号额度（5 小时 / 每周）</h5><small>只展示“指定账号”的 Codex、Claude 账号池；Codex 为实时查询（约 1 分钟内复用），Claude 为 CPA 最近观测快照。</small></div>
+                    <div class="quota-freshness"><time id="group-account-quota-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="group-account-quota-refresh" type="button" class="text-button quota-refresh" aria-label="刷新指定账号的 5 小时与每周额度">刷新额度</button></div>
+                    <div id="group-account-quota-list" class="billing-account-usage-list" aria-live="polite"></div>
+                  </div>
                 </section>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
