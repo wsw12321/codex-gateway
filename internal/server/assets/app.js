@@ -46,6 +46,9 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit",
 });
+const dataTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+});
 const integerFormatter = new Intl.NumberFormat("zh-CN", {maximumFractionDigits: 0});
 
 let invitationToken = "";
@@ -58,6 +61,7 @@ let state = null;
 let overviewSummary = null;
 let overviewRequestSequence = 0;
 let overviewSnapshots = {};
+let overviewBillingSequence = 0;
 let noticeTimer = 0;
 let secretAfterClose = null;
 let secretDismissible = false;
@@ -71,6 +75,9 @@ let profileOperation = null;
 let profileRevision = 0;
 let stateRequestSequence = 0;
 let billingDetail = null;
+// The time each billing read arrived; the cash, subscription and group cards
+// all come from that one response and show the same data time.
+let billingDetailReceivedAt = null;
 let billingUsers = [];
 let billingSettings = null;
 let billingPlans = [];
@@ -458,6 +465,48 @@ function formatDate(value, fallback = "—") {
   return Number.isNaN(date.getTime()) ? fallback : dateFormatter.format(date);
 }
 
+// Quota readings carry seconds so two refreshes a minute apart stay distinct.
+function formatDataTime(value, fallback = "未知时间") {
+  if (!value) return fallback;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? fallback : dataTimeFormatter.format(date);
+}
+
+/*
+ * Every quota display shows when its numbers were read and offers a refresh
+ * next to that time, so a stale page is never mistaken for the current
+ * balance. `at` is the moment the response arrived (or the upstream's own
+ * observation time when one is reported); `label` names what the time means.
+ */
+function quotaFreshness({at = null, label = "数据时间", pending = "", onRefresh = null, refreshLabel = "刷新", subject = "额度", className = ""} = {}) {
+  const valid = at && !Number.isNaN(new Date(at).getTime());
+  const time = element("time", {
+    className: "quota-freshness-time",
+    text: pending || (valid ? `${label}：${formatDataTime(at)}` : `${label}：尚未加载`),
+    attributes: {datetime: valid && !pending ? new Date(at).toISOString() : null},
+  });
+  const node = element("div", {className: ["quota-freshness", className].filter(Boolean).join(" "), dataset: {state: pending ? "loading" : valid ? "ready" : "empty"}}, time);
+  if (onRefresh) {
+    const button = element("button", {type: "button", className: "text-button quota-refresh", text: refreshLabel, attributes: {"aria-label": `刷新${subject}`}});
+    button.disabled = Boolean(pending);
+    button.addEventListener("click", () => runButton(button, onRefresh, "刷新中…"));
+    node.append(button);
+  }
+  return node;
+}
+
+// Static freshness rows in index.html keep their button; only the <time>
+// element, which carries the id, changes.
+function setQuotaFreshness(id, at, {label = "数据时间", pending = ""} = {}) {
+  const time = byId(id);
+  if (!time) return;
+  const valid = at && !Number.isNaN(new Date(at).getTime());
+  time.textContent = pending || (valid ? `${label}：${formatDataTime(at)}` : `${label}：尚未加载`);
+  if (valid && !pending) time.setAttribute?.("datetime", new Date(at).toISOString());
+  else time.removeAttribute?.("datetime");
+  if (time.dataset) time.dataset.state = pending ? "loading" : valid ? "ready" : "empty";
+}
+
 function inputDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -746,6 +795,7 @@ function selectUpstreamAccountProvider(section) {
     setLocalMessage(guardForm);
   }
   byId("upstream-account-period").textContent = "—";
+  setQuotaFreshness("upstream-account-list-time", null);
   byId("upstream-allocation-period").textContent = "近 24 小时费用独立于历史统计筛选；费用占比以所有已归因账号费用为分母。";
   byId("upstream-account-list").replaceChildren(emptyState("正在加载账号和本地统计…"));
   byId("upstream-account-unattributed")?.replaceChildren();
@@ -831,7 +881,7 @@ function setBusy(host, busy, label = "处理中…") {
   if (host.matches?.("#billing-recharge-form, #billing-adjustment-form, .billing-subscription-form") ||
       host.closest?.(".billing-subscription-form, .billing-pagination")) syncBillingUserControls();
   if (host.closest?.("#billing-batch-panel")) syncBillingBatchControls();
-  if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh") syncGroupControls();
+  if (host.closest?.("#groups, #group-detail") || host.id === "groups-refresh" || host.id === "groups-list-refresh") syncGroupControls();
   if (host.closest?.('[data-section="information"]')) syncInformationControls();
   if (host.id === "model-identification-form") syncModelIdentificationControls();
   if (host.closest?.('[data-section="invitations"], #invitation-dialog')) syncInvitationControls();
@@ -945,6 +995,8 @@ function handleUnauthorized() {
   state = null;
   overviewSummary = null;
   billingDetail = null;
+  billingDetailReceivedAt = null;
+  renderBillingFreshness();
   billingUsers = [];
   billingSettings = null;
   billingLedgerOffset = 0;
@@ -1576,19 +1628,53 @@ function resetOverview() {
     byId(id).replaceChildren();
     byId(id).setAttribute("aria-busy", "false");
   }
-  for (const id of ["overview-billing-updated", "overview-usage-updated", "overview-global-updated", "overview-alerts-updated", "overview-next-expiry", "metric-global-coverage"]) {
+  overviewBillingSequence++;
+  for (const id of ["overview-billing-updated", "overview-subscriptions-updated", "overview-usage-updated", "overview-global-updated", "overview-alerts-updated", "overview-next-expiry", "metric-global-coverage"]) {
     byId(id).textContent = "—";
   }
 }
 
-function renderOverviewBilling(detail) {
+function renderOverviewBilling(detail, receivedAt = new Date()) {
   byId("overview-cash").textContent = formatUSD(detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd);
   const active = billingSubscriptions(detail).filter(billingSubscriptionEnabled);
   byId("overview-subscriptions").replaceChildren(...(active.length ? active.map((subscription) =>
     element("div", {}, element("span", {text: subscription.name || "订阅"}), element("b", {text: formatUSD(subscription.remaining_usd, "数据不可用")}))) : [element("small", {text: "当前没有有效订阅"})]));
   const expiries = active.map((subscription) => subscription.expires_at).filter(Boolean).sort((a, b) => new Date(a) - new Date(b));
   byId("overview-next-expiry").textContent = expiries.length ? `最近到期：${formatDateTime(expiries[0])}` : active.some((subscription) => subscription.period_count !== 0 && !subscription.expires_at) ? "到期时间：数据不可用" : active.length ? "有效订阅均为无限期" : "可在套餐页面购买订阅";
-  byId("overview-billing-updated").textContent = `本人余额 · ${overviewUpdated()}`;
+  const freshness = `数据时间：${formatDataTime(receivedAt)}`;
+  byId("overview-billing-updated").textContent = freshness;
+  byId("overview-subscriptions-updated").textContent = freshness;
+}
+
+// The balance cards refresh on their own as well as with the whole overview,
+// so a quick re-read never waits for the slower management snapshots.
+async function loadOverviewBilling() {
+  if (loggingOut || !state?.user?.id) return;
+  const sequence = ++overviewBillingSequence;
+  const actorID = state.user.id;
+  const generation = identityGeneration;
+  const current = () => sequence === overviewBillingSequence && generation === identityGeneration && !loggingOut && state?.user?.id === actorID;
+  const container = byId("overview-subscriptions");
+  container.setAttribute("aria-busy", "true");
+  overviewSnapshots.billing = null;
+  byId("overview-billing-updated").textContent = "正在刷新本人额度…";
+  byId("overview-subscriptions-updated").textContent = "正在刷新订阅额度…";
+  try {
+    const result = await api("/admin/billing/me?limit=1&offset=0", undefined, current);
+    if (!current()) return;
+    if (normalizeBillingUser(result?.user || result).id !== actorID) throw new Error("返回的账务身份与当前用户不一致");
+    renderOverviewBilling(result, new Date());
+    overviewSnapshots.billing = result;
+  } catch (error) {
+    if (!current()) return;
+    byId("overview-cash").textContent = "加载失败";
+    byId("overview-subscriptions").textContent = "数据不可用";
+    byId("overview-next-expiry").textContent = "—";
+    byId("overview-billing-updated").textContent = friendlyError(error);
+    byId("overview-subscriptions-updated").textContent = "额度数据不可用，请刷新重试。";
+  } finally {
+    if (current()) container.setAttribute("aria-busy", "false");
+  }
 }
 
 function renderOverviewUsage(result) {
@@ -1662,18 +1748,9 @@ async function loadOverview() {
       if (current()) container.setAttribute("aria-busy", "false");
     }
   };
-  byId("overview-billing-updated").textContent = "正在刷新本人账务…";
   byId("overview-usage-updated").textContent = "正在刷新本人最近 7 天…";
   const tasks = [
-    snapshot("billing", "/admin/billing/me?limit=1&offset=0", "overview-subscriptions", (result) => {
-      if (normalizeBillingUser(result?.user || result).id !== actorID) throw new Error("返回的账务身份与当前用户不一致");
-      renderOverviewBilling(result);
-    }, (error) => {
-      byId("overview-cash").textContent = "加载失败";
-      byId("overview-subscriptions").textContent = "数据不可用";
-      byId("overview-next-expiry").textContent = "—";
-      byId("overview-billing-updated").textContent = friendlyError(error);
-    }),
+    loadOverviewBilling(),
     snapshot("usage", `/admin/usage?${overviewPeriodQuery()}`, "overview-recent-requests", renderOverviewUsage, (error) => {
       overviewSummary = null;
       byId("metric-requests").textContent = "加载失败";
@@ -1728,6 +1805,7 @@ async function openOverviewUsage(model = "") {
 
 function bindOverview() {
   byId("overview-refresh").addEventListener("click", (event) => runButton(event.currentTarget, loadOverview, "刷新中…"));
+  all("[data-overview-billing-refresh]").forEach((button) => button.addEventListener("click", () => runButton(button, loadOverviewBilling, "刷新中…")));
   all("[data-overview-usage]").forEach((button) => button.addEventListener("click", () => runButton(button, () => openOverviewUsage(), "加载中…")));
   all("[data-overview-billing]").forEach((button) => button.addEventListener("click", () => runButton(button, async () => {
     if (!state?.user?.id || loggingOut) return;
@@ -3358,8 +3436,21 @@ function renderBillingAdminValues() {
   syncBillingUserControls();
 }
 
-function renderBillingDetail(detail) {
+function renderBillingFreshness(pending = "") {
+  for (const id of ["billing-cash-time", "billing-subscriptions-time"]) {
+    setQuotaFreshness(id, billingDetailReceivedAt, {pending});
+  }
+}
+
+async function refreshBillingQuota() {
+  if (loggingOut || !state?.user?.id) return;
+  await loadBillingDetail(selectedBillingUserID(), billingLedgerOffset);
+}
+
+function renderBillingDetail(detail, receivedAt = new Date()) {
   billingDetail = detail || {};
+  billingDetailReceivedAt = receivedAt;
+  renderBillingFreshness();
   renderBillingGroup(detail?.group, detail);
   const user = billingUserForDetail(detail);
   const cash = detail?.cash_balance_usd ?? detail?.account?.cash_balance_usd;
@@ -4320,6 +4411,7 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
   const current = () => sequence === billingRequestSequence && !loggingOut && state?.user?.id === actorUserID && selectedBillingUserID() === userID;
   billingDetailLoading = true;
   billingDetail = null;
+  renderBillingFreshness("正在刷新额度…");
   const user = billingUsers.find((item) => item.id === userID) || (state?.user?.id === userID ? state.user : null);
   byId("billing-scope-name").textContent = `${user?.display_name || user?.username || userID} (${user?.username || userID}) · 正在加载`;
   byId("billing-cash-balance").textContent = "—";
@@ -4335,10 +4427,12 @@ async function loadBillingDetail(userID = selectedBillingUserID(), offset = 0) {
     if (!current()) return;
     if (normalizeBillingUser(result?.user || result).id !== userID) throw new Error("返回的账务用户与所选用户不一致，请重新选择重试。");
     billingDetailLoading = false;
-    renderBillingDetail(result);
+    renderBillingDetail(result, new Date());
   } catch (error) {
     if (!current()) return;
     billingDetail = null;
+    billingDetailReceivedAt = null;
+    renderBillingFreshness("数据时间：加载失败");
     byId("billing-scope-name").textContent = `${user?.display_name || user?.username || userID} (${user?.username || userID}) · 加载失败，请重新选择重试`;
     byId("billing-subscriptions").classList.remove("loading");
     byId("billing-subscriptions").setAttribute("aria-busy", "false");
@@ -5160,6 +5254,7 @@ function resumeBillingPlanOperation() {
 function bindBillingPlanUI() {
   byId("billing-plan-create")?.addEventListener("click", () => openBillingPlanEditor());
   byId("billing-plan-resume")?.addEventListener("click", resumeBillingPlanOperation);
+  all("[data-billing-refresh]").forEach((button) => button.addEventListener("click", () => runButton(button, refreshBillingQuota, "刷新中…")));
   byId("billing-plans-refresh")?.addEventListener("click", () => runButton(byId("billing-plans-refresh"), async () => {
     billingPlanMessage();
     if (!await refreshBillingPlanData()) billingPlanMessage("部分账务或套餐数据刷新失败，请重试。");
@@ -6298,6 +6393,8 @@ function resetGroupManagement() {
   byId("group-detail-name").textContent = "—";
   byId("group-detail-period").textContent = "—";
   byId("group-detail-models").textContent = "—";
+  setQuotaFreshness("groups-list-time", null);
+  setQuotaFreshness("group-detail-time", null);
   byId("group-metrics").replaceChildren();
   byId("group-upstream-providers")?.replaceChildren();
   byId("group-account-periods")?.replaceChildren();
@@ -6319,7 +6416,7 @@ function resetGroupManagement() {
     setBusy(form, false);
     setLocalMessage(form);
   }
-  for (const id of ["groups-refresh", "group-members-add", "group-members-remove", "group-members-remove-all", "group-archive"]) setBusy(byId(id), false);
+  for (const id of ["groups-refresh", "groups-list-refresh", "group-detail-refresh", "group-members-add", "group-members-remove", "group-members-remove-all", "group-archive"]) setBusy(byId(id), false);
 }
 
 function groupIdentityCurrent() {
@@ -6420,7 +6517,9 @@ function renderBillingGroup(group, detail = {}) {
   host.replaceChildren();
   if (!groups.length) return;
   const self = state?.user?.id && selectedBillingUserID() === state.user.id;
-  host.append(element("h3", {text: "群组额度"}), element("p", {className: "muted", text: "请求按优先级从上到下选择可用群组；同级按群组 UUID 稳定排序。"}));
+  host.append(element("div", {className: "billing-group-heading"}, element("h3", {text: "群组额度"}),
+    quotaFreshness({at: billingDetailReceivedAt, onRefresh: refreshBillingQuota, subject: "群组额度"})),
+  element("p", {className: "muted", text: "请求按优先级从上到下选择可用群组；同级按群组 UUID 稳定排序。"}));
   for (const group of groups) {
     const memberUsed = group.member_used_usd ?? group.group_member_used_usd ?? detail.group_member_used_usd;
     const memberRemaining = group.member_remaining_usd ?? group.group_member_remaining_usd ?? detail.group_member_remaining_usd;
@@ -6512,7 +6611,7 @@ function memberAccountUsageCard(account, accounts) {
     ...(account.error_code ? [] : [
       element("div", {className: "billing-account-usage-windows"},
         memberAccountUsageWindow("5 小时", account.five_hour), memberAccountUsageWindow("每周", account.seven_day)),
-      element("small", {className: "muted", text: observed ? `观测于 ${formatDateTime(account.updated_at, "暂无观测")}` : `查询于 ${formatDateTime(account.updated_at, "未知时间")}`}),
+      element("small", {className: "muted", text: observed ? `观测于 ${formatDataTime(account.updated_at, "暂无观测")}` : `查询于 ${formatDataTime(account.updated_at, "未知时间")}`}),
     ]),
   );
 }
@@ -6528,12 +6627,10 @@ function renderMemberAccountUsage(errorMessage = "") {
     section.classList.toggle("hidden", !accounts.length);
     if (!accounts.length) { section.replaceChildren(); continue; }
     shown++;
-    const refresh = element("button", {type: "button", className: "secondary", text: "刷新用量"});
-    refresh.addEventListener("click", () => runButton(refresh, () => loadMemberAccountUsage(true), "刷新中…"));
     section.replaceChildren(
       element("div", {className: "billing-account-usage-head"},
-        element("div", {}, element("h5", {text: "账号用量"}), element("small", {className: "muted", text: `更新于 ${formatDateTime(new Date(usage.receivedAt))}`})),
-        refresh),
+        element("h5", {text: "账号用量"}),
+        quotaFreshness({at: new Date(usage.receivedAt), onRefresh: () => loadMemberAccountUsage(true), refreshLabel: "刷新用量", subject: "账号用量"})),
       ...(errorMessage ? [element("p", {className: "form-message", text: errorMessage, dataset: {kind: "error"}, attributes: {role: "alert"}})] : []),
       element("div", {className: "billing-account-usage-list"}, ...accounts.map((account) => memberAccountUsageCard(account, accounts))),
       element("p", {className: "muted billing-account-usage-note", text: "群组管理员开启后可见。Codex 为实时查询，约 1 分钟内复用结果；Claude 为最近一次请求时观测到的快照，没有新请求时不会更新。"}),
@@ -6636,6 +6733,7 @@ async function loadGroups(preferredID = managedGroup?.id || "") {
   // Keep the preferred group unless the archive filter hides it; otherwise
   // fall back to the first group the filtered list shows.
   const id = managedGroups.some((g) => g.id === preferredID && groupListedByArchive(g)) ? preferredID : visibleManagedGroups()[0]?.id;
+  setQuotaFreshness("groups-list-time", new Date());
   renderGroupList();
   if (id) await loadGroupDetail(id);
   else { managedGroup = null; hide("group-detail"); }
@@ -6652,12 +6750,13 @@ async function loadGroupDetail(id) {
   catch (error) { if (!current()) return; throw error; }
   if (sequence !== groupDetailSequence || generation !== identityGeneration || groupOperation || loggingOut || state?.user?.role !== "owner") return;
   if (group?.id !== id || !Array.isArray(group.members)) throw new Error("群组详情响应格式无效。");
-  renderGroupDetail(group);
+  renderGroupDetail(group, new Date());
 }
 
-function renderGroupDetail(group) {
+function renderGroupDetail(group, receivedAt = new Date()) {
   if (managedGroup?.id !== group.id) groupSelectedUsers.clear();
   managedGroup = group;
+  setQuotaFreshness("group-detail-time", receivedAt);
   byId("group-detail-name").textContent = group.name;
   byId("group-detail-period").textContent = `${groupPeriodLabel(group)} · ${groupPeriodProgress(group)} · ${groupPeriodStatus(group)}。本期 ${formatDateTime(group.period_starts_at)} — ${formatDateTime(group.period_ends_at)}；${groupExpiryLabel(group)}`;
   byId("group-detail-models").textContent = groupModelLabel(group);
@@ -6948,6 +7047,8 @@ function syncGroupControls() {
   byId("group-invitation-create").disabled = unavailable;
   byId("group-create").disabled = groupOperation;
   byId("groups-refresh").disabled = groupOperation;
+  byId("groups-list-refresh").disabled = groupOperation;
+  byId("group-detail-refresh").disabled = groupOperation || !managedGroup || loggingOut;
   byId("group-select-visible").disabled = unavailable;
   byId("group-clear-selection").disabled = groupOperation;
   const pools = byId("group-upstream-providers");
@@ -7198,6 +7299,12 @@ function bindGroupUI() {
   byId("group-clear-selection").addEventListener("click", () => { groupSelectedUsers.clear(); renderGroupMembers(); });
   byId("group-members-form").addEventListener("submit", (event) => event.preventDefault());
   bindAsync("groups-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
+  bindAsync("groups-list-refresh", "click", async () => { await loadGroups(); groupMessage("群组用量已刷新。"); }, "刷新中…", groupIdentityCurrent);
+  bindAsync("group-detail-refresh", "click", async () => {
+    if (!managedGroup?.id) return;
+    await loadGroupDetail(managedGroup.id);
+    groupMessage("本群组额度已刷新。");
+  }, "刷新中…", groupIdentityCurrent);
   bindAsync("group-form", "submit", saveGroup, "保存中…", groupIdentityCurrent);
   bindAsync("group-members-add", "click", () => changeGroupMembers("add"), "处理中…", groupIdentityCurrent);
   bindAsync("group-members-remove", "click", () => changeGroupMembers("remove"), "处理中…", groupIdentityCurrent);
@@ -7334,7 +7441,7 @@ function renderUpstreamQuota(account, container, result, receivedAt) {
   container.setAttribute("aria-busy", "false");
   container.replaceChildren(
     element("div", {className: "upstream-quota-result-head"},
-      element("span", {text: `查询于 ${formatDateTime(receivedAt, "未知时间")} · ${String(account.plan || "套餐未知")}`}),
+      element("span", {text: `查询于 ${formatDataTime(receivedAt)} · ${String(account.plan || "套餐未知")}`}),
       freshness,
     ),
     element("div", {className: "upstream-quota-windows"}, ...windows),
@@ -7348,7 +7455,7 @@ function renderAnthropicQuota(container, result) {
   container.dataset.state = "observed";
   container.setAttribute("aria-busy", "false");
   container.replaceChildren(
-    element("p", {text: `观测时间：${formatDateTime(result?.observed_at, "未知")} · 套餐：未知`}),
+    element("p", {text: `观测时间：${formatDataTime(result?.observed_at, "未知")} · 套餐：未知`}),
     element("p", {text: `冷却至：${formatDateTime(result?.cooldown_until, "无观测")}`}),
     element("div", {className: "upstream-quota-windows"}, ...["five_hour", "seven_day"].map(name => {
       const value = windows.find(item => item.window === name);
@@ -7519,6 +7626,8 @@ function syncUpstreamAccountControls() {
   }
   const filter = byId("upstream-account-filter");
   filter.querySelector("button[type=submit]").disabled = Boolean(upstreamAccountOperation) || filter.dataset.busy === "true";
+  const listRefresh = byId("upstream-account-list-refresh");
+  if (listRefresh && listRefresh.dataset.busy !== "true") listRefresh.disabled = Boolean(upstreamAccountOperation) || upstreamAccountListLoading;
 }
 
 async function saveUpstreamConcurrentLimit(account, form) {
@@ -8866,6 +8975,7 @@ async function loadUpstreamAccounts(query, {afterOperation = false} = {}) {
     if (sequence !== upstreamAccountRequestSequence) return;
     if (!result || typeof result !== "object" || !Array.isArray(result.accounts)) throw new Error("上游账号响应格式异常，请稍后重试。");
     renderUpstreamAccounts(result || {}, query);
+    setQuotaFreshness("upstream-account-list-time", new Date());
     if (result.sync_warning) {
       setUpstreamAccountMessage("upstream-account-refresh-message", "上游状态同步失败，当前展示最后已知记录；账号操作已暂停，请重新应用筛选刷新。");
     }
@@ -10132,6 +10242,10 @@ function bindUI() {
     await loadUpstreamAccounts(upstreamAccountQueryFromForm());
     announce("上游账号本地统计已更新。");
   }, "应用中…");
+  bindAsync("upstream-account-list-refresh", "click", async () => {
+    await loadUpstreamAccounts(upstreamAccountQueryFromForm());
+    announce("上游账号列表与状态已刷新。");
+  }, "刷新中…");
   all("[data-disable-subscription]").forEach((button) => button.addEventListener("click", () => {
     runButton(button, () => disableBillingSubscription(button), "停用中…").then(() => {
       if (billingDetail) renderBillingAdminValues(billingDetail);

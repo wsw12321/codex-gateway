@@ -4041,6 +4041,23 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
   #group-detail > .panel-heading > .button-group { flex: 1 1 100%; justify-content: flex-start; }
   #group-detail > .panel-heading > .button-group > button { flex: 1 1 auto; }
 }
+/* Quota freshness: when the numbers on screen were read, with a refresh beside it. */
+.quota-freshness { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .65rem; min-width: 0; margin-top: .35rem; }
+.quota-freshness .quota-freshness-time, .quota-freshness > small { display: inline; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; font-variant-numeric: tabular-nums; }
+.quota-freshness .quota-freshness-time[data-state="loading"] { color: var(--accent-text); }
+.quota-freshness .quota-refresh { min-height: 0; padding: .1rem .15rem; font-size: .8rem; }
+.panel-heading > .quota-freshness { justify-content: flex-end; margin-top: 0; margin-left: auto; }
+.metrics article .quota-freshness { margin-top: .4rem; }
+.billing-group-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem 1rem; }
+.billing-group-heading h3 { margin: 0; }
+.billing-group-heading .quota-freshness { margin-top: 0; }
+.billing-account-usage-head .quota-freshness { margin-top: 0; }
+.group-detail-freshness { margin: .1rem 0 .55rem; }
+.group-list-freshness { margin-top: 0; }
+.upstream-account-freshness { margin: .35rem 0; }
+@media (pointer: coarse) {
+  .quota-freshness .quota-refresh { min-height: 44px; padding-inline: .5rem; }
+}
 @media (pointer: coarse) {
   .theme-switcher button { min-width: 44px; min-height: 44px; }
 }

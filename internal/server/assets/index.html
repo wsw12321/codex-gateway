@@ -219,8 +219,8 @@
             </div>
             <div class="overview-scope"><p>我的账户与最近 7 天</p><div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button><button id="overview-refresh" type="button" class="text-button">刷新概览</button></div></div>
             <div class="metrics overview-personal-metrics">
-              <article><span>现金余额</span><strong id="overview-cash">—</strong><small id="overview-billing-updated">正在加载本人账务…</small><button class="text-button" type="button" data-overview-billing>查看账务</button></article>
-              <article class="overview-subscription-metric"><span>各订阅剩余</span><div id="overview-subscriptions" class="overview-subscription-list" aria-live="polite">—</div><small id="overview-next-expiry">—</small><button class="text-button" type="button" data-overview-billing>查看订阅</button></article>
+              <article><span>现金余额</span><strong id="overview-cash">—</strong><div class="quota-freshness"><small id="overview-billing-updated">正在加载本人账务…</small><button class="text-button quota-refresh" type="button" data-overview-billing-refresh aria-label="刷新现金余额与订阅额度">刷新</button></div><button class="text-button" type="button" data-overview-billing>查看账务</button></article>
+              <article class="overview-subscription-metric"><span>各订阅剩余</span><div id="overview-subscriptions" class="overview-subscription-list" aria-live="polite">—</div><small id="overview-next-expiry">—</small><div class="quota-freshness"><small id="overview-subscriptions-updated">正在加载订阅额度…</small><button class="text-button quota-refresh" type="button" data-overview-billing-refresh aria-label="刷新现金余额与订阅额度">刷新</button></div><button class="text-button" type="button" data-overview-billing>查看订阅</button></article>
               <article><span>最近 7 天请求</span><strong id="metric-requests">—</strong><small>本人用量 · <b id="metric-tokens">—</b> Token</small><button class="text-button" type="button" data-overview-usage>查看使用记录</button></article>
               <article><span>最近 7 天错误率</span><strong id="metric-errors">—</strong><small>失败或 HTTP 4xx/5xx</small><button class="text-button" type="button" data-overview-usage>查看请求结果</button></article>
             </div>
@@ -433,7 +433,7 @@
               <span id="billing-scope-name">—</span>
             </div>
             <div class="metrics billing-metrics">
-              <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
+              <article class="billing-cash-card"><span>现金余额</span><strong id="billing-cash-balance">—</strong><div class="quota-freshness"><time id="billing-cash-time" class="quota-freshness-time">数据时间：尚未加载</time><button type="button" class="text-button quota-refresh" data-billing-refresh aria-label="刷新现金余额">刷新</button></div><div id="billing-cash-source"><div class="billing-source-control"><small class="billing-source-state" data-billing-source-state="cash">等待额度加载</small><button type="button" class="secondary billing-source-button" data-billing-source="cash" disabled>禁用扣费</button></div></div></article>
               <article class="billing-order-card"><span>扣费顺序</span><strong>群组 → 个人来源优先级</strong><small>群组在剩余额度和成员本期上限内优先支付；剩余费用使用允许扣费的个人来源。实际分摊以结算流水为准。</small></article>
             </div>
             <article id="billing-recharge" class="panel site-recharge-card hidden" aria-labelledby="billing-recharge-title">
@@ -452,7 +452,7 @@
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
             <p id="billing-source-message" class="form-message billing-source-message hidden" role="status" aria-live="polite"></p>
             <article class="panel billing-period-panel">
-              <div class="panel-heading"><div><h3>订阅额度</h3></div></div>
+              <div class="panel-heading"><div><h3>订阅额度</h3></div><div class="quota-freshness"><time id="billing-subscriptions-time" class="quota-freshness-time">数据时间：尚未加载</time><button type="button" class="text-button quota-refresh" data-billing-refresh aria-label="刷新订阅额度">刷新</button></div></div>
               <div id="billing-subscriptions" class="subscription-list loading" aria-live="polite" aria-busy="true">正在加载周期额度…</div>
             </article>
 
@@ -871,11 +871,13 @@
                   <label>搜索群组<input id="group-search" type="search" autocomplete="off" placeholder="群组名称或拼音" aria-controls="group-list" aria-describedby="group-list-status"></label>
                   <label class="check-label group-archived-toggle"><input id="group-show-archived" type="checkbox" aria-controls="group-list">显示已归档群组</label>
                   <p id="group-list-status" class="group-list-status" role="status" aria-live="polite"></p>
+                  <div class="quota-freshness group-list-freshness"><time id="groups-list-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="groups-list-refresh" type="button" class="text-button quota-refresh" aria-label="刷新群组列表额度">刷新</button></div>
                 </div>
                 <div id="group-list" class="group-list" aria-label="群组列表" aria-live="polite"><p class="muted">正在加载群组…</p></div>
               </div>
               <article id="group-detail" class="panel hidden">
                 <div class="panel-heading"><div><h3 id="group-detail-name">—</h3><p id="group-detail-period" class="muted">—</p><p id="group-detail-models" class="muted">—</p></div><div class="button-group"><button id="group-invitation-create" type="button" class="secondary">创建邀请码</button><button id="group-edit" type="button" class="secondary">编辑群组</button></div></div>
+                <div class="quota-freshness group-detail-freshness"><time id="group-detail-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="group-detail-refresh" type="button" class="text-button quota-refresh" aria-label="刷新本群组额度">刷新额度</button></div>
                 <div id="group-metrics" class="metrics compact"></div>
                 <section class="group-upstream-settings" aria-labelledby="group-upstream-title">
                   <div class="panel-heading"><div><h4 id="group-upstream-title">群组账号池</h4><p class="muted">仅约束由本群组额度支付的请求；按服务商独立保存，未配置时使用全部账号。</p></div></div>
@@ -1217,6 +1219,7 @@
             <p id="upstream-account-action-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
+            <div class="quota-freshness upstream-account-freshness"><time id="upstream-account-list-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="upstream-account-list-refresh" type="button" class="text-button quota-refresh" aria-label="刷新账号列表、状态与近 24 小时费用">刷新列表</button></div>
             <p id="upstream-account-match-count" class="upstream-account-period muted" aria-live="polite"></p>
             <p id="upstream-concurrency-sampled" class="upstream-account-period muted" aria-live="polite">实时并发暂不可用 · 每 5 秒刷新</p>
             <p id="upstream-account-no-match" class="empty hidden" role="status">没有匹配的账号，试试其他名称或状态。</p>
