@@ -37,6 +37,7 @@ SHADOWSOCKS_PASSWORD_FILE=./deploy/secrets/shadowsocks_password
 
 节点地址支持规范 IPv4 或小写 DNS 域名，端口为 `1..65535` 的十进制数。
 密码算法支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`。
+全局出口暂不支持 `2022-blake3-aes-128-gcm`；SS2022 节点可在“出口服务器”页面按账号绑定。
 密码按 UTF-8 保存、最多 4096 字节，保留空格、引号、反斜杠和 `$` 等特殊字符；
 可带一个文件末尾换行，不允许内嵌换行或 NUL。
 

@@ -56,3 +56,39 @@ type Resolution struct {
 	ProxyURL string `json:"proxy_url,omitempty"`
 	Revision string `json:"revision"`
 }
+
+// ProbeRequest asks the runtime to test one applied node revision by opening
+// a TLS session to an allowed provider host through that node.
+type ProbeRequest struct {
+	NodeID       string `json:"node_id"`
+	NodeRevision int64  `json:"node_revision"`
+	Target       string `json:"target"`
+}
+
+// ProbeResult carries only a stable outcome code and the elapsed time. It
+// never includes addresses, credentials or underlying error text.
+type ProbeResult struct {
+	OK        bool   `json:"ok"`
+	Code      string `json:"code"`
+	LatencyMS int64  `json:"latency_ms"`
+}
+
+const (
+	ProbeOK                  = "ok"
+	ProbeNodeNotApplied      = "node_not_applied"
+	ProbeBusy                = "probe_busy"
+	ProbeListenerUnavailable = "listener_unavailable"
+	ProbeTunnelFailed        = "tunnel_failed"
+	ProbeHandshakeFailed     = "handshake_failed"
+	ProbeCertificateInvalid  = "certificate_invalid"
+	ProbeTimeout             = "timeout"
+)
+
+// KnownProbeCode reports whether code is one the runtime may return.
+func KnownProbeCode(code string) bool {
+	switch code {
+	case ProbeOK, ProbeNodeNotApplied, ProbeBusy, ProbeListenerUnavailable, ProbeTunnelFailed, ProbeHandshakeFailed, ProbeCertificateInvalid, ProbeTimeout:
+		return true
+	}
+	return false
+}

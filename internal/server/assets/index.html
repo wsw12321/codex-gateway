@@ -1104,6 +1104,11 @@
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
             <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为不同的上游账号绑定 Shadowsocks 出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
+            <div class="egress-probe-bar">
+              <label>连通性测试目标<select id="egress-probe-target"><option value="codex">Codex · chatgpt.com</option><option value="antigravity">Antigravity · cloudcode-pa.googleapis.com</option><option value="anthropic">Anthropic · api.anthropic.com</option></select></label>
+              <button id="egress-test-all" type="button" class="secondary">全部测试</button>
+              <small class="muted">经节点与所选目标完成 TLS 握手即为连通，可验证地址、端口、加密方式与密码；不发送模型请求，也不消耗额度。</small>
+            </div>
             <p id="egress-message" class="form-message hidden" role="alert"></p>
             <p id="egress-runtime" class="muted" aria-live="polite">正在加载出口配置…</p>
             <div id="egress-list" class="egress-list" aria-live="polite"></div>
@@ -1251,9 +1256,9 @@
       <label>节点名称<input name="name" required maxlength="80"></label>
       <label>服务器地址<input name="server" required maxlength="253" placeholder="IPv4 或域名" spellcheck="false"></label>
       <label>端口<input name="port" type="number" required min="1" max="65535" step="1"></label>
-      <label>加密方式<select name="cipher"><option value="aes-128-gcm">aes-128-gcm</option><option value="aes-256-gcm">aes-256-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option></select></label>
+      <label>加密方式<select name="cipher"><option value="aes-128-gcm">aes-128-gcm</option><option value="aes-256-gcm">aes-256-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option></select></label>
       <label>密码<input name="password" type="password" maxlength="4096" autocomplete="new-password"><small id="egress-password-help">新增节点需要填写密码。</small></label>
-      <label class="checkbox-label"><input name="udp" type="checkbox">允许 UDP</label>
+      <label class="check-label"><input name="udp" type="checkbox">允许 UDP</label>
       <p class="muted">当前模型接口通过 TCP 连接；UDP 选项保存为节点能力。</p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="submit">保存节点</button><button type="button" class="secondary" data-close>取消</button></div>

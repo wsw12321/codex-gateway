@@ -3,11 +3,18 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -384,5 +391,242 @@ func TestConfigurationUpdateKeepsActiveTunnelAndRejectsOldRoutes(t *testing.T) {
 	r.prune(context.Background())
 	if r.nodes[nodeKey("node-one", 1)] != nil {
 		t.Fatal("did not drain unused revision")
+	}
+}
+
+const ss2022Key = "AAECAwQFBgcICQoLDA0ODw=="
+
+func TestSS2022NodesRequireBase64KeysBeforeMihomo(t *testing.T) {
+	c := &fixtureController{}
+	r := newRuntime(fixtureKey, c)
+	snapshot := fixtureSnapshot(1)
+	snapshot.Nodes[0].Cipher = egress.SS2022AES128GCM
+	snapshot.Nodes[0].Password = ss2022Key + ":EBESExQVFhcYGRobHB0eHw=="
+	if err := r.install(context.Background(), snapshot); err != nil {
+		t.Fatalf("valid SS2022 node rejected: %v", err)
+	}
+	var configuration struct {
+		Proxies []map[string]any `json:"proxies"`
+	}
+	if json.Unmarshal(c.configurations[len(c.configurations)-1], &configuration) != nil || configuration.Proxies[0]["cipher"] != egress.SS2022AES128GCM || configuration.Proxies[0]["password"] != snapshot.Nodes[0].Password {
+		t.Fatal("SS2022 cipher or key was not passed to Mihomo literally")
+	}
+	applied := len(c.configurations)
+	for _, password := range []string{"plain password", "AAECAwQFBgcICQoLDA0ODw", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", ss2022Key + ":"} {
+		bad := fixtureSnapshot(2)
+		bad.Nodes[0].Cipher = egress.SS2022AES128GCM
+		bad.Nodes[0].Password = password
+		if r.install(context.Background(), bad) == nil {
+			t.Errorf("accepted SS2022 key %q", password)
+		}
+	}
+	if len(c.configurations) != applied || r.status.AppliedVersion != 1 || !r.status.Ready {
+		t.Fatal("malformed SS2022 key reached Mihomo or disturbed the applied configuration")
+	}
+	for _, cipher := range []string{"2022-blake3-aes-256-gcm", "none", "rc4-md5"} {
+		bad := fixtureSnapshot(2)
+		bad.Nodes[0].Cipher = cipher
+		if r.install(context.Background(), bad) == nil {
+			t.Errorf("accepted cipher %q", cipher)
+		}
+	}
+}
+
+// providerTLS serves a certificate for chatgpt.com, standing in for the
+// provider reached through an SS exit.
+func providerTLS(t *testing.T) (string, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "chatgpt.com"}, DNSNames: []string{"chatgpt.com"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, BasicConstraintsValid: true, IsCA: true}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(certificate)
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
+				_ = connection.(*tls.Conn).Handshake()
+				_, _ = io.Copy(io.Discard, connection)
+			}()
+		}
+	}()
+	return listener.Addr().String(), roots
+}
+
+// fakeListener imitates Mihomo's HTTP listener: it acknowledges CONNECT
+// before dialing, then behaves as mode says.
+func fakeListener(t *testing.T, mode, upstream string, targets chan<- string) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer connection.Close()
+				reader := bufio.NewReader(connection)
+				request, err := http.ReadRequest(reader)
+				if err != nil {
+					return
+				}
+				if targets != nil {
+					targets <- request.Method + " " + request.RequestURI
+				}
+				if mode == "reject" {
+					_, _ = io.WriteString(connection, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+					return
+				}
+				_, _ = io.WriteString(connection, "HTTP/1.1 200 Connection established\r\n\r\n")
+				switch mode {
+				case "close": // wrong SS password or unreachable SS server
+					return
+				case "hang":
+					_, _ = io.Copy(io.Discard, reader)
+					return
+				}
+				peer, err := net.Dial("tcp", upstream)
+				if err != nil {
+					return
+				}
+				defer peer.Close()
+				go func() { _, _ = io.Copy(peer, reader); peer.Close() }()
+				_, _ = io.Copy(connection, peer)
+			}()
+		}
+	}()
+	return listener.Addr().(*net.TCPAddr).Port
+}
+
+func probeRequest(t *testing.T, server *httptest.Server, credential string, body string) (int, egress.ProbeResult, string) {
+	t.Helper()
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/probe", strings.NewReader(body))
+	request.Header.Set("Authorization", credential)
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	raw, _ := io.ReadAll(response.Body)
+	var result egress.ProbeResult
+	if response.StatusCode == 200 && json.Unmarshal(raw, &result) != nil {
+		t.Fatalf("invalid probe result %s", raw)
+	}
+	return response.StatusCode, result, string(raw)
+}
+
+func TestProbeCompletesTLSThroughAppliedNodeOnly(t *testing.T) {
+	upstream, roots := providerTLS(t)
+	r := newRuntime(fixtureKey, &fixtureController{})
+	r.probeRoots = roots
+	r.probeTimeout = 2 * time.Second
+	snapshot := fixtureSnapshot(1)
+	if err := r.install(context.Background(), snapshot); err != nil {
+		t.Fatal(err)
+	}
+	node := r.nodes[nodeKey("node-one", 1)]
+	targets := make(chan string, 8)
+	server := httptest.NewServer(r.controlHandler())
+	defer server.Close()
+	auth := "Bearer " + fixtureKey
+	body := `{"node_id":"node-one","node_revision":1,"target":"chatgpt.com"}`
+
+	node.port = fakeListener(t, "forward", upstream, targets)
+	status, result, raw := probeRequest(t, server, auth, body)
+	if status != 200 || !result.OK || result.Code != egress.ProbeOK || result.LatencyMS < 0 {
+		t.Fatalf("healthy node failed: %d %s", status, raw)
+	}
+	if got := <-targets; got != "CONNECT chatgpt.com:443" {
+		t.Fatalf("probe requested %q", got)
+	}
+	for _, secret := range []string{fixtureKey, snapshot.Nodes[0].Password, snapshot.Nodes[0].Server, snapshot.Routes[0].Token} {
+		if strings.Contains(raw, secret) {
+			t.Fatal("probe result exposed private configuration")
+		}
+	}
+
+	r.probeRoots = x509.NewCertPool()
+	if _, result, _ = probeRequest(t, server, auth, body); result.OK || result.Code != egress.ProbeCertificateInvalid {
+		t.Fatalf("untrusted certificate reported %+v", result)
+	}
+	r.probeRoots = roots
+	for mode, want := range map[string]string{"close": egress.ProbeHandshakeFailed, "reject": egress.ProbeTunnelFailed} {
+		node.port = fakeListener(t, mode, upstream, nil)
+		if _, result, _ = probeRequest(t, server, auth, body); result.OK || result.Code != want {
+			t.Fatalf("%s listener reported %+v, want %s", mode, result, want)
+		}
+	}
+	r.probeTimeout = 200 * time.Millisecond
+	node.port = fakeListener(t, "hang", upstream, nil)
+	if _, result, _ = probeRequest(t, server, auth, body); result.OK || result.Code != egress.ProbeTimeout {
+		t.Fatalf("stalled node reported %+v", result)
+	}
+	closed, _ := net.Listen("tcp", "127.0.0.1:0")
+	node.port = closed.Addr().(*net.TCPAddr).Port
+	closed.Close()
+	if _, result, _ = probeRequest(t, server, auth, body); result.OK || result.Code != egress.ProbeListenerUnavailable {
+		t.Fatalf("missing listener reported %+v", result)
+	}
+
+	if _, result, _ = probeRequest(t, server, auth, `{"node_id":"node-one","node_revision":2,"target":"chatgpt.com"}`); result.OK || result.Code != egress.ProbeNodeNotApplied {
+		t.Fatalf("unapplied revision reported %+v", result)
+	}
+	for i := 0; i < maxConcurrentProbes; i++ {
+		r.probeSlots <- struct{}{}
+	}
+	if _, result, _ = probeRequest(t, server, auth, body); result.OK || result.Code != egress.ProbeBusy {
+		t.Fatalf("saturated probes reported %+v", result)
+	}
+	for i := 0; i < maxConcurrentProbes; i++ {
+		<-r.probeSlots
+	}
+	r.mu.Lock()
+	active := node.active
+	r.mu.Unlock()
+	if active != 0 {
+		t.Fatal("probe retained its node revision")
+	}
+
+	for _, invalid := range []string{
+		`{"node_id":"node-one","node_revision":1,"target":"evil.invalid"}`,
+		`{"node_id":"node-one","node_revision":1,"target":"127.0.0.1"}`,
+		`{"node_id":"node-one","node_revision":1,"target":"chatgpt.com:80"}`,
+		`{"node_id":"node-one","node_revision":1,"target":"CHATGPT.COM"}`,
+		`{"node_id":"../node","node_revision":1,"target":"chatgpt.com"}`,
+		`{"node_id":"node-one","node_revision":0,"target":"chatgpt.com"}`,
+		`{"node_id":"node-one","node_revision":1,"target":"chatgpt.com","port":8443}`,
+		body + body,
+	} {
+		if status, _, _ := probeRequest(t, server, auth, invalid); status != 400 {
+			t.Errorf("accepted probe %s: %d", invalid, status)
+		}
+	}
+	if status, _, _ := probeRequest(t, server, "Bearer wrong", body); status != 401 {
+		t.Fatal("unauthenticated probe accepted")
 	}
 }

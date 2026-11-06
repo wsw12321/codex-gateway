@@ -19,6 +19,8 @@ from relay_image import ROOT, ALL_HOSTS, command, eventually
 
 KEY = "synthetic-account-control-key-not-production-0123456789"
 PASSWORD = "synthetic SS: # $ ' \" \\ 中文"
+# Shadowsocks 2022 takes Base64 pre-shared keys; this one is synthetic.
+SS2022_KEY = "AAECAwQFBgcICQoLDA0ODw=="
 FIXTURE = "/fixture/account_egress_fixture.pl"
 
 
@@ -34,16 +36,19 @@ def snapshot(version, password=PASSWORD):
          "cipher": "aes-128-gcm", "password": password, "udp": True},
         {"id": "node-b", "revision": 1, "server": "127.0.0.5", "port": 24020,
          "cipher": "chacha20-ietf-poly1305", "password": PASSWORD, "udp": False},
+        {"id": "node-c", "revision": 1, "server": "127.0.0.5", "port": 24021,
+         "cipher": "2022-blake3-aes-128-gcm", "password": SS2022_KEY, "udp": False},
     ], "routes": [route(f"account-a-revision-{version}", "node-a", version),
                   route("account-b-revision-1", "node-b", 1),
-                  route(f"shared-account-revision-{version}", "node-a", version)]}
+                  route(f"shared-account-revision-{version}", "node-a", version),
+                  route("account-c-revision-1", "node-c", 1)]}
 
 
 class AccountSandbox:
     def __init__(self, images, directory, helper):
         self.images, self.directory, self.helper = images, directory, helper
         self.name = "account-egress-test-" + uuid.uuid4().hex[:10]
-        self.router, self.server_a, self.server_b = (self.name + suffix for suffix in ("-router", "-a", "-b"))
+        self.router, self.server_a, self.server_b, self.server_c = (self.name + suffix for suffix in ("-router", "-a", "-b", "-c"))
         self.containers = []
 
     def docker(self, *args, **kwargs):
@@ -72,10 +77,11 @@ class AccountSandbox:
             self.docker("run", "--rm", "--network", "container:" + self.name, "--read-only", "--cap-drop", "ALL",
                         "--cap-add", "NET_ADMIN", "--security-opt", "no-new-privileges:true", "--user", "0:0",
                         "--entrypoint", "/bin/sh", self.images["RUNTIME_IMAGE"], "-ec", setup)
-            for label, address in (("A", "127.0.0.6"), ("B", "127.0.0.7")):
+            for label, address in (("A", "127.0.0.6"), ("B", "127.0.0.7"), ("C", "127.0.0.8")):
                 self.docker("exec", "-d", self.name, "perl", FIXTURE, "serve", label, address)
             self.start_server(self.server_a, "server-a.json")
             self.start_server(self.server_b, "server-b.json")
+            self.start_server(self.server_c, "server-c.json")
             self.docker("run", "-d", "--name", self.router, "--network", "container:" + self.name,
                         "--read-only", "--cap-drop", "ALL", "--user", f"10004:{os.getgid()}",
                         "--security-opt", "no-new-privileges:true",
@@ -123,6 +129,7 @@ class AccountSandbox:
             eventually(lambda: "EXIT_A" in self.probe(1, 0, "A", check=False).stdout, f"A route with global {mode}")
             assert "EXIT_B" in self.probe(1, 1, "B").stdout
             assert "EXIT_A" in self.probe(1, 2, "A").stdout
+            assert "EXIT_C" in self.probe(1, 3, "C").stdout
         for mode in ("bad-token", "missing-token", "bad-host"):
             result = self.probe(1, 0, "A", mode)
             assert not result.stdout.startswith("200\n"), result.stdout
@@ -140,6 +147,7 @@ class AccountSandbox:
         self.apply(3)
         assert "BLOCKED" in self.probe(3, 0, "A", "reject-tunnel").stdout
         assert "EXIT_B" in self.probe(3, 1, "B").stdout
+        assert "EXIT_C" in self.probe(3, 3, "C").stdout
         before = json.loads(self.fixture("control", "/status", "GET").stdout.split("\n", 1)[1])
         self.docker("restart", "--time", "1", self.router)
         eventually(lambda: self.fixture("control", "/status", "GET", check=False).stdout.startswith("200\n"), "runtime restarted")
@@ -151,14 +159,14 @@ class AccountSandbox:
         self.docker("stop", "--time", "1", self.server_b)
         assert "BLOCKED" in self.probe(3, 1, "B", "reject-tunnel").stdout
         logs = self.docker("logs", self.router).stdout + self.docker("logs", self.router).stderr
-        assert KEY not in logs and PASSWORD not in logs
+        assert KEY not in logs and PASSWORD not in logs and SS2022_KEY not in logs
 
     def __exit__(self, kind, value, traceback):
         if kind and self.name in self.containers:
             print(self.contents("/var/log/squid/cache.log"), file=sys.stderr)
             if self.router in self.containers:
                 logs = self.docker("logs", self.router, check=False)
-                print((logs.stdout + logs.stderr).replace(KEY, "<redacted>").replace(PASSWORD, "<redacted>"), file=sys.stderr)
+                print((logs.stdout + logs.stderr).replace(KEY, "<redacted>").replace(PASSWORD, "<redacted>").replace(SS2022_KEY, "<redacted>"), file=sys.stderr)
         for name in reversed(self.containers):
             self.docker("rm", "-f", name, check=False)
 
@@ -182,9 +190,9 @@ def run(helper=None):
         config = config.replace("http_port 3128", "http_port 127.0.0.1:3128")
         config += "\ntcp_outgoing_address 172.28.60.2 account_route\nconnect_timeout 2 seconds\nforward_timeout 5 seconds\npeer_connect_timeout 1 seconds\ndead_peer_timeout 1 seconds\n"
         (directory / "squid.conf").write_text(config)
-        for label, target, port, cipher in (("a", "127.0.0.6", 24019, "aes-128-gcm"), ("b", "127.0.0.7", 24020, "chacha20-ietf-poly1305")):
+        for label, target, port, cipher, secret in (("a", "127.0.0.6", 24019, "aes-128-gcm", PASSWORD), ("b", "127.0.0.7", 24020, "chacha20-ietf-poly1305", PASSWORD), ("c", "127.0.0.8", 24021, "2022-blake3-aes-128-gcm", SS2022_KEY)):
             native = {"mode": "rule", "log-level": "silent", "ipv6": False,
-                      "listeners": [{"name": f"server-{label}", "type": "shadowsocks", "listen": "127.0.0.5", "port": port, "cipher": cipher, "password": PASSWORD, "udp": True}],
+                      "listeners": [{"name": f"server-{label}", "type": "shadowsocks", "listen": "127.0.0.5", "port": port, "cipher": cipher, "password": secret, "udp": True}],
                       "hosts": {host: target for host in ALL_HOSTS}, "rules": ["MATCH,DIRECT"]}
             (directory / f"server-{label}.json").write_text(json.dumps(native))
         for version in (1, 2, 3):
@@ -195,7 +203,7 @@ def run(helper=None):
         (directory / "key").chmod(0o640)
         with AccountSandbox(images, directory, helper) as sandbox:
             sandbox.checks()
-    print("Two real SS exits, shared nodes, global mode independence, authenticated routing, hot stream updates, restart recovery and failure without fallback passed.", flush=True)
+    print("Three real SS exits (including SS2022), shared nodes, global mode independence, authenticated routing, hot stream updates, restart recovery and failure without fallback passed.", flush=True)
 
 
 if __name__ == "__main__":

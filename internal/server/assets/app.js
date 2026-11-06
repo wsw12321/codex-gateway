@@ -142,6 +142,22 @@ let egressSequence = 0;
 let egressDraftID = null;
 let egressOperation = null;
 let egressPollTimer = 0;
+let egressListing = null;
+// Connectivity results live only in this page, keyed by node ID and tied to
+// the node revision that was tested.
+const egressProbes = new Map();
+const egressProbeTargets = {codex: "chatgpt.com", antigravity: "cloudcode-pa.googleapis.com", anthropic: "api.anthropic.com"};
+const egressProbeConcurrency = 3;
+const egressSS2022Cipher = "2022-blake3-aes-128-gcm";
+const egressProbeMessages = {
+  node_not_applied: "节点配置尚未应用，请稍后重试。",
+  probe_busy: "同时进行的测试过多，请稍后重试。",
+  listener_unavailable: "出口服务的本地监听不可用，请检查 account-egress 运行状态。",
+  tunnel_failed: "出口服务未能建立测试隧道。",
+  handshake_failed: "未能与目标完成 TLS 握手。请检查服务器地址、端口、加密方式和密码，或确认该节点可以访问目标。",
+  certificate_invalid: "目标证书校验失败，节点出口可能拦截或篡改了 TLS 连接。",
+  timeout: "测试超时，节点无响应或网络延迟过高。",
+};
 let siteContent = null;
 let siteContentSequence = 0;
 let siteSettingsResult = null;
@@ -8128,6 +8144,8 @@ function resetEgressServers() {
   egressLoaded = false;
   egressOperation = null;
   egressDraftID = null;
+  egressListing = null;
+  egressProbes.clear();
   const form = byId("egress-form");
   if (form) form.reset();
   const dialog = byId("egress-dialog");
@@ -8155,6 +8173,8 @@ async function loadEgressServers() {
   if (!Array.isArray(result?.servers)) throw new Error("出口服务器响应格式异常。");
   egressServers = result.servers;
   egressLoaded = true;
+  egressListing = result;
+  for (const id of egressProbes.keys()) if (!egressServers.some((node) => node.id === id)) egressProbes.delete(id);
   renderEgressServers(result);
   for (const select of all(".upstream-egress-select")) populateEgressSelect(select, select.value);
   syncUpstreamAccountControls();
@@ -8166,15 +8186,80 @@ async function loadEgressServers() {
   }
 }
 
+function egressNodeApplied(node, result = egressListing) {
+  const runtime = result?.runtime || {};
+  return Boolean(runtime.ready && (runtime.node_revisions?.[node.id] === node.revision || runtime.applied_version === result.version));
+}
+
+function egressProbeTarget() {
+  const value = byId("egress-probe-target")?.value;
+  return Object.hasOwn(egressProbeTargets, value) ? value : "codex";
+}
+
+function egressProbeStatus(node) {
+  const probe = egressProbes.get(node.id);
+  if (!probe) return null;
+  const host = egressProbeTargets[probe.target] || probe.target;
+  if (probe.revision !== node.revision) return {kind: "stale", text: "节点配置已变更，请重新测试。"};
+  if (probe.state === "testing") return {kind: "pending", text: `正在测试 ${host}…`};
+  const when = formatDateTime(probe.testedAt, "");
+  if (probe.ok) {
+    const latency = Number.isFinite(probe.latency) && probe.latency > 0 ? ` · ${formatInteger(probe.latency)} ms` : "";
+    return {kind: "ok", text: `连通正常 · ${host}${latency}${when ? ` · ${when}` : ""}`};
+  }
+  return {kind: "error", text: `连通失败 · ${host}：${probe.message || egressProbeMessages[probe.code] || "测试未通过。"}`};
+}
+
+async function testEgressServer(node, target = egressProbeTarget()) {
+  if (loggingOut || state?.user?.role !== "owner" || egressProbes.get(node.id)?.state === "testing") return;
+  const currentIdentity = egressIdentityCurrent();
+  const probe = {state: "testing", revision: node.revision, target};
+  const current = () => currentIdentity() && egressProbes.get(node.id) === probe;
+  egressProbes.set(node.id, probe);
+  if (egressListing) renderEgressServers(egressListing);
+  try {
+    const result = await api(`/admin/egress-servers/${encodeURIComponent(node.id)}/test`, {method: "POST", body: JSON.stringify({target})}, current);
+    if (!current()) return;
+    Object.assign(probe, {state: "done", ok: result?.ok === true, code: String(result?.code || ""), latency: Number(result?.latency_ms), testedAt: result?.tested_at || new Date().toISOString()});
+  } catch (error) {
+    if (!current()) return;
+    Object.assign(probe, {state: "done", ok: false, code: String(error?.code || ""), message: friendlyError(error), testedAt: new Date().toISOString()});
+  }
+  if (egressListing) renderEgressServers(egressListing);
+}
+
+async function testAllEgressServers() {
+  if (loggingOut || state?.user?.role !== "owner") return;
+  const target = egressProbeTarget();
+  const queue = egressServers.filter((node) => egressNodeApplied(node));
+  if (!queue.length) {
+    egressMessage(egressServers.length ? "暂无已应用的节点可测试，请等待配置应用后重试。" : "尚未配置出口服务器。", "error");
+    return;
+  }
+  egressMessage();
+  const workers = Array.from({length: Math.min(egressProbeConcurrency, queue.length)}, async () => {
+    while (queue.length) await testEgressServer(queue.shift(), target);
+  });
+  await Promise.all(workers);
+}
+
 function renderEgressServers(result) {
   const host = byId("egress-list");
   if (!host) return;
   const runtime = result.runtime || {};
   const applied = runtime.ready && runtime.applied_version === result.version;
-  byId("egress-runtime").textContent = applied ? "出口配置已应用。此状态不代表远端节点或密码已通过连通性验证。" :
+  byId("egress-runtime").textContent = applied ? "出口配置已应用。应用状态不代表远端节点或密码可用，可用“测试连通性”检查。" :
     runtime.error_code ? "配置应用失败，后台将自动重试。相关账号的新请求暂不可用。" : "配置待应用。相关账号的新请求将在出口服务就绪后恢复。";
+  const testAll = byId("egress-test-all");
+  if (testAll && testAll.dataset.busy !== "true") testAll.disabled = !egressServers.some((node) => egressNodeApplied(node, result));
   host.replaceChildren(...egressServers.map((node) => {
-    const nodeApplied = runtime.ready && (runtime.node_revisions?.[node.id] === node.revision || applied);
+    const nodeApplied = egressNodeApplied(node, result);
+    const probe = egressProbeStatus(node);
+    const testing = egressProbes.get(node.id)?.state === "testing";
+    const test = element("button", {type: "button", className: "secondary", text: testing ? "测试中…" : "测试连通性"});
+    test.disabled = testing || !nodeApplied;
+    if (!nodeApplied) test.title = "节点配置应用后才能测试";
+    test.addEventListener("click", () => testEgressServer(node));
     const edit = element("button", {type: "button", className: "secondary", text: "编辑"});
     const remove = element("button", {type: "button", className: "secondary", text: "删除"});
     edit.addEventListener("click", () => openEgressEditor(node));
@@ -8186,7 +8271,8 @@ function renderEgressServers(result) {
       element("div", {className: "panel-heading"}, element("h3", {text: node.name}), element("span", {className: "status-badge", text: nodeApplied ? "已应用" : "待应用"})),
       element("p", {className: "egress-address", text: `${node.server}:${node.port}`}),
       element("p", {className: "muted", text: `SS · ${node.cipher} · UDP ${node.udp ? "开启" : "关闭"}`}),
-      element("div", {className: "actions"}, edit, remove));
+      probe && element("p", {className: "egress-probe", dataset: {kind: probe.kind}, text: probe.text}),
+      element("div", {className: "actions"}, test, edit, remove));
   }));
   if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 节点后，可在上游账号设置中绑定。"));
 }
@@ -8198,16 +8284,43 @@ function openEgressEditor(node = null) {
   egressDraftID = node?.id || "";
   for (const name of ["name", "server", "port", "cipher"]) form.elements[name].value = node?.[name] ?? (name === "cipher" ? "aes-128-gcm" : "");
   form.elements.udp.checked = Boolean(node?.udp);
-  form.elements.password.required = !node;
+  form.dataset.savedCipher = node?.cipher || "";
+  syncEgressPasswordHelp(form);
   byId("egress-dialog-title").textContent = node ? "编辑出口服务器" : "新增出口服务器";
-  byId("egress-password-help").textContent = node ? "留空保留现有密码。" : "新增节点需要填写密码。";
   setLocalMessage(form);
   openDialog("egress-dialog");
+}
+
+// SS2022 uses the server's pre-shared key, not a free-form password. A
+// retained password from another cipher is rarely a valid key, so switching
+// asks for the key again; the server checks the format either way.
+function syncEgressPasswordHelp(form) {
+  const editing = Boolean(egressDraftID);
+  const cipher = form.elements.cipher.value;
+  const savedCipher = form.dataset.savedCipher || "";
+  const ss2022 = cipher === egressSS2022Cipher;
+  const needsKey = ss2022 && savedCipher !== cipher;
+  form.elements.password.required = !editing || needsKey;
+  form.elements.password.placeholder = ss2022 ? "Base64 密钥" : "";
+  let help = editing ? "留空保留现有密码。" : "新增节点需要填写密码。";
+  if (ss2022) {
+    help = "填写服务端的 Base64 密钥（16 字节，可用 openssl rand -base64 16 生成）；多个密钥用英文冒号分隔。";
+    if (editing) help += needsKey ? "切换加密方式需重新填写密钥。" : "留空保留现有密钥。";
+  }
+  const target = byId("egress-password-help");
+  if (target) target.textContent = help;
+}
+
+function validSS2022Key(value) {
+  return value.split(":").every((key) => /^[A-Za-z0-9+/]{22}==$/.test(key));
 }
 
 async function saveEgressServer(event) {
   if (egressOperation || egressDraftID === null) return;
   const form = event.currentTarget;
+  if (form.elements.cipher.value === egressSS2022Cipher && form.elements.password.value && !validSS2022Key(form.elements.password.value)) {
+    throw new Error(`${egressSS2022Cipher} 的密码须为 Base64 编码的 16 字节密钥，多个密钥用英文冒号分隔。`);
+  }
   const operation = {id: egressDraftID};
   const currentIdentity = egressIdentityCurrent();
   const current = () => currentIdentity() && egressOperation === operation;
@@ -9880,6 +9993,8 @@ function applyWebAuthnSupport() {
 function bindUI() {
   bindAsync("egress-refresh", "click", () => loadEgressServers(), "刷新中…", egressIdentityCurrent);
   byId("egress-create").addEventListener("click", () => openEgressEditor());
+  bindAsync("egress-test-all", "click", testAllEgressServers, "测试中…", egressIdentityCurrent);
+  byId("egress-form").elements.cipher.addEventListener("change", () => syncEgressPasswordHelp(byId("egress-form")));
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
     byId("egress-form").elements.password.value = "";

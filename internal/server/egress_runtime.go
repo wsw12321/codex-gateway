@@ -73,7 +73,23 @@ func (s *Server) runtimeSnapshot(state store.EgressState) (egress.Snapshot, erro
 	return snapshot, nil
 }
 
+// The runtime bounds each probe at ten seconds; allow for queueing and the
+// control round trip without letting a stuck runtime hold the request.
+const egressProbeClientTimeout = 20 * time.Second
+
 func (s *Server) egressControl(ctx context.Context, method, path string, input, output any) error {
+	return s.egressControlVia(ctx, s.accountEgressRuntime().client, method, path, input, output)
+}
+
+// egressProbe runs outside runtime.mu so a slow node never delays the
+// synchronization of other nodes or account route resolution.
+func (s *Server) egressProbe(ctx context.Context, request egress.ProbeRequest, result *egress.ProbeResult) error {
+	client := *s.accountEgressRuntime().client
+	client.Timeout = egressProbeClientTimeout
+	return s.egressControlVia(ctx, &client, http.MethodPost, "/probe", request, result)
+}
+
+func (s *Server) egressControlVia(ctx context.Context, client *http.Client, method, path string, input, output any) error {
 	if s.config.EgressControlKey == "" || s.config.EgressControlURL == nil {
 		return errEgressUnavailable
 	}
@@ -95,7 +111,7 @@ func (s *Server) egressControl(ctx context.Context, method, path string, input, 
 	}
 	req.Header.Set("Authorization", "Bearer "+s.config.EgressControlKey)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := s.accountEgressRuntime().client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return errEgressUnavailable
 	}

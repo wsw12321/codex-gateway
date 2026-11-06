@@ -6,6 +6,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -20,7 +22,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/wsw/codex-gateway/internal/egress"
 )
@@ -54,10 +55,20 @@ type runtime struct {
 	desired     map[string]bool
 	routes      map[string]routeRuntime
 	squidIP     string
+	// Connectivity probes are owner-initiated; a small fixed pool keeps a
+	// burst of tests from competing with model traffic for local resources.
+	probeSlots   chan struct{}
+	probeTimeout time.Duration
+	probeRoots   *x509.CertPool // nil selects the system trust store
 }
 
+const (
+	maxConcurrentProbes = 4
+	defaultProbeTimeout = 10 * time.Second
+)
+
 func newRuntime(key string, controller proxyController) *runtime {
-	return &runtime{key: key, controller: controller, status: egress.Status{InstanceID: randomID(), UpdatedAt: time.Now().UTC()}, nodes: map[string]*nodeRuntime{}, desired: map[string]bool{}, routes: map[string]routeRuntime{}, squidIP: "172.28.60.2"}
+	return &runtime{key: key, controller: controller, status: egress.Status{InstanceID: randomID(), UpdatedAt: time.Now().UTC()}, nodes: map[string]*nodeRuntime{}, desired: map[string]bool{}, routes: map[string]routeRuntime{}, squidIP: "172.28.60.2", probeSlots: make(chan struct{}, maxConcurrentProbes), probeTimeout: defaultProbeTimeout}
 }
 
 func nodeKey(id string, revision int64) string { return id + "/" + strconv.FormatInt(revision, 10) }
@@ -92,13 +103,16 @@ func validateSnapshot(snapshot egress.Snapshot, key string) error {
 	}
 	nodes := map[string]bool{}
 	for _, node := range snapshot.Nodes {
-		if !identifierPattern.MatchString(node.ID) || node.Revision < 1 || !validServer(node.Server) || node.Port < 1 || node.Port > 65535 || node.Password == "" || len(node.Password) > 4096 || !utf8.ValidString(node.Password) || strings.ContainsAny(node.Password, "\x00\r\n") {
+		if !identifierPattern.MatchString(node.ID) || node.Revision < 1 || !validServer(node.Server) || node.Port < 1 || node.Port > 65535 {
 			return errors.New("invalid node")
 		}
-		switch node.Cipher {
-		case "aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305":
-		default:
+		if !egress.SupportedCipher(node.Cipher) {
 			return errors.New("invalid cipher")
+		}
+		// SS2022 keys are checked here as well: Mihomo rejects the whole
+		// configuration for one malformed key, which would block every node.
+		if !egress.ValidPassword(node.Cipher, node.Password) {
+			return errors.New("invalid node")
 		}
 		id := nodeKey(node.ID, node.Revision)
 		if nodes[id] {
@@ -290,6 +304,23 @@ func (r *runtime) controlHandler() http.Handler {
 			return
 		}
 		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/probe":
+			var probe egress.ProbeRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, request.Body, 4<<10))
+			decoder.DisallowUnknownFields()
+			if decoder.Decode(&probe) != nil {
+				http.Error(w, "invalid probe", http.StatusBadRequest)
+				return
+			}
+			var extra any
+			if decoder.Decode(&extra) != io.EOF || !identifierPattern.MatchString(probe.NodeID) || probe.NodeRevision < 1 || !allowedTarget(net.JoinHostPort(probe.Target, "443")) {
+				http.Error(w, "invalid probe", http.StatusBadRequest)
+				return
+			}
+			result := r.probeNode(request.Context(), probe)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(result)
+			return
 		case request.Method == http.MethodGet && request.URL.Path == "/status":
 		case request.Method == http.MethodPut && request.URL.Path == "/config":
 			var snapshot egress.Snapshot
@@ -426,6 +457,84 @@ func (r *runtime) ServeHTTP(w http.ResponseWriter, request *http.Request) {
 	_ = upstream.Close()
 	_ = client.Close()
 	<-done
+}
+
+type bufferedConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c bufferedConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+// probeNode opens a TLS session to an allowed provider host through the
+// node's applied local listener. Mihomo acknowledges CONNECT before it dials
+// the SS server, so only a completed handshake shows that the node is
+// reachable, its cipher and password are accepted, and the exit reaches the
+// provider. The probe uses the same listener as model traffic and never dials
+// an origin directly. Results carry stable codes only, never error text.
+func (r *runtime) probeNode(ctx context.Context, probe egress.ProbeRequest) egress.ProbeResult {
+	select {
+	case r.probeSlots <- struct{}{}:
+		defer func() { <-r.probeSlots }()
+	default:
+		return egress.ProbeResult{Code: egress.ProbeBusy}
+	}
+	key := nodeKey(probe.NodeID, probe.NodeRevision)
+	r.mu.Lock()
+	node := r.nodes[key]
+	if !r.status.Ready || node == nil || !r.desired[key] {
+		r.mu.Unlock()
+		return egress.ProbeResult{Code: egress.ProbeNodeNotApplied}
+	}
+	// Hold the revision like a tunnel so pruning keeps its listener.
+	node.active++
+	port := node.port
+	r.mu.Unlock()
+	defer func() { r.mu.Lock(); node.active--; r.mu.Unlock() }()
+	ctx, cancel := context.WithTimeout(ctx, r.probeTimeout)
+	defer cancel()
+	started := time.Now()
+	result := func(code string) egress.ProbeResult {
+		return egress.ProbeResult{OK: code == egress.ProbeOK, Code: code, LatencyMS: time.Since(started).Milliseconds()}
+	}
+	failure := func(err error, fallback string) egress.ProbeResult {
+		var timeout net.Error
+		if ctx.Err() != nil || errors.As(err, &timeout) && timeout.Timeout() {
+			return result(egress.ProbeTimeout)
+		}
+		return result(fallback)
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return failure(err, egress.ProbeListenerUnavailable)
+	}
+	defer connection.Close()
+	stop := context.AfterFunc(ctx, func() { _ = connection.SetDeadline(time.Now()) })
+	defer stop()
+	target := net.JoinHostPort(probe.Target, "443")
+	if _, err = fmt.Fprintf(connection, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		return failure(err, egress.ProbeTunnelFailed)
+	}
+	reader := bufio.NewReader(connection)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		return failure(err, egress.ProbeTunnelFailed)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return result(egress.ProbeTunnelFailed)
+	}
+	session := tls.Client(bufferedConn{Conn: connection, reader: reader}, &tls.Config{ServerName: probe.Target, MinVersion: tls.VersionTLS12, RootCAs: r.probeRoots, NextProtos: []string{"http/1.1"}})
+	if err = session.HandshakeContext(ctx); err != nil {
+		var verification *tls.CertificateVerificationError
+		if errors.As(err, &verification) {
+			return result(egress.ProbeCertificateInvalid)
+		}
+		return failure(err, egress.ProbeHandshakeFailed)
+	}
+	outcome := result(egress.ProbeOK)
+	_ = session.Close()
+	return outcome
 }
 
 type controller struct {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/netip"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/wsw/codex-gateway/internal/egress"
 )
 
 type EgressServer struct {
@@ -65,7 +67,7 @@ func ValidateEgressServer(n EgressServer) error {
 	if n.Name == "" || len(n.Name) > 80 || strings.TrimSpace(n.Name) != n.Name || strings.IndexFunc(n.Name, unicode.IsControl) >= 0 || n.Port < 1 || n.Port > 65535 {
 		return fmt.Errorf("%w: invalid egress node", ErrInvalid)
 	}
-	if n.Cipher != "aes-128-gcm" && n.Cipher != "aes-256-gcm" && n.Cipher != "chacha20-ietf-poly1305" {
+	if !egress.SupportedCipher(n.Cipher) {
 		return fmt.Errorf("%w: invalid SS cipher", ErrInvalid)
 	}
 	if n.Server == "" || len(n.Server) > 253 || strings.TrimSpace(n.Server) != n.Server {
@@ -117,7 +119,9 @@ func egressAudit(ctx context.Context, tx *sql.Tx, a EgressActor, event, subject 
 	return mapDBError("audit egress operation", err)
 }
 
-// An empty ciphertext on update retains the existing encrypted password.
+// An empty ciphertext on update retains the existing encrypted password. A
+// nonzero Revision on such an update is an optimistic guard: the row changes
+// only if it still has the revision whose password the caller validated.
 func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create bool, a EgressActor) (EgressServer, error) {
 	if a.UserID == "" {
 		return EgressServer{}, ErrInvalid
@@ -140,7 +144,20 @@ func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create boo
 		if create {
 			result, err = scanEgressServer(tx.QueryRowContext(ctx, `INSERT INTO egress_servers(id,name,server,port,cipher,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,now(),now()) RETURNING `+egressServerColumns, n.ID, n.Name, n.Server, n.Port, n.Cipher, n.PasswordCiphertext, n.UDP, v))
 		} else {
-			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,server=$3,port=$4,cipher=$5,password_ciphertext=CASE WHEN octet_length($6::bytea)=0 THEN password_ciphertext ELSE $6 END,udp=$7,revision=$8,updated_at=now() WHERE id=$1::uuid RETURNING `+egressServerColumns, n.ID, n.Name, n.Server, n.Port, n.Cipher, nonNilBytes(n.PasswordCiphertext), n.UDP, v))
+			expected := int64(0)
+			if len(n.PasswordCiphertext) == 0 {
+				expected = n.Revision
+			}
+			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,server=$3,port=$4,cipher=$5,password_ciphertext=CASE WHEN octet_length($6::bytea)=0 THEN password_ciphertext ELSE $6 END,udp=$7,revision=$8,updated_at=now() WHERE id=$1::uuid AND ($9::bigint=0 OR revision=$9) RETURNING `+egressServerColumns, n.ID, n.Name, n.Server, n.Port, n.Cipher, nonNilBytes(n.PasswordCiphertext), n.UDP, v, expected))
+			if errors.Is(err, sql.ErrNoRows) && expected > 0 {
+				var exists bool
+				if existsErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid)`, n.ID).Scan(&exists); existsErr != nil {
+					return mapDBError("check egress node", existsErr)
+				}
+				if exists {
+					return fmt.Errorf("%w: egress node changed", ErrConflict)
+				}
+			}
 		}
 		if err != nil {
 			return mapDBError("save egress node", err)
@@ -154,6 +171,15 @@ func nonNilBytes(b []byte) []byte {
 		return []byte{}
 	}
 	return b
+}
+
+// EgressServer returns one node, including its encrypted credential.
+func (s *Store) EgressServer(ctx context.Context, id string) (EgressServer, error) {
+	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
+		return EgressServer{}, fmt.Errorf("%w: invalid node id", ErrInvalid)
+	}
+	n, err := scanEgressServer(s.db.QueryRowContext(ctx, `SELECT `+egressServerColumns+` FROM egress_servers WHERE id=$1::uuid`, id))
+	return n, mapDBError("find egress node", err)
 }
 
 func (s *Store) DeleteEgressServer(ctx context.Context, id string, a EgressActor) error {

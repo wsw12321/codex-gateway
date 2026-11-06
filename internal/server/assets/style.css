@@ -3714,6 +3714,13 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 .egress-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
 .egress-card { min-width: 0; }
 .egress-address { overflow-wrap: anywhere; }
+.egress-probe-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .65rem 1rem; margin: 0 0 1rem; }
+.egress-probe-bar label { display: grid; gap: .35rem; flex: 0 1 22rem; min-width: min(100%, 16rem); }
+.egress-probe-bar select { width: 100%; }
+.egress-probe-bar small { flex: 1 1 100%; }
+.egress-probe { margin: .2rem 0 0; color: var(--muted); font-size: .86rem; overflow-wrap: anywhere; }
+.egress-probe[data-kind="ok"] { color: var(--success); }
+.egress-probe[data-kind="error"] { color: var(--danger); }
 .upstream-egress-form { display: grid; gap: .65rem; }
 .upstream-egress-form select { width: 100%; }
 .upstream-egress-form button { justify-self: start; }

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/wsw/codex-gateway/internal/egress"
@@ -24,6 +23,9 @@ func (s *Server) egressRoutes() {
 	s.mux.Handle("POST /admin/egress-servers", write(s.saveEgressServer))
 	s.mux.Handle("PUT /admin/egress-servers/{id}", write(s.saveEgressServer))
 	s.mux.Handle("DELETE /admin/egress-servers/{id}", write(s.deleteEgressServer))
+	// A connectivity test changes nothing, so it needs a session and the
+	// Origin check but not the five-minute re-verification of writes.
+	s.mux.Handle("POST /admin/egress-servers/{id}/test", s.browserOrigin(s.requireSession(s.ownerOnly(http.HandlerFunc(s.testEgressServer)))))
 	for _, path := range []string{"upstream-accounts", "antigravity-accounts", "anthropic-accounts"} {
 		s.mux.Handle("PUT /admin/"+path+"/{id}/egress", write(s.setAccountEgress))
 	}
@@ -143,7 +145,7 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 	if create {
 		id = uuid.NewString()
 	}
-	if input.Protocol != "" && input.Protocol != "ss" || len(input.Password) > 4096 || !utf8.ValidString(input.Password) || strings.ContainsAny(input.Password, "\x00\r\n") || create && input.Password == "" {
+	if input.Protocol != "" && input.Protocol != "ss" || create && input.Password == "" {
 		egressError(w, r, store.ErrInvalid)
 		return
 	}
@@ -151,6 +153,32 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 	if err := store.ValidateEgressServer(n); err != nil {
 		egressError(w, r, err)
 		return
+	}
+	if input.Password != "" && !egress.ValidPassword(n.Cipher, input.Password) {
+		input.Password = ""
+		egressPasswordError(w, r, n.Cipher, false)
+		return
+	}
+	if !create && input.Password == "" && egress.IsSS2022(n.Cipher) {
+		// A retained password may predate the switch to SS2022. Check that it is
+		// a usable key, then save only if the node is still at that revision.
+		current, err := s.store.EgressServer(r.Context(), id)
+		if err != nil {
+			egressError(w, r, err)
+			return
+		}
+		retained, err := security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, id, current.PasswordCiphertext)
+		if err != nil {
+			egressError(w, r, errEgressUnavailable)
+			return
+		}
+		valid := egress.ValidPassword(n.Cipher, retained)
+		retained = ""
+		if !valid {
+			egressPasswordError(w, r, n.Cipher, true)
+			return
+		}
+		n.Revision = current.Revision
 	}
 	if input.Password != "" {
 		ciphertext, err := security.EncryptEgressPassword(s.config.APIKeyEncryptionKey, id, input.Password)
@@ -162,6 +190,10 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 	}
 	input.Password = ""
 	saved, err := s.store.SaveEgressServer(r.Context(), n, create, egressActor(r))
+	if errors.Is(err, store.ErrConflict) {
+		httpx.WriteError(w, r, http.StatusConflict, "upstream_error", "egress_node_changed", "节点已被其他操作修改，请刷新后重试")
+		return
+	}
 	if err != nil {
 		egressError(w, r, err)
 		return
@@ -172,6 +204,69 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		code = http.StatusCreated
 	}
 	writeJSON(w, code, map[string]any{"server": egressNodeDTO(saved), "runtime": publicEgressStatus(status), "saved": true})
+}
+
+// egressProbeTargets maps a provider choice to the provider host the probe
+// opens through the node. Each host is on the runtime's CONNECT allowlist.
+var egressProbeTargets = map[string]string{
+	"codex":       "chatgpt.com",
+	"antigravity": "cloudcode-pa.googleapis.com",
+	"anthropic":   "api.anthropic.com",
+}
+
+func (s *Server) testEgressServer(w http.ResponseWriter, r *http.Request) {
+	if !s.egressEnabled(w, r) {
+		return
+	}
+	var input struct {
+		Target string `json:"target"`
+	}
+	if !cpaJSON(w, r, &input, 256, "target") {
+		return
+	}
+	if input.Target == "" {
+		input.Target = "codex"
+	}
+	host, known := egressProbeTargets[input.Target]
+	id := r.PathValue("id")
+	if parsed, err := uuid.Parse(id); !known || err != nil || parsed.String() != id {
+		egressError(w, r, store.ErrInvalid)
+		return
+	}
+	// Synchronizing first lets a test right after saving use the new revision.
+	state, status, err := s.syncAccountEgress(r.Context())
+	if err != nil && !errors.Is(err, errEgressUnavailable) {
+		egressError(w, r, err)
+		return
+	}
+	var node *store.EgressServer
+	for i := range state.Nodes {
+		if state.Nodes[i].ID == id {
+			node = &state.Nodes[i]
+		}
+	}
+	if node == nil {
+		egressError(w, r, store.ErrNotFound)
+		return
+	}
+	if !status.Ready || status.InstanceID == "" || status.NodeRevisions[id] != node.Revision {
+		httpx.WriteError(w, r, http.StatusConflict, "upstream_error", "egress_node_not_applied", "节点配置尚未应用到出口服务，请稍后再测试")
+		return
+	}
+	var result egress.ProbeResult
+	if err := s.egressProbe(r.Context(), egress.ProbeRequest{NodeID: id, NodeRevision: node.Revision, Target: host}, &result); err != nil {
+		httpx.WriteError(w, r, http.StatusServiceUnavailable, "upstream_error", "egress_probe_unavailable", "出口服务暂时无法执行连通性测试，请稍后重试")
+		return
+	}
+	code := result.Code
+	if !egress.KnownProbeCode(code) {
+		code = egress.ProbeHandshakeFailed
+	}
+	latency := result.LatencyMS
+	if latency < 0 || latency > egressProbeClientTimeout.Milliseconds() {
+		latency = 0
+	}
+	writeJSON(w, 200, map[string]any{"id": id, "revision": node.Revision, "target": host, "ok": result.OK && code == egress.ProbeOK, "code": code, "latency_ms": latency, "tested_at": time.Now().UTC()})
 }
 
 func (s *Server) deleteEgressServer(w http.ResponseWriter, r *http.Request) {
@@ -306,6 +401,17 @@ func (s *Server) registerEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"registration_id": registration.ID, "account_id": registration.AccountID, "status": "committed", "revision": resolution.Revision})
+}
+
+func egressPasswordError(w http.ResponseWriter, r *http.Request, cipher string, retained bool) {
+	switch {
+	case retained:
+		httpx.WriteError(w, r, 400, "invalid_request_error", "egress_password_required", "现有密码不是有效的 "+cipher+" 密钥，请重新填写 Base64 密钥")
+	case egress.IsSS2022(cipher):
+		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_password", cipher+" 的密码须为 Base64 编码的 16 字节密钥，多个密钥用英文冒号分隔")
+	default:
+		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_password", "SS 密码须为非空单行文本，最多 4096 字节")
+	}
 }
 
 func egressError(w http.ResponseWriter, r *http.Request, err error) {
