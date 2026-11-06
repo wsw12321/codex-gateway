@@ -52,6 +52,7 @@ async function fixture(browser, options = {}) {
     if (url.pathname === "/admin/billing/me") return send(billing);
     if (url.pathname === "/admin/billing/plans") return send({plans: []});
     if (url.pathname === "/admin/usage") return send(usage);
+    if (url.pathname === "/admin/usage/models") return send({models: [], total: {requests: 0, tokens: 0, charged_usd: "0"}});
     throw new Error(`Unexpected fixture request: ${request.method()} ${url.pathname}`);
   });
   return {context, page, errors, writes};

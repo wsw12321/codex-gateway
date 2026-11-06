@@ -52,6 +52,7 @@ async function main() {
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
       if (url.pathname === "/admin/usage") return send({summary: {requests: 0, tokens: 0, error_rate: 0}, requests: []});
+      if (url.pathname === "/admin/usage/models") return send({models: [], total: {requests: 0, tokens: 0, charged_usd: "0"}});
       if (url.pathname === "/admin/information") return send({latest_job: latestJob, cleaned_before: latestJob?.status === "completed" ? cutoff : null});
       if (url.pathname === "/admin/information/preview") { previews.push(request.postDataJSON()); return send(report); }
       if (url.pathname === "/admin/information/jobs") {

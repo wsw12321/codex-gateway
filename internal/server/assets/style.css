@@ -4174,7 +4174,10 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 .billing-account-usage-head .quota-freshness { margin-top: 0; }
 .group-detail-freshness { margin: .1rem 0 .55rem; }
 .group-list-freshness { margin-top: 0; }
-.upstream-account-freshness { margin: .35rem 0; }
+/* The list's data time shares the match-count line, so the first card stays on a phone's first screen. */
+.upstream-account-list-meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0 .75rem; margin: .45rem 0; }
+#upstream-account-manager .upstream-account-list-meta > .upstream-account-period { margin: 0; font-size: .78rem; }
+.upstream-account-list-meta > .upstream-account-freshness { margin: 0; }
 @media (pointer: coarse) {
   .quota-freshness .quota-refresh { min-height: 44px; padding-inline: .5rem; }
 }

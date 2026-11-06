@@ -1257,8 +1257,10 @@
             <p id="upstream-account-action-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <p id="upstream-account-refresh-message" class="form-message hidden" role="alert"></p>
             <div id="upstream-account-loading" class="inline-loading hidden" role="status">正在加载上游账号和本地统计…</div>
-            <div class="quota-freshness upstream-account-freshness"><time id="upstream-account-list-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="upstream-account-list-refresh" type="button" class="text-button quota-refresh" aria-label="刷新账号列表、状态与近 24 小时费用">刷新列表</button></div>
-            <p id="upstream-account-match-count" class="upstream-account-period muted" aria-live="polite"></p>
+            <div class="upstream-account-list-meta">
+              <p id="upstream-account-match-count" class="upstream-account-period muted" aria-live="polite"></p>
+              <div class="quota-freshness upstream-account-freshness"><time id="upstream-account-list-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="upstream-account-list-refresh" type="button" class="text-button quota-refresh" aria-label="刷新账号列表、状态与近 24 小时费用">刷新</button></div>
+            </div>
             <p id="upstream-concurrency-sampled" class="upstream-account-period muted" aria-live="polite">实时并发暂不可用 · 每 5 秒刷新</p>
             <p id="upstream-account-no-match" class="empty hidden" role="status">没有匹配的账号，试试其他名称或状态。</p>
             <div id="upstream-account-list" class="upstream-account-grid" aria-live="polite" aria-busy="true">

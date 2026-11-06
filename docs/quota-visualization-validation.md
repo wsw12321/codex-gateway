@@ -182,7 +182,17 @@ node internal/server/testdata/quota_visualization_browser.cjs   # 需要 Playwri
 
 浏览器脚本在 1440×1000 与 390×844 视口检查无横向溢出，逐页点击刷新按钮并确认只读取
 对应接口；以生产环境的 CSP（`style-src 'self'`，无内联样式）提供页面并把 CSP 报错视为
-失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。
+失败，确认线形图通过 CSSOM 设置宽度不受策略阻止。截图前把指针移出页面，避免悬停样式
+进入截图。
+
+其余 `*_browser.cjs` 脚本已随改动更新并重新运行：`billing_plans_browser`、
+`dashboard_layout_browser` 先点击“展开请求明细”再操作请求筛选与明细；
+`dashboard_layout_browser`、`information_browser`、`shuiyuan_theme_browser` 的严格模拟
+新增 `/admin/usage/models`，`group_list_browser` 新增 `usage-breakdown` 与 `account-usage`。
+上游账号列表的数据时间与“显示 N / M 个账号”合并为一行，手机首屏（390×844）第一张账号
+卡片位置与改动前一致（`dashboard_layout_browser` 要求顶部低于 650 px，改动前后均为
+644.8 px）。除 `oidc_browser` 外全部通过；`oidc_browser` 在改动前的提交上以同样的断言失败，
+与本改动无关。
 
 验证环境中观察到的两个与本改动无关的既有现象：
 

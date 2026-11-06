@@ -163,6 +163,8 @@ async function main() {
 
     // Single mode shares the native radio keyboard contract in usage and identification.
     await page.evaluate(() => { location.hash = "usage"; loadUsageModelPickers(); });
+    // The request filters sit behind "展开请求明细" since the page opens on per-model usage.
+    await page.locator("#usage-details-toggle").click();
     await page.waitForSelector('#usage-model-picker [value="gpt-example"]:visible');
     await page.locator('#usage-model-picker [value="gpt-example"]').check();
     await page.locator('#usage-model-picker [value="gpt-example"]').press("ArrowDown");

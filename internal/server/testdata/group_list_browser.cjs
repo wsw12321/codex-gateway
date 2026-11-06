@@ -53,6 +53,11 @@ async function main() {
         const group = groups.find((item) => item.id === match[1]);
         if (match[2] === "/upstream-access") return send(pool(group.id));
         if (match[2] === "/periods") return send({periods: []});
+        if (match[2] === "/usage-breakdown") {
+          return send({group_id: group.id, current_period: true, data_complete: true, period: {id: "period", starts_at: group.period_starts_at, ends_at: group.period_ends_at},
+            periods: [], limit_usd: group.limit_usd, member_limit_usd: null, used_usd: group.used_usd, remaining_usd: group.remaining_usd, members: [], accounts: []});
+        }
+        if (match[2] === "/account-usage") return send({group_id: group.id, truncated: false, accounts: []});
         if (!match[2] && request.method() === "PUT") {
           const body = request.postDataJSON(); writes.push({path: url.pathname, body});
           if (group.archived_at) return send({error: {code: "group_operation_conflict", message: "群组已归档"}}, 409);

@@ -51,6 +51,7 @@ async function main() {
       if (url.pathname === "/admin/billing/me") return send(billing(identity));
       if (url.pathname === "/admin/billing/users") return send({users: [owner, member]});
       if (url.pathname === "/admin/usage") return send(usage);
+      if (url.pathname === "/admin/usage/models") return send({models: [], total: {requests: 0, tokens: 0, charged_usd: "0"}});
       if (url.pathname === "/admin/usage/global") return send({summary: {usage: {tokens: 87654321, requests: 21456, actual_cost_usd: "246.12345", unpriced_tokens: 1200}, pricing_coverage: 0.987, active_users: 12, total_users: 16}});
       if (url.pathname === "/admin/alerts") return send({alerts: [{severity: "warning"}]});
       if (url.pathname === "/admin/monitoring") return send({sampled_at: new Date().toISOString(), recent: requests, failures: [requests[2]]});
@@ -123,7 +124,12 @@ async function main() {
     await summary.locator(".upstream-account-details > summary").click();
     await capture({path: path.join(screenshots, "account-expanded-desktop.png"), fullPage: true});
     await page.setViewportSize({width: 320, height: 844}); await noOverflow("320 account details");
-    await navigate("usage"); await page.evaluate((value) => renderPersonalUsage(value), usage);
+    await navigate("usage");
+    // The request list sits behind "展开请求明细"; the page opens on per-model usage.
+    await noOverflow("320 usage models");
+    await page.locator("#usage-details-toggle").click();
+    await page.locator("#usage-rows .record-details summary").first().waitFor();
+    await page.evaluate((value) => renderPersonalUsage(value), usage);
     await noOverflow("320 usage");
     await page.locator("#usage-rows .record-details summary").first().click();
     assert.equal(await page.locator("#usage-rows .record-details dd").first().isVisible(), true);
