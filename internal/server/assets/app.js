@@ -66,6 +66,11 @@ let noticeTimer = 0;
 let secretAfterClose = null;
 let secretDismissible = false;
 let personalRequestSequence = 0;
+let usageModelsSequence = 0;
+// The request list stays collapsed until asked for; it loads on first expand
+// and again whenever its scope changed while it was hidden.
+let usageDetailsOpen = false;
+let usageDetailsStale = true;
 let globalRequestSequence = 0;
 let checkingSession = false;
 let loggingOut = false;
@@ -493,6 +498,144 @@ function quotaFreshness({at = null, label = "数据时间", pending = "", onRefr
     node.append(button);
   }
   return node;
+}
+
+/*
+ * Share bars: one line split into colored segments, used for "who used how
+ * much" views. Colors follow the entity, not its rank: shareSlots() gives
+ * each key a fixed categorical slot (in a stable key order, so adjacent slots
+ * stay distinguishable), and a view passes the same map to every bar it draws
+ * so one user keeps one color across bars. Past the slot count the smallest
+ * entities fold into a neutral "其他" segment. Hovering a segment previews its
+ * amount; clicking or focusing it (or its legend entry) keeps the detail
+ * visible, so touch screens get the same information. The legend always
+ * names each segment with its amount, so color never carries meaning alone.
+ */
+const shareBarSlotCount = 7;
+
+// Exact decimal arithmetic for displayed money: amounts arrive as decimal
+// strings with up to 12 fractional digits and are summed as scaled BigInts.
+const decimalScale = 12;
+
+function decimalUnits(value) {
+  const match = String(value ?? "0").trim().match(/^(-?)(\d+)(?:\.(\d+))?$/);
+  if (!match) return null;
+  const units = BigInt(match[2] + (match[3] || "").padEnd(decimalScale, "0").slice(0, decimalScale));
+  return match[1] ? -units : units;
+}
+
+function decimalString(units) {
+  const negative = units < 0n;
+  const digits = (negative ? -units : units).toString().padStart(decimalScale + 1, "0");
+  return `${negative ? "-" : ""}${digits.slice(0, -decimalScale)}.${digits.slice(-decimalScale)}`;
+}
+
+// Sums decimal strings exactly; returns null when any value is not a decimal.
+function sumDecimals(values) {
+  let total = 0n;
+  for (const value of values) {
+    const units = decimalUnits(value);
+    if (units == null) return null;
+    total += units;
+  }
+  return decimalString(total);
+}
+
+function shareSlots(keys) {
+  const sorted = [...new Set(keys.filter((key) => key != null && key !== ""))].sort((a, b) => String(a).localeCompare(String(b), "zh-CN"));
+  return new Map(sorted.map((key, index) => [key, String(index % shareBarSlotCount + 1)]));
+}
+
+// Keeps the largest entities and folds the rest into one "其他" entry. Values
+// are numbers for drawing only; each item's `amount` is the exact text shown.
+function foldShareItems(items, {limit = shareBarSlotCount, otherLabel = "其他", otherAmount = null} = {}) {
+  const visible = items.filter((item) => Number(item.value) > 0);
+  if (visible.length <= limit) return visible;
+  const ranked = [...visible].sort((a, b) => Number(b.value) - Number(a.value));
+  const kept = new Set(ranked.slice(0, limit - 1));
+  const rest = ranked.slice(limit - 1);
+  const value = rest.reduce((sum, item) => sum + Number(item.value), 0);
+  return [...visible.filter((item) => kept.has(item)), {
+    key: "__other__", label: `${otherLabel}（${rest.length} 项）`, value, tone: "other",
+    amount: otherAmount ? otherAmount(rest) : formatUSD(sumDecimals(rest.map((item) => item.exact ?? String(item.value))), "—"),
+    detail: `${otherLabel}：${rest.map((item) => `${item.label} ${item.amount}`).join("、")}`,
+  }];
+}
+
+function sharePercent(value, scale) {
+  return scale > 0 ? Math.max(0, Math.min(100, Number(value) / scale * 100)) : 0;
+}
+
+function formatSharePercent(value, scale) {
+  if (!(scale > 0)) return "—";
+  const percent = Number(value) / scale * 100;
+  return percent > 0 && percent < 0.1 ? "<0.1%" : `${percent.toFixed(1)}%`;
+}
+
+/*
+ * shareBar({label, items, scale, slots, remainder, hint}) draws the bar and its
+ * legend. items: [{key, label, value, amount, detail?, tone?}] in display
+ * order; scale is the value of a full bar (defaults to the items' sum, so a
+ * larger scale leaves the rest of the track visible as unused); remainder
+ * names that unused part in the legend, e.g. {label: "剩余", amount: "US$3.00"}.
+ */
+function shareBar({label, items, scale = null, slots = null, remainder = null, hint = "悬停或点击色块查看具体额度", emptyText = "暂无用量"}) {
+  const total = items.reduce((sum, item) => sum + Math.max(0, Number(item.value) || 0), 0);
+  const full = Math.max(Number(scale) || 0, total);
+  const colors = slots || shareSlots(items.map((item) => item.key));
+  const figure = element("figure", {className: "share-bar", attributes: {"aria-label": label}});
+  const detail = element("p", {className: "share-bar-detail", text: items.length ? hint : emptyText, attributes: {"aria-live": "polite"}});
+  if (!items.length || !(full > 0)) {
+    figure.append(element("div", {className: "share-bar-track", dataset: {empty: "true"}}), detail);
+    return figure;
+  }
+  let selected = null;
+  const entries = [];
+  const describe = (item) => item.detail || `${item.label}：${item.amount}，占 ${formatSharePercent(item.value, full)}`;
+  const select = (entry) => {
+    selected = selected === entry ? null : entry;
+    for (const other of entries) {
+      for (const node of [other.segment, other.key]) node.setAttribute("aria-pressed", String(other === selected));
+    }
+    detail.textContent = selected ? describe(selected.item) : hint;
+  };
+  const preview = (entry) => { detail.textContent = entry ? describe(entry.item) : selected ? describe(selected.item) : hint; };
+  const track = element("div", {className: "share-bar-track"});
+  const legend = element("ul", {className: "share-bar-legend"});
+  for (const item of items) {
+    const tone = item.tone || colors.get(item.key) || "other";
+    const text = `${item.label}：${item.amount}（${formatSharePercent(item.value, full)}）`;
+    const segment = element("button", {type: "button", className: "share-bar-segment", dataset: {tone},
+      attributes: {title: text, "aria-label": text, "aria-pressed": "false"}});
+    const width = sharePercent(item.value, full);
+    if (segment.style) segment.style.width = `${width}%`;
+    segment.dataset.width = width.toFixed(3);
+    const key = element("button", {type: "button", className: "share-bar-key", dataset: {tone}, attributes: {"aria-pressed": "false"}},
+      element("span", {className: "share-bar-swatch", attributes: {"aria-hidden": "true"}}),
+      element("span", {className: "share-bar-name", text: item.label}),
+      element("strong", {text: item.amount}),
+      element("small", {text: formatSharePercent(item.value, full)}));
+    const entry = {item, segment, key};
+    entries.push(entry);
+    for (const node of [segment, key]) {
+      node.addEventListener("click", () => select(entry));
+      node.addEventListener("mouseenter", () => preview(entry));
+      node.addEventListener("mouseleave", () => preview(null));
+      node.addEventListener("focus", () => preview(entry));
+      node.addEventListener("blur", () => preview(null));
+    }
+    track.append(segment);
+    legend.append(element("li", {}, key));
+  }
+  if (remainder) {
+    legend.append(element("li", {}, element("span", {className: "share-bar-key share-bar-remainder"},
+      element("span", {className: "share-bar-swatch", attributes: {"aria-hidden": "true"}}),
+      element("span", {className: "share-bar-name", text: remainder.label}),
+      element("strong", {text: remainder.amount}),
+      element("small", {text: formatSharePercent(full - total, full)}))));
+  }
+  figure.append(track, detail, legend);
+  return figure;
 }
 
 // Static freshness rows in index.html keep their button; only the <time>
@@ -1053,6 +1196,11 @@ function handleUnauthorized() {
   resetPersonalUsageSummary();
   hide("personal-loading");
   byId("usage-rows").replaceChildren(tableMessage(8, "登录后加载使用明细。"));
+  usageModelsSequence++;
+  usageDetailsStale = true;
+  setUsageDetailsOpen(false);
+  resetUsageModels("登录后加载模型用量。");
+  setQuotaFreshness("usage-models-time", null);
   byId("global-rows").replaceChildren(tableMessage(6, "登录后加载全员汇总。"));
   hide("upstream-account-loading");
   byId("upstream-account-period").textContent = "—";
@@ -1800,6 +1948,7 @@ async function openOverviewUsage(model = "") {
   form.elements.state.value = "";
   form.elements.status.value = "";
   updateCSVLink();
+  setUsageDetailsOpen(true);
   await loadPersonalUsage(queryFromForm(form));
 }
 
@@ -6128,6 +6277,97 @@ function renderPersonalUsage(result, updateOverview) {
   tbody.replaceChildren(...rows);
 }
 
+function usageModelsQuery() {
+  const query = new URLSearchParams();
+  const userID = byId("usage-filter").elements.user_id.value;
+  if (userID) query.set("user_id", userID);
+  return query;
+}
+
+function resetUsageModels(message = "正在加载…") {
+  for (const id of ["usage-models-charged", "usage-models-requests", "usage-models-tokens", "usage-models-count"]) byId(id).textContent = "—";
+  byId("usage-models-period").textContent = "统计区间：—";
+  byId("usage-models-share").replaceChildren();
+  byId("usage-model-rows").replaceChildren(tableMessage(5, message));
+}
+
+function usageModelCharge(model) {
+  return decimalUnits(model?.charged_usd) == null ? "0" : String(model.charged_usd);
+}
+
+function renderUsageModels(result, receivedAt = new Date()) {
+  const models = (Array.isArray(result?.models) ? result.models : []).filter((model) => model && typeof model === "object");
+  const total = result?.total || {};
+  const totalCharge = decimalUnits(total.charged_usd) == null ? sumDecimals(models.map(usageModelCharge)) : String(total.charged_usd);
+  const scale = Number(totalCharge) || 0;
+  setQuotaFreshness("usage-models-time", receivedAt);
+  byId("usage-models-period").textContent = `统计区间：${formatDataTime(result?.from, "—")} — ${formatDataTime(result?.until, "—")}`;
+  byId("usage-models-charged").textContent = formatMoney(totalCharge, "USD");
+  byId("usage-models-requests").textContent = formatInteger(total.requests ?? models.reduce((sum, model) => sum + Number(model.requests || 0), 0));
+  byId("usage-models-count").textContent = `${formatInteger(models.length)} 个模型${result?.truncated ? "（仅列出前 200 个）" : ""}`;
+  byId("usage-models-tokens").textContent = formatInteger(total.tokens ?? models.reduce((sum, model) => sum + Number(model.tokens || 0), 0));
+  const charged = models.filter((model) => Number(usageModelCharge(model)) > 0)
+    .map((model) => ({key: model.model, label: model.model || "未知模型", value: Number(usageModelCharge(model)), exact: usageModelCharge(model), amount: formatUSD(usageModelCharge(model))}));
+  const shown = foldShareItems(charged, {otherLabel: "其他模型"});
+  const slots = shareSlots(shown.filter((item) => item.key !== "__other__").map((item) => item.key));
+  byId("usage-models-share").replaceChildren(shareBar({label: "各模型实际扣款占比", items: shown, slots, emptyText: models.length ? "最近 24 小时的请求尚无已结算扣款。" : "最近 24 小时没有请求。"}));
+  const tbody = byId("usage-model-rows");
+  if (!models.length) {
+    tbody.replaceChildren(tableMessage(5, "最近 24 小时没有请求记录。"));
+    return;
+  }
+  tbody.replaceChildren(...models.map((model) => {
+    const charge = usageModelCharge(model);
+    const share = scale > 0 ? Math.min(100, Number(charge) / scale * 100) : 0;
+    const notes = [model.errors ? `${formatInteger(model.errors)} 个失败` : "", model.in_progress ? `${formatInteger(model.in_progress)} 个进行中` : ""].filter(Boolean).join(" · ");
+    return element("tr", {},
+      element("td", {}, element("span", {className: "usage-model-name"}, element("span", {className: "usage-model-swatch", dataset: {tone: slots.get(model.model) || "other"}, attributes: {"aria-hidden": "true"}}), element("code", {text: model.model || "未知模型"}))),
+      element("td", {className: "money-cell", text: formatUSD(charge)}),
+      element("td", {className: "usage-model-share"}, element("span", {text: formatSharePercent(Number(charge), scale)}),
+        element("progress", {className: "subscription-progress", attributes: {value: share.toFixed(2), max: 100, "aria-label": `${model.model || "未知模型"}扣款占比`}})),
+      element("td", {}, element("span", {text: formatInteger(model.requests)}), notes ? element("small", {text: notes}) : null),
+      element("td", {text: formatInteger(model.tokens ?? Number(model.input_tokens || 0) + Number(model.output_tokens || 0))}),
+    );
+  }));
+}
+
+async function loadUsageModels() {
+  if (loggingOut || !state?.user?.id) return;
+  const sequence = ++usageModelsSequence;
+  const generation = identityGeneration;
+  const query = usageModelsQuery();
+  const current = () => sequence === usageModelsSequence && generation === identityGeneration && !loggingOut && Boolean(state?.user?.id);
+  const panel = byId("usage-models-panel");
+  panel.setAttribute("aria-busy", "true");
+  setQuotaFreshness("usage-models-time", null, {pending: "正在刷新…"});
+  try {
+    const result = await api(`/admin/usage/models${querySuffix(query)}`, undefined, current);
+    if (!current()) return;
+    if (!Array.isArray(result?.models)) throw new Error("模型用量响应格式无效。");
+    renderUsageModels(result, new Date());
+  } catch (error) {
+    if (!current()) return;
+    setQuotaFreshness("usage-models-time", null, {pending: "数据时间：加载失败"});
+    resetUsageModels(`模型用量加载失败：${friendlyError(error)}`);
+    throw error;
+  } finally {
+    if (current()) panel.setAttribute("aria-busy", "false");
+  }
+}
+
+function setUsageDetailsOpen(open) {
+  usageDetailsOpen = Boolean(open);
+  byId("usage-details").classList.toggle("hidden", !usageDetailsOpen);
+  const button = byId("usage-details-toggle");
+  button.setAttribute("aria-expanded", String(usageDetailsOpen));
+  button.textContent = usageDetailsOpen ? "收起请求明细" : "展开请求明细";
+}
+
+async function toggleUsageDetails() {
+  setUsageDetailsOpen(!usageDetailsOpen);
+  if (usageDetailsOpen && usageDetailsStale) await loadPersonalUsage(queryFromForm(byId("usage-filter")), false);
+}
+
 async function loadPersonalUsage(query, updateOverview = false) {
   const sequence = ++personalRequestSequence;
   const loading = byId("personal-loading");
@@ -6138,6 +6378,7 @@ async function loadPersonalUsage(query, updateOverview = false) {
   try {
     const result = await api(`/admin/usage${suffix}`);
     if (sequence !== personalRequestSequence) return;
+    usageDetailsStale = false;
     renderPersonalUsage(result, updateOverview);
   } catch (error) {
     if (sequence === personalRequestSequence) {
@@ -6210,7 +6451,8 @@ async function drillDownUser(user) {
   }
   const query = queryFromForm(byId("usage-filter"));
   updateCSVLink();
-  await loadPersonalUsage(query, false);
+  setUsageDetailsOpen(true);
+  await Promise.all([loadPersonalUsage(query, false), loadUsageModels()]);
   byId("content").focus({preventScroll: true});
 }
 
@@ -9940,6 +10182,8 @@ function routeFromHash(focusContent = true) {
     loadEgressServers().catch((error) => egressMessage(friendlyError(error)));
   } else { window.clearTimeout(egressPollTimer); }
   if (section === "overview") loadOverview();
+  // Errors are shown inside the panel, next to its data time.
+  if (section === "usage") loadUsageModels().catch(() => {});
   if (section === "plans") {
     if (selectedBillingUserID() !== state?.user?.id) selectBillingUser(state.user).catch((error) => billingPlanMessage(friendlyError(error)));
     loadBillingPlans().catch((error) => billingPlanMessage(friendlyError(error)));
@@ -9969,12 +10213,12 @@ async function loadDashboard() {
   await refreshState();
   loadUsageModelPickers();
   if (state.user.role === "owner") loadFormModelPicker("billing-batch-models", "manageable");
-  const personalQuery = queryFromForm(byId("usage-filter"));
+  usageDetailsStale = true;
   const tasks = [
-    loadPersonalUsage(personalQuery).catch((error) => {
+    ...(usageDetailsOpen ? [loadPersonalUsage(queryFromForm(byId("usage-filter"))).catch((error) => {
       setLocalMessage(byId("usage-filter"), friendlyError(error));
       notice(`个人用量加载失败：${friendlyError(error)}`, "error");
-    }),
+    })] : []),
     loadBillingDashboard().catch((error) => {
       notice(`额度与订阅加载失败：${friendlyError(error)}`, "error");
     }),
@@ -10300,8 +10544,15 @@ function bindUI() {
   }));
   byId("clear-user-filter").addEventListener("click", () => runButton(byId("clear-user-filter"), async () => {
     setPersonalScope();
-    await loadPersonalUsage(queryFromForm(byId("usage-filter")), false);
+    usageDetailsStale = true;
+    await Promise.all([usageDetailsOpen ? loadPersonalUsage(queryFromForm(byId("usage-filter")), false) : null, loadUsageModels()]);
   }, "加载中…"));
+  // Not runButton: the label flips between expand and collapse, and the list
+  // shows its own loading and error state.
+  byId("usage-details-toggle").addEventListener("click", () => toggleUsageDetails().catch((error) => {
+    setLocalMessage(byId("usage-filter"), friendlyError(error));
+  }));
+  byId("usage-models-refresh").addEventListener("click", (event) => runButton(event.currentTarget, loadUsageModels, "刷新中…"));
 
   byId("usage-filter").addEventListener("input", updateCSVLink);
   byId("usage-filter").addEventListener("change", updateCSVLink);

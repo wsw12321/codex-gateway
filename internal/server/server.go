@@ -64,6 +64,7 @@ type Server struct {
 	identificationWG        sync.WaitGroup
 	groupRepo               groupRepository
 	groupAccountUsageRepo   groupAccountUsageRepository
+	usageModelRepo          usageModelRepository
 	informationRepo         informationRepository
 	browserHandoffRepo      browserHandoffRepository
 	browserHandoffs         *browserHandoffStore
@@ -218,6 +219,7 @@ func (s *Server) routes() {
 	s.mux.Handle("GET /admin/state", s.requireSession(http.HandlerFunc(s.adminState)))
 	s.mux.Handle("GET /admin/usage", s.requireSession(http.HandlerFunc(s.usageJSON)))
 	s.mux.Handle("GET /admin/usage.csv", s.requireSession(http.HandlerFunc(s.usageCSV)))
+	s.mux.Handle("GET /admin/usage/models", s.requireSession(http.HandlerFunc(s.usageModelsJSON)))
 	s.mux.Handle("GET /admin/monitoring", s.requireSession(s.ownerOnly(http.HandlerFunc(s.monitoringJSON))))
 	s.mux.Handle("GET /admin/usage/global", s.requireSession(s.ownerOnly(http.HandlerFunc(s.globalUsageJSON))))
 	s.mux.Handle("GET /admin/upstream-accounts", s.requireSession(s.ownerOnly(http.HandlerFunc(s.upstreamAccountsJSON))))

@@ -4041,6 +4041,78 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(3px); }
   #group-detail > .panel-heading > .button-group { flex: 1 1 100%; justify-content: flex-start; }
   #group-detail > .panel-heading > .button-group > button { flex: 1 1 auto; }
 }
+/* Share bars: categorical slots validated for both themes (adjacent CVD ΔE ≥ 8.4).
+   Light slots 3–5 sit below 3:1 on white, so every bar ships a labelled legend. */
+.share-bar, .usage-model-swatch {
+  --share-1: #2a78d6; --share-2: #eb6834; --share-3: #1baf7a; --share-4: #eda100;
+  --share-5: #e87ba4; --share-6: #008300; --share-7: #6250d6; --share-other: #898781;
+}
+:root[data-theme="dark"] .share-bar, :root[data-theme="dark"] .usage-model-swatch {
+  --share-1: #3987e5; --share-2: #d95926; --share-3: #199e70; --share-4: #c98500;
+  --share-5: #d55181; --share-6: #008300; --share-7: #9085e9; --share-other: #898781;
+}
+[data-tone="1"] { --share-color: var(--share-1); }
+[data-tone="2"] { --share-color: var(--share-2); }
+[data-tone="3"] { --share-color: var(--share-3); }
+[data-tone="4"] { --share-color: var(--share-4); }
+[data-tone="5"] { --share-color: var(--share-5); }
+[data-tone="6"] { --share-color: var(--share-6); }
+[data-tone="7"] { --share-color: var(--share-7); }
+[data-tone="other"] { --share-color: var(--share-other); }
+.share-bar { display: grid; gap: .45rem; min-width: 0; margin: 0; }
+.share-bar-track { display: flex; gap: 2px; height: .75rem; overflow: hidden; border-radius: 4px; background: var(--line); }
+.share-bar-segment, .share-bar-segment:hover, .share-bar-segment:disabled {
+  flex: 0 0 auto; min-width: 3px; min-height: 0; height: 100%; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: var(--share-color); box-shadow: none; transform: none; cursor: pointer;
+}
+.share-bar-segment:hover, .share-bar-segment[aria-pressed="true"] { box-shadow: inset 0 0 0 2px var(--text); }
+.share-bar-segment:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 2px; }
+.share-bar-detail { margin: 0; min-height: 1.3em; color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+.share-bar-legend { display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin: 0; padding: 0; list-style: none; }
+.share-bar-legend li { min-width: 0; }
+.share-bar-key, .share-bar-key:hover {
+  display: inline-flex; align-items: baseline; gap: .35rem; min-height: 0; padding: .1rem .2rem; border: 0; border-radius: 6px;
+  color: var(--text); background: transparent; font-size: .8rem; font-weight: 500; text-align: left; box-shadow: none; transform: none;
+}
+button.share-bar-key { cursor: pointer; }
+button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: var(--hover); }
+.share-bar-key strong { font-weight: 650; font-variant-numeric: tabular-nums; }
+.share-bar-key small { color: var(--muted); font-variant-numeric: tabular-nums; }
+.share-bar-swatch { flex: none; align-self: center; width: .65rem; height: .65rem; border-radius: 3px; background: var(--share-color); }
+.share-bar-remainder .share-bar-swatch { background: var(--line); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.share-bar-track[data-empty="true"] { opacity: .7; }
+@media (forced-colors: active) {
+  .share-bar-segment, .share-bar-swatch { forced-color-adjust: none; border: 1px solid CanvasText; }
+}
+@media (pointer: coarse) {
+  .share-bar-track { height: 1.1rem; }
+  .share-bar-key { min-height: 44px; }
+}
+
+/* Usage page: 24-hour per-model charges first; the request list is opt-in. */
+.usage-models-panel { display: grid; gap: .85rem; margin-bottom: 1rem; }
+.usage-models-panel > .panel-heading { margin-bottom: 0; }
+.usage-models-panel > .panel-heading p { margin: .2rem 0 0; font-size: .8rem; }
+.usage-models-metrics { margin: 0; }
+.usage-models-table { width: 100%; }
+.usage-models-table td small { display: block; color: var(--muted); font-size: .76rem; }
+.usage-models-table td { vertical-align: middle; font-variant-numeric: tabular-nums; }
+.usage-model-name { display: inline-flex; align-items: center; gap: .45rem; min-width: 0; }
+.usage-model-name code { overflow-wrap: anywhere; }
+.usage-model-swatch { flex: none; width: .65rem; height: .65rem; border-radius: 3px; background: var(--share-color); }
+.usage-model-share { min-width: 7rem; }
+.usage-model-share span { display: block; }
+.usage-model-share progress { display: block; margin-top: .3rem; }
+.usage-details-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 0 0 1rem; }
+.usage-details-toggle small { color: var(--muted); font-size: .8rem; }
+@media (max-width: 600px) {
+  /* Shares are in the bar legend above; keep model, charge and requests. */
+  .usage-models-table th:nth-child(3), .usage-models-table td:nth-child(3),
+  .usage-models-table th:nth-child(5), .usage-models-table td:nth-child(5) { display: none; }
+  .usage-models-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .usage-models-metrics article:first-child { grid-column: 1 / -1; }
+}
+
 /* Quota freshness: when the numbers on screen were read, with a refresh beside it. */
 .quota-freshness { display: flex; flex-wrap: wrap; align-items: center; gap: .1rem .65rem; min-width: 0; margin-top: .35rem; }
 .quota-freshness .quota-freshness-time, .quota-freshness > small { display: inline; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.45; font-variant-numeric: tabular-nums; }

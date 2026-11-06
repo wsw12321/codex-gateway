@@ -13,6 +13,8 @@ const screenshots = process.env.SCREENSHOT_DIR || path.join(__dirname, "../../..
 const source = fs.readFileSync(path.join(assets, "app.js"), "utf8");
 const app = source.slice(0, source.lastIndexOf("\nstart().catch("));
 const origin = "http://127.0.0.1:8765";
+// The production policy from internal/httpx: no inline styles or scripts.
+const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'";
 const now = Date.parse("2026-11-06T06:00:00Z");
 const hour = 60 * 60 * 1000;
 const at = (offset) => new Date(now + offset).toISOString();
@@ -52,6 +54,19 @@ const codexAccounts = [
   {...accountBase, id: "2123456789abcdef", email_masked: "c***@example.test", quota_guard: {status: "available", source: "auto"}},
 ];
 
+const usageModels = {from: at(-24 * hour), until: at(1000), generated_at: at(1000), truncated: false,
+  total: {requests: 57, tokens: 1873400, charged_usd: "6.418200000000"},
+  models: [
+    {model: "gpt-5.6", requests: 31, errors: 1, in_progress: 0, tokens: 1204000, charged_usd: "3.912000000000"},
+    {model: "claude-sonnet-5", requests: 12, errors: 0, in_progress: 1, tokens: 402000, charged_usd: "1.640700000000"},
+    {model: "gpt-5.6-mini", requests: 9, errors: 0, in_progress: 0, tokens: 198000, charged_usd: "0.511500000000"},
+    {model: "gemini-3-pro", requests: 4, errors: 2, in_progress: 0, tokens: 69400, charged_usd: "0.354000000000"},
+    {model: "gpt-5.6-nano", requests: 1, errors: 0, in_progress: 0, tokens: 0, charged_usd: "0"},
+  ]};
+const usageRequests = Array.from({length: 4}, (_, index) => ({request_id: `req-${index}`, requested_at: at(-index * 17 * 60 * 1000),
+  model: ["gpt-5.6", "claude-sonnet-5", "gpt-5.6-mini", "gemini-3-pro"][index], state: "completed", http_status: 200,
+  input_tokens: 1200 * (index + 1), output_tokens: 300, device_id: "", api_key_id: "", key_prefix: "cgk_v1_demo"}));
+
 async function main() {
   fs.mkdirSync(screenshots, {recursive: true});
   const browser = await chromium.launch({headless: true, executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE});
@@ -68,11 +83,15 @@ async function main() {
     const errors = [], unexpected = [], reads = [];
     let identity = owner;
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => { if (/Content Security Policy/i.test(message.text())) errors.push(message.text()); });
     await page.route("**/*", async (route) => {
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin, "all traffic must stay on the mocked origin");
       const send = (body, status = 200, contentType = "application/json") => route.fulfill({status, contentType, body: typeof body === "string" ? body : JSON.stringify(body)});
-      if (url.pathname === "/") return send(fs.readFileSync(path.join(assets, "index.html"), "utf8"), 200, "text/html");
+      if (url.pathname === "/") {
+        return route.fulfill({status: 200, contentType: "text/html", body: fs.readFileSync(path.join(assets, "index.html"), "utf8"),
+          headers: {"Content-Security-Policy": csp}});
+      }
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/static/style.css") return send(fs.readFileSync(path.join(assets, "style.css"), "utf8"), 200, "text/css");
       if (url.pathname === "/static/theme.js") return send(fs.readFileSync(path.join(assets, "theme.js"), "utf8"), 200, "application/javascript");
@@ -85,7 +104,8 @@ async function main() {
       if (url.pathname === "/admin/billing/plans") return send({plans: []});
       if (url.pathname === "/admin/billing/users") return send({users: [owner, member]});
       if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-5.6"}, {id: "claude-sonnet-5"}]});
-      if (url.pathname === "/admin/usage") return send({summary: {requests: 12, tokens: 345678, error_rate: 0.02}, requests: []});
+      if (url.pathname === "/admin/usage") return send({summary: {requests: 12, tokens: 345678, error_rate: 0.02}, requests: usageRequests});
+      if (url.pathname === "/admin/usage/models") return send(usageModels);
       if (url.pathname === "/admin/usage/global") return send({summary: {usage: {tokens: 1234567, actual_cost_usd: "88.12", requests: 345}, active_users: 4, total_users: 9, pricing_coverage: 1}, rows: []});
       if (["/admin/upstream-accounts", "/admin/anthropic-accounts", "/admin/antigravity-accounts"].includes(url.pathname)) {
         return send({all: true, until: at(0), allocation_from: at(-24 * hour), allocation_until: at(0), quota_guard_safety_percent: 5,
@@ -163,6 +183,33 @@ async function main() {
     await page.locator("#groups-message").filter({hasText: "本群组额度已刷新"}).waitFor();
     await noOverflow("groups desktop");
     await capture(".groups-layout", "groups-quota-freshness-desktop.png");
+
+    // Usage: the 24-hour per-model charges come first; the request list is opt-in.
+    const usageStart = reads.length;
+    await open("usage", member, "");
+    await page.waitForFunction(() => document.getElementById("usage-models-time").dataset.state === "ready");
+    assert.equal(await page.locator("#usage-details").isVisible(), false, "request list starts collapsed");
+    assert.equal(reads.slice(usageStart).includes("/admin/usage"), false, "the request list is not read until expanded");
+    assert.equal(await page.locator("#usage-models-charged").textContent(), "US$6.4182");
+    assert.equal(await page.locator("#usage-models-share .share-bar-segment").count(), 4, "models without charges get no segment");
+    const widths = await page.locator("#usage-models-share .share-bar-segment").evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().width)));
+    assert.ok(widths[0] > widths[1] && widths[1] > widths[2], `segment widths follow charges: ${widths}`);
+    await page.locator("#usage-models-share .share-bar-segment").nth(1).hover();
+    assert.match(await page.locator("#usage-models-share .share-bar-detail").textContent(), /^claude-sonnet-5：US\$1\.6407，占 25\.6%$/);
+    await page.locator("#usage-models-share .share-bar-segment").nth(1).click();
+    await noOverflow("usage desktop");
+    await capture("#usage-models-panel", "usage-models-desktop.png");
+    await page.setViewportSize({width: 390, height: 844});
+    await noOverflow("usage mobile");
+    await capture("#usage-models-panel", "usage-models-mobile.png");
+    await page.setViewportSize({width: 1440, height: 1000});
+    await page.locator("#usage-details-toggle").click();
+    await page.locator("#usage-rows tr").nth(3).waitFor();
+    assert.equal(await page.locator("#usage-details-toggle").textContent(), "收起请求明细");
+    assert.equal(reads.slice(usageStart).filter((value) => value === "/admin/usage").length, 1);
+    await capture('[data-section="usage"]', "usage-details-expanded-desktop.png");
+    await page.locator("#usage-details-toggle").click();
+    assert.equal(await page.locator("#usage-details").isVisible(), false);
 
     // Upstream accounts: the list states when its status and costs were read.
     await open("upstream-accounts", owner, 'byId("upstream-account-filter").elements.range.value = "all"; syncUpstreamAccountRange(); await loadUpstreamAccounts(upstreamAccountQueryFromForm());');

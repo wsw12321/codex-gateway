@@ -69,6 +69,8 @@ function dashboard({role = "owner", userID = "self"} = {}) {
   const context = vm.createContext({
     document: {getElementById: node, createElement: (tag) => new Element(tag), addEventListener() {}, querySelectorAll: (selector) => root.querySelectorAll(selector), querySelector: (selector) => root.querySelector(selector)},
     window: {setTimeout: () => 0, clearTimeout() {}}, Intl, URLSearchParams, URL, crypto: {randomUUID}, console,
+    // queryFromForm reads the fake form's named elements.
+    FormData: class { constructor(form) { this.values = Object.entries(form.elements || {}).map(([name, field]) => [name, field.value]); } [Symbol.iterator]() { return this.values[Symbol.iterator](); } },
   });
   const source = readFileSync(path.join(__dirname, "../assets/app.js"), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstart().catch")), context);
@@ -179,4 +181,126 @@ test("group details record the time their quota was read", () => {
   assert.equal(ui.node("group-detail-refresh").disabled, false);
   ui.run(`resetGroupManagement()`);
   assert.equal(ui.node("group-detail-time").textContent, "数据时间：尚未加载");
+});
+
+const usageModels = (extra = {}) => ({
+  from: "2026-11-05T06:00:00Z", until: "2026-11-06T06:00:01Z", generated_at: "2026-11-06T06:00:01Z", truncated: false,
+  total: {requests: 9, tokens: 4200, charged_usd: "3.750000000001"},
+  models: [
+    {model: "gpt-5.6", requests: 6, errors: 1, in_progress: 0, tokens: 3000, charged_usd: "3.000000000001"},
+    {model: "claude-sonnet-5", requests: 2, errors: 0, in_progress: 1, tokens: 1200, charged_usd: "0.75"},
+    {model: "gpt-5.6-mini", requests: 1, errors: 0, in_progress: 0, tokens: 0, charged_usd: "0"},
+  ], ...extra,
+});
+
+function usageForm(ui) {
+  const form = ui.node("usage-filter");
+  form.elements = {user_id: new Element("input"), from: new Element("input"), until: new Element("input"), device_id: new Element("select"),
+    api_key_id: new Element("select"), project_id: new Element("select"), model: new Element("input"), state: new Element("select"), status: new Element("input")};
+  return form;
+}
+
+test("decimal sums stay exact past float precision", () => {
+  const ui = dashboard();
+  assert.equal(ui.run(`sumDecimals(["0.100000000001", "0.2", "3"])`), "3.300000000001");
+  assert.equal(ui.run(`sumDecimals(["12.5", "-0.000000000001"])`), "12.499999999999");
+  assert.equal(ui.run(`sumDecimals(["1", "abc"])`), null);
+});
+
+test("share bars size segments by value, keep a legend with amounts and show details on hover or click", () => {
+  const ui = dashboard();
+  ui.context.items = [
+    {key: "bob", label: "Bob", value: 30, amount: "US$30.00"},
+    {key: "alice", label: "Alice", value: 10, amount: "US$10.00"},
+  ];
+  const bar = ui.run(`shareBar({label: "群组额度", items, scale: 100, remainder: {label: "剩余", amount: "US$60.00"}})`);
+  const segments = bar.querySelectorAll(".share-bar-segment");
+  assert.deepEqual(segments.map((node) => node.dataset.width), ["30.000", "10.000"]);
+  assert.deepEqual(segments.map((node) => node.style.width), ["30%", "10%"]);
+  // Slots follow the sorted keys, not the order or size of the segments.
+  assert.deepEqual(segments.map((node) => node.dataset.tone), ["2", "1"]);
+  assert.equal(segments[0].attributes.title, "Bob：US$30.00（30.0%）");
+  const legend = bar.querySelector(".share-bar-legend").textContent;
+  assert.equal(legend, "BobUS$30.0030.0%AliceUS$10.0010.0%剩余US$60.0060.0%");
+  const detail = bar.querySelector(".share-bar-detail");
+  assert.equal(detail.textContent, "悬停或点击色块查看具体额度");
+  segments[1].dispatch("mouseenter");
+  assert.equal(detail.textContent, "Alice：US$10.00，占 10.0%");
+  segments[1].dispatch("mouseleave");
+  assert.equal(detail.textContent, "悬停或点击色块查看具体额度");
+  segments[0].dispatch("click");
+  assert.equal(segments[0].attributes["aria-pressed"], "true");
+  assert.equal(bar.querySelectorAll(".share-bar-key")[0].attributes["aria-pressed"], "true");
+  segments[1].dispatch("mouseleave");
+  assert.equal(detail.textContent, "Bob：US$30.00，占 30.0%", "a selection outlives hovering elsewhere");
+  bar.querySelectorAll(".share-bar-key")[0].dispatch("click");
+  assert.equal(detail.textContent, "悬停或点击色块查看具体额度", "clicking the selected entry clears it");
+
+  const empty = ui.run(`shareBar({label: "空", items: [], emptyText: "没有数据"})`);
+  assert.equal(empty.querySelector(".share-bar-detail").textContent, "没有数据");
+  assert.equal(empty.querySelectorAll(".share-bar-segment").length, 0);
+});
+
+test("more entities than slots fold into one exact 其他 segment", () => {
+  const ui = dashboard();
+  ui.context.items = Array.from({length: 9}, (_, index) => ({key: `m${index}`, label: `m${index}`, value: 9 - index, exact: `${9 - index}.000000000001`, amount: `US$${9 - index}`}));
+  const folded = ui.run(`foldShareItems(items, {otherLabel: "其他模型"})`);
+  assert.equal(folded.length, 7);
+  assert.deepEqual(JSON.parse(JSON.stringify(folded.slice(0, 6).map((item) => item.key))), ["m0", "m1", "m2", "m3", "m4", "m5"]);
+  const other = folded[6];
+  assert.equal(other.label, "其他模型（3 项）");
+  assert.equal(other.tone, "other");
+  assert.equal(other.amount, "US$6.000000000003");
+  assert.match(other.detail, /^其他模型：m6 US\$3、m7 US\$2、m8 US\$1$/);
+});
+
+test("the usage page opens on 24-hour per-model charges and keeps the request list collapsed", async () => {
+  const ui = dashboard({role: "member"});
+  usageForm(ui);
+  ui.context.respond = async (url) => url.startsWith("/admin/usage/models") ? usageModels() : {summary: {requests: 1}, requests: []};
+  await ui.run(`loadUsageModels()`);
+  assert.deepEqual(ui.calls.map(({url}) => url), ["/admin/usage/models"]);
+  assert.equal(ui.node("usage-models-charged").textContent, "US$3.750000000001");
+  assert.equal(ui.node("usage-models-requests").textContent, "9");
+  assert.equal(ui.node("usage-models-count").textContent, "3 个模型");
+  assert.match(ui.node("usage-models-time").textContent, /^数据时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:\d{2}$/);
+  assert.match(ui.node("usage-models-period").textContent, /^统计区间：2026\/11\/0\d \d{2}:00:00 — 2026\/11\/0\d \d{2}:00:01$/);
+  const segments = ui.node("usage-models-share").querySelectorAll(".share-bar-segment");
+  assert.deepEqual(segments.map((node) => node.attributes.title), ["gpt-5.6：US$3.000000000001（80.0%）", "claude-sonnet-5：US$0.75（20.0%）"]);
+  const rows = ui.node("usage-model-rows").children;
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].textContent, "gpt-5.6US$3.00000000000180.0%61 个失败3,000");
+  assert.equal(rows[1].textContent, "claude-sonnet-5US$0.7520.0%21 个进行中1,200");
+  assert.equal(rows[2].textContent, "gpt-5.6-miniUS$0.000.0%10");
+  assert.equal(rows[2].querySelector(".usage-model-swatch").dataset.tone, "other", "models without charges have no slot");
+
+  assert.equal(ui.run("usageDetailsOpen"), false);
+  await ui.run(`toggleUsageDetails()`);
+  assert.equal(ui.node("usage-details").classList.contains("hidden"), false);
+  assert.equal(ui.node("usage-details-toggle").textContent, "收起请求明细");
+  assert.equal(ui.node("usage-details-toggle").attributes["aria-expanded"], "true");
+  const listReads = () => ui.calls.filter(({url}) => url === "/admin/usage" || url.startsWith("/admin/usage?")).length;
+  assert.equal(listReads(), 1);
+  await ui.run(`toggleUsageDetails()`);
+  assert.equal(ui.node("usage-details").classList.contains("hidden"), true);
+  assert.equal(ui.node("usage-details-toggle").textContent, "展开请求明细");
+  await ui.run(`toggleUsageDetails()`);
+  assert.equal(listReads(), 1, "reopening reuses the loaded list");
+});
+
+test("model usage follows the drilled-down user and reports failures beside the data time", async () => {
+  const ui = dashboard();
+  const form = usageForm(ui);
+  form.elements.user_id.value = "member-2";
+  ui.context.respond = async () => { throw new Error("服务暂不可用"); };
+  await assert.rejects(ui.run(`loadUsageModels()`), /服务暂不可用/);
+  assert.equal(ui.calls[0].url, "/admin/usage/models?user_id=member-2");
+  assert.equal(ui.node("usage-models-time").textContent, "数据时间：加载失败");
+  assert.equal(ui.node("usage-models-charged").textContent, "—");
+  assert.match(ui.node("usage-model-rows").textContent, /模型用量加载失败：服务暂不可用/);
+
+  ui.context.respond = async () => usageModels({models: [], total: {requests: 0, tokens: 0, charged_usd: "0.000000000000"}});
+  await ui.run(`loadUsageModels()`);
+  assert.equal(ui.node("usage-model-rows").textContent, "最近 24 小时没有请求记录。");
+  assert.equal(ui.node("usage-models-share").querySelector(".share-bar-detail").textContent, "最近 24 小时没有请求。");
 });

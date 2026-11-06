@@ -146,7 +146,9 @@ lease，客户端断开会取消上游请求并释放租约，异常退出的遗
 Token 总量按 input + output 结算；cached input、cache write 和 reasoning 是细分
 指标，不重复计入总量。管理界面可按时间、用户、设备、Key、项目、模型和状态
 过滤，展示请求数、Token、实际扣款、缓存率、缓存写入量、错误率、p95 TTFT/耗时，
-并导出 CSV；实际扣款来自筛选区间内已结算的 `usage_charge` ledger。
+并导出 CSV；实际扣款来自筛选区间内已结算的 `usage_charge` ledger。“使用统计”页
+默认只显示最近 24 小时各模型的实际扣款、请求数与 Token（按扣款占比的彩色线形图
+加明细表，`GET /admin/usage/models`），逐条请求明细需点击“展开请求明细”后才加载。
 
 ### 额度与订阅计费
 

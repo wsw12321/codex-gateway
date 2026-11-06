@@ -716,6 +716,30 @@
                 <span>正在查看 <strong id="personal-scope-name"></strong> 的明细</span>
                 <button id="clear-user-filter" type="button" class="text-button">返回我的明细</button>
               </div>
+              <article id="usage-models-panel" class="panel usage-models-panel" aria-labelledby="usage-models-title">
+                <div class="panel-heading">
+                  <div><h3 id="usage-models-title">最近 24 小时各模型用量</h3><p id="usage-models-period" class="muted">统计区间：—</p></div>
+                  <div class="quota-freshness"><time id="usage-models-time" class="quota-freshness-time">数据时间：尚未加载</time><button id="usage-models-refresh" type="button" class="text-button quota-refresh" aria-label="刷新最近 24 小时各模型用量">刷新</button></div>
+                </div>
+                <div class="metrics compact usage-models-metrics" aria-live="polite">
+                  <article><span>实际扣款</span><strong id="usage-models-charged">—</strong><small>已结算费用，包含模型倍率</small></article>
+                  <article><span>请求</span><strong id="usage-models-requests">—</strong><small id="usage-models-count">—</small></article>
+                  <article><span>Token</span><strong id="usage-models-tokens">—</strong><small>输入 + 输出</small></article>
+                </div>
+                <div id="usage-models-share" class="usage-models-share"></div>
+                <div class="table-wrap">
+                  <table class="usage-models-table">
+                    <caption>按实际扣款降序。实际扣款来自已结算的用量扣费，进行中的请求结算后计入。</caption>
+                    <thead><tr><th scope="col">模型</th><th scope="col">实际扣款</th><th scope="col">扣款占比</th><th scope="col">请求</th><th scope="col">Token</th></tr></thead>
+                    <tbody id="usage-model-rows"><tr><td colspan="5" class="table-message">正在加载…</td></tr></tbody>
+                  </table>
+                </div>
+              </article>
+              <div class="usage-details-toggle">
+                <button id="usage-details-toggle" type="button" class="secondary" aria-expanded="false" aria-controls="usage-details">展开请求明细</button>
+                <small>按时间、设备、Key、项目、模型与状态筛选每一条请求（最多 500 条），并导出 CSV。</small>
+              </div>
+              <div id="usage-details" class="usage-details hidden">
               <form id="usage-filter" class="filters">
                 <input name="user_id" type="hidden">
                 <label>从
@@ -763,8 +787,9 @@
                 <table class="responsive-record-table usage-record-table">
                   <caption>最多显示 500 条请求元数据；汇总卡基于完整筛选区间。<span class="owner-only hidden">上游账号与 CSV 显示最终使用或最后尝试的账号；历史缺失显示“未归因”。</span></caption>
                   <thead><tr><th>时间</th><th class="record-secondary">设备</th><th class="record-secondary">Key</th><th class="record-secondary">项目</th><th>模型</th><th>状态</th><th class="record-secondary">HTTP</th><th class="record-secondary">Token</th><th class="record-secondary owner-only hidden">上游账号</th><th class="record-details-cell">详情</th></tr></thead>
-                  <tbody id="usage-rows"><tr><td colspan="8" class="table-message">正在加载…</td></tr></tbody>
+                  <tbody id="usage-rows"><tr><td colspan="8" class="table-message">展开后加载请求明细。</td></tr></tbody>
                 </table>
+              </div>
               </div>
             </div>
 
