@@ -65,8 +65,8 @@ docker run --rm --network none --read-only --cap-drop ALL \
             test "$attempt" -lt 30
             sleep 1
         done
-        grep -Fq "Version: v8.0.48" /run/cliproxy/startup.log
-        grep -Fq "Commit: dbb706215a3afd2f0ea3c96482d4233856466caa" /run/cliproxy/startup.log
+        grep -Fq "Version: v8.0.58" /run/cliproxy/startup.log
+        grep -Fq "Commit: e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882" /run/cliproxy/startup.log
         # No Gateway exists on this network: health must not wait for allocation.
         grep -Fq "strategy: \"gateway-allocation\"" /run/cliproxy/config.yaml
         grep -A1 "^discovery:" /run/cliproxy/config.yaml | grep -Eq "enabled:[[:space:]]*false"

@@ -1,12 +1,16 @@
-# CPA v8.0.48 原生模型与定价迁移
+# CPA v8.0.58 原生模型与定价迁移
 
-Gateway 固定使用 CLIProxyAPI **v8.0.48**（commit `dbb706215a3afd2f0ea3c96482d4233856466caa`）的模型目录，
+Gateway 固定使用 CLIProxyAPI **v8.0.58**（commit `e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882`）的模型目录，
 公开范围限于已经接入的供应商和审核过的模型。
 目录同步由 Gateway 启动时执行，只有同时满足价格、用户权限、API Key 白名单和上游账号能力的模型才会在
 `/v1/models` 中返回。Antigravity 默认模型为 `gemini-3.8-flash-high`；模型 ID 必须精确匹配，不能用
 别名替代。
 
-## v8.0.48 目录变更
+## v8.0.58 目录变更
+
+v8.0.58 在既有目录基础上新增 `gpt-6-chat-thinking`。模型只有在 Gateway 价格目录和用户权限策略中完成审核后才会公开。
+
+## v8.0.48 基线目录变更
 
 上游 v8.0.48 从全部四个 Codex 目录（free/team/plus/pro）移除 `gpt-5.5`，并新增 `gpt-6.1-terra`、
 Kimi 与 xAI 模型。Gateway 只退役 `gpt-5.5`，不新增公开模型：`gpt-6.1-terra` 尚无审核过的价格，

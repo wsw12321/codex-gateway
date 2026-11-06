@@ -1,9 +1,9 @@
 # Pinned CPA build
 
-The default image builds CPA `v8.0.48` at
-`dbb706215a3afd2f0ea3c96482d4233856466caa`. The Dockerfile verifies the peeled
+The default image builds CPA `v8.0.58` at
+`e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882`. The Dockerfile verifies the peeled
 release tag, the full commit and `CLIPROXY_PATCH_SHA256` before applying
-`cliproxy-v8.0.48-gateway.patch`. The build uses Go 1.26.10 and retains the security
+`cliproxy-v8.0.58-gateway.patch`. The build uses Go 1.26.10 and retains the security
 dependency updates from the prior build. The old v7 patch is retained only for the
 controlled compatibility rollback described in the operations documentation.
 
@@ -53,12 +53,12 @@ transport/quota regression list. Run
 runtime checks, including credential permissions, provider capabilities,
 management-key separation and exclusive refresh locking. These checks do not
 replace the maintenance-window tests with real accounts and a Gateway key.
-The v8.0.48 upgrade rebases the complete v8.0.30 gateway patch, keeps
+The v8.0.58 upgrade rebases the complete v8.0.30 gateway patch, keeps
 `klauspost/compress` at v1.18.7, disables downstream response compression on the
 internal Gateway hop, retires `gpt-5.5` and requires the `0038` catalog migration
 plus the offline pricing merge. Local CI replication and pending real-account
 acceptance are recorded in
-[`cpa-v8.0.48-validation.md`](../../docs/cpa-v8.0.48-validation.md).
+[`cpa-v8.0.58-validation.md`](../../docs/cpa-v8.0.58-validation.md).
 
 Claude subscriptions use Gateway provider `anthropic`; the adapter maps it to
 CPA executor `claude` and OAuth flow `anthropic`. The independent mode-0600
