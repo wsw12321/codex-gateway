@@ -15,7 +15,7 @@ import sys
 import tempfile
 import uuid
 
-from relay_image import ROOT, ALL_HOSTS, command, eventually
+from relay_image import ROOT, ALL_HOSTS, command, eventually, require_fixed_zlib
 
 KEY = "synthetic-account-control-key-not-production-0123456789"
 PASSWORD = "synthetic SS: # $ ' \" \\ 中文"
@@ -181,6 +181,7 @@ def run(helper=None):
         result = subprocess.run(args + [str(ROOT)], check=False)
         if result.returncode:
             raise SystemExit(result.returncode)
+    require_fixed_zlib(helper)
     with tempfile.TemporaryDirectory(prefix="account-egress-image-") as directory:
         directory = Path(directory)
         directory.chmod(0o755)

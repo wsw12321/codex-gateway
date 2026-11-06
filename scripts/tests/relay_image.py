@@ -44,6 +44,16 @@ def command(*args, check=True, timeout=45):
     return result
 
 
+def require_fixed_zlib(image):
+    """Reject an Alpine image that kept the base image's zlib (CVE-2026-85091)."""
+    check = 'v=$(apk info -ev zlib); test "$(apk version -t "${v#zlib-}" 1.3.2-r1)" != "<"'
+    result = command("docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+                     "--security-opt", "no-new-privileges:true", "--entrypoint", "/bin/sh", image, "-euc", check,
+                     check=False)
+    if result.returncode:
+        raise SystemExit(f"{image} lacks the zlib 1.3.2-r1 fix for CVE-2026-85091")
+
+
 def eventually(predicate, description, seconds=12):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:

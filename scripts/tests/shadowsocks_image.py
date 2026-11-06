@@ -18,7 +18,7 @@ import tempfile
 import time
 import uuid
 
-from relay_image import ALL_HOSTS, CLIENTS, FIXTURE, ROOT, Sandbox, command, eventually
+from relay_image import ALL_HOSTS, CLIENTS, FIXTURE, ROOT, Sandbox, command, eventually, require_fixed_zlib
 
 
 PASSWORD = "synthetic-only: # $ ' \" \\ UTF-8-密码"
@@ -279,6 +279,7 @@ if __name__ == "__main__":
                     *(argument for key in ("GOLANG_IMAGE", "RUNTIME_IMAGE")
                       for argument in ("--build-arg", key + "=" + locked[key])),
                     str(ROOT), timeout=1800)
+        require_fixed_zlib(image)
         run(locked["SQUID_IMAGE"], locked["MIHOMO_IMAGE"], image)
     finally:
         if built:
