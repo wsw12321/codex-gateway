@@ -36,7 +36,7 @@ RUN git init \
     && test "$(git rev-parse HEAD)" = "${CLIPROXY_COMMIT}"
 
 ARG CLIPROXY_PATCH_SHA256
-COPY deploy/codex-compat/cliproxy-v8.0.58-gateway.patch /tmp/cliproxy-multi-account.patch
+COPY deploy/codex-compat/cliproxy-v8.0.59-gateway.patch /tmp/cliproxy-multi-account.patch
 RUN printf "%s  /tmp/cliproxy-multi-account.patch\n" "$CLIPROXY_PATCH_SHA256" | sha256sum -c - \
     && git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch \
     && git apply --ignore-space-change /tmp/cliproxy-multi-account.patch \
@@ -82,7 +82,7 @@ RUN go test -count=1 \
 # hold manager locks, and simultaneous first requests must share one binding.
 # Watcher revisions must also preserve canonical account identity under updates.
 RUN go test -race -count=1 ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy
-# v8.0.58 stream finalization and asynchronous usage must not retain pooled
+# v8.0.59 stream finalization and asynchronous usage must not retain pooled
 # request state or let late interrupts affect the next response.
 RUN go test -race -count=1 ./internal/api/middleware ./internal/cache \
     ./internal/runtime/executor/helps ./sdk/cliproxy/usage ./sdk/api/handlers/openai

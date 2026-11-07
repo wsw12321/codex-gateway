@@ -1,6 +1,6 @@
 # CPA v8 切换、演练与回滚
 
-本次固定 CPA **v8.0.58 / e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882**，
+本次固定 CPA **v8.0.59 / c5251b57b3fa5dcbc689f514f4aa166daacb4481**，
 管理面板 **v1.25.0 / b87b9487f63e08ad97b1fb4e7c17b4adb811b922**。
 CPA 源码、补丁 SHA-256 和构建回归由 Dockerfile 与 Compose 校验；面板固定源码组件、
 依赖锁和同源资源摘要见 `deploy/cpa-panel/`。面板是去除配置、代理、权重、插件、任意请求
@@ -12,7 +12,7 @@ Gateway 管身份、模型和账号权限、权重、并发、限额、价格、
 
 ## 已运行 v8.0.30 的补丁升级
 
-从 CPA v8.0.30 升至 v8.0.48 **需要执行一次 `0038_cpa_v8_0_48_model_catalog.sql` 和价格目录合并**；本次从 v8.0.48 升至 v8.0.58 没有新增数据库迁移，但必须重新审核并锁定上游模型目录。
+从 CPA v8.0.30 升至 v8.0.48 **需要执行一次 `0038_cpa_v8_0_48_model_catalog.sql` 和价格目录合并**；此后升至 v8.0.58 和本次 v8.0.59 都没有新增数据库迁移，但必须重新审核并锁定上游模型目录。
 上游 Codex 目录移除了 `gpt-5.5`；本次只退役该模型，不新增公开模型。迁移只把 `gpt-5.5` 标为非活动目录
 并保存权限与倍率快照，不改 API Key allowlist、余额、usage、订阅范围或账单快照。凭据文件、身份映射和
 `.gateway-account-state` 继续复用，不需要重新登录。
@@ -31,7 +31,14 @@ Gateway 管身份、模型和账号权限、权重、并发、限额、价格、
 
 兼容层不再对内部 Gateway 链路压缩响应（`response-compression.enabled: false`），SSE 按原样流式
 传给 Gateway；这是部署入口固定的安全默认值，不需要手工配置。
-本次本地 CI 复现结果及真实账号待验收项见 [v8.0.58 验证记录](cpa-v8.0.58-validation.md)。
+v8.0.59 起，Codex 和 SIWC refresh 在发送前先在 OAuth 卷的 `.codex-refresh/` 中登记 claim，
+成功结果作为 receipt 保存。传输失败、响应不可读或 5xx 等无法证明 refresh token 未被轮换的情况，
+报告为 `refresh_outcome_unknown` 且不再重试：未过期的 access token 仍可使用，refresh 需对该账号重新执行
+`scripts/codex-device-login.sh`。不要删除 `.codex-refresh/`，也不要用重启、重新导入同一 token 或回滚镜像代替
+重新登录；旧镜像不识别该目录，回滚后不会遵守已有 claim。该目录的权限与其他 OAuth 文件相同（目录 `0700`、
+文件 `0600`、UID 10001），现有入口校验无需改动。
+
+本次本地 CI 复现结果及真实账号待验收项见 [v8.0.59 验证记录](cpa-v8.0.59-validation.md)。
 
 ## 历史：v8.0.20 升至 v8.0.30
 
@@ -80,7 +87,7 @@ TEST_DATABASE_URL="$DISPOSABLE_DATABASE_URL" \
   go test -count=1 -p 1 -tags=integration ./internal/store ./internal/server
 ```
 
-v8.0.58 的本地检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.58-validation.md)；
+v8.0.59 的本地检查与 CI 待验收项见 [本次验证记录](cpa-v8.0.59-validation.md)；
 此前构建与切换演练保存在 [v8 历史验证记录](cpa-v8-validation.md)。上述构建和运行检查应在
 进入实际部署维护窗口前完成，历史版本的成功结果不能替代本次验证。
 本地合成凭据、HTTP stub 和测试数据库的成功，

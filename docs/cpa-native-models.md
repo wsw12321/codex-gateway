@@ -1,10 +1,15 @@
-# CPA v8.0.58 原生模型与定价迁移
+# CPA v8.0.59 原生模型与定价迁移
 
-Gateway 固定使用 CLIProxyAPI **v8.0.58**（commit `e5e6ad1e1b91fc20ab9964e6fb22c0c269b9d882`）的模型目录，
+Gateway 固定使用 CLIProxyAPI **v8.0.59**（commit `c5251b57b3fa5dcbc689f514f4aa166daacb4481`）的模型目录，
 公开范围限于已经接入的供应商和审核过的模型。
 目录同步由 Gateway 启动时执行，只有同时满足价格、用户权限、API Key 白名单和上游账号能力的模型才会在
 `/v1/models` 中返回。Antigravity 默认模型为 `gemini-3.8-flash-high`；模型 ID 必须精确匹配，不能用
 别名替代。
+
+## v8.0.59 目录变更
+
+v8.0.59 未修改上游 `internal/registry/models/models.json`，SHA-256 仍为
+`99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0`。公开模型、价格和权限均不变。
 
 ## v8.0.58 目录变更
 
