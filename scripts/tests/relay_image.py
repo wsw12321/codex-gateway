@@ -44,14 +44,24 @@ def command(*args, check=True, timeout=45):
     return result
 
 
-def require_fixed_zlib(image):
-    """Reject an Alpine image that kept the base image's zlib (CVE-2026-85091)."""
-    check = 'v=$(apk info -ev zlib); test "$(apk version -t "${v#zlib-}" 1.3.2-r1)" != "<"'
-    result = command("docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
-                     "--security-opt", "no-new-privileges:true", "--entrypoint", "/bin/sh", image, "-euc", check,
-                     check=False)
-    if result.returncode:
-        raise SystemExit(f"{image} lacks the zlib 1.3.2-r1 fix for CVE-2026-85091")
+# Packages the locked Alpine base ships with fixed HIGH findings, and the
+# minimum fixed version each runtime image must contain.
+ALPINE_SECURITY_FIXES = (
+    ("zlib", "1.3.2-r1", "CVE-2026-85091"),
+    ("musl", "1.2.5-r13", "CVE-2026-107891"),
+    ("musl-utils", "1.2.5-r13", "CVE-2026-107891"),
+)
+
+
+def require_fixed_alpine_packages(image):
+    """Reject an Alpine image that kept a vulnerable package from the base image."""
+    for package, fixed, cve in ALPINE_SECURITY_FIXES:
+        check = f'v=$(apk info -ev {package}); test "$(apk version -t "${{v#{package}-}}" {fixed})" != "<"'
+        result = command("docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+                         "--security-opt", "no-new-privileges:true", "--entrypoint", "/bin/sh", image, "-euc", check,
+                         check=False)
+        if result.returncode:
+            raise SystemExit(f"{image} lacks the {package} {fixed} fix for {cve}")
 
 
 def eventually(predicate, description, seconds=12):

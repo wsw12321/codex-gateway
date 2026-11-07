@@ -255,7 +255,7 @@ git diff -- deploy/images.sources deploy/images.lock.env
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建证明 `v8.0.59` 的 peeled commit 正是
 `c5251b57b3fa5dcbc689f514f4aa166daacb4481`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.59-c5251b57-7ab8c39000cf1d95-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`v8.0.59-c5251b57-f6d25e7f06e22777-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
@@ -265,6 +265,8 @@ Codex refresh 结果不确定时不再重试，需重新登录，详见 [CPA v8 
 本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.59-validation.md)。
 2026-10-12 安全更新使用 Go 1.26.9 构建，并将 CPA 的 `golang.org/x/net`
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。
+2026-11-07 安全更新将 CPA 与 mihomo 的 `golang.org/x/net` 升级到 `v0.62.0`（`CVE-2026-78661`），
+并在 Alpine 运行镜像中显式升级 musl 到 `1.2.5-r13`（`CVE-2026-107891`），见 [验证记录](ci-musl-xnet-validation.md)。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥

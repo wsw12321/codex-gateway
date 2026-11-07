@@ -30,5 +30,5 @@ git apply "$upstream/mihomo-v1.19.32-dependencies.patch"
 # Match upstream's Docker build tag and baseline x86 instruction set. The
 # module graph and checksums are committed in the patch; never resolve updates.
 CGO_ENABLED=0 GOAMD64=v1 go build -mod=readonly -buildvcs=false -tags with_gvisor -trimpath \
-    -ldflags "-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=$MIHOMO_VERSION-gateway.2" \
+    -ldflags "-s -w -buildid= -X github.com/metacubex/mihomo/constant.Version=$MIHOMO_VERSION-gateway.3" \
     -o "$output" .

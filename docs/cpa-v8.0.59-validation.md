@@ -6,7 +6,7 @@
 - 固定 tag：`v8.0.59`
 - 固定 commit：`c5251b57b3fa5dcbc689f514f4aa166daacb4481`
 - Gateway 补丁：`deploy/codex-compat/cliproxy-v8.0.59-gateway.patch`
-- 补丁 SHA-256：`7ab8c39000cf1d953c1d0e52236e2ceb0c75bff607786774f42f4beacd55af8f`
+- 补丁 SHA-256：`f6d25e7f06e227775a3edaeff53341600b39696db1b94fc664cab0f91500233e`
 - 模型目录：`internal/registry/models/models.json`
 - 模型目录 SHA-256：`99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0`（与 v8.0.58 相同）
 
@@ -35,6 +35,8 @@ v8.0.59 没有修改 `go.mod`、模型目录或数据库结构，主要变更为
 - `sdk/cliproxy/auth/conductor_refresh.go`：错误发布前仍等待进行中的凭据保存，同时不把未知结果当作取消。
 
 `internal/util/nocopy_invariant_test.go` 中上游已加入与补丁相同的 `bolt_store.go` 条目，删除补丁中的重复项。
+补丁另将上游的 `golang.org/x/net` 从 `v0.60.0` 升到 `v0.62.0`，修复 CVE-2026-78661，
+见 [musl 与 x/net 安全更新](ci-musl-xnet-validation.md)。
 三个 Gateway 安全测试和上游新增的显式路径 refresh 测试按 journal 语义调整：每个用例重置进程内
 journal，脱敏状态码通过 `errors.As` 读取，测试凭据带有已验证的账号身份。
 

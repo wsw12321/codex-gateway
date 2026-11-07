@@ -145,7 +145,7 @@ dependency security updates and the repository's locked Go toolchain. Source
 provenance is recorded in deploy/shadowsocks/upstream/source.lock.env; build.sh
 and mihomo-v1.19.32-dependencies.patch in that directory reproduce the binary.
 The dependency updates include klauspost/compress v1.18.7, golang.org/x/crypto
-v0.57.0, golang.org/x/net v0.60.0 and golang.org/x/text v0.42.0. The official
+v0.58.0, golang.org/x/net v0.62.0 and golang.org/x/text v0.43.0. The official
 image pinned in deploy/images.lock.env is used only as a synthetic test server;
 its precompiled binary is not shipped in these application images.
 Upstream source:
