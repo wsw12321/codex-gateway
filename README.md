@@ -111,7 +111,11 @@ Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调�
 `426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
 不进入上游转发、配额、计费、并发租约或 usage 统计。
 
-`claude-*` 模型除原生 `/v1/messages` 外，也可以通过 `POST /v1/responses` 调用：
+Owner 在“模型权限”页开启“模型协议转换”后，`claude-*` 模型除原生 `/v1/messages`
+外，也可以通过 `POST /v1/responses` 调用。该开关默认禁用；禁用时这类请求在转发和
+计费前返回 `400 protocol_conversion_disabled`，开关状态读取失败时返回
+`503 protocol_conversion_unavailable`。开关只管 Claude，Gemini 经 Responses 调用
+不受影响；每次切换写入审计日志，并校验页面读取时的设置版本。开启后，
 CPA 把 OpenAI Responses 请求转换为 Claude Messages，并只从 Claude 账号池选号；
 权限、配额、账号归因和 Anthropic 计费与原生接口一致。`/v1/responses/compact`
 和 `service_tier: "priority"`（Claude Fast）对 Claude 模型在转发和计费前拒绝。
@@ -126,8 +130,9 @@ API Key 模型限制、价格、计费方式、扣费来源和上游账号池都
 使用记录同时保留客户端请求的模型和实际模型，控制台显示为“请求模型 → 实际模型”。
 响应不改写，客户端看到的是目标模型。路由只跳转一次，目标不能再是另一条规则的原模型。
 `/v1/messages` 只能路由到 Claude 模型（CPA 补丁对原生 Messages 固定使用 Claude
-执行器），`/v1/responses/compact` 只能路由到 Codex 模型，不兼容时在转发和扣费前
-返回 `400 model_route_incompatible`；Gemini 原生接口的模型在 URL 路径中，不参与路由；
+执行器），`/v1/responses/compact` 只能路由到 Codex 模型；经 `/v1/responses` 路由到 Claude
+模型还需要 Owner 开启模型协议转换。不兼容时在转发和扣费前返回
+`400 model_route_incompatible`；Gemini 原生接口的模型在 URL 路径中，不参与路由；
 `/v1/models` 不列出路由别名。路由查询失败时返回 `503 model_route_unavailable`，
 不会按原模型继续转发。验证记录见[模型路由验证](docs/model-routes-validation.md)。
 

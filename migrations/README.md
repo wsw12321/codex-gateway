@@ -81,6 +81,10 @@ Current migrations:
   routes. A request for `source_model` is admitted, priced, funded and
   forwarded as `target_model`; `usage_requests.requested_model` keeps the
   client's model. Existing rows are unchanged.
+- `internal/store/migrations/0047_protocol_conversion_settings.sql` — Owner
+  switch for protocol conversion, off by default. While off, `claude-*` models
+  are accepted only on native `/v1/messages`; Claude through OpenAI Responses
+  (including model routes to a Claude target) is rejected before admission.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

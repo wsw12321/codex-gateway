@@ -284,6 +284,7 @@
                 </div>
                 <button id="model-route-add" type="button" class="secondary">添加规则</button>
               </div>
+              <p id="model-routes-conversion-note" class="callout hidden" role="note">管理员当前未开启模型协议转换：通过 <code>/v1/responses</code> 命中目标为 Claude 模型的规则会被拒绝。</p>
               <div id="model-routes" class="model-route-list" aria-live="polite" aria-busy="true">正在加载模型路由…</div>
               <p class="form-message hidden" aria-live="polite"></p>
               <div class="model-routes-actions">
@@ -1026,6 +1027,17 @@
               <div><p class="eyebrow">OWNER ONLY</p><h2 id="model-access-title">模型权限</h2><p>控制每位用户可调用的定价目录模型，以及新用户注册时获得的默认权限。</p></div>
             </div>
             <p class="callout model-access-note" role="note">新用户默认值只在注册时复制；批量操作只影响当前已经存在的用户，两者互不追溯。</p>
+            <article class="panel protocol-conversion" aria-labelledby="protocol-conversion-title">
+              <div class="protocol-conversion-head">
+                <div>
+                  <p class="eyebrow">PROTOCOL CONVERSION</p>
+                  <h3 id="protocol-conversion-title">模型协议转换 <span id="protocol-conversion-status" class="status-badge" data-status="unknown">加载中</span></h3>
+                  <p>开启后，<code>claude-*</code> 模型也可以通过 OpenAI Responses（<code>/v1/responses</code>）调用，由 CPA 转换为 Claude Messages；用户把模型路由到 Claude 也依赖此开关。禁用时 Claude 模型只能通过 <code>/v1/messages</code> 调用。Gemini 经 Responses 调用不受影响。</p>
+                </div>
+                <button id="protocol-conversion-toggle" type="button" disabled>加载中…</button>
+              </div>
+              <p id="protocol-conversion-meta" class="protocol-conversion-meta" aria-live="polite"></p>
+            </article>
             <div id="model-access-loading" class="inline-loading hidden" role="status">正在加载模型权限…</div>
             <div class="model-access-grid">
               <article class="panel model-access-settings">

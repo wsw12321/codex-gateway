@@ -76,6 +76,9 @@ type modelRouteView struct {
 type modelRoutesResponse struct {
 	Routes    []modelRouteView `json:"routes"`
 	MaxRoutes int              `json:"max_routes"`
+	// ProtocolConversionEnabled tells the user whether routes to a Claude
+	// target can serve OpenAI Responses requests; null when it is unknown.
+	ProtocolConversionEnabled *bool `json:"protocol_conversion_enabled"`
 }
 
 func (s *Server) modelRoutesResponse(ctx context.Context, userID string, routes []store.ModelRoute) (modelRoutesResponse, error) {
@@ -84,6 +87,14 @@ func (s *Server) modelRoutesResponse(ctx context.Context, userID string, routes 
 		return modelRoutesResponse{}, err
 	}
 	response := modelRoutesResponse{Routes: make([]modelRouteView, 0, len(routes)), MaxRoutes: store.MaxUserModelRoutes}
+	if repository := s.protocolConversionStorage(); repository != nil {
+		// Informational only: the request path re-reads the setting and fails
+		// closed, so an unreadable value is reported as unknown here.
+		if settings, err := repository.ProtocolConversionSettings(ctx); err == nil {
+			enabled := settings.ClaudeResponsesEnabled
+			response.ProtocolConversionEnabled = &enabled
+		}
+	}
 	for _, route := range routes {
 		_, available := allowed[route.TargetModel]
 		response.Routes = append(response.Routes, modelRouteView{

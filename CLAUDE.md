@@ -70,7 +70,7 @@ All generation endpoints share one path:
 - `/v1/responses`
 - `/v1/responses/compact`
 - `/v1/messages` (Claude only; non-`claude-*` models are rejected)
-- `claude-*` models may also use `/v1/responses` (CPA translates it to Claude; `prepared.claude` routes it through the Anthropic client, provider and billing mode). `/v1/responses/compact` is rejected for Claude. CPA's translated usage omits `cache_write_tokens`, so settlement falls back to billing all uncached input at the higher cache-write price.
+- `claude-*` models may also use `/v1/responses` (CPA translates it to Claude; `prepared.claude` routes it through the Anthropic client, provider and billing mode), but only while the Owner switch `protocol_conversion_settings.claude_responses_enabled` is on. It is off by default; `requireClaudeResponsesConversion` (`internal/server/protocol_conversion.go`) reads it only for this request shape and fails closed. `/v1/responses/compact` is rejected for Claude. CPA's translated usage omits `cache_write_tokens`, so settlement falls back to billing all uncached input at the higher cache-write price.
 - `/v1beta/models/*` (Gemini native)
 
 The steps are:

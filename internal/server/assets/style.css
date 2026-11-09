@@ -840,6 +840,43 @@ nav a.active {
   gap: .5rem;
 }
 
+.protocol-conversion {
+  margin-bottom: 1rem;
+}
+
+.protocol-conversion-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: .75rem 1rem;
+}
+
+.protocol-conversion-head > div {
+  flex: 1 1 24rem;
+  min-width: 0;
+}
+
+.protocol-conversion-head h3 {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  margin: 0 0 .35rem;
+}
+
+.protocol-conversion-head p:not(.eyebrow),
+.protocol-conversion-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: .86rem;
+  line-height: 1.6;
+}
+
+.protocol-conversion-meta {
+  margin-top: .6rem;
+}
+
 .model-routes {
   margin-top: 1rem;
   display: grid;

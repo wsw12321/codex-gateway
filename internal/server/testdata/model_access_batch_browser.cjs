@@ -37,6 +37,7 @@ async function main() {
       if (url.pathname === "/static/app.js") return send(app, 200, "application/javascript");
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/model-catalog") return send({models: models.map((id) => ({id, group: "GPT"}))});
+      if (url.pathname === "/admin/protocol-conversion" && request.method() === "GET") return send({claude_responses_enabled: false, revision: 1, updated_at: "2026-11-09T08:00:00Z"});
       if (url.pathname === "/admin/model-access/models") return send({models: models.map((model) => ({model, default_enabled: defaults.get(model), enabled_user_count: users.filter((user) => permissions.get(`${model}/${user.user_id}`)).length, disabled_user_count: users.filter((user) => !permissions.get(`${model}/${user.user_id}`)).length}))});
       if (url.pathname === "/admin/model-access/users" && request.method() === "GET") {
         const selected = url.searchParams.getAll("models");

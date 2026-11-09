@@ -557,3 +557,15 @@ func TestModelRoutesDashboardBehavior(t *testing.T) {
 		t.Fatalf("model routes dashboard behavior failed: %v\n%s", err, output)
 	}
 }
+
+func TestProtocolConversionDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/protocol_conversion_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("protocol conversion dashboard behavior failed: %v\n%s", err, output)
+	}
+}

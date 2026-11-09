@@ -128,6 +128,12 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Messages 接口仅支持 Claude 模型")
 			return
 		}
+		// Claude through OpenAI Responses relies on CPA's protocol translation,
+		// which the Owner enables explicitly; it is off by default.
+		if prepared.claude && upstreamPath == "/v1/responses" && !s.requireClaudeResponsesConversion(w, r, prepared, routing.Model) {
+			_ = parsedBody.Close()
+			return
+		}
 		// Anthropic speed is independent of service_tier. Fast generation has
 		// separate rates, so never admit it under a standard pricing snapshot.
 		if prepared.anthropic && !prepared.countTokens && routing.Speed != "" && routing.Speed != "standard" {

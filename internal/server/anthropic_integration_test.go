@@ -188,6 +188,31 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 		s.Handler().ServeHTTP(w, r)
 		return w
 	}
+	// Protocol conversion is off by default: Claude through Responses is
+	// rejected before CPA, usage and billing. Only an Owner can enable it, and
+	// only from the revision they read.
+	rejectedBefore := responsesCalls.Load()
+	w = sendResponses("/v1/responses", `{"model":"claude-test","input":"hello"}`)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"protocol_conversion_disabled"`) || responsesCalls.Load() != rejectedBefore {
+		t.Fatalf("default conversion %d %s", w.Code, w.Body)
+	}
+	if err := repo.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE request_id=$1`, w.Header().Get(httpx.RequestIDHeader)).Scan(&counts); err != nil || counts != 0 {
+		t.Fatalf("rejected conversion usage=%d: %v", counts, err)
+	}
+	_, _, memberCookie := profileHTTPMember(t, f, "conversion-member")
+	f.send(t, "GET", "/admin/protocol-conversion", nil, memberCookie, 403)
+	f.send(t, "PUT", "/admin/protocol-conversion", map[string]any{"claude_responses_enabled": true, "revision": 1}, memberCookie, 403)
+	conversion := invitationResponse(t, f.send(t, "GET", "/admin/protocol-conversion", nil, f.cookie, 200))
+	revision, _ := conversion["revision"].(float64)
+	if conversion["claude_responses_enabled"] != false || revision < 1 {
+		t.Fatalf("default conversion settings %v", conversion)
+	}
+	f.send(t, "PUT", "/admin/protocol-conversion", map[string]any{"claude_responses_enabled": true, "revision": revision + 1}, f.cookie, 409)
+	f.send(t, "PUT", "/admin/protocol-conversion", map[string]any{"claude_responses_enabled": "yes", "revision": revision}, f.cookie, 400)
+	conversion = invitationResponse(t, f.send(t, "PUT", "/admin/protocol-conversion", map[string]any{"claude_responses_enabled": true, "revision": revision}, f.cookie, 200))
+	if conversion["claude_responses_enabled"] != true || conversion["revision"] != revision+1 {
+		t.Fatalf("enabled conversion settings %v", conversion)
+	}
 	for _, stream := range []bool{false, true} {
 		for _, fields := range []string{"", `"service_tier":"auto",`, `"service_tier":"default",`} {
 			before := responsesCalls.Load()
@@ -220,7 +245,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"source_model":"gpt-alias","target_model":"claude-test","available":true`) {
 		t.Fatalf("saved routes %s", w.Body)
 	}
-	if w = f.send(t, "GET", "/admin/model-routes", nil, f.cookie, 200); !strings.Contains(w.Body.String(), `"target_model":"claude-test"`) || !strings.Contains(w.Body.String(), `"max_routes":32`) {
+	if w = f.send(t, "GET", "/admin/model-routes", nil, f.cookie, 200); !strings.Contains(w.Body.String(), `"target_model":"claude-test"`) || !strings.Contains(w.Body.String(), `"max_routes":32`) || !strings.Contains(w.Body.String(), `"protocol_conversion_enabled":true`) {
 		t.Fatalf("listed routes %s", w.Body)
 	}
 	for _, stream := range []bool{false, true} {

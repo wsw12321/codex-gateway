@@ -2717,6 +2717,7 @@ function resetModelRoutes(message) {
   byId("model-routes").setAttribute("aria-busy", "false");
   byId("model-routes").replaceChildren(element("p", {className: "empty", text: message}));
   byId("model-routes-count").textContent = "";
+  byId("model-routes-conversion-note").classList.add("hidden");
   byId("model-route-add").disabled = true;
   byId("model-routes-save").disabled = true;
 }
@@ -2744,6 +2745,8 @@ function applyModelRoutes(result, targets) {
     targets: Array.isArray(targets) ? targets.map((item) => item?.id).filter((id) => typeof id === "string" && id) : modelRoutes.targets,
     draft: result.routes.map((route) => ({source: String(route.source_model || ""), target: String(route.target_model || "")})),
   };
+  // Only an explicit false warns; null means the state could not be read.
+  byId("model-routes-conversion-note").classList.toggle("hidden", result.protocol_conversion_enabled !== false);
   renderModelRoutes();
 }
 
@@ -6272,6 +6275,7 @@ async function loadModelAccess() {
   const current = modelSelectionIdentityCurrent();
   const sequence = ++modelAccessModelsRequestSequence;
   show("model-access-loading");
+  loadProtocolConversion();
   try {
     const [result, catalog] = await Promise.all([api("/admin/model-access/models", {}, current), modelCatalog("manageable")]);
     if (!current() || sequence !== modelAccessModelsRequestSequence) return;
@@ -6282,6 +6286,67 @@ async function loadModelAccess() {
     if (current()) throw error;
   } finally {
     if (current() && sequence === modelAccessModelsRequestSequence) hide("model-access-loading");
+  }
+}
+
+// Owner switch for Claude through OpenAI Responses. Writes carry the revision
+// that was read, so a stale page cannot undo another Owner's change.
+let protocolConversion = null;
+let protocolConversionSequence = 0;
+
+function renderProtocolConversion(message = "") {
+  const badge = byId("protocol-conversion-status"), toggle = byId("protocol-conversion-toggle");
+  const enabled = protocolConversion?.claude_responses_enabled === true;
+  badge.textContent = protocolConversion ? (enabled ? "已开启" : "已禁用") : "未知";
+  badge.dataset.status = protocolConversion ? (enabled ? "active" : "disabled") : "unknown";
+  const label = protocolConversion ? (enabled ? "禁用转换" : "开启转换") : "不可用";
+  toggle.className = enabled ? "danger" : "";
+  // While runButton holds the button busy it restores dataset.idleLabel when
+  // done, so the new state's label must go there instead of textContent.
+  if (toggle.dataset.busy === "true") {
+    toggle.dataset.idleLabel = label;
+  } else {
+    toggle.textContent = label;
+    toggle.disabled = !protocolConversion;
+  }
+  byId("protocol-conversion-meta").textContent = message || (protocolConversion
+    ? `最后修改：${formatDateTime(protocolConversion.updated_at, "—")}`
+    : "");
+}
+
+async function loadProtocolConversion() {
+  const current = modelSelectionIdentityCurrent();
+  const sequence = ++protocolConversionSequence;
+  try {
+    const result = await api("/admin/protocol-conversion", {}, current);
+    requireCurrentRequest(current);
+    if (sequence !== protocolConversionSequence) return;
+    if (typeof result?.claude_responses_enabled !== "boolean" || !(Number(result.revision) >= 1)) throw new Error("协议转换设置格式无效。");
+    protocolConversion = result;
+    renderProtocolConversion();
+  } catch (error) {
+    if (error?.code === "stale_request" || !current() || sequence !== protocolConversionSequence) return;
+    protocolConversion = null;
+    renderProtocolConversion(`协议转换设置加载失败：${friendlyError(error)}`);
+  }
+}
+
+async function toggleProtocolConversion() {
+  if (!protocolConversion) return;
+  const enable = !protocolConversion.claude_responses_enabled;
+  if (!enable && !window.confirm("禁用后，Claude 模型通过 /v1/responses 的新请求（包括路由到 Claude 的模型路由）会立即被拒绝，/v1/messages 不受影响。确定禁用？")) return;
+  const current = modelSelectionIdentityCurrent();
+  protocolConversionSequence++;
+  const body = JSON.stringify({claude_responses_enabled: enable, revision: protocolConversion.revision});
+  try {
+    const result = await sensitiveAction(() => api("/admin/protocol-conversion", {method: "PUT", body}, current), current);
+    requireCurrentRequest(current);
+    protocolConversion = result;
+    renderProtocolConversion();
+    notice(enable ? "已开启模型协议转换，Claude 模型现在也可以通过 /v1/responses 调用。" : "已禁用模型协议转换，Claude 模型只能通过 /v1/messages 调用。", "ok");
+  } catch (error) {
+    if (error?.status === 409 && current()) await loadProtocolConversion();
+    throw error;
   }
 }
 
@@ -10836,6 +10901,7 @@ function bindUI() {
   bindNavigation();
   bindOverview();
   byId("model-route-add").addEventListener("click", addModelRoute);
+  byId("protocol-conversion-toggle").addEventListener("click", (event) => runButton(event.currentTarget, toggleProtocolConversion, "保存中…"));
   byId("model-routes-form").addEventListener("submit", (event) => {
     event.preventDefault();
     runButton(byId("model-routes-save"), saveModelRoutes, "保存中…");
