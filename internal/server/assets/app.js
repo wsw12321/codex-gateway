@@ -1275,6 +1275,7 @@ function handleUnauthorized() {
   for (const id of ["devices", "projects", "keys", "passkeys"]) {
     byId(id).replaceChildren(element("div", {className: "empty", text: "登录后加载。"}));
   }
+  resetModelRoutes("登录后加载。");
   if (!checkingSession) notice("登录会话已失效，请重新登录。", "error", true);
 }
 
@@ -2702,6 +2703,128 @@ async function deleteKey(key) {
   renderAPIKeyMutation();
   notice("API Key 已永久删除。", "ok");
   await refreshAfterMutation();
+}
+
+// Model routes are edited as a draft list and saved as a whole. Targets come
+// from the caller's API-key model catalog; the server re-validates both.
+const modelRoutePattern = /^[A-Za-z0-9._:-]{1,128}$/;
+let modelRoutes = {loaded: false, maxRoutes: 32, targets: [], draft: []};
+let modelRoutesSequence = 0;
+
+function resetModelRoutes(message) {
+  modelRoutesSequence++;
+  modelRoutes = {loaded: false, maxRoutes: 32, targets: [], draft: []};
+  byId("model-routes").setAttribute("aria-busy", "false");
+  byId("model-routes").replaceChildren(element("p", {className: "empty", text: message}));
+  byId("model-routes-count").textContent = "";
+  byId("model-route-add").disabled = true;
+  byId("model-routes-save").disabled = true;
+}
+
+async function loadModelRoutes() {
+  if (!state?.user?.id) return;
+  const sequence = ++modelRoutesSequence, generation = identityGeneration, actor = state.user.id;
+  const current = () => !loggingOut && sequence === modelRoutesSequence && generation === identityGeneration && actor === state?.user?.id;
+  byId("model-routes").setAttribute("aria-busy", "true");
+  try {
+    const [result, targets] = await Promise.all([api("/admin/model-routes", {}, current), modelCatalog("api_key")]);
+    requireCurrentRequest(current);
+    applyModelRoutes(result, targets);
+  } catch (error) {
+    if (error?.code === "stale_request" || !current()) return;
+    resetModelRoutes(`模型路由加载失败：${friendlyError(error)}`);
+  }
+}
+
+function applyModelRoutes(result, targets) {
+  if (!Array.isArray(result?.routes)) throw new Error("模型路由格式无效。");
+  modelRoutes = {
+    loaded: true,
+    maxRoutes: Number(result.max_routes) > 0 ? Number(result.max_routes) : 32,
+    targets: Array.isArray(targets) ? targets.map((item) => item?.id).filter((id) => typeof id === "string" && id) : modelRoutes.targets,
+    draft: result.routes.map((route) => ({source: String(route.source_model || ""), target: String(route.target_model || "")})),
+  };
+  renderModelRoutes();
+}
+
+function renderModelRoutes() {
+  const host = byId("model-routes");
+  const {draft, targets, maxRoutes, loaded} = modelRoutes;
+  host.setAttribute("aria-busy", "false");
+  // A structural change makes any earlier validation message stale.
+  setLocalMessage(byId("model-routes-save"), "");
+  byId("model-routes-count").textContent = loaded ? `${draft.length} / ${maxRoutes} 条` : "";
+  byId("model-route-add").disabled = !loaded || draft.length >= maxRoutes;
+  byId("model-routes-save").disabled = !loaded;
+  if (!draft.length) {
+    host.replaceChildren(element("p", {className: "empty", text: "还没有模型路由。未命中规则的请求按原模型处理。"}));
+    return;
+  }
+  host.replaceChildren(...draft.map((row, index) => {
+    const number = index + 1;
+    const source = element("input", {type: "text", className: "model-route-source", attributes: {
+      placeholder: "原模型，例如 gpt-6-sol", "aria-label": `第 ${number} 条规则的原模型`,
+      autocomplete: "off", spellcheck: "false", maxlength: 128,
+    }});
+    source.value = row.source;
+    source.addEventListener("input", (event) => { row.source = event.currentTarget.value; });
+    const choices = row.target && !targets.includes(row.target) ? [row.target, ...targets] : targets;
+    const target = element("select", {className: "model-route-target", attributes: {"aria-label": `第 ${number} 条规则的目标模型`}},
+      element("option", {text: "选择目标模型", attributes: {value: ""}}),
+      ...choices.map((id) => element("option", {text: targets.includes(id) ? id : `${id}（当前不可用）`, attributes: {value: id}})));
+    target.value = row.target;
+    const warning = element("small", {className: "model-route-warning", text: "目标模型当前不可用，命中此规则的请求会被拒绝。", attributes: {role: "note"}});
+    warning.classList.toggle("hidden", !row.target || targets.includes(row.target));
+    target.addEventListener("change", (event) => {
+      row.target = event.currentTarget.value;
+      warning.classList.toggle("hidden", !row.target || targets.includes(row.target));
+    });
+    const remove = element("button", {type: "button", className: "secondary", text: "删除", attributes: {"aria-label": `删除第 ${number} 条规则`}});
+    remove.addEventListener("click", () => {
+      modelRoutes.draft.splice(index, 1);
+      renderModelRoutes();
+    });
+    return element("div", {className: "model-route-row"},
+      source, element("span", {className: "model-route-arrow", text: "→", attributes: {"aria-hidden": "true"}}), target, remove, warning);
+  }));
+}
+
+function addModelRoute() {
+  if (!modelRoutes.loaded || modelRoutes.draft.length >= modelRoutes.maxRoutes) return;
+  modelRoutes.draft.push({source: "", target: ""});
+  renderModelRoutes();
+  all(".model-route-source", byId("model-routes")).at(-1)?.focus?.();
+}
+
+function modelRoutesPayload() {
+  const routes = [], sources = new Set();
+  for (const row of modelRoutes.draft) {
+    const source = String(row.source || "").trim(), target = String(row.target || "").trim();
+    if (!source && !target) continue;
+    if (!source || !target) throw new Error("每条规则都需要填写原模型并选择目标模型。");
+    if (!modelRoutePattern.test(source)) throw new Error(`原模型 ${source} 格式无效：只能包含字母、数字和 . _ : -，最长 128 个字符。`);
+    if (source === target) throw new Error(`规则 ${source} 的原模型和目标模型不能相同。`);
+    if (sources.has(source)) throw new Error(`原模型 ${source} 重复，每个原模型只能有一条规则。`);
+    sources.add(source);
+    routes.push({source_model: source, target_model: target});
+  }
+  for (const route of routes) {
+    if (sources.has(route.target_model)) throw new Error(`目标模型 ${route.target_model} 也是另一条规则的原模型，路由不能串联。`);
+  }
+  return routes;
+}
+
+async function saveModelRoutes() {
+  if (!modelRoutes.loaded) return;
+  const routes = modelRoutesPayload();
+  const generation = identityGeneration, actor = state?.user?.id;
+  const current = () => !loggingOut && generation === identityGeneration && actor === state?.user?.id;
+  const result = await sensitiveAction(() => api("/admin/model-routes", {method: "PUT", body: JSON.stringify({routes})}, current), current);
+  requireCurrentRequest(current);
+  modelRoutesSequence++;
+  applyModelRoutes(result, null);
+  setLocalMessage(byId("model-routes-save"), "");
+  notice(routes.length ? `已保存 ${routes.length} 条模型路由，新请求立即生效。` : "已清空模型路由。", "ok");
 }
 
 async function addPasskey(event) {
@@ -6264,6 +6387,11 @@ function usageModelCell(request, requestState = field(request, "state", "State")
   const requested = field(request, "requested_model", "RequestedModel");
   if (requestState === "degraded" && requested && requested !== actual) {
     return element("code", {className: "usage-model-degraded", text: `${requested} → ${actual}`});
+  }
+  // A model route (or an upstream substitution on a failed request) records
+  // the client's model separately; billing always follows the actual model.
+  if (requested && actual !== "—" && requested !== actual) {
+    return element("code", {className: "usage-model-routed", text: `${requested} → ${actual}`, attributes: {title: "客户端请求的模型 → 实际使用并计费的模型"}});
   }
   return element("code", {text: actual});
 }
@@ -10571,6 +10699,7 @@ async function loadDashboard() {
     }),
     // Community and recharge cards are optional; a failure leaves them hidden.
     loadSiteContent().catch(() => {}),
+    loadModelRoutes(),
   ];
   if (state.user.role === "owner") {
     tasks.push(
@@ -10706,6 +10835,11 @@ function bindUI() {
   bindBrowserHandoff();
   bindNavigation();
   bindOverview();
+  byId("model-route-add").addEventListener("click", addModelRoute);
+  byId("model-routes-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(byId("model-routes-save"), saveModelRoutes, "保存中…");
+  });
   bindUpstreamAccountUI();
   bindInformation();
   bindModelIdentification();

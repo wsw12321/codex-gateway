@@ -276,6 +276,21 @@
             </div>
             <p id="key-guidance" class="callout hidden" role="status"></p>
             <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
+            <form id="model-routes-form" class="panel model-routes" aria-labelledby="model-routes-title" novalidate>
+              <div class="model-routes-head">
+                <div>
+                  <h3 id="model-routes-title">模型路由</h3>
+                  <p>把客户端请求的模型转到另一个模型，适用于你所有的 API Key。权限、Key 模型限制和计费都按目标模型；协议转换由 CPA 完成。Messages 接口只能路由到 Claude 模型，<code>/v1/responses/compact</code> 只能路由到 Codex 模型。</p>
+                </div>
+                <button id="model-route-add" type="button" class="secondary">添加规则</button>
+              </div>
+              <div id="model-routes" class="model-route-list" aria-live="polite" aria-busy="true">正在加载模型路由…</div>
+              <p class="form-message hidden" aria-live="polite"></p>
+              <div class="model-routes-actions">
+                <small id="model-routes-count" aria-live="polite"></small>
+                <button id="model-routes-save" type="submit">保存路由</button>
+              </div>
+            </form>
           </section>
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">

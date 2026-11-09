@@ -685,7 +685,7 @@ func TestGroupQuotaHTTPResponseHasStableCodeAndRetryAfter(t *testing.T) {
 			begins := 0
 			db := sql.OpenDB(groupAdmissionErrorConnector{err: &store.GroupQuotaExceededError{GroupID: groupHandlerTestID, RetryAfter: tc.retry, NotStarted: tc.notStarted}, begins: &begins})
 			t.Cleanup(func() { _ = db.Close() })
-			s := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: config.Config{BodyLimit: 1024, UsagePricing: config.UsagePricing{SchemaVersion: 1, Models: map[string]config.ModelPricing{"gpt-test": {InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0"}}}}}
+			s := &Server{store: store.New(db), modelRouteRepo: &fakeModelRoutes{}, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), config: config.Config{BodyLimit: 1024, UsagePricing: config.UsagePricing{SchemaVersion: 1, Models: map[string]config.ModelPricing{"gpt-test": {InputUSDPerMillion: "1", CachedInputUSDPerMillion: "0", OutputUSDPerMillion: "0"}}}}}
 			r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-test","input":"test"}`))
 			r = r.WithContext(context.WithValue(r.Context(), apiKeyContextKey, store.APIKey{ID: "key", UserID: "user", DeviceID: "device"}))
 			w := httptest.NewRecorder()

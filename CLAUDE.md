@@ -75,7 +75,7 @@ All generation endpoints share one path:
 
 The steps are:
 
-1. `prepareModelBody` stream-scans the top-level `model` and `service_tier`, spooling large bodies to disk.
+1. `prepareModelBody` stream-scans the top-level `model` and `service_tier`, spooling large bodies to disk. On the Responses and Messages routes, `applyModelRoute` (`internal/server/model_routes.go`) then looks up the user's model route (`user_model_routes`) and, on a hit, rewrites only the top-level `model` value in the spooled body. Every later step (permission, key allowlist, pricing, provider, funding) sees the target model; `usage_requests.requested_model` keeps the client's model. A lookup error fails closed with `503 model_route_unavailable`; protocol translation stays in CPA.
 2. Snapshot the pricing for the exact model from `config.UsagePricing`.
 3. `store.AdmitRequest` runs **one transaction** that covers quota reservation (RPM/concurrency/daily), the usage row, the model-permission check, and the billing reservation with its fixed funding-source order.
 4. Forward through `proxy.Router` or the provider client. A lease-renewal goroutine keeps long SSE streams alive.

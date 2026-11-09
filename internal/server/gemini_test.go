@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -176,7 +177,11 @@ func TestGeminiRejectionsNeverReserveQuotaOrBill(t *testing.T) {
 			if got := harness.upstreamCalls.Load(); got != 0 {
 				t.Fatalf("upstream calls = %d, want 0", got)
 			}
-			queries := harness.database.queriesSnapshot()
+			// Responses routes also resolve the user's model route; it reads no
+			// quota, billing or permission state.
+			queries := slices.DeleteFunc(harness.database.queriesSnapshot(), func(query string) bool {
+				return strings.Contains(query, "FROM user_model_routes")
+			})
 			if len(queries) != 1+test.wantAccessReads || !strings.Contains(queries[0], "FROM api_keys k") {
 				t.Fatalf("queries = %#v, want authentication and %d permission reads", queries, test.wantAccessReads)
 			}

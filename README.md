@@ -118,6 +118,19 @@ CPA 把 OpenAI Responses 请求转换为 Claude Messages，并只从 Claude 账�
 CPA 转换后的用量不含缓存写入数量，结算时按所有未命中缓存的输入均为缓存写入、
 使用较高的写入单价保守计费；需要准确缓存计费时请使用 `/v1/messages`。
 
+每个用户可以在“API Keys”页的“模型路由”卡片维护自己的路由表（最多 32 条），
+例如把 `gpt-6-sol` 路由到 `claude-sonnet-5-5`。规则对该用户的全部 API Key 生效，
+保存需要近期身份验证并写入审计日志。命中规则后，Gateway 只把请求体顶层 `model`
+替换为目标模型，客户端协议原样交给 CPA，由 CPA 完成协议转换；模型权限、
+API Key 模型限制、价格、计费方式、扣费来源和上游账号池都按目标模型判断，
+使用记录同时保留客户端请求的模型和实际模型，控制台显示为“请求模型 → 实际模型”。
+响应不改写，客户端看到的是目标模型。路由只跳转一次，目标不能再是另一条规则的原模型。
+`/v1/messages` 只能路由到 Claude 模型（CPA 补丁对原生 Messages 固定使用 Claude
+执行器），`/v1/responses/compact` 只能路由到 Codex 模型，不兼容时在转发和扣费前
+返回 `400 model_route_incompatible`；Gemini 原生接口的模型在 URL 路径中，不参与路由；
+`/v1/models` 不列出路由别名。路由查询失败时返回 `503 model_route_unavailable`，
+不会按原模型继续转发。验证记录见[模型路由验证](docs/model-routes-validation.md)。
+
 Gemini 原生接口转发到同一 CPA 的 Antigravity provider，接受 `x-goog-api-key` 或 Bearer 中的
 Gateway key，重复或多来源凭据拒绝。它们共用现有权限、配额和结算，使用 Gemini
 格式错误；请求限制为 1 MiB，支持文本、客户端函数工具和原生 SSE。累计 usage 只结算一次，

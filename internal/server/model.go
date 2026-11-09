@@ -28,6 +28,10 @@ type requestRouting struct {
 	Model       string
 	ServiceTier string
 	Speed       string
+	// modelStart and modelEnd are the byte offsets of the top-level model
+	// string's contents, excluding quotes, in the scanned body.
+	modelStart int64
+	modelEnd   int64
 }
 
 type countingBody struct {
@@ -38,6 +42,7 @@ type countingBody struct {
 
 type temporaryRequestFile struct {
 	file    *os.File
+	size    int64
 	path    string
 	release func()
 	once    sync.Once
@@ -97,7 +102,8 @@ func (s *Server) prepareModelBody(w http.ResponseWriter, r *http.Request, limit 
 		cleanup()
 		return requestRouting{}, nil, fmt.Errorf("%w: secure temporary file: %v", errRequestBodySpool, err)
 	}
-	if _, err := io.Copy(file, original); err != nil {
+	size, err := io.Copy(file, original)
+	if err != nil {
 		_ = original.Close()
 		cleanup()
 		var maxBytes *http.MaxBytesError
@@ -123,7 +129,7 @@ func (s *Server) prepareModelBody(w http.ResponseWriter, r *http.Request, limit 
 		cleanup()
 		return requestRouting{}, nil, fmt.Errorf("%w: rewind parsed request body: %v", errRequestBodySpool, err)
 	}
-	temporary := &temporaryRequestFile{file: file, path: path, release: release}
+	temporary := &temporaryRequestFile{file: file, size: size, path: path, release: release}
 	body := &countingBody{
 		reader: temporary, closer: temporary,
 	}
@@ -168,7 +174,9 @@ func extractTopLevelRouting(raw []byte) (requestRouting, error) {
 func scanTopLevelRouting(source io.Reader, includeSpeed bool) (requestRouting, error) {
 	var routing requestRouting
 	seenModel, seenServiceTier, seenSpeed := false, false, false
-	reader := bufio.NewReaderSize(source, 64<<10)
+	counted := &countingByteReader{reader: source}
+	reader := bufio.NewReaderSize(counted, 64<<10)
+	offset := func() int64 { return counted.bytes - int64(reader.Buffered()) }
 	character, err := nextNonSpaceByte(reader)
 	if err != nil || character != '{' {
 		return routing, errModelNotFound
@@ -205,11 +213,13 @@ func scanTopLevelRouting(source io.Reader, includeSpeed bool) (requestRouting, e
 			if character != '"' {
 				return routing, errModelNotFound
 			}
+			start := offset()
 			model, escaped, truncated, err := readStreamingJSONString(reader, 129)
 			if err != nil || escaped || truncated || !validModel(model) || seenModel {
 				return routing, errModelNotFound
 			}
 			routing.Model, seenModel = model, true
+			routing.modelStart, routing.modelEnd = start, offset()-1
 		} else if key == "service_tier" {
 			if character != '"' {
 				return routing, errModelNotFound
@@ -257,6 +267,36 @@ func scanTopLevelRouting(source io.Reader, includeSpeed bool) (requestRouting, e
 			return routing, errModelNotFound
 		}
 	}
+}
+
+type countingByteReader struct {
+	reader io.Reader
+	bytes  int64
+}
+
+func (r *countingByteReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.bytes += int64(n)
+	return n, err
+}
+
+// rewriteTopLevelModel replaces the scanned top-level model value of an
+// unread spooled body and returns the new body length. The scanner rejects
+// escaped model strings, so the value's bytes are exactly routing.Model, and
+// a validModel target never needs JSON escaping.
+func rewriteTopLevelModel(body *countingBody, routing requestRouting, target string) (int64, error) {
+	file, ok := body.closer.(*temporaryRequestFile)
+	start, end := routing.modelStart, routing.modelEnd
+	if !ok || body.bytes != 0 || !validModel(target) || start <= 0 || end < start || end >= file.size ||
+		end-start != int64(len(routing.Model)) {
+		return 0, errors.New("request body cannot be rewritten")
+	}
+	body.reader = io.MultiReader(
+		io.NewSectionReader(file.file, 0, start),
+		strings.NewReader(target),
+		io.NewSectionReader(file.file, end, file.size-end),
+	)
+	return file.size - (end - start) + int64(len(target)), nil
 }
 
 func nextNonSpaceByte(reader *bufio.Reader) (byte, error) {

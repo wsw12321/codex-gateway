@@ -77,6 +77,10 @@ Current migrations:
   account egress node cipher check to accept `2022-blake3-aes-128-gcm`.
   Existing nodes are unchanged. Gateway and `account-egress` validate the
   Base64 pre-shared key format before a node reaches Mihomo.
+- `internal/store/migrations/0046_user_model_routes.sql` — per-user model
+  routes. A request for `source_model` is admitted, priced, funded and
+  forwarded as `target_model`; `usage_requests.requested_model` keeps the
+  client's model. Existing rows are unchanged.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

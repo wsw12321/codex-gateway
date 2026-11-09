@@ -48,6 +48,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 	}
 	var interruptStream atomic.Bool
 	var upstreamCalls, responsesCalls atomic.Int64
+	var lastResponsesBody atomic.Value
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -84,6 +85,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			// CPA's Claude-to-Responses translation folds cache writes into
 			// input_tokens and omits cache_write_tokens.
 			responsesCalls.Add(1)
+			lastResponsesBody.Store(string(data))
 			usage := `{"input_tokens":60,"input_tokens_details":{"cached_tokens":20},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":67}`
 			if strings.Contains(string(data), `"stream":true`) {
 				w.Header().Set("Content-Type", "text/event-stream")
@@ -209,6 +211,46 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			}
 		}
 	}
+	// A user model route replaces the client's model before permission,
+	// pricing and forwarding. The key allowlist holds only the target model,
+	// and CPA receives the target in the client's original protocol.
+	f.send(t, "PUT", "/admin/model-routes", map[string]any{"routes": []map[string]string{{"source_model": "gpt-alias", "target_model": "gpt-unpriced"}}}, f.cookie, 400)
+	f.send(t, "PUT", "/admin/model-routes", map[string]any{"routes": []map[string]string{{"source_model": "a", "target_model": "b"}, {"source_model": "b", "target_model": "claude-test"}}}, f.cookie, 400)
+	w = f.send(t, "PUT", "/admin/model-routes", map[string]any{"routes": []map[string]string{{"source_model": "gpt-alias", "target_model": "claude-test"}}}, f.cookie, 200)
+	if !strings.Contains(w.Body.String(), `"source_model":"gpt-alias","target_model":"claude-test","available":true`) {
+		t.Fatalf("saved routes %s", w.Body)
+	}
+	if w = f.send(t, "GET", "/admin/model-routes", nil, f.cookie, 200); !strings.Contains(w.Body.String(), `"target_model":"claude-test"`) || !strings.Contains(w.Body.String(), `"max_routes":32`) {
+		t.Fatalf("listed routes %s", w.Body)
+	}
+	for _, stream := range []bool{false, true} {
+		before := responsesCalls.Load()
+		w = sendResponses("/v1/responses", fmt.Sprintf(`{"model":"gpt-alias","stream":%t,"input":"hello"}`, stream))
+		forwarded, _ := lastResponsesBody.Load().(string)
+		if w.Code != 200 || responsesCalls.Load() != before+1 || forwarded != fmt.Sprintf(`{"model":"claude-test","stream":%t,"input":"hello"}`, stream) {
+			t.Fatalf("routed stream=%t: %d %s forwarded=%s", stream, w.Code, w.Body, forwarded)
+		}
+		var requested, routed, provider, mode, cost string
+		err := repo.DB().QueryRowContext(ctx, `SELECT u.requested_model,u.model,a.provider,b.billing_mode,b.actual_cost_usd::text
+			FROM usage_requests u JOIN upstream_accounts a ON a.id=u.upstream_account_id JOIN billing_reservations b USING(request_id) WHERE request_id=$1`,
+			w.Header().Get(httpx.RequestIDHeader)).Scan(&requested, &routed, &provider, &mode, &cost)
+		if err != nil || requested != "gpt-alias" || routed != "claude-test" || provider != "anthropic" || mode != store.BillingModeAnthropicAPIEquivalent || cost != "0.000351000000" {
+			t.Fatalf("routed usage stream=%t: %s %s %s %s %s %v", stream, requested, routed, provider, mode, cost, err)
+		}
+	}
+	before := upstreamCalls.Load()
+	w = sendResponses("/v1/responses/compact", `{"model":"gpt-alias","input":"hello"}`)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"model_route_incompatible"`) || upstreamCalls.Load() != before {
+		t.Fatalf("routed compact %d %s", w.Code, w.Body)
+	}
+	if err := repo.DB().QueryRowContext(ctx, `SELECT count(*) FROM usage_requests WHERE request_id=$1`, w.Header().Get(httpx.RequestIDHeader)).Scan(&counts); err != nil || counts != 0 {
+		t.Fatalf("routed compact usage=%d: %v", counts, err)
+	}
+	f.send(t, "PUT", "/admin/model-routes", map[string]any{"routes": []map[string]string{}}, f.cookie, 200)
+	if w = sendResponses("/v1/responses", `{"model":"gpt-alias","input":"hello"}`); w.Code != 403 || !strings.Contains(w.Body.String(), `"code":"model_not_allowed"`) {
+		t.Fatalf("unrouted alias %d %s", w.Code, w.Body)
+	}
+
 	// Fast/priority generation is not priced for Claude, and compact has no
 	// Claude implementation. Both are rejected before upstream or charging.
 	for _, test := range []struct {

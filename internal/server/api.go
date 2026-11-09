@@ -78,6 +78,9 @@ type preparedAPIRequest struct {
 	anthropic   bool
 	claude      bool
 	countTokens bool
+	// requestedModel is the client's model when a user model route replaced
+	// it with model; empty for unrouted requests.
+	requestedModel string
 }
 
 func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath, endpoint, fixedModel string) {
@@ -105,6 +108,10 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			}
 			return
 		}
+		if ok := s.applyModelRoute(w, r, &routing, parsedBody, &prepared); !ok {
+			_ = parsedBody.Close()
+			return
+		}
 		prepared.model, prepared.serviceTier, prepared.body = routing.Model, routing.ServiceTier, parsedBody
 		prepared.claude = strings.HasPrefix(routing.Model, "claude-")
 		if prepared.claude && (prepared.serviceTier == "auto" || prepared.serviceTier == "standard_only") {
@@ -114,6 +121,10 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 		// OpenAI Responses protocol. Messages routes remain Claude-only.
 		if prepared.anthropic && !prepared.claude {
 			_ = parsedBody.Close()
+			if prepared.requestedModel != "" {
+				writeModelRouteIncompatible(w, r, prepared.requestedModel, routing.Model, "Messages 接口只能路由到 Claude 模型")
+				return
+			}
 			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Messages 接口仅支持 Claude 模型")
 			return
 		}
@@ -197,6 +208,10 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 				} else {
 					internalError(s, w, r, "resolve model access for compact", err)
 				}
+				return
+			}
+			if prepared.requestedModel != "" {
+				writeModelRouteIncompatible(w, r, prepared.requestedModel, model, "/v1/responses/compact 只能路由到 Codex 模型")
 				return
 			}
 			message := "Antigravity 不支持 /v1/responses/compact，请使用 /v1/responses"
@@ -283,6 +298,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		Usage: store.BeginUsageRequestParams{
 			RequestID: requestID, UserID: key.UserID, DeviceID: key.DeviceID,
 			APIKeyID: key.ID, ProjectID: projectID, Model: model, Endpoint: endpoint,
+			RequestedModel:       prepared.requestedModel,
 			RequestedServiceTier: requestedServiceTier,
 			PricingRuleVersion:   pricingRuleVersion,
 			RequestedAt:          requestedAt, RequestBytes: requestBytes,

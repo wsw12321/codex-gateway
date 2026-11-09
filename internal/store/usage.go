@@ -44,12 +44,15 @@ func scanUsageRequest(row rowScanner) (UsageRequest, error) {
 }
 
 type BeginUsageRequestParams struct {
-	RequestID            string
-	UserID               string
-	DeviceID             string
-	APIKeyID             string
-	ProjectID            string
-	Model                string
+	RequestID string
+	UserID    string
+	DeviceID  string
+	APIKeyID  string
+	ProjectID string
+	Model     string
+	// RequestedModel is the client's model when a user route replaced it;
+	// empty means the request used Model directly.
+	RequestedModel       string
 	RequestedServiceTier string
 	PricingRuleVersion   int
 	Endpoint             string
@@ -72,6 +75,10 @@ type queryRower interface {
 
 func (s *Store) normalizeBeginUsageRequest(params BeginUsageRequestParams) (BeginUsageRequestParams, error) {
 	params.Model = strings.TrimSpace(params.Model)
+	params.RequestedModel = strings.TrimSpace(params.RequestedModel)
+	if params.RequestedModel == "" {
+		params.RequestedModel = params.Model
+	}
 	params.RequestedServiceTier = strings.TrimSpace(params.RequestedServiceTier)
 	if params.PricingRuleVersion == 0 {
 		params.PricingRuleVersion = 1
@@ -79,7 +86,7 @@ func (s *Store) normalizeBeginUsageRequest(params BeginUsageRequestParams) (Begi
 	if params.RequestID == "" || params.UserID == "" || params.DeviceID == "" ||
 		params.APIKeyID == "" || params.Model == "" || params.RequestBytes < 0 ||
 		(params.PricingRuleVersion != 1 && params.PricingRuleVersion != 2) ||
-		len(params.RequestedServiceTier) > 32 {
+		len(params.RequestedServiceTier) > 32 || len(params.RequestedModel) > 128 {
 		return params, fmt.Errorf("%w: invalid usage request metadata", ErrInvalid)
 	}
 	if params.RequestedAt.IsZero() {
@@ -94,13 +101,14 @@ func beginUsageRequestTx(ctx context.Context, queryer queryRower, params BeginUs
 			(request_id, user_id, device_id, api_key_id, key_prefix, project_id,
 			 model, requested_model, requested_service_tier, pricing_rule_version,
 			 endpoint, requested_at, request_bytes)
-		SELECT $1, $2, $3, k.id, k.key_prefix, $5, $6, $6, $7, $8, $9, $10, $11
+		SELECT $1, $2, $3, k.id, k.key_prefix, $5, $6, COALESCE(NULLIF($12, ''), $6), $7, $8, $9, $10, $11
 		FROM api_key_history k
 		WHERE k.id = $4 AND k.user_id = $2 AND k.device_id = $3
 		RETURNING `+usageRequestColumns,
 		params.RequestID, params.UserID, params.DeviceID, params.APIKeyID,
 		valueOrNil(params.ProjectID), params.Model, valueOrNil(params.RequestedServiceTier),
 		params.PricingRuleVersion, params.Endpoint, params.RequestedAt, params.RequestBytes,
+		params.RequestedModel,
 	))
 	return request, mapDBError("begin usage request", err)
 }

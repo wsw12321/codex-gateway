@@ -545,3 +545,15 @@ func TestUsageDashboardIncludesDegradedStatePresentation(t *testing.T) {
 		t.Fatal("usage dashboard is missing degraded warning style")
 	}
 }
+
+func TestModelRoutesDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/model_routes_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("model routes dashboard behavior failed: %v\n%s", err, output)
+	}
+}

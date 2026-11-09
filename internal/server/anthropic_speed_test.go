@@ -122,8 +122,11 @@ func TestAnthropicMessagesRejectsUnsupportedSpeedBeforeAdmission(t *testing.T) {
 				if got := anthropicCalls.Load() + h.upstreamCalls.Load(); got != 0 {
 					t.Fatalf("upstream calls=%d, want 0", got)
 				}
-				if queries := h.database.queriesSnapshot(); len(queries) != 1 || !strings.Contains(queries[0], "FROM api_keys k") {
-					t.Fatalf("database queries=%#v, want only API key authentication and no reservation", queries)
+				// A syntactically valid body also resolves the user's model route.
+				queries := h.database.queriesSnapshot()
+				routed := len(queries) == 2 && strings.Contains(queries[1], "FROM user_model_routes")
+				if (len(queries) != 1 && !routed) || !strings.Contains(queries[0], "FROM api_keys k") {
+					t.Fatalf("database queries=%#v, want only API key authentication, route lookup and no reservation", queries)
 				}
 				if slots := len(h.server.spoolSlots); slots != 0 {
 					t.Fatalf("request spool slots=%d, want 0", slots)

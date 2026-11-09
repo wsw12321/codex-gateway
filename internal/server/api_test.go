@@ -409,9 +409,10 @@ func TestResponsesRejectsUnknownModelBeforeServiceTier(t *testing.T) {
 			if got := harness.upstreamCalls.Load(); got != 0 {
 				t.Fatalf("upstream calls = %d, want 0", got)
 			}
-			if queries := harness.database.queriesSnapshot(); len(queries) != 1 ||
-				!strings.Contains(queries[0], "FROM api_keys k") {
-				t.Fatalf("database queries = %#v, want only API key authentication", queries)
+			// A valid body also resolves the user's model route before pricing.
+			if queries := harness.database.queriesSnapshot(); len(queries) != 2 ||
+				!strings.Contains(queries[0], "FROM api_keys k") || !strings.Contains(queries[1], "FROM user_model_routes") {
+				t.Fatalf("database queries = %#v, want API key authentication and route lookup", queries)
 			}
 		})
 	}
