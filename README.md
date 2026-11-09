@@ -111,6 +111,13 @@ Cookie、转发头及 hop-by-hop headers，使用内部固定 Bearer Token 调�
 `426 responses_websocket_unsupported`，让客户端立即改用 HTTPS/SSE；该协商请求
 不进入上游转发、配额、计费、并发租约或 usage 统计。
 
+`claude-*` 模型除原生 `/v1/messages` 外，也可以通过 `POST /v1/responses` 调用：
+CPA 把 OpenAI Responses 请求转换为 Claude Messages，并只从 Claude 账号池选号；
+权限、配额、账号归因和 Anthropic 计费与原生接口一致。`/v1/responses/compact`
+和 `service_tier: "priority"`（Claude Fast）对 Claude 模型在转发和计费前拒绝。
+CPA 转换后的用量不含缓存写入数量，结算时按所有未命中缓存的输入均为缓存写入、
+使用较高的写入单价保守计费；需要准确缓存计费时请使用 `/v1/messages`。
+
 Gemini 原生接口转发到同一 CPA 的 Antigravity provider，接受 `x-goog-api-key` 或 Bearer 中的
 Gateway key，重复或多来源凭据拒绝。它们共用现有权限、配额和结算，使用 Gemini
 格式错误；请求限制为 1 MiB，支持文本、客户端函数工具和原生 SSE。累计 usage 只结算一次，

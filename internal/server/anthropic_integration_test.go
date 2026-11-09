@@ -47,7 +47,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	var interruptStream atomic.Bool
-	var upstreamCalls atomic.Int64
+	var upstreamCalls, responsesCalls atomic.Int64
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
@@ -80,6 +80,24 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			return
 		}
 		data, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/responses" {
+			// CPA's Claude-to-Responses translation folds cache writes into
+			// input_tokens and omits cache_write_tokens.
+			responsesCalls.Add(1)
+			usage := `{"input_tokens":60,"input_tokens_details":{"cached_tokens":20},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":67}`
+			if strings.Contains(string(data), `"stream":true`) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"claude-test\",\"status\":\"in_progress\"}}\n\n")
+				fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+				fmt.Fprintf(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"claude-test\",\"status\":\"completed\",\"usage\":%s}}\n\n", usage)
+				return
+			}
+			fmt.Fprintf(w, `{"id":"resp_1","object":"response","model":"claude-test","status":"completed","output":[],"usage":%s}`, usage)
+			return
+		}
+		if r.URL.Path != "/v1/messages" {
+			t.Errorf("unexpected CPA path %s", r.URL.Path)
+		}
 		usage := `{"input_tokens":10,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"cache_creation":{"ephemeral_5m_input_tokens":12,"ephemeral_1h_input_tokens":18},"output_tokens":7}`
 		if strings.Contains(string(data), `"stream":true`) {
 			w.Header().Set("Content-Type", "text/event-stream")
@@ -156,6 +174,60 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			}
 		}
 	}
+	// OpenAI Responses requests for Claude models reach CPA's /v1/responses
+	// through the Anthropic client and settle as Anthropic usage. Without
+	// cache_write_tokens every uncached input token is billed at the highest
+	// cache-write price: 40*6 + 20*0.3 + 7*15 = 351 micro-USD.
+	sendResponses := func(path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", path, strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+h.apiKey)
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		return w
+	}
+	for _, stream := range []bool{false, true} {
+		for _, fields := range []string{"", `"service_tier":"auto",`, `"service_tier":"default",`} {
+			before := responsesCalls.Load()
+			w = sendResponses("/v1/responses", fmt.Sprintf(`{"model":"claude-test","stream":%t,%s"input":"hello"}`, stream, fields))
+			if w.Code != 200 || responsesCalls.Load() != before+1 {
+				t.Fatalf("responses fields=%s stream=%t: %d %s", fields, stream, w.Code, w.Body)
+			}
+			var input, cached, cacheWrite, output int64
+			var ttlPresent bool
+			var provider, mode, state, endpoint, account, fallback, cost string
+			err := repo.DB().QueryRowContext(ctx, `SELECT u.input_tokens,u.cached_input_tokens,u.cache_write_tokens,u.cache_write_ttl_present,u.output_tokens,
+				a.provider,b.billing_mode,u.state,u.endpoint,u.upstream_account_id,COALESCE(u.pricing_fallback_reason,''),b.actual_cost_usd::text
+				FROM usage_requests u JOIN upstream_accounts a ON a.id=u.upstream_account_id JOIN billing_reservations b USING(request_id) WHERE request_id=$1`,
+				w.Header().Get(httpx.RequestIDHeader)).Scan(&input, &cached, &cacheWrite, &ttlPresent, &output, &provider, &mode, &state, &endpoint, &account, &fallback, &cost)
+			if err != nil || input != 60 || cached != 20 || cacheWrite != 40 || ttlPresent || output != 7 ||
+				provider != "anthropic" || mode != store.BillingModeAnthropicAPIEquivalent || state != "completed" ||
+				endpoint != "responses" || account != "1122334455667788" || !strings.Contains(fallback, config.FallbackMissingCacheWriteTokens) ||
+				cost != "0.000351000000" {
+				t.Fatalf("responses billing fields=%s stream=%t: %d %d %d %t %d %s %s %s %s %s %q %s %v", fields, stream,
+					input, cached, cacheWrite, ttlPresent, output, provider, mode, state, endpoint, account, fallback, cost, err)
+			}
+		}
+	}
+	// Fast/priority generation is not priced for Claude, and compact has no
+	// Claude implementation. Both are rejected before upstream or charging.
+	for _, test := range []struct {
+		path, body, code string
+		status           int
+	}{
+		{"/v1/responses", `{"model":"claude-test","service_tier":"priority","input":"hello"}`, "service_tier_not_supported", 400},
+		{"/v1/responses/compact", `{"model":"claude-test","input":"hello"}`, "endpoint_not_supported", 501},
+	} {
+		before := upstreamCalls.Load()
+		w = sendResponses(test.path, test.body)
+		if w.Code != test.status || !strings.Contains(w.Body.String(), `"code":"`+test.code+`"`) || upstreamCalls.Load() != before {
+			t.Fatalf("%s %s: %d %s", test.path, test.body, w.Code, w.Body)
+		}
+		if err := repo.DB().QueryRowContext(ctx, `SELECT (SELECT count(*) FROM usage_requests WHERE request_id=$1),(SELECT count(*) FROM billing_reservations WHERE request_id=$1)`, w.Header().Get(httpx.RequestIDHeader)).Scan(&counts, &charges); err != nil || counts != 0 || charges != 0 {
+			t.Fatalf("%s rejected request usage=%d reservations=%d: %v", test.path, counts, charges, err)
+		}
+	}
+
 	// Transport truncation after a validated cumulative usage frame must
 	// charge observed tokens once and release concurrency despite aborting SSE.
 	interruptStream.Store(true)

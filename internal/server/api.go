@@ -73,8 +73,11 @@ type preparedAPIRequest struct {
 	serviceTier  string
 	body         *countingBody
 	gemini       bool
-	anthropic    bool
-	countTokens  bool
+	// anthropic marks the native Messages routes; claude marks every claude-*
+	// request, including OpenAI Responses requests that CPA translates.
+	anthropic   bool
+	claude      bool
+	countTokens bool
 }
 
 func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath, endpoint, fixedModel string) {
@@ -103,12 +106,15 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			return
 		}
 		prepared.model, prepared.serviceTier, prepared.body = routing.Model, routing.ServiceTier, parsedBody
-		if prepared.anthropic && (prepared.serviceTier == "auto" || prepared.serviceTier == "standard_only") {
+		prepared.claude = strings.HasPrefix(routing.Model, "claude-")
+		if prepared.claude && (prepared.serviceTier == "auto" || prepared.serviceTier == "standard_only") {
 			prepared.serviceTier = "standard"
 		}
-		if prepared.anthropic != strings.HasPrefix(routing.Model, "claude-") {
+		// Claude models may also use /v1/responses, where CPA translates the
+		// OpenAI Responses protocol. Messages routes remain Claude-only.
+		if prepared.anthropic && !prepared.claude {
 			_ = parsedBody.Close()
-			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Claude 模型必须通过 Messages 接口调用")
+			httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "model_provider_mismatch", "Messages 接口仅支持 Claude 模型")
 			return
 		}
 		// Anthropic speed is independent of service_tier. Fast generation has
@@ -181,10 +187,10 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			writeServiceTierNotSupported(w, r)
 			return
 		}
-		if upstreamPath == "/v1/responses/compact" && upstreams.IsAntigravityModel(model) {
-			// Compact is not a generation request for Antigravity. Check permission
-			// without admitting a request, so rejection cannot reserve quota,
-			// create usage, or charge the caller.
+		if upstreamPath == "/v1/responses/compact" && (upstreams.IsAntigravityModel(model) || prepared.claude) {
+			// Compact is not a generation request for Antigravity or Claude. Check
+			// permission without admitting a request, so rejection cannot reserve
+			// quota, create usage, or charge the caller.
 			if err := s.store.RequireModelAccess(r.Context(), key.UserID, model); err != nil {
 				if errors.Is(err, store.ErrModelNotAllowed) {
 					writeModelNotAllowed(w, r)
@@ -193,7 +199,11 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 				}
 				return
 			}
-			httpx.WriteError(w, r, http.StatusNotImplemented, "invalid_request_error", "endpoint_not_supported", "Antigravity 不支持 /v1/responses/compact，请使用 /v1/responses")
+			message := "Antigravity 不支持 /v1/responses/compact，请使用 /v1/responses"
+			if prepared.claude {
+				message = "Claude 模型不支持 /v1/responses/compact，请使用 /v1/responses"
+			}
+			httpx.WriteError(w, r, http.StatusNotImplemented, "invalid_request_error", "endpoint_not_supported", message)
 			return
 		}
 		if pricingRuleVersion == 1 {
@@ -206,7 +216,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			billingMode = store.BillingModeOpenAIAPIEquivalent
 			if upstreams.IsAntigravityModel(model) {
 				billingMode = store.BillingModeGeminiAPIEquivalent
-			} else if prepared.anthropic {
+			} else if prepared.claude {
 				billingMode = store.BillingModeAnthropicAPIEquivalent
 			} else if model == "codex-auto-review" {
 				billingMode = store.BillingModeInternalZero
@@ -240,7 +250,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			return
 		}
 	}
-	if prepared.anthropic {
+	if prepared.claude {
 		provider = store.UpstreamProviderAnthropic
 	}
 	var billingReservation *store.BillingReservationParams
@@ -348,7 +358,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	defer s.clearActiveConversation(requestID)
 	var anthropicAccountIDs map[string]struct{}
 	onUpstreamAccount := func(accountID string) {
-		if prepared.anthropic {
+		if prepared.claude {
 			if _, ok := anthropicAccountIDs[accountID]; !ok {
 				return
 			}
@@ -373,7 +383,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	forwardingStarted = true
 	var result gatewayproxy.Result
 	var failure *gatewayproxy.Failure
-	if prepared.anthropic {
+	if prepared.claude {
 		if err := s.syncAnthropicAccounts(r.Context()); err != nil {
 			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "upstream_unavailable", Message: "Claude 账号暂不可用"}
 		} else {
@@ -438,6 +448,13 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		})
 	} else if prepared.anthropic {
 		result, failure = s.anthropic.ForwardMessages(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
+			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID, Groups: allocationGroups,
+			OnUpstreamAccount: onUpstreamAccount, OnConversation: onConversation,
+		})
+	} else if prepared.claude {
+		// OpenAI Responses for a Claude model: CPA translates the protocol and
+		// selects only Claude credentials through the Anthropic account callback.
+		result, failure = s.anthropic.ForwardWithOptions(r.Context(), w, r, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID, Groups: allocationGroups,
 			OnUpstreamAccount: onUpstreamAccount, OnConversation: onConversation,
 		})
