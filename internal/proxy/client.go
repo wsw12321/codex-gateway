@@ -159,6 +159,8 @@ type Client struct {
 	cpaNative      bool
 	anthropic      bool
 	requireEgress  bool
+	// ledger is set with the CPA plugin integration; see UseAllocationLedger.
+	ledger *AllocationLedger
 }
 
 // RequireAccountEgress is configured before serving requests. Every operation
@@ -544,6 +546,11 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	if err := setGroupAccountScope(outgoing.Header, options); err != nil {
 		return Result{}, protocolFailure(err)
 	}
+	opened, err := c.openDispatch(outgoing.Header, options)
+	if err != nil {
+		return Result{}, protocolFailure(err)
+	}
+	defer opened.close()
 
 	response, err := c.http.Do(outgoing)
 	if err != nil {
@@ -558,10 +565,11 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
+	opened.apply(&result)
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := c.sanitizeFailure(response)
+		failure := opened.failure(c.sanitizeFailure(response), parseRetryAfter(response.Header.Get("Retry-After")))
 		result.CompletedAt = time.Now()
 		return result, failure
 	}

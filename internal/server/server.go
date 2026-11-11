@@ -20,12 +20,15 @@ import (
 const sessionCookieName = "__Host-cg_session"
 
 type Server struct {
-	config                config.Config
-	store                 *store.Store
-	identity              *identity.Service
-	upstream              *gatewayproxy.Client
-	antigravity           *gatewayproxy.Client
-	anthropic             *gatewayproxy.Client
+	config      config.Config
+	store       *store.Store
+	identity    *identity.Service
+	upstream    *gatewayproxy.Client
+	antigravity *gatewayproxy.Client
+	anthropic   *gatewayproxy.Client
+	// allocations is set with the CPA plugin integration: the plugin reports
+	// each allocation decision here instead of CPA stamping response headers.
+	allocations           *gatewayproxy.AllocationLedger
 	cpaAdmin              *cpaAdminState
 	egressOnce            sync.Once
 	egressRuntime         *accountEgressRuntime
@@ -143,6 +146,12 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 			}
 		}
 	}
+	if cfg.UsesCPAPlugin() {
+		s.allocations = gatewayproxy.NewAllocationLedger()
+		s.upstream.UseAllocationLedger(s.allocations)
+		s.anthropic.UseAllocationLedger(s.allocations)
+		s.antigravity.UseAllocationLedger(s.allocations)
+	}
 	s.upstream.RequireAccountEgress(requireAccountEgress)
 	s.anthropic.RequireAccountEgress(requireAccountEgress)
 	if cfg.UsesCPAAntigravity() {
@@ -172,6 +181,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /internal/upstream-accounts/eligible", s.eligibleUpstreamAccounts)
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/select", s.selectUpstreamAccount)
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/eligible", s.eligibleUpstreamAccounts)
+	s.mux.HandleFunc("POST /internal/upstream-accounts/attempt", s.recordUpstreamAttempt)
+	s.mux.HandleFunc("POST /internal/antigravity-accounts/attempt", s.recordUpstreamAttempt)
+	s.mux.HandleFunc("POST /internal/anthropic-accounts/attempt", s.recordUpstreamAttempt)
 	s.antigravityAccountRoutes()
 	s.anthropicAccountRoutes()
 	s.cpaAdminRoutes()

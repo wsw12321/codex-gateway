@@ -42,3 +42,36 @@ func TestCPATransportDefaultsAndBoundaries(t *testing.T) {
 		}
 	}
 }
+
+func TestCPAIntegrationSetting(t *testing.T) {
+	setValidLoadEnvironment(t)
+	t.Setenv("ANTIGRAVITY_TRANSPORT", "")
+	t.Setenv("ANTIGRAVITY_BRIDGE_URL", "")
+	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "")
+	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY_FILE", "")
+	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", "{}")
+	t.Setenv("CPA_INTEGRATION", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The source-patched image stays the default until the plugin is accepted.
+	if cfg.CPAIntegration != "patch" || cfg.UsesCPAPlugin() {
+		t.Fatalf("default integration = %q", cfg.CPAIntegration)
+	}
+	t.Setenv("CPA_INTEGRATION", "plugin")
+	if cfg, err = Load(); err != nil || !cfg.UsesCPAPlugin() {
+		t.Fatalf("plugin integration rejected: %v", err)
+	}
+	for _, change := range []func(*Config){
+		func(c *Config) { c.CPAIntegration = "automatic" },
+		// The legacy bridge allocates on its own; the plugin cannot cover it.
+		func(c *Config) { c.AntigravityTransport = "legacy-bridge" },
+	} {
+		test := cfg
+		change(&test)
+		if err := test.Validate(); err == nil {
+			t.Fatal("accepted an unsupported CPA integration")
+		}
+	}
+}
