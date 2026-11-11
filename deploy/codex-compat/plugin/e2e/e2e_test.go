@@ -355,6 +355,119 @@ func TestPerAccountEgress(t *testing.T) {
 	})
 }
 
+// TestAccountManagement drives the plugin's account routes exactly as the
+// Gateway does: behind the management key, with the account id as a query
+// parameter.
+func TestAccountManagement(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.addAccount("a", nil), h.addAccount("b", nil)
+	h.start()
+	const base = "/v0/management/gateway/upstream-accounts"
+
+	for name, key := range map[string]string{"no key": "", "data-plane key": internalKey} {
+		if status, _ := h.management(http.MethodGet, base+"/capabilities", key, ""); status != http.StatusUnauthorized {
+			t.Fatalf("%s reached the plugin's routes: %d", name, status)
+		}
+	}
+	status, body := h.management(http.MethodGet, base+"/capabilities", managementKey, "")
+	if status != http.StatusOK || !strings.Contains(body, `"protocol":"upstream_account_access_v1"`) || strings.Contains(body, "account_egress") {
+		t.Fatalf("capabilities: %d %s", status, body)
+	}
+	if status, body = h.management(http.MethodGet, "/v0/management/gateway/anthropic-accounts/capabilities", managementKey, ""); status != http.StatusOK || !strings.Contains(body, "anthropic_messages_v1") {
+		t.Fatalf("anthropic capabilities: %d %s", status, body)
+	}
+
+	status, body = h.management(http.MethodGet, base, managementKey, "")
+	var listing struct {
+		Accounts []map[string]string `json:"accounts"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &listing) != nil || len(listing.Accounts) != 2 {
+		t.Fatalf("list: %d %s", status, body)
+	}
+	for _, row := range listing.Accounts {
+		name := "a"
+		if row["id"] == b.id {
+			name = "b"
+		} else if row["id"] != a.id {
+			t.Fatalf("unexpected account %v", row)
+		}
+		if len(row) != 8 || row["masked_email"] != name+"***@example.com" || row["plan"] != "plus" || row["status"] != "available" || row["cliproxy_status"] != "active" {
+			t.Fatalf("account row %v", row)
+		}
+	}
+	for _, secret := range []string{a.token, "refresh-a", "acct-a", "a@example.com"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("the account listing leaks %q", secret)
+		}
+	}
+
+	// Disabling an account takes it out of allocation at once and durably.
+	status, body = h.management(http.MethodPut, base+"/status?id="+a.id, managementKey, `{"enabled":false}`)
+	if status != http.StatusOK || !strings.Contains(body, `"gateway_manual_status":"manual_disabled"`) || !strings.Contains(body, `"status":"unavailable"`) {
+		t.Fatalf("disable: %d %s", status, body)
+	}
+	h.resetObservations()
+	h.gateway.prefer = []string{a.id, b.id}
+	for i := 0; i < 3; i++ {
+		if got := h.do(call{}); got.status != http.StatusOK {
+			t.Fatalf("status %d: %s", got.status, got.body)
+		}
+	}
+	for _, name := range h.served() {
+		if name != "b" {
+			t.Fatalf("a disabled account served a request: %v", h.served())
+		}
+	}
+	h.stop()
+	h.start()
+	h.resetObservations()
+	h.do(call{})
+	if served := h.served(); len(served) != 1 || served[0] != "b" {
+		t.Fatalf("the disable did not survive a restart: %v", served)
+	}
+	status, body = h.management(http.MethodPut, base+"/status?id="+a.id, managementKey, `{"enabled":true}`)
+	if status != http.StatusOK || !strings.Contains(body, `"status":"available"`) {
+		t.Fatalf("enable: %d %s", status, body)
+	}
+	h.resetObservations()
+	h.gateway.prefer = []string{a.id}
+	h.do(call{})
+	if served := h.served(); len(served) != 1 || served[0] != "a" {
+		t.Fatalf("a re-enabled account was not used: %v", served)
+	}
+
+	for name, request := range map[string][2]string{
+		"unknown account": {base + "/status?id=0123456789abcdef", `{"enabled":true}`},
+		"missing id":      {base + "/status", `{"enabled":true}`},
+	} {
+		if status, _ = h.management(http.MethodPut, request[0], managementKey, request[1]); status != http.StatusNotFound {
+			t.Fatalf("%s: status %d", name, status)
+		}
+	}
+	if status, _ = h.management(http.MethodPut, base+"/status?id="+a.id, managementKey, `{"enabled":"yes"}`); status != http.StatusBadRequest {
+		t.Fatalf("a malformed status request was accepted: %d", status)
+	}
+
+	// The snapshot counts the conversation the last request left held.
+	status, body = h.management(http.MethodGet, base+"/concurrency", managementKey, "")
+	var snapshot struct {
+		SampledAt time.Time `json:"sampled_at"`
+		Accounts  []struct {
+			ID              string `json:"id"`
+			ActiveRequests  *int64 `json:"active_requests"`
+			ConcurrentLimit int64  `json:"concurrent_limit"`
+		} `json:"accounts"`
+	}
+	if status != http.StatusOK || json.Unmarshal([]byte(body), &snapshot) != nil || len(snapshot.Accounts) != 2 || time.Since(snapshot.SampledAt) > time.Minute {
+		t.Fatalf("concurrency: %d %s", status, body)
+	}
+	for _, row := range snapshot.Accounts {
+		if row.ActiveRequests == nil || *row.ActiveRequests < 0 || row.ConcurrentLimit < 1 {
+			t.Fatalf("concurrency row %+v in %s", row, body)
+		}
+	}
+}
+
 func TestManagementBoundary(t *testing.T) {
 	h := newHarness(t)
 	h.addAccount("a", nil)

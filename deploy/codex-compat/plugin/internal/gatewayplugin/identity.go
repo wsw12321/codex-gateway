@@ -41,6 +41,7 @@ type AuthEntry struct {
 	Size        int64     `json:"size"`
 	ModTime     time.Time `json:"modtime"`
 	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time `json:"created_at"`
 	LastRefresh time.Time `json:"last_refresh"`
 	AccountType string    `json:"account_type"`
 }
@@ -70,8 +71,10 @@ type Account struct {
 	Plan        string
 	Status      string
 	Disabled    bool
+	Unavailable bool
 	LastRefresh time.Time
 	UpdatedAt   time.Time
+	CreatedAt   time.Time
 	// Duplicate marks a credential file that lost to another file of the same
 	// real account. Duplicates are listed nowhere and never selected.
 	Duplicate bool
@@ -246,6 +249,34 @@ func codexTokenAccountID(token string) (accountID string, present, valid bool) {
 	}
 	accountID = strings.TrimSpace(accountID)
 	return accountID, true, validCodexAccountID(accountID)
+}
+
+// codexTokenPlan reads the subscription plan claim from an ID token. Only the
+// plans the Gateway distinguishes are reported; anything else is unknown.
+func codexTokenPlan(token string) string {
+	parts := strings.Split(strings.TrimSpace(token), ".")
+	if len(parts) != 3 {
+		return "unknown"
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
+			return "unknown"
+		}
+	}
+	var claims struct {
+		Auth struct {
+			Plan string `json:"chatgpt_plan_type"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return "unknown"
+	}
+	switch plan := strings.ToLower(strings.TrimSpace(claims.Auth.Plan)); plan {
+	case "plus", "pro":
+		return plan
+	}
+	return "unknown"
 }
 
 // codexIdentity resolves a Codex credential's account id from the top-level
@@ -445,7 +476,7 @@ func (inv *Inventory) refreshLocked(now time.Time) error {
 		next[entry.ID] = &Account{
 			ID: identity.id, Provider: provider, AuthID: entry.ID, AuthIndex: entry.AuthIndex, Name: entry.Name,
 			Email: identity.email, Plan: identity.plan, Status: entry.Status, Disabled: entry.Disabled,
-			LastRefresh: entry.LastRefresh, UpdatedAt: entry.UpdatedAt,
+			Unavailable: entry.Unavailable, LastRefresh: entry.LastRefresh, UpdatedAt: entry.UpdatedAt, CreatedAt: entry.CreatedAt,
 		}
 	}
 	markDuplicates(next)
@@ -468,6 +499,7 @@ func (inv *Inventory) identify(provider string, raw json.RawMessage) resolvedIde
 			return resolvedIdentity{}
 		}
 		identity.id = CodexAccountIndex(accountID)
+		identity.plan = codexTokenPlan(stringField(document, "id_token"))
 	case ProviderAntigravity:
 		subject := stringField(document, "google_subject")
 		if !validGoogleSubject(subject) {

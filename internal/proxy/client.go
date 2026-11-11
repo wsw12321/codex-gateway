@@ -161,6 +161,9 @@ type Client struct {
 	requireEgress  bool
 	// ledger is set with the CPA plugin integration; see UseAllocationLedger.
 	ledger *AllocationLedger
+	// managementToken is set with the CPA plugin integration; see
+	// UsePluginManagement.
+	managementToken string
 }
 
 // RequireAccountEgress is configured before serving requests. Every operation

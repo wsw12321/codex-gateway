@@ -151,6 +151,10 @@ func (c Config) validateAntigravity() error {
 	if c.UsesCPAPlugin() && !c.UsesCPAAntigravity() {
 		return errors.New("CPA_INTEGRATION=plugin requires ANTIGRAVITY_TRANSPORT=cpa")
 	}
+	// The plugin's account routes are served behind CPA's management key.
+	if c.UsesCPAPlugin() && c.CPAManagementToken == "" {
+		return errors.New("CPA_INTEGRATION=plugin requires CPA_MANAGEMENT_KEY")
+	}
 	if c.CPAManagementToken != "" && (len(c.CPAManagementToken) < minSecretBytes || c.CPAManagementToken == c.SidecarToken) {
 		return errors.New("CPA_MANAGEMENT_KEY must contain at least 32 bytes and differ from SIDECAR_API_KEY")
 	}

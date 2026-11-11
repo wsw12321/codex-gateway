@@ -60,6 +60,8 @@ func TestCPAIntegrationSetting(t *testing.T) {
 		t.Fatalf("default integration = %q", cfg.CPAIntegration)
 	}
 	t.Setenv("CPA_INTEGRATION", "plugin")
+	t.Setenv("CPA_MANAGEMENT_KEY", strings.Repeat("m", 43))
+	t.Setenv("CPA_MANAGEMENT_KEY_FILE", "")
 	if cfg, err = Load(); err != nil || !cfg.UsesCPAPlugin() {
 		t.Fatalf("plugin integration rejected: %v", err)
 	}
@@ -67,6 +69,8 @@ func TestCPAIntegrationSetting(t *testing.T) {
 		func(c *Config) { c.CPAIntegration = "automatic" },
 		// The legacy bridge allocates on its own; the plugin cannot cover it.
 		func(c *Config) { c.AntigravityTransport = "legacy-bridge" },
+		// The plugin's account routes need CPA's management key.
+		func(c *Config) { c.CPAManagementToken = "" },
 	} {
 		test := cfg
 		change(&test)

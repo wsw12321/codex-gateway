@@ -148,9 +148,10 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	}
 	if cfg.UsesCPAPlugin() {
 		s.allocations = gatewayproxy.NewAllocationLedger()
-		s.upstream.UseAllocationLedger(s.allocations)
-		s.anthropic.UseAllocationLedger(s.allocations)
-		s.antigravity.UseAllocationLedger(s.allocations)
+		for _, client := range []*gatewayproxy.Client{s.upstream, s.anthropic, s.antigravity} {
+			client.UseAllocationLedger(s.allocations)
+			client.UsePluginManagement(cfg.CPAManagementToken)
+		}
 	}
 	s.upstream.RequireAccountEgress(requireAccountEgress)
 	s.anthropic.RequireAccountEgress(requireAccountEgress)
