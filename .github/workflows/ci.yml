@@ -49,6 +49,7 @@ jobs:
           set -eu
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
           test "$(jq -r .go_version deploy/codex-compat/source.lock.json)" = "$GO_VERSION"
+          test "$(jq -r .go_version deploy/codex-compat/plugin.lock.json)" = "$GO_VERSION"
           test "$(sed -n 's/^GO_VERSION=//p' deploy/shadowsocks/upstream/source.lock.env)" = "$GO_VERSION"
           go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
           grep -Fxq "GOLANG_IMAGE|$go_image" deploy/images.sources
@@ -56,7 +57,7 @@ jobs:
           locked_go_image=$(sed -n 's/^GOLANG_IMAGE=//p' deploy/images.lock.env)
           test "${locked_go_image%@sha256:*}" = "$go_image"
           test "$(sed -n 's/^CLIPROXY_GOLANG_IMAGE=//p' deploy/images.lock.env)" = "$locked_go_image"
-          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/antigravity-bridge/Dockerfile deploy/codex-compat/legacy.Dockerfile deploy/cpa-migrate/Dockerfile; do
+          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/codex-compat/plugin.Dockerfile deploy/antigravity-bridge/Dockerfile deploy/codex-compat/legacy.Dockerfile deploy/cpa-migrate/Dockerfile; do
             grep -Fxq "ARG GOLANG_IMAGE=$locked_go_image" "$dockerfile"
           done
       - name: Install locked Go toolchain
@@ -75,6 +76,17 @@ jobs:
         run: go test -race -count=1 ./...
       - name: Vet
         run: go vet ./...
+      # The CPA plugin is a separate Go module, so ./... above does not reach it.
+      # Its end-to-end suite needs a CPA binary and runs in the image build.
+      - name: CPA plugin vet, unit tests and race detector
+        working-directory: deploy/codex-compat/plugin
+        shell: bash
+        run: |
+          set -eu
+          go vet ./...
+          go vet -tags e2e ./...
+          go test -count=1 ./...
+          go test -race -count=1 ./...
 
   postgres-integration:
     runs-on: ubuntu-24.04
@@ -148,6 +160,15 @@ jobs:
         run: scripts/ci-go-tool.sh golang.org/x/vuln/cmd/govulncheck@v1.1.4 -- ./...
       - name: gosec
         run: scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- ./...
+      - name: govulncheck (CPA plugin)
+        working-directory: deploy/codex-compat/plugin
+        run: ../../../scripts/ci-go-tool.sh golang.org/x/vuln/cmd/govulncheck@v1.1.4 -- ./...
+      # Inside the module gosec analyses the wrappers cgo generates for the
+      # C ABI shim; they are not source in this repository. The shim itself is
+      # covered by the repository-wide run above.
+      - name: gosec (CPA plugin)
+        working-directory: deploy/codex-compat/plugin
+        run: ../../../scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- -exclude-generated ./...
 
   supply-chain:
     runs-on: ubuntu-24.04
@@ -311,6 +332,25 @@ jobs:
         run: ./scripts/test-sidecar-image.sh
       - name: Verify Antigravity keyring isolation without a Google account
         run: ./scripts/test-antigravity-image.sh
+      # Unmodified CPA with the Gateway plugin. The build itself runs the
+      # plugin's end-to-end suite against the binary it ships.
+      - name: Build and verify plugin-mode CPA image
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock=deploy/codex-compat/plugin.lock.json
+          plugin_image=$(jq -er .image "$lock")
+          merged=$(./scripts/compose.sh -f deploy/cpa-plugin.override.yml config --format json)
+          jq -e --arg image "$plugin_image" '
+            .services.gateway.environment.CPA_INTEGRATION == "plugin" and
+            .services["codex-compat"].image == $image and
+            (.services["codex-compat"].build.dockerfile | endswith("plugin.Dockerfile")) and
+            .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
+            ([.services["codex-compat"].tmpfs[] | select(startswith("/tmp:"))] | length == 1) and
+            ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:"))] | length == 1)
+          ' <<<"$merged" >/dev/null
+          ./scripts/compose.sh -f deploy/cpa-plugin.override.yml --progress plain build codex-compat
+          ./scripts/test-cpa-plugin-image.sh "$plugin_image"
       - name: Build and verify compatible CPA rollback image
         shell: bash
         run: |
@@ -356,6 +396,10 @@ jobs:
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
             --severity HIGH,CRITICAL "$account_egress_image"
+          docker run --rm \
+            --volume /var/run/docker.sock:/var/run/docker.sock \
+            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
+            --severity HIGH,CRITICAL "$(jq -er .image deploy/codex-compat/plugin.lock.json)"
       - name: Export tested images for publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash

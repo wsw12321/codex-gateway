@@ -550,6 +550,12 @@ remote-management:
 		"CLIPROXY_API_KEY_FILE=" + keyFile,
 		"CPA_MANAGEMENT_KEY_FILE=" + managementFile,
 	}
+	// CPA loads a plugin from a private copy under its temporary directory, so
+	// that directory must allow mapping executable pages. CPA_E2E_TMPDIR lets
+	// a run reproduce a container's temporary filesystem.
+	if tmp := os.Getenv("CPA_E2E_TMPDIR"); tmp != "" {
+		h.cmd.Env = append(h.cmd.Env, "TMPDIR="+tmp)
+	}
 	h.cmd.Stdout, h.cmd.Stderr = h.logs, h.logs
 	if err := h.cmd.Start(); err != nil {
 		h.t.Fatal(err)

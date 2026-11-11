@@ -28,7 +28,7 @@ func ledgerSidecar(t *testing.T, status int, header http.Header, body string, re
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(
 				`{"protocol":"` + AccountAccessProtocolV1 + `","group_upstream_account_scope":"` + GroupUpstreamAccountScopeV1 + `"}`))}, nil
 		}
-		token := r.Header.Get(requestTokenHeader)
+		token := r.Header.Get(dispatchHeader)
 		if !requestTokenPattern.MatchString(token) {
 			t.Errorf("dispatch carried no valid request token: %q", token)
 		}
@@ -180,7 +180,7 @@ func TestPatchIntegrationKeepsHeaderAttribution(t *testing.T) {
 		if strings.HasSuffix(r.URL.Path, "/capabilities") {
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"protocol":"` + AccountAccessProtocolV1 + `"}`))}, nil
 		}
-		if r.Header.Get(requestTokenHeader) != "" {
+		if r.Header.Get(dispatchHeader) != "" {
 			t.Error("a request token was sent without the plugin integration")
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, upstreamAccountHeader: {ledgerAccount}}, Body: io.NopCloser(strings.NewReader(ledgerBody))}, nil

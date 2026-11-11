@@ -68,6 +68,11 @@ import (
 	"github.com/wsw/codex-gateway/deploy/codex-compat/plugin/internal/gatewayplugin"
 )
 
+// maxMessageBytes bounds one message in either direction. Request bodies are
+// never passed to this plugin, so real messages are a few kilobytes; the bound
+// exists so a length can always be converted to a C int without overflow.
+const maxMessageBytes = 64 << 20
+
 var (
 	instanceOnce sync.Once
 	instance     *gatewayplugin.Plugin
@@ -111,12 +116,16 @@ func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t,
 	if method == nil {
 		return 1
 	}
+	if uint64(requestLen) > maxMessageBytes {
+		return 1
+	}
 	var payload []byte
 	if request != nil && requestLen > 0 {
+		// #nosec G103 -- copies the host's request buffer; its length was bounded above
 		payload = C.GoBytes(unsafe.Pointer(request), C.int(requestLen))
 	}
 	raw := plugin().Handle(C.GoString(method), payload)
-	if response == nil || len(raw) == 0 {
+	if response == nil || len(raw) == 0 || len(raw) > maxMessageBytes {
 		return 1
 	}
 	ptr := C.CBytes(raw)
@@ -149,10 +158,11 @@ var errHost = errors.New("host callback failed")
 // only the fact of failure.
 func callHost(method string, payload any) (json.RawMessage, error) {
 	raw, err := json.Marshal(payload)
-	if err != nil {
+	if err != nil || len(raw) > maxMessageBytes {
 		return nil, errHost
 	}
 	cMethod := C.CString(method)
+	// #nosec G103 -- frees the C string allocated on the line above
 	defer C.free(unsafe.Pointer(cMethod))
 	var response C.cliproxy_buffer
 	var requestPtr *C.uint8_t
@@ -166,14 +176,15 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 	}
 	code := C.call_host_api(cMethod, requestPtr, C.size_t(len(raw)), &response)
 	var out []byte
-	if response.ptr != nil && response.len > 0 {
+	oversized := uint64(response.len) > maxMessageBytes
+	if response.ptr != nil && response.len > 0 && !oversized {
 		out = C.GoBytes(response.ptr, C.int(response.len))
 	}
 	if response.ptr != nil {
 		C.free_host_buffer(response.ptr, response.len)
 	}
 	var envelope hostEnvelope
-	if code != 0 || json.Unmarshal(out, &envelope) != nil || !envelope.OK {
+	if code != 0 || oversized || json.Unmarshal(out, &envelope) != nil || !envelope.OK {
 		return nil, errHost
 	}
 	return envelope.Result, nil

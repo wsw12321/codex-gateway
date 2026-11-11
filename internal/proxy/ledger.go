@@ -9,10 +9,10 @@ import (
 	"sync"
 )
 
-// requestTokenHeader carries the one-time dispatch token to CPA. The Gateway
+// dispatchHeader carries the one-time dispatch token to CPA. The Gateway
 // plugin echoes it on the allocation callbacks, which is how a dispatch learns
 // its upstream account without trusting anything CPA renders in the response.
-const requestTokenHeader = "X-Codex-Gateway-Request"
+const dispatchHeader = "X-Codex-Gateway-Request"
 
 var requestTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
@@ -200,6 +200,6 @@ func (c *Client) openDispatch(header http.Header, options ForwardOptions) (*disp
 	if err != nil {
 		return nil, err
 	}
-	header.Set(requestTokenHeader, opened.token)
+	header.Set(dispatchHeader, opened.token)
 	return opened, nil
 }
