@@ -1,0 +1,139 @@
+diff --git a/sdk/cliproxy/auth/gateway_plugin_only_selector.go b/sdk/cliproxy/auth/gateway_plugin_only_selector.go
+new file mode 100644
+index 0000000..6c7dcd8
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_plugin_only_selector.go
+@@ -0,0 +1,31 @@
++package auth
++
++import (
++	"context"
++	"net/http"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++// PluginOnlyStrategy is the routing.strategy value that leaves credential
++// selection entirely to a scheduler plugin.
++const PluginOnlyStrategy = "plugin-only"
++
++// PluginOnlySelector rejects every pick. The manager consults a scheduler
++// plugin first and only reaches the configured selector when no plugin handled
++// the request: the plugin is absent, disabled, fused after a panic, or returned
++// an invalid decision. Under routing.strategy "plugin-only" all of those fail
++// closed instead of falling back to a built-in strategy.
++//
++// It is deliberately not a built-in selector type, so the manager also skips
++// the built-in scheduler fast path.
++type PluginOnlySelector struct{}
++
++// Pick always fails with a request-stopping error.
++func (PluginOnlySelector) Pick(context.Context, string, string, cliproxyexecutor.Options, []*Auth) (*Auth, error) {
++	return nil, wrapRequestStopError(&Error{
++		Code:       "gateway_allocation_unavailable",
++		Message:    "gateway_allocation_unavailable",
++		HTTPStatus: http.StatusServiceUnavailable,
++	})
++}
+diff --git a/sdk/cliproxy/auth/gateway_plugin_only_selector_test.go b/sdk/cliproxy/auth/gateway_plugin_only_selector_test.go
+new file mode 100644
+index 0000000..bc0eeef
+--- /dev/null
++++ b/sdk/cliproxy/auth/gateway_plugin_only_selector_test.go
+@@ -0,0 +1,36 @@
++package auth
++
++import (
++	"context"
++	"errors"
++	"net/http"
++	"testing"
++
++	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
++)
++
++func TestGatewayPluginOnlySelectorAlwaysRejects(t *testing.T) {
++	candidates := []*Auth{{ID: "a", Provider: "codex"}, {ID: "b", Provider: "codex"}}
++	for _, auths := range [][]*Auth{nil, candidates} {
++		selected, err := PluginOnlySelector{}.Pick(context.Background(), "codex", "gpt-test", cliproxyexecutor.Options{}, auths)
++		if selected != nil || err == nil {
++			t.Fatalf("Pick() = %v, %v; want a rejection", selected, err)
++		}
++		var authErr *Error
++		if !errors.As(err, &authErr) || authErr.Code != "gateway_allocation_unavailable" || authErr.HTTPStatus != http.StatusServiceUnavailable {
++			t.Fatalf("Pick() error = %v, want gateway_allocation_unavailable with 503", err)
++		}
++		if !isRequestStopError(err) {
++			t.Fatal("the rejection must stop the request instead of trying another credential")
++		}
++	}
++}
++
++// The manager only uses its built-in scheduler fast path for built-in selector
++// types. Staying out of that set is what keeps the fast path from selecting a
++// credential when no scheduler plugin is present.
++func TestGatewayPluginOnlySelectorIsNotBuiltIn(t *testing.T) {
++	if isBuiltInSelector(PluginOnlySelector{}) {
++		t.Fatal("PluginOnlySelector must not be treated as a built-in selector")
++	}
++}
+diff --git a/sdk/cliproxy/gateway_plugin_only_routing_test.go b/sdk/cliproxy/gateway_plugin_only_routing_test.go
+new file mode 100644
+index 0000000..452640e
+--- /dev/null
++++ b/sdk/cliproxy/gateway_plugin_only_routing_test.go
+@@ -0,0 +1,29 @@
++package cliproxy
++
++import (
++	"testing"
++
++	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
++	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
++)
++
++func TestGatewayPluginOnlyRoutingStrategy(t *testing.T) {
++	cfg := &config.Config{}
++	cfg.Routing.Strategy = " Plugin-Only "
++	// Session affinity must not wrap the selector: a wrapped selector would
++	// reuse a binding without consulting the scheduler plugin.
++	cfg.Routing.SessionAffinity = true
++	state := normalizedRoutingRuntimeState(cfg)
++	if state.strategy != coreauth.PluginOnlyStrategy {
++		t.Fatalf("strategy = %q, want %q", state.strategy, coreauth.PluginOnlyStrategy)
++	}
++	if _, ok := newRoutingSelector(state).(coreauth.PluginOnlySelector); !ok {
++		t.Fatalf("selector = %T, want an unwrapped PluginOnlySelector", newRoutingSelector(state))
++	}
++	// Every other value keeps upstream behavior.
++	cfg.Routing.Strategy = "round-robin"
++	cfg.Routing.SessionAffinity = false
++	if _, ok := newRoutingSelector(normalizedRoutingRuntimeState(cfg)).(*coreauth.RoundRobinSelector); !ok {
++		t.Fatal("the default strategy changed")
++	}
++}
+diff --git a/sdk/cliproxy/service_config.go b/sdk/cliproxy/service_config.go
+index cbda28e..76cce20 100644
+--- a/sdk/cliproxy/service_config.go
++++ b/sdk/cliproxy/service_config.go
+@@ -79,6 +79,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
+ 		state.strategy = "weighted-round-robin"
+ 	case "fill-first", "fillfirst", "ff":
+ 		state.strategy = "fill-first"
++	case coreauth.PluginOnlyStrategy:
++		state.strategy = coreauth.PluginOnlyStrategy
+ 	}
+ 	state.sessionAffinity = cfg.Routing.SessionAffinity
+ 	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
+@@ -99,6 +101,11 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
+ }
+ 
+ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
++	if state.strategy == coreauth.PluginOnlyStrategy {
++		// Never wrap this selector: session affinity would reuse a binding
++		// without consulting the scheduler plugin.
++		return coreauth.PluginOnlySelector{}
++	}
+ 	var selector coreauth.Selector
+ 	switch state.strategy {
+ 	case "weighted-round-robin":
