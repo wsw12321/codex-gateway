@@ -466,7 +466,8 @@ CI 检查通过后发布四个应用镜像，服务器按提交和 digest 拉取
 一个 139 行的残余补丁，CPA 升级不再需要重基大补丁。插件模式通过
 `deploy/cpa-plugin.override.yml` 启用，暂不提供上游额度查询、模型鉴定和“CPA 授权管理”
 页面的凭证操作，在补齐并完成真实账号验收前不是默认部署。说明见
-[兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式可选尚非默认)。
+[兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式可选尚非默认)，
+后续步骤见 [CPA 插件模式路线图](docs/cpa-plugin-roadmap.md)。
 
 ```sh
 ./scripts/validate-compose.sh

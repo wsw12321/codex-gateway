@@ -216,7 +216,8 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 
 插件模式通过 `deploy/cpa-plugin.override.yml` 启用，默认部署不受影响。它还没有覆盖
 补丁镜像的全部功能（见“尚未提供的功能”），在补齐并完成真实账号验收之前不应作为默认。
-验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)。
+验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)，后续步骤见
+[CPA 插件模式路线图](cpa-plugin-roadmap.md)。
 
 ### 组成
 

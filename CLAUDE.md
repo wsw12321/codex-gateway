@@ -19,6 +19,13 @@ go test -race -count=1 ./...    # needs a C compiler
 go test -count=1 -run '^TestName$' ./internal/server   # single test
 ```
 
+**CPA plugin module.** `deploy/codex-compat/plugin/` is a separate Go module, so `./...` from the root does not reach it. Its end-to-end suite (`-tags e2e`) needs a CPA binary built with the residual patch and the compiled plugin; it runs inside `plugin.Dockerfile`. See the plugin-mode section of `docs/compatibility-upgrades.md`.
+
+```sh
+(cd deploy/codex-compat/plugin && go vet ./... && go test -race -count=1 ./...)
+python3 -m unittest scripts.tests.test_cpa_plugin_deploy   # lock/patch/Dockerfile/override consistency
+```
+
 **Dashboard JS tests.** Some Go tests (e.g. `TestOverviewUI`) shell out to `node --test internal/server/testdata/*.cjs`. If `node` is not on PATH they are skipped silently, so install Node to actually exercise them. You can run one directly from the repo root:
 
 ```sh
@@ -131,11 +138,12 @@ The Node tests load `app.js` by slicing it at the last `\nstart().catch(` and ev
 - `GO_VERSION` in `ci.yml`
 - `deploy/images.sources`
 - `deploy/images.lock.env`
-- the `ARG GOLANG_IMAGE=` line in all five Dockerfiles
+- the `ARG GOLANG_IMAGE=` line in all six Dockerfiles that build Go (including `deploy/codex-compat/plugin.Dockerfile`)
+- `go_version` in `deploy/codex-compat/source.lock.json` and `deploy/codex-compat/plugin.lock.json`
 
 Regenerate or check the locks with `./scripts/lock-images.sh [--check]`.
 
-**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI.
+**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `deploy/cpa-plugin.override.yml` and the plugin's `go.mod`; `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. The remaining work to make plugin mode the default is in `docs/cpa-plugin-roadmap.md`.
 
 ## Conventions
 
