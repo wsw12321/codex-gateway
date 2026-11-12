@@ -62,7 +62,47 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
 		)
 	}
+	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Query one Codex account's live quota"})
+	for _, provider := range facadeProviders {
+		routes = append(routes, managementRoute{http.MethodPost, managementPrefix + facadeNamespace + "/" + provider.name + "/accounts/quota", "Report one account's quota on the credential page"})
+	}
 	return managementRegistration{Routes: routes}
+}
+
+// The credential page reaches CPA under /internal/gateway-management/ in the
+// source-patched image; the Gateway maps that prefix to this namespace.
+const facadeNamespace = "gateway-management"
+
+// facadeProviders maps the credential page's provider names to providers.
+var facadeProviders = []struct{ name, provider string }{
+	{"codex", ProviderCodex},
+	{"antigravity", ProviderAntigravity},
+	{"anthropic", ProviderClaude},
+}
+
+// facadeManagement serves the credential page's routes. Only quota exists in
+// plugin mode; credential operations answer 404 until they are migrated.
+func (p *Plugin) facadeManagement(method, path string, query url.Values, body []byte) []byte {
+	provider := ""
+	for _, candidate := range facadeProviders {
+		if path == candidate.name+"/accounts/quota" {
+			provider = candidate.provider
+		}
+	}
+	if method != http.MethodPost || provider == "" {
+		return managementError(http.StatusNotFound, "not_found")
+	}
+	switch provider {
+	case ProviderCodex:
+		return p.codexQuotaFacade(query, body)
+	case ProviderAntigravity:
+		if !p.cfg.AntigravityEnabled {
+			return facadeError(http.StatusServiceUnavailable)
+		}
+		return p.antigravityQuotaFacade(query, body)
+	default:
+		return p.anthropicQuotaFacade(query, body)
+	}
 }
 
 func managementJSON(status int, value any) []byte {
@@ -100,6 +140,9 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return managementError(http.StatusServiceUnavailable, "account_registry_unavailable")
 	}
 	path = strings.TrimPrefix(strings.TrimPrefix(path, managementBase), managementPrefix)
+	if facade, ok := strings.CutPrefix(path, facadeNamespace+"/"); ok {
+		return p.facadeManagement(method, facade, query, body)
+	}
 	name, action, _ := strings.Cut(path, "/")
 	provider := ""
 	for _, namespace := range accountNamespaces {
@@ -127,6 +170,8 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return p.setAccountStatus(provider, query, body)
 	case method == http.MethodPut && action == "egress":
 		return p.syncAccountEgress(provider, query, body)
+	case method == http.MethodPost && action == "quota" && provider == ProviderCodex:
+		return p.codexQuota(query, body)
 	}
 	return managementError(http.StatusNotFound, "not_found")
 }

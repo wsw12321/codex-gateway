@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -162,5 +165,62 @@ func TestSyncAccountEgress(t *testing.T) {
 	client.UsePluginManagement("")
 	if err := client.SyncAccountEgress(context.Background(), account); err == nil {
 		t.Fatal("pushed without the plugin integration")
+	}
+}
+
+// TestPluginQuotaContract feeds the plugin's own golden output to the strict
+// quota parser, so the two modules cannot drift apart unnoticed.
+func TestPluginQuotaContract(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join("..", "..", "deploy", "codex-compat", "plugin", "internal", "gatewayplugin", "testdata", "codex_quota_rpc.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const account = "0123456789abcdef"
+	var seen []*http.Request
+	client := pluginManagementClient(t, "codex", &seen, func(r *http.Request) (int, string) {
+		if r.URL.Path == "/v0/management/gateway/upstream-accounts/capabilities" {
+			return 200, `{"protocol":"` + AccountAccessProtocolV1 + `","group_upstream_account_scope":"` + GroupUpstreamAccountScopeV1 + `"}`
+		}
+		return 200, string(golden)
+	})
+	quota, err := client.QueryUpstreamAccountQuota(context.Background(), account)
+	if err != nil {
+		t.Fatalf("the plugin's quota answer was rejected: %v", err)
+	}
+	request := seen[len(seen)-1]
+	body, _ := io.ReadAll(request.Body)
+	if request.Method != http.MethodPost || request.URL.Path != "/v0/management/gateway/upstream-accounts/quota" ||
+		request.URL.RawQuery != "id="+account || request.Header.Get("Authorization") != "Bearer management-secret" ||
+		string(body) != accountRateLimitsRequestBody {
+		t.Fatalf("unexpected quota request: %s %s %q", request.Method, request.URL, body)
+	}
+	primary := quota.Result.RateLimits.Primary
+	review := quota.Result.RateLimitsByLimitID["code_review"]
+	if primary == nil || primary.UsedPercent != 25 || primary.WindowDurationMins == nil || *primary.WindowDurationMins != 300 ||
+		quota.Result.RateLimits.RateLimitReachedType == nil || review.Primary == nil || review.Secondary != nil {
+		t.Fatalf("parsed quota %+v", quota.Result)
+	}
+
+	// The plugin's fixed error codes map to the same Gateway codes as the
+	// source-patched image's.
+	for _, test := range []struct {
+		status int
+		body   string
+		code   string
+	}{
+		{401, `{"error":"quota_reauthentication_required"}`, "upstream_reauthentication_required"},
+		{409, `{"error":"upstream_account_disabled"}`, "upstream_account_disabled"},
+		{429, `{"error":"quota_upstream_rate_limited"}`, "upstream_quota_rate_limited"},
+		{502, `{"error":"quota_rate_limit_missing"}`, "upstream_quota_rate_limit_missing"},
+		{502, `{"error":"quota_upstream_unavailable"}`, "upstream_quota_unavailable"},
+		{502, `{"error":"quota_account_identity_unavailable"}`, "upstream_quota_account_identity_unavailable"},
+		{504, `{"error":"quota_upstream_timeout"}`, "upstream_quota_timeout"},
+	} {
+		failing := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return test.status, test.body })
+		_, err = failing.QueryUpstreamAccountQuota(context.Background(), account)
+		var internalErr *InternalAPIError
+		if !errors.As(err, &internalErr) || internalErr.SafeCode() != test.code {
+			t.Fatalf("%d %s: got %v, want %s", test.status, test.body, err, test.code)
+		}
 	}
 }

@@ -41,6 +41,11 @@ type Plugin struct {
 	now         func() time.Time
 	// applyProxy writes a credential's egress; see loopbackApplyProxy.
 	applyProxy func(context.Context, Account, string) error
+	// quotaHTTP sends one quota query through a proxy; see directQuotaHTTP.
+	quotaHTTP func(context.Context, string, *http.Request) (*http.Response, error)
+	// observeCredential reads passive quota observations; see
+	// loopbackObserveCredential.
+	observeCredential func(context.Context, Account) (credentialObservation, error)
 }
 
 // New builds the plugin from the environment. It never fails: an unusable
@@ -66,6 +71,8 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 		},
 	}
 	p.applyProxy = p.loopbackApplyProxy
+	p.quotaHTTP = directQuotaHTTP
+	p.observeCredential = p.loopbackObserveCredential
 	control, err := LoadControlState(cfg.AuthDir)
 	if err != nil {
 		p.unavailable = err

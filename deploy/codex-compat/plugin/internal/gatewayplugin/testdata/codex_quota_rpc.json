@@ -1,0 +1,49 @@
+{
+  "id": 6,
+  "result": {
+    "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "primary": {
+        "usedPercent": 25,
+        "windowDurationMins": 300,
+        "resetsAt": 1794200000
+      },
+      "secondary": {
+        "usedPercent": 40,
+        "windowDurationMins": 10080,
+        "resetsAt": 1794700000
+      },
+      "rateLimitReachedType": "rate_limit_reached"
+    },
+    "rateLimitsByLimitId": {
+      "code_review": {
+        "limitId": "code_review",
+        "limitName": null,
+        "primary": {
+          "usedPercent": 0,
+          "windowDurationMins": 10080,
+          "resetsAt": 1794700000
+        },
+        "secondary": null,
+        "rateLimitReachedType": null
+      },
+      "codex": {
+        "limitId": "codex",
+        "limitName": null,
+        "primary": {
+          "usedPercent": 25,
+          "windowDurationMins": 300,
+          "resetsAt": 1794200000
+        },
+        "secondary": {
+          "usedPercent": 40,
+          "windowDurationMins": 10080,
+          "resetsAt": 1794700000
+        },
+        "rateLimitReachedType": "rate_limit_reached"
+      }
+    },
+    "rateLimitResetCredits": null
+  }
+}

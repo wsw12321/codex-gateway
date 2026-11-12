@@ -38,6 +38,10 @@ type Config struct {
 	// EgressProxyHost is the only authority an account-bound egress URL may
 	// name: the per-account listener of the egress service.
 	EgressProxyHost string
+	// GlobalProxyURL is CPA's own proxy-url, used by quota queries for an
+	// account without a binding. Empty makes those queries unavailable: they
+	// never connect directly.
+	GlobalProxyURL string
 }
 
 const (
@@ -69,9 +73,15 @@ func LoadConfig(getenv func(string) string, readFile func(string) ([]byte, error
 		HoldTTL:            5 * time.Minute,
 		CallbackTimeout:    2 * time.Second,
 		EgressProxyHost:    valueOr(getenv("CPA_PLUGIN_EGRESS_PROXY_HOST"), defaultEgressProxyHost),
+		GlobalProxyURL:     strings.TrimSpace(getenv("CPA_PLUGIN_GLOBAL_PROXY_URL")),
 	}
 	if !validOrigin(cfg.GatewayURL) || !validOrigin(cfg.LoopbackURL) || cfg.AuthDir == "" || !validOrigin("http://"+cfg.EgressProxyHost) {
 		return Config{}, ErrConfig
+	}
+	if cfg.GlobalProxyURL != "" {
+		if _, err := parseProxyURL(cfg.GlobalProxyURL); err != nil {
+			return Config{}, ErrConfig
+		}
 	}
 	key, err := readKey(readFile, valueOr(getenv("CLIPROXY_API_KEY_FILE"), defaultInternalKeyFile))
 	if err != nil {

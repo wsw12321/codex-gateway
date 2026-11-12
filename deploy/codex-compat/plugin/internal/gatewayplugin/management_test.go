@@ -38,8 +38,10 @@ func TestManagementRoutesAreExactAndAuthenticatedOnly(t *testing.T) {
 		t.Fatalf("a menu or resource route would be served without the management key: %s", raw)
 	}
 	routes := f.plugin.managementRoutes().Routes
-	if len(routes) != 18 {
-		t.Fatalf("%d routes declared, want 6 per account namespace", len(routes))
+	// Six per account namespace, the Codex quota query and one quota route
+	// per provider on the credential page.
+	if len(routes) != 22 {
+		t.Fatalf("%d routes declared, want 22", len(routes))
 	}
 	seen := map[string]bool{}
 	for _, route := range routes {

@@ -147,6 +147,9 @@ chmod 0600 "$config_file"
 # an account's route may be redirected through the environment.
 export CPA_PLUGIN_GATEWAY_URL=http://gateway:8080
 export CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129
+# Quota queries for an account without its own route use CPA's global egress,
+# the same proxy-url written to the configuration above; never a direct path.
+export CPA_PLUGIN_GLOBAL_PROXY_URL="$proxy_url"
 export CPA_PLUGIN_LOOPBACK_URL="http://127.0.0.1:${listen_port}"
 export CPA_PLUGIN_AUTH_DIR="$auth_dir"
 export CLIPROXY_API_KEY_FILE="$key_file"

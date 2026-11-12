@@ -91,7 +91,10 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	const prefix = "/internal/upstream-accounts/"
+	prefix := "/internal/upstream-accounts/"
+	if strings.HasPrefix(r.URL.Path, "/internal/anthropic-accounts/") {
+		prefix = "/internal/anthropic-accounts/"
+	}
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, prefix) {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -284,7 +287,7 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 		return
 	}
 	host, _, _ := net.SplitHostPort(request.Host)
-	if host != "chatgpt.com" {
+	if host != "chatgpt.com" && host != "api.anthropic.com" {
 		// CPA's own background lookups are not part of any scenario.
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
 		return
@@ -362,6 +365,14 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth})
 	behavior := p.behavior[bearer]
 	p.mu.Unlock()
+	if host == "chatgpt.com" && r.URL.Path == "/backend-api/wham/usage" {
+		serveUsage(behavior, w)
+		return
+	}
+	if host == "api.anthropic.com" {
+		serveClaude(r, w)
+		return
+	}
 	switch behavior {
 	case "limit":
 		w.Header().Set("Content-Type", "application/json")
@@ -392,6 +403,75 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 		_, _ = io.WriteString(w, strings.ReplaceAll(sseBody, "MODEL", model))
 	}
 }
+
+// usageDocument is a ChatGPT usage answer; the plan and e-mail must never
+// reach the Gateway.
+const usageDocument = `{"plan_type":"plus","email":"leak@example.com","rate_limit":{"allowed":true,` +
+	`"primary_window":{"used_percent":30,"limit_window_seconds":18000,"reset_at":1794200000},` +
+	`"secondary_window":{"used_percent":55,"limit_window_seconds":604800,"reset_at":1794700000}},` +
+	`"additional_rate_limits":[{"limit_name":"Review","metered_feature":"code_review","rate_limit":{"primary_window":{"used_percent":10}}}]}`
+
+func serveUsage(behavior string, w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	switch behavior {
+	case "quota-401":
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"detail":"provider-secret-text"}`)
+	case "quota-redirect":
+		w.Header().Set("Location", "https://chatgpt.com/backend-api/elsewhere")
+		w.WriteHeader(http.StatusFound)
+	case "quota-schema":
+		_, _ = io.WriteString(w, `{"plan_type":"plus","email":"leak@example.com"}`)
+	case "quota-fractional":
+		_, _ = io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":12.5}}}`)
+	default:
+		_, _ = io.WriteString(w, usageDocument)
+	}
+}
+
+// serveClaude answers a Messages request with the unified rate limit headers
+// CPA observes passively.
+func serveClaude(r *http.Request, w http.ResponseWriter) {
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Status", "allowed_warning")
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.42")
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1794200000")
+	w.Header().Set("Anthropic-Ratelimit-Unified-7d-Status", "allowed")
+	w.Header().Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.1")
+	w.Header().Set("Request-Id", "req_e2e")
+	if r.URL.Path != "/v1/messages" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, claudeSSE)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"hello"}],`+
+		`"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}`)
+}
+
+const claudeSSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
 
 func (p *fakeProvider) set(token, behavior string) {
 	p.mu.Lock()
@@ -440,6 +520,9 @@ type harness struct {
 	// dataPlaneClosed is set by scenarios in which the plugin refuses even the
 	// model listing, so readiness cannot be observed through it.
 	dataPlaneClosed bool
+	// anthropicIdentities is the verified identity registry written before
+	// CPA starts, as the credential page's registration would leave it.
+	anthropicIdentities map[string]string
 }
 
 func requireEnv(t *testing.T, name string) string {
@@ -496,6 +579,32 @@ func (h *harness) addAccount(name string, extra map[string]any) account {
 	return created
 }
 
+// addClaudeAccount writes a Claude OAuth credential whose verified identity
+// is already registered, and returns the account with the given stable id.
+func (h *harness) addClaudeAccount(name, id string) account {
+	h.t.Helper()
+	accountUUID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa" + fmt.Sprintf("%02x", len(h.accounts))
+	organizationUUID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	subject := accountUUID + ":" + organizationUUID
+	if h.anthropicIdentities == nil {
+		h.anthropicIdentities = map[string]string{}
+	}
+	h.anthropicIdentities[subject] = id
+	token := "claude-token-" + name
+	document := map[string]any{
+		"type": "claude", "email": name + "@example.com", "access_token": token, "refresh_token": "refresh-" + name,
+		"expired": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339), "last_refresh": time.Now().UTC().Format(time.RFC3339),
+		"account_uuid": accountUUID, "organization_uuid": organizationUUID, "gateway_anthropic_subject": subject,
+	}
+	raw, _ := json.Marshal(document)
+	if err := os.WriteFile(filepath.Join(h.authDir, "claude-"+name+".json"), raw, 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	created := account{name: name, token: token, id: id}
+	h.accounts[name] = created
+	return created
+}
+
 func freePort(t *testing.T) int {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -517,6 +626,12 @@ func (h *harness) start() {
 			h.t.Fatal(err)
 		}
 		return path
+	}
+	if len(h.anthropicIdentities) > 0 {
+		registry, _ := json.Marshal(map[string]any{"version": 1, "accounts": h.anthropicIdentities})
+		if err := os.WriteFile(filepath.Join(h.authDir, ".gateway-anthropic-identities"), registry, 0o600); err != nil {
+			h.t.Fatal(err)
+		}
 	}
 	keyFile := write("sidecar_api_key", internalKey+"\n")
 	managementFile := write("cpa_management_key", managementKey+"\n")
@@ -577,6 +692,8 @@ remote-management:
 		"CPA_MANAGEMENT_KEY_FILE=" + managementFile,
 		// The account-egress listener stands in for egress-allowlist:3129.
 		"CPA_PLUGIN_EGRESS_PROXY_HOST=" + strings.TrimPrefix(h.egress, "http://"),
+		// As in the entrypoint, the plugin's global egress is CPA's proxy-url.
+		"CPA_PLUGIN_GLOBAL_PROXY_URL=" + h.proxy,
 	}
 	// CPA loads a plugin from a private copy under its temporary directory, so
 	// that directory must allow mapping executable pages. CPA_E2E_TMPDIR lets
@@ -660,6 +777,8 @@ type call struct {
 	headers  map[string]string
 	noToken  bool
 	timeout  time.Duration
+	// body replaces the default Responses request.
+	body string
 }
 
 type result struct {
@@ -700,6 +819,9 @@ func (h *harness) do(c call) result {
 		c.timeout = 30 * time.Second
 	}
 	body := `{"model":"` + model + `","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+	if c.body != "" {
+		body = c.body
+	}
 	request, _ := http.NewRequest(http.MethodPost, h.base+c.path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+c.key)
 	request.Header.Set("Content-Type", "application/json")

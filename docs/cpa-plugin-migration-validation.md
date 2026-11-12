@@ -208,3 +208,57 @@ push 运行，所以此前没有暴露。
 
 Trivy 的结果中没有插件 `.so`，Go 二进制的检测只列出了 `cli-proxy-api`。插件的依赖由
 `go-security` 中插件 module 的 govulncheck 覆盖。
+
+## 路线图第 4 步：额度查询
+
+日期 2026-11-12。插件新增四个管理路由，按补丁镜像的格式提供 Gateway 用到的全部额度
+查询，Gateway 不需要改动（路径映射在插件模式引入时已就位）。设计与取舍见
+[兼容层升级规程](compatibility-upgrades.md#额度查询)，行为差异见同文第 14–17 项。
+
+### 评估：为什么不用 `QuotaProvider`
+
+- CPA 的 `POST /v0/management/quota/fetch` 输出 `QuotaFetchResponse`（剩余比例、窗口名），
+  装不下 Gateway 严格解析的 `account/rateLimits/read` 信封（整数百分比、窗口分钟数、
+  `rateLimitReachedType`、限额 ID）。
+- 该接口出错时把插件返回的错误文本拼进响应，并以错误级别写日志。
+- 它交给插件的宿主 HTTP 客户端会跟随重定向（跨源时去掉凭证头），而补丁镜像的规则是
+  不跟随。宿主的 `host.http.do` 回调又只能使用全局代理，无法指定账号出口。
+- 注册为 `codex`、`claude` 的 `QuotaProvider` 还会改变 CPA 自己管理页面的行为。
+
+所以查询由插件的管理路由自己发出：先向 Gateway 确认路由，用独立的传输层只连该代理，
+拒绝重定向。
+
+### 测试
+
+插件单测（`internal/gatewayplugin/quota_test.go`，含 `-race`）：
+
+| 项 | 覆盖 |
+|---|---|
+| 请求解码 | 与补丁镜像一致：只接受 `{"method":"account/rateLimits/read","id":6}`；空、`null`、数组、方法或 id 错误、`6.0`、`6e0`、字符串 id、`params`、未知字段、尾随 JSON、重复键、大小写不同、缺字段一律 400；超过 256 字节 413 |
+| 归一化 | 黄金文件 `testdata/codex_quota_rpc.json` 固定输出；24 种合法与非法形状逐一对应补丁镜像的错误码；只报告已知的 `rateLimitReachedType` |
+| 出口 | 未绑定走全局出口，绑定走账号路由；全局出口未配置或路由无法确认时零上游调用 |
+| 请求内容 | URL、方法固定；请求头恰好三个，令牌只在 `Authorization` |
+| 错误映射 | 23 种情况：账号不存在、参数多余、注册表不可用、凭证被禁用、缺少或含控制字符的令牌、凭证文件被换成其他账号、传输失败与超时、401/403/429/408/504/500/302、超大响应、结构变化；上游正文和令牌从不出现在响应中 |
+| 传输层 | 真实的 `httptest` 代理：只经给定代理（忽略 `HTTP_PROXY`/`HTTPS_PROXY`），携带路由凭据，302 不跟随；非法代理地址被拒绝 |
+| 授权页面 | Codex 门面换算剩余比例并排序；Antigravity 只保留合法的 `gemini-*` 模型，丢弃不合法的重置时间，回滚期间不触碰 Google 凭证；Claude 取最新的凭证或模型观测，过期冷却不输出 |
+| 回环读取 | 只按 `auth_index` 查询，只认 `id` 与 `auth_index` 都匹配的条目；错误状态、格式错误、缺管理密钥都视为不可用 |
+
+Gateway（`internal/proxy/plugin_management_test.go`）：`TestPluginQuotaContract` 用插件的
+黄金文件喂给 Gateway 的严格解析器，检查请求走 `/v0/management/gateway/upstream-accounts/quota?id=`
+并使用管理密钥；插件的固定错误码映射到与补丁镜像相同的 Gateway 错误码。
+
+端到端（真实 CPA 进程，新增 2 组，共 11 组）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestQuotaQuery` | 未绑定账号经全局出口查询，绑定账号经账号出口并携带路由凭据；返回值正确，计划类型和邮箱不外泄；内部请求头不到上游；401、302（不跟随）、结构变化、小数百分比的固定错误码；路由无法确认时零上游调用；无密钥或数据面密钥被拒；授权页面的 Codex 额度 |
+| `TestClaudePassiveQuota` | 请求前返回空窗口；一次经 CPA 的 Claude 请求后，CPA 记录的 `anthropic-ratelimit-unified-*` 响应头经管理 API 回读为 5 小时与 7 天窗口；不含令牌和邮箱；Codex 账号不能当作 Claude 查询 |
+
+本地按 `plugin.Dockerfile` 的步骤在固定 CPA 提交上应用残余补丁、编译 CPA 和插件，11 组
+端到端测试全部通过。镜像中的同一步骤由 CI 运行，构建会逐一断言这两个新测试名。
+
+### 未验证
+
+- chatgpt.com 是否接受插件的 Go 标准 TLS 客户端（补丁镜像用 CPA 的浏览器指纹客户端），
+  以及 Antigravity 的固定客户端版本号是否被接受。两者都要在真实账号验收中确认，已加入
+  第 3 步的验收清单。

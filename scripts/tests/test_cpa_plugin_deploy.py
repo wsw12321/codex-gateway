@@ -84,8 +84,10 @@ class CPAPluginDeploymentTests(unittest.TestCase):
 
         # Every end-to-end test must be asserted by name: a test that silently
         # stopped running would otherwise leave the build green.
-        declared = re.findall(r"^func (Test\w+)\(", read(PLUGIN / "e2e" / "e2e_test.go"), flags=re.M)
-        self.assertGreaterEqual(len(declared), 9)
+        declared = []
+        for source in sorted((PLUGIN / "e2e").glob("*_test.go")):
+            declared += re.findall(r"^func (Test\w+)\(", read(source), flags=re.M)
+        self.assertGreaterEqual(len(declared), 11)
         e2e_step = self.dockerfile[self.dockerfile.index("CPA_E2E_BINARY=/out/cli-proxy-api"):]
         asserted = re.findall(r"^\s+(Test\w+)(?: \\|; do \\)$", e2e_step, flags=re.M)
         self.assertEqual(sorted(asserted), sorted(declared))
@@ -138,6 +140,9 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         # environment, and the two keys must differ.
         self.assertIn("\nexport CPA_PLUGIN_GATEWAY_URL=http://gateway:8080\n", self.entrypoint)
         self.assertIn("\nexport CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129\n", self.entrypoint)
+        # Quota queries use exactly CPA's own global egress.
+        self.assertIn('\nexport CPA_PLUGIN_GLOBAL_PROXY_URL="$proxy_url"\n', self.entrypoint)
+        self.assertIn('proxy-url: "${proxy_url}"', self.entrypoint)
         gateway = read(ROOT / "internal" / "server" / "egress_runtime.go")
         self.assertIn('const accountEgressProxy = "http://egress-allowlist:3129"', gateway)
         self.assertIn('test "$internal_key" != "$management_key"', self.entrypoint)

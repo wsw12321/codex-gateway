@@ -37,8 +37,17 @@ func TestLoadConfig(t *testing.T) {
 	}
 	base := map[string]string{"CLIPROXY_API_KEY_FILE": "/k/internal", "CPA_MANAGEMENT_KEY_FILE": "/k/manage", "CPA_PLUGIN_AUTH_DIR": "/auth"}
 	cfg, err := LoadConfig(env(base), read)
-	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL || !cfg.AntigravityEnabled {
+	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL || !cfg.AntigravityEnabled || cfg.GlobalProxyURL != "" {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
+	}
+	for _, proxy := range []string{"http://egress-allowlist:3128", "socks5h://u:p@egress:1080"} {
+		withProxy := map[string]string{"CPA_PLUGIN_GLOBAL_PROXY_URL": proxy}
+		for k, v := range base {
+			withProxy[k] = v
+		}
+		if cfg, err = LoadConfig(env(withProxy), read); err != nil || cfg.GlobalProxyURL != proxy {
+			t.Fatalf("global proxy %q: %+v, %v", proxy, cfg, err)
+		}
 	}
 	for name, change := range map[string][2]string{
 		"missing auth dir":       {"CPA_PLUGIN_AUTH_DIR", ""},
@@ -49,6 +58,9 @@ func TestLoadConfig(t *testing.T) {
 		"gateway url with path":  {"CPA_PLUGIN_GATEWAY_URL", "http://gateway:8080/x"},
 		"gateway url with creds": {"CPA_PLUGIN_GATEWAY_URL", "http://u:p@gateway:8080"},
 		"https gateway":          {"CPA_PLUGIN_GATEWAY_URL", "https://gateway"},
+		"global proxy with path": {"CPA_PLUGIN_GLOBAL_PROXY_URL", "http://egress:3128/x"},
+		"global proxy scheme":    {"CPA_PLUGIN_GLOBAL_PROXY_URL", "ftp://egress:21"},
+		"global proxy no host":   {"CPA_PLUGIN_GLOBAL_PROXY_URL", "direct"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values := map[string]string{}
