@@ -148,6 +148,8 @@ Regenerate or check the locks with `./scripts/lock-images.sh [--check]`.
 ## Conventions
 
 - **Fail closed.** Authentication, quota, model permission, account eligibility, and missing usage all reject rather than allow. Never add automatic fallback to a paid Platform API.
+- **CPA builds every upstream request.** Inference, token refresh, OAuth, model listing and quota data come from CPA's own code paths. The plugin and the Gateway never construct provider requests (no provider URLs, headers, User-Agents or TLS clients of their own), and no patch may change how CPA builds them. Leave a capability out rather than reimplement it. The only CPA patch left in plugin mode is the residual plugin-only selector, which does not touch request content.
+- **Account egress never falls back.** When an account's egress is unavailable, that account's request, refresh or login fails; it never switches to the global egress or a direct connection. The scheduler may still try another authorized account through that account's own egress.
 - **Logging.** Never log request or response content, tokens, or raw error text from upstreams. Existing code logs `fmt.Sprintf("%T", err)` (see `internalError` in `middleware.go`) or passes errors through `security.RedactText`.
 - **gosec suppressions** must be targeted and justified: `// #nosec G115 -- <reason>`.
 - **Shell scripts** use one of the shebangs CI accepts (`#!/bin/sh`, `#!/usr/bin/env bash`, `#!/sbin/openrc-run`), `set -eu`, and `pipefail` for Bash pipelines.
