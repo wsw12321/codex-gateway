@@ -31,6 +31,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -75,6 +76,10 @@ type fakeGateway struct {
 	// the global egress. egressDown makes every resolution fail.
 	routes     map[string]string
 	egressDown bool
+	// registrations maps an egress registration to the route the account it
+	// is committed to gets; committed records "registration=account".
+	registrations map[string]string
+	committed     []string
 	// resolved counts the routes confirmed per account.
 	resolved map[string]int
 }
@@ -164,6 +169,21 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"mode": "global", "revision": "global:0"})
+	case "register-egress":
+		var input struct {
+			RegistrationID string `json:"registration_id"`
+			Provider       string `json:"provider"`
+			AccountID      string `json:"account_id"`
+		}
+		_ = json.Unmarshal(body, &input)
+		route, ok := g.registrations[input.RegistrationID]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		g.routes[input.AccountID] = route
+		g.committed = append(g.committed, input.RegistrationID+"="+input.AccountID)
+		_ = json.NewEncoder(w).Encode(map[string]string{"registration_id": input.RegistrationID, "account_id": input.AccountID, "status": "committed", "revision": "route:1"})
 	case "attempt":
 		var report attemptReport
 		_ = json.Unmarshal(body, &report)
@@ -218,6 +238,8 @@ type upstreamCall struct {
 	Headers http.Header
 	// ProxyAuth is the credential CPA presented to the proxy on CONNECT.
 	ProxyAuth string
+	// Form is the decoded body of a token endpoint call.
+	Form url.Values
 }
 
 type fakeProvider struct {
@@ -314,7 +336,7 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 		return
 	}
 	host, _, _ := net.SplitHostPort(request.Host)
-	if host != "chatgpt.com" && host != "api.anthropic.com" {
+	if host != "chatgpt.com" && host != "api.anthropic.com" && host != "auth.openai.com" {
 		// CPA's own background lookups are not part of any scenario.
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
 		return
@@ -393,14 +415,23 @@ data: {"type":"response.completed","response":{"id":"resp_1","object":"response"
 `
 
 func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter, r *http.Request) {
+	var form url.Values
+	if host == "auth.openai.com" {
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+		form, _ = url.ParseQuery(string(raw))
+	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 8<<20))
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	p.mu.Lock()
-	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth})
+	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth, Form: form})
 	behavior := p.behavior[bearer]
 	p.mu.Unlock()
 	if host == "api.anthropic.com" {
 		serveClaude(r, w)
+		return
+	}
+	if host == "auth.openai.com" {
+		serveCodexToken(r, form, w)
 		return
 	}
 	switch behavior {
@@ -457,6 +488,31 @@ var codexQuotaHeaders = map[string]string{
 	"X-Codex-Code-Review-Primary-Used-Percent":   "10",
 	"X-Codex-Code-Review-Primary-Window-Minutes": "10080",
 	"X-Codex-Plan-Type":                          "plus",
+}
+
+// serveCodexToken answers ChatGPT's token endpoint. A refresh token
+// "rt-NAME" or an authorization code "code-NAME" yields the tokens of
+// ChatGPT account "acct-NAME": access token "at-NAME", refresh token
+// "rt2-NAME", and an ID token naming the account.
+func serveCodexToken(r *http.Request, form url.Values, w http.ResponseWriter) {
+	name := ""
+	switch {
+	case r.URL.Path != "/oauth/token":
+	case form.Get("grant_type") == "refresh_token":
+		name = strings.TrimPrefix(strings.TrimPrefix(form.Get("refresh_token"), "rt2-"), "rt-")
+	case form.Get("grant_type") == "authorization_code":
+		name = strings.TrimPrefix(form.Get("code"), "code-")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token": "at-" + name, "refresh_token": "rt2-" + name, "id_token": fakeJWT("acct-" + name),
+		"token_type": "Bearer", "expires_in": 3600,
+	})
 }
 
 // serveClaude answers a Messages request with the unified rate limit headers

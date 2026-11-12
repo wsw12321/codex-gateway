@@ -277,7 +277,7 @@ func TestCodexQuotaFromObservation(t *testing.T) {
 	if status, fields, _ = f.manage(http.MethodPost, path, query, `{"x":1}`); status != http.StatusBadRequest || string(fields["status"]) != `"error"` {
 		t.Fatalf("facade accepted a body: %d %v", status, fields)
 	}
-	for _, other := range []string{"/codex/accounts/refresh", "/unknown/accounts/quota", "/codex/accounts"} {
+	for _, other := range []string{"/unknown/accounts/quota", "/codex/accounts", "/codex/accounts/quota/x"} {
 		if status, _, _ := f.manage(http.MethodPost, managementPrefix+facadeNamespace+other, query, "{}"); status != http.StatusNotFound {
 			t.Fatalf("%s answered %d", other, status)
 		}

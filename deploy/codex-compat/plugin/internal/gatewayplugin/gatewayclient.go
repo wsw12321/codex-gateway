@@ -58,6 +58,9 @@ type Allocator interface {
 	Select(ctx context.Context, provider, userID string, accounts []string) (string, error)
 	// Report records the final decision of one attempt for attribution.
 	Report(ctx context.Context, provider string, attempt Attempt) error
+	// RegisterEgress commits the egress the Owner chose before a login or an
+	// import to the account that login produced.
+	RegisterEgress(ctx context.Context, provider, registrationID, accountID string) error
 }
 
 // GatewayClient calls the fixed Gateway callbacks. It never uses a proxy,
@@ -274,4 +277,32 @@ func (c *GatewayClient) ResolveEgress(ctx context.Context, provider, accountID s
 		return Egress{}, ErrUnavailable
 	}
 	return Egress{ProxyURL: resolution.ProxyURL, Revision: resolution.Revision}, nil
+}
+
+// RegisterEgress implements Allocator. The Gateway binds the account to the
+// egress recorded under the registration; the answer must name the same
+// registration and account.
+func (c *GatewayClient) RegisterEgress(ctx context.Context, provider, registrationID, accountID string) error {
+	if accountsPath(provider) == "" || !validUUID(registrationID) || !validAccountID(accountID) {
+		return ErrUnavailable
+	}
+	body := struct {
+		RegistrationID string `json:"registration_id"`
+		Provider       string `json:"provider"`
+		AccountID      string `json:"account_id"`
+	}{registrationID, gatewayProvider(provider), accountID}
+	status, data, err := c.postPath(ctx, "/internal/upstream-accounts/register-egress", body, 4<<10)
+	if err != nil || status != http.StatusOK {
+		return ErrUnavailable
+	}
+	var answer struct {
+		RegistrationID string `json:"registration_id"`
+		AccountID      string `json:"account_id"`
+		Status         string `json:"status"`
+	}
+	if _, errObject := decodeObject(data); errObject != nil || json.Unmarshal(data, &answer) != nil ||
+		answer.RegistrationID != registrationID || answer.AccountID != accountID || answer.Status != "committed" {
+		return ErrUnavailable
+	}
+	return nil
 }

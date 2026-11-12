@@ -64,7 +64,16 @@ func (p *Plugin) managementRoutes() managementRegistration {
 	}
 	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Report one Codex account's quota as CPA observed it"})
 	for _, provider := range facadeProviders {
-		routes = append(routes, managementRoute{http.MethodPost, managementPrefix + facadeNamespace + "/" + provider.name + "/accounts/quota", "Report one account's quota on the credential page"})
+		base := managementPrefix + facadeNamespace + "/" + provider.name
+		routes = append(routes,
+			managementRoute{http.MethodPost, base + "/accounts/quota", "Report one account's quota on the credential page"},
+			managementRoute{http.MethodPost, base + "/oauth", "Start a login through CPA with a fixed egress"},
+			managementRoute{http.MethodPost, base + "/oauth/callback", "Hand an authorization code to CPA"},
+			managementRoute{http.MethodPost, base + "/oauth/status", "Report a login and bind its account"},
+			managementRoute{http.MethodPost, base + "/credentials", "Import tokens and let CPA refresh them"},
+			managementRoute{http.MethodPost, base + "/accounts/refresh", "Refresh one account's credential through CPA"},
+			managementRoute{http.MethodDelete, base + "/accounts", "Delete one disabled, idle account's credential"},
+		)
 	}
 	return managementRegistration{Routes: routes}
 }
@@ -80,29 +89,48 @@ var facadeProviders = []struct{ name, provider string }{
 	{"anthropic", ProviderClaude},
 }
 
-// facadeManagement serves the credential page's routes. Only quota exists in
-// plugin mode; credential operations answer 404 until they are migrated.
+// facadeManagement serves the credential page's routes: quota, login,
+// import, refresh and delete. Each operation is carried out by CPA's own
+// management API; see credentials.go.
 func (p *Plugin) facadeManagement(method, path string, query url.Values, body []byte) []byte {
+	name, action, _ := strings.Cut(path, "/")
 	provider := ""
 	for _, candidate := range facadeProviders {
-		if path == candidate.name+"/accounts/quota" {
+		if candidate.name == name {
 			provider = candidate.provider
 		}
 	}
-	if method != http.MethodPost || provider == "" {
+	if provider == "" {
 		return managementError(http.StatusNotFound, "not_found")
 	}
-	switch provider {
-	case ProviderCodex:
-		return p.codexQuotaFacade(query, body)
-	case ProviderAntigravity:
-		if !p.cfg.AntigravityEnabled {
-			return facadeError(http.StatusServiceUnavailable)
-		}
-		return p.antigravityQuotaFacade(query, body)
-	default:
-		return p.anthropicQuotaFacade(query, body)
+	if provider == ProviderAntigravity && !p.cfg.AntigravityEnabled {
+		// During a bridge rollback this CPA must not touch Google credentials.
+		return facadeError(http.StatusServiceUnavailable)
 	}
+	switch {
+	case method == http.MethodPost && action == "accounts/quota":
+		switch provider {
+		case ProviderCodex:
+			return p.codexQuotaFacade(query, body)
+		case ProviderAntigravity:
+			return p.antigravityQuotaFacade(query, body)
+		default:
+			return p.anthropicQuotaFacade(query, body)
+		}
+	case method == http.MethodPost && action == "oauth" && len(query) == 0:
+		return p.oauthBegin(provider, body)
+	case method == http.MethodPost && action == "oauth/callback" && len(query) == 0:
+		return p.oauthCallback(provider, body)
+	case method == http.MethodPost && action == "oauth/status" && len(query) == 0:
+		return p.oauthStatus(provider, body)
+	case method == http.MethodPost && action == "credentials" && len(query) == 0:
+		return p.importCredential(provider, body)
+	case method == http.MethodPost && action == "accounts/refresh":
+		return p.refreshCredential(provider, query, body)
+	case method == http.MethodDelete && action == "accounts":
+		return p.deleteCredential(provider, query, body)
+	}
+	return managementError(http.StatusNotFound, "not_found")
 }
 
 func managementJSON(status int, value any) []byte {

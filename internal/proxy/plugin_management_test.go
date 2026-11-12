@@ -15,13 +15,18 @@ import (
 
 func TestPluginManagementPath(t *testing.T) {
 	for path, want := range map[string][2]string{
-		"/internal/upstream-accounts":                                    {"/v0/management/gateway/upstream-accounts", ""},
-		"/internal/upstream-accounts/capabilities":                       {"/v0/management/gateway/upstream-accounts/capabilities", ""},
-		"/internal/anthropic-accounts/concurrency":                       {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
-		"/internal/upstream-accounts/0123456789abcdef/status":            {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
-		"/internal/antigravity-accounts/0123456789abcdef/quota":          {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
-		"/internal/model-identification/accounts/0123456789abcdef/probe": {"/v0/management/gateway/model-identification/accounts/probe", "id=0123456789abcdef"},
-		"/internal/gateway-management/codex/oauth":                       {"/v0/management/gateway/gateway-management/codex/oauth", ""},
+		"/internal/upstream-accounts":                                          {"/v0/management/gateway/upstream-accounts", ""},
+		"/internal/upstream-accounts/capabilities":                             {"/v0/management/gateway/upstream-accounts/capabilities", ""},
+		"/internal/anthropic-accounts/concurrency":                             {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
+		"/internal/upstream-accounts/0123456789abcdef/status":                  {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
+		"/internal/antigravity-accounts/0123456789abcdef/quota":                {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
+		"/internal/model-identification/accounts/0123456789abcdef/probe":       {"/v0/management/gateway/model-identification/accounts/probe", "id=0123456789abcdef"},
+		"/internal/gateway-management/codex/oauth":                             {"/v0/management/gateway/gateway-management/codex/oauth", ""},
+		"/internal/gateway-management/anthropic/oauth/callback":                {"/v0/management/gateway/gateway-management/anthropic/oauth/callback", ""},
+		"/internal/gateway-management/antigravity/oauth/status":                {"/v0/management/gateway/gateway-management/antigravity/oauth/status", ""},
+		"/internal/gateway-management/codex/credentials":                       {"/v0/management/gateway/gateway-management/codex/credentials", ""},
+		"/internal/gateway-management/codex/accounts/0123456789abcdef/refresh": {"/v0/management/gateway/gateway-management/codex/accounts/refresh", "id=0123456789abcdef"},
+		"/internal/gateway-management/codex/accounts/0123456789abcdef":         {"/v0/management/gateway/gateway-management/codex/accounts", "id=0123456789abcdef"},
 		// Only a well-formed account id is lifted out of the path.
 		"/internal/upstream-accounts/0123456789ABCDEF/status": {"/v0/management/gateway/upstream-accounts/0123456789ABCDEF/status", ""},
 	} {

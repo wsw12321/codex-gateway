@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +47,11 @@ type Plugin struct {
 	// loopbackObserveCredential.
 	observeCredential func(context.Context, Account) (credentialObservation, error)
 
+	// cpaManagement calls CPA's own management API; see loopbackManagement.
+	cpaManagement func(ctx context.Context, method, path string, query url.Values, body []byte) (int, []byte, error)
+	// oauth tracks the logins started through the credential page.
+	oauth *oauthSessions
+
 	// reconcileStop ends the background egress passes; see startReconcile.
 	reconcileMu   sync.Mutex
 	reconcileStop chan struct{}
@@ -74,6 +80,8 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 		},
 	}
 	p.applyProxy = p.loopbackApplyProxy
+	p.cpaManagement = p.loopbackManagement
+	p.oauth = newOAuthSessions()
 	p.observeCredential = p.loopbackObserveCredential
 	control, err := LoadControlState(cfg.AuthDir)
 	if err != nil {

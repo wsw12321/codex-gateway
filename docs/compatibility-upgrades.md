@@ -320,15 +320,26 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 4. **归因复核。** `attempt` 只接受正在进行中的派发，并再次核对该用户是否有权使用被
    上报的账号、账号是否在本次请求的账号池内。不通过则插件放弃这次选号。
 
-### 尚未提供的功能
+### 凭证操作
 
-插件模式下以下路由返回 404，对应的管理页面功能不可用：
+“CPA 授权管理”页面的新增/重新授权、导入、刷新、删除都由 CPA 自己的管理接口完成，插件
+只在之前固定出口、之后识别身份并绑定账号。Gateway 侧的契约与补丁镜像相同，页面不改。
 
-- 模型鉴定（`/internal/model-identification/*`）。
-- “CPA 授权管理”页面的 OAuth 新增/重新授权、凭据导入、刷新、删除
-  （`/internal/gateway-management/*` 中额度以外的路由）。凭据仍可在补丁镜像下维护，两种
-  镜像共用凭证卷。
-- 新增账号时“先选出口再访问供应商”的登记流程。它属于上一条的授权门面。
+| 操作 | CPA 原生接口 | 插件做的事 |
+|---|---|---|
+| 新增/重新授权 | `POST /v8/management/oauth/auth-url`（请求体带 `proxy_url`）、`POST /v0/management/oauth-callback`、`GET /v0/management/get-auth-status` | 出口取 Gateway 为本次登记准备的路由，没有选节点时取全局出口地址，二者都显式交给 CPA。CPA 经该出口完成换取令牌，并把出口写进保存的凭证。授权 URL 的主机必须是 `auth.openai.com`、`claude.ai` 或 `accounts.google.com` |
+| 导入 | `POST /v0/management/auth-files`、`POST /v0/management/auth-files/refresh` | 只接受刷新令牌（可附访问令牌与 Codex 的 ID 令牌），生成只含 `type`、令牌和 `proxy_url` 的凭证文件上传，再让 CPA 经该出口刷新 |
+| 刷新 | `POST /v0/management/auth-files/refresh` | 先写入账号当前的路由 |
+| 删除 | `DELETE /v0/management/auth-files` | 删除前再次确认账号已停用、没有进行中的请求；身份登记与控制状态保留 |
+
+授权或导入完成后，插件从 CPA 保存的字段识别身份：Codex 取 `account_id` 与 ID 令牌中的
+声明；Claude 取 `account_uuid` 与 `organization_uuid`；Antigravity 优先取补丁镜像记录的
+`google_subject`，没有时取 CPA 记录的邮箱（小写，登记在
+`.gateway-antigravity-email-identities`）。随后调用 Gateway 的 `register-egress` 把 Owner
+选择的出口提交给该账号，并写入最终路由。任何一步失败都不会让账号带着别的出口运行：没有
+身份或与已有 Claude/Antigravity 凭证冲突的新凭证会被删除；出口登记失败时账号被停用。
+
+尚未提供：模型鉴定（`/internal/model-identification/*`）。
 
 ### 与补丁镜像的行为差异
 
@@ -352,6 +363,9 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 | 16 | Claude 冷却时间取凭证与各模型冷却中的最晚值 | 取 CPA 管理 API 给出的凭证冷却时间，不含模型级冷却 | 管理 API 不输出模型级冷却 |
 | 17 | Antigravity 额度实时请求 `fetchAvailableModels` | 不可用 | CPA 没有 Antigravity 的被动观测；不自行构造供应商请求 |
 | 18 | Codex 额度百分比只接受整数 | 小数向上取整 | 响应头可能带小数；向上取整不会少报用量 |
+| 19 | 身份由补丁向供应商的固定身份端点核验 | 取 CPA 保存的字段；新增的 Antigravity 账号以邮箱为身份 | 插件不自行发出供应商请求；CPA 的 Antigravity 授权只记录邮箱 |
+| 20 | 可导入 Antigravity 刷新令牌、只有访问令牌的 Claude 凭证 | 不支持，提示改用授权 | CPA 刷新时不获取 Antigravity 邮箱；没有刷新令牌的凭证无法由 CPA 核验身份 |
+| 21 | — | 插件模式下新增的 Claude 账号与以邮箱为身份的 Antigravity 账号，回退到补丁镜像后不可用 | 补丁镜像只认它自己写入的身份字段；回退期间需在补丁镜像中重新授权 |
 
 另有一点运行特性：插件内部的 panic 会被插件自己捕获并转成拒绝；如果有 panic 逃出
 插件，整个 CPA 进程会退出并由容器重启，进行中的请求全部中断。这是拒绝服务而不是

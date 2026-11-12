@@ -109,6 +109,19 @@ type fakeAllocator struct {
 	// routes binds an account to an egress; a missing account is global.
 	routes    map[string]Egress
 	egressErr map[string]error
+	// registered records each committed registration as "registration=account".
+	registered  []string
+	registerErr error
+}
+
+func (a *fakeAllocator) RegisterEgress(_ context.Context, _, registrationID, accountID string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.registerErr != nil {
+		return a.registerErr
+	}
+	a.registered = append(a.registered, registrationID+"="+accountID)
+	return nil
 }
 
 func (a *fakeAllocator) ResolveEgress(_ context.Context, _, accountID string) (Egress, error) {
@@ -229,7 +242,7 @@ func newFixture(t *testing.T, n int) *fixture {
 }
 
 func (f *fixture) build() {
-	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, AntigravityEnabled: true, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317", GlobalProxyURL: testGlobalProxy}
+	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, AntigravityEnabled: true, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317", GlobalProxyURL: testGlobalProxy, EgressProxyHost: "egress-allowlist:3129"}
 	f.plugin = NewWithConfig(cfg, f.host, f.alloc)
 	if f.plugin.unavailable != nil {
 		return

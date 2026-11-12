@@ -376,3 +376,57 @@ node 测试确认观测快照显示“观测于 …”和“最近观测”，�
 - 运行本仓库测试时，`TestClientConfigurator` 在本会话中失败，原因是会话环境自带
   `ANTHROPIC_BASE_URL` 等变量，被配置脚本识别为冲突设置；去掉这两个变量后
   `internal/server` 全部通过。与本次改动无关。
+
+## 路线图第 5 步：凭证操作改用 CPA 原生管理接口
+
+日期 2026-11-12。“CPA 授权管理”页面的新增/重新授权、导入、刷新、删除在插件模式下可用，
+每一步都由 CPA 自己的管理接口完成。设计见
+[兼容层升级规程](compatibility-upgrades.md#凭证操作)，行为差异见同文第 19–21 项。
+
+### 依据：CPA 的原生接口
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：
+
+- `POST /v8/management/oauth/auth-url` 接受请求体中的 `proxy_url`，经
+  `validateOAuthSessionProxyURL` 校验后作为本次登录的出口；换取令牌使用该代理，保存凭证
+  时由 `applySessionProxyToAuthRecord` 写入 `proxy_url`。v0 的 `/{provider}-auth-url`
+  不接受代理，所以插件用 v8 接口。
+- `POST /v0/management/oauth-callback` 接受 `{provider, code, state}`；
+  `GET /v0/management/get-auth-status` 完成后返回 `auth_id`。
+- `POST /v0/management/oauth/import` 在该版本只支持 Vertex，所以导入用
+  `POST /v0/management/auth-files?name=`（原始 JSON）加 `POST /v0/management/auth-files/refresh`。
+  刷新接口的响应包含完整凭证，插件读取 `ok` 后丢弃。
+- CPA 保存的 Claude 凭证带 `account_uuid` 与 `organization_uuid`（授权与刷新都会写入）；
+  Antigravity 授权只记录邮箱与项目，没有 Google subject。
+
+### 测试
+
+插件单测（`credentials_test.go`，含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestLoginStartsInCPAWithTheChosenEgress` | 登记路由与显式全局出口都交给 CPA；外来主机、无路由凭据、SOCKS、未知字段、非法登记号都不到达 CPA；授权 URL 主机不对时拒绝 |
+| `TestLoginCompletesWithIdentityAndEgressBinding` | 回调只接受本插件发起、同一 Provider 的 state；CPA 尚未列出凭证时继续等待；完成后身份识别、出口登记、写入提交后的路由；重复轮询不再访问 CPA 与 Gateway |
+| `TestLoginFailuresFailClosed` | 无身份的新凭证被删除且不登记出口；出口登记失败时账号被停用；CPA 报错后会话作废；与已有 Claude 凭证同一身份的新凭证被删除 |
+| `TestCPAStoredIdentities` | Claude 由两个 UUID 组成身份，已记录的 subject 须一致；Antigravity 以 subject 优先、否则邮箱，邮箱登记在单独文件中，补丁镜像读取的 subject 注册表不受影响；畸形邮箱与 subject 被拒 |
+| `TestImportStoresTokensWithTheirEgressAndLetsCPARefresh` | 上传的文件只含 `type`、令牌和出口；CPA 刷新后识别身份并登记出口；响应不含令牌；Antigravity、缺刷新令牌、令牌含空白、未知字段、外来出口被拒；上传失败、刷新失败、刷新后无身份时清理文件 |
+| `TestRefreshAndDeleteGoThroughCPA` | 刷新前写入当前路由，路由无法确认时不刷新；删除只针对已停用且无进行中请求的账号，控制状态保留 |
+| `TestCredentialRoutesRespectTheAntigravityRollback` | Bridge 回滚期间 Antigravity 的凭证操作不到达 CPA |
+
+Gateway：`TestPluginManagementPath` 覆盖授权、回调、状态、导入、刷新、删除六类路径的映射。
+
+端到端（真实 CPA 进程，新增 1 组，共 13 组）。harness 的 TLS 拦截代理新增假的
+`auth.openai.com/oauth/token`：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestCredentialOperations` | 导入：CPA 经所选出口（登记路由的凭据）用导入的刷新令牌刷新，凭证最终带提交后的路由，Gateway 收到出口登记，账号随后经该路由服务请求；刷新：成功，CPA 发出的令牌请求都经账号路由；删除：未停用时 409，停用后文件删除、列表中消失；授权：授权 URL 主机与 state 正确，回调前不访问供应商，CPA 经所选出口换取令牌（及随后的刷新），状态返回稳定账号 ID，凭证带提交后的路由；整个过程没有任何请求经全局出口；未知 state 404；数据面密钥无法访问 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，13 组全部通过。
+
+### 未验证
+
+- 真实 OpenAI、Anthropic、Google 的授权与令牌端点，以及 Claude 授权码的格式（端到端只
+  模拟了 Codex 的令牌端点），在第 3 步的真实账号验收中确认。
+- CPA 可能在导入或授权后自行再刷新一次凭证（端到端中观察到），也可能跳过刚刷新过的凭证；
+  两者都是 CPA 原生行为，请求都经所选出口。
