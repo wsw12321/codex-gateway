@@ -3,11 +3,11 @@
 package e2e
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -15,117 +15,95 @@ const (
 	quotaRPC  = `{"method":"account/rateLimits/read","id":6}`
 )
 
-// TestQuotaQuery runs the Owner's live Codex quota query in a real CPA
-// process: the provider is reached through the account's own route, the
-// answer is normalized, and provider failures become fixed codes.
-func TestQuotaQuery(t *testing.T) {
+// TestCodexPassiveQuota checks that the Owner's Codex quota is CPA's own
+// passive observation of the rate-limit headers on a real response, read back
+// through CPA's management listing. The quota routes never reach a provider.
+func TestCodexPassiveQuota(t *testing.T) {
 	h := newHarness(t)
 	a, b := h.addAccount("a", nil), h.addAccount("b", nil)
 	h.start()
+	facade := "/v0/management/gateway/gateway-management/codex/accounts/quota?id="
 
+	// Nothing observed yet.
 	status, body := h.management(http.MethodPost, quotaPath+a.id, managementKey, quotaRPC)
-	if status != http.StatusOK {
-		t.Fatalf("quota query: %d %s", status, body)
+	if status != http.StatusConflict || body != `{"error":"quota_not_observed"}` {
+		t.Fatalf("before any request: %d %s", status, body)
 	}
+	if status, body = h.management(http.MethodPost, facade+a.id, managementKey, "{}"); status != http.StatusOK || body != `{"quota":[],"status":"ok"}` {
+		t.Fatalf("credential page before any request: %d %s", status, body)
+	}
+
+	// One Codex request through CPA; its response carries the headers.
+	h.provider.set(a.token, "quota-signals")
+	h.gateway.prefer = []string{a.id, b.id}
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("codex request: %d %s", got.status, got.body)
+	}
+	served := len(h.provider.seen())
 	var answer struct {
 		ID     int `json:"id"`
 		Result struct {
 			RateLimits struct {
 				LimitID   string `json:"limitId"`
-				Primary   *struct{ UsedPercent, WindowDurationMins int64 }
+				Primary   *struct{ UsedPercent, WindowDurationMins, ResetsAt int64 }
 				Secondary *struct{ UsedPercent, WindowDurationMins int64 }
 			} `json:"rateLimits"`
 			ByLimitID map[string]struct {
 				Primary *struct{ UsedPercent int64 }
 			} `json:"rateLimitsByLimitId"`
 		} `json:"result"`
+		ObservedAt time.Time `json:"observed_at"`
 	}
+	h.eventually("the passive observation", func() bool {
+		status, body = h.management(http.MethodPost, quotaPath+a.id, managementKey, quotaRPC)
+		return status == http.StatusOK
+	})
 	if err := json.Unmarshal([]byte(body), &answer); err != nil || answer.ID != 6 || answer.Result.RateLimits.LimitID != "codex" ||
-		answer.Result.RateLimits.Primary == nil || answer.Result.RateLimits.Primary.UsedPercent != 30 || answer.Result.RateLimits.Primary.WindowDurationMins != 300 ||
+		answer.Result.RateLimits.Primary == nil || answer.Result.RateLimits.Primary.UsedPercent != 30 ||
+		answer.Result.RateLimits.Primary.WindowDurationMins != 300 || answer.Result.RateLimits.Primary.ResetsAt != 1794200000 ||
 		answer.Result.RateLimits.Secondary == nil || answer.Result.RateLimits.Secondary.UsedPercent != 55 ||
-		len(answer.Result.ByLimitID) != 2 || answer.Result.ByLimitID["code_review"].Primary == nil || answer.Result.ByLimitID["code_review"].Primary.UsedPercent != 10 {
+		len(answer.Result.ByLimitID) != 2 || answer.Result.ByLimitID["code_review"].Primary == nil || answer.Result.ByLimitID["code_review"].Primary.UsedPercent != 10 ||
+		answer.ObservedAt.IsZero() || time.Since(answer.ObservedAt) > time.Minute {
 		t.Fatalf("unexpected quota answer: %s", body)
 	}
-	if strings.Contains(body, "leak@example.com") || strings.Contains(body, "plus") {
-		t.Fatalf("provider fields reached the answer: %s", body)
+	if strings.Contains(body, "plus") || strings.Contains(body, a.token) {
+		t.Fatalf("plan or credential data reached the answer: %s", body)
 	}
-	calls := h.provider.seen()
-	if len(calls) != 1 {
-		t.Fatalf("%d provider calls", len(calls))
+	// The credential page reduces the same observation to remaining shares.
+	status, body = h.management(http.MethodPost, facade+a.id, managementKey, "{}")
+	if status != http.StatusOK || !strings.HasPrefix(body, `{"observed_at":"`) ||
+		!strings.HasSuffix(body, `"quota":[{"model":"code_review","remaining_fraction":0.9},{"model":"codex","remaining_fraction":0.7}],"status":"ok"}`) {
+		t.Fatalf("credential page quota: %d %s", status, body)
 	}
-	call := calls[0]
-	if call.Via != "global" || call.Host != "chatgpt.com" || call.Path != "/backend-api/wham/usage" || call.Bearer != a.token ||
-		call.Headers.Get("Chatgpt-Account-Id") != "acct-a" || call.ProxyAuth != "" {
-		t.Fatalf("unbound account's query did not use the global egress: %+v", call)
+	// Reading quota sent nothing upstream.
+	if calls := h.provider.seen(); len(calls) != served {
+		t.Fatalf("a quota read reached the provider: %+v", calls[served:])
 	}
-	for name := range call.Headers {
-		if strings.HasPrefix(strings.ToLower(name), "x-codex-gateway") || strings.EqualFold(name, "Cookie") {
-			t.Fatalf("an internal header reached the provider: %s", name)
+	for _, call := range h.provider.seen() {
+		if call.Path != "/backend-api/codex/responses" {
+			t.Fatalf("a request other than CPA's own reached the provider: %+v", call)
 		}
 	}
 
-	// A bound account's query goes through its own route with its credential.
-	h.gateway.mu.Lock()
-	h.gateway.routes[b.id] = h.route("route-b", "secret-b")
-	h.gateway.mu.Unlock()
-	h.resetObservations()
-	if status, body = h.management(http.MethodPost, quotaPath+b.id, managementKey, quotaRPC); status != http.StatusOK {
-		t.Fatalf("bound quota query: %d %s", status, body)
+	// An observation the projection cannot accept becomes a fixed code.
+	h.provider.set(b.token, "quota-signals-invalid")
+	h.gateway.prefer = []string{b.id, a.id}
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("codex request: %d %s", got.status, got.body)
 	}
-	calls = h.provider.seen()
-	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("route-b:secret-b"))
-	if len(calls) != 1 || calls[0].Via != "account-egress" || calls[0].ProxyAuth != wantAuth || calls[0].Bearer != b.token {
-		t.Fatalf("bound account's query did not use its route: %+v", calls)
+	h.eventually("the invalid observation", func() bool {
+		status, body = h.management(http.MethodPost, quotaPath+b.id, managementKey, quotaRPC)
+		return status != http.StatusConflict
+	})
+	if status != http.StatusBadGateway || body != `{"error":"quota_percent_out_of_range"}` {
+		t.Fatalf("invalid observation: %d %s", status, body)
 	}
-
-	for behavior, want := range map[string]struct {
-		status int
-		code   string
-	}{
-		"quota-401":        {http.StatusUnauthorized, "quota_reauthentication_required"},
-		"quota-redirect":   {http.StatusBadGateway, "quota_upstream_error"},
-		"quota-schema":     {http.StatusBadGateway, "quota_rate_limit_missing"},
-		"quota-fractional": {http.StatusBadGateway, "quota_percent_fractional"},
-	} {
-		h.provider.set(a.token, behavior)
-		h.resetObservations()
-		status, body = h.management(http.MethodPost, quotaPath+a.id, managementKey, quotaRPC)
-		if status != want.status || body != `{"error":"`+want.code+`"}` {
-			t.Fatalf("%s: %d %s", behavior, status, body)
-		}
-		// A redirect is answered, never followed.
-		if calls = h.provider.seen(); len(calls) != 1 {
-			t.Fatalf("%s: %d provider calls", behavior, len(calls))
-		}
-	}
-	h.provider.set(a.token, "")
-
-	// Without a confirmed route nothing leaves the process.
-	h.gateway.mu.Lock()
-	h.gateway.egressDown = true
-	h.gateway.mu.Unlock()
-	h.resetObservations()
-	if status, body = h.management(http.MethodPost, quotaPath+a.id, managementKey, quotaRPC); status != http.StatusBadGateway || body != `{"error":"quota_upstream_unavailable"}` {
-		t.Fatalf("unresolvable route: %d %s", status, body)
-	}
-	if calls = h.provider.seen(); len(calls) != 0 {
-		t.Fatalf("a query left without a route: %+v", calls)
-	}
-	h.gateway.mu.Lock()
-	h.gateway.egressDown = false
-	h.gateway.mu.Unlock()
 
 	// Only the management key reaches the route.
 	for name, key := range map[string]string{"no key": "", "data-plane key": internalKey} {
 		if status, _ = h.management(http.MethodPost, quotaPath+a.id, key, quotaRPC); status != http.StatusUnauthorized {
 			t.Fatalf("%s reached the quota route: %d", name, status)
 		}
-	}
-
-	// The credential page reduces the same query to remaining shares.
-	status, body = h.management(http.MethodPost, "/v0/management/gateway/gateway-management/codex/accounts/quota?id="+a.id, managementKey, "{}")
-	if status != http.StatusOK || body != `{"quota":[{"model":"code_review","remaining_fraction":0.9},{"model":"codex","remaining_fraction":0.7}],"status":"ok"}` {
-		t.Fatalf("credential page quota: %d %s", status, body)
 	}
 }
 

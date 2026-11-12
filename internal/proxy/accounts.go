@@ -53,6 +53,7 @@ var internalErrorCodes = map[int]map[string]string{
 		"upstream_account_not_found": "invalid_upstream_account",
 	},
 	http.StatusConflict: {
+		"quota_not_observed":              "upstream_quota_not_observed",
 		"upstream_account_disabled":       "upstream_account_disabled",
 		"account_status_identity_invalid": "upstream_account_identity_invalid",
 		"upstream_account_unavailable":    "upstream_account_unavailable",
@@ -91,6 +92,7 @@ var internalErrorCodes = map[int]map[string]string{
 		"quota_limits_excessive":             "upstream_quota_limits_excessive",
 	},
 	http.StatusServiceUnavailable: {
+		"quota_observation_unavailable":     "upstream_quota_observation_unavailable",
 		"probe_unavailable":                 "probe_unavailable",
 		"unauthorized":                      "sidecar_auth_unavailable",
 		"internal_auth_unavailable":         "sidecar_auth_unavailable",
@@ -158,6 +160,10 @@ type AccountRateLimitsResult struct {
 type UpstreamQuota struct {
 	ID     int64                   `json:"id"`
 	Result AccountRateLimitsResult `json:"result"`
+	// ObservedAt is set when the snapshot is CPA's passive observation of a
+	// response rather than a live query (plugin mode): it is when CPA
+	// received that response.
+	ObservedAt *time.Time `json:"observed_at,omitempty"`
 }
 
 type rateLimitWindowWire struct {
@@ -181,9 +187,14 @@ type accountRateLimitsResultWire struct {
 }
 
 type upstreamQuotaWire struct {
-	ID     *int64                       `json:"id"`
-	Result *accountRateLimitsResultWire `json:"result"`
+	ID         *int64                       `json:"id"`
+	Result     *accountRateLimitsResultWire `json:"result"`
+	ObservedAt *string                      `json:"observed_at"`
 }
+
+// maxQuotaObservationSkew bounds how far in the future an observation time
+// may lie; CPA and the Gateway share a host clock.
+const maxQuotaObservationSkew = 5 * time.Minute
 
 type InternalAPIError struct {
 	StatusCode int    `json:"status_code"`
@@ -341,12 +352,21 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 	if primary, exists := byLimitID[provider]; !exists || !equalRateLimitSnapshot(rateLimits, primary) {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
-	return UpstreamQuota{
+	quota := UpstreamQuota{
 		ID: AccountRateLimitsRequestID,
 		Result: AccountRateLimitsResult{
 			RateLimits: rateLimits, RateLimitsByLimitID: byLimitID, RateLimitResetCredits: nil,
 		},
-	}, nil
+	}
+	if wire.ObservedAt != nil {
+		observed, err := time.Parse(time.RFC3339, *wire.ObservedAt)
+		if err != nil || observed.Unix() < minRateLimitResetUnix || observed.After(time.Now().Add(maxQuotaObservationSkew)) {
+			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+		}
+		observed = observed.UTC()
+		quota.ObservedAt = &observed
+	}
+	return quota, nil
 }
 
 func (c *Client) internalJSON(ctx context.Context, method, path string, destination any) error {

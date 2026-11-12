@@ -62,7 +62,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
 		)
 	}
-	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Query one Codex account's live quota"})
+	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Report one Codex account's quota as CPA observed it"})
 	for _, provider := range facadeProviders {
 		routes = append(routes, managementRoute{http.MethodPost, managementPrefix + facadeNamespace + "/" + provider.name + "/accounts/quota", "Report one account's quota on the credential page"})
 	}

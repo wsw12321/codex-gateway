@@ -399,10 +399,6 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth})
 	behavior := p.behavior[bearer]
 	p.mu.Unlock()
-	if host == "chatgpt.com" && r.URL.Path == "/backend-api/wham/usage" {
-		serveUsage(behavior, w)
-		return
-	}
 	if host == "api.anthropic.com" {
 		serveClaude(r, w)
 		return
@@ -419,6 +415,16 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":{"message":"bad request shape","type":"invalid_request_error"}}`)
+	case "quota-signals", "quota-signals-invalid":
+		for name, value := range codexQuotaHeaders {
+			w.Header().Set(name, value)
+		}
+		if behavior == "quota-signals-invalid" {
+			w.Header().Set("X-Codex-Primary-Used-Percent", "120")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.ReplaceAll(sseBody, "MODEL", model))
 	case "hold":
 		// Keep the stream open until the client goes away.
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -438,29 +444,19 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 	}
 }
 
-// usageDocument is a ChatGPT usage answer; the plan and e-mail must never
-// reach the Gateway.
-const usageDocument = `{"plan_type":"plus","email":"leak@example.com","rate_limit":{"allowed":true,` +
-	`"primary_window":{"used_percent":30,"limit_window_seconds":18000,"reset_at":1794200000},` +
-	`"secondary_window":{"used_percent":55,"limit_window_seconds":604800,"reset_at":1794700000}},` +
-	`"additional_rate_limits":[{"limit_name":"Review","metered_feature":"code_review","rate_limit":{"primary_window":{"used_percent":10}}}]}`
-
-func serveUsage(behavior string, w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	switch behavior {
-	case "quota-401":
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = io.WriteString(w, `{"detail":"provider-secret-text"}`)
-	case "quota-redirect":
-		w.Header().Set("Location", "https://chatgpt.com/backend-api/elsewhere")
-		w.WriteHeader(http.StatusFound)
-	case "quota-schema":
-		_, _ = io.WriteString(w, `{"plan_type":"plus","email":"leak@example.com"}`)
-	case "quota-fractional":
-		_, _ = io.WriteString(w, `{"rate_limit":{"primary_window":{"used_percent":12.5}}}`)
-	default:
-		_, _ = io.WriteString(w, usageDocument)
-	}
+// codexQuotaHeaders are the rate-limit headers a Codex response carries.
+// CPA records them on the credential; the plan type must never reach the
+// Gateway.
+var codexQuotaHeaders = map[string]string{
+	"X-Codex-Primary-Used-Percent":               "30",
+	"X-Codex-Primary-Window-Minutes":             "300",
+	"X-Codex-Primary-Reset-At":                   "1794200000",
+	"X-Codex-Secondary-Used-Percent":             "55",
+	"X-Codex-Secondary-Window-Minutes":           "10080",
+	"X-Codex-Secondary-Reset-At":                 "1794700000",
+	"X-Codex-Code-Review-Primary-Used-Percent":   "10",
+	"X-Codex-Code-Review-Primary-Window-Minutes": "10080",
+	"X-Codex-Plan-Type":                          "plus",
 }
 
 // serveClaude answers a Messages request with the unified rate limit headers

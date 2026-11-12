@@ -200,6 +200,27 @@ func TestPluginQuotaContract(t *testing.T) {
 		quota.Result.RateLimits.RateLimitReachedType == nil || review.Primary == nil || review.Secondary != nil {
 		t.Fatalf("parsed quota %+v", quota.Result)
 	}
+	// The plugin answers from CPA's passive observation and says when it was
+	// made.
+	if quota.ObservedAt == nil || !quota.ObservedAt.Equal(time.Date(2026, 11, 9, 2, 6, 40, 0, time.UTC)) {
+		t.Fatalf("observation time %v", quota.ObservedAt)
+	}
+	for name, observed := range map[string]string{
+		"not a time":  `"yesterday"`,
+		"no timezone": `"2026-11-09T02:06:40"`,
+		"far future":  `"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"`,
+		"before 2000": `"1999-12-31T23:59:59Z"`,
+		"number":      `1794190000`,
+		"null":        `null`,
+	} {
+		answer := strings.Replace(string(golden), `"2026-11-09T02:06:40Z"`, observed, 1)
+		invalid := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return 200, answer })
+		if _, err := invalid.QueryUpstreamAccountQuota(context.Background(), account); err == nil && name != "null" {
+			t.Fatalf("%s observation time was accepted", name)
+		} else if name == "null" && err != nil {
+			t.Fatalf("an absent observation time was refused: %v", err)
+		}
+	}
 
 	// The plugin's fixed error codes map to the same Gateway codes as the
 	// source-patched image's.
@@ -214,6 +235,8 @@ func TestPluginQuotaContract(t *testing.T) {
 		{502, `{"error":"quota_rate_limit_missing"}`, "upstream_quota_rate_limit_missing"},
 		{502, `{"error":"quota_upstream_unavailable"}`, "upstream_quota_unavailable"},
 		{502, `{"error":"quota_account_identity_unavailable"}`, "upstream_quota_account_identity_unavailable"},
+		{409, `{"error":"quota_not_observed"}`, "upstream_quota_not_observed"},
+		{503, `{"error":"quota_observation_unavailable"}`, "upstream_quota_observation_unavailable"},
 		{504, `{"error":"quota_upstream_timeout"}`, "upstream_quota_timeout"},
 	} {
 		failing := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return test.status, test.body })

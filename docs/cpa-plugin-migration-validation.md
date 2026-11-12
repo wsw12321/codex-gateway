@@ -325,3 +325,54 @@ Gateway（`internal/proxy/plugin_management_test.go`）：`TestPluginQuotaContra
   第 3 步的验收清单中加入“出口失败不回退”一项，用真实节点确认。
 - CPA 自身的后台请求（Antigravity 版本清单、Grok CLI 版本）原来经 Squid 3128，被白名单
   拒绝；现在直连，同样失败，CPA 使用内置的回退版本。
+
+## 路线图第 4 步（改写）：额度改为 CPA 被动观测
+
+日期 2026-11-12。取代上文第 4 步的第一次实现：插件不再向 `chatgpt.com` 和 `cloudcode-pa`
+发请求，删除了自带的 HTTP 客户端、写死的 URL 和 User-Agent。依据是
+[路线图的原则 1](cpa-plugin-roadmap.md#原则)。
+
+### 依据：CPA 的被动观测
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：`sdk/cliproxy/auth/quota_signals.go` 对
+`codex`、`claude`（和 `devin`）把响应中的限额头写入凭证的 `QuotaState.Signals` 与
+`ObservedAt`；Codex 认可的头为 `x-codex-*` 中带 `-used-percent`、`-window-minutes`、
+`-reset-at`、`-reset-after-seconds`、`-limit-reached`、`-allowed` 等后缀的名字，以及
+`x-codex-plan-type`、`x-codex-active-limit`、`x-codex-credits-*`。WebSocket 的
+`codex.rate_limits` 事件由 `internal/runtime/executor/helps/codex_quota.go` 归一成同样的头，
+额外限额用 `X-Codex-Additional-<名字>-` 前缀。Antigravity 不在被动观测之列。
+
+### 测试
+
+插件单测（含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestNormalizeCodexSignalsMatchesGolden` | 一组 Codex 响应头映射出的信封与第一次实现的黄金文件逐字段一致，只多出 `observed_at`；套餐和限额显示名不输出 |
+| `TestNormalizeCodexSignalsShapes` | 20 种合法与非法形状：只有百分比、只有达到限额标志、只有额外限额、WebSocket 命名、小写头名、无观测、只有套餐与余额、缺百分比、越界、非数字、窗口与重置时间越界、负的相对重置；小数向上取整；相对重置以观测时间为起点；两种命名映射到同一 ID；非法名字与 `codex` 同名被略过；额外限额封顶 |
+| `TestCodexQuotaFromObservation` | 路由输出与黄金文件一致；取凭证与各模型观测中最新且含 Codex 信号的一次；授权页面换算剩余比例并带观测时间；无观测时 Owner 得到 `quota_not_observed`、授权页面得到空列表 |
+| `TestCodexQuotaErrors` | 13 种错误映射，包括观测读取失败（503）、无观测或只有非 Codex 信号（409）、观测值越界（502）、凭证被换成其他账号；响应中不含令牌 |
+| `TestAntigravityQuotaIsUnavailable` | 返回 `{"status":"unavailable","quota":[]}`，未知账号 404，多余请求体 400 |
+
+Gateway：`TestPluginQuotaContract` 用新的黄金文件，确认 `observed_at` 被解析；拒绝非时间、
+无时区、一小时后的未来、2000 年以前和数字形式的观测时间，接受缺省（补丁镜像）；
+`quota_not_observed`、`quota_observation_unavailable` 映射到新的 Gateway 错误码。控制台的
+node 测试确认观测快照显示“观测于 …”和“最近观测”，过期计时从观测时间算起；实时查询的
+文案不变。
+
+端到端（真实 CPA 进程）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestCodexPassiveQuota` | 请求前 Owner 得到 `quota_not_observed`、授权页面为空；一次经 CPA 的 Codex 请求后，CPA 记录的 `x-codex-*` 头经管理 API 回读为默认限额与 `code_review` 限额，观测时间在一分钟内；授权页面换算剩余比例；读取额度没有产生任何上游请求，上游只收到 CPA 自己的推理请求；越界的观测值得到固定错误码；只有管理密钥能访问 |
+| `TestClaudePassiveQuota` | 不变 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，12 组全部通过。
+
+### 未验证
+
+- 真实 Codex 响应头的确切集合（例如额外限额的命名、百分比是否带小数）要在真实账号验收中
+  确认，已在第 3 步的清单中改为“显示最近一次观测及观测时间”。
+- 运行本仓库测试时，`TestClientConfigurator` 在本会话中失败，原因是会话环境自带
+  `ANTHROPIC_BASE_URL` 等变量，被配置脚本识别为冲突设置；去掉这两个变量后
+  `internal/server` 全部通过。与本次改动无关。

@@ -640,6 +640,8 @@ var upstreamManagementErrors = map[string]struct {
 	"upstream_quota_credential_unavailable":       {http.StatusBadGateway, "上游账号缺少有效登录凭据，请管理员重新登录该账号"},
 	"upstream_quota_request_failed":               {http.StatusBadGateway, "额度查询服务无法构造 ChatGPT 请求，请管理员检查 sidecar 配置"},
 	"upstream_quota_unavailable":                  {http.StatusBadGateway, "额度查询服务无法连接 ChatGPT，请管理员检查 sidecar 出站网络和代理"},
+	"upstream_quota_not_observed":                 {http.StatusConflict, "该账号还没有额度观测：额度取自 CPA 记录的真实请求响应，账号处理过请求后才会显示"},
+	"upstream_quota_observation_unavailable":      {http.StatusServiceUnavailable, "无法读取 CPA 记录的额度观测，请管理员检查 sidecar 状态"},
 	"upstream_quota_upstream_error":               {http.StatusBadGateway, "ChatGPT 额度接口返回错误，请稍后重试"},
 	"upstream_quota_timeout":                      {http.StatusGatewayTimeout, "额度查询服务请求 ChatGPT 超时，请检查出站网络或稍后重试"},
 	"upstream_quota_invalid_response":             {http.StatusBadGateway, "ChatGPT 额度响应读取失败或过大，请稍后重试"},

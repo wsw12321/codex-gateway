@@ -12,75 +12,52 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
 const (
 	testAccessToken = "synthetic-access-token"
-	// codexUsageDocument is a ChatGPT usage answer with every field the
-	// normalizer reads, plus fields it must ignore.
-	codexUsageDocument = `{"plan_type":"plus","email":"someone@example.com",` +
-		`"rate_limit":{"allowed":true,"limit_reached":false,` +
-		`"primary_window":{"used_percent":25,"limit_window_seconds":18000,"reset_after_seconds":3600,"reset_at":1794200000},` +
-		`"secondary_window":{"used_percent":40,"limit_window_seconds":604800,"reset_at":1794700000}},` +
-		`"additional_rate_limits":[{"limit_name":"Code review","metered_feature":"code_review",` +
-		`"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":604800,"reset_at":1794700000},"secondary_window":null}}],` +
-		`"rate_limit_reached_type":{"type":"rate_limit_reached"},"credits":{"has_credits":false}}`
+	// testObservedUnix is when CPA received the observed Codex response.
+	testObservedUnix = 1794190000
 )
 
-// fakeQuotaHTTP records each outbound quota request and answers from a script.
-type fakeQuotaHTTP struct {
-	mu     sync.Mutex
-	calls  []quotaCall
-	status int
-	body   string
-	err    error
-}
-
-type quotaCall struct {
-	Proxy  string
-	Method string
-	URL    string
-	Header http.Header
-	Body   string
-}
-
-func (q *fakeQuotaHTTP) do(_ context.Context, proxyURL string, request *http.Request) (*http.Response, error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	var body []byte
-	if request.Body != nil {
-		body, _ = io.ReadAll(request.Body)
+// codexSignals is what CPA records from one Codex response: the default
+// limit's windows, a namespaced extra limit, and headers the projection must
+// ignore (plan, credits, limit display name, Retry-After).
+func codexSignals() map[string]string {
+	return map[string]string{
+		"X-Codex-Primary-Used-Percent":               "25",
+		"X-Codex-Primary-Window-Minutes":             "300",
+		"X-Codex-Primary-Reset-At":                   "1794200000",
+		"X-Codex-Secondary-Used-Percent":             "40",
+		"X-Codex-Secondary-Window-Minutes":           "10080",
+		"X-Codex-Secondary-Reset-After-Seconds":      "510000",
+		"X-Codex-Limit-Reached":                      "true",
+		"X-Codex-Code-Review-Primary-Used-Percent":   "0",
+		"X-Codex-Code-Review-Primary-Window-Minutes": "10080",
+		"X-Codex-Code-Review-Primary-Reset-At":       "1794700000",
+		"X-Codex-Code-Review-Limit-Name":             "Code review",
+		"X-Codex-Plan-Type":                          "plus",
+		"X-Codex-Credits-Has-Credits":                "false",
+		"Retry-After":                                "30",
 	}
-	q.calls = append(q.calls, quotaCall{Proxy: proxyURL, Method: request.Method, URL: request.URL.String(), Header: request.Header.Clone(), Body: string(body)})
-	if q.err != nil {
-		return nil, q.err
-	}
-	status := q.status
-	if status == 0 {
-		status = http.StatusOK
-	}
-	return &http.Response{StatusCode: status, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(q.body))}, nil
 }
 
-func (q *fakeQuotaHTTP) seen() []quotaCall {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	return append([]quotaCall(nil), q.calls...)
-}
-
-// quotaFixture builds a plugin with one Codex account that holds an access
-// token, a global egress and a scripted provider.
-func quotaFixture(t *testing.T) (*fixture, *fakeQuotaHTTP) {
+// quotaFixture builds a plugin with one Codex account whose credential holds
+// an access token, and a scripted CPA observation of that credential.
+func quotaFixture(t *testing.T) (*fixture, *credentialObservation) {
 	t.Helper()
 	f := newFixture(t, 1)
 	f.host.setDocField("idx-a", "access_token", testAccessToken)
-	upstream := &fakeQuotaHTTP{body: codexUsageDocument}
-	f.plugin.quotaHTTP = upstream.do
-	f.plugin.cfg.GlobalProxyURL = testGlobalProxy
-	return f, upstream
+	observation := &credentialObservation{Quota: signalSnapshot{ObservedAt: time.Unix(testObservedUnix, 0).UTC(), Signals: codexSignals()}}
+	f.plugin.observeCredential = func(_ context.Context, account Account) (credentialObservation, error) {
+		if account.AuthIndex == "" {
+			return credentialObservation{}, ErrUnavailable
+		}
+		return *observation, nil
+	}
+	return f, observation
 }
 
 func (h *fakeHost) setDocField(authIndex, field string, value any) {
@@ -149,12 +126,13 @@ func TestDecodeQuotaRPCRequest(t *testing.T) {
 	}
 }
 
-func TestNormalizeCodexUsageMatchesGolden(t *testing.T) {
-	result, err := normalizeCodexUsage([]byte(codexUsageDocument))
+func TestNormalizeCodexSignalsMatchesGolden(t *testing.T) {
+	observed := time.Unix(testObservedUnix, 0).UTC()
+	result, err := normalizeCodexSignals(codexSignals(), observed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, _ := json.MarshalIndent(quotaRPCResponse{ID: quotaRPCID, Result: result}, "", "  ")
+	got, _ := json.MarshalIndent(quotaRPCResponse{ID: quotaRPCID, Result: result, ObservedAt: observed.Format(time.RFC3339)}, "", "  ")
 	golden := filepath.Join("testdata", "codex_quota_rpc.json")
 	if os.Getenv("UPDATE_GOLDEN") == "1" {
 		if err = os.WriteFile(golden, append(got, '\n'), 0o600); err != nil {
@@ -169,65 +147,102 @@ func TestNormalizeCodexUsageMatchesGolden(t *testing.T) {
 	if string(want) != string(got)+"\n" {
 		t.Fatalf("normalized quota changed:\n%s\nwant:\n%s", got, want)
 	}
-	if strings.Contains(string(got), "someone@example.com") || strings.Contains(string(got), "plus") {
-		t.Fatalf("provider fields leaked: %s", got)
+	if strings.Contains(string(got), "plus") || strings.Contains(string(got), "Code review") {
+		t.Fatalf("plan or display name leaked: %s", got)
 	}
 }
 
-func TestNormalizeCodexUsageShapes(t *testing.T) {
-	window := func(fields string) string { return `{"rate_limit":{"primary_window":{` + fields + `}}}` }
+func TestNormalizeCodexSignalsShapes(t *testing.T) {
+	observed := time.Unix(testObservedUnix, 0).UTC()
+	window := func(fields map[string]string) map[string]string {
+		out := map[string]string{}
+		for name, value := range fields {
+			out["X-Codex-Primary-"+name] = value
+		}
+		return out
+	}
 	for name, test := range map[string]struct {
-		body string
-		code string
+		signals map[string]string
+		code    string
 	}{
-		"explicit null limit":       {`{"rate_limit":null}`, ""},
-		"only additional limits":    {`{"additional_rate_limits":[]}`, ""},
-		"null windows":              {`{"rate_limit":{"primary_window":null,"secondary_window":null}}`, ""},
-		"window without optionals":  {window(`"used_percent":100`), ""},
-		"plan only":                 {`{"plan_type":"plus"}`, "quota_rate_limit_missing"},
-		"empty object":              {`{}`, "quota_rate_limit_missing"},
-		"percent missing":           {window(`"limit_window_seconds":60`), "quota_percent_missing"},
-		"percent above range":       {window(`"used_percent":101`), "quota_percent_out_of_range"},
-		"percent below range":       {window(`"used_percent":-1`), "quota_percent_out_of_range"},
-		"percent fractional":        {window(`"used_percent":12.5`), "quota_percent_fractional"},
-		"window zero":               {window(`"used_percent":1,"limit_window_seconds":0`), "quota_window_invalid"},
-		"window too long":           {window(`"used_percent":1,"limit_window_seconds":2678401`), "quota_window_invalid"},
-		"reset too early":           {window(`"used_percent":1,"reset_at":946684799`), "quota_reset_invalid"},
-		"reset too late":            {window(`"used_percent":1,"reset_at":4102444801`), "quota_reset_invalid"},
-		"percent as string":         {window(`"used_percent":"1"`), "quota_field_type_invalid"},
-		"limit as string":           {`{"rate_limit":"full"}`, "quota_field_type_invalid"},
-		"truncated":                 {`{"rate_limit":`, "quota_json_invalid"},
-		"trailing value":            {`{"rate_limit":null} {}`, "quota_json_invalid"},
-		"uppercase limit id":        {`{"additional_rate_limits":[{"metered_feature":"Review"}]}`, "quota_limit_id_invalid"},
-		"long limit id":             {`{"additional_rate_limits":[{"metered_feature":"` + strings.Repeat("a", 33) + `"}]}`, "quota_limit_id_invalid"},
-		"limit id shadowing codex":  {`{"additional_rate_limits":[{"metered_feature":"codex"}]}`, "quota_limit_id_duplicate"},
-		"duplicate additional id":   {`{"additional_rate_limits":[{"metered_feature":"a"},{"metered_feature":"a"}]}`, "quota_limit_id_duplicate"},
-		"too many additional":       {`{"additional_rate_limits":[` + strings.TrimSuffix(strings.Repeat(`{"metered_feature":"x"},`, 33), ",") + `]}`, "quota_limits_excessive"},
-		"additional window invalid": {`{"additional_rate_limits":[{"metered_feature":"a","rate_limit":{"primary_window":{}}}]}`, "quota_percent_missing"},
+		"percent only":           {window(map[string]string{"Used-Percent": "100"}), ""},
+		"reached flag only":      {map[string]string{"X-Codex-Allowed": "false"}, ""},
+		"only an extra limit":    {map[string]string{"X-Codex-Bengalfox-Primary-Used-Percent": "5"}, ""},
+		"websocket extra limit":  {map[string]string{"X-Codex-Additional-Gpt-5-Codex-Spark-Primary-Used-Percent": "5"}, ""},
+		"lowercase names":        {map[string]string{"x-codex-primary-used-percent": "5"}, ""},
+		"nothing recorded":       {map[string]string{}, "not observed"},
+		"only plan and credits":  {map[string]string{"X-Codex-Plan-Type": "plus", "X-Codex-Credits-Balance": "3"}, "not observed"},
+		"window without percent": {window(map[string]string{"Window-Minutes": "300"}), "not observed"},
+		"percent above range":    {window(map[string]string{"Used-Percent": "101"}), "quota_percent_out_of_range"},
+		"percent below range":    {window(map[string]string{"Used-Percent": "-1"}), "quota_percent_out_of_range"},
+		"percent not a number":   {window(map[string]string{"Used-Percent": "NaN"}), "quota_percent_out_of_range"},
+		"percent as text":        {window(map[string]string{"Used-Percent": "most"}), "quota_field_type_invalid"},
+		"window as text":         {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "5h"}), "quota_field_type_invalid"},
+		"window zero":            {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "0"}), "quota_window_invalid"},
+		"window too long":        {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "44641"}), "quota_window_invalid"},
+		"reset too early":        {window(map[string]string{"Used-Percent": "1", "Reset-At": "946684799"}), "quota_reset_invalid"},
+		"reset too late":         {window(map[string]string{"Used-Percent": "1", "Reset-At": "4102444801"}), "quota_reset_invalid"},
+		"reset as text":          {window(map[string]string{"Used-Percent": "1", "Reset-At": "soon"}), "quota_field_type_invalid"},
+		"negative reset after":   {window(map[string]string{"Used-Percent": "1", "Reset-After-Seconds": "-1"}), "quota_reset_invalid"},
+		"extra limit invalid":    {map[string]string{"X-Codex-Bengalfox-Primary-Used-Percent": "500"}, "quota_percent_out_of_range"},
 	} {
-		_, err := normalizeCodexUsage([]byte(test.body))
-		if test.code == "" && err != nil || test.code != "" && quotaSchemaCode(err) != test.code {
+		_, err := normalizeCodexSignals(test.signals, observed)
+		switch {
+		case test.code == "" && err != nil:
+			t.Errorf("%s: %v", name, err)
+		case test.code == "not observed" && !errors.Is(err, errQuotaNotObserved):
+			t.Errorf("%s: got %v, want not observed", name, err)
+		case test.code != "" && test.code != "not observed" && quotaSchemaCode(err) != test.code:
 			t.Errorf("%s: got %v, want %q", name, err, test.code)
 		}
 	}
-	// Only the known reached types are reported; anything else is withheld.
-	for value, want := range map[string]string{"workspace_member_usage_limit_reached": "workspace_member_usage_limit_reached", "something_new": "", "": ""} {
-		result, err := normalizeCodexUsage([]byte(`{"rate_limit":null,"rate_limit_reached_type":{"type":"` + value + `"}}`))
-		got := ""
-		if err == nil && result.RateLimits.RateLimitReachedType != nil {
-			got = *result.RateLimits.RateLimitReachedType
-		}
-		if err != nil || got != want {
-			t.Errorf("reached type %q: got %q, %v", value, got, err)
-		}
+
+	// A fractional percentage is rounded up; a relative reset is anchored to
+	// the observation; the reached flag maps to the generic reached type.
+	result, err := normalizeCodexSignals(window(map[string]string{"Used-Percent": "12.1", "Reset-After-Seconds": "60"}), observed)
+	if err != nil || result.RateLimits.Primary.UsedPercent != 13 || *result.RateLimits.Primary.ResetsAt != testObservedUnix+60 ||
+		result.RateLimits.RateLimitReachedType != nil {
+		t.Fatalf("rounding and relative reset: %+v, %v", result.RateLimits.Primary, err)
+	}
+	result, _ = normalizeCodexSignals(map[string]string{"X-Codex-Allowed": "false"}, observed)
+	if result.RateLimits.RateLimitReachedType == nil || *result.RateLimits.RateLimitReachedType != "rate_limit_reached" {
+		t.Fatalf("reached flag: %+v", result.RateLimits)
+	}
+	// Extra limits: both namespaces map to the same id; a name that cannot be
+	// an id, or that would shadow the default limit, is left out.
+	result, err = normalizeCodexSignals(map[string]string{
+		"X-Codex-Primary-Used-Percent":                                   "1",
+		"X-Codex-Additional-Code-Review-Primary-Used-Percent":            "2",
+		"X-Codex-" + strings.Repeat("Long-", 8) + "Primary-Used-Percent": "3",
+		"X-Codex-Codex-Primary-Used-Percent":                             "4",
+		"X-Codex-9lives-Primary-Used-Percent":                            "5",
+	}, observed)
+	if err != nil || len(result.RateLimitsByLimitID) != 2 || result.RateLimitsByLimitID["code_review"].Primary.UsedPercent != 2 ||
+		result.RateLimitsByLimitID[codexPrimaryLimitID].Primary.UsedPercent != 1 {
+		t.Fatalf("extra limits: %+v, %v", result.RateLimitsByLimitID, err)
+	}
+	// Only the default limit observed: it is also the rateLimits entry.
+	if result.RateLimits.Primary.UsedPercent != 1 {
+		t.Fatalf("rateLimits is not the default limit: %+v", result.RateLimits)
+	}
+	// An extra limit without the default: the default is present and empty.
+	result, _ = normalizeCodexSignals(map[string]string{"X-Codex-Bengalfox-Primary-Used-Percent": "5"}, observed)
+	if result.RateLimits.LimitID != codexPrimaryLimitID || result.RateLimits.Primary != nil || len(result.RateLimitsByLimitID) != 2 {
+		t.Fatalf("default limit placeholder: %+v", result)
+	}
+	// Extra limits are capped.
+	many := map[string]string{}
+	for i := 0; i < 40; i++ {
+		many["X-Codex-L"+strings.Repeat("x", i%10)+string(rune('a'+i/10))+"-Primary-Used-Percent"] = "1"
+	}
+	if result, err = normalizeCodexSignals(many, observed); err != nil || len(result.RateLimitsByLimitID) > maxQuotaExtraLimits+2 {
+		t.Fatalf("%d limits, %v", len(result.RateLimitsByLimitID), err)
 	}
 }
 
-func TestCodexQuotaQueryUsesTheAccountRoute(t *testing.T) {
-	f, upstream := quotaFixture(t)
-	id := f.ids["a"]
-	query := url.Values{"id": {id}}
-
+func TestCodexQuotaFromObservation(t *testing.T) {
+	f, observation := quotaFixture(t)
+	query := url.Values{"id": {f.ids["a"]}}
 	status, fields, body := f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody)
 	if status != http.StatusOK || string(fields["id"]) != "6" {
 		t.Fatalf("quota query: %d %s", status, body)
@@ -238,56 +253,54 @@ func TestCodexQuotaQueryUsesTheAccountRoute(t *testing.T) {
 	if body != compact.String() {
 		t.Fatalf("quota answer differs from the golden contract:\n%s", body)
 	}
-	calls := upstream.seen()
-	if len(calls) != 1 {
-		t.Fatalf("%d upstream calls", len(calls))
+
+	// The newest snapshot with Codex signals wins, the credential's or a
+	// model's; a newer snapshot without Codex signals is not one.
+	later := time.Unix(testObservedUnix+600, 0).UTC()
+	observation.ModelQuotas = map[string]signalSnapshot{
+		"gpt-6":   {ObservedAt: later, Signals: map[string]string{"X-Codex-Primary-Used-Percent": "80"}},
+		"gpt-6.1": {ObservedAt: later.Add(time.Minute), Signals: map[string]string{"Retry-After": "1"}},
 	}
-	call := calls[0]
-	if call.Proxy != testGlobalProxy || call.Method != http.MethodGet || call.URL != codexUsageURL || call.Body != "" {
-		t.Fatalf("unbound account did not use the global egress: %+v", call)
-	}
-	// Exactly these headers: nothing from the credential file or the caller.
-	if len(call.Header) != 3 || call.Header.Get("Accept") != "application/json" ||
-		call.Header.Get("Authorization") != "Bearer "+testAccessToken || call.Header.Get("Chatgpt-Account-Id") != "acct-a" {
-		t.Fatalf("unexpected upstream headers: %v", call.Header)
+	status, fields, body = f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody)
+	if status != http.StatusOK || string(fields["observed_at"]) != `"`+later.Format(time.RFC3339)+`"` ||
+		!strings.Contains(body, `"usedPercent":80`) {
+		t.Fatalf("latest snapshot: %d %s", status, body)
 	}
 
-	bound := "http://route-a:secret@egress-allowlist:3129"
-	f.alloc.routes = map[string]Egress{id: {ProxyURL: bound, Revision: "route:1"}}
-	if status, _, body = f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody); status != http.StatusOK {
-		t.Fatalf("bound quota query: %d %s", status, body)
+	// The credential page sees the same snapshot.
+	path := managementPrefix + facadeNamespace + "/codex/accounts/quota"
+	status, fields, body = f.manage(http.MethodPost, path, query, "{}")
+	if status != http.StatusOK || string(fields["status"]) != `"ok"` || string(fields["quota"]) != `[{"model":"codex","remaining_fraction":0.2}]` ||
+		string(fields["observed_at"]) != `"`+later.Format(time.RFC3339)+`"` {
+		t.Fatalf("facade quota: %d %s", status, body)
 	}
-	if calls = upstream.seen(); calls[len(calls)-1].Proxy != bound {
-		t.Fatalf("bound account did not use its own egress: %+v", calls[len(calls)-1])
+	if status, fields, _ = f.manage(http.MethodPost, path, query, `{"x":1}`); status != http.StatusBadRequest || string(fields["status"]) != `"error"` {
+		t.Fatalf("facade accepted a body: %d %v", status, fields)
+	}
+	for _, other := range []string{"/codex/accounts/refresh", "/unknown/accounts/quota", "/codex/accounts"} {
+		if status, _, _ := f.manage(http.MethodPost, managementPrefix+facadeNamespace+other, query, "{}"); status != http.StatusNotFound {
+			t.Fatalf("%s answered %d", other, status)
+		}
+	}
+
+	// Nothing observed yet: a fixed code for the Owner, an empty list on the
+	// credential page.
+	*observation = credentialObservation{}
+	if status, fields, _ = f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody); status != http.StatusConflict || string(fields["error"]) != `"quota_not_observed"` {
+		t.Fatalf("no observation: %d %v", status, fields)
+	}
+	if status, fields, _ = f.manage(http.MethodPost, path, query, "{}"); status != http.StatusOK || string(fields["quota"]) != `[]` {
+		t.Fatalf("facade without observation: %d %v", status, fields)
 	}
 }
 
-func TestCodexQuotaQueryNeverConnectsDirectly(t *testing.T) {
-	f, upstream := quotaFixture(t)
-	query := url.Values{"id": {f.ids["a"]}}
-	f.plugin.cfg.GlobalProxyURL = ""
-	status, fields, _ := f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody)
-	if status != http.StatusBadGateway || string(fields["error"]) != `"quota_upstream_unavailable"` {
-		t.Fatalf("no global egress: %d %v", status, fields)
-	}
-	f.plugin.cfg.GlobalProxyURL = testGlobalProxy
-	f.alloc.egressErr = map[string]error{f.ids["a"]: ErrUnavailable}
-	if status, fields, _ = f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody); status != http.StatusBadGateway || string(fields["error"]) != `"quota_upstream_unavailable"` {
-		t.Fatalf("unresolvable route: %d %v", status, fields)
-	}
-	if calls := upstream.seen(); len(calls) != 0 {
-		t.Fatalf("a query left without a confirmed route: %+v", calls)
-	}
-}
-
-func TestCodexQuotaQueryErrors(t *testing.T) {
+func TestCodexQuotaErrors(t *testing.T) {
 	for name, test := range map[string]struct {
-		setup  func(*fixture, *fakeQuotaHTTP)
+		setup  func(*fixture, *credentialObservation)
 		query  func(*fixture) url.Values
 		body   string
 		status int
 		code   string
-		calls  int
 	}{
 		"invalid request":      {body: `{"method":"account/rateLimits/read","id":7}`, status: 400, code: "quota_request_invalid"},
 		"oversized request":    {body: `{"method":"x","pad":"` + strings.Repeat("x", 300) + `"}`, status: 413, code: "quota_request_too_large"},
@@ -295,17 +308,11 @@ func TestCodexQuotaQueryErrors(t *testing.T) {
 		"two ids":              {query: func(f *fixture) url.Values { return url.Values{"id": {f.ids["a"], f.ids["a"]}} }, status: 404, code: "upstream_account_not_found"},
 		"extra parameter":      {query: func(f *fixture) url.Values { return url.Values{"id": {f.ids["a"]}, "x": {"1"}} }, status: 404, code: "upstream_account_not_found"},
 		"unknown account":      {query: func(*fixture) url.Values { return url.Values{"id": {"0123456789abcdef"}} }, status: 404, code: "upstream_account_not_found"},
-		"registry unavailable": {setup: func(f *fixture, _ *fakeQuotaHTTP) { f.host.listErr = errors.New("down") }, status: 503, code: "account_registry_unavailable"},
-		"disabled credential": {setup: func(f *fixture, _ *fakeQuotaHTTP) {
+		"registry unavailable": {setup: func(f *fixture, _ *credentialObservation) { f.host.listErr = errors.New("down") }, status: 503, code: "account_registry_unavailable"},
+		"disabled credential": {setup: func(f *fixture, _ *credentialObservation) {
 			f.host.entries[0].Disabled = true
 		}, status: 409, code: "upstream_account_disabled"},
-		"no access token": {setup: func(f *fixture, _ *fakeQuotaHTTP) {
-			f.host.setDocField("idx-a", "access_token", nil)
-		}, status: 502, code: "quota_credential_unavailable"},
-		"unsafe access token": {setup: func(f *fixture, _ *fakeQuotaHTTP) {
-			f.host.setDocField("idx-a", "access_token", "bad token\r\nX-Injected: 1")
-		}, status: 502, code: "quota_credential_unavailable"},
-		"credential replaced by another account": {setup: func(f *fixture, _ *fakeQuotaHTTP) {
+		"credential replaced by another account": {setup: func(f *fixture, _ *credentialObservation) {
 			// The inventory still maps the file to account a; the document now
 			// names another ChatGPT account.
 			_, _, _ = f.plugin.inventory.Find(ProviderCodex, f.ids["a"])
@@ -313,23 +320,23 @@ func TestCodexQuotaQueryErrors(t *testing.T) {
 			f.host.docs["idx-a"] = strings.Replace(f.host.docs["idx-a"], `"acct-a"`, `"acct-z"`, 1)
 			f.host.mu.Unlock()
 		}, status: 502, code: "quota_account_identity_unavailable"},
-		"transport failure":    {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.err = errors.New("dial secret-host") }, status: 502, code: "quota_upstream_unavailable", calls: 1},
-		"transport timeout":    {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.err = context.DeadlineExceeded }, status: 504, code: "quota_upstream_timeout", calls: 1},
-		"provider 401":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 401 }, status: 401, code: "quota_reauthentication_required", calls: 1},
-		"provider 403":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 403 }, status: 403, code: "quota_reauthentication_required", calls: 1},
-		"provider 429":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 429 }, status: 429, code: "quota_upstream_rate_limited", calls: 1},
-		"provider 408":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 408 }, status: 504, code: "quota_upstream_timeout", calls: 1},
-		"provider 504":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 504 }, status: 504, code: "quota_upstream_timeout", calls: 1},
-		"provider 500":         {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 500 }, status: 502, code: "quota_upstream_error", calls: 1},
-		"provider redirect":    {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status = 302 }, status: 502, code: "quota_upstream_error", calls: 1},
-		"oversized answer":     {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.body = strings.Repeat(" ", maxQuotaResponseBytes+1) }, status: 502, code: "quota_response_invalid", calls: 1},
-		"schema change":        {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.body = `{"plan_type":"plus"}` }, status: 502, code: "quota_rate_limit_missing", calls: 1},
-		"provider text in 500": {setup: func(_ *fixture, q *fakeQuotaHTTP) { q.status, q.body = 500, `{"error":"secret-provider-text"}` }, status: 502, code: "quota_upstream_error", calls: 1},
+		"observation unavailable": {setup: func(f *fixture, _ *credentialObservation) {
+			f.plugin.observeCredential = func(context.Context, Account) (credentialObservation, error) {
+				return credentialObservation{}, ErrUnavailable
+			}
+		}, status: 503, code: "quota_observation_unavailable"},
+		"nothing observed": {setup: func(_ *fixture, o *credentialObservation) { *o = credentialObservation{} }, status: 409, code: "quota_not_observed"},
+		"observed without codex signals": {setup: func(_ *fixture, o *credentialObservation) {
+			o.Quota.Signals = map[string]string{"Retry-After": "30"}
+		}, status: 409, code: "quota_not_observed"},
+		"observed value out of range": {setup: func(_ *fixture, o *credentialObservation) {
+			o.Quota.Signals = map[string]string{"X-Codex-Primary-Used-Percent": "120"}
+		}, status: 502, code: "quota_percent_out_of_range"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			f, upstream := quotaFixture(t)
+			f, observation := quotaFixture(t)
 			if test.setup != nil {
-				test.setup(f, upstream)
+				test.setup(f, observation)
 			}
 			query := url.Values{"id": {f.ids["a"]}}
 			if test.query != nil {
@@ -343,18 +350,15 @@ func TestCodexQuotaQueryErrors(t *testing.T) {
 			if status != test.status || len(fields) != 1 || string(fields["error"]) != `"`+test.code+`"` {
 				t.Fatalf("got %d %s, want %d %s", status, raw, test.status, test.code)
 			}
-			if strings.Contains(raw, "secret") || strings.Contains(raw, testAccessToken) {
-				t.Fatalf("provider or credential text leaked: %s", raw)
-			}
-			if calls := len(upstream.seen()); calls != test.calls {
-				t.Fatalf("%d upstream calls, want %d", calls, test.calls)
+			if strings.Contains(raw, testAccessToken) {
+				t.Fatalf("credential text leaked: %s", raw)
 			}
 		})
 	}
 }
 
 func TestQuotaRoutesOnlyForCodexNamespace(t *testing.T) {
-	f, upstream := quotaFixture(t)
+	f, _ := quotaFixture(t)
 	for _, namespace := range []string{"antigravity-accounts", "anthropic-accounts"} {
 		if status, _, _ := f.manage(http.MethodPost, managementPrefix+namespace+"/quota", url.Values{"id": {f.ids["a"]}}, rpcBody); status != http.StatusNotFound {
 			t.Fatalf("%s/quota answered %d", namespace, status)
@@ -363,45 +367,10 @@ func TestQuotaRoutesOnlyForCodexNamespace(t *testing.T) {
 	if status, _, _ := f.manage(http.MethodGet, managementPrefix+"upstream-accounts/quota", url.Values{"id": {f.ids["a"]}}, ""); status != http.StatusNotFound {
 		t.Fatalf("GET quota answered %d", status)
 	}
-	if len(upstream.seen()) != 0 {
-		t.Fatal("an unrouted request reached the provider")
-	}
 }
 
-func TestCodexQuotaFacade(t *testing.T) {
-	f, upstream := quotaFixture(t)
-	query := url.Values{"id": {f.ids["a"]}}
-	path := managementPrefix + facadeNamespace + "/codex/accounts/quota"
-	for _, body := range []string{"{}", ""} {
-		status, fields, raw := f.manage(http.MethodPost, path, query, body)
-		if status != http.StatusOK || string(fields["status"]) != `"ok"` ||
-			string(fields["quota"]) != `[{"model":"code_review","remaining_fraction":1},{"model":"codex","remaining_fraction":0.75}]` {
-			t.Fatalf("facade quota: %d %s", status, raw)
-		}
-	}
-	if status, fields, _ := f.manage(http.MethodPost, path, query, `{"x":1}`); status != http.StatusBadRequest || string(fields["status"]) != `"error"` {
-		t.Fatalf("facade accepted a body: %d %v", status, fields)
-	}
-	if status, _, _ := f.manage(http.MethodPost, path, url.Values{"id": {"0123456789abcdef"}}, "{}"); status != http.StatusNotFound {
-		t.Fatalf("unknown account answered %d", status)
-	}
-	upstream.status = http.StatusUnauthorized
-	if status, fields, raw := f.manage(http.MethodPost, path, query, "{}"); status != http.StatusBadGateway || len(fields) != 1 || string(fields["status"]) != `"error"` {
-		t.Fatalf("facade error: %d %s", status, raw)
-	}
-	if status, _, _ := f.manage(http.MethodGet, path, query, ""); status != http.StatusNotFound {
-		t.Fatalf("GET facade quota answered %d", status)
-	}
-	for _, other := range []string{"/codex/accounts/refresh", "/unknown/accounts/quota", "/codex/accounts"} {
-		if status, _, _ := f.manage(http.MethodPost, managementPrefix+facadeNamespace+other, query, "{}"); status != http.StatusNotFound {
-			t.Fatalf("%s answered %d", other, status)
-		}
-	}
-}
-
-func antigravityFixture(t *testing.T) (*fixture, string, *fakeQuotaHTTP) {
-	t.Helper()
-	f, upstream := quotaFixture(t)
+func TestAntigravityQuotaIsUnavailable(t *testing.T) {
+	f, _ := quotaFixture(t)
 	const subject = "109876543210"
 	id, err := f.plugin.inventory.antigravity.register(subject)
 	if err != nil {
@@ -411,43 +380,16 @@ func antigravityFixture(t *testing.T) (*fixture, string, *fakeQuotaHTTP) {
 		"type": "antigravity", "google_subject": subject, "email": "g@example.com",
 		"access_token": testAccessToken, "project_id": "project-1", "refresh_token": "secret",
 	}, f.clock)
-	upstream.body = `{"models":{` +
-		`"gemini-3-flash":{"quotaInfo":{"remainingFraction":0.5,"resetTime":"2026-11-12T05:00:00Z"}},` +
-		`"gemini-3.1-flash-lite":{"quotaInfo":{"remainingFraction":1}},` +
-		`"gemini-bad-reset":{"quotaInfo":{"remainingFraction":0.25,"resetTime":"tomorrow<script>"}},` +
-		`"gemini-out-of-range":{"quotaInfo":{"remainingFraction":1.5}},` +
-		`"gemini-<script>":{"quotaInfo":{"remainingFraction":0.1}},` +
-		`"claude-opus":{"quotaInfo":{"remainingFraction":0.9}},` +
-		`"gemini-no-quota":{}}}`
-	return f, id, upstream
-}
-
-func TestAntigravityQuotaFacade(t *testing.T) {
-	f, id, upstream := antigravityFixture(t)
 	path := managementPrefix + facadeNamespace + "/antigravity/accounts/quota"
 	status, fields, raw := f.manage(http.MethodPost, path, url.Values{"id": {id}}, "{}")
-	want := `[{"model":"gemini-3-flash","remaining_fraction":0.5,"reset_time":"2026-11-12T05:00:00Z"},` +
-		`{"model":"gemini-3.1-flash-lite","remaining_fraction":1},{"model":"gemini-bad-reset","remaining_fraction":0.25}]`
-	if status != http.StatusOK || string(fields["quota"]) != want {
+	if status != http.StatusOK || string(fields["status"]) != `"unavailable"` || string(fields["quota"]) != `[]` || len(fields) != 2 {
 		t.Fatalf("antigravity quota: %d %s", status, raw)
 	}
-	call := upstream.seen()[0]
-	if call.Proxy != testGlobalProxy || call.Method != http.MethodPost || call.URL != antigravityQuotaURL || call.Body != `{"project":"project-1"}` ||
-		len(call.Header) != 3 || call.Header.Get("Authorization") != "Bearer "+testAccessToken ||
-		call.Header.Get("Content-Type") != "application/json" || call.Header.Get("User-Agent") != antigravityUserAgent {
-		t.Fatalf("unexpected antigravity request: %+v", call)
+	if status, _, _ = f.manage(http.MethodPost, path, url.Values{"id": {"0123456789abcdef"}}, "{}"); status != http.StatusNotFound {
+		t.Fatalf("unknown account answered %d", status)
 	}
-	for name, body := range map[string]string{"no models": `{}`, "only invalid": `{"models":{"claude":{"quotaInfo":{"remainingFraction":1}}}}`, "not json": `<html>`} {
-		upstream.body = body
-		if status, fields, _ = f.manage(http.MethodPost, path, url.Values{"id": {id}}, "{}"); status != http.StatusBadGateway || string(fields["status"]) != `"error"` {
-			t.Fatalf("%s: %d %v", name, status, fields)
-		}
-	}
-	// During a bridge rollback this CPA must not use Google credentials.
-	f.plugin.cfg.AntigravityEnabled = false
-	calls := len(upstream.seen())
-	if status, _, _ = f.manage(http.MethodPost, path, url.Values{"id": {id}}, "{}"); status != http.StatusServiceUnavailable || len(upstream.seen()) != calls {
-		t.Fatalf("antigravity quota ran while disabled: %d", status)
+	if status, _, _ = f.manage(http.MethodPost, path, url.Values{"id": {id}}, `{"x":1}`); status != http.StatusBadRequest {
+		t.Fatalf("a body was accepted: %d", status)
 	}
 }
 
@@ -559,41 +501,6 @@ func TestLoopbackObserveCredential(t *testing.T) {
 		change()
 		if _, err = f.plugin.loopbackObserveCredential(context.Background(), account); err == nil {
 			t.Fatalf("%s: an observation was accepted", name)
-		}
-	}
-}
-
-func TestDirectQuotaHTTPUsesOnlyTheGivenProxyAndRefusesRedirects(t *testing.T) {
-	var proxied []string
-	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// A forward proxy receives the absolute target URL.
-		proxied = append(proxied, r.Method+" "+r.URL.String()+" "+r.Header.Get("Proxy-Authorization"))
-		w.Header().Set("Location", "http://elsewhere.invalid/next")
-		w.WriteHeader(http.StatusFound)
-	}))
-	defer proxy.Close()
-	decoy := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Error("the environment's proxy was used")
-	}))
-	defer decoy.Close()
-	t.Setenv("HTTP_PROXY", decoy.URL)
-	t.Setenv("HTTPS_PROXY", decoy.URL)
-
-	request, _ := http.NewRequest(http.MethodGet, "http://provider.invalid/usage", nil)
-	parsed, _ := url.Parse(proxy.URL)
-	parsed.User = url.UserPassword("route-a", "secret")
-	response, err := directQuotaHTTP(context.Background(), parsed.String(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusFound || len(proxied) != 1 ||
-		!strings.HasPrefix(proxied[0], "GET http://provider.invalid/usage Basic ") {
-		t.Fatalf("redirect followed or proxy bypassed: %d %v", response.StatusCode, proxied)
-	}
-	for _, invalid := range []string{"", "direct", "ftp://proxy:21", "http://", "http://proxy:1/path", "http://proxy:1?x=1"} {
-		if _, err = directQuotaHTTP(context.Background(), invalid, request); !errors.Is(err, errQuotaEgress) {
-			t.Fatalf("proxy %q was accepted: %v", invalid, err)
 		}
 	}
 }

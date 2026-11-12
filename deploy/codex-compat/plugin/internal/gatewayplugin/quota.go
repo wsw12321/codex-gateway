@@ -15,34 +15,29 @@ import (
 	"time"
 )
 
-// Quota queries reproduce the source-patched image's /internal/*/quota
-// contract byte for byte where the Gateway decodes it strictly: the request is
-// a fixed RPC envelope, the answer is a normalized snapshot or one fixed error
-// code, and nothing the provider wrote is ever passed through.
+// Quota answers come from CPA's passive observation only. CPA records the
+// rate-limit headers of the responses it receives for its own requests
+// (x-codex-* for Codex, anthropic-ratelimit-unified-* for Claude) on each
+// credential; this plugin reads that record through CPA's management API and
+// projects it. It never sends a request to a provider: the request handling
+// belongs to CPA alone, and CPA has no live quota request of its own.
 //
-// Live queries (Codex, Antigravity) go out from this plugin, not through the
-// host, because no host callback can both pin a proxy and refuse redirects.
-// Each request uses the route the Gateway binds the account to, or CPA's
-// global egress when the account has no binding; it never connects directly.
+// The Codex answer keeps the source-patched image's /internal/*/quota
+// envelope, which the Gateway decodes strictly, and adds the observation
+// time. Antigravity has no passive source, so its quota is unavailable.
 const (
-	codexUsageURL        = "https://chatgpt.com/backend-api/wham/usage"
-	antigravityQuotaURL  = "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels"
-	antigravityUserAgent = "antigravity/hub/2.29.0 (aidev_client; os_type=darwin; arch=arm64; cl=1013060670)"
-
 	quotaRPCMethod         = "account/rateLimits/read"
 	quotaRPCID             = 6
-	quotaTimeout           = 15 * time.Second
 	maxQuotaRequestBytes   = 256
-	maxQuotaResponseBytes  = 1 << 20
 	maxFacadeRequestBytes  = 128
 	maxQuotaExtraLimits    = 32
 	maxQuotaLimitIDBytes   = 32
 	maxQuotaWindowSeconds  = 31 * 24 * 60 * 60
 	minQuotaResetUnix      = 946684800  // 2000-01-01T00:00:00Z
 	maxQuotaResetUnix      = 4102444800 // 2100-01-01T00:00:00Z
-	maxBearerTokenBytes    = 16 << 10
 	maxAuthFileListBytes   = 1 << 20
 	codexPrimaryLimitID    = "codex"
+	codexSignalsPrefix     = "X-Codex-"
 	anthropicFiveHour      = "five_hour"
 	anthropicSevenDay      = "seven_day"
 	anthropicSignalsPrefix = "Anthropic-Ratelimit-Unified-"
@@ -51,11 +46,11 @@ const (
 var (
 	errQuotaRequestTooLarge = errors.New("quota request too large")
 	errQuotaRequestInvalid  = errors.New("quota request invalid")
-	errQuotaEgress          = errors.New("quota egress unavailable")
+	errQuotaNotObserved     = errors.New("quota not observed")
 )
 
 // quotaSchemaError names a failed schema check without retaining any value
-// from the provider's response.
+// from the observation.
 type quotaSchemaError string
 
 func (e quotaSchemaError) Error() string { return string(e) }
@@ -64,10 +59,8 @@ func quotaSchemaCode(err error) string {
 	var schema quotaSchemaError
 	if errors.As(err, &schema) {
 		switch schema {
-		case "quota_json_invalid", "quota_field_type_invalid", "quota_rate_limit_missing",
-			"quota_percent_missing", "quota_percent_out_of_range", "quota_percent_fractional",
-			"quota_window_invalid", "quota_reset_invalid", "quota_limit_id_invalid",
-			"quota_limit_id_duplicate", "quota_limits_excessive":
+		case "quota_field_type_invalid", "quota_percent_out_of_range",
+			"quota_window_invalid", "quota_reset_invalid":
 			return string(schema)
 		}
 	}
@@ -79,6 +72,8 @@ func quotaSchemaCode(err error) string {
 type quotaRPCResponse struct {
 	ID     int               `json:"id"`
 	Result quotaRateLimitSet `json:"result"`
+	// ObservedAt is when CPA received the response the snapshot comes from.
+	ObservedAt string `json:"observed_at"`
 }
 
 type quotaRateLimitSet struct {
@@ -160,26 +155,30 @@ func quotaAccountID(query url.Values) (string, bool) {
 
 // ---- Codex ------------------------------------------------------------------
 
-// codexQuota serves the Owner's live Codex quota query.
+// codexQuota serves the Owner's Codex quota query from CPA's latest
+// observation of the account.
 func (p *Plugin) codexQuota(query url.Values, body []byte) []byte {
-	result, status, code := p.queryCodexQuota(query, body)
+	result, status, code := p.observeCodexQuota(query, body)
 	if code != "" {
 		return managementError(status, code)
 	}
 	return managementJSON(http.StatusOK, result)
 }
 
-// codexQuotaFacade serves the credential page: the same live query, reduced to
-// the remaining share of each limit's primary window.
+// codexQuotaFacade serves the credential page: the same observation, reduced
+// to the remaining share of each limit's primary window.
 func (p *Plugin) codexQuotaFacade(query url.Values, body []byte) []byte {
 	if !decodeFacadeRequest(body) {
 		return facadeError(http.StatusBadRequest)
 	}
 	rpc, _ := json.Marshal(map[string]any{"method": quotaRPCMethod, "id": quotaRPCID})
-	result, status, code := p.queryCodexQuota(query, rpc)
+	result, status, code := p.observeCodexQuota(query, rpc)
 	if code != "" {
 		if status == http.StatusNotFound {
 			return facadeError(http.StatusNotFound)
+		}
+		if code == "quota_not_observed" {
+			return managementJSON(http.StatusOK, map[string]any{"status": "ok", "quota": []facadeQuota{}})
 		}
 		return facadeError(http.StatusBadGateway)
 	}
@@ -194,16 +193,16 @@ func (p *Plugin) codexQuotaFacade(query url.Values, body []byte) []byte {
 			quota = append(quota, facadeQuota{Model: id, RemainingFraction: float64(100-primary.UsedPercent) / 100})
 		}
 	}
-	return managementJSON(http.StatusOK, map[string]any{"status": "ok", "quota": quota})
+	return managementJSON(http.StatusOK, map[string]any{"status": "ok", "quota": quota, "observed_at": result.ObservedAt})
 }
 
 func facadeError(status int) []byte {
 	return managementJSON(status, map[string]string{"status": "error"})
 }
 
-// queryCodexQuota returns the normalized snapshot, or an HTTP status with the
-// fixed error code the Gateway maps.
-func (p *Plugin) queryCodexQuota(query url.Values, body []byte) (quotaRPCResponse, int, string) {
+// observeCodexQuota returns the normalized snapshot, or an HTTP status with
+// the fixed error code the Gateway maps.
+func (p *Plugin) observeCodexQuota(query url.Values, body []byte) (quotaRPCResponse, int, string) {
 	id, err := decodeQuotaRPCRequest(body)
 	if errors.Is(err, errQuotaRequestTooLarge) {
 		return quotaRPCResponse{}, http.StatusRequestEntityTooLarge, "quota_request_too_large"
@@ -225,182 +224,203 @@ func (p *Plugin) queryCodexQuota(query url.Values, body []byte) (quotaRPCRespons
 	if hostStatus(account) == "disabled" {
 		return quotaRPCResponse{}, http.StatusConflict, "upstream_account_disabled"
 	}
+	// The credential must still be the ChatGPT account the stable id was
+	// derived from, so a file replaced since the last inventory refresh
+	// cannot answer for another account. This reads the stored document only.
 	document, err := p.credentialDocument(account)
 	if err != nil {
 		return quotaRPCResponse{}, http.StatusBadGateway, "quota_credential_unavailable"
 	}
-	// The header must name the same ChatGPT account the stable id was derived
-	// from, so a credential replaced since the last inventory refresh cannot
-	// answer for another account.
 	chatgptAccount, ok := codexIdentity(document)
 	if !ok || chatgptAccount == "" || CodexAccountIndex(chatgptAccount) != account.ID {
 		return quotaRPCResponse{}, http.StatusBadGateway, "quota_account_identity_unavailable"
 	}
-	token := stringField(document, "access_token")
-	if !safeBearerToken(token) {
-		return quotaRPCResponse{}, http.StatusBadGateway, "quota_credential_unavailable"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), quotaTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
+	observation, err := p.observeCredential(ctx, account)
 	if err != nil {
-		return quotaRPCResponse{}, http.StatusBadGateway, "quota_request_failed"
+		return quotaRPCResponse{}, http.StatusServiceUnavailable, "quota_observation_unavailable"
 	}
-	request.Header = http.Header{
-		"Accept":             {"application/json"},
-		"Authorization":      {"Bearer " + token},
-		"Chatgpt-Account-Id": {chatgptAccount},
+	snapshot, found := latestSnapshot(observation, codexSignalsPrefix)
+	if !found {
+		return quotaRPCResponse{}, http.StatusConflict, "quota_not_observed"
 	}
-	status, data, err := p.quotaExchange(ctx, ProviderCodex, account, request)
-	if err != nil {
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-			return quotaRPCResponse{}, http.StatusGatewayTimeout, "quota_upstream_timeout"
-		}
-		return quotaRPCResponse{}, http.StatusBadGateway, "quota_upstream_unavailable"
+	result, err := normalizeCodexSignals(snapshot.Signals, snapshot.ObservedAt)
+	if errors.Is(err, errQuotaNotObserved) {
+		return quotaRPCResponse{}, http.StatusConflict, "quota_not_observed"
 	}
-	switch {
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return quotaRPCResponse{}, status, "quota_reauthentication_required"
-	case status == http.StatusTooManyRequests:
-		return quotaRPCResponse{}, status, "quota_upstream_rate_limited"
-	case status == http.StatusRequestTimeout || status == http.StatusGatewayTimeout:
-		return quotaRPCResponse{}, http.StatusGatewayTimeout, "quota_upstream_timeout"
-	case status < http.StatusOK || status >= http.StatusMultipleChoices:
-		return quotaRPCResponse{}, http.StatusBadGateway, "quota_upstream_error"
-	case data == nil:
-		return quotaRPCResponse{}, http.StatusBadGateway, "quota_response_invalid"
-	}
-	result, err := normalizeCodexUsage(data)
 	if err != nil {
 		return quotaRPCResponse{}, http.StatusBadGateway, quotaSchemaCode(err)
 	}
-	return quotaRPCResponse{ID: id, Result: result}, 0, ""
+	return quotaRPCResponse{ID: id, Result: result, ObservedAt: snapshot.ObservedAt.UTC().Format(time.RFC3339)}, 0, ""
 }
 
-type codexUsagePayload struct {
-	RateLimit            json.RawMessage        `json:"rate_limit"`
-	AdditionalRateLimits []codexAdditionalLimit `json:"additional_rate_limits"`
-	RateLimitReachedType *struct {
-		Type string `json:"type"`
-	} `json:"rate_limit_reached_type"`
-}
+// codexWindowNames are the two windows of every Codex limit.
+var codexWindowNames = [...]string{"Primary", "Secondary"}
 
-type codexAdditionalLimit struct {
-	LimitName      string          `json:"limit_name"`
-	MeteredFeature string          `json:"metered_feature"`
-	RateLimit      *codexRateLimit `json:"rate_limit"`
-}
-
-type codexRateLimit struct {
-	PrimaryWindow   *codexUsageWindow `json:"primary_window"`
-	SecondaryWindow *codexUsageWindow `json:"secondary_window"`
-}
-
-type codexUsageWindow struct {
-	UsedPercent        *float64 `json:"used_percent"`
-	LimitWindowSeconds *int64   `json:"limit_window_seconds"`
-	ResetAt            *int64   `json:"reset_at"`
-}
-
-// normalizeCodexUsage converts ChatGPT's usage document into the app-server
-// rateLimits shape. It accepts exactly what the source-patched image accepts
-// and fails with the same codes.
-func normalizeCodexUsage(body []byte) (quotaRateLimitSet, error) {
-	var payload codexUsagePayload
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	if err := decoder.Decode(&payload); err != nil {
-		var typeErr *json.UnmarshalTypeError
-		if errors.As(err, &typeErr) {
-			return quotaRateLimitSet{}, quotaSchemaError("quota_field_type_invalid")
+// normalizeCodexSignals converts the x-codex-* headers CPA recorded into the
+// app-server rateLimits shape. The default limit's headers carry no limit
+// name (x-codex-primary-used-percent); every other limit is namespaced by a
+// short name on HTTP responses (x-codex-<name>-primary-used-percent) and by
+// x-codex-additional-<name>- on websocket events. A limit whose name does not
+// form a valid id is left out rather than failing the whole snapshot.
+func normalizeCodexSignals(signals map[string]string, observedAt time.Time) (quotaRateLimitSet, error) {
+	limits := map[string]map[string]string{}
+	for name, value := range signals {
+		canonical := http.CanonicalHeaderKey(name)
+		rest, ok := strings.CutPrefix(canonical, codexSignalsPrefix)
+		if !ok {
+			continue
 		}
-		return quotaRateLimitSet{}, quotaSchemaError("quota_json_invalid")
+		limit, field, ok := splitCodexSignal(rest)
+		if !ok {
+			continue
+		}
+		if limits[limit] == nil {
+			limits[limit] = map[string]string{}
+		}
+		limits[limit][field] = value
 	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return quotaRateLimitSet{}, quotaSchemaError("quota_json_invalid")
+	byLimitID := map[string]quotaRateLimit{}
+	names := make([]string, 0, len(limits))
+	for name := range limits {
+		names = append(names, name)
 	}
-	// Plan metadata does not determine usage: require a quota field, keeping
-	// explicit null windows without accepting unrelated JSON as usage.
-	if len(payload.RateLimit) == 0 && payload.AdditionalRateLimits == nil {
-		return quotaRateLimitSet{}, quotaSchemaError("quota_rate_limit_missing")
-	}
-	var rateLimit *codexRateLimit
-	if len(payload.RateLimit) != 0 {
-		if err := json.Unmarshal(payload.RateLimit, &rateLimit); err != nil {
-			return quotaRateLimitSet{}, quotaSchemaError("quota_field_type_invalid")
+	sort.Strings(names)
+	for _, name := range names {
+		limitID := codexPrimaryLimitID
+		if name != "" {
+			limitID = codexLimitID(name)
+			if !validQuotaLimitID(limitID) || limitID == codexPrimaryLimitID || len(byLimitID) > maxQuotaExtraLimits {
+				continue
+			}
+			if _, exists := byLimitID[limitID]; exists {
+				continue
+			}
+		}
+		normalized, present, err := normalizeCodexSignalLimit(limitID, limits[name], observedAt)
+		if err != nil {
+			return quotaRateLimitSet{}, err
+		}
+		if present {
+			byLimitID[limitID] = normalized
 		}
 	}
-	var reached *string
-	if payload.RateLimitReachedType != nil {
-		reached = reachedType(payload.RateLimitReachedType.Type)
+	if len(byLimitID) == 0 {
+		return quotaRateLimitSet{}, errQuotaNotObserved
 	}
-	primary, err := normalizeCodexLimit(codexPrimaryLimitID, rateLimit, reached)
-	if err != nil {
-		return quotaRateLimitSet{}, err
-	}
-	byLimitID := map[string]quotaRateLimit{codexPrimaryLimitID: primary}
-	if len(payload.AdditionalRateLimits) > maxQuotaExtraLimits {
-		return quotaRateLimitSet{}, quotaSchemaError("quota_limits_excessive")
-	}
-	for _, additional := range payload.AdditionalRateLimits {
-		limitID := strings.TrimSpace(additional.MeteredFeature)
-		if !validQuotaLimitID(limitID) {
-			return quotaRateLimitSet{}, quotaSchemaError("quota_limit_id_invalid")
-		}
-		if _, exists := byLimitID[limitID]; exists {
-			return quotaRateLimitSet{}, quotaSchemaError("quota_limit_id_duplicate")
-		}
-		normalized, errLimit := normalizeCodexLimit(limitID, additional.RateLimit, nil)
-		if errLimit != nil {
-			return quotaRateLimitSet{}, errLimit
-		}
-		byLimitID[limitID] = normalized
+	primary, ok := byLimitID[codexPrimaryLimitID]
+	if !ok {
+		primary = quotaRateLimit{LimitID: codexPrimaryLimitID}
+		byLimitID[codexPrimaryLimitID] = primary
 	}
 	return quotaRateLimitSet{RateLimits: primary, RateLimitsByLimitID: byLimitID}, nil
 }
 
-func normalizeCodexLimit(limitID string, limit *codexRateLimit, reached *string) (quotaRateLimit, error) {
-	view := quotaRateLimit{LimitID: limitID, RateLimitReachedType: reached}
-	if limit == nil {
-		return view, nil
+// splitCodexSignal splits "Bengalfox-Primary-Used-Percent" into the limit
+// name ("Bengalfox") and the field ("Primary-Used-Percent"). The default
+// limit has an empty name. Headers that describe no window are skipped.
+func splitCodexSignal(rest string) (limit, field string, ok bool) {
+	for _, window := range codexWindowNames {
+		if strings.HasPrefix(rest, window+"-") {
+			return "", rest, true
+		}
+		if index := strings.Index(rest, "-"+window+"-"); index > 0 {
+			return rest[:index], rest[index+1:], true
+		}
 	}
-	var err error
-	if view.Primary, err = normalizeCodexWindow(limit.PrimaryWindow); err != nil {
-		return quotaRateLimit{}, err
+	switch {
+	case rest == "Limit-Reached" || rest == "Allowed":
+		return "", rest, true
+	case strings.HasSuffix(rest, "-Limit-Reached"):
+		return strings.TrimSuffix(rest, "-Limit-Reached"), "Limit-Reached", true
+	case strings.HasSuffix(rest, "-Allowed"):
+		return strings.TrimSuffix(rest, "-Allowed"), "Allowed", true
 	}
-	if view.Secondary, err = normalizeCodexWindow(limit.SecondaryWindow); err != nil {
-		return quotaRateLimit{}, err
-	}
-	return view, nil
+	return "", "", false
 }
 
-func normalizeCodexWindow(window *codexUsageWindow) (*quotaWindow, error) {
-	if window == nil {
+// codexLimitID turns a header namespace into a limit id: "Code-Review" and
+// "Additional-Code-Review" both become "code_review".
+func codexLimitID(name string) string {
+	name = strings.TrimPrefix(name, "Additional-")
+	return strings.ReplaceAll(strings.ToLower(name), "-", "_")
+}
+
+// normalizeCodexSignalLimit builds one limit. present is false when the limit
+// carries no window and no reached flag.
+func normalizeCodexSignalLimit(limitID string, fields map[string]string, observedAt time.Time) (quotaRateLimit, bool, error) {
+	view := quotaRateLimit{LimitID: limitID}
+	present := false
+	for _, window := range codexWindowNames {
+		normalized, err := normalizeCodexSignalWindow(fields, window+"-", observedAt)
+		if err != nil {
+			return quotaRateLimit{}, false, err
+		}
+		if normalized == nil {
+			continue
+		}
+		present = true
+		if window == "Primary" {
+			view.Primary = normalized
+		} else {
+			view.Secondary = normalized
+		}
+	}
+	reached := strings.EqualFold(strings.TrimSpace(fields["Limit-Reached"]), "true") ||
+		strings.EqualFold(strings.TrimSpace(fields["Allowed"]), "false")
+	if reached {
+		present = true
+		view.RateLimitReachedType = reachedType("rate_limit_reached")
+	}
+	return view, present, nil
+}
+
+// normalizeCodexSignalWindow reads one window. A window without a used
+// percentage is absent. A fractional percentage is rounded up, so the
+// snapshot never reports less use than CPA observed.
+func normalizeCodexSignalWindow(fields map[string]string, prefix string, observedAt time.Time) (*quotaWindow, error) {
+	rawUsed, ok := fields[prefix+"Used-Percent"]
+	if !ok {
 		return nil, nil
 	}
-	if window.UsedPercent == nil {
-		return nil, quotaSchemaError("quota_percent_missing")
+	used, err := strconv.ParseFloat(strings.TrimSpace(rawUsed), 64)
+	if err != nil {
+		return nil, quotaSchemaError("quota_field_type_invalid")
 	}
-	used := *window.UsedPercent
 	if math.IsNaN(used) || math.IsInf(used, 0) || used < 0 || used > 100 {
 		return nil, quotaSchemaError("quota_percent_out_of_range")
 	}
-	if math.Trunc(used) != used {
-		return nil, quotaSchemaError("quota_percent_fractional")
-	}
-	view := &quotaWindow{UsedPercent: int(used)}
-	if window.LimitWindowSeconds != nil {
-		seconds := *window.LimitWindowSeconds
-		if seconds <= 0 || seconds > maxQuotaWindowSeconds {
+	view := &quotaWindow{UsedPercent: int(math.Ceil(used))}
+	if raw, ok := fields[prefix+"Window-Minutes"]; ok {
+		minutes, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if err != nil {
+			return nil, quotaSchemaError("quota_field_type_invalid")
+		}
+		if minutes <= 0 || minutes > maxQuotaWindowSeconds/60 {
 			return nil, quotaSchemaError("quota_window_invalid")
 		}
-		minutes := (seconds + 59) / 60
 		view.WindowDurationMins = &minutes
 	}
-	if window.ResetAt != nil {
-		if *window.ResetAt < minQuotaResetUnix || *window.ResetAt > maxQuotaResetUnix {
+	var reset int64
+	if raw, ok := fields[prefix+"Reset-At"]; ok {
+		if reset, err = strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err != nil {
+			return nil, quotaSchemaError("quota_field_type_invalid")
+		}
+	} else if raw, ok := fields[prefix+"Reset-After-Seconds"]; ok {
+		after, errAfter := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+		if errAfter != nil {
+			return nil, quotaSchemaError("quota_field_type_invalid")
+		}
+		if after < 0 || after > maxQuotaWindowSeconds {
 			return nil, quotaSchemaError("quota_reset_invalid")
 		}
-		reset := *window.ResetAt
+		reset = observedAt.Unix() + after
+	}
+	if reset != 0 {
+		if reset < minQuotaResetUnix || reset > maxQuotaResetUnix {
+			return nil, quotaSchemaError("quota_reset_invalid")
+		}
 		view.ResetsAt = &reset
 	}
 	return view, nil
@@ -431,7 +451,9 @@ func reachedType(value string) *string {
 
 // ---- Antigravity ------------------------------------------------------------
 
-// antigravityQuotaFacade serves the credential page's live Gemini quota.
+// antigravityQuotaFacade answers the credential page's Gemini quota. CPA has
+// no passive quota record for Antigravity and this plugin sends no provider
+// request of its own, so the quota is reported as unavailable.
 func (p *Plugin) antigravityQuotaFacade(query url.Values, body []byte) []byte {
 	if !decodeFacadeRequest(body) {
 		return facadeError(http.StatusBadRequest)
@@ -440,90 +462,10 @@ func (p *Plugin) antigravityQuotaFacade(query url.Values, body []byte) []byte {
 	if !ok {
 		return facadeError(http.StatusNotFound)
 	}
-	account, found, err := p.inventory.Find(ProviderAntigravity, accountID)
-	if err != nil || !found {
+	if _, found, err := p.inventory.Find(ProviderAntigravity, accountID); err != nil || !found {
 		return facadeError(http.StatusNotFound)
 	}
-	document, err := p.credentialDocument(account)
-	if err != nil {
-		return facadeError(http.StatusBadGateway)
-	}
-	token, project := stringField(document, "access_token"), stringField(document, "project_id")
-	if !safeBearerToken(token) || project == "" || len(project) > 256 {
-		return facadeError(http.StatusBadGateway)
-	}
-	payload, _ := json.Marshal(map[string]string{"project": project})
-	ctx, cancel := context.WithTimeout(context.Background(), quotaTimeout)
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, antigravityQuotaURL, bytes.NewReader(payload))
-	if err != nil {
-		return facadeError(http.StatusBadGateway)
-	}
-	request.Header = http.Header{
-		"Authorization": {"Bearer " + token},
-		"Content-Type":  {"application/json"},
-		"User-Agent":    {antigravityUserAgent},
-	}
-	status, data, err := p.quotaExchange(ctx, ProviderAntigravity, account, request)
-	if err != nil || status != http.StatusOK || data == nil {
-		return facadeError(http.StatusBadGateway)
-	}
-	quota, ok := normalizeAntigravityQuota(data)
-	if !ok {
-		return facadeError(http.StatusBadGateway)
-	}
-	return managementJSON(http.StatusOK, map[string]any{"status": "ok", "quota": quota})
-}
-
-// normalizeAntigravityQuota keeps Gemini models with a valid remaining share.
-// A reset time is kept only when it is a well-formed timestamp in range.
-func normalizeAntigravityQuota(body []byte) ([]facadeQuota, bool) {
-	var payload struct {
-		Models map[string]struct {
-			QuotaInfo *struct {
-				RemainingFraction *float64 `json:"remainingFraction"`
-				ResetTime         string   `json:"resetTime"`
-			} `json:"quotaInfo"`
-		} `json:"models"`
-	}
-	if json.Unmarshal(body, &payload) != nil || payload.Models == nil {
-		return nil, false
-	}
-	quota := make([]facadeQuota, 0, len(payload.Models))
-	for model, value := range payload.Models {
-		info := value.QuotaInfo
-		if info == nil || info.RemainingFraction == nil || !strings.HasPrefix(model, "gemini-") || !validModelName(model) {
-			continue
-		}
-		fraction := *info.RemainingFraction
-		if math.IsNaN(fraction) || math.IsInf(fraction, 0) || fraction < 0 || fraction > 1 {
-			continue
-		}
-		item := facadeQuota{Model: model, RemainingFraction: fraction}
-		if reset, err := time.Parse(time.RFC3339, info.ResetTime); err == nil &&
-			reset.Unix() >= minQuotaResetUnix && reset.Unix() <= maxQuotaResetUnix {
-			item.ResetTime = reset.UTC().Format(time.RFC3339)
-		}
-		quota = append(quota, item)
-	}
-	if len(quota) == 0 {
-		return nil, false
-	}
-	sort.Slice(quota, func(i, j int) bool { return quota[i].Model < quota[j].Model })
-	return quota, true
-}
-
-func validModelName(model string) bool {
-	if len(model) > 64 {
-		return false
-	}
-	for i := 0; i < len(model); i++ {
-		c := model[i]
-		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '.' || c == '_') {
-			return false
-		}
-	}
-	return true
+	return managementJSON(http.StatusOK, map[string]any{"status": "unavailable", "quota": []facadeQuota{}})
 }
 
 // ---- Claude -----------------------------------------------------------------
@@ -586,18 +528,8 @@ func anthropicSnapshot(observation credentialObservation, now time.Time) anthrop
 	if observation.NextRetryAfter.After(now) {
 		out.CooldownUntil = observation.NextRetryAfter.UTC().Format(time.RFC3339)
 	}
-	latest := observation.Quota
-	models := make([]string, 0, len(observation.ModelQuotas))
-	for model := range observation.ModelQuotas {
-		models = append(models, model)
-	}
-	sort.Strings(models)
-	for _, model := range models {
-		if candidate := observation.ModelQuotas[model]; candidate.ObservedAt.After(latest.ObservedAt) {
-			latest = candidate
-		}
-	}
-	if latest.ObservedAt.IsZero() {
+	latest, found := latestSnapshot(observation, "")
+	if !found {
 		return out
 	}
 	out.ObservedAt = latest.ObservedAt.UTC().Format(time.RFC3339)
@@ -665,8 +597,45 @@ func (p *Plugin) loopbackObserveCredential(ctx context.Context, account Account)
 
 // ---- shared -----------------------------------------------------------------
 
+// latestSnapshot returns the newest observation of the credential or any of
+// its models whose signals include a name with prefix (any signal when prefix
+// is empty). Model names are visited in order, so ties resolve the same way
+// every time.
+func latestSnapshot(observation credentialObservation, prefix string) (signalSnapshot, bool) {
+	relevant := func(snapshot signalSnapshot) bool {
+		if snapshot.ObservedAt.IsZero() {
+			return false
+		}
+		if prefix == "" {
+			return true
+		}
+		for name := range snapshot.Signals {
+			if strings.HasPrefix(http.CanonicalHeaderKey(name), prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	var latest signalSnapshot
+	found := false
+	if relevant(observation.Quota) {
+		latest, found = observation.Quota, true
+	}
+	models := make([]string, 0, len(observation.ModelQuotas))
+	for model := range observation.ModelQuotas {
+		models = append(models, model)
+	}
+	sort.Strings(models)
+	for _, model := range models {
+		if candidate := observation.ModelQuotas[model]; relevant(candidate) && (!found || candidate.ObservedAt.After(latest.ObservedAt)) {
+			latest, found = candidate, true
+		}
+	}
+	return latest, found
+}
+
 // credentialDocument reads a credential's stored document. Only the fields a
-// query needs are taken from it; nothing is retained.
+// check needs are taken from it; nothing is retained.
 func (p *Plugin) credentialDocument(account Account) (map[string]json.RawMessage, error) {
 	raw, err := p.host.AuthJSON(account.AuthIndex)
 	if err != nil {
@@ -677,96 +646,4 @@ func (p *Plugin) credentialDocument(account Account) (map[string]json.RawMessage
 		return nil, ErrUnavailable
 	}
 	return document, nil
-}
-
-// quotaRoute is the proxy a query for this account must use: the account's
-// own binding, otherwise CPA's global egress. There is no direct path.
-func (p *Plugin) quotaRoute(ctx context.Context, provider string, account Account) (string, error) {
-	route, err := p.alloc.ResolveEgress(ctx, provider, account.ID)
-	if err != nil {
-		return "", errQuotaEgress
-	}
-	if route.ProxyURL != "" {
-		return route.ProxyURL, nil
-	}
-	if p.cfg.GlobalProxyURL == "" {
-		return "", errQuotaEgress
-	}
-	return p.cfg.GlobalProxyURL, nil
-}
-
-// quotaExchange sends one provider request through the account's route and
-// returns the status and, for a 2xx answer, a body of bounded size. Error
-// bodies are drained and discarded. A nil body with a 2xx status means the
-// body was too large or unreadable.
-func (p *Plugin) quotaExchange(ctx context.Context, provider string, account Account, request *http.Request) (int, []byte, error) {
-	proxyURL, err := p.quotaRoute(ctx, provider, account)
-	if err != nil {
-		logf("quota route of account %s is unavailable", account.ID)
-		return 0, nil, err
-	}
-	response, err := p.quotaHTTP(ctx, proxyURL, request)
-	if err != nil {
-		return 0, nil, err
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 64<<10))
-		return response.StatusCode, nil, nil
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxQuotaResponseBytes+1))
-	if err != nil || len(data) > maxQuotaResponseBytes {
-		return response.StatusCode, nil, nil
-	}
-	return response.StatusCode, data, nil
-}
-
-// directQuotaHTTP sends request through proxyURL with a fresh transport: no
-// connection is shared between accounts, redirects are returned rather than
-// followed, and the environment's proxy settings are ignored.
-func directQuotaHTTP(ctx context.Context, proxyURL string, request *http.Request) (*http.Response, error) {
-	proxy, err := parseProxyURL(proxyURL)
-	if err != nil {
-		return nil, errQuotaEgress
-	}
-	transport := &http.Transport{
-		Proxy:                  http.ProxyURL(proxy),
-		ForceAttemptHTTP2:      true,
-		DisableKeepAlives:      true,
-		TLSHandshakeTimeout:    10 * time.Second,
-		ResponseHeaderTimeout:  quotaTimeout,
-		MaxResponseHeaderBytes: 64 << 10,
-	}
-	client := &http.Client{
-		Transport:     transport,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}
-	return client.Do(request.WithContext(ctx))
-}
-
-// parseProxyURL accepts the proxy forms CPA itself supports for its global
-// egress. A path, query or fragment means the value is not a proxy origin.
-func parseProxyURL(raw string) (*url.URL, error) {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" || (parsed.Path != "" && parsed.Path != "/") ||
-		parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Opaque != "" {
-		return nil, errQuotaEgress
-	}
-	switch parsed.Scheme {
-	case "http", "https", "socks5", "socks5h":
-		return parsed, nil
-	}
-	return nil, errQuotaEgress
-}
-
-func safeBearerToken(value string) bool {
-	if value == "" || len(value) > maxBearerTokenBytes {
-		return false
-	}
-	for i := 0; i < len(value); i++ {
-		if value[i] <= 0x20 || value[i] >= 0x7f {
-			return false
-		}
-	}
-	return true
 }

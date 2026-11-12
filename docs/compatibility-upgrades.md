@@ -238,7 +238,7 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 | 请求拦截 | 选号后移除全部内部请求头 |
 | 请求终态 | 释放并发名额；成功的对话保留名额 5 分钟 |
 | 用量 | 识别结构化的 `usage_limit_reached`，锁定账号直到 Owner 重新启用 |
-| 管理路由 | Codex、Antigravity、Anthropic 三个命名空间的 capabilities、funding-layers、账号列表、并发快照、启用/禁用、出口同步；Codex 实时额度查询；“CPA 授权管理”页面三个 Provider 的额度 |
+| 管理路由 | Codex、Antigravity、Anthropic 三个命名空间的 capabilities、funding-layers、账号列表、并发快照、启用/禁用、出口同步；Codex 额度（CPA 被动观测）；“CPA 授权管理”页面三个 Provider 的额度 |
 
 `.gateway-account-state`、`.gateway-antigravity-identities`、`.gateway-anthropic-identities`
 沿用补丁镜像的文件名和格式，稳定账号 ID 的算法也相同，所以两种镜像可以挂载同一个
@@ -278,30 +278,35 @@ Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行�
 
 ### 额度查询
 
-插件按补丁镜像的格式提供 Gateway 用到的三种额度查询，Gateway 侧不需要改动：
+插件不向任何供应商发请求，额度全部来自 CPA 的被动观测：CPA 对自己发出的真实请求，
+把响应里的限额头（Codex 的 `x-codex-*`、Claude 的 `anthropic-ratelimit-unified-*`）记录
+在凭证上。插件通过 CPA 管理 API 的 `GET /v0/management/auth-files?auth_index=` 读取
+（只取 `quota`、`model_quotas` 和 `next_retry_after`），取该凭证或其各模型中最新的一次
+观测。
 
 | 用途 | 插件路由 | 来源 |
 |---|---|---|
-| Owner 额度查询、额度守卫、群组账号用量（Codex） | `upstream-accounts/quota` | 实时请求 `https://chatgpt.com/backend-api/wham/usage`，按补丁镜像的规则归一为 `account/rateLimits/read` 信封 |
+| Owner 额度查询、额度守卫、群组账号用量（Codex） | `upstream-accounts/quota` | 最新一次含 `x-codex-*` 的观测，映射为补丁镜像的 `account/rateLimits/read` 信封，并附 `observed_at` |
 | “CPA 授权管理”页面的 Codex 额度 | `gateway-management/codex/accounts/quota` | 同上，换算成每个限额主窗口的剩余比例 |
-| “CPA 授权管理”页面的 Antigravity 额度 | `gateway-management/antigravity/accounts/quota` | 实时请求 `fetchAvailableModels`，只保留 `gemini-*` 模型 |
-| Claude 额度守卫与“CPA 授权管理”页面 | `gateway-management/anthropic/accounts/quota` | 不发上游请求；读取 CPA 自己从响应头记录的被动观测（`anthropic-ratelimit-unified-*`） |
+| “CPA 授权管理”页面的 Antigravity 额度 | `gateway-management/antigravity/accounts/quota` | CPA 没有 Antigravity 的被动观测，返回 `{"status":"unavailable","quota":[]}` |
+| Claude 额度守卫与“CPA 授权管理”页面 | `gateway-management/anthropic/accounts/quota` | 最新一次观测的 `anthropic-ratelimit-unified-*` |
 
-实时请求由插件自己发出，不经过 CPA 的宿主 HTTP 回调，因为宿主回调既不能指定代理，也
-不能拒绝重定向。每次请求：
+Codex 信号的映射：
 
-- 先向 Gateway 的 `resolve-egress` 确认该账号的路由；有绑定时走账号出口，否则走 CPA 的
-  全局出口（入口脚本把 `proxy-url` 同时传给插件）。路由无法确认或全局出口未配置时返回
-  `quota_upstream_unavailable`，不会直连。
-- 只发送固定的 URL 和请求头（Codex：`Accept`、`Authorization`、`Chatgpt-Account-Id`），
-  访问令牌从凭证文件读取后只用于这一次请求，不保存、不记录。
-- 不跟随重定向，响应体上限 1 MiB，单次超时 15 秒。上游的错误正文被丢弃，只返回固定
-  错误码，错误码与补丁镜像相同。
-- Codex 请求头中的 ChatGPT 账号必须与稳定账号 ID 的来源一致，凭证文件被换成其他账号时
-  返回 `quota_account_identity_unavailable`。
+- 默认限额（`codex`）读 `X-Codex-Primary-*`、`X-Codex-Secondary-*`；其他限额读带名字的
+  `X-Codex-<名字>-Primary-*`（HTTP 响应）或 `X-Codex-Additional-<名字>-…`（WebSocket 事件），
+  限额 ID 为名字转小写、连字符换成下划线。名字不能构成合法 ID 的限额被略过，最多 32 个。
+- 每个窗口取 `Used-Percent`（小数向上取整，所以不会少报）、`Window-Minutes`、`Reset-At`；
+  只有 `Reset-After-Seconds` 时以观测时间为起点换算。`Limit-Reached: true` 或
+  `Allowed: false` 记为 `rate_limit_reached`。
+- 套餐类型、额度余额、限额显示名都不输出。
+- 还没有观测时返回 409 `quota_not_observed`；读取观测失败返回 503
+  `quota_observation_unavailable`；数值不合法时返回与补丁镜像相同的结构错误码。
+- 凭证文件中的 ChatGPT 账号仍须与稳定账号 ID 的来源一致，否则返回
+  `quota_account_identity_unavailable`。这一步只读本地凭证文件。
 
-Claude 的被动观测通过 CPA 管理 API 的 `GET /v0/management/auth-files?auth_index=` 读取，
-只取 `quota`、`model_quotas` 和 `next_retry_after` 三个字段。
+Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观测于 …”，额度守卫和群组
+账号用量按观测时间记录。额度只在账号处理请求后更新；长时间没有请求的账号显示较旧的观测。
 
 ### 失败时关闭的四道检查
 
@@ -342,10 +347,11 @@ Claude 的被动观测通过 CPA 管理 API 的 `GET /v0/management/auth-files?a
 | 11 | 没有可验证身份的凭证可路由但无归因 | 直接不可用 | 无法授权也无法计费的账号不应接收请求 |
 | 12 | 容器内没有可写且可执行的目录 | 多一个 64 MB 的可执行 tmpfs | CPA 把插件复制到临时目录后再加载 |
 | 13 | 账号出口按每次操作向 Gateway 解析，只在内存中使用 | 选号时向 Gateway 解析并写入凭证文件；不一致时本次跳过该账号 | 插件改不了 CPA 已取好的凭证快照 |
-| 14 | Codex 额度请求经 CPA 的 Codex 执行器，使用浏览器 TLS 指纹 | 插件自己的 Go 标准 TLS 客户端 | 没有能同时指定代理和拒绝重定向的宿主回调。需要在真实账号验收中确认 chatgpt.com 接受 |
+| 14 | Codex 额度实时请求 `chatgpt.com/backend-api/wham/usage` | CPA 被动观测的最近一次响应头，附观测时间；没有观测时返回 `quota_not_observed` | 上游请求只由 CPA 生成，CPA 没有主动额度查询 |
 | 15 | “CPA 授权管理”页面的 Codex 额度总是失败（门面以 RPC id `1` 调用只接受 `6` 的处理器） | 正常返回 | 补丁镜像的缺陷，插件按正确的 id 调用 |
 | 16 | Claude 冷却时间取凭证与各模型冷却中的最晚值 | 取 CPA 管理 API 给出的凭证冷却时间，不含模型级冷却 | 管理 API 不输出模型级冷却 |
-| 17 | Antigravity 额度请求使用 CPA 动态获取的客户端版本号；重置时间原样转发 | 固定使用 CPA 的回退版本号（2.29.0）；重置时间不合法时丢弃，模型名限定字符集 | 插件拿不到 CPA 的动态版本号；对返回给页面的字段从严 |
+| 17 | Antigravity 额度实时请求 `fetchAvailableModels` | 不可用 | CPA 没有 Antigravity 的被动观测；不自行构造供应商请求 |
+| 18 | Codex 额度百分比只接受整数 | 小数向上取整 | 响应头可能带小数；向上取整不会少报用量 |
 
 另有一点运行特性：插件内部的 panic 会被插件自己捕获并转成拒绝；如果有 panic 逃出
 插件，整个 CPA 进程会退出并由容器重启，进行中的请求全部中断。这是拒绝服务而不是
