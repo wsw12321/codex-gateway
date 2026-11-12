@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -74,10 +75,12 @@ type fakeGateway struct {
 	// the global egress. egressDown makes every resolution fail.
 	routes     map[string]string
 	egressDown bool
+	// resolved counts the routes confirmed per account.
+	resolved map[string]int
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
-	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}}
+	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}, resolved: map[string]int{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -153,6 +156,7 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		g.resolved[input.AccountID]++
 		if route, ok := g.routes[input.AccountID]; ok {
 			// Like the Gateway's route id, the revision is opaque.
 			digest := sha256.Sum256([]byte(route))
@@ -168,6 +172,22 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// egressState returns how often each account's route was confirmed and the
+// proxy URL each account must carry, given the global egress.
+func (g *fakeGateway) egressState(global string, ids []string) (resolved map[string]int, want map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	resolved, want = map[string]int{}, map[string]string{}
+	for _, id := range ids {
+		resolved[id] = g.resolved[id]
+		want[id] = global
+		if route, ok := g.routes[id]; ok {
+			want[id] = route
+		}
+	}
+	return resolved, want
 }
 
 func (g *fakeGateway) reset() {
@@ -211,7 +231,14 @@ type fakeProvider struct {
 	behavior map[string]string
 	calls    []upstreamCall
 	leaves   map[string]*tls.Certificate
+	// refused records CONNECTs refused because their route is down.
+	refused []upstreamCall
 }
+
+// deadRouteUser names a route whose egress node is down: the account
+// listener refuses its CONNECT the way Squid does when the account's parent
+// proxy is unreachable, and never forwards it anywhere else.
+const deadRouteUser = "dead"
 
 func newFakeProvider(t *testing.T) *fakeProvider {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -290,6 +317,13 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 	if host != "chatgpt.com" && host != "api.anthropic.com" {
 		// CPA's own background lookups are not part of any scenario.
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		return
+	}
+	if user, _, ok := parseProxyBasic(request.Header.Get("Proxy-Authorization")); ok && user == deadRouteUser {
+		p.mu.Lock()
+		p.refused = append(p.refused, upstreamCall{Via: via, Host: host, ProxyAuth: request.Header.Get("Proxy-Authorization")})
+		p.mu.Unlock()
+		_, _ = io.WriteString(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
 		return
 	}
 	_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -481,8 +515,28 @@ func (p *fakeProvider) set(token, behavior string) {
 
 func (p *fakeProvider) reset() {
 	p.mu.Lock()
-	p.calls = nil
+	p.calls, p.refused = nil, nil
 	p.mu.Unlock()
+}
+
+func (p *fakeProvider) refusedConnects() []upstreamCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]upstreamCall(nil), p.refused...)
+}
+
+// parseProxyBasic decodes a Basic Proxy-Authorization value.
+func parseProxyBasic(value string) (user, password string, ok bool) {
+	encoded, found := strings.CutPrefix(value, "Basic ")
+	if !found {
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", false
+	}
+	user, password, ok = strings.Cut(string(decoded), ":")
+	return user, password, ok
 }
 
 func (p *fakeProvider) seen() []upstreamCall {
@@ -520,6 +574,9 @@ type harness struct {
 	// dataPlaneClosed is set by scenarios in which the plugin refuses even the
 	// model listing, so readiness cannot be observed through it.
 	dataPlaneClosed bool
+	// skipEgressWait is set by scenarios whose accounts the plugin can never
+	// route, so start must not wait for their credentials to carry a route.
+	skipEgressWait bool
 	// anthropicIdentities is the verified identity registry written before
 	// CPA starts, as the credential page's registration would leave it.
 	anthropicIdentities map[string]string
@@ -639,7 +696,6 @@ func (h *harness) start() {
 	config := write("config.yaml", fmt.Sprintf(`host: "127.0.0.1"
 port: %d
 auth-dir: %q
-proxy-url: %q
 response-compression:
   enabled: false
 plugins:
@@ -678,7 +734,7 @@ remote-management:
   secret-key: %q
   disable-control-panel: true
   disable-auto-update-panel: true
-`, port, h.authDir, h.proxy, pluginDir, h.pluginEnabled, h.strategy, internalKey, managementKey))
+`, port, h.authDir, pluginDir, h.pluginEnabled, h.strategy, internalKey, managementKey))
 
 	h.cmd = exec.Command(binary, "-config", config, "-local-model")
 	h.cmd.Dir = h.dir
@@ -692,8 +748,13 @@ remote-management:
 		"CPA_MANAGEMENT_KEY_FILE=" + managementFile,
 		// The account-egress listener stands in for egress-allowlist:3129.
 		"CPA_PLUGIN_EGRESS_PROXY_HOST=" + strings.TrimPrefix(h.egress, "http://"),
-		// As in the entrypoint, the plugin's global egress is CPA's proxy-url.
+		// As in the entrypoint, CPA has no proxy of its own: the plugin
+		// writes the global egress into every credential the Gateway leaves
+		// on it, so a CPA fallback could only connect directly.
 		"CPA_PLUGIN_GLOBAL_PROXY_URL=" + h.proxy,
+		// Only the start-up passes run within a scenario; later changes are
+		// left to the per-pick check and the Gateway's push.
+		"CPA_PLUGIN_EGRESS_RECONCILE_SECONDS=3600",
 	}
 	// CPA loads a plugin from a private copy under its temporary directory, so
 	// that directory must allow mapping executable pages. CPA_E2E_TMPDIR lets
@@ -702,6 +763,11 @@ remote-management:
 		h.cmd.Env = append(h.cmd.Env, "TMPDIR="+tmp)
 	}
 	h.cmd.Stdout, h.cmd.Stderr = h.logs, h.logs
+	ids := make([]string, 0, len(h.accounts))
+	for _, created := range h.accounts {
+		ids = append(ids, created.id)
+	}
+	before, _ := h.gateway.egressState(h.proxy, ids)
 	if err := h.cmd.Start(); err != nil {
 		h.t.Fatal(err)
 	}
@@ -709,11 +775,37 @@ remote-management:
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if h.credentialsLoaded() && (h.dataPlaneClosed || h.modelsReady()) {
+			h.awaitEgress(before, ids)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	h.t.Fatalf("CPA did not become ready:\n%s", h.logs.String())
+}
+
+// awaitEgress waits for the plugin's start-up pass: every account's route
+// confirmed with the Gateway since this start and written into its credential.
+// A deployment reaches the same state before the Gateway sends traffic.
+func (h *harness) awaitEgress(before map[string]int, ids []string) {
+	h.t.Helper()
+	if h.skipEgressWait || !h.pluginEnabled || h.dataPlaneClosed || h.gatewayURL != h.gateway.server.URL {
+		return
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resolved, want := h.gateway.egressState(h.proxy, ids)
+		done := true
+		for _, created := range h.accounts {
+			if resolved[created.id] <= before[created.id] || h.credentialProxy(created.name) != want[created.id] {
+				done = false
+			}
+		}
+		if done {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	h.t.Fatalf("credentials did not receive their routes:\n%s", h.logs.String())
 }
 
 // credentialsLoaded reports whether CPA has registered every credential file.
@@ -913,6 +1005,9 @@ func (h *harness) route(name, secret string) string {
 func (h *harness) credentialProxy(name string) string {
 	h.t.Helper()
 	raw, err := os.ReadFile(filepath.Join(h.authDir, "codex-"+name+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		raw, err = os.ReadFile(filepath.Join(h.authDir, "claude-"+name+".json"))
+	}
 	if err != nil {
 		h.t.Fatal(err)
 	}

@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	testGlobalProxy = "http://egress-allowlist:3128"
 	testAccessToken = "synthetic-access-token"
 	// codexUsageDocument is a ChatGPT usage answer with every field the
 	// normalizer reads, plus fields it must ignore.

@@ -262,3 +262,66 @@ Gateway（`internal/proxy/plugin_management_test.go`）：`TestPluginQuotaContra
 - chatgpt.com 是否接受插件的 Go 标准 TLS 客户端（补丁镜像用 CPA 的浏览器指纹客户端），
   以及 Antigravity 的固定客户端版本号是否被接受。两者都要在真实账号验收中确认，已加入
   第 3 步的验收清单。
+
+## 路线图第 7 步（出口部分）：账号出口不回退
+
+日期 2026-11-12。按[路线图的原则 3](cpa-plugin-roadmap.md#原则)，不改 CPA，靠配置和网络
+保证账号出口失败时请求失败。
+
+### 依据：CPA 的代理退路
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：
+
+- `internal/runtime/executor/helps/proxy_helpers.go` 的 `NewProxyAwareHTTPClient` 按
+  “请求级代理 → 凭证 `proxy_url` → 全局 `proxy-url`”取代理；构建失败时退到上下文传输层，
+  再退到带环境代理的默认传输层。
+- 管理接口 `api-call` 的 `apiCallTransport` 依次尝试凭证代理、全局代理，最后直连。
+- Codex、Claude、Antigravity 的令牌刷新与 Antigravity 模型探测都使用凭证的 `proxy_url`，
+  凭证没有代理时使用全局 `proxy-url`。
+
+插件模式原来同时配置了全局 `proxy-url` 和 `HTTPS_PROXY`（都是 Squid 3128），所以上述
+退路可以落到全局出口。
+
+### 改动
+
+- 插件把 Gateway 的“继承全局出口”也写成凭证上的显式 `proxy_url`
+  （`CPA_PLUGIN_GLOBAL_PROXY_URL`，现为必填，只接受 `http://主机:端口`，且不能是账号出口
+  监听）。没有全局出口配置时拒绝把账号留在空代理上。
+- 插件后台对账：注册后每 2 秒一轮直到确认全部凭证，之后每分钟一轮；停机时停止。
+- 入口脚本生成的配置去掉 `proxy-url`，并在启动 CPA 前清除 `HTTP_PROXY`、`HTTPS_PROXY`、
+  `ALL_PROXY` 及小写形式；覆盖文件同样把它们置空。
+- Gateway 侧不需要改动：出口变更时的即时推送保留，推送失败由插件的每次选号检查和后台
+  对账兜底。
+
+### 测试
+
+插件单测（含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestLoadConfig` | 全局出口必填；拒绝缺失、等于账号出口监听、带凭据、SOCKS；对账间隔 10–3600 秒 |
+| `TestPickReplacesAProxyTheGatewayDidNotBind` | 预置代理与空代理都被替换为显式全局出口，替换前本次跳过该账号 |
+| `TestPickRefusesTheGlobalRouteWithoutAGlobalEgress` | 没有全局出口配置时不写空代理、不使用账号 |
+| `TestReconcileWritesEveryCredentialsRoute` | 一轮对账写入绑定路由与全局出口；第二轮无写入；路由无法确认的凭证保持原样并计为失败 |
+| `TestBackgroundReconcileFollowsTheLifecycle` | 注册启动后台对账（重复注册不重复启动），停机后停止 |
+
+端到端（真实 CPA 进程，新增 1 组，共 12 组）。harness 生成的 CPA 配置与入口脚本一致，
+不含 `proxy-url`，进程环境中没有代理变量；启动后等待插件的首轮对账写好全部凭证：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestPerAccountEgress` | 启动后无代理和预置代理的凭证都带上显式全局出口；其余绑定、重新绑定、重启、路由无法确认、解绑场景不变，解绑后凭证回到显式全局出口 |
+| `TestDeadEgressNeverFallsBack` | 账号绑定到不可用的出口节点（账号出口监听拒绝 CONNECT）：只授权该账号时请求失败（5xx），该账号的请求从未经全局出口或其他途径到达上游；另一个账号有权限时由它经自己的出口完成请求 |
+
+部署静态校验：生成的配置中没有 `proxy-url`；入口脚本在 `exec` 前清除代理变量，全局出口只
+接受 `http://`；覆盖文件把三个代理变量置空。
+
+本地按 `plugin.Dockerfile` 的步骤（固定提交、残余补丁、`CGO_ENABLED=1` 编译 CPA 与插件）
+运行端到端测试，12 组全部通过。
+
+### 未验证
+
+- 生产网络中 `compat_internal` 拒绝直连这一前提由 Compose 的 `internal: true` 保证，已在
+  第 3 步的验收清单中加入“出口失败不回退”一项，用真实节点确认。
+- CPA 自身的后台请求（Antigravity 版本清单、Grok CLI 版本）原来经 Squid 3128，被白名单
+  拒绝；现在直连，同样失败，CPA 使用内置的回退版本。

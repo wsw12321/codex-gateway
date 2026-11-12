@@ -27,5 +27,12 @@ services:
       # CPA maps a plugin from a private copy under its temporary directory.
       # /tmp is noexec and too small for that, so the copy gets its own tmpfs.
       TMPDIR: /run/cliproxy-plugin
+      # CPA runs without a proxy of its own: the plugin writes each account's
+      # route into its credential, the global egress (CLIPROXY_PROXY_URL)
+      # included. Any CPA fallback is then a direct connection, which
+      # compat_internal refuses. The entrypoint also unsets these.
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
+      ALL_PROXY: ""
     tmpfs:
       - /run/cliproxy-plugin:rw,exec,nosuid,nodev,size=64m,mode=0700,uid=10001,gid=10001

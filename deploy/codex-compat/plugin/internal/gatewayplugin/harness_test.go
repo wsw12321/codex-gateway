@@ -21,6 +21,8 @@ const (
 	testOtherUser     = "22222222-2222-4222-8222-222222222222"
 	testGroupA        = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 	testGroupB        = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	// testGlobalProxy is the deployment's global egress listener.
+	testGlobalProxy = "http://egress-allowlist:3128"
 )
 
 func b64(seed byte) string {
@@ -80,7 +82,9 @@ func (h *fakeHost) addCodex(name, accountID string, lastRefresh time.Time) strin
 		ID: name, AuthIndex: index, Name: name, Provider: ProviderCodex, Status: "active", Source: "file",
 		Size: int64(len(accountID)), ModTime: lastRefresh, UpdatedAt: lastRefresh, LastRefresh: lastRefresh, AccountType: "oauth",
 	})
-	h.docs[index] = fmt.Sprintf(`{"type":"codex","email":"%s@example.com","account_id":%q,"refresh_token":"secret"}`, name, accountID)
+	// Credentials start on the global egress, as the background pass leaves
+	// them once the plugin has run.
+	h.docs[index] = fmt.Sprintf(`{"type":"codex","email":"%s@example.com","account_id":%q,"refresh_token":"secret","proxy_url":%q}`, name, accountID, testGlobalProxy)
 	return CodexAccountIndex(accountID)
 }
 
@@ -225,7 +229,7 @@ func newFixture(t *testing.T, n int) *fixture {
 }
 
 func (f *fixture) build() {
-	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, AntigravityEnabled: true, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317"}
+	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, AntigravityEnabled: true, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317", GlobalProxyURL: testGlobalProxy}
 	f.plugin = NewWithConfig(cfg, f.host, f.alloc)
 	if f.plugin.unavailable != nil {
 		return
@@ -245,6 +249,17 @@ func (f *fixture) applyProxy(_ context.Context, account Account, proxyURL string
 	f.applied = append(f.applied, account.Name+"="+proxyURL)
 	f.host.setProxy(account.AuthIndex, proxyURL, f.clock.Add(time.Duration(len(f.applied))*time.Millisecond))
 	return nil
+}
+
+// proxyOf returns the proxy stored in one credential document.
+func (h *fakeHost) proxyOf(authIndex string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var document struct {
+		ProxyURL string `json:"proxy_url"`
+	}
+	_ = json.Unmarshal([]byte(h.docs[authIndex]), &document)
+	return document.ProxyURL
 }
 
 func (h *fakeHost) setProxy(authIndex, proxyURL string, modified time.Time) {

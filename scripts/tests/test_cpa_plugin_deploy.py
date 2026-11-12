@@ -140,9 +140,15 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         # environment, and the two keys must differ.
         self.assertIn("\nexport CPA_PLUGIN_GATEWAY_URL=http://gateway:8080\n", self.entrypoint)
         self.assertIn("\nexport CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129\n", self.entrypoint)
-        # Quota queries use exactly CPA's own global egress.
+        # CPA has no proxy of its own: no proxy-url and no proxy variables. The
+        # plugin writes the global egress into credentials explicitly, so a
+        # CPA fallback can only be a direct connection, which the network
+        # refuses.
         self.assertIn('\nexport CPA_PLUGIN_GLOBAL_PROXY_URL="$proxy_url"\n', self.entrypoint)
-        self.assertIn('proxy-url: "${proxy_url}"', self.entrypoint)
+        self.assertNotRegex(config, r"(?m)^proxy-url:")
+        self.assertIn("\nunset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy\n", self.entrypoint)
+        self.assertLess(self.entrypoint.index("\nunset HTTP_PROXY"), self.entrypoint.index('\nexec "$cpa_binary" "$@"'))
+        self.assertIn("    http://*) ;;\n", self.entrypoint)
         gateway = read(ROOT / "internal" / "server" / "egress_runtime.go")
         self.assertIn('const accountEgressProxy = "http://egress-allowlist:3129"', gateway)
         self.assertIn('test "$internal_key" != "$management_key"', self.entrypoint)
@@ -167,6 +173,8 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         # CPA loads a plugin from a copy under its temporary directory, which
         # therefore must be executable; the shared /tmp stays noexec.
         self.assertIn("      TMPDIR: /run/cliproxy-plugin\n", self.override)
+        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            self.assertIn(f'      {variable}: ""\n', self.override)
         tmpfs = re.search(r"^\s+- (/run/cliproxy-plugin:\S+)$", self.override, flags=re.M).group(1)
         options = tmpfs.split(":", 1)[1].split(",")
         self.assertIn("exec", options)

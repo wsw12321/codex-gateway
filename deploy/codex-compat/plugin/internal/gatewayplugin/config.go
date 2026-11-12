@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,10 +39,16 @@ type Config struct {
 	// EgressProxyHost is the only authority an account-bound egress URL may
 	// name: the per-account listener of the egress service.
 	EgressProxyHost string
-	// GlobalProxyURL is CPA's own proxy-url, used by quota queries for an
-	// account without a binding. Empty makes those queries unavailable: they
-	// never connect directly.
+	// GlobalProxyURL is the deployment's global egress. CPA itself runs
+	// without a proxy-url, so an account the Gateway leaves on the global
+	// egress gets this URL written into its credential like any other route.
+	// A credential without a proxy can then only connect directly, which the
+	// sidecar's network refuses: no CPA fallback reaches the internet.
 	GlobalProxyURL string
+	// EgressReconcileInterval spaces the background passes that write every
+	// account's route into its credential, so CPA's own refreshes never use a
+	// route the Gateway no longer binds. Zero disables them.
+	EgressReconcileInterval time.Duration
 }
 
 const (
@@ -50,6 +57,10 @@ const (
 	defaultLoopbackURL     = "http://127.0.0.1:8317"
 	defaultEgressProxyHost = "egress-allowlist:3129"
 	minInternalKeyLength   = 43
+
+	defaultEgressReconcileSeconds = 60
+	minEgressReconcileSeconds     = 10
+	maxEgressReconcileSeconds     = 3600
 )
 
 // ErrConfig reports an unusable deployment configuration. The plugin stays
@@ -73,16 +84,21 @@ func LoadConfig(getenv func(string) string, readFile func(string) ([]byte, error
 		HoldTTL:            5 * time.Minute,
 		CallbackTimeout:    2 * time.Second,
 		EgressProxyHost:    valueOr(getenv("CPA_PLUGIN_EGRESS_PROXY_HOST"), defaultEgressProxyHost),
-		GlobalProxyURL:     strings.TrimSpace(getenv("CPA_PLUGIN_GLOBAL_PROXY_URL")),
+		GlobalProxyURL:     strings.TrimRight(strings.TrimSpace(getenv("CPA_PLUGIN_GLOBAL_PROXY_URL")), "/"),
 	}
 	if !validOrigin(cfg.GatewayURL) || !validOrigin(cfg.LoopbackURL) || cfg.AuthDir == "" || !validOrigin("http://"+cfg.EgressProxyHost) {
 		return Config{}, ErrConfig
 	}
-	if cfg.GlobalProxyURL != "" {
-		if _, err := parseProxyURL(cfg.GlobalProxyURL); err != nil {
-			return Config{}, ErrConfig
-		}
+	// The global egress is required and must be a plain listener distinct from
+	// the per-account one: a route credential is never sent to it.
+	if !validOrigin(cfg.GlobalProxyURL) || strings.TrimPrefix(cfg.GlobalProxyURL, "http://") == cfg.EgressProxyHost {
+		return Config{}, ErrConfig
 	}
+	interval, err := reconcileInterval(getenv("CPA_PLUGIN_EGRESS_RECONCILE_SECONDS"))
+	if err != nil {
+		return Config{}, ErrConfig
+	}
+	cfg.EgressReconcileInterval = interval
 	key, err := readKey(readFile, valueOr(getenv("CLIPROXY_API_KEY_FILE"), defaultInternalKeyFile))
 	if err != nil {
 		return Config{}, ErrConfig
@@ -98,6 +114,19 @@ func LoadConfig(getenv func(string) string, readFile func(string) ([]byte, error
 		cfg.ManagementKey = managementKey
 	}
 	return cfg, nil
+}
+
+// reconcileInterval parses the background egress pass interval in seconds.
+func reconcileInterval(raw string) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return defaultEgressReconcileSeconds * time.Second, nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil || seconds < minEgressReconcileSeconds || seconds > maxEgressReconcileSeconds {
+		return 0, ErrConfig
+	}
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func valueOr(value, fallback string) string {

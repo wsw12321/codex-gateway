@@ -24,15 +24,33 @@ func (p *Plugin) ensureEgress(ctx context.Context, provider string, account *Acc
 	if err != nil {
 		return err
 	}
-	if route.ProxyURL == account.ProxyURL {
+	proxyURL, err := p.accountProxy(route)
+	if err != nil {
+		return err
+	}
+	if proxyURL == account.ProxyURL {
 		return nil
 	}
-	if err = p.applyProxy(ctx, *account, route.ProxyURL); err != nil {
+	if err = p.applyProxy(ctx, *account, proxyURL); err != nil {
 		logf("egress of account %s was not applied: %T", account.ID, err)
 		return err
 	}
-	p.inventory.NoteProxy(account.AuthID, route.ProxyURL)
+	p.inventory.NoteProxy(account.AuthID, proxyURL)
 	return errEgressPending
+}
+
+// accountProxy is the proxy URL a credential must carry for route. The global
+// egress is written out like any other route: CPA has no proxy of its own, so
+// the URL in the credential is the only way out, and a credential without one
+// cannot reach a provider at all.
+func (p *Plugin) accountProxy(route Egress) (string, error) {
+	if route.ProxyURL != "" {
+		return route.ProxyURL, nil
+	}
+	if p.cfg.GlobalProxyURL == "" {
+		return "", ErrUnavailable
+	}
+	return p.cfg.GlobalProxyURL, nil
 }
 
 // syncEgress applies the account's current route outside any request, so a
@@ -43,13 +61,107 @@ func (p *Plugin) syncEgress(ctx context.Context, provider string, account Accoun
 	if err != nil {
 		return "", err
 	}
-	if route.ProxyURL != account.ProxyURL {
-		if err = p.applyProxy(ctx, account, route.ProxyURL); err != nil {
+	proxyURL, err := p.accountProxy(route)
+	if err != nil {
+		return "", err
+	}
+	if proxyURL != account.ProxyURL {
+		if err = p.applyProxy(ctx, account, proxyURL); err != nil {
 			return "", err
 		}
-		p.inventory.NoteProxy(account.AuthID, route.ProxyURL)
+		p.inventory.NoteProxy(account.AuthID, proxyURL)
 	}
 	return route.Revision, nil
+}
+
+// ReconcileEgress writes every credential's current route, duplicates
+// included, outside any request. CPA refreshes credentials on its own schedule
+// with whatever proxy the file carries; this pass bounds how long a binding
+// change, a missed push or a credential that arrived without a route can
+// last. A failure leaves the credential as it was and is retried on the next
+// pass; requests keep checking the route on every pick regardless.
+func (p *Plugin) ReconcileEgress(ctx context.Context) (accounts, failed int) {
+	if p.unavailable != nil {
+		return 0, 0
+	}
+	all, err := p.inventory.All()
+	if err != nil {
+		return 0, 1
+	}
+	for _, account := range all {
+		if ctx.Err() != nil {
+			return accounts, failed + 1
+		}
+		accounts++
+		callCtx, cancel := context.WithTimeout(ctx, 4*p.cfg.CallbackTimeout)
+		_, errSync := p.syncEgress(callCtx, account.Provider, account)
+		cancel()
+		if errSync != nil {
+			failed++
+		}
+	}
+	if failed > 0 {
+		logf("egress reconcile left %d of %d credentials unconfirmed", failed, accounts)
+	}
+	return accounts, failed
+}
+
+// reconcileWarmup covers the time CPA needs to load its credentials after the
+// plugin registers: until a pass has seen and confirmed at least one
+// credential, passes run every reconcileRetry instead of every interval.
+const (
+	reconcileWarmup = time.Minute
+	reconcileRetry  = 2 * time.Second
+)
+
+// startReconcile runs ReconcileEgress in the background until stopReconcile.
+// It is idempotent and does nothing when the interval is zero.
+func (p *Plugin) startReconcile() {
+	if p.unavailable != nil || p.cfg.EgressReconcileInterval <= 0 {
+		return
+	}
+	p.reconcileMu.Lock()
+	defer p.reconcileMu.Unlock()
+	if p.reconcileStop != nil {
+		return
+	}
+	stop := make(chan struct{})
+	p.reconcileStop = stop
+	started := p.now()
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				logf("egress reconcile stopped after a panic: %T", recovered)
+			}
+		}()
+		delay := reconcileRetry
+		for {
+			timer := time.NewTimer(delay)
+			select {
+			case <-stop:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), p.cfg.EgressReconcileInterval)
+			accounts, failed := p.ReconcileEgress(ctx)
+			cancel()
+			delay = p.cfg.EgressReconcileInterval
+			if (accounts == 0 || failed > 0) && p.now().Sub(started) < reconcileWarmup {
+				delay = reconcileRetry
+			}
+		}
+	}()
+}
+
+// stopReconcile ends the background passes, if any.
+func (p *Plugin) stopReconcile() {
+	p.reconcileMu.Lock()
+	defer p.reconcileMu.Unlock()
+	if p.reconcileStop != nil {
+		close(p.reconcileStop)
+		p.reconcileStop = nil
+	}
 }
 
 // loopbackApplyProxy writes a credential's proxy through CPA's own management

@@ -448,6 +448,31 @@ func (inv *Inventory) Accounts(provider string) ([]Account, error) {
 	return accounts, nil
 }
 
+// All returns a fresh snapshot of every identified credential of every
+// provider, duplicates included, sorted by provider, index and file name.
+func (inv *Inventory) All() ([]Account, error) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if err := inv.refreshLocked(inv.now()); err != nil {
+		return nil, err
+	}
+	accounts := make([]Account, 0, len(inv.byAuthID))
+	for _, account := range inv.byAuthID {
+		accounts = append(accounts, *account)
+	}
+	sort.Slice(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.Provider != b.Provider {
+			return a.Provider < b.Provider
+		}
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		return a.Name < b.Name
+	})
+	return accounts, nil
+}
+
 // Find returns the canonical credential of one account.
 func (inv *Inventory) Find(provider, id string) (Account, bool, error) {
 	accounts, err := inv.Accounts(provider)

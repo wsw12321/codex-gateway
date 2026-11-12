@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -46,6 +47,10 @@ type Plugin struct {
 	// observeCredential reads passive quota observations; see
 	// loopbackObserveCredential.
 	observeCredential func(context.Context, Account) (credentialObservation, error)
+
+	// reconcileStop ends the background egress passes; see startReconcile.
+	reconcileMu   sync.Mutex
+	reconcileStop chan struct{}
 }
 
 // New builds the plugin from the environment. It never fails: an unusable
@@ -165,8 +170,10 @@ func (p *Plugin) Handle(method string, request []byte) (response []byte) {
 	}()
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		p.startReconcile()
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
+		p.stopReconcile()
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodFrontendAuthIdentifier:
 		return okEnvelope(map[string]string{"identifier": PluginID})
