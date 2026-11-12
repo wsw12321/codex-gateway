@@ -39,6 +39,8 @@ type Plugin struct {
 	requests    *requestTable
 	loopback    *http.Client
 	now         func() time.Time
+	// applyProxy writes a credential's egress; see loopbackApplyProxy.
+	applyProxy func(context.Context, Account, string) error
 }
 
 // New builds the plugin from the environment. It never fails: an unusable
@@ -48,7 +50,7 @@ func New(host Host) *Plugin {
 	if err != nil {
 		return &Plugin{unavailable: err, host: host, requests: newRequestTable(), now: time.Now}
 	}
-	return NewWithConfig(cfg, host, NewGatewayClient(cfg.GatewayURL, cfg.InternalKey, cfg.CallbackTimeout))
+	return NewWithConfig(cfg, host, NewGatewayClient(cfg.GatewayURL, cfg.InternalKey, cfg.EgressProxyHost, cfg.CallbackTimeout))
 }
 
 // NewWithConfig builds the plugin from explicit dependencies.
@@ -63,6 +65,7 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
+	p.applyProxy = p.loopbackApplyProxy
 	control, err := LoadControlState(cfg.AuthDir)
 	if err != nil {
 		p.unavailable = err

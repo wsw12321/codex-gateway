@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
 	"time"
 )
@@ -40,8 +41,17 @@ type Attempt struct {
 	Rejected string
 }
 
+// Egress is the route the Gateway binds one account to. ProxyURL is empty for
+// the deployment's global egress.
+type Egress struct {
+	ProxyURL string
+	Revision string
+}
+
 // Allocator is the Gateway's side of account allocation.
 type Allocator interface {
+	// ResolveEgress returns the egress the account is bound to right now.
+	ResolveEgress(ctx context.Context, provider, accountID string) (Egress, error)
 	// Eligible returns the subset of accounts the user may use right now.
 	Eligible(ctx context.Context, provider, userID string, accounts []string) ([]Eligibility, error)
 	// Select asks the Gateway to choose one of accounts by weight and spend.
@@ -56,13 +66,16 @@ type GatewayClient struct {
 	origin string
 	key    string
 	client *http.Client
+	// egressHost is the only authority an account-bound route may name.
+	egressHost string
 }
 
 // NewGatewayClient builds a client for origin authenticated with key.
-func NewGatewayClient(origin, key string, timeout time.Duration) *GatewayClient {
+func NewGatewayClient(origin, key, egressHost string, timeout time.Duration) *GatewayClient {
 	return &GatewayClient{
-		origin: origin,
-		key:    key,
+		origin:     origin,
+		key:        key,
+		egressHost: egressHost,
 		client: &http.Client{
 			Timeout: timeout,
 			Transport: &http.Transport{
@@ -92,14 +105,21 @@ func accountsPath(provider string) string {
 
 func (c *GatewayClient) post(ctx context.Context, provider, action string, body any, limit int64) (int, []byte, error) {
 	path := accountsPath(provider)
-	if path == "" || c.key == "" {
+	if path == "" {
+		return 0, nil, ErrUnavailable
+	}
+	return c.postPath(ctx, path+action, body, limit)
+}
+
+func (c *GatewayClient) postPath(ctx context.Context, path string, body any, limit int64) (int, []byte, error) {
+	if c.key == "" {
 		return 0, nil, ErrUnavailable
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return 0, nil, ErrUnavailable
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.origin+path+action, bytes.NewReader(raw))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.origin+path, bytes.NewReader(raw))
 	if err != nil {
 		return 0, nil, ErrUnavailable
 	}
@@ -205,4 +225,53 @@ func (c *GatewayClient) Report(ctx context.Context, provider string, attempt Att
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// gatewayProvider names a provider the way the Gateway's egress tables do.
+func gatewayProvider(provider string) string {
+	if provider == ProviderClaude {
+		return "anthropic"
+	}
+	return provider
+}
+
+// ResolveEgress implements Allocator. The Gateway is the only source of an
+// account's route: whatever a credential file says about its proxy is not
+// trusted. An account-bound route must point at the fixed egress listener and
+// carry its route credential; anything else is refused.
+func (c *GatewayClient) ResolveEgress(ctx context.Context, provider, accountID string) (Egress, error) {
+	if accountsPath(provider) == "" || !validAccountID(accountID) {
+		return Egress{}, ErrUnavailable
+	}
+	body := struct {
+		Provider  string `json:"provider"`
+		AccountID string `json:"account_id"`
+	}{gatewayProvider(provider), accountID}
+	status, data, err := c.postPath(ctx, "/internal/upstream-accounts/resolve-egress", body, 16<<10)
+	if err != nil || status != http.StatusOK {
+		return Egress{}, ErrUnavailable
+	}
+	var resolution struct {
+		Mode     string `json:"mode"`
+		ProxyURL string `json:"proxy_url"`
+		Revision string `json:"revision"`
+	}
+	if _, errObject := decodeObject(data); errObject != nil || json.Unmarshal(data, &resolution) != nil || resolution.Revision == "" {
+		return Egress{}, ErrUnavailable
+	}
+	switch resolution.Mode {
+	case "global":
+		if resolution.ProxyURL != "" {
+			return Egress{}, ErrUnavailable
+		}
+	case "account":
+		parsed, errParse := url.Parse(resolution.ProxyURL)
+		if errParse != nil || parsed.Scheme != "http" || parsed.Host != c.egressHost || parsed.User == nil ||
+			parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return Egress{}, ErrUnavailable
+		}
+	default:
+		return Egress{}, ErrUnavailable
+	}
+	return Egress{ProxyURL: resolution.ProxyURL, Revision: resolution.Revision}, nil
 }

@@ -102,6 +102,21 @@ type fakeAllocator struct {
 	selectCalls   [][]string
 	reports       []Attempt
 	beforeSelect  func()
+	// routes binds an account to an egress; a missing account is global.
+	routes    map[string]Egress
+	egressErr map[string]error
+}
+
+func (a *fakeAllocator) ResolveEgress(_ context.Context, _, accountID string) (Egress, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.egressErr[accountID]; err != nil {
+		return Egress{}, err
+	}
+	if route, ok := a.routes[accountID]; ok {
+		return route, nil
+	}
+	return Egress{Revision: "global:0"}, nil
 }
 
 func (a *fakeAllocator) Eligible(_ context.Context, _, userID string, accounts []string) ([]Eligibility, error) {
@@ -192,6 +207,9 @@ type fixture struct {
 	seq    int
 	// ids maps a credential name to its stable account index.
 	ids map[string]string
+	// applied records each proxy the plugin wrote, as "name=url".
+	applied  []string
+	applyErr error
 }
 
 // newFixture builds a plugin over n Codex accounts named a, b, c, ...
@@ -215,6 +233,33 @@ func (f *fixture) build() {
 	now := func() time.Time { return f.clock }
 	f.plugin.now, f.plugin.concurrency.now, f.plugin.bindings.now, f.plugin.roots.now = now, now, now, now
 	f.plugin.requests.now, f.plugin.inventory.now, f.plugin.control.now = now, now, now
+	f.plugin.applyProxy = f.applyProxy
+}
+
+// applyProxy stands in for CPA's field patch: it rewrites the stored
+// credential document and its modification time, as CPA does on disk.
+func (f *fixture) applyProxy(_ context.Context, account Account, proxyURL string) error {
+	if f.applyErr != nil {
+		return f.applyErr
+	}
+	f.applied = append(f.applied, account.Name+"="+proxyURL)
+	f.host.setProxy(account.AuthIndex, proxyURL, f.clock.Add(time.Duration(len(f.applied))*time.Millisecond))
+	return nil
+}
+
+func (h *fakeHost) setProxy(authIndex, proxyURL string, modified time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var document map[string]any
+	_ = json.Unmarshal([]byte(h.docs[authIndex]), &document)
+	document["proxy_url"] = proxyURL
+	raw, _ := json.Marshal(document)
+	h.docs[authIndex] = string(raw)
+	for i := range h.entries {
+		if h.entries[i].AuthIndex == authIndex {
+			h.entries[i].ModTime, h.entries[i].Size = modified, int64(len(raw))
+		}
+	}
 }
 
 func (f *fixture) advance(d time.Duration) { f.clock = f.clock.Add(d) }

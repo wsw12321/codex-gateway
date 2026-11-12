@@ -142,9 +142,11 @@ CONFIG
 unset internal_key management_key
 chmod 0600 "$config_file"
 
-# Plugin wiring. The Gateway origin is fixed, as it was in the source patch:
-# the allocation callback must not be redirectable through the environment.
+# Plugin wiring. The Gateway origin and the per-account egress listener are
+# fixed, as they were in the source patch: neither the allocation callback nor
+# an account's route may be redirected through the environment.
 export CPA_PLUGIN_GATEWAY_URL=http://gateway:8080
+export CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129
 export CPA_PLUGIN_LOOPBACK_URL="http://127.0.0.1:${listen_port}"
 export CPA_PLUGIN_AUTH_DIR="$auth_dir"
 export CLIPROXY_API_KEY_FILE="$key_file"

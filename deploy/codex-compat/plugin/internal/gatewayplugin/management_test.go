@@ -38,8 +38,8 @@ func TestManagementRoutesAreExactAndAuthenticatedOnly(t *testing.T) {
 		t.Fatalf("a menu or resource route would be served without the management key: %s", raw)
 	}
 	routes := f.plugin.managementRoutes().Routes
-	if len(routes) != 15 {
-		t.Fatalf("%d routes declared, want 5 per account namespace", len(routes))
+	if len(routes) != 18 {
+		t.Fatalf("%d routes declared, want 6 per account namespace", len(routes))
 	}
 	seen := map[string]bool{}
 	for _, route := range routes {
@@ -62,15 +62,20 @@ func TestManagementCapabilities(t *testing.T) {
 		if _, has := fields["anthropic_messages"]; has != anthropic {
 			t.Fatalf("%s: anthropic_messages present = %v", namespace, has)
 		}
-		// Advertising account egress without enforcing it would let a Gateway
-		// that requires per-account egress dispatch through the default route.
-		if _, has := fields["account_egress"]; has {
-			t.Fatalf("%s advertises account egress: %s", namespace, body)
+		if string(fields["account_egress"]) != `"account_egress_v1"` {
+			t.Fatalf("%s does not advertise account egress: %s", namespace, body)
 		}
 		if status, fields, _ = f.manage(http.MethodGet, managementPrefix+namespace+"/funding-layers", nil, ""); status != http.StatusOK || string(fields["protocol"]) != `"group_upstream_account_layers_v1"` || len(fields) != 1 {
 			t.Fatalf("%s funding layers: %d %v", namespace, status, fields)
 		}
 	}
+	// Without the management key the plugin cannot write a credential's proxy,
+	// so it must not claim to enforce bindings.
+	f.plugin.cfg.ManagementKey = ""
+	if _, fields, body := f.manage(http.MethodGet, managementPrefix+"upstream-accounts/capabilities", nil, ""); fields["account_egress"] != nil {
+		t.Fatalf("account egress advertised without the management key: %s", body)
+	}
+	f.plugin.cfg.ManagementKey = testManagementKey
 	if status, _, _ := f.manage(http.MethodGet, managementPrefix+"unknown-accounts/capabilities", nil, ""); status != http.StatusNotFound {
 		t.Fatalf("an unknown namespace answered %d", status)
 	}

@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -330,29 +331,100 @@ func TestFailsClosed(t *testing.T) {
 	})
 }
 
+// TestPerAccountEgress follows an Owner binding an account to its own egress.
+// The Gateway is the only source of the route: the plugin writes it into the
+// credential, and CPA then uses it for every call on that account.
 func TestPerAccountEgress(t *testing.T) {
 	h := newHarness(t)
-	a := h.addAccount("a", map[string]any{"proxy_url": ""})
+	a, b := h.addAccount("a", nil), h.addAccount("b", map[string]any{"proxy_url": "http://planted.example:8080"})
 	h.start()
+	h.gateway.prefer = []string{a.id, b.id}
+
+	// b came with a proxy of its own, which the Gateway never bound. It is
+	// removed before b serves anything.
+	h.gateway.prefer = []string{b.id, a.id}
+	h.resetObservations()
 	if got := h.do(call{}); got.status != http.StatusOK {
 		t.Fatalf("status %d: %s", got.status, got.body)
 	}
-	if calls := h.provider.seen(); len(calls) != 1 || calls[0].Via != "global" {
-		t.Fatalf("unexpected egress %+v", calls)
+	if served := h.served(); len(served) != 1 || served[0] != "a" {
+		t.Fatalf("provider saw %v; b must not serve with an unbound proxy", served)
 	}
-	// Bind the account to its own egress through CPA's native field patch.
-	status, body := h.management(http.MethodPatch, "/v0/management/auth-files/fields", managementKey, `{"name":"codex-a.json","proxy_url":"`+h.egress+`"}`)
-	if status != http.StatusOK {
-		t.Fatalf("field patch failed: %d %s", status, body)
+	if proxy := h.credentialProxy("b"); proxy != "" {
+		t.Fatalf("b still carries %q", proxy)
 	}
-	h.eventually("the account egress to take effect", func() bool {
-		h.resetObservations()
-		if got := h.do(call{}); got.status != http.StatusOK {
-			return false
-		}
-		calls := h.provider.seen()
-		return len(calls) == 1 && calls[0].Via == "account-egress" && calls[0].Bearer == a.token
-	})
+	h.resetObservations()
+	h.do(call{})
+	if calls := h.provider.seen(); len(calls) != 1 || calls[0].Bearer != b.token || calls[0].Via != "global" {
+		t.Fatalf("b after cleanup: %+v", calls)
+	}
+
+	// The Owner binds a to its own egress. The Gateway pushes the binding.
+	routeA := h.route("route-a", "secret-a")
+	h.gateway.routes[a.id] = routeA
+	status, body := h.management(http.MethodPut, "/v0/management/gateway/upstream-accounts/egress?id="+a.id, managementKey, "{}")
+	if status != http.StatusOK || strings.Contains(body, "secret-a") || !strings.Contains(body, `"revision":"route:`) {
+		t.Fatalf("egress sync: %d %s", status, body)
+	}
+	if proxy := h.credentialProxy("a"); proxy != routeA {
+		t.Fatalf("a's credential carries %q", proxy)
+	}
+	h.gateway.prefer = []string{a.id, b.id}
+	h.resetObservations()
+	h.do(call{})
+	calls := h.provider.seen()
+	wantAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("route-a:secret-a"))
+	if len(calls) != 1 || calls[0].Bearer != a.token || calls[0].Via != "account-egress" || calls[0].ProxyAuth != wantAuth {
+		t.Fatalf("a after binding: %+v", calls)
+	}
+
+	// A rebinding the push never reached is caught on the next pick: a is
+	// skipped once while its new route is written, then used through it.
+	routeA2 := h.route("route-a2", "secret-a2")
+	h.gateway.routes[a.id] = routeA2
+	h.resetObservations()
+	h.do(call{})
+	if served := h.served(); len(served) != 1 || served[0] != "b" {
+		t.Fatalf("provider saw %v while a carried a stale route", served)
+	}
+	h.resetObservations()
+	h.do(call{})
+	calls = h.provider.seen()
+	if len(calls) != 1 || calls[0].Bearer != a.token || calls[0].ProxyAuth != "Basic "+base64.StdEncoding.EncodeToString([]byte("route-a2:secret-a2")) {
+		t.Fatalf("a after rebinding: %+v", calls)
+	}
+
+	// The route survives a restart: it lives in the credential.
+	h.stop()
+	h.start()
+	h.resetObservations()
+	h.do(call{})
+	if calls = h.provider.seen(); len(calls) != 1 || calls[0].Bearer != a.token || calls[0].Via != "account-egress" {
+		t.Fatalf("a after restart: %+v", calls)
+	}
+
+	// When the Gateway cannot confirm any route, nothing is sent at all.
+	h.gateway.egressDown = true
+	h.resetObservations()
+	if got := h.do(call{}); got.status != http.StatusServiceUnavailable || len(h.provider.seen()) != 0 {
+		t.Fatalf("status %d with %d provider calls while routes were unknown", got.status, len(h.provider.seen()))
+	}
+	h.gateway.egressDown = false
+
+	// Unbinding returns a to the global egress.
+	delete(h.gateway.routes, a.id)
+	if status, body = h.management(http.MethodPut, "/v0/management/gateway/upstream-accounts/egress?id="+a.id, managementKey, ""); status != http.StatusOK {
+		t.Fatalf("egress sync: %d %s", status, body)
+	}
+	h.resetObservations()
+	h.do(call{})
+	if calls = h.provider.seen(); len(calls) != 1 || calls[0].Bearer != a.token || calls[0].Via != "global" {
+		t.Fatalf("a after unbinding: %+v", calls)
+	}
+	// The management key is required to change a route.
+	if status, _ = h.management(http.MethodPut, "/v0/management/gateway/upstream-accounts/egress?id="+a.id, internalKey, ""); status != http.StatusUnauthorized {
+		t.Fatalf("the data-plane key changed a route: %d", status)
+	}
 }
 
 // TestAccountManagement drives the plugin's account routes exactly as the
@@ -370,7 +442,7 @@ func TestAccountManagement(t *testing.T) {
 		}
 	}
 	status, body := h.management(http.MethodGet, base+"/capabilities", managementKey, "")
-	if status != http.StatusOK || !strings.Contains(body, `"protocol":"upstream_account_access_v1"`) || strings.Contains(body, "account_egress") {
+	if status != http.StatusOK || !strings.Contains(body, `"protocol":"upstream_account_access_v1"`) || !strings.Contains(body, `"account_egress":"account_egress_v1"`) {
 		t.Fatalf("capabilities: %d %s", status, body)
 	}
 	if status, body = h.management(http.MethodGet, "/v0/management/gateway/anthropic-accounts/capabilities", managementKey, ""); status != http.StatusOK || !strings.Contains(body, "anthropic_messages_v1") {

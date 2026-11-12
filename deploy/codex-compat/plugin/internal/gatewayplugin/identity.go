@@ -75,6 +75,9 @@ type Account struct {
 	LastRefresh time.Time
 	UpdatedAt   time.Time
 	CreatedAt   time.Time
+	// ProxyURL is the egress stored in the credential file. It is what CPA
+	// uses for this credential, and is kept equal to the Gateway's binding.
+	ProxyURL string
 	// Duplicate marks a credential file that lost to another file of the same
 	// real account. Duplicates are listed nowhere and never selected.
 	Duplicate bool
@@ -358,6 +361,7 @@ type resolvedIdentity struct {
 	id    string
 	email string
 	plan  string
+	proxy string
 }
 
 // NewInventory loads the identity registries from authDir.
@@ -406,6 +410,24 @@ func (inv *Inventory) Resolve(authIDs []string) (map[string]*Account, error) {
 		}
 	}
 	return result, nil
+}
+
+// NoteProxy records the egress just written to a credential, so the next
+// lookup sees it without waiting for the host to report the file change.
+func (inv *Inventory) NoteProxy(authID, proxyURL string) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	// Replace rather than mutate: callers hold pointers to the old value and
+	// read it without this lock.
+	if account := inv.byAuthID[authID]; account != nil {
+		updated := *account
+		updated.ProxyURL = proxyURL
+		inv.byAuthID[authID] = &updated
+	}
+	if identity, ok := inv.identity[authID]; ok {
+		identity.proxy = proxyURL
+		inv.identity[authID] = identity
+	}
 }
 
 // Accounts returns a fresh snapshot of every identified, non-duplicate account
@@ -477,6 +499,7 @@ func (inv *Inventory) refreshLocked(now time.Time) error {
 			ID: identity.id, Provider: provider, AuthID: entry.ID, AuthIndex: entry.AuthIndex, Name: entry.Name,
 			Email: identity.email, Plan: identity.plan, Status: entry.Status, Disabled: entry.Disabled,
 			Unavailable: entry.Unavailable, LastRefresh: entry.LastRefresh, UpdatedAt: entry.UpdatedAt, CreatedAt: entry.CreatedAt,
+			ProxyURL: identity.proxy,
 		}
 	}
 	markDuplicates(next)
@@ -491,7 +514,7 @@ func (inv *Inventory) identify(provider string, raw json.RawMessage) resolvedIde
 	if json.Unmarshal(raw, &document) != nil {
 		return resolvedIdentity{}
 	}
-	identity := resolvedIdentity{email: stringField(document, "email")}
+	identity := resolvedIdentity{email: stringField(document, "email"), proxy: stringField(document, "proxy_url")}
 	switch provider {
 	case ProviderCodex:
 		accountID, ok := codexIdentity(document)

@@ -35,12 +35,16 @@ type Config struct {
 	HoldTTL time.Duration
 	// CallbackTimeout bounds one Gateway allocation callback.
 	CallbackTimeout time.Duration
+	// EgressProxyHost is the only authority an account-bound egress URL may
+	// name: the per-account listener of the egress service.
+	EgressProxyHost string
 }
 
 const (
 	defaultGatewayURL      = "http://gateway:8080"
 	defaultInternalKeyFile = "/run/secrets/sidecar_api_key"
 	defaultLoopbackURL     = "http://127.0.0.1:8317"
+	defaultEgressProxyHost = "egress-allowlist:3129"
 	minInternalKeyLength   = 43
 )
 
@@ -64,8 +68,9 @@ func LoadConfig(getenv func(string) string, readFile func(string) ([]byte, error
 		BindingTTL:         time.Hour,
 		HoldTTL:            5 * time.Minute,
 		CallbackTimeout:    2 * time.Second,
+		EgressProxyHost:    valueOr(getenv("CPA_PLUGIN_EGRESS_PROXY_HOST"), defaultEgressProxyHost),
 	}
-	if !validOrigin(cfg.GatewayURL) || !validOrigin(cfg.LoopbackURL) || cfg.AuthDir == "" {
+	if !validOrigin(cfg.GatewayURL) || !validOrigin(cfg.LoopbackURL) || cfg.AuthDir == "" || !validOrigin("http://"+cfg.EgressProxyHost) {
 		return Config{}, ErrConfig
 	}
 	key, err := readKey(readFile, valueOr(getenv("CLIPROXY_API_KEY_FILE"), defaultInternalKeyFile))

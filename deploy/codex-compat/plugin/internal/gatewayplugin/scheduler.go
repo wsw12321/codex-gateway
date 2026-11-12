@@ -70,16 +70,27 @@ func (p *Plugin) Pick(ctx context.Context, request pluginapi.SchedulerPickReques
 		bindKey bindingKey
 		release func(SlotOutcome)
 	)
-	busy := map[string]bool{}
+	// excluded records why an account dropped out of this pick: a lost slot
+	// race (ErrConcurrency) or a route that could not be confirmed.
+	excluded := map[string]error{}
 	for {
-		chosen, bindKey, err = p.allocate(ctx, provider, trusted, candidates, busy, scope, session, parent, request.Model, rootSlotKey)
+		chosen, bindKey, err = p.allocate(ctx, provider, trusted, candidates, excluded, scope, session, parent, request.Model, rootSlotKey)
 		if err != nil {
 			return "", p.reject(ctx, provider, trusted, conversation, err)
 		}
-		if release, ok = p.concurrency.Acquire(chosen.account.ID, rootSlotKey); ok {
-			break
+		if release, ok = p.concurrency.Acquire(chosen.account.ID, rootSlotKey); !ok {
+			excluded[chosen.account.ID] = ErrConcurrency
+			continue
 		}
-		busy[chosen.account.ID] = true
+		// An account whose route cannot be confirmed is skipped like a full
+		// one: the request moves on to another permitted account, never to an
+		// unbound route.
+		if errEgress := p.ensureEgress(ctx, provider, chosen.account); errEgress != nil {
+			release(SlotKeep)
+			excluded[chosen.account.ID] = ErrUnavailable
+			continue
+		}
+		break
 	}
 	next := &attempt{
 		provider: provider, account: chosen.account.ID, rootKey: rootSlotKey, bindKey: bindKey, bound: session != "",
@@ -141,17 +152,22 @@ func (p *Plugin) resolveCandidates(candidates []pluginapi.SchedulerAuthCandidate
 // eligibility as the Gateway reports it now, per-account concurrency, the
 // conversation's existing binding, and finally a weighted Gateway selection
 // walked through the funding layers in billing order.
-func (p *Plugin) allocate(ctx context.Context, provider string, trusted Trusted, candidates []candidateAccount, busy map[string]bool, scope, session, parent, model, rootSlotKey string) (candidateAccount, bindingKey, error) {
+func (p *Plugin) allocate(ctx context.Context, provider string, trusted Trusted, candidates []candidateAccount, excluded map[string]error, scope, session, parent, model, rootSlotKey string) (candidateAccount, bindingKey, error) {
 	bindKey := newBindingKey(scope, provider, session, model)
-	if len(busy) > 0 {
-		free := candidates[:0:0]
+	if len(excluded) > 0 {
+		remaining := candidates[:0:0]
+		outcome := ErrUnavailable
 		for _, candidate := range candidates {
-			if !busy[candidate.account.ID] {
-				free = append(free, candidate)
+			reason, out := excluded[candidate.account.ID]
+			if !out {
+				remaining = append(remaining, candidate)
+			} else if errors.Is(reason, ErrConcurrency) {
+				// A full account is worth retrying; an unroutable one is not.
+				outcome = ErrConcurrency
 			}
 		}
-		if candidates = free; len(candidates) == 0 {
-			return candidateAccount{}, bindKey, ErrConcurrency
+		if candidates = remaining; len(candidates) == 0 {
+			return candidateAccount{}, bindKey, outcome
 		}
 	}
 	if trusted.Scope.Present && trusted.Scope.Restricted {

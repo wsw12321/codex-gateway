@@ -2,6 +2,7 @@ package gatewayplugin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ const (
 	protocolGroupScope    = "group_upstream_account_scope_v1"
 	protocolFundingLayers = "group_upstream_account_layers_v1"
 	protocolAnthropic     = "anthropic_messages_v1"
+	protocolAccountEgress = "account_egress_v1"
 
 	maxStatusRequestBytes = 1 << 10
 )
@@ -57,6 +59,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodGet, base + "/funding-layers", "Report the funding layer protocol"},
 			managementRoute{http.MethodGet, base + "/concurrency", "Sample active conversations per account"},
 			managementRoute{http.MethodPut, base + "/status", "Enable or disable one account"},
+			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
 		)
 	}
 	return managementRegistration{Routes: routes}
@@ -122,6 +125,8 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return p.concurrencySnapshot(provider)
 	case method == http.MethodPut && action == "status":
 		return p.setAccountStatus(provider, query, body)
+	case method == http.MethodPut && action == "egress":
+		return p.syncAccountEgress(provider, query, body)
 	}
 	return managementError(http.StatusNotFound, "not_found")
 }
@@ -130,14 +135,17 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 // this plugin answers 404 and the Gateway refuses to dispatch, so the probe is
 // a second fail-closed barrier behind the plugin-only selector.
 //
-// account_egress is deliberately not advertised: this plugin does not yet
-// bind accounts to their own egress, and a Gateway that requires the binding
-// must refuse rather than send traffic through the default route.
+// account_egress is advertised only when this plugin can enforce bindings,
+// which needs the management key to write a credential's proxy. Without it a
+// Gateway that requires bindings refuses to dispatch.
 func (p *Plugin) capabilities(provider string) []byte {
 	if _, err := p.inventory.Accounts(provider); err != nil {
 		return managementError(http.StatusServiceUnavailable, "account_registry_unavailable")
 	}
 	response := map[string]string{"protocol": protocolAccountAccess, "group_upstream_account_scope": protocolGroupScope}
+	if p.cfg.ManagementKey != "" {
+		response["account_egress"] = protocolAccountEgress
+	}
 	if provider == ProviderClaude {
 		response["anthropic_messages"] = protocolAnthropic
 	}
@@ -327,4 +335,31 @@ func (p *Plugin) setAccountStatus(provider string, query url.Values, body []byte
 	return managementJSON(http.StatusOK, map[string]string{
 		"id": id, "status": final, "cliproxy_status": host, "gateway_manual_status": manual, "gateway_quota_status": quota,
 	})
+}
+
+// syncAccountEgress applies one account's current egress binding. The Gateway
+// calls it after the Owner changes the binding; the route itself is resolved
+// from the Gateway again rather than taken from this request.
+func (p *Plugin) syncAccountEgress(provider string, query url.Values, body []byte) []byte {
+	ids := query["id"]
+	if len(ids) != 1 || len(query) != 1 || !validAccountID(ids[0]) {
+		return managementError(http.StatusNotFound, "upstream_account_not_found")
+	}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) != 0 && string(trimmed) != "{}" {
+		return managementError(http.StatusBadRequest, "account_egress_request_invalid")
+	}
+	account, found, err := p.inventory.Find(provider, ids[0])
+	if err != nil {
+		return managementError(http.StatusServiceUnavailable, "account_registry_unavailable")
+	}
+	if !found {
+		return managementError(http.StatusNotFound, "upstream_account_not_found")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*p.cfg.CallbackTimeout)
+	defer cancel()
+	revision, err := p.syncEgress(ctx, provider, account)
+	if err != nil {
+		return managementError(http.StatusServiceUnavailable, "account_egress_unavailable")
+	}
+	return managementJSON(http.StatusOK, map[string]string{"id": account.ID, "revision": revision})
 }

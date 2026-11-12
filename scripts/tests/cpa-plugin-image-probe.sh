@@ -133,10 +133,7 @@ for namespace in upstream-accounts antigravity-accounts anthropic-accounts; do
     expect_status 200 "$namespace capabilities"
     grep -Fq '"protocol":"upstream_account_access_v1"' "$run/response" || fail "$namespace lacks the access protocol"
     grep -Fq '"group_upstream_account_scope":"group_upstream_account_scope_v1"' "$run/response" || fail "$namespace lacks the group scope protocol"
-    # Not advertised until the plugin binds accounts to their own egress.
-    if grep -Fq account_egress "$run/response"; then
-        fail "$namespace advertises account egress"
-    fi
+    grep -Fq '"account_egress":"account_egress_v1"' "$run/response" || fail "$namespace does not enforce account egress"
     request GET "/v0/management/gateway/$namespace/funding-layers" "$management"
     grep -Fq '"protocol":"group_upstream_account_layers_v1"' "$run/response" || fail "$namespace lacks the funding layer protocol"
     # The data-plane key and a missing key open nothing on the management side.
@@ -158,6 +155,12 @@ grep -Fq '"plan":"plus"' "$run/response" || fail "the account plan is not report
 if grep -Eq 'synthetic@example.com|acct-synthetic|synthetic-refresh|eyJhbGci' "$run/response"; then
     fail "the account list leaks credential content"
 fi
+# Without a Gateway the account's route cannot be confirmed, so it is not
+# changed either.
+request PUT "/v0/management/gateway/upstream-accounts/egress?id=$account" "$management" '{}'
+expect_status 503 "egress sync without a Gateway"
+request PUT "/v0/management/gateway/upstream-accounts/egress?id=$account" "$internal" '{}'
+expect_status 401 "egress sync with the data-plane key"
 request GET /v0/management/gateway/upstream-accounts/concurrency "$management"
 expect_status 200 "concurrency snapshot"
 grep -Fq "\"id\":\"$account\"" "$run/response" || fail "the concurrency snapshot omits the account"

@@ -137,6 +137,9 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         # The allocation callback origin is fixed, not taken from the caller's
         # environment, and the two keys must differ.
         self.assertIn("\nexport CPA_PLUGIN_GATEWAY_URL=http://gateway:8080\n", self.entrypoint)
+        self.assertIn("\nexport CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129\n", self.entrypoint)
+        gateway = read(ROOT / "internal" / "server" / "egress_runtime.go")
+        self.assertIn('const accountEgressProxy = "http://egress-allowlist:3129"', gateway)
         self.assertIn('test "$internal_key" != "$management_key"', self.entrypoint)
         self.assertIn('"$oauth_entrypoint" verify-oauth', self.entrypoint)
         self.assertIn('flock -n 9 || fail "OAuth store is owned by another refresh process"', self.entrypoint)

@@ -16,10 +16,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -68,10 +70,14 @@ type fakeGateway struct {
 	reports   []attemptReport
 	calls     []string
 	unauth    int
+	// routes binds an account to an egress proxy URL; a missing account uses
+	// the global egress. egressDown makes every resolution fail.
+	routes     map[string]string
+	egressDown bool
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
-	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}}
+	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -134,6 +140,23 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			chosen = selection.AccountIDs[0]
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"account_id": chosen})
+	case "resolve-egress":
+		var input struct {
+			Provider  string `json:"provider"`
+			AccountID string `json:"account_id"`
+		}
+		_ = json.Unmarshal(body, &input)
+		if g.egressDown {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		if route, ok := g.routes[input.AccountID]; ok {
+			// Like the Gateway's route id, the revision is opaque.
+			digest := sha256.Sum256([]byte(route))
+			_ = json.NewEncoder(w).Encode(map[string]string{"mode": "account", "proxy_url": route, "revision": "route:" + hex.EncodeToString(digest[:8])})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"mode": "global", "revision": "global:0"})
 	case "attempt":
 		var report attemptReport
 		_ = json.Unmarshal(body, &report)
@@ -170,6 +193,8 @@ type upstreamCall struct {
 	Path    string
 	Bearer  string
 	Headers http.Header
+	// ProxyAuth is the credential CPA presented to the proxy on CONNECT.
+	ProxyAuth string
 }
 
 type fakeProvider struct {
@@ -279,7 +304,8 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 	if secure.Handshake() != nil {
 		return
 	}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.serve(via, host, w, r) }), ReadHeaderTimeout: 10 * time.Second}
+	proxyAuth := request.Header.Get("Proxy-Authorization")
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.serve(via, host, proxyAuth, w, r) }), ReadHeaderTimeout: 10 * time.Second}
 	_ = server.Serve(&singleListener{conn: secure, done: make(chan struct{})})
 }
 
@@ -329,11 +355,11 @@ data: {"type":"response.completed","response":{"id":"resp_1","object":"response"
 
 `
 
-func (p *fakeProvider) serve(via, host string, w http.ResponseWriter, r *http.Request) {
+func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 8<<20))
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	p.mu.Lock()
-	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone()})
+	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth})
 	behavior := p.behavior[bearer]
 	p.mu.Unlock()
 	switch behavior {
@@ -549,6 +575,8 @@ remote-management:
 		"CPA_PLUGIN_AUTH_DIR=" + h.authDir,
 		"CLIPROXY_API_KEY_FILE=" + keyFile,
 		"CPA_MANAGEMENT_KEY_FILE=" + managementFile,
+		// The account-egress listener stands in for egress-allowlist:3129.
+		"CPA_PLUGIN_EGRESS_PROXY_HOST=" + strings.TrimPrefix(h.egress, "http://"),
 	}
 	// CPA loads a plugin from a private copy under its temporary directory, so
 	// that directory must allow mapping executable pages. CPA_E2E_TMPDIR lets
@@ -752,4 +780,25 @@ func (h *harness) eventually(what string, check func() bool) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	h.t.Fatalf("timed out waiting for %s", what)
+}
+
+// route returns an account-bound egress URL for the harness's egress listener.
+func (h *harness) route(name, secret string) string {
+	return "http://" + name + ":" + secret + "@" + strings.TrimPrefix(h.egress, "http://")
+}
+
+// credentialProxy reads the proxy stored in an account's credential file.
+func (h *harness) credentialProxy(name string) string {
+	h.t.Helper()
+	raw, err := os.ReadFile(filepath.Join(h.authDir, "codex-"+name+".json"))
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	var document struct {
+		ProxyURL string `json:"proxy_url"`
+	}
+	if err = json.Unmarshal(raw, &document); err != nil {
+		h.t.Fatal(err)
+	}
+	return document.ProxyURL
 }

@@ -119,3 +119,48 @@ func TestPluginIntegrationFailsClosedWithoutThePlugin(t *testing.T) {
 		t.Fatal("account egress was treated as available although the plugin does not advertise it")
 	}
 }
+
+func TestSyncAccountEgress(t *testing.T) {
+	const account = "0123456789abcdef"
+	for kind, namespace := range map[string]string{"codex": "upstream-accounts", "anthropic": "anthropic-accounts", "antigravity": "antigravity-accounts"} {
+		var seen []*http.Request
+		var bodies []string
+		answer := `{"id":"` + account + `","revision":"r1"}`
+		client := pluginManagementClient(t, kind, &seen, func(r *http.Request) (int, string) {
+			raw, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, string(raw))
+			return 200, answer
+		})
+		if err := client.SyncAccountEgress(context.Background(), account); err != nil {
+			t.Fatalf("%s: %v", kind, err)
+		}
+		r := seen[0]
+		if got := r.Method + " " + r.URL.Path + " " + r.URL.RawQuery; got != "PUT /v0/management/gateway/"+namespace+"/egress id="+account {
+			t.Fatalf("%s: request %q", kind, got)
+		}
+		// The route is resolved by the plugin, never sent by the Gateway.
+		if bodies[0] != "{}" || r.Header.Get("Authorization") != "Bearer management-secret" {
+			t.Fatalf("%s: body %q, auth %q", kind, bodies[0], r.Header.Get("Authorization"))
+		}
+		for _, invalid := range []string{
+			`{"id":"fedcba9876543210","revision":"r1"}`,
+			`{"id":"` + account + `","revision":""}`,
+			`{"id":"` + account + `"}`,
+			`{"id":"` + account + `","revision":"r1","proxy_url":"http://x"}`,
+		} {
+			answer = invalid
+			if err := client.SyncAccountEgress(context.Background(), account); err == nil {
+				t.Fatalf("%s: accepted %s", kind, invalid)
+			}
+		}
+	}
+	var seen []*http.Request
+	client := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return 200, `{}` })
+	if err := client.SyncAccountEgress(context.Background(), "not-an-id"); err == nil || len(seen) != 0 {
+		t.Fatal("a malformed account id was sent")
+	}
+	client.UsePluginManagement("")
+	if err := client.SyncAccountEgress(context.Background(), account); err == nil {
+		t.Fatal("pushed without the plugin integration")
+	}
+}

@@ -1,6 +1,9 @@
 package proxy
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
 	"net/url"
 	"strings"
 )
@@ -50,4 +53,26 @@ func (c *Client) internalTarget(path string) (*url.URL, string) {
 	}
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + path
 	return &target, token
+}
+
+// SyncAccountEgress asks the plugin to apply one account's egress binding now.
+// The plugin resolves the route from the Gateway itself; nothing about the
+// route travels in this request.
+func (c *Client) SyncAccountEgress(ctx context.Context, accountID string) error {
+	if c == nil || c.managementToken == "" {
+		return &InternalAPIError{StatusCode: http.StatusServiceUnavailable, Code: "provider_account_unavailable"}
+	}
+	if !upstreamAccountPattern.MatchString(accountID) {
+		return &InternalAPIError{StatusCode: http.StatusBadRequest, Code: "invalid_upstream_account"}
+	}
+	var wire map[string]json.RawMessage
+	if err := c.internalJSONBody(ctx, http.MethodPut, "/internal/upstream-accounts/"+accountID+"/egress", "{}", &wire); err != nil {
+		return err
+	}
+	var id, revision string
+	if len(wire) != 2 || json.Unmarshal(wire["id"], &id) != nil || id != accountID ||
+		json.Unmarshal(wire["revision"], &revision) != nil || revision == "" {
+		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+	}
+	return nil
 }
