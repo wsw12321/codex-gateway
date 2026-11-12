@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // dispatchHeader carries the one-time dispatch token to CPA. The Gateway
@@ -74,11 +76,42 @@ type ledgerEntry struct {
 type AllocationLedger struct {
 	mu      sync.Mutex
 	entries map[string]*ledgerEntry
+	// probes maps a one-time probe identity to the only account its
+	// allocation callbacks may be answered with.
+	probes map[string]string
 }
 
 // NewAllocationLedger creates an empty ledger.
 func NewAllocationLedger() *AllocationLedger {
-	return &AllocationLedger{entries: make(map[string]*ledgerEntry)}
+	return &AllocationLedger{entries: make(map[string]*ledgerEntry), probes: make(map[string]string)}
+}
+
+// PinProbe creates a one-time identity for a model identification probe. The
+// Gateway answers the allocation callbacks of that identity with accountID
+// alone, so CPA can neither choose nor retry another account. release ends
+// the pin.
+func (l *AllocationLedger) PinProbe(accountID string) (string, func()) {
+	identity := uuid.NewString()
+	l.mu.Lock()
+	l.probes[identity] = accountID
+	l.mu.Unlock()
+	return identity, func() {
+		l.mu.Lock()
+		delete(l.probes, identity)
+		l.mu.Unlock()
+	}
+}
+
+// ProbeAccount reports the account pinned to a probe identity. Any identity
+// the Gateway did not create for a probe in flight is not one.
+func (l *AllocationLedger) ProbeAccount(userID string) (string, bool) {
+	if l == nil {
+		return "", false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	accountID, ok := l.probes[userID]
+	return accountID, ok
 }
 
 // dispatch is one open ledger entry. A nil dispatch is valid and inert, which

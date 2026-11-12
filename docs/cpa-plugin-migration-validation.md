@@ -430,3 +430,34 @@ Gateway：`TestPluginManagementPath` 覆盖授权、回调、状态、导入、�
   模拟了 Codex 的令牌端点），在第 3 步的真实账号验收中确认。
 - CPA 可能在导入或授权后自行再刷新一次凭证（端到端中观察到），也可能跳过刚刷新过的凭证；
   两者都是 CPA 原生行为，请求都经所选出口。
+
+## 路线图第 6 步：模型鉴定走 CPA 的普通请求路径
+
+日期 2026-11-12。插件模式下的模型鉴定可用。探针是普通的 `/v1/responses` 请求，由 CPA
+生成上游请求；Gateway 用一次性身份把它固定到被鉴定的账号。设计见
+[兼容层升级规程](compatibility-upgrades.md#模型鉴定)，行为差异见同文第 22 项。
+
+### 测试
+
+Gateway：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestModelIdentificationProbeThroughCPA` | 探针是带一次性身份、独立调用方作用域和请求令牌的普通请求，请求体只有模型、输入、输出上限和 `stream: false`，不带补丁协议的诊断头；请求期间该身份固定到被鉴定的账号，结束后作废；16 种结果：正常回答（忽略 reasoning）、上报为其他账号、插件报告并发耗尽或分配不可用、401、429、502、400、工具调用、未完成、空回答、输出令牌超限、回答过长、非 JSON、重复键、未知状态，各自对应固定错误码 |
+| `TestModelIdentificationCapabilityFollowsTheIntegration` | 插件模式只接受 `model_identification_cpa_v1` |
+| `TestProbeAllocationAnswersOnlyThePinnedAccount` | 探针身份的 `eligible` 只返回固定账号（带其并发上限），候选中没有时为空；`select` 只选固定账号，否则 429；`attempt` 上报其他账号被拒；探针结束后身份失效 |
+
+插件单测：`TestModelIdentificationRoutes` 覆盖协议路由、经 CPA 列出模型（去重、丢弃非法
+ID）、未知账号的诊断错误、畸形列表；探针本身没有插件路由。
+
+端到端（真实 CPA 进程，新增 1 组，共 14 组）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestModelIdentification` | 协议路由；CPA 为凭证注册的模型中包含测试模型；未知账号 404；数据面密钥无法访问；只授权给账号 a 的探针身份发出的非流式请求由 a 完成，CPA 把上游流式回答聚合成 Responses JSON，归因上报为 a；a 返回 500 时探针失败，b 从未被尝试 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，14 组全部通过。
+
+### 未验证
+
+- 用真实账号跑一次完整鉴定（三道题与评分），在第 3 步的真实账号验收中进行。

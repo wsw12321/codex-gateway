@@ -115,6 +115,7 @@ RUN CPA_E2E_BINARY=/out/cli-proxy-api CPA_E2E_PLUGIN_DIR=/out/plugins \
         TestPerAccountEgress \
         TestDeadEgressNeverFallsBack \
         TestCredentialOperations \
+        TestModelIdentification \
         TestAccountManagement \
         TestManagementBoundary \
         TestCodexPassiveQuota \

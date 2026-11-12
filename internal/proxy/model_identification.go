@@ -16,6 +16,10 @@ import (
 
 const (
 	ModelIdentificationProtocol = "model_identification_direct_v1"
+	// ModelIdentificationCPAProtocol is the plugin's: probes are ordinary
+	// Responses requests that CPA builds, pinned to one account by the
+	// Gateway's allocation callbacks.
+	ModelIdentificationCPAProtocol = "model_identification_cpa_v1"
 	// The sidecar stops a probe at 180 seconds; allow time for its terminal reply.
 	ModelIdentificationProbeTimeout = 185 * time.Second
 	modelIdentificationPath         = "/internal/model-identification"
@@ -121,7 +125,11 @@ func (c *Client) RequireModelIdentificationCapability(ctx context.Context) error
 	if err := c.diagnosticJSON(ctx, http.MethodGet, modelIdentificationPath+"/capabilities", nil, nil, &response); err != nil {
 		return err
 	}
-	if response.Protocol != ModelIdentificationProtocol {
+	want := ModelIdentificationProtocol
+	if c.ledger != nil {
+		want = ModelIdentificationCPAProtocol
+	}
+	if response.Protocol != want {
 		return diagnosticError("protocol_unsupported", http.StatusServiceUnavailable)
 	}
 	return nil
@@ -165,6 +173,9 @@ func (c *Client) ProbeModelIdentification(ctx context.Context, probe ModelIdenti
 	if !upstreamAccountPattern.MatchString(probe.AccountID) || !validSidecarModelID(probe.Model) || probe.Prompt == "" ||
 		len(probe.Prompt) > 8<<10 || !utf8.ValidString(probe.Prompt) || strings.ContainsRune(probe.Prompt, 0) {
 		return "", diagnosticError("probe_request_invalid", http.StatusBadRequest)
+	}
+	if c.ledger != nil {
+		return c.probeThroughCPA(ctx, probe)
 	}
 	body, err := json.Marshal(struct {
 		Model           string `json:"model"`

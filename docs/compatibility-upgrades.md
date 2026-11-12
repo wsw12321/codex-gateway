@@ -214,8 +214,10 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 上游文件中有 85 个被上游修改，而插件接口只变了 48 行。插件模式把 Gateway 需要的功能
 移到这个接口之后，残余补丁只剩 139 行。
 
-插件模式通过 `deploy/cpa-plugin.override.yml` 启用，默认部署不受影响。它还没有覆盖
-补丁镜像的全部功能（见“尚未提供的功能”），在补齐并完成真实账号验收之前不应作为默认。
+插件模式通过 `deploy/cpa-plugin.override.yml` 启用，默认部署不受影响。它覆盖了补丁镜像
+的功能，差异见下文“与补丁镜像的行为差异”；在完成真实账号验收之前不应作为默认。上游请求
+全部由 CPA 生成，插件和 Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成请求的
+方式。
 验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)，后续步骤见
 [CPA 插件模式路线图](cpa-plugin-roadmap.md)。
 
@@ -339,7 +341,18 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 选择的出口提交给该账号，并写入最终路由。任何一步失败都不会让账号带着别的出口运行：没有
 身份或与已有 Claude/Antigravity 凭证冲突的新凭证会被删除；出口登记失败时账号被停用。
 
-尚未提供：模型鉴定（`/internal/model-identification/*`）。
+### 模型鉴定
+
+探针是一次普通的 `POST /v1/responses`（`stream: false`），上游请求由 CPA 按处理客户端
+请求的同一路径生成。Gateway 为每次探针生成一个一次性身份（随机 UUID）和独立的调用方
+作用域，并在请求账本中把它固定到被鉴定的账号：这个身份的 `eligible`/`select` 回调只回答该
+账号（不受 Owner 自己的账号权限影响），候选里没有它时回答不可用；`attempt` 上报也只接受该
+账号。所以 CPA 无法选到或重试到别的账号。探针不经过准入，不计费，也不记为用量；它和普通
+请求一样占用该账号的并发名额。
+
+插件只提供两个管理路由：`model-identification/capabilities` 报告协议
+`model_identification_cpa_v1`；`model-identification/accounts/models?id=` 包装 CPA 的
+`GET /v0/management/auth-files/models`，列出 CPA 为该凭证注册的模型。
 
 ### 与补丁镜像的行为差异
 
@@ -366,6 +379,7 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 | 19 | 身份由补丁向供应商的固定身份端点核验 | 取 CPA 保存的字段；新增的 Antigravity 账号以邮箱为身份 | 插件不自行发出供应商请求；CPA 的 Antigravity 授权只记录邮箱 |
 | 20 | 可导入 Antigravity 刷新令牌、只有访问令牌的 Claude 凭证 | 不支持，提示改用授权 | CPA 刷新时不获取 Antigravity 邮箱；没有刷新令牌的凭证无法由 CPA 核验身份 |
 | 21 | — | 插件模式下新增的 Claude 账号与以邮箱为身份的 Antigravity 账号，回退到补丁镜像后不可用 | 补丁镜像只认它自己写入的身份字段；回退期间需在补丁镜像中重新授权 |
+| 22 | 模型鉴定探针走补丁中的专用执行路径，不刷新、不重放 | 普通 Responses 请求；CPA 可能按原生规则刷新令牌并在同一账号上重试；停用或额度锁定的账号不能鉴定 | 上游请求只由 CPA 生成；固定账号由 Gateway 的分配回调保证 |
 
 另有一点运行特性：插件内部的 panic 会被插件自己捕获并转成拒绝；如果有 panic 逃出
 插件，整个 CPA 进程会退出并由容器重启，进行中的请求全部中断。这是拒绝服务而不是
@@ -396,7 +410,7 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 
 ### 启用与回退
 
-启用前确认不需要上面列出的未提供功能。
+启用前阅读上面的行为差异，特别是第 19–22 项。
 
 ```sh
 ./scripts/compose.sh -f deploy/cpa-plugin.override.yml build gateway codex-compat

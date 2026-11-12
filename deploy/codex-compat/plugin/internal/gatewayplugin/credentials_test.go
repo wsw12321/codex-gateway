@@ -559,3 +559,36 @@ func TestCredentialRoutesRespectTheAntigravityRollback(t *testing.T) {
 		t.Fatal("a rollback-time request reached CPA")
 	}
 }
+
+func TestModelIdentificationRoutes(t *testing.T) {
+	f := newFixture(t, 1)
+	var asked []string
+	models := `{"models":[{"id":"gpt-6"},{"id":"gpt-6"},{"id":"bad model"},{"id":"gpt-6-mini","owned_by":"openai"}]}`
+	f.plugin.cpaManagement = func(_ context.Context, method, path string, query url.Values, _ []byte) (int, []byte, error) {
+		asked = append(asked, method+" "+path+"?"+query.Encode())
+		return 200, []byte(models), nil
+	}
+	status, fields, body := f.manage(http.MethodGet, managementPrefix+"model-identification/capabilities", nil, "")
+	if status != http.StatusOK || string(fields["protocol"]) != `"model_identification_cpa_v1"` {
+		t.Fatalf("capabilities: %d %s", status, body)
+	}
+	status, fields, body = f.manage(http.MethodGet, managementPrefix+"model-identification/accounts/models", url.Values{"id": {f.ids["a"]}}, "")
+	if status != http.StatusOK || string(fields["account_id"]) != `"`+f.ids["a"]+`"` || string(fields["models"]) != `["gpt-6","gpt-6-mini"]` {
+		t.Fatalf("models: %d %s", status, body)
+	}
+	if len(asked) != 1 || asked[0] != "GET /v0/management/auth-files/models?name=a" {
+		t.Fatalf("CPA was asked %v", asked)
+	}
+	status, _, body = f.manage(http.MethodGet, managementPrefix+"model-identification/accounts/models", url.Values{"id": {"0123456789abcdef"}}, "")
+	if status != http.StatusNotFound || body != `{"error":{"code":"probe_account_not_found","stage":"preflight"}}` {
+		t.Fatalf("unknown account: %d %s", status, body)
+	}
+	models = `{"error":"x"}`
+	if status, _, body = f.manage(http.MethodGet, managementPrefix+"model-identification/accounts/models", url.Values{"id": {f.ids["a"]}}, ""); status != http.StatusServiceUnavailable {
+		t.Fatalf("a malformed listing was accepted: %d %s", status, body)
+	}
+	// The probe itself is not a plugin route: it is an ordinary request.
+	if status, _, _ = f.manage(http.MethodPost, managementPrefix+"model-identification/accounts/probe", url.Values{"id": {f.ids["a"]}}, "{}"); status != http.StatusNotFound {
+		t.Fatalf("a probe route answered %d", status)
+	}
+}

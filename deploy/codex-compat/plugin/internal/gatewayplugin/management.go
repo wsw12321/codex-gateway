@@ -62,7 +62,10 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
 		)
 	}
-	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Report one Codex account's quota as CPA observed it"})
+	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Report one Codex account's quota as CPA observed it"},
+		managementRoute{http.MethodGet, managementPrefix + modelIdentificationPrefix + "capabilities", "Report the model identification protocol"},
+		managementRoute{http.MethodGet, managementPrefix + modelIdentificationPrefix + "accounts/models", "List the models CPA registered for one Codex account"},
+	)
 	for _, provider := range facadeProviders {
 		base := managementPrefix + facadeNamespace + "/" + provider.name
 		routes = append(routes,
@@ -170,6 +173,9 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 	path = strings.TrimPrefix(strings.TrimPrefix(path, managementBase), managementPrefix)
 	if facade, ok := strings.CutPrefix(path, facadeNamespace+"/"); ok {
 		return p.facadeManagement(method, facade, query, body)
+	}
+	if action, ok := strings.CutPrefix(path, modelIdentificationPrefix); ok {
+		return p.modelIdentification(method, action, query)
 	}
 	name, action, _ := strings.Cut(path, "/")
 	provider := ""
