@@ -9,7 +9,7 @@
     "version": "1.0.0",
     "source": "plugin"
   },
-  "go_version": "1.26.10",
+  "go_version": "1.26.11",
   "security_modules": {
     "github.com/klauspost/compress": "v1.18.7",
     "golang.org/x/crypto": "v0.58.0",
