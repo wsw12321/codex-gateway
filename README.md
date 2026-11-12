@@ -461,14 +461,15 @@ CI 检查通过后发布四个应用镜像，服务器按提交和 digest 拉取
 此次版本升级的源码、镜像与数据库验证状态见 [v8.0.59 验证记录](docs/cpa-v8.0.59-validation.md)。生产切换及真实 OAuth 账号验收
 按 [CPA v8 切换与回滚](docs/cpa-v8-cutover.md) 执行。
 
-另有一种可选的**插件模式**：运行未修改的 CLIProxyAPI，Gateway 需要的账号分配、身份
-隔离、账号控制和账号独立出口由 `deploy/codex-compat/plugin/` 中的插件实现，源码改动只剩
-一个 139 行的残余补丁，CPA 升级不再需要重基大补丁。插件模式通过
-`deploy/cpa-plugin.override.yml` 启用。上游请求全部由 CPA 生成，插件不自行构造供应商
-请求：额度取自 CPA 对真实请求响应的被动观测，“CPA 授权管理”页面的凭证操作经 CPA 原生
-管理接口完成，模型鉴定的探针也是由 CPA 生成的普通请求，账号出口失败时不会改走全局出口
-或直连。完成真实账号验收前不是默认部署。说明见
-[兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式可选尚非默认)，
+默认部署运行**插件模式**：未修改的 CLIProxyAPI，Gateway 需要的账号分配、身份隔离、
+账号控制和账号独立出口由 `deploy/codex-compat/plugin/` 中的插件实现，源码改动只剩一个
+139 行的残余补丁（插件未选号时拒绝请求），CPA 升级不再需要重基大补丁。上游请求全部由
+CPA 生成，插件不自行构造供应商请求：额度取自 CPA 对真实请求响应的被动观测，“CPA 授权
+管理”页面的凭证操作经 CPA 原生管理接口完成，模型鉴定的探针也是由 CPA 生成的普通请求，
+账号出口失败时不会改走全局出口或直连。凭证只在“CPA 授权管理”页面维护，命令行登录脚本
+只用于回退的补丁镜像。源码补丁镜像保留为回退：在 `.env` 中设置 `CPA_INTEGRATION=patch`，
+见[运维手册](docs/operations.md#cpa-插件模式的切换与回退)。说明见
+[兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式默认)，
 后续步骤见 [CPA 插件模式路线图](docs/cpa-plugin-roadmap.md)。
 
 ```sh

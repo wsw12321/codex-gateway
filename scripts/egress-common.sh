@@ -27,7 +27,7 @@ egress_prepare() {
     unset EGRESS_MODE CODEX_RELAY_IP CODEX_RELAY_PORT \
         SHADOWSOCKS_SERVER SHADOWSOCKS_PORT SHADOWSOCKS_CIPHER \
         SHADOWSOCKS_PASSWORD SHADOWSOCKS_PASSWORD_FILE MIHOMO_IMAGE \
-        GATEWAY_SECRET_GID OIDC_ENABLED OIDC_ISSUER OIDC_CLIENT_ID OIDC_AUTH_HOST \
+        GATEWAY_SECRET_GID OIDC_ENABLED OIDC_ISSUER OIDC_CLIENT_ID OIDC_AUTH_HOST CPA_INTEGRATION \
         COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES \
         COMPOSE_DISABLE_ENV_FILE COMPOSE_REMOVE_ORPHANS
     unset egress_name
@@ -41,6 +41,7 @@ egress_prepare() {
     unset egress_raw_settings
     egress_mode=$(printf '%s' "$egress_settings" | jq -r '.mode')
     egress_oidc_enabled=$(printf '%s' "$egress_settings" | jq -r '.oidc_enabled')
+    egress_cpa_integration=$(printf '%s' "$egress_settings" | jq -r '.cpa_integration')
 }
 
 egress_compose() {
@@ -51,6 +52,11 @@ egress_compose() {
     fi
     if test "$egress_mode" = shadowsocks; then
         set -- -f "$egress_root/deploy/shadowsocks.override.yml" "$@"
+    fi
+    # CPA_INTEGRATION=patch rolls CPA and the Gateway back to the
+    # source-patched image together, for every command of the deployment.
+    if test "$egress_cpa_integration" = patch; then
+        set -- -f "$egress_root/deploy/patch-cpa.override.yml" "$@"
     fi
     docker compose \
         --project-name codex-gateway --project-directory "$egress_root" \

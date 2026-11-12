@@ -1,7 +1,7 @@
 # CPA 插件模式路线图
 
-本文记录插件模式从“可选”走到“默认”还需要做的事，以及每一步的验收标准。插件模式的
-设计与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式可选尚非默认)，已完成
+本文记录插件模式从“可选”走到“默认”、再到删除源码补丁所需的事，以及每一步的验收标准。插件模式的
+设计与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式默认)，已完成
 的验证见[验证记录](cpa-plugin-migration-validation.md)。
 
 ## 原则
@@ -28,9 +28,10 @@
 - 残余补丁 139 行，只新增 `routing.strategy: "plugin-only"`，同一份补丁可无 fuzz 应用到
   v8.0.59 和 v8.0.67。
 - Gateway 的 `CPA_INTEGRATION=plugin`：请求账本归因、`/v0/management/gateway/*` 路由映射、
-  出口推送。默认仍是 `patch`。
-- 构建（`plugin.Dockerfile`）、部署（`deploy/cpa-plugin.override.yml`）、CI 步骤、镜像探针、
-  部署静态校验。
+  出口推送。
+- 插件模式是默认部署（第 8 步第 1 项）；源码补丁镜像经 `.env` 的 `CPA_INTEGRATION=patch`
+  回退（`deploy/patch-cpa.override.yml`）。
+- 构建（`plugin.Dockerfile`）、CI 步骤、镜像探针、部署静态校验。
 - 自动化测试：插件单测与竞态检测、12 组端到端测试、Gateway 单测、部署静态校验，均通过。
 - 账号出口不回退（第 7 步的出口部分）：每个凭证都带显式出口，CPA 不配置任何代理，
   插件后台对账。
@@ -213,6 +214,12 @@ Gateway 侧的推送重试改由插件的后台对账承担（启动后到确认
    `docs/threat-model.md` 与 `THIRD_PARTY_NOTICES`。
 
 **验收。** CI 全绿；默认部署的镜像探针与端到端测试通过；回退覆盖文件可用。
+
+**状态（2026-11-12）。** 第 1 项已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-8-步第-1-项插件模式成为默认)。回退不靠
+`-f`：`.env` 的 `CPA_INTEGRATION=patch` 让 `scripts/compose.sh` 的每次调用都叠加回退覆盖文件，
+登录脚本和之后的 `up -d` 也不会切回插件镜像。第 2、3 项等真实账号验收（第 3 步）通过并
+稳定 7 天后进行。
 
 ### 9. 减少残余补丁并提前发现上游变化
 

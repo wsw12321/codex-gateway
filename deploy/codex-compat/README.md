@@ -115,7 +115,7 @@ file next to it and a management key equal to the data-plane key, and writes a
 configuration with the plugin-only strategy and the management API behind its
 own key. `plugin-healthcheck.sh` is healthy only while the plugin serves its
 capability route. CPA maps a plugin from a private copy under `TMPDIR`, so
-`../cpa-plugin.override.yml` adds an executable tmpfs for it.
+`docker-compose.yml` mounts an executable tmpfs for it (`/run/cliproxy-plugin`).
 
 The plugin keeps `.gateway-account-state` and both identity documents in the
 format described above, so either image can take over the other's credential

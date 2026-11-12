@@ -166,10 +166,9 @@ export CPA_PLUGIN_AUTH_DIR="$auth_dir"
 export CLIPROXY_API_KEY_FILE="$key_file"
 export CPA_MANAGEMENT_KEY_FILE="$management_key_file"
 
-if test "$#" -eq 0; then
-    set -- -config "$config_file" -local-model
-else
-    set -- -config "$config_file" -local-model "$@"
-fi
+# Logins and imports go through the credential page, where CPA runs them with
+# the egress the Owner chose. A command-line login would run without any
+# egress (CPA has no proxy of its own here) and outside the registration.
+test "$#" -eq 0 || fail "command-line logins are not available in plugin mode; use the CPA credential page, or set CPA_INTEGRATION=patch for the rollback image"
 
-exec "$cpa_binary" "$@"
+exec "$cpa_binary" -config "$config_file" -local-model

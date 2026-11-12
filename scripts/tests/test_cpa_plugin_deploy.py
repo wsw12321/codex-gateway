@@ -32,7 +32,8 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         cls.dockerfile = read(COMPAT / "plugin.Dockerfile")
         cls.entrypoint = read(COMPAT / "plugin-entrypoint.sh")
         cls.healthcheck = read(COMPAT / "plugin-healthcheck.sh")
-        cls.override = read(ROOT / "deploy" / "cpa-plugin.override.yml")
+        cls.compose = read(ROOT / "docker-compose.yml")
+        cls.rollback = read(ROOT / "deploy" / "patch-cpa.override.yml")
         cls.patch_path = COMPAT / cls.lock["residual_patch"]
         cls.patch = read(cls.patch_path)
 
@@ -147,7 +148,7 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn('\nexport CPA_PLUGIN_GLOBAL_PROXY_URL="$proxy_url"\n', self.entrypoint)
         self.assertNotRegex(config, r"(?m)^proxy-url:")
         self.assertIn("\nunset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy\n", self.entrypoint)
-        self.assertLess(self.entrypoint.index("\nunset HTTP_PROXY"), self.entrypoint.index('\nexec "$cpa_binary" "$@"'))
+        self.assertLess(self.entrypoint.index("\nunset HTTP_PROXY"), self.entrypoint.index('\nexec "$cpa_binary" -config'))
         self.assertIn("    http://*) ;;\n", self.entrypoint)
         gateway = read(ROOT / "internal" / "server" / "egress_runtime.go")
         self.assertIn('const accountEgressProxy = "http://egress-allowlist:3129"', gateway)
@@ -160,34 +161,71 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn("/v0/management/gateway/upstream-accounts/capabilities", self.healthcheck)
         self.assertIn("upstream_account_access_v1", self.healthcheck)
 
-    def test_override_switches_both_services_and_default_is_unchanged(self):
-        self.assertIn("  gateway:\n    environment:\n      CPA_INTEGRATION: plugin\n", self.override)
-        self.assertIn("      dockerfile: deploy/codex-compat/plugin.Dockerfile\n", self.override)
-        self.assertIn("    image: {}\n".format(self.lock["image"]), self.override)
+    def compat_service(self):
+        start = self.compose.index("\n  codex-compat:\n")
+        end = self.compose.index("\n  antigravity-bridge:\n")
+        return self.compose[start:end]
+
+    def test_default_compose_runs_plugin_mode(self):
+        self.assertIn("      CPA_INTEGRATION: plugin\n", self.compose)
+        service = self.compat_service()
+        self.assertIn("      dockerfile: deploy/codex-compat/plugin.Dockerfile\n", service)
+        self.assertIn("    image: {}\n".format(self.lock["image"]), service)
         for key, value in (
             ("CLIPROXY_VERSION", self.lock["tag"]),
             ("CLIPROXY_COMMIT", self.lock["commit"]),
             ("CLIPROXY_RESIDUAL_PATCH_SHA256", self.lock["residual_patch_sha256"]),
         ):
-            self.assertIn(f"        {key}: {value}\n", self.override)
+            self.assertIn(f"        {key}: {value}\n", service)
+        self.assertNotIn("CLIPROXY_PATCH_SHA256", service)
+        # CPA has no proxy of its own; the global egress is only handed to the
+        # plugin, which writes it into credentials.
+        self.assertIn("      CLIPROXY_PROXY_URL: http://egress-allowlist:3128\n", service)
+        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+            self.assertNotIn(f"      {variable}:", service)
         # CPA loads a plugin from a copy under its temporary directory, which
         # therefore must be executable; the shared /tmp stays noexec.
-        self.assertIn("      TMPDIR: /run/cliproxy-plugin\n", self.override)
-        for variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
-            self.assertIn(f'      {variable}: ""\n', self.override)
-        tmpfs = re.search(r"^\s+- (/run/cliproxy-plugin:\S+)$", self.override, flags=re.M).group(1)
+        self.assertIn("      TMPDIR: /run/cliproxy-plugin\n", service)
+        tmpfs = re.search(r"^\s+- (/run/cliproxy-plugin:\S+)$", service, flags=re.M).group(1)
         options = tmpfs.split(":", 1)[1].split(",")
         self.assertIn("exec", options)
         self.assertNotIn("noexec", options)
         for option in ("rw", "nosuid", "nodev", "mode=0700", "uid=10001", "gid=10001"):
             self.assertIn(option, options)
+        self.assertIn("/tmp:rw,noexec,nosuid,nodev", service)
+        self.assertIn(self.lock["commit"], self.compose)
+        self.assertFalse((ROOT / "deploy" / "cpa-plugin.override.yml").exists())
 
-        compose = read(ROOT / "docker-compose.yml")
-        self.assertNotIn("CPA_INTEGRATION", compose)
-        self.assertNotIn("plugin.Dockerfile", compose)
-        self.assertIn("/tmp:rw,noexec,nosuid,nodev", compose)
-        self.assertIn(self.lock["commit"], compose)
+    def test_rollback_override_restores_the_source_patched_image(self):
+        patch_sha = self.source_lock["patch_sha256"]
+        image = "codex-gateway-compat:{}-{}-{}-cpa".format(
+            self.source_lock["tag"], self.source_lock["commit"][:8], patch_sha[:16])
+        self.assertIn("  gateway:\n    environment:\n      CPA_INTEGRATION: patch\n", self.rollback)
+        self.assertIn("    image: {}\n".format(image), self.rollback)
+        self.assertIn("      dockerfile: deploy/codex-compat/Dockerfile\n", self.rollback)
+        self.assertIn(f"        CLIPROXY_PATCH_SHA256: {patch_sha}\n", self.rollback)
+        self.assertIn("      HTTPS_PROXY: http://egress-allowlist:3128\n", self.rollback)
+        self.assertIn("      TMPDIR: /tmp\n", self.rollback)
+        validate = read(ROOT / "scripts" / "validate-compose.sh")
+        self.assertIn(f"compat_image={image}\n", validate)
+        self.assertIn(f"compat_patch_sha256={patch_sha}\n", validate)
 
+    def test_env_selects_the_rollback_for_every_compose_call(self):
+        settings = read(ROOT / "scripts" / "egress-settings.compose.yml")
+        self.assertIn("      CPA_INTEGRATION: ${CPA_INTEGRATION:-plugin}\n", settings)
+        common = read(ROOT / "scripts" / "egress-common.sh")
+        self.assertIn('if test "$egress_cpa_integration" = patch; then\n'
+                      '        set -- -f "$egress_root/deploy/patch-cpa.override.yml" "$@"', common)
+        self.assertIn(" CPA_INTEGRATION ", common)
+        validator = read(ROOT / "scripts" / "validate-egress.py")
+        self.assertIn('fail("CPA_INTEGRATION must be plugin or patch")', validator)
+        self.assertIn('fail("CPA_INTEGRATION and the rendered CPA image disagree")', validator)
+        for example in ("env.example", "env.gpt-5.6.example"):
+            self.assertIn("\nCPA_INTEGRATION=plugin\n", read(ROOT / "deploy" / example))
+        # A command-line login cannot run in plugin mode: CPA would have no
+        # egress for it and the login would bypass the egress registration.
+        self.assertIn('test "$#" -eq 0 || fail "command-line logins are not available in plugin mode', self.entrypoint)
+        self.assertIn('exec "$cpa_binary" -config "$config_file" -local-model\n', self.entrypoint)
 
 if __name__ == "__main__":
     unittest.main()

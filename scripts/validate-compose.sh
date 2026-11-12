@@ -928,15 +928,50 @@ jq -e \
   .services["antigravity-bridge"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
 ' "$tmp" >/dev/null
 
-jq -e --arg patch "$compat_patch_sha256" '
-  .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
+jq -e '
   .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.59" and
   .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
     "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and
   .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
 ' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
-test "$(jq -r '.services["codex-compat"].image' "$tmp")" = "$compat_image" || \
-    fail 'codex-compat image tag must identify the reviewed CPA build'
+# CPA_INTEGRATION in .env selects the image: plugin mode by default, the
+# source-patched image (deploy/patch-cpa.override.yml) for a rollback. The
+# Gateway and the CPA image must always agree.
+compat_integration=$(jq -r '.services.gateway.environment.CPA_INTEGRATION' "$tmp")
+case "$compat_integration" in
+    plugin)
+        plugin_lock=$root/deploy/codex-compat/plugin.lock.json
+        residual_patch=$root/deploy/codex-compat/$(jq -er .residual_patch "$plugin_lock")
+        residual_sha256=$(jq -er .residual_patch_sha256 "$plugin_lock")
+        test "$(sha256sum "$residual_patch" | awk '{print $1}')" = "$residual_sha256" || \
+            fail 'the reviewed residual plugin-only patch checksum changed'
+        jq -e --arg image "$(jq -er .image "$plugin_lock")" --arg residual "$residual_sha256" '
+          .services["codex-compat"].image == $image and
+          (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/plugin.Dockerfile")) and
+          .services["codex-compat"].build.args.CLIPROXY_RESIDUAL_PATCH_SHA256 == $residual and
+          .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == null and
+          .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
+          .services["codex-compat"].environment.CLIPROXY_PROXY_URL == "http://egress-allowlist:3128" and
+          .services["codex-compat"].environment.HTTP_PROXY == null and
+          .services["codex-compat"].environment.HTTPS_PROXY == null and
+          .services["codex-compat"].environment.ALL_PROXY == null and
+          ([.services["codex-compat"].tmpfs[] | select(startswith("/tmp:rw,noexec,"))] | length == 1) and
+          ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:rw,exec,nosuid,nodev,"))] | length == 1)
+        ' "$tmp" >/dev/null || fail 'plugin-mode codex-compat must use the locked plugin image with no proxy of its own'
+        ;;
+    patch)
+        jq -e --arg patch "$compat_patch_sha256" --arg image "$compat_image" '
+          .services["codex-compat"].image == $image and
+          (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/Dockerfile")) and
+          .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
+          .services["codex-compat"].environment.HTTPS_PROXY == "http://egress-allowlist:3128" and
+          .services["codex-compat"].environment.TMPDIR == "/tmp"
+        ' "$tmp" >/dev/null || fail 'the rollback codex-compat must use the reviewed source-patched image'
+        ;;
+    *)
+        fail 'CPA_INTEGRATION must be plugin or patch'
+        ;;
+esac
 jq -e '.services["codex-compat"].depends_on.gateway == null and
     .services.gateway.depends_on["codex-compat"].condition == "service_healthy" and
     .services.gateway.environment.GATEWAY_LISTEN == ":8080"' "$tmp" >/dev/null || \

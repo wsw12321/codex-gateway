@@ -254,8 +254,9 @@ git diff -- deploy/images.sources deploy/images.lock.env
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
 `latest`。CLIProxyAPI 的构建证明 `v8.0.59` 的 peeled commit 正是
-`c5251b57b3fa5dcbc689f514f4aa166daacb4481`，并校验补丁 SHA-256，不匹配就会失败。兼容层镜像标签为
-`v8.0.59-c5251b57-f6d25e7f06e22777-cpa`，统一提供 Codex、Antigravity 与 Claude；校验脚本和 CI 使用实际完整标签。
+`c5251b57b3fa5dcbc689f514f4aa166daacb4481`，并校验补丁 SHA-256，不匹配就会失败。默认的插件模式镜像标签为
+`v8.0.59-c5251b57-8f3381084e4e1055-plugin`（见 `deploy/codex-compat/plugin.lock.json`），回退用的源码补丁镜像为
+`v8.0.59-c5251b57-f6d25e7f06e22777-cpa`；两者统一提供 Codex、Antigravity 与 Claude，校验脚本和 CI 使用实际完整标签。
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
@@ -1067,42 +1068,60 @@ Responses、compact 冒烟仍按上述步骤及
 
 ### CPA 插件模式的切换与回退
 
-插件模式用未修改的 CLIProxyAPI 加 Gateway 插件替代源码补丁镜像，尚非默认。它不提供
-模型鉴定和“CPA 授权管理”页面的凭证操作（额度查询已提供）；需要这些功能时留在补丁镜像。
-差异与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式可选尚非默认)，
-信任边界变化见[威胁模型](threat-model.md#cpa-插件模式可选)。
+默认部署运行插件模式：未修改的 CLIProxyAPI 加 Gateway 插件（残余补丁只有“插件未选号时
+拒绝”）。上游请求全部由 CPA 生成；账号出口失败时请求失败，不会改走全局出口或直连。源码
+补丁镜像保留为回退，在真实账号验收稳定后删除。差异与升级规程见
+[兼容层升级规程](compatibility-upgrades.md#插件模式默认)，信任边界见
+[威胁模型](threat-model.md#cpa-插件模式默认)。
 
-切换在维护窗口内进行，Gateway 与 sidecar 必须一起切换：
+`.env` 中的 `CPA_INTEGRATION` 决定使用哪种镜像：`plugin`（默认）或 `patch`（回退）。
+`scripts/compose.sh` 的每次调用都读取它：`patch` 时自动叠加
+`deploy/patch-cpa.override.yml`，Gateway 与 sidecar 一起切换，登录脚本和之后的
+`up -d` 也都留在所选镜像上。不要用 `-f` 手动叠加覆盖文件。
+
+**从补丁镜像升级到默认的插件模式**（在维护窗口内）：
 
 1. 按第 8 节生成并演练数据库备份。插件模式不写数据库迁移，但会重置进程内的会话绑定。
 2. 持有 `.device-login.lock` 的 `flock`，确保没有登录或迁移进程在使用 OAuth 卷。
-3. 构建并检查插件镜像：
+3. 确认 `.env` 中没有 `CPA_INTEGRATION=patch`（缺省即 `plugin`），然后构建并检查：
 
    ```sh
-   ./scripts/compose.sh -f deploy/cpa-plugin.override.yml build gateway codex-compat
+   ./scripts/validate-compose.sh
+   ./scripts/compose.sh build gateway codex-compat
    ./scripts/test-cpa-plugin-image.sh
    ```
 
 4. 停止旧 sidecar，确认其容器不再运行，再启动新组合：
 
    ```sh
-   ./scripts/compose.sh -f deploy/cpa-plugin.override.yml up -d gateway codex-compat
+   ./scripts/compose.sh up -d gateway codex-compat
    ```
 
-5. 等 Gateway `/readyz` 返回 200，用真实用户 API Key 完成模型列表、普通与 SSE
-   Responses、compact、Messages、Gemini 原生请求，检查请求明细里的上游账号归因和扣费
-   层，再在管理页面禁用并重新启用一个账号。配置了账号独立出口时，确认该账号的流量经
-   对应节点。
+   启动后插件在后台把每个凭证的出口写成显式地址（未绑定的账号写全局出口），一般在
+   几秒内完成；此前首次被选中的账号会被跳过一次。
+5. 等 Gateway `/readyz` 返回 200，按[路线图第 3 步](cpa-plugin-roadmap.md#3-维护窗口内的真实账号验收)
+   的清单验收：模型列表、普通与 SSE Responses、compact、Messages、Gemini 原生请求、
+   请求明细中的上游账号归因和扣费层、禁用与重新启用、账号独立出口、出口失败不回退、额度
+   观测、授权与导入、模型鉴定。
 
-回退时同样先停止插件 sidecar，再去掉覆盖文件重新启动：
+插件模式下凭证只能在“CPA 授权管理”页面新增、导入、刷新和删除。命令行登录脚本
+（`scripts/oauth-login.sh`、`scripts/claude-login.sh`）和 `scripts/smoke-sidecar.sh`
+属于补丁镜像；插件镜像的入口脚本会拒绝命令行登录，因为 CPA 在这里没有自己的出口，登录也
+绕过了出口登记。
+
+**回退到补丁镜像**：在 `.env` 中设置 `CPA_INTEGRATION=patch`，然后
 
 ```sh
+./scripts/validate-compose.sh
+./scripts/compose.sh build gateway codex-compat
 ./scripts/compose.sh up -d gateway codex-compat
 ```
 
-两种镜像使用相同的 `.gateway-account-state` 与身份登记文件，账号禁用、额度锁和稳定
-账号 ID 在切换后保持不变。插件模式写入凭证文件的 `proxy_url` 不影响补丁镜像：补丁镜像
-在每次操作时向 Gateway 解析出口，不使用上传凭证中的代理字段。
+恢复时删除该行（或改回 `plugin`）并重复同样的命令。两种镜像使用相同的
+`.gateway-account-state` 与身份登记文件，账号禁用、额度锁和稳定账号 ID 保持不变。插件
+模式写入凭证文件的 `proxy_url` 不影响补丁镜像：补丁镜像在每次操作时向 Gateway 解析出口。
+例外：插件模式下新增的 Claude 账号和以邮箱为身份的 Antigravity 账号，补丁镜像不认识，
+回退期间需在补丁镜像中重新授权。
 
 Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移会明确拒绝数据库
 降级。因此，只在确认新 revision **没有写入任何新迁移** 时才可直接把镜像标签

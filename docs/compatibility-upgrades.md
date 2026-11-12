@@ -207,17 +207,18 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 旧镜像会忽略禁用与额度锁定，不能直接恢复流量；保持 Gateway 停流量，使用包含
 账号控制补丁的修复镜像。不要通过删除状态文件或复制 OAuth 卷来恢复账号。
 
-## 插件模式（可选，尚非默认）
+## 插件模式（默认）
 
 上文描述的是源码补丁镜像：一个 25,177 行、改动 219 个文件的补丁，每次 CPA 升级都要
 重基。CPA v8 提供了正式的插件接口，同一段时间里（v8.0.48 → v8.0.59）补丁改到的 127 个
 上游文件中有 85 个被上游修改，而插件接口只变了 48 行。插件模式把 Gateway 需要的功能
 移到这个接口之后，残余补丁只剩 139 行。
 
-插件模式通过 `deploy/cpa-plugin.override.yml` 启用，默认部署不受影响。它覆盖了补丁镜像
-的功能，差异见下文“与补丁镜像的行为差异”；在完成真实账号验收之前不应作为默认。上游请求
-全部由 CPA 生成，插件和 Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成请求的
-方式。
+插件模式是默认部署（`docker-compose.yml`）。源码补丁镜像保留为回退：在 `.env` 中设置
+`CPA_INTEGRATION=patch`，`scripts/compose.sh` 就会叠加 `deploy/patch-cpa.override.yml`；
+真实账号验收稳定后删除。插件模式覆盖了补丁镜像的功能，差异见下文“与补丁镜像的行为差异”。
+上游请求全部由 CPA 生成，插件和 Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成
+请求的方式。
 验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)，后续步骤见
 [CPA 插件模式路线图](cpa-plugin-roadmap.md)。
 
@@ -387,7 +388,7 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 
 ### 升级 CPA
 
-1. 在 `deploy/codex-compat/plugin.lock.json`、`deploy/cpa-plugin.override.yml` 中更新
+1. 在 `deploy/codex-compat/plugin.lock.json`、`docker-compose.yml` 中更新
    tag、commit 和镜像标签；在 `deploy/codex-compat/plugin/go.mod` 中更新 CPA 版本并运行
    `go mod tidy`。补丁镜像与插件镜像必须固定同一个提交，`source.lock.json` 随补丁镜像
    的升级一起更新。
@@ -410,17 +411,10 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 
 ### 启用与回退
 
-启用前阅读上面的行为差异，特别是第 19–22 项。
-
-```sh
-./scripts/compose.sh -f deploy/cpa-plugin.override.yml build gateway codex-compat
-./scripts/test-cpa-plugin-image.sh
-./scripts/compose.sh -f deploy/cpa-plugin.override.yml up -d gateway codex-compat
-```
-
-Gateway 和 CPA 必须一起切换：`CPA_INTEGRATION=plugin` 的 Gateway 配补丁镜像，或默认
-Gateway 配插件镜像，都会因能力探测失败而拒绝全部生成请求。回退时去掉覆盖文件重新
-`up -d gateway codex-compat`。切换会重置会话绑定，进行中的对话会被重新分配账号。
+见[运维手册](operations.md#cpa-插件模式的切换与回退)。要点：`.env` 中的
+`CPA_INTEGRATION`（`plugin` 或 `patch`）决定镜像，Gateway 与 CPA 总是一起切换；不要用 `-f`
+手动叠加覆盖文件。启用前阅读上面的行为差异，特别是第 19–22 项。切换会重置会话绑定，进行中
+的对话会被重新分配账号。
 
 ### 本地验证
 

@@ -2,7 +2,7 @@
 
 本文记录把 `codex-compat` 从整份源码补丁迁移到 CPA 官方插件的验证过程。迁移目标、
 架构与取舍见 [兼容层升级规程](compatibility-upgrades.md) 的“插件模式”一节。
-默认部署仍是补丁镜像；插件模式在完成真实账号验收前不作为默认。
+插件模式自路线图第 8 步起是默认部署，源码补丁镜像保留为回退（`CPA_INTEGRATION=patch`）。
 
 ## 阶段 0：可行性验证
 
@@ -461,3 +461,47 @@ ID）、未知账号的诊断错误、畸形列表；探针本身没有插件路
 ### 未验证
 
 - 用真实账号跑一次完整鉴定（三道题与评分），在第 3 步的真实账号验收中进行。
+
+## 路线图第 8 步第 1 项：插件模式成为默认
+
+日期 2026-11-12。`docker-compose.yml` 改为插件镜像与 `CPA_INTEGRATION=plugin`；源码补丁
+镜像改为回退，由 `.env` 的 `CPA_INTEGRATION=patch` 选择。
+
+### 改动
+
+- `docker-compose.yml`：`codex-compat` 使用 `plugin.Dockerfile`、锁定的插件镜像标签和残余
+  补丁 SHA-256；去掉 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`，增加 `TMPDIR` 与可执行的
+  `/run/cliproxy-plugin` tmpfs；Gateway 设 `CPA_INTEGRATION=plugin`。
+- `deploy/patch-cpa.override.yml`（取代 `deploy/cpa-plugin.override.yml`）：恢复补丁镜像、
+  代理变量和 `TMPDIR=/tmp`，Gateway 设 `CPA_INTEGRATION=patch`。插件 tmpfs 仍挂载但不使用。
+- 选择机制沿用 `EGRESS_MODE` 的做法：`scripts/egress-settings.compose.yml` 读取
+  `CPA_INTEGRATION`（缺省 `plugin`），`scripts/validate-egress.py` 只接受 `plugin`/`patch`，
+  并在部署前核对渲染结果中 Gateway 的设置与 CPA 镜像一致；`scripts/egress-common.sh` 在
+  `patch` 时为每次调用叠加回退覆盖文件。
+- `scripts/validate-compose.sh` 按当前模式检查：插件模式核对锁定镜像、残余补丁校验和、无
+  代理变量与两个 tmpfs；回退模式核对补丁镜像与补丁校验和。
+- 插件镜像的入口脚本拒绝命令行参数：命令行登录在插件模式下没有出口，也绕过出口登记，
+  凭证只在“CPA 授权管理”页面维护。
+- CI：校验两种模式的 Compose；默认镜像随应用镜像构建，构建内运行插件的端到端测试；补丁
+  镜像单独构建并运行原有的 `test-sidecar-image.sh`；Trivy 扫描两者。
+- Gateway 代码中 `CPA_INTEGRATION` 未设置时仍按 `patch` 处理（不需要管理密钥），部署由
+  Compose 显式设置；不一致时 Gateway 的能力探测拒绝派发。
+
+### 测试
+
+- `scripts/tests/test_cpa_plugin_deploy.py`：默认 Compose 为插件模式（镜像、Dockerfile、
+  构建参数、无代理变量、tmpfs）；回退覆盖文件恢复补丁镜像（标签由 `source.lock.json`
+  推出）；`.env` 选择回退的链路（设置文件、包装脚本、校验器、两个 env 示例）；入口脚本
+  拒绝命令行登录。脚本测试共 178 个通过（1 个需 Docker 守护进程的跳过）。
+- 本地用 Docker Compose v5.6.1 渲染两种模式：插件模式的 Gateway 为 `plugin`、
+  `codex-compat` 为插件镜像且无 `HTTPS_PROXY`；回退模式为 `patch` 与补丁镜像；无效值被
+  `CPA_INTEGRATION must be plugin or patch` 拒绝。`validate-compose.sh` 新增的模式检查对
+  两种渲染结果都通过；`validate-egress.py --deployment` 对两种渲染结果通过，对 Gateway 与
+  镜像不一致的模型报错。
+- 完整的 `validate-compose.sh` 在本地 Compose v5.6.1 下停在一项既有的 cloudflared 检查
+  （上一个提交同样如此，与本次无关）；CI 中运行完整校验。
+
+### 未验证
+
+- 镜像构建、`test-cpa-plugin-image.sh`、`test-sidecar-image.sh` 与 Trivy 只能在 CI 中运行。
+- 真实账号验收（第 3 步）。

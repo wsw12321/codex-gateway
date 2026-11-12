@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Go gateway ("水源喵中转站") that sits between AI CLI clients (Codex, agy/Gemini, Claude Code) and a patched, version-pinned CLIProxyAPI ("CPA", service `codex-compat`). The gateway owns identity (Passkey/password/OIDC), per-device API keys, quotas, billing, usage metadata, and upstream account allocation. CPA holds the upstream OAuth credentials and performs the model calls. The gateway never stores prompts or responses. The README, `docs/`, the dashboard UI, and user-facing error messages are in Chinese. Code, comments, and most commit subjects are in English.
+A Go gateway ("水源喵中转站") that sits between AI CLI clients (Codex, agy/Gemini, Claude Code) and a version-pinned CLIProxyAPI ("CPA", service `codex-compat`) running unmodified with the Gateway plugin. The gateway owns identity (Passkey/password/OIDC), per-device API keys, quotas, billing, usage metadata, and upstream account allocation. CPA holds the upstream OAuth credentials and performs the model calls. The gateway never stores prompts or responses. The README, `docs/`, the dashboard UI, and user-facing error messages are in Chinese. Code, comments, and most commit subjects are in English.
 
 ## Commands
 
@@ -62,11 +62,13 @@ Gateway subcommands: `serve` (default; runs migrations first), `migrate`, `boots
 
 ### Topology
 
-cloudflared → Caddy → `gateway` → `codex-compat` (CPA v8.0.59 + `deploy/codex-compat/cliproxy-v8.0.59-gateway.patch`) → Squid egress allowlist. No service publishes host ports.
+cloudflared → Caddy → `gateway` → `codex-compat` (CPA v8.0.59 + the residual plugin-only selector patch + the Gateway plugin in `deploy/codex-compat/plugin/`) → Squid egress allowlist. No service publishes host ports.
+
+`CPA_INTEGRATION` in `.env` selects the image: `plugin` (default) or `patch`, the source-patched rollback image (`deploy/codex-compat/cliproxy-v8.0.59-gateway.patch`, added by `scripts/compose.sh` as `deploy/patch-cpa.override.yml`). The Gateway's own `CPA_INTEGRATION` always matches the image. The source patch and its `/internal/*` code paths are removed once plugin mode has passed real-account acceptance (`docs/cpa-plugin-roadmap.md`, step 8).
 
 The gateway reaches CPA at `SIDECAR_URL` with a fixed internal bearer (`SIDECAR_API_KEY`). It strips client auth, cookies, and hop-by-hop headers first.
 
-**CPA calls back into the gateway** at `POST /internal/{upstream,antigravity,anthropic}-accounts/{select,eligible}` to pick which OAuth account serves each request. Allocation weights, per-user account scopes, dedicated grants, and concurrency all live in the gateway (`internal/server/upstream_allocation.go`). CPA only executes. A change to the selection contract must land on both sides: the Go handler and the CPA patch.
+**The plugin calls back into the gateway** at `POST /internal/{upstream,antigravity,anthropic}-accounts/{select,eligible,attempt,resolve-egress,register-egress}` to pick which OAuth account serves each request, report the decision (the request ledger in `internal/proxy/ledger.go`) and resolve each account's egress. Allocation weights, per-user account scopes, dedicated grants, and concurrency all live in the gateway (`internal/server/upstream_allocation.go`). CPA only executes. A change to the selection contract must land on both sides: the Go handler and the plugin (and the CPA patch while the rollback image exists).
 
 `cmd/antigravity-bridge` with `internal/antigravity` is the legacy AGY transport. It is kept only for the `legacy-bridge` Compose profile and rollback. The default is `ANTIGRAVITY_TRANSPORT=cpa`.
 
@@ -143,7 +145,7 @@ The Node tests load `app.js` by slicing it at the last `\nstart().catch(` and ev
 
 Regenerate or check the locks with `./scripts/lock-images.sh [--check]`.
 
-**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `deploy/cpa-plugin.override.yml` and the plugin's `go.mod`; `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. The remaining work to make plugin mode the default is in `docs/cpa-plugin-roadmap.md`.
+**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `docker-compose.yml` and the plugin's `go.mod`; the rollback pins it in `deploy/patch-cpa.override.yml` and `deploy/codex-compat/source.lock.json`. `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. Remaining work is in `docs/cpa-plugin-roadmap.md`.
 
 ## Conventions
 
