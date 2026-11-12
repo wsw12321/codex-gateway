@@ -133,3 +133,58 @@ v8.0.59 到 v8.0.67 之间上游改了 289 个文件。插件接口在此区间�
   再授权的登记流程）。
 
 后续步骤与验收标准见 [CPA 插件模式路线图](cpa-plugin-roadmap.md)。
+
+## 路线图第 1 步：Go 1.26.11
+
+日期 2026-11-12。按 `CLAUDE.md` 的 “Go or base-image version bump” 清单，把 `go.mod`
+的 `toolchain`、CI 的 `GO_VERSION`、`deploy/images.sources`、六个 Dockerfile 的
+`ARG GOLANG_IMAGE=`、两份 CPA 锁文件与 Mihomo 源码锁中的 Go 版本统一改为 1.26.11，
+`deploy/images.lock.env` 由 `scripts/lock-images.sh` 重新生成。golang 镜像锁定为
+`golang:1.26.11-bookworm@sha256:dc40a13b…98fc0`（2026-11-10 发布）。生成前
+`lock-images.sh --check` 确认其余九个镜像的 digest 与仓库一致，所以锁文件只变了
+Go 两行。`scripts/validate-compose.sh` 中对 CPA 源码锁 `go_version` 的断言同步更新。
+插件 `go.mod` 的 `go` 指令表示最低版本，仍为 1.26.10，构建使用的工具链由 CI 和
+镜像决定。
+
+### 结果
+
+| 检查 | Go 1.26.10（改动前） | Go 1.26.11 |
+|---|---|---|
+| govulncheck v1.1.4，Gateway module | GO-2026-6859（`net/http`） | 无发现 |
+| govulncheck v1.1.4，插件 module | GO-2026-6859（`net/http`） | 无发现 |
+
+在 Go 1.26.11 下还通过了：
+
+- Gateway：`go build`、`gofmt -l .` 无输出、`go vet ./...`、`go test -count=1 ./...`、
+  `go test -race -count=1 ./...`。
+- 插件 module：`go vet ./...`、`go test -race -count=1 ./...`。
+- gosec v2.22.8：两个 module 均为 0 个问题。go-licenses v1.6.0 许可证检查通过。
+- `scripts/lock-images.sh --check`；在本地按原样执行 CI 的 “Verify Go toolchain sources
+  agree” 步骤。
+- 176 项部署与脚本测试（含 `test_cpa_plugin_deploy`），175 项通过，1 项按环境条件跳过。
+- 在一份隔离副本中用合成配置运行 `validate-compose.sh`，三种出口模式的静态策略检查都
+  通过；`compose.sh config --quiet` 通过。脚本最后用 `docker run` 做的容器探针需要
+  Docker 守护进程，本地无法运行。
+
+`TestClientConfigurator` 仍只在设置了 `ANTHROPIC_BASE_URL` 与
+`CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST` 的沙箱中失败，去掉这两个变量后通过，与上文
+记录的既有情况相同。
+
+### 发现：仓库级 gosec 扫描会失败
+
+插件 module 加入后，CI 中从仓库根目录运行的 gosec 会失败：gosec 按目录而不是按
+module 遍历，在根 module 中无法解析插件 module 的依赖。它报告类型错误，并在问题数为
+0 的情况下以退出码 1 结束。改动前的提交上同样如此。这条分支没有开 PR，CI 也不对它的
+push 运行，所以此前没有暴露。
+
+根目录的扫描改为 `-exclude-dir=deploy/codex-compat/plugin`，插件仍由它自己 module 内的
+步骤扫描。CI 注释原来说 C ABI 薄层（插件的 `main.go`）由根目录的扫描覆盖，这并不
+成立：根目录扫描在类型错误下无法通过；在 module 内，cgo 把 `main.go` 改写成生成的
+文件，`-exclude-generated` 会跳过它，不加这个参数时 gosec 只对 cgo 自己的包装代码
+报告误报（G115）。注释已据实改写。薄层中两处长度转换都受 `maxMessageBytes`
+（64 MiB）约束，薄层应保持最小。
+
+### 未验证
+
+镜像构建、Trivy 和镜像探针只在 CI 中运行（本地没有 Docker 守护进程），属于路线图
+第 2 步。

@@ -158,14 +158,18 @@ jobs:
           cache: true
       - name: govulncheck
         run: scripts/ci-go-tool.sh golang.org/x/vuln/cmd/govulncheck@v1.1.4 -- ./...
+      # gosec walks directories, not modules. From the root it cannot resolve
+      # the CPA plugin module's imports, reports type errors and fails with no
+      # findings, so the plugin is scanned from inside its module below.
       - name: gosec
-        run: scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- ./...
+        run: scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- -exclude-dir=deploy/codex-compat/plugin ./...
       - name: govulncheck (CPA plugin)
         working-directory: deploy/codex-compat/plugin
         run: ../../../scripts/ci-go-tool.sh golang.org/x/vuln/cmd/govulncheck@v1.1.4 -- ./...
-      # Inside the module gosec analyses the wrappers cgo generates for the
-      # C ABI shim; they are not source in this repository. The shim itself is
-      # covered by the repository-wide run above.
+      # cgo rewrites the C ABI shim (main.go) into generated files. Without
+      # -exclude-generated gosec flags cgo's own wrappers; with it gosec skips
+      # the shim and covers the internal packages only. Keep the shim minimal:
+      # its length conversions are bounded by maxMessageBytes.
       - name: gosec (CPA plugin)
         working-directory: deploy/codex-compat/plugin
         run: ../../../scripts/ci-go-tool.sh github.com/securego/gosec/v2/cmd/gosec@v2.22.8 -- -exclude-generated ./...
