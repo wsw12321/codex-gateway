@@ -188,3 +188,23 @@ push 运行，所以此前没有暴露。
 
 镜像构建、Trivy 和镜像探针只在 CI 中运行（本地没有 Docker 守护进程），属于路线图
 第 2 步。
+
+## 路线图第 2 步：插件镜像首次通过 CI
+
+日期 2026-11-12。PR #4 在提交 `0a3df3e` 上的
+[CI 运行 43137551706](https://github.com/wsw12321/codex-gateway/actions/runs/43137551706)
+第一次就全部通过：`go-test`、`go-security`、`supply-chain`、`containers`、
+`postgres-integration`（`publish-images` 只在 `main` 上运行，PR 中跳过）。路线图列出的
+几处只有 CI 能暴露的问题，日志中的结果如下：
+
+| 项 | 结果 |
+|---|---|
+| 构建阶段在 `golang:1.26.11-bookworm` 内的测试 | CPA 的 `internal/pluginhost`、`sdk/pluginapi`、`sdk/pluginabi` 测试通过；插件 `go vet`（含 `-tags e2e`）与 `go test -race` 通过 |
+| 端到端 | 9 个测试按名字逐一断言为 PASS，无 SKIP；只用回环网络 |
+| 插件文件的属主与权限 | 运行阶段以 `--chown=0:0 --chmod=0444` 复制 `codex-gateway-v1.0.0.so` |
+| `scripts/test-cpa-plugin-image.sh` | 两行通过信息都已输出：完整性、密钥隔离、刷新锁、三个命名空间路由、账号控制持久化与拒绝检查通过；无可执行临时目录时插件不加载、容器不健康、生成请求被拒绝 |
+| Trivy（`--ignore-unfixed --severity HIGH,CRITICAL`） | 插件镜像的 Debian 12.15 系统包与 `cli-proxy-api` 均为 0；Gateway、补丁镜像、Bridge、账号出口镜像同为 0 |
+| 根目录 gosec（排除插件目录）与插件 module 的 gosec、govulncheck | 通过 |
+
+Trivy 的结果中没有插件 `.so`，Go 二进制的检测只列出了 `cli-proxy-api`。插件的依赖由
+`go-security` 中插件 module 的 govulncheck 覆盖。
