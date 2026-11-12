@@ -206,3 +206,152 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 账号控制上线后，回滚镜像也必须理解 `.gateway-account-state`。不支持该文件的
 旧镜像会忽略禁用与额度锁定，不能直接恢复流量；保持 Gateway 停流量，使用包含
 账号控制补丁的修复镜像。不要通过删除状态文件或复制 OAuth 卷来恢复账号。
+
+## 插件模式（可选，尚非默认）
+
+上文描述的是源码补丁镜像：一个 25,177 行、改动 219 个文件的补丁，每次 CPA 升级都要
+重基。CPA v8 提供了正式的插件接口，同一段时间里（v8.0.48 → v8.0.59）补丁改到的 127 个
+上游文件中有 85 个被上游修改，而插件接口只变了 48 行。插件模式把 Gateway 需要的功能
+移到这个接口之后，残余补丁只剩 139 行。
+
+插件模式通过 `deploy/cpa-plugin.override.yml` 启用，默认部署不受影响。它还没有覆盖
+补丁镜像的全部功能（见“尚未提供的功能”），在补齐并完成真实账号验收之前不应作为默认。
+验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)。
+
+### 组成
+
+| 部分 | 位置 | 作用 |
+|---|---|---|
+| 残余补丁 | `deploy/codex-compat/residual/cliproxy-plugin-only-selector.patch` | 新增 `routing.strategy: "plugin-only"`：一个对任何选号都返回 `gateway_allocation_unavailable` 的选择器。纯新增，不删改上游行为 |
+| Gateway 插件 | `deploy/codex-compat/plugin/` | 独立 Go module，编译为 `codex-gateway-v1.0.0.so`。除 CPA 的插件接口定义外没有第三方依赖 |
+| 构建 | `deploy/codex-compat/plugin.Dockerfile`、`plugin.lock.json` | 固定同一 CPA 提交；安全依赖改用 `go get` 升级；构建时运行插件单测和端到端测试 |
+| 运行 | `plugin-entrypoint.sh`、`plugin-healthcheck.sh` | 凭证目录检查沿用 `entrypoint.sh`；健康检查要求插件正在提供服务 |
+| Gateway | `CPA_INTEGRATION=plugin` | 用请求账本做归因；账号路由改走 `/v0/management/gateway/*`，使用 `CPA_MANAGEMENT_KEY` |
+
+插件通过 CPA 的以下扩展点工作：
+
+| 扩展点 | 插件做的事 |
+|---|---|
+| 前端认证（独占） | 只接受 Gateway 的内部密钥；校验 `X-Codex-Gateway-User`、`-Affinity`、`-Groups`、`-Request`；把调用方作用域交给 CPA，使会话身份按调用方隔离 |
+| 调度 | 每次选号都调用 Gateway 的 `eligible`，按账号控制状态、账号池范围、并发名额过滤；已绑定的会话复用原账号，否则按资金层顺序调用 `select`；把最终决定上报到 `attempt` |
+| 请求拦截 | 选号后移除全部内部请求头 |
+| 请求终态 | 释放并发名额；成功的对话保留名额 5 分钟 |
+| 用量 | 识别结构化的 `usage_limit_reached`，锁定账号直到 Owner 重新启用 |
+| 管理路由 | Codex、Antigravity、Anthropic 三个命名空间的 capabilities、funding-layers、账号列表、并发快照、启用/禁用、出口同步 |
+
+`.gateway-account-state`、`.gateway-antigravity-identities`、`.gateway-anthropic-identities`
+沿用补丁镜像的文件名和格式，稳定账号 ID 的算法也相同，所以两种镜像可以挂载同一个
+凭证卷互相替换。
+
+### 账号独立出口
+
+Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行：
+
+1. 每次选中一个账号后，插件调用 Gateway 现有的 `resolve-egress` 回调，取得该账号此刻
+   绑定的路由，与凭证文件里的 `proxy_url` 比较。
+2. 一致就使用该账号。CPA 对这个凭证的推理、刷新、模型列表都走 `proxy_url`。
+3. 不一致时，插件通过 CPA 自己的 `PATCH /v0/management/auth-files/fields` 写入新路由，
+   并在本次请求中跳过该账号，改用其他有权限的账号。原因是 CPA 在调用插件之前已经取好了
+   凭证快照，本次请求改不了它的代理。
+4. 路由无法确认（Gateway 不可达、出口尚未生效）或不是固定的 `egress-allowlist:3129`
+   加路由凭据的形式时，该账号同样被跳过。没有其他账号可用时请求返回 503。
+
+凭证上传时自带的代理会被覆盖，不会被信任。Owner 修改账号出口或编辑出口节点后，
+Gateway 立即通知插件同步受影响的账号，所以通常不会出现上面第 3 步的跳过。通知失败只会
+导致该账号被跳过一次，不会走错出口。
+
+与补丁镜像相比有两点不同：
+
+- 路由凭据会写进 OAuth 卷里的凭证文件（`0600`），补丁镜像只保存在内存中。
+- 绑定变更后、该账号下一次被选中或收到通知之前，CPA 的后台刷新仍使用凭证里原来的代理。
+
+### 失败时关闭的四道检查
+
+1. **选择器。** 插件未加载、在配置中被禁用或返回了无效账号时，CPA 落到 `plugin-only`
+   选择器，请求得到 503，不会改用内置轮询。未打残余补丁的原版 CPA 在同样情况下会
+   轮询并成功调用上游，端到端测试覆盖了这一差别。
+2. **能力探测。** Gateway 每次派发前请求 capabilities 路由。没有插件的 CPA 返回 404，
+   Gateway 拒绝派发。
+3. **插件自身。** 配置无效、控制文件不可读或格式错误时，插件保持注册但拒绝一切请求，
+   容器健康检查失败。
+4. **归因复核。** `attempt` 只接受正在进行中的派发，并再次核对该用户是否有权使用被
+   上报的账号、账号是否在本次请求的账号池内。不通过则插件放弃这次选号。
+
+### 尚未提供的功能
+
+插件模式下以下路由返回 404，对应的管理页面功能不可用：
+
+- 上游额度查询（`/quota`）。
+- 模型鉴定（`/internal/model-identification/*`）。
+- “CPA 授权管理”页面的 OAuth 新增/重新授权、凭据导入、刷新、删除
+  （`/internal/gateway-management/*`）。凭据仍可在补丁镜像下维护，两种镜像共用凭证卷。
+- 新增账号时“先选出口再访问供应商”的登记流程。它属于上一条的授权门面。
+
+### 与补丁镜像的行为差异
+
+| # | 补丁镜像 | 插件模式 | 原因 |
+|---|---|---|---|
+| 1 | 自定义“哪些错误可以换账号” | CPA 原生规则，上限仍是 4 个账号。实测 429、500、403 会换账号，400 直接返回 | 判定逻辑在执行循环内部，插件接触不到 |
+| 2 | 归因写在响应头里 | Gateway 请求账本 | 只依赖调度这一个扩展点，对所有端点一致 |
+| 3 | 执行器内拒绝重定向、固定上游主机 | 不保留，依靠出口白名单 | 属于 CPA 内部代码 |
+| 4 | Provider 缓存按调用方和账号隔离 | 依赖 CPA 原生的调用方作用域。会话绑定和会话哈希已验证按调用方隔离；各 Provider 缓存的键尚未逐个核对 | 同上 |
+| 5 | Antigravity 只注册五个已审模型 | 只靠 Gateway 的模型权限和价格目录限制 | 尚未配置 CPA 侧的排除列表 |
+| 6 | Gemini 历史校验返回 `new_session_required` | 返回上游原生错误 | 需要让完整请求体经过插件 |
+| 7 | 重复凭证在加载时隔离 | Codex 重复文件在选号时过滤，只用最近刷新的一份；Antigravity/Claude 同一身份有多份时全部不可用 | 插件没有加载期钩子 |
+| 8 | CPA 管理 API 关闭 | 开启，使用独立密钥，仅内部网络可达 | 插件路由挂在管理 API 之下 |
+| 9 | 会话绑定和会话哈希跨重启外的升级延续 | 切换到插件模式时重置一次；哈希域从 `v2` 变为 `v3` | 根会话标识的来源不同 |
+| 10 | 没有显式会话标识时按对话内容推导亲和 | 不推导，按单次请求处理 | 需要解析请求体。Codex CLI 和 Claude Code 都带显式会话标识 |
+| 11 | 没有可验证身份的凭证可路由但无归因 | 直接不可用 | 无法授权也无法计费的账号不应接收请求 |
+| 12 | 容器内没有可写且可执行的目录 | 多一个 64 MB 的可执行 tmpfs | CPA 把插件复制到临时目录后再加载 |
+| 13 | 账号出口按每次操作向 Gateway 解析，只在内存中使用 | 选号时向 Gateway 解析并写入凭证文件；不一致时本次跳过该账号 | 插件改不了 CPA 已取好的凭证快照 |
+
+另有一点运行特性：插件内部的 panic 会被插件自己捕获并转成拒绝；如果有 panic 逃出
+插件，整个 CPA 进程会退出并由容器重启，进行中的请求全部中断。这是拒绝服务而不是
+放行。
+
+### 升级 CPA
+
+1. 在 `deploy/codex-compat/plugin.lock.json`、`deploy/cpa-plugin.override.yml` 中更新
+   tag、commit 和镜像标签；在 `deploy/codex-compat/plugin/go.mod` 中更新 CPA 版本并运行
+   `go mod tidy`。补丁镜像与插件镜像必须固定同一个提交，`source.lock.json` 随补丁镜像
+   的升级一起更新。
+2. 运行 `python3 -m unittest scripts.tests.test_cpa_plugin_deploy`，确认锁文件、补丁、
+   Dockerfile、入口脚本和覆盖文件一致。
+3. 构建镜像。构建会依次检查：残余补丁无 fuzz 应用、残余补丁的测试、CPA 自己的插件
+   宿主与账号管理器测试、插件单测与竞态检测、针对所产出二进制的端到端测试。任何一步
+   失败都不产生镜像。
+4. 残余补丁应用失败时，说明 `sdk/cliproxy/service_config.go` 中选择策略的那段代码
+   变了，按新代码重新生成补丁并更新锁文件中的 SHA-256。插件编译失败时，说明插件接口
+   的类型变了，按编译错误修改。
+5. 运行 `./scripts/test-cpa-plugin-image.sh`，然后按上文规程做真实账号验收。
+
+作为参照，2026-11-12 对 v8.0.67 做了一次实际演练。v8.0.59 到 v8.0.67 之间上游改了
+289 个文件，其中调度与插件接口所在的 `conductor_selection.go` 改了 648 行。插件源码
+未作任何修改，针对 v8.0.67 编译后单测、竞态检测和 9 组端到端测试全部通过。残余补丁
+第一版无法应用，因为上游把它修改的 `newRoutingSelector` 拆成了两个函数；把插入点移到
+两版都相同的 `switch` 之后即可，现在同一份补丁可以无 fuzz 地应用到 v8.0.59 和 v8.0.67。
+对比之下，源码补丁镜像在同一区间需要重基 127 个被修改的上游文件中改动过的那部分。
+
+### 启用与回退
+
+启用前确认不需要上面列出的未提供功能。
+
+```sh
+./scripts/compose.sh -f deploy/cpa-plugin.override.yml build gateway codex-compat
+./scripts/test-cpa-plugin-image.sh
+./scripts/compose.sh -f deploy/cpa-plugin.override.yml up -d gateway codex-compat
+```
+
+Gateway 和 CPA 必须一起切换：`CPA_INTEGRATION=plugin` 的 Gateway 配补丁镜像，或默认
+Gateway 配插件镜像，都会因能力探测失败而拒绝全部生成请求。回退时去掉覆盖文件重新
+`up -d gateway codex-compat`。切换会重置会话绑定，进行中的对话会被重新分配账号。
+
+### 本地验证
+
+```sh
+(cd deploy/codex-compat/plugin && go vet ./... && go test -race -count=1 ./...)
+python3 -m unittest scripts.tests.test_cpa_plugin_deploy -v
+# 端到端：需要一个打了残余补丁的 CPA 二进制和编译好的插件
+CPA_E2E_BINARY=/path/to/cli-proxy-api CPA_E2E_PLUGIN_DIR=/path/to/plugins \
+  go test -C deploy/codex-compat/plugin -tags e2e -count=1 ./e2e
+```

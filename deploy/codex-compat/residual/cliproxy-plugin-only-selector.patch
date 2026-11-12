@@ -113,7 +113,7 @@ index 0000000..452640e
 +	}
 +}
 diff --git a/sdk/cliproxy/service_config.go b/sdk/cliproxy/service_config.go
-index cbda28e..76cce20 100644
+index cbda28e..06729ee 100644
 --- a/sdk/cliproxy/service_config.go
 +++ b/sdk/cliproxy/service_config.go
 @@ -79,6 +79,8 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -125,15 +125,15 @@ index cbda28e..76cce20 100644
  	}
  	state.sessionAffinity = cfg.Routing.SessionAffinity
  	if ttl := strings.TrimSpace(cfg.Routing.SessionAffinityTTL); ttl != "" {
-@@ -99,6 +101,11 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
- }
- 
- func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
+@@ -108,6 +110,11 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
+ 	default:
+ 		selector = &coreauth.RoundRobinSelector{}
+ 	}
 +	if state.strategy == coreauth.PluginOnlyStrategy {
 +		// Never wrap this selector: session affinity would reuse a binding
 +		// without consulting the scheduler plugin.
 +		return coreauth.PluginOnlySelector{}
 +	}
- 	var selector coreauth.Selector
- 	switch state.strategy {
- 	case "weighted-round-robin":
+ 	if state.sessionAffinity {
+ 		subagents := state.sessionAffinitySubagents
+ 		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{

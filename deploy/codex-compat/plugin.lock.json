@@ -3,7 +3,7 @@
   "tag": "v8.0.59",
   "commit": "c5251b57b3fa5dcbc689f514f4aa166daacb4481",
   "residual_patch": "residual/cliproxy-plugin-only-selector.patch",
-  "residual_patch_sha256": "6ba57beded66b32c47267459142ff0c354940dd215aab13c752f475d9612e1fe",
+  "residual_patch_sha256": "8f3381084e4e10557aebcc089e171bfb833e88a041f6c1972774dfc4b2ec7b1a",
   "plugin": {
     "id": "codex-gateway",
     "version": "1.0.0",
@@ -16,6 +16,6 @@
     "golang.org/x/net": "v0.62.0"
   },
   "model_catalog_sha256": "99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0",
-  "image": "codex-gateway-compat:v8.0.59-c5251b57-6ba57beded66b32c-plugin",
+  "image": "codex-gateway-compat:v8.0.59-c5251b57-8f3381084e4e1055-plugin",
   "automatic_updates": false
 }

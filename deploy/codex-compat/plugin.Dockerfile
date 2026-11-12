@@ -51,13 +51,23 @@ RUN printf "%s  /tmp/cliproxy-residual.patch\n" "$CLIPROXY_RESIDUAL_PATCH_SHA256
 RUN printf '%s  internal/registry/models/models.json\n' \
     '99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0' | sha256sum -c -
 
-# Security dependency updates. The source-patched build carried these as
-# go.mod hunks; here they are ordinary module upgrades and never conflict.
-RUN go get \
+# Security dependency floors. The source-patched build carried these as
+# go.mod hunks; here they are ordinary module upgrades and never conflict. A
+# module upstream already requires at or above its floor is left alone: go get
+# with an older version would downgrade it.
+RUN set -eu; \
+    for pin in \
         github.com/klauspost/compress@v1.18.7 \
         golang.org/x/crypto@v0.58.0 \
-        golang.org/x/net@v0.62.0 \
-    && go mod verify
+        golang.org/x/net@v0.62.0; do \
+        module=${pin%@*}; floor=${pin#*@}; \
+        current=$(go list -m -f '{{.Version}}' "$module"); \
+        if test "$(printf '%s\n%s\n' "$current" "$floor" | sort -V | head -n 1)" != "$floor"; then \
+            go get "$pin"; \
+        fi; \
+        test "$(printf '%s\n%s\n' "$(go list -m -f '{{.Version}}' "$module")" "$floor" | sort -V | head -n 1)" = "$floor"; \
+    done; \
+    go mod verify
 
 RUN go test -count=1 -run '^TestGatewayPluginOnly' ./sdk/cliproxy/auth ./sdk/cliproxy \
     && go test -list '^TestGatewayPluginOnly' ./sdk/cliproxy/auth ./sdk/cliproxy > /tmp/residual-tests \

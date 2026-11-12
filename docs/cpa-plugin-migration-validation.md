@@ -50,3 +50,84 @@
 本阶段没有验证的内容：真实 OAuth 凭证经凭证级代理的推理、刷新与额度查询；v8
 OAuth 会话级代理参数；Provider 缓存键是否全部按 `caller_scope` 隔离（需要逐个
 阅读源码）。这些留到对应阶段，并在真实账号验收中覆盖。
+
+## 实现与验证
+
+阶段 0 之后按“插件优先、残余补丁兜底”实现，分为以下提交：
+
+| 内容 | 主要文件 |
+|---|---|
+| 插件核心：选号、可信头、会话绑定、并发名额、账号控制状态、稳定账号 ID、终态与用量处理 | `deploy/codex-compat/plugin/` |
+| 残余补丁：`routing.strategy: "plugin-only"` | `deploy/codex-compat/residual/` |
+| Gateway 请求账本与 `POST /internal/*-accounts/attempt` | `internal/proxy/ledger.go`、`internal/server/upstream_attempt.go` |
+| 插件账号路由；Gateway 在插件模式下改走 `/v0/management/gateway/*` | `management.go`、`internal/proxy/plugin_management.go` |
+| 构建、入口、健康检查、Compose 覆盖文件、CI | `plugin.Dockerfile`、`plugin-entrypoint.sh`、`deploy/cpa-plugin.override.yml` |
+| 账号独立出口 | `egress.go`、`internal/server/plugin_egress.go` |
+
+### 自动化测试
+
+| 层次 | 内容 | 结果 |
+|---|---|---|
+| 插件单测（含 `-race`） | 可信头与账号池解析、Gateway 回调契约、资金层顺序、授权变化后解绑、按调用方隔离、子代理跟随父会话、名额竞争、持有与释放、失败切换、额度锁与旧结果、控制文件格式与写入失败、身份算法、管理路由、出口解析与改写、panic 转拒绝 | 通过 |
+| 端到端（9 组） | 在真实 CPA 进程中加载插件；OAuth 凭证文件、假 Gateway、经 TLS 拦截代理的假上游 | 通过 |
+| Gateway 单测与 `-race` | 账本归因、拒绝原因映射、伪造与越界上报、管理路由映射与密钥、出口推送、配置校验；原有全部测试 | 通过 |
+| 部署静态校验 | 锁文件、残余补丁、Dockerfile、入口脚本、覆盖文件之间的一致性 | 通过 |
+| 镜像探针（本地模拟容器挂载） | 插件只读、两把密钥互不通用、刷新锁独占、三个命名空间路由、账号控制持久化、无 Gateway 时拒绝、临时目录 `noexec` 时不健康且拒绝 | 通过 |
+| gosec、govulncheck | Gateway 与插件 module | 见下 |
+
+端到端的 9 组：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestAllocation` | 采用 Gateway 的选择并上报；内部头不到上游；绑定会话复用；两个调用方同一 session id 互不影响；无权限用户 503；权限缩小账号池；群组账号池；不可信请求被拒 |
+| `TestServerErrorMovesToNextAuthorizedAccount` | 500 后换账号，最后一次上报为实际账号，会话改绑到新账号 |
+| `TestRequestErrorIsNotReplayed` | 400 不换账号 |
+| `TestUsageLimitLocksAccountDurably` | `usage_limit_reached` 写入额度锁，`0600`，重启后仍生效 |
+| `TestConcurrencyLimit` | 名额已满时 429 且上报原因；客户端断开后释放 |
+| `TestFailsClosed` | Gateway 不可达、插件被禁用、控制文件损坏、凭证无身份，全部 503 且上游零调用 |
+| `TestPerAccountEgress` | 上传凭证自带的代理被清除后才使用；推送绑定后经账号出口并携带路由凭据；未推送的改绑在下一次选号时改写；重启后保持；路由无法确认时零调用；解绑回到全局出口；数据面密钥不能改出口 |
+| `TestAccountManagement` | 管理路由鉴权；账号列表字段与脱敏；禁用立即生效且跨重启；重新启用；错误请求；并发快照 |
+| `TestManagementBoundary` | 无密钥或数据面密钥不能访问 CPA 管理 API |
+
+用未打残余补丁的原版 CPA 运行 `TestFailsClosed` 时，“插件被禁用”一项失败：原版改用
+内置轮询并成功调用了上游。这说明该测试能发现放行，也说明残余补丁是必要的。
+
+### 对后续上游版本的实测
+
+| 上游版本 | 残余补丁 | 插件 | 端到端 |
+|---|---|---|---|
+| v8.0.59（固定版本） | 无 fuzz 应用 | 编译通过 | 9/9 |
+| `d1ea84f`（2026-11-10，v8.0.64 之后） | 第一版无 fuzz 应用 | 未修改，编译通过 | 9/9 |
+| v8.0.67（2026-11-11） | 第一版失败，调整插入点后的现行版本无 fuzz 应用 | 未修改，编译通过 | 9/9 |
+
+v8.0.59 到 v8.0.67 之间上游改了 289 个文件。插件接口在此区间新增了错误分类字段（向后
+兼容），插件无需改动。
+
+### 过程中的发现
+
+- **CPA 从临时目录下的私有副本加载插件。** sidecar 的 `/tmp` 是 16 MB 的 `noexec`
+  tmpfs，插件在那里无法加载。覆盖文件为此另挂一个可执行 tmpfs 并设置 `TMPDIR`，威胁
+  模型已记录。镜像探针分别验证了有、无该目录的两种行为。
+- **构建中的依赖升级可能降级。** 用 `go get 模块@版本` 固定安全版本时，若上游已经要求
+  更高版本就会被降级。构建步骤改为只在低于下限时升级，并在之后核对下限。
+- **gosec 的两类误报。** 插件 module 内 gosec 会分析 cgo 生成的包装代码，因此该 module
+  的扫描使用 `-exclude-generated`；C 边界的两处 `unsafe` 调用加了说明性的 `#nosec`。
+  Gateway 中一个名字含 “Token” 的头常量被误判为硬编码凭据，已改名。
+- **govulncheck 报告 GO-2026-6859**（`net/http`，Go 1.26.10 中存在，1.26.11 修复）。
+  Gateway module 在本次改动之前同样命中，属于既有问题，需要单独升级 Go 工具链处理，
+  本次未改。
+- **本地沙箱的一个既有测试失败。** `TestClientConfigurator` 在设置了
+  `ANTHROPIC_BASE_URL` 等变量的环境中失败，改动前的提交上同样失败，与本次无关。
+
+### 未验证的内容
+
+- **镜像没有在本地构建过。** 本地环境没有 Docker 守护进程。`plugin.Dockerfile` 的每一步
+  都在同一 CPA 提交上逐条复现过（含发布用的构建参数），入口脚本、健康检查和镜像探针
+  在模拟容器挂载的命名空间中以服务用户运行过；实际镜像构建、Trivy 扫描和
+  `scripts/test-cpa-plugin-image.sh` 只在 CI 中运行。
+- **没有使用真实账号。** 真实 OAuth 凭证经账号出口的推理、刷新和模型列表，Claude 与
+  Antigravity 的真实流量，以及 Gemini 原生请求，都需要按运维手册在维护窗口验收。
+- **Provider 缓存键尚未逐个核对。** 会话绑定和会话哈希已验证按调用方隔离；CPA 内部
+  各 Provider 的缓存是否都使用调用方作用域，需要逐个阅读源码确认。
+- **尚未迁移：** 上游额度查询、模型鉴定、“CPA 授权管理”页面的凭证操作（含先选出口
+  再授权的登记流程）。
