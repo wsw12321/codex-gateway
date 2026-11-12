@@ -203,8 +203,12 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 		body = bytes.NewReader(data)
 	}
 	target := *s.config.SidecarURL
-	target.Path = strings.TrimRight(target.Path, "/") + "/internal/gateway-management/" + path
 	target.RawPath, target.RawQuery, target.Fragment = "", "", ""
+	internalPath := "/internal/gateway-management/" + path
+	if s.config.UsesCPAPlugin() {
+		internalPath, target.RawQuery = gatewayproxy.PluginManagementPath(internalPath)
+	}
+	target.Path = strings.TrimRight(target.Path, "/") + internalPath
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return err

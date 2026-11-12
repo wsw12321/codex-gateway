@@ -364,10 +364,7 @@ func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, 
 	if c.cpaNative && strings.HasPrefix(path, "/internal/upstream-accounts") {
 		path = "/internal/antigravity-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
 	}
-	target := *c.baseURL
-	target.Path = strings.TrimRight(c.baseURL.Path, "/") + path
-	target.RawQuery = ""
-	target.Fragment = ""
+	target, token := c.internalTarget(path)
 	var requestBody io.Reader
 	if body != "" {
 		requestBody = strings.NewReader(body)
@@ -376,7 +373,7 @@ func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, 
 	if err != nil {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_unavailable", Cause: err}
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
 	for key, values := range headers {

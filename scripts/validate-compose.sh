@@ -59,7 +59,7 @@ jq -e --arg patch "$compat_patch_sha256" '
     .tag == "v8.0.59" and
     .commit == "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and
     .patch == "cliproxy-v8.0.59-gateway.patch" and
-    .patch_sha256 == $patch and .go_version == "1.26.10" and
+    .patch_sha256 == $patch and .go_version == "1.26.11" and
     .automatic_updates == false and
     .model_catalog.repository == "https://github.com/router-for-me/CLIProxyAPI" and
     .model_catalog.commit == "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and

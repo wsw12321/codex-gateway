@@ -136,9 +136,24 @@ func validRouteModel(model string) bool {
 
 func (c Config) UsesCPAAntigravity() bool { return c.AntigravityTransport == "cpa" }
 
+// UsesCPAPlugin reports whether CPA runs unmodified with the Gateway plugin.
+func (c Config) UsesCPAPlugin() bool { return c.CPAIntegration == "plugin" }
+
 func (c Config) validateAntigravity() error {
+	if c.CPAIntegration != "" && c.CPAIntegration != "patch" && c.CPAIntegration != "plugin" {
+		return errors.New("CPA_INTEGRATION must be patch or plugin")
+	}
 	if c.AntigravityTransport != "" && c.AntigravityTransport != "cpa" && c.AntigravityTransport != "legacy-bridge" {
 		return errors.New("ANTIGRAVITY_TRANSPORT must be cpa or legacy-bridge")
+	}
+	// The plugin allocates every provider inside one CPA process; the legacy
+	// bridge is a separate service with its own allocation callbacks.
+	if c.UsesCPAPlugin() && !c.UsesCPAAntigravity() {
+		return errors.New("CPA_INTEGRATION=plugin requires ANTIGRAVITY_TRANSPORT=cpa")
+	}
+	// The plugin's account routes are served behind CPA's management key.
+	if c.UsesCPAPlugin() && c.CPAManagementToken == "" {
+		return errors.New("CPA_INTEGRATION=plugin requires CPA_MANAGEMENT_KEY")
 	}
 	if c.CPAManagementToken != "" && (len(c.CPAManagementToken) < minSecretBytes || c.CPAManagementToken == c.SidecarToken) {
 		return errors.New("CPA_MANAGEMENT_KEY must contain at least 32 bytes and differ from SIDECAR_API_KEY")

@@ -43,6 +43,11 @@ type Config struct {
 	CPAManagementToken string
 	EgressControlKey   string
 	EgressControlURL   *url.URL
+	// CPAIntegration selects how the Gateway integrates with CPA. "patch" is
+	// the source-patched image and its /internal/* endpoints. "plugin" is
+	// unmodified CPA with the Gateway plugin: allocation is attributed through
+	// the request ledger instead of response headers.
+	CPAIntegration string
 	// AntigravityTransport is cpa by default. legacy-bridge is reserved for
 	// the rehearsed rollback build and requires separate bridge credentials.
 	AntigravityTransport   string
@@ -110,6 +115,7 @@ func Load() (Config, error) {
 		DatabaseURL:            databaseURL,
 		SidecarToken:           sidecarToken,
 		CPAManagementToken:     cpaManagementToken,
+		CPAIntegration:         envDefault("CPA_INTEGRATION", "patch"),
 		AntigravityTransport:   envDefault("ANTIGRAVITY_TRANSPORT", "cpa"),
 		AntigravityBridgeToken: antigravityToken,
 		AntigravityModelRoutes: antigravityRoutes,

@@ -1065,6 +1065,45 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 Responses、compact 冒烟仍按上述步骤及
 [兼容层升级规程](compatibility-upgrades.md) 执行。
 
+### CPA 插件模式的切换与回退
+
+插件模式用未修改的 CLIProxyAPI 加 Gateway 插件替代源码补丁镜像，尚非默认。它不提供
+上游额度查询、模型鉴定和“CPA 授权管理”页面的凭证操作；需要这些功能时留在补丁镜像。
+差异与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式可选尚非默认)，
+信任边界变化见[威胁模型](threat-model.md#cpa-插件模式可选)。
+
+切换在维护窗口内进行，Gateway 与 sidecar 必须一起切换：
+
+1. 按第 8 节生成并演练数据库备份。插件模式不写数据库迁移，但会重置进程内的会话绑定。
+2. 持有 `.device-login.lock` 的 `flock`，确保没有登录或迁移进程在使用 OAuth 卷。
+3. 构建并检查插件镜像：
+
+   ```sh
+   ./scripts/compose.sh -f deploy/cpa-plugin.override.yml build gateway codex-compat
+   ./scripts/test-cpa-plugin-image.sh
+   ```
+
+4. 停止旧 sidecar，确认其容器不再运行，再启动新组合：
+
+   ```sh
+   ./scripts/compose.sh -f deploy/cpa-plugin.override.yml up -d gateway codex-compat
+   ```
+
+5. 等 Gateway `/readyz` 返回 200，用真实用户 API Key 完成模型列表、普通与 SSE
+   Responses、compact、Messages、Gemini 原生请求，检查请求明细里的上游账号归因和扣费
+   层，再在管理页面禁用并重新启用一个账号。配置了账号独立出口时，确认该账号的流量经
+   对应节点。
+
+回退时同样先停止插件 sidecar，再去掉覆盖文件重新启动：
+
+```sh
+./scripts/compose.sh up -d gateway codex-compat
+```
+
+两种镜像使用相同的 `.gateway-account-state` 与身份登记文件，账号禁用、额度锁和稳定
+账号 ID 在切换后保持不变。插件模式写入凭证文件的 `proxy_url` 不影响补丁镜像：补丁镜像
+在每次操作时向 Gateway 解析出口，不使用上传凭证中的代理字段。
+
 Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移会明确拒绝数据库
 降级。因此，只在确认新 revision **没有写入任何新迁移** 时才可直接把镜像标签
 切回上一 revision。只要新迁移已写入，无论 SQL 看起来是否兼容，都禁止仅回滚

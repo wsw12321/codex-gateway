@@ -198,7 +198,9 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		egressError(w, r, err)
 		return
 	}
-	_, status, _ := s.syncAccountEgress(r.Context())
+	applied, status, _ := s.syncAccountEgress(r.Context())
+	// Editing a node changes the route of every account on it.
+	s.pushPluginEgress(r.Context(), nodeBindings(applied, saved.ID))
 	code := http.StatusOK
 	if create {
 		code = http.StatusCreated
@@ -309,6 +311,10 @@ func (s *Server) setAccountEgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, status, _ := s.syncAccountEgress(r.Context())
+	if binding.Provider == "" {
+		binding.Provider = attemptProvider(r)
+	}
+	s.pushPluginEgress(r.Context(), []store.EgressBinding{binding})
 	writeJSON(w, 200, map[string]any{"id": binding.AccountID, "egress_server_id": binding.NodeID, "egress_revision": binding.Revision, "runtime": publicEgressStatus(status), "saved": true})
 }
 

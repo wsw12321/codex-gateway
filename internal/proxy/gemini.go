@@ -92,6 +92,11 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 	} else {
 		outgoing.Header.Set("Accept", "application/json")
 	}
+	opened, err := c.openDispatch(outgoing.Header, options)
+	if err != nil {
+		return Result{}, protocolFailure(err)
+	}
+	defer opened.close()
 	response, err := c.http.Do(outgoing)
 	if err != nil {
 		return Result{}, c.transportFailure(ctx, err)
@@ -104,10 +109,11 @@ func (c *Client) forwardGemini(ctx context.Context, w http.ResponseWriter, incom
 		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
+	opened.apply(&result)
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := c.sanitizeFailure(response)
+		failure := opened.failure(c.sanitizeFailure(response), 0)
 		if retryAfter := parseRetryAfter(response.Header.Get("Retry-After")); retryAfter > 0 {
 			failure.RetryAfter = retryAfter
 		}

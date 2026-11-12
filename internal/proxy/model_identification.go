@@ -206,14 +206,12 @@ func (c *Client) diagnosticJSON(ctx context.Context, method, path string, body [
 			return err
 		}
 	}
-	target := *c.baseURL
-	target.Path = strings.TrimRight(target.Path, "/") + path
-	target.RawQuery, target.Fragment = "", ""
+	target, token := c.internalTarget(path)
 	request, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
 	if err != nil {
 		return diagnosticError("probe_request_invalid", http.StatusBadRequest)
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
+	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
 	if len(body) > 0 {

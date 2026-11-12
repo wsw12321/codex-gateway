@@ -74,6 +74,11 @@ func (c *Client) ForwardMessages(ctx context.Context, w http.ResponseWriter, inc
 	if err := setGroupAccountScope(outgoing.Header, options); err != nil {
 		return Result{}, protocolFailure(err)
 	}
+	opened, err := c.openDispatch(outgoing.Header, options)
+	if err != nil {
+		return Result{}, protocolFailure(err)
+	}
+	defer opened.close()
 	response, err := c.http.Do(outgoing)
 	if err != nil {
 		return Result{}, c.transportFailure(ctx, err)
@@ -82,9 +87,16 @@ func (c *Client) ForwardMessages(ctx context.Context, w http.ResponseWriter, inc
 	result := Result{StatusCode: response.StatusCode, ContentType: response.Header.Get("Content-Type"),
 		Model: model, UpstreamAccountID: safeUpstreamAccountHeader(response.Header), ConversationHash: safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "Request-Id", "X-Request-Id")}
+	opened.apply(&result)
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		// A refused allocation never reached Claude, so there is no native
+		// error to forward; the Gateway's own stable error applies.
+		if refused := opened.failure(nil, parseRetryAfter(response.Header.Get("Retry-After"))); refused != nil {
+			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxInternalResponseBodyBytes))
+			return result, refused
+		}
 		// Native error wording drives Claude Code's capability recovery. Only a
 		// validated error envelope from the fixed CPA service is forwarded.
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, maxInternalResponseBodyBytes+1))
