@@ -323,6 +323,7 @@ func TestFailsClosed(t *testing.T) {
 	t.Run("credential without a verified identity", func(t *testing.T) {
 		h := newHarness(t)
 		h.addAccount("a", map[string]any{"account_id": "", "id_token": "", "access_token": "opaque-token"})
+		h.skipEgressWait = true // an unidentified credential is never routed
 		h.start()
 		got := h.do(call{})
 		if got.status != http.StatusServiceUnavailable || len(h.provider.seen()) != 0 {
@@ -338,25 +339,23 @@ func TestPerAccountEgress(t *testing.T) {
 	h := newHarness(t)
 	a, b := h.addAccount("a", nil), h.addAccount("b", map[string]any{"proxy_url": "http://planted.example:8080"})
 	h.start()
-	h.gateway.prefer = []string{a.id, b.id}
 
-	// b came with a proxy of its own, which the Gateway never bound. It is
-	// removed before b serves anything.
+	// CPA has no proxy of its own, so every credential carries its route
+	// explicitly once the plugin's start-up pass has run: a, which came with
+	// no proxy, and b, whose planted proxy the Gateway never bound, both carry
+	// the global egress before either serves anything.
+	for _, name := range []string{"a", "b"} {
+		if proxy := h.credentialProxy(name); proxy != h.proxy {
+			t.Fatalf("%s carries %q, want the global egress written out", name, proxy)
+		}
+	}
 	h.gateway.prefer = []string{b.id, a.id}
 	h.resetObservations()
 	if got := h.do(call{}); got.status != http.StatusOK {
 		t.Fatalf("status %d: %s", got.status, got.body)
 	}
-	if served := h.served(); len(served) != 1 || served[0] != "a" {
-		t.Fatalf("provider saw %v; b must not serve with an unbound proxy", served)
-	}
-	if proxy := h.credentialProxy("b"); proxy != "" {
-		t.Fatalf("b still carries %q", proxy)
-	}
-	h.resetObservations()
-	h.do(call{})
 	if calls := h.provider.seen(); len(calls) != 1 || calls[0].Bearer != b.token || calls[0].Via != "global" {
-		t.Fatalf("b after cleanup: %+v", calls)
+		t.Fatalf("b on the global egress: %+v", calls)
 	}
 
 	// The Owner binds a to its own egress. The Gateway pushes the binding.
@@ -416,6 +415,9 @@ func TestPerAccountEgress(t *testing.T) {
 	if status, body = h.management(http.MethodPut, "/v0/management/gateway/upstream-accounts/egress?id="+a.id, managementKey, ""); status != http.StatusOK {
 		t.Fatalf("egress sync: %d %s", status, body)
 	}
+	if proxy := h.credentialProxy("a"); proxy != h.proxy {
+		t.Fatalf("a carries %q after unbinding, want the global egress written out", proxy)
+	}
 	h.resetObservations()
 	h.do(call{})
 	if calls = h.provider.seen(); len(calls) != 1 || calls[0].Bearer != a.token || calls[0].Via != "global" {
@@ -424,6 +426,61 @@ func TestPerAccountEgress(t *testing.T) {
 	// The management key is required to change a route.
 	if status, _ = h.management(http.MethodPut, "/v0/management/gateway/upstream-accounts/egress?id="+a.id, internalKey, ""); status != http.StatusUnauthorized {
 		t.Fatalf("the data-plane key changed a route: %d", status)
+	}
+}
+
+// TestDeadEgressNeverFallsBack binds an account to an egress node that is
+// down. The account's request fails at its own listener and is never sent
+// through the global egress or directly; the scheduler may still serve the
+// request with another authorized account through that account's egress.
+func TestDeadEgressNeverFallsBack(t *testing.T) {
+	h := newHarness(t)
+	a, b := h.addAccount("a", nil), h.addAccount("b", nil)
+	dead := "http://" + deadRouteUser + ":secret-dead@" + strings.TrimPrefix(h.egress, "http://")
+	h.gateway.routes[a.id] = dead
+	h.start()
+	if proxy := h.credentialProxy("a"); proxy != dead {
+		t.Fatalf("a carries %q", proxy)
+	}
+	noFallback := func(what string, attempted bool) {
+		t.Helper()
+		for _, call := range h.provider.seen() {
+			if call.Bearer == a.token {
+				t.Fatalf("%s: a reached the provider via %s: %+v", what, call.Via, call)
+			}
+		}
+		refused := h.provider.refusedConnects()
+		if attempted && len(refused) == 0 {
+			t.Fatalf("%s: a was never attempted through its own egress", what)
+		}
+		for _, connect := range refused {
+			if connect.Via != "account-egress" {
+				t.Fatalf("%s: a's route was presented to %s", what, connect.Via)
+			}
+		}
+	}
+
+	// Only a is authorized: the request fails rather than leaving another way.
+	h.gateway.permitted[userAlice] = map[string]bool{a.id: true}
+	h.gateway.prefer = []string{a.id}
+	h.resetObservations()
+	if got := h.do(call{}); got.status < 500 {
+		t.Fatalf("status %d with a's egress down: %s", got.status, got.body)
+	}
+	noFallback("a alone", true)
+
+	// With b authorized as well, b serves through its own (global) egress.
+	// CPA may skip a altogether now that it has failed; if it tries a again,
+	// that attempt again ends at a's own listener.
+	delete(h.gateway.permitted, userAlice)
+	h.gateway.prefer = []string{a.id, b.id}
+	h.resetObservations()
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("status %d: %s", got.status, got.body)
+	}
+	noFallback("a then b", false)
+	if served := h.served(); len(served) != 1 || served[0] != "b" || h.provider.seen()[0].Via != "global" {
+		t.Fatalf("provider saw %v", h.provider.seen())
 	}
 }
 

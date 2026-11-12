@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -41,6 +43,18 @@ type Plugin struct {
 	now         func() time.Time
 	// applyProxy writes a credential's egress; see loopbackApplyProxy.
 	applyProxy func(context.Context, Account, string) error
+	// observeCredential reads passive quota observations; see
+	// loopbackObserveCredential.
+	observeCredential func(context.Context, Account) (credentialObservation, error)
+
+	// cpaManagement calls CPA's own management API; see loopbackManagement.
+	cpaManagement func(ctx context.Context, method, path string, query url.Values, body []byte) (int, []byte, error)
+	// oauth tracks the logins started through the credential page.
+	oauth *oauthSessions
+
+	// reconcileStop ends the background egress passes; see startReconcile.
+	reconcileMu   sync.Mutex
+	reconcileStop chan struct{}
 }
 
 // New builds the plugin from the environment. It never fails: an unusable
@@ -66,6 +80,9 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 		},
 	}
 	p.applyProxy = p.loopbackApplyProxy
+	p.cpaManagement = p.loopbackManagement
+	p.oauth = newOAuthSessions()
+	p.observeCredential = p.loopbackObserveCredential
 	control, err := LoadControlState(cfg.AuthDir)
 	if err != nil {
 		p.unavailable = err
@@ -158,8 +175,10 @@ func (p *Plugin) Handle(method string, request []byte) (response []byte) {
 	}()
 	switch method {
 	case pluginabi.MethodPluginRegister, pluginabi.MethodPluginReconfigure:
+		p.startReconcile()
 		return okEnvelope(pluginRegistration())
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
+		p.stopReconcile()
 		return okEnvelope(struct{}{})
 	case pluginabi.MethodFrontendAuthIdentifier:
 		return okEnvelope(map[string]string{"identifier": PluginID})

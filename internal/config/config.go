@@ -43,10 +43,13 @@ type Config struct {
 	CPAManagementToken string
 	EgressControlKey   string
 	EgressControlURL   *url.URL
-	// CPAIntegration selects how the Gateway integrates with CPA. "patch" is
-	// the source-patched image and its /internal/* endpoints. "plugin" is
+	// CPAIntegration selects how the Gateway integrates with CPA. "plugin" is
 	// unmodified CPA with the Gateway plugin: allocation is attributed through
-	// the request ledger instead of response headers.
+	// the request ledger instead of response headers. It is what the default
+	// Compose deployment sets. "patch" is the source-patched rollback image
+	// and its /internal/* endpoints; it stays the value when nothing is set,
+	// because it needs no CPA management key. A mismatch with the running
+	// image fails closed at the Gateway's capability probe.
 	CPAIntegration string
 	// AntigravityTransport is cpa by default. legacy-bridge is reserved for
 	// the rehearsed rollback build and requires separate bridge credentials.

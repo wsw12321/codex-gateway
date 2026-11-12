@@ -95,6 +95,10 @@ services:
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
       ANTIGRAVITY_TRANSPORT: cpa
+      # Unmodified CPA with the Gateway plugin. CPA_INTEGRATION=patch in .env
+      # selects deploy/patch-cpa.override.yml for a rollback; see
+      # docs/operations.md.
+      CPA_INTEGRATION: plugin
       CPA_MANAGEMENT_KEY_FILE: /run/secrets/cpa_management_key
       ANTIGRAVITY_MODEL_ROUTES_JSON: ${ANTIGRAVITY_MODEL_ROUTES_JSON:-}
       GATEWAY_BODY_LIMIT_BYTES: "67108864"
@@ -174,16 +178,18 @@ services:
 
   codex-compat:
     <<: *common-security
-    image: codex-gateway-compat:v8.0.59-c5251b57-f6d25e7f06e22777-cpa
+    # Unmodified CPA, the residual plugin-only selector and the Gateway
+    # plugin; see deploy/codex-compat/plugin.lock.json.
+    image: codex-gateway-compat:v8.0.59-c5251b57-8f3381084e4e1055-plugin
     build:
       context: .
-      dockerfile: deploy/codex-compat/Dockerfile
+      dockerfile: deploy/codex-compat/plugin.Dockerfile
       args:
         GOLANG_IMAGE: ${CLIPROXY_GOLANG_IMAGE:?Run ./scripts/lock-images.sh first}
         RUNTIME_IMAGE: ${CLIPROXY_RUNTIME_IMAGE:?Run ./scripts/lock-images.sh first}
         CLIPROXY_VERSION: v8.0.59
         CLIPROXY_COMMIT: c5251b57b3fa5dcbc689f514f4aa166daacb4481
-        CLIPROXY_PATCH_SHA256: f6d25e7f06e227775a3edaeff53341600b39696db1b94fc664cab0f91500233e
+        CLIPROXY_RESIDUAL_PATCH_SHA256: 8f3381084e4e10557aebcc089e171bfb833e88a041f6c1972774dfc4b2ec7b1a
     read_only: true
     user: "10001:${GATEWAY_SECRET_GID:-1000}"
     init: true
@@ -193,11 +199,14 @@ services:
       CLIPROXY_PORT: "8317"
       CLIPROXY_API_KEY_FILE: /run/secrets/sidecar_api_key
       CPA_MANAGEMENT_KEY_FILE: /run/secrets/cpa_management_key
+      # The global egress. The plugin writes it into every credential the
+      # Gateway leaves on it; CPA itself gets no proxy, so any CPA fallback is
+      # a direct connection, which compat_internal refuses.
       CLIPROXY_PROXY_URL: http://egress-allowlist:3128
-      HTTP_PROXY: http://egress-allowlist:3128
-      HTTPS_PROXY: http://egress-allowlist:3128
-      ALL_PROXY: http://egress-allowlist:3128
       NO_PROXY: 127.0.0.1,localhost,codex-compat,gateway
+      # CPA maps the plugin from a private copy under its temporary directory.
+      # /tmp is noexec and too small for that, so the copy gets its own tmpfs.
+      TMPDIR: /run/cliproxy-plugin
       CODEX_SMOKE_MODEL: ${CODEX_SMOKE_MODEL:-gpt-5-codex}
     secrets:
       - sidecar_api_key
@@ -211,6 +220,7 @@ services:
     tmpfs:
       - /run/cliproxy:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
       - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10001,gid=10001
+      - /run/cliproxy-plugin:rw,exec,nosuid,nodev,size=64m,mode=0700,uid=10001,gid=10001
     networks:
       compat_internal:
         ipv4_address: 172.28.30.3

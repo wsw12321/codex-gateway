@@ -2,7 +2,7 @@
 
 本文记录把 `codex-compat` 从整份源码补丁迁移到 CPA 官方插件的验证过程。迁移目标、
 架构与取舍见 [兼容层升级规程](compatibility-upgrades.md) 的“插件模式”一节。
-默认部署仍是补丁镜像；插件模式在完成真实账号验收前不作为默认。
+插件模式自路线图第 8 步起是默认部署，源码补丁镜像保留为回退（`CPA_INTEGRATION=patch`）。
 
 ## 阶段 0：可行性验证
 
@@ -208,3 +208,300 @@ push 运行，所以此前没有暴露。
 
 Trivy 的结果中没有插件 `.so`，Go 二进制的检测只列出了 `cli-proxy-api`。插件的依赖由
 `go-security` 中插件 module 的 govulncheck 覆盖。
+
+## 路线图第 4 步：额度查询
+
+日期 2026-11-12。插件新增四个管理路由，按补丁镜像的格式提供 Gateway 用到的全部额度
+查询，Gateway 不需要改动（路径映射在插件模式引入时已就位）。设计与取舍见
+[兼容层升级规程](compatibility-upgrades.md#额度查询)，行为差异见同文第 14–17 项。
+
+### 评估：为什么不用 `QuotaProvider`
+
+- CPA 的 `POST /v0/management/quota/fetch` 输出 `QuotaFetchResponse`（剩余比例、窗口名），
+  装不下 Gateway 严格解析的 `account/rateLimits/read` 信封（整数百分比、窗口分钟数、
+  `rateLimitReachedType`、限额 ID）。
+- 该接口出错时把插件返回的错误文本拼进响应，并以错误级别写日志。
+- 它交给插件的宿主 HTTP 客户端会跟随重定向（跨源时去掉凭证头），而补丁镜像的规则是
+  不跟随。宿主的 `host.http.do` 回调又只能使用全局代理，无法指定账号出口。
+- 注册为 `codex`、`claude` 的 `QuotaProvider` 还会改变 CPA 自己管理页面的行为。
+
+所以查询由插件的管理路由自己发出：先向 Gateway 确认路由，用独立的传输层只连该代理，
+拒绝重定向。
+
+### 测试
+
+插件单测（`internal/gatewayplugin/quota_test.go`，含 `-race`）：
+
+| 项 | 覆盖 |
+|---|---|
+| 请求解码 | 与补丁镜像一致：只接受 `{"method":"account/rateLimits/read","id":6}`；空、`null`、数组、方法或 id 错误、`6.0`、`6e0`、字符串 id、`params`、未知字段、尾随 JSON、重复键、大小写不同、缺字段一律 400；超过 256 字节 413 |
+| 归一化 | 黄金文件 `testdata/codex_quota_rpc.json` 固定输出；24 种合法与非法形状逐一对应补丁镜像的错误码；只报告已知的 `rateLimitReachedType` |
+| 出口 | 未绑定走全局出口，绑定走账号路由；全局出口未配置或路由无法确认时零上游调用 |
+| 请求内容 | URL、方法固定；请求头恰好三个，令牌只在 `Authorization` |
+| 错误映射 | 23 种情况：账号不存在、参数多余、注册表不可用、凭证被禁用、缺少或含控制字符的令牌、凭证文件被换成其他账号、传输失败与超时、401/403/429/408/504/500/302、超大响应、结构变化；上游正文和令牌从不出现在响应中 |
+| 传输层 | 真实的 `httptest` 代理：只经给定代理（忽略 `HTTP_PROXY`/`HTTPS_PROXY`），携带路由凭据，302 不跟随；非法代理地址被拒绝 |
+| 授权页面 | Codex 门面换算剩余比例并排序；Antigravity 只保留合法的 `gemini-*` 模型，丢弃不合法的重置时间，回滚期间不触碰 Google 凭证；Claude 取最新的凭证或模型观测，过期冷却不输出 |
+| 回环读取 | 只按 `auth_index` 查询，只认 `id` 与 `auth_index` 都匹配的条目；错误状态、格式错误、缺管理密钥都视为不可用 |
+
+Gateway（`internal/proxy/plugin_management_test.go`）：`TestPluginQuotaContract` 用插件的
+黄金文件喂给 Gateway 的严格解析器，检查请求走 `/v0/management/gateway/upstream-accounts/quota?id=`
+并使用管理密钥；插件的固定错误码映射到与补丁镜像相同的 Gateway 错误码。
+
+端到端（真实 CPA 进程，新增 2 组，共 11 组）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestQuotaQuery` | 未绑定账号经全局出口查询，绑定账号经账号出口并携带路由凭据；返回值正确，计划类型和邮箱不外泄；内部请求头不到上游；401、302（不跟随）、结构变化、小数百分比的固定错误码；路由无法确认时零上游调用；无密钥或数据面密钥被拒；授权页面的 Codex 额度 |
+| `TestClaudePassiveQuota` | 请求前返回空窗口；一次经 CPA 的 Claude 请求后，CPA 记录的 `anthropic-ratelimit-unified-*` 响应头经管理 API 回读为 5 小时与 7 天窗口；不含令牌和邮箱；Codex 账号不能当作 Claude 查询 |
+
+本地按 `plugin.Dockerfile` 的步骤在固定 CPA 提交上应用残余补丁、编译 CPA 和插件，11 组
+端到端测试全部通过。镜像中的同一步骤由 CI 运行，构建会逐一断言这两个新测试名。
+
+### 未验证
+
+- chatgpt.com 是否接受插件的 Go 标准 TLS 客户端（补丁镜像用 CPA 的浏览器指纹客户端），
+  以及 Antigravity 的固定客户端版本号是否被接受。两者都要在真实账号验收中确认，已加入
+  第 3 步的验收清单。
+
+## 路线图第 7 步（出口部分）：账号出口不回退
+
+日期 2026-11-12。按[路线图的原则 3](cpa-plugin-roadmap.md#原则)，不改 CPA，靠配置和网络
+保证账号出口失败时请求失败。
+
+### 依据：CPA 的代理退路
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：
+
+- `internal/runtime/executor/helps/proxy_helpers.go` 的 `NewProxyAwareHTTPClient` 按
+  “请求级代理 → 凭证 `proxy_url` → 全局 `proxy-url`”取代理；构建失败时退到上下文传输层，
+  再退到带环境代理的默认传输层。
+- 管理接口 `api-call` 的 `apiCallTransport` 依次尝试凭证代理、全局代理，最后直连。
+- Codex、Claude、Antigravity 的令牌刷新与 Antigravity 模型探测都使用凭证的 `proxy_url`，
+  凭证没有代理时使用全局 `proxy-url`。
+
+插件模式原来同时配置了全局 `proxy-url` 和 `HTTPS_PROXY`（都是 Squid 3128），所以上述
+退路可以落到全局出口。
+
+### 改动
+
+- 插件把 Gateway 的“继承全局出口”也写成凭证上的显式 `proxy_url`
+  （`CPA_PLUGIN_GLOBAL_PROXY_URL`，现为必填，只接受 `http://主机:端口`，且不能是账号出口
+  监听）。没有全局出口配置时拒绝把账号留在空代理上。
+- 插件后台对账：注册后每 2 秒一轮直到确认全部凭证，之后每分钟一轮；停机时停止。
+- 入口脚本生成的配置去掉 `proxy-url`，并在启动 CPA 前清除 `HTTP_PROXY`、`HTTPS_PROXY`、
+  `ALL_PROXY` 及小写形式；覆盖文件同样把它们置空。
+- Gateway 侧不需要改动：出口变更时的即时推送保留，推送失败由插件的每次选号检查和后台
+  对账兜底。
+
+### 测试
+
+插件单测（含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestLoadConfig` | 全局出口必填；拒绝缺失、等于账号出口监听、带凭据、SOCKS；对账间隔 10–3600 秒 |
+| `TestPickReplacesAProxyTheGatewayDidNotBind` | 预置代理与空代理都被替换为显式全局出口，替换前本次跳过该账号 |
+| `TestPickRefusesTheGlobalRouteWithoutAGlobalEgress` | 没有全局出口配置时不写空代理、不使用账号 |
+| `TestReconcileWritesEveryCredentialsRoute` | 一轮对账写入绑定路由与全局出口；第二轮无写入；路由无法确认的凭证保持原样并计为失败 |
+| `TestBackgroundReconcileFollowsTheLifecycle` | 注册启动后台对账（重复注册不重复启动），停机后停止 |
+
+端到端（真实 CPA 进程，新增 1 组，共 12 组）。harness 生成的 CPA 配置与入口脚本一致，
+不含 `proxy-url`，进程环境中没有代理变量；启动后等待插件的首轮对账写好全部凭证：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestPerAccountEgress` | 启动后无代理和预置代理的凭证都带上显式全局出口；其余绑定、重新绑定、重启、路由无法确认、解绑场景不变，解绑后凭证回到显式全局出口 |
+| `TestDeadEgressNeverFallsBack` | 账号绑定到不可用的出口节点（账号出口监听拒绝 CONNECT）：只授权该账号时请求失败（5xx），该账号的请求从未经全局出口或其他途径到达上游；另一个账号有权限时由它经自己的出口完成请求 |
+
+部署静态校验：生成的配置中没有 `proxy-url`；入口脚本在 `exec` 前清除代理变量，全局出口只
+接受 `http://`；覆盖文件把三个代理变量置空。
+
+本地按 `plugin.Dockerfile` 的步骤（固定提交、残余补丁、`CGO_ENABLED=1` 编译 CPA 与插件）
+运行端到端测试，12 组全部通过。
+
+### 未验证
+
+- 生产网络中 `compat_internal` 拒绝直连这一前提由 Compose 的 `internal: true` 保证，已在
+  第 3 步的验收清单中加入“出口失败不回退”一项，用真实节点确认。
+- CPA 自身的后台请求（Antigravity 版本清单、Grok CLI 版本）原来经 Squid 3128，被白名单
+  拒绝；现在直连，同样失败，CPA 使用内置的回退版本。
+
+## 路线图第 4 步（改写）：额度改为 CPA 被动观测
+
+日期 2026-11-12。取代上文第 4 步的第一次实现：插件不再向 `chatgpt.com` 和 `cloudcode-pa`
+发请求，删除了自带的 HTTP 客户端、写死的 URL 和 User-Agent。依据是
+[路线图的原则 1](cpa-plugin-roadmap.md#原则)。
+
+### 依据：CPA 的被动观测
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：`sdk/cliproxy/auth/quota_signals.go` 对
+`codex`、`claude`（和 `devin`）把响应中的限额头写入凭证的 `QuotaState.Signals` 与
+`ObservedAt`；Codex 认可的头为 `x-codex-*` 中带 `-used-percent`、`-window-minutes`、
+`-reset-at`、`-reset-after-seconds`、`-limit-reached`、`-allowed` 等后缀的名字，以及
+`x-codex-plan-type`、`x-codex-active-limit`、`x-codex-credits-*`。WebSocket 的
+`codex.rate_limits` 事件由 `internal/runtime/executor/helps/codex_quota.go` 归一成同样的头，
+额外限额用 `X-Codex-Additional-<名字>-` 前缀。Antigravity 不在被动观测之列。
+
+### 测试
+
+插件单测（含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestNormalizeCodexSignalsMatchesGolden` | 一组 Codex 响应头映射出的信封与第一次实现的黄金文件逐字段一致，只多出 `observed_at`；套餐和限额显示名不输出 |
+| `TestNormalizeCodexSignalsShapes` | 20 种合法与非法形状：只有百分比、只有达到限额标志、只有额外限额、WebSocket 命名、小写头名、无观测、只有套餐与余额、缺百分比、越界、非数字、窗口与重置时间越界、负的相对重置；小数向上取整；相对重置以观测时间为起点；两种命名映射到同一 ID；非法名字与 `codex` 同名被略过；额外限额封顶 |
+| `TestCodexQuotaFromObservation` | 路由输出与黄金文件一致；取凭证与各模型观测中最新且含 Codex 信号的一次；授权页面换算剩余比例并带观测时间；无观测时 Owner 得到 `quota_not_observed`、授权页面得到空列表 |
+| `TestCodexQuotaErrors` | 13 种错误映射，包括观测读取失败（503）、无观测或只有非 Codex 信号（409）、观测值越界（502）、凭证被换成其他账号；响应中不含令牌 |
+| `TestAntigravityQuotaIsUnavailable` | 返回 `{"status":"unavailable","quota":[]}`，未知账号 404，多余请求体 400 |
+
+Gateway：`TestPluginQuotaContract` 用新的黄金文件，确认 `observed_at` 被解析；拒绝非时间、
+无时区、一小时后的未来、2000 年以前和数字形式的观测时间，接受缺省（补丁镜像）；
+`quota_not_observed`、`quota_observation_unavailable` 映射到新的 Gateway 错误码。控制台的
+node 测试确认观测快照显示“观测于 …”和“最近观测”，过期计时从观测时间算起；实时查询的
+文案不变。
+
+端到端（真实 CPA 进程）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestCodexPassiveQuota` | 请求前 Owner 得到 `quota_not_observed`、授权页面为空；一次经 CPA 的 Codex 请求后，CPA 记录的 `x-codex-*` 头经管理 API 回读为默认限额与 `code_review` 限额，观测时间在一分钟内；授权页面换算剩余比例；读取额度没有产生任何上游请求，上游只收到 CPA 自己的推理请求；越界的观测值得到固定错误码；只有管理密钥能访问 |
+| `TestClaudePassiveQuota` | 不变 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，12 组全部通过。
+
+### 未验证
+
+- 真实 Codex 响应头的确切集合（例如额外限额的命名、百分比是否带小数）要在真实账号验收中
+  确认，已在第 3 步的清单中改为“显示最近一次观测及观测时间”。
+- 运行本仓库测试时，`TestClientConfigurator` 在本会话中失败，原因是会话环境自带
+  `ANTHROPIC_BASE_URL` 等变量，被配置脚本识别为冲突设置；去掉这两个变量后
+  `internal/server` 全部通过。与本次改动无关。
+
+## 路线图第 5 步：凭证操作改用 CPA 原生管理接口
+
+日期 2026-11-12。“CPA 授权管理”页面的新增/重新授权、导入、刷新、删除在插件模式下可用，
+每一步都由 CPA 自己的管理接口完成。设计见
+[兼容层升级规程](compatibility-upgrades.md#凭证操作)，行为差异见同文第 19–21 项。
+
+### 依据：CPA 的原生接口
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：
+
+- `POST /v8/management/oauth/auth-url` 接受请求体中的 `proxy_url`，经
+  `validateOAuthSessionProxyURL` 校验后作为本次登录的出口；换取令牌使用该代理，保存凭证
+  时由 `applySessionProxyToAuthRecord` 写入 `proxy_url`。v0 的 `/{provider}-auth-url`
+  不接受代理，所以插件用 v8 接口。
+- `POST /v0/management/oauth-callback` 接受 `{provider, code, state}`；
+  `GET /v0/management/get-auth-status` 完成后返回 `auth_id`。
+- `POST /v0/management/oauth/import` 在该版本只支持 Vertex，所以导入用
+  `POST /v0/management/auth-files?name=`（原始 JSON）加 `POST /v0/management/auth-files/refresh`。
+  刷新接口的响应包含完整凭证，插件读取 `ok` 后丢弃。
+- CPA 保存的 Claude 凭证带 `account_uuid` 与 `organization_uuid`（授权与刷新都会写入）；
+  Antigravity 授权只记录邮箱与项目，没有 Google subject。
+
+### 测试
+
+插件单测（`credentials_test.go`，含 `-race`）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestLoginStartsInCPAWithTheChosenEgress` | 登记路由与显式全局出口都交给 CPA；外来主机、无路由凭据、SOCKS、未知字段、非法登记号都不到达 CPA；授权 URL 主机不对时拒绝 |
+| `TestLoginCompletesWithIdentityAndEgressBinding` | 回调只接受本插件发起、同一 Provider 的 state；CPA 尚未列出凭证时继续等待；完成后身份识别、出口登记、写入提交后的路由；重复轮询不再访问 CPA 与 Gateway |
+| `TestLoginFailuresFailClosed` | 无身份的新凭证被删除且不登记出口；出口登记失败时账号被停用；CPA 报错后会话作废；与已有 Claude 凭证同一身份的新凭证被删除 |
+| `TestCPAStoredIdentities` | Claude 由两个 UUID 组成身份，已记录的 subject 须一致；Antigravity 以 subject 优先、否则邮箱，邮箱登记在单独文件中，补丁镜像读取的 subject 注册表不受影响；畸形邮箱与 subject 被拒 |
+| `TestImportStoresTokensWithTheirEgressAndLetsCPARefresh` | 上传的文件只含 `type`、令牌和出口；CPA 刷新后识别身份并登记出口；响应不含令牌；Antigravity、缺刷新令牌、令牌含空白、未知字段、外来出口被拒；上传失败、刷新失败、刷新后无身份时清理文件 |
+| `TestRefreshAndDeleteGoThroughCPA` | 刷新前写入当前路由，路由无法确认时不刷新；删除只针对已停用且无进行中请求的账号，控制状态保留 |
+| `TestCredentialRoutesRespectTheAntigravityRollback` | Bridge 回滚期间 Antigravity 的凭证操作不到达 CPA |
+
+Gateway：`TestPluginManagementPath` 覆盖授权、回调、状态、导入、刷新、删除六类路径的映射。
+
+端到端（真实 CPA 进程，新增 1 组，共 13 组）。harness 的 TLS 拦截代理新增假的
+`auth.openai.com/oauth/token`：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestCredentialOperations` | 导入：CPA 经所选出口（登记路由的凭据）用导入的刷新令牌刷新，凭证最终带提交后的路由，Gateway 收到出口登记，账号随后经该路由服务请求；刷新：成功，CPA 发出的令牌请求都经账号路由；删除：未停用时 409，停用后文件删除、列表中消失；授权：授权 URL 主机与 state 正确，回调前不访问供应商，CPA 经所选出口换取令牌（及随后的刷新），状态返回稳定账号 ID，凭证带提交后的路由；整个过程没有任何请求经全局出口；未知 state 404；数据面密钥无法访问 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，13 组全部通过。
+
+### 未验证
+
+- 真实 OpenAI、Anthropic、Google 的授权与令牌端点，以及 Claude 授权码的格式（端到端只
+  模拟了 Codex 的令牌端点），在第 3 步的真实账号验收中确认。
+- CPA 可能在导入或授权后自行再刷新一次凭证（端到端中观察到），也可能跳过刚刷新过的凭证；
+  两者都是 CPA 原生行为，请求都经所选出口。
+
+## 路线图第 6 步：模型鉴定走 CPA 的普通请求路径
+
+日期 2026-11-12。插件模式下的模型鉴定可用。探针是普通的 `/v1/responses` 请求，由 CPA
+生成上游请求；Gateway 用一次性身份把它固定到被鉴定的账号。设计见
+[兼容层升级规程](compatibility-upgrades.md#模型鉴定)，行为差异见同文第 22 项。
+
+### 测试
+
+Gateway：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestModelIdentificationProbeThroughCPA` | 探针是带一次性身份、独立调用方作用域和请求令牌的普通请求，请求体只有模型、输入、输出上限和 `stream: false`，不带补丁协议的诊断头；请求期间该身份固定到被鉴定的账号，结束后作废；16 种结果：正常回答（忽略 reasoning）、上报为其他账号、插件报告并发耗尽或分配不可用、401、429、502、400、工具调用、未完成、空回答、输出令牌超限、回答过长、非 JSON、重复键、未知状态，各自对应固定错误码 |
+| `TestModelIdentificationCapabilityFollowsTheIntegration` | 插件模式只接受 `model_identification_cpa_v1` |
+| `TestProbeAllocationAnswersOnlyThePinnedAccount` | 探针身份的 `eligible` 只返回固定账号（带其并发上限），候选中没有时为空；`select` 只选固定账号，否则 429；`attempt` 上报其他账号被拒；探针结束后身份失效 |
+
+插件单测：`TestModelIdentificationRoutes` 覆盖协议路由、经 CPA 列出模型（去重、丢弃非法
+ID）、未知账号的诊断错误、畸形列表；探针本身没有插件路由。
+
+端到端（真实 CPA 进程，新增 1 组，共 14 组）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestModelIdentification` | 协议路由；CPA 为凭证注册的模型中包含测试模型；未知账号 404；数据面密钥无法访问；只授权给账号 a 的探针身份发出的非流式请求由 a 完成，CPA 把上游流式回答聚合成 Responses JSON，归因上报为 a；a 返回 500 时探针失败，b 从未被尝试 |
+
+本地按 `plugin.Dockerfile` 的步骤运行端到端测试，14 组全部通过。
+
+### 未验证
+
+- 用真实账号跑一次完整鉴定（三道题与评分），在第 3 步的真实账号验收中进行。
+
+## 路线图第 8 步第 1 项：插件模式成为默认
+
+日期 2026-11-12。`docker-compose.yml` 改为插件镜像与 `CPA_INTEGRATION=plugin`；源码补丁
+镜像改为回退，由 `.env` 的 `CPA_INTEGRATION=patch` 选择。
+
+### 改动
+
+- `docker-compose.yml`：`codex-compat` 使用 `plugin.Dockerfile`、锁定的插件镜像标签和残余
+  补丁 SHA-256；去掉 `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`，增加 `TMPDIR` 与可执行的
+  `/run/cliproxy-plugin` tmpfs；Gateway 设 `CPA_INTEGRATION=plugin`。
+- `deploy/patch-cpa.override.yml`（取代 `deploy/cpa-plugin.override.yml`）：恢复补丁镜像、
+  代理变量和 `TMPDIR=/tmp`，Gateway 设 `CPA_INTEGRATION=patch`。插件 tmpfs 仍挂载但不使用。
+- 选择机制沿用 `EGRESS_MODE` 的做法：`scripts/egress-settings.compose.yml` 读取
+  `CPA_INTEGRATION`（缺省 `plugin`），`scripts/validate-egress.py` 只接受 `plugin`/`patch`，
+  并在部署前核对渲染结果中 Gateway 的设置与 CPA 镜像一致；`scripts/egress-common.sh` 在
+  `patch` 时为每次调用叠加回退覆盖文件。
+- `scripts/validate-compose.sh` 按当前模式检查：插件模式核对锁定镜像、残余补丁校验和、无
+  代理变量与两个 tmpfs；回退模式核对补丁镜像与补丁校验和。
+- 插件镜像的入口脚本拒绝命令行参数：命令行登录在插件模式下没有出口，也绕过出口登记，
+  凭证只在“CPA 授权管理”页面维护。
+- CI：校验两种模式的 Compose；默认镜像随应用镜像构建，构建内运行插件的端到端测试；补丁
+  镜像单独构建并运行原有的 `test-sidecar-image.sh`；Trivy 扫描两者。
+- Gateway 代码中 `CPA_INTEGRATION` 未设置时仍按 `patch` 处理（不需要管理密钥），部署由
+  Compose 显式设置；不一致时 Gateway 的能力探测拒绝派发。
+
+### 测试
+
+- `scripts/tests/test_cpa_plugin_deploy.py`：默认 Compose 为插件模式（镜像、Dockerfile、
+  构建参数、无代理变量、tmpfs）；回退覆盖文件恢复补丁镜像（标签由 `source.lock.json`
+  推出）；`.env` 选择回退的链路（设置文件、包装脚本、校验器、两个 env 示例）；入口脚本
+  拒绝命令行登录。脚本测试共 178 个通过（1 个需 Docker 守护进程的跳过）。
+- 本地用 Docker Compose v5.6.1 渲染两种模式：插件模式的 Gateway 为 `plugin`、
+  `codex-compat` 为插件镜像且无 `HTTPS_PROXY`；回退模式为 `patch` 与补丁镜像；无效值被
+  `CPA_INTEGRATION must be plugin or patch` 拒绝。`validate-compose.sh` 新增的模式检查对
+  两种渲染结果都通过；`validate-egress.py --deployment` 对两种渲染结果通过，对 Gateway 与
+  镜像不一致的模型报错。
+- 完整的 `validate-compose.sh` 在本地 Compose v5.6.1 下停在一项既有的 cloudflared 检查
+  （上一个提交同样如此，与本次无关）；CI 中运行完整校验。
+
+### 未验证
+
+- 镜像构建、`test-cpa-plugin-image.sh`、`test-sidecar-image.sh` 与 Trivy 只能在 CI 中运行。
+- 真实账号验收（第 3 步）。

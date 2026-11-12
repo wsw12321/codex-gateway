@@ -70,7 +70,13 @@ func (s *Server) recordUpstreamAttempt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_attempt", "分配上报无效")
 		return
 	}
-	if report.AccountID != "" {
+	if pinned, probe := s.allocations.ProbeAccount(report.UserID); probe {
+		// A model identification probe may only ever report its pinned account.
+		if report.AccountID != "" && report.AccountID != pinned {
+			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "upstream_account_not_permitted", "用户无权使用该上游账号")
+			return
+		}
+	} else if report.AccountID != "" {
 		allowed, errEligible := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), report.UserID, []string{report.AccountID})
 		if errEligible != nil {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")

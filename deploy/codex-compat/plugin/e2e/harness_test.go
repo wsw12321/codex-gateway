@@ -24,12 +24,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,10 +76,16 @@ type fakeGateway struct {
 	// the global egress. egressDown makes every resolution fail.
 	routes     map[string]string
 	egressDown bool
+	// registrations maps an egress registration to the route the account it
+	// is committed to gets; committed records "registration=account".
+	registrations map[string]string
+	committed     []string
+	// resolved counts the routes confirmed per account.
+	resolved map[string]int
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
-	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}}
+	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}, resolved: map[string]int{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -91,7 +99,10 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	const prefix = "/internal/upstream-accounts/"
+	prefix := "/internal/upstream-accounts/"
+	if strings.HasPrefix(r.URL.Path, "/internal/anthropic-accounts/") {
+		prefix = "/internal/anthropic-accounts/"
+	}
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, prefix) {
 		w.WriteHeader(http.StatusNotFound)
 		return
@@ -150,6 +161,7 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
+		g.resolved[input.AccountID]++
 		if route, ok := g.routes[input.AccountID]; ok {
 			// Like the Gateway's route id, the revision is opaque.
 			digest := sha256.Sum256([]byte(route))
@@ -157,6 +169,21 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"mode": "global", "revision": "global:0"})
+	case "register-egress":
+		var input struct {
+			RegistrationID string `json:"registration_id"`
+			Provider       string `json:"provider"`
+			AccountID      string `json:"account_id"`
+		}
+		_ = json.Unmarshal(body, &input)
+		route, ok := g.registrations[input.RegistrationID]
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		g.routes[input.AccountID] = route
+		g.committed = append(g.committed, input.RegistrationID+"="+input.AccountID)
+		_ = json.NewEncoder(w).Encode(map[string]string{"registration_id": input.RegistrationID, "account_id": input.AccountID, "status": "committed", "revision": "route:1"})
 	case "attempt":
 		var report attemptReport
 		_ = json.Unmarshal(body, &report)
@@ -165,6 +192,22 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
+}
+
+// egressState returns how often each account's route was confirmed and the
+// proxy URL each account must carry, given the global egress.
+func (g *fakeGateway) egressState(global string, ids []string) (resolved map[string]int, want map[string]string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	resolved, want = map[string]int{}, map[string]string{}
+	for _, id := range ids {
+		resolved[id] = g.resolved[id]
+		want[id] = global
+		if route, ok := g.routes[id]; ok {
+			want[id] = route
+		}
+	}
+	return resolved, want
 }
 
 func (g *fakeGateway) reset() {
@@ -195,6 +238,8 @@ type upstreamCall struct {
 	Headers http.Header
 	// ProxyAuth is the credential CPA presented to the proxy on CONNECT.
 	ProxyAuth string
+	// Form is the decoded body of a token endpoint call.
+	Form url.Values
 }
 
 type fakeProvider struct {
@@ -208,7 +253,14 @@ type fakeProvider struct {
 	behavior map[string]string
 	calls    []upstreamCall
 	leaves   map[string]*tls.Certificate
+	// refused records CONNECTs refused because their route is down.
+	refused []upstreamCall
 }
+
+// deadRouteUser names a route whose egress node is down: the account
+// listener refuses its CONNECT the way Squid does when the account's parent
+// proxy is unreachable, and never forwards it anywhere else.
+const deadRouteUser = "dead"
 
 func newFakeProvider(t *testing.T) *fakeProvider {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -284,9 +336,16 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 		return
 	}
 	host, _, _ := net.SplitHostPort(request.Host)
-	if host != "chatgpt.com" {
+	if host != "chatgpt.com" && host != "api.anthropic.com" && host != "auth.openai.com" {
 		// CPA's own background lookups are not part of any scenario.
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+		return
+	}
+	if user, _, ok := parseProxyBasic(request.Header.Get("Proxy-Authorization")); ok && user == deadRouteUser {
+		p.mu.Lock()
+		p.refused = append(p.refused, upstreamCall{Via: via, Host: host, ProxyAuth: request.Header.Get("Proxy-Authorization")})
+		p.mu.Unlock()
+		_, _ = io.WriteString(conn, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
 		return
 	}
 	_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
@@ -356,12 +415,25 @@ data: {"type":"response.completed","response":{"id":"resp_1","object":"response"
 `
 
 func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter, r *http.Request) {
+	var form url.Values
+	if host == "auth.openai.com" {
+		raw, _ := io.ReadAll(io.LimitReader(r.Body, 64<<10))
+		form, _ = url.ParseQuery(string(raw))
+	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 8<<20))
 	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	p.mu.Lock()
-	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth})
+	p.calls = append(p.calls, upstreamCall{Via: via, Host: host, Path: r.URL.Path, Bearer: bearer, Headers: r.Header.Clone(), ProxyAuth: proxyAuth, Form: form})
 	behavior := p.behavior[bearer]
 	p.mu.Unlock()
+	if host == "api.anthropic.com" {
+		serveClaude(r, w)
+		return
+	}
+	if host == "auth.openai.com" {
+		serveCodexToken(r, form, w)
+		return
+	}
 	switch behavior {
 	case "limit":
 		w.Header().Set("Content-Type", "application/json")
@@ -374,6 +446,16 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":{"message":"bad request shape","type":"invalid_request_error"}}`)
+	case "quota-signals", "quota-signals-invalid":
+		for name, value := range codexQuotaHeaders {
+			w.Header().Set(name, value)
+		}
+		if behavior == "quota-signals-invalid" {
+			w.Header().Set("X-Codex-Primary-Used-Percent", "120")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, strings.ReplaceAll(sseBody, "MODEL", model))
 	case "hold":
 		// Keep the stream open until the client goes away.
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -393,6 +475,90 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 	}
 }
 
+// codexQuotaHeaders are the rate-limit headers a Codex response carries.
+// CPA records them on the credential; the plan type must never reach the
+// Gateway.
+var codexQuotaHeaders = map[string]string{
+	"X-Codex-Primary-Used-Percent":               "30",
+	"X-Codex-Primary-Window-Minutes":             "300",
+	"X-Codex-Primary-Reset-At":                   "1794200000",
+	"X-Codex-Secondary-Used-Percent":             "55",
+	"X-Codex-Secondary-Window-Minutes":           "10080",
+	"X-Codex-Secondary-Reset-At":                 "1794700000",
+	"X-Codex-Code-Review-Primary-Used-Percent":   "10",
+	"X-Codex-Code-Review-Primary-Window-Minutes": "10080",
+	"X-Codex-Plan-Type":                          "plus",
+}
+
+// serveCodexToken answers ChatGPT's token endpoint. A refresh token
+// "rt-NAME" or an authorization code "code-NAME" yields the tokens of
+// ChatGPT account "acct-NAME": access token "at-NAME", refresh token
+// "rt2-NAME", and an ID token naming the account.
+func serveCodexToken(r *http.Request, form url.Values, w http.ResponseWriter) {
+	name := ""
+	switch {
+	case r.URL.Path != "/oauth/token":
+	case form.Get("grant_type") == "refresh_token":
+		name = strings.TrimPrefix(strings.TrimPrefix(form.Get("refresh_token"), "rt2-"), "rt-")
+	case form.Get("grant_type") == "authorization_code":
+		name = strings.TrimPrefix(form.Get("code"), "code-")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if name == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"access_token": "at-" + name, "refresh_token": "rt2-" + name, "id_token": fakeJWT("acct-" + name),
+		"token_type": "Bearer", "expires_in": 3600,
+	})
+}
+
+// serveClaude answers a Messages request with the unified rate limit headers
+// CPA observes passively.
+func serveClaude(r *http.Request, w http.ResponseWriter) {
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Status", "allowed_warning")
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Utilization", "0.42")
+	w.Header().Set("Anthropic-Ratelimit-Unified-5h-Reset", "1794200000")
+	w.Header().Set("Anthropic-Ratelimit-Unified-7d-Status", "allowed")
+	w.Header().Set("Anthropic-Ratelimit-Unified-7d-Utilization", "0.1")
+	w.Header().Set("Request-Id", "req_e2e")
+	if r.URL.Path != "/v1/messages" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if strings.Contains(r.Header.Get("Accept"), "text/event-stream") || r.URL.Query().Get("stream") == "true" {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, claudeSSE)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[{"type":"text","text":"hello"}],`+
+		`"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}`)
+}
+
+const claudeSSE = `event: message_start
+data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":3,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
 func (p *fakeProvider) set(token, behavior string) {
 	p.mu.Lock()
 	p.behavior[token] = behavior
@@ -401,8 +567,28 @@ func (p *fakeProvider) set(token, behavior string) {
 
 func (p *fakeProvider) reset() {
 	p.mu.Lock()
-	p.calls = nil
+	p.calls, p.refused = nil, nil
 	p.mu.Unlock()
+}
+
+func (p *fakeProvider) refusedConnects() []upstreamCall {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]upstreamCall(nil), p.refused...)
+}
+
+// parseProxyBasic decodes a Basic Proxy-Authorization value.
+func parseProxyBasic(value string) (user, password string, ok bool) {
+	encoded, found := strings.CutPrefix(value, "Basic ")
+	if !found {
+		return "", "", false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return "", "", false
+	}
+	user, password, ok = strings.Cut(string(decoded), ":")
+	return user, password, ok
 }
 
 func (p *fakeProvider) seen() []upstreamCall {
@@ -440,6 +626,12 @@ type harness struct {
 	// dataPlaneClosed is set by scenarios in which the plugin refuses even the
 	// model listing, so readiness cannot be observed through it.
 	dataPlaneClosed bool
+	// skipEgressWait is set by scenarios whose accounts the plugin can never
+	// route, so start must not wait for their credentials to carry a route.
+	skipEgressWait bool
+	// anthropicIdentities is the verified identity registry written before
+	// CPA starts, as the credential page's registration would leave it.
+	anthropicIdentities map[string]string
 }
 
 func requireEnv(t *testing.T, name string) string {
@@ -496,6 +688,32 @@ func (h *harness) addAccount(name string, extra map[string]any) account {
 	return created
 }
 
+// addClaudeAccount writes a Claude OAuth credential whose verified identity
+// is already registered, and returns the account with the given stable id.
+func (h *harness) addClaudeAccount(name, id string) account {
+	h.t.Helper()
+	accountUUID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa" + fmt.Sprintf("%02x", len(h.accounts))
+	organizationUUID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	subject := accountUUID + ":" + organizationUUID
+	if h.anthropicIdentities == nil {
+		h.anthropicIdentities = map[string]string{}
+	}
+	h.anthropicIdentities[subject] = id
+	token := "claude-token-" + name
+	document := map[string]any{
+		"type": "claude", "email": name + "@example.com", "access_token": token, "refresh_token": "refresh-" + name,
+		"expired": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339), "last_refresh": time.Now().UTC().Format(time.RFC3339),
+		"account_uuid": accountUUID, "organization_uuid": organizationUUID, "gateway_anthropic_subject": subject,
+	}
+	raw, _ := json.Marshal(document)
+	if err := os.WriteFile(filepath.Join(h.authDir, "claude-"+name+".json"), raw, 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	created := account{name: name, token: token, id: id}
+	h.accounts[name] = created
+	return created
+}
+
 func freePort(t *testing.T) int {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -518,13 +736,18 @@ func (h *harness) start() {
 		}
 		return path
 	}
+	if len(h.anthropicIdentities) > 0 {
+		registry, _ := json.Marshal(map[string]any{"version": 1, "accounts": h.anthropicIdentities})
+		if err := os.WriteFile(filepath.Join(h.authDir, ".gateway-anthropic-identities"), registry, 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
 	keyFile := write("sidecar_api_key", internalKey+"\n")
 	managementFile := write("cpa_management_key", managementKey+"\n")
 	caFile := write("ca.pem", string(h.provider.caPEM))
 	config := write("config.yaml", fmt.Sprintf(`host: "127.0.0.1"
 port: %d
 auth-dir: %q
-proxy-url: %q
 response-compression:
   enabled: false
 plugins:
@@ -563,7 +786,7 @@ remote-management:
   secret-key: %q
   disable-control-panel: true
   disable-auto-update-panel: true
-`, port, h.authDir, h.proxy, pluginDir, h.pluginEnabled, h.strategy, internalKey, managementKey))
+`, port, h.authDir, pluginDir, h.pluginEnabled, h.strategy, internalKey, managementKey))
 
 	h.cmd = exec.Command(binary, "-config", config, "-local-model")
 	h.cmd.Dir = h.dir
@@ -577,6 +800,13 @@ remote-management:
 		"CPA_MANAGEMENT_KEY_FILE=" + managementFile,
 		// The account-egress listener stands in for egress-allowlist:3129.
 		"CPA_PLUGIN_EGRESS_PROXY_HOST=" + strings.TrimPrefix(h.egress, "http://"),
+		// As in the entrypoint, CPA has no proxy of its own: the plugin
+		// writes the global egress into every credential the Gateway leaves
+		// on it, so a CPA fallback could only connect directly.
+		"CPA_PLUGIN_GLOBAL_PROXY_URL=" + h.proxy,
+		// Only the start-up passes run within a scenario; later changes are
+		// left to the per-pick check and the Gateway's push.
+		"CPA_PLUGIN_EGRESS_RECONCILE_SECONDS=3600",
 	}
 	// CPA loads a plugin from a private copy under its temporary directory, so
 	// that directory must allow mapping executable pages. CPA_E2E_TMPDIR lets
@@ -585,6 +815,11 @@ remote-management:
 		h.cmd.Env = append(h.cmd.Env, "TMPDIR="+tmp)
 	}
 	h.cmd.Stdout, h.cmd.Stderr = h.logs, h.logs
+	ids := make([]string, 0, len(h.accounts))
+	for _, created := range h.accounts {
+		ids = append(ids, created.id)
+	}
+	before, _ := h.gateway.egressState(h.proxy, ids)
 	if err := h.cmd.Start(); err != nil {
 		h.t.Fatal(err)
 	}
@@ -592,11 +827,37 @@ remote-management:
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if h.credentialsLoaded() && (h.dataPlaneClosed || h.modelsReady()) {
+			h.awaitEgress(before, ids)
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	h.t.Fatalf("CPA did not become ready:\n%s", h.logs.String())
+}
+
+// awaitEgress waits for the plugin's start-up pass: every account's route
+// confirmed with the Gateway since this start and written into its credential.
+// A deployment reaches the same state before the Gateway sends traffic.
+func (h *harness) awaitEgress(before map[string]int, ids []string) {
+	h.t.Helper()
+	if h.skipEgressWait || !h.pluginEnabled || h.dataPlaneClosed || h.gatewayURL != h.gateway.server.URL {
+		return
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		resolved, want := h.gateway.egressState(h.proxy, ids)
+		done := true
+		for _, created := range h.accounts {
+			if resolved[created.id] <= before[created.id] || h.credentialProxy(created.name) != want[created.id] {
+				done = false
+			}
+		}
+		if done {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	h.t.Fatalf("credentials did not receive their routes:\n%s", h.logs.String())
 }
 
 // credentialsLoaded reports whether CPA has registered every credential file.
@@ -660,6 +921,8 @@ type call struct {
 	headers  map[string]string
 	noToken  bool
 	timeout  time.Duration
+	// body replaces the default Responses request.
+	body string
 }
 
 type result struct {
@@ -700,6 +963,9 @@ func (h *harness) do(c call) result {
 		c.timeout = 30 * time.Second
 	}
 	body := `{"model":"` + model + `","stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+	if c.body != "" {
+		body = c.body
+	}
 	request, _ := http.NewRequest(http.MethodPost, h.base+c.path, strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer "+c.key)
 	request.Header.Set("Content-Type", "application/json")
@@ -791,6 +1057,9 @@ func (h *harness) route(name, secret string) string {
 func (h *harness) credentialProxy(name string) string {
 	h.t.Helper()
 	raw, err := os.ReadFile(filepath.Join(h.authDir, "codex-"+name+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		raw, err = os.ReadFile(filepath.Join(h.authDir, "claude-"+name+".json"))
+	}
 	if err != nil {
 		h.t.Fatal(err)
 	}

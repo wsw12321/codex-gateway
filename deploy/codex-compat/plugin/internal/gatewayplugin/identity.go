@@ -22,9 +22,17 @@ const (
 	// names and schema; see AccountStateFile.
 	AntigravityIdentityFile = ".gateway-antigravity-identities"
 	AnthropicIdentityFile   = ".gateway-anthropic-identities"
+	// AntigravityEmailIdentityFile maps the e-mail address CPA records for an
+	// Antigravity credential to its stable index. Unmodified CPA does not
+	// record the Google subject, and this plugin sends no request of its own
+	// to learn it, so accounts registered in plugin mode are keyed by e-mail.
+	// It is a separate file: the patched image's registry accepts only
+	// subjects and would refuse to load e-mail keys.
+	AntigravityEmailIdentityFile = ".gateway-antigravity-email-identities"
 
-	antigravityIdentityDomain = "codex-gateway-antigravity-google-subject:\x00"
-	anthropicIdentityDomain   = "codex-gateway-anthropic-account-organization:\x00"
+	antigravityIdentityDomain      = "codex-gateway-antigravity-google-subject:\x00"
+	antigravityEmailIdentityDomain = "codex-gateway-antigravity-email:\x00"
+	anthropicIdentityDomain        = "codex-gateway-anthropic-account-organization:\x00"
 )
 
 // AuthEntry is the subset of a host credential listing this plugin relies on.
@@ -170,6 +178,34 @@ func validGoogleSubject(subject string) bool {
 	for i := 0; i < len(subject); i++ {
 		c := subject[i]
 		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+// antigravityEmailKey normalizes the e-mail address CPA recorded. Anything
+// that is not one plain address yields "" and leaves the credential
+// unidentified.
+func antigravityEmailKey(email string) string {
+	email = strings.ToLower(strings.TrimSpace(email))
+	if !validAntigravityEmail(email) {
+		return ""
+	}
+	return email
+}
+
+func validAntigravityEmail(email string) bool {
+	if len(email) < 3 || len(email) > 254 || strings.Count(email, "@") != 1 {
+		return false
+	}
+	local, domain, _ := strings.Cut(email, "@")
+	if local == "" || domain == "" || !strings.Contains(domain, ".") || strings.HasPrefix(domain, ".") || strings.HasSuffix(domain, ".") {
+		return false
+	}
+	for i := 0; i < len(email); i++ {
+		c := email[i]
+		if c <= 0x20 || c >= 0x7f || c >= 'A' && c <= 'Z' || strings.IndexByte("\"(),:;<>[\\]", c) >= 0 {
 			return false
 		}
 	}
@@ -342,12 +378,13 @@ func boolField(document map[string]json.RawMessage, name string) bool {
 // documents are read through the host only when a file changed, and only the
 // derived identity is kept: no token is retained in this plugin's memory.
 type Inventory struct {
-	host        Host
-	antigravity *identityRegistry
-	anthropic   *identityRegistry
-	antigravOn  bool
-	now         func() time.Time
-	maxAge      time.Duration
+	host             Host
+	antigravity      *identityRegistry
+	antigravityEmail *identityRegistry
+	anthropic        *identityRegistry
+	antigravOn       bool
+	now              func() time.Time
+	maxAge           time.Duration
 
 	mu          sync.Mutex
 	loadedAt    time.Time
@@ -370,12 +407,16 @@ func NewInventory(host Host, authDir string, antigravityEnabled bool) (*Inventor
 	if err != nil {
 		return nil, err
 	}
+	antigravityEmail, err := loadIdentityRegistry(authDir, AntigravityEmailIdentityFile, antigravityEmailIdentityDomain, validAntigravityEmail)
+	if err != nil {
+		return nil, err
+	}
 	anthropic, err := loadIdentityRegistry(authDir, AnthropicIdentityFile, anthropicIdentityDomain, validAnthropicSubject)
 	if err != nil {
 		return nil, err
 	}
 	return &Inventory{
-		host: host, antigravity: antigravity, anthropic: anthropic, antigravOn: antigravityEnabled,
+		host: host, antigravity: antigravity, antigravityEmail: antigravityEmail, anthropic: anthropic, antigravOn: antigravityEnabled,
 		now: time.Now, maxAge: 15 * time.Second,
 		byAuthID: map[string]*Account{}, fingerprint: map[string]string{}, identity: map[string]resolvedIdentity{},
 	}, nil
@@ -445,6 +486,31 @@ func (inv *Inventory) Accounts(provider string) ([]Account, error) {
 		}
 	}
 	sort.Slice(accounts, func(i, j int) bool { return accounts[i].ID < accounts[j].ID })
+	return accounts, nil
+}
+
+// All returns a fresh snapshot of every identified credential of every
+// provider, duplicates included, sorted by provider, index and file name.
+func (inv *Inventory) All() ([]Account, error) {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	if err := inv.refreshLocked(inv.now()); err != nil {
+		return nil, err
+	}
+	accounts := make([]Account, 0, len(inv.byAuthID))
+	for _, account := range inv.byAuthID {
+		accounts = append(accounts, *account)
+	}
+	sort.Slice(accounts, func(i, j int) bool {
+		a, b := accounts[i], accounts[j]
+		if a.Provider != b.Provider {
+			return a.Provider < b.Provider
+		}
+		if a.ID != b.ID {
+			return a.ID < b.ID
+		}
+		return a.Name < b.Name
+	})
 	return accounts, nil
 }
 
@@ -524,20 +590,94 @@ func (inv *Inventory) identify(provider string, raw json.RawMessage) resolvedIde
 		identity.id = CodexAccountIndex(accountID)
 		identity.plan = codexTokenPlan(stringField(document, "id_token"))
 	case ProviderAntigravity:
-		subject := stringField(document, "google_subject")
-		if !validGoogleSubject(subject) {
+		registry, subject := inv.antigravitySubject(document)
+		if registry == nil {
 			return resolvedIdentity{}
 		}
-		identity.id, _ = inv.antigravity.lookup(subject)
+		identity.id, _ = registry.lookup(subject)
 	case ProviderClaude:
-		subject := stringField(document, "gateway_anthropic_subject")
-		if boolField(document, "gateway_identity_conflict") || !validAnthropicSubject(subject) ||
-			subject != AnthropicSubject(stringField(document, "account_uuid"), stringField(document, "organization_uuid")) {
+		subject, ok := anthropicDocumentSubject(document)
+		if !ok {
 			return resolvedIdentity{}
 		}
 		identity.id, _ = inv.anthropic.lookup(subject)
 	}
 	return identity
+}
+
+// antigravitySubject picks the registry and key of an Antigravity credential:
+// the Google subject the patched image recorded, otherwise the e-mail address
+// CPA recorded. A present but malformed subject is never replaced by e-mail.
+func (inv *Inventory) antigravitySubject(document map[string]json.RawMessage) (*identityRegistry, string) {
+	if _, present := document["google_subject"]; present {
+		subject := stringField(document, "google_subject")
+		if !validGoogleSubject(subject) {
+			return nil, ""
+		}
+		return inv.antigravity, subject
+	}
+	if email := antigravityEmailKey(stringField(document, "email")); email != "" {
+		return inv.antigravityEmail, email
+	}
+	return nil, ""
+}
+
+// anthropicDocumentSubject derives the subject from the account and
+// organization UUIDs CPA stores with every Claude credential. A subject the
+// patched image recorded must agree with them.
+func anthropicDocumentSubject(document map[string]json.RawMessage) (string, bool) {
+	subject := AnthropicSubject(stringField(document, "account_uuid"), stringField(document, "organization_uuid"))
+	if subject == "" || boolField(document, "gateway_identity_conflict") {
+		return "", false
+	}
+	if _, present := document["gateway_anthropic_subject"]; present && stringField(document, "gateway_anthropic_subject") != subject {
+		return "", false
+	}
+	return subject, true
+}
+
+// Register records the identity of a credential the Owner has just added,
+// and returns its stable index. Only the Owner's login or import calls it;
+// a credential that merely appears in the store is never registered. The
+// identity comes from the fields CPA stored, nothing else.
+func (inv *Inventory) Register(provider string, raw json.RawMessage) (string, error) {
+	var document map[string]json.RawMessage
+	if json.Unmarshal(raw, &document) != nil {
+		return "", ErrAccountNotFound
+	}
+	var id string
+	var err error
+	switch provider {
+	case ProviderCodex:
+		accountID, ok := codexIdentity(document)
+		if !ok {
+			return "", ErrAccountNotFound
+		}
+		id = CodexAccountIndex(accountID)
+	case ProviderClaude:
+		subject, ok := anthropicDocumentSubject(document)
+		if !ok {
+			return "", ErrAccountNotFound
+		}
+		id, err = inv.anthropic.register(subject)
+	case ProviderAntigravity:
+		registry, subject := inv.antigravitySubject(document)
+		if registry == nil {
+			return "", ErrAccountNotFound
+		}
+		id, err = registry.register(subject)
+	default:
+		return "", ErrAccountNotFound
+	}
+	if err != nil {
+		return "", err
+	}
+	// Identities are cached per file version; a new registration changes the
+	// answer for an unchanged file, so the next lookup reads every file again.
+	inv.mu.Lock()
+	inv.identity, inv.fingerprint, inv.loadedAt = map[string]resolvedIdentity{}, map[string]string{}, time.Time{}
+	inv.mu.Unlock()
+	return id, nil
 }
 
 // markDuplicates keeps one credential per real account. Codex prefers the most

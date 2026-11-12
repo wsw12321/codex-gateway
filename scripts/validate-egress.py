@@ -124,7 +124,10 @@ def validate(settings, root):
         if not path.is_absolute():
             path = root / path
         password_file(path, int(gid))
-    return {"mode": mode, "oidc_enabled": oidc_enabled}
+    cpa_integration = env.get("CPA_INTEGRATION", "plugin")
+    if cpa_integration not in ("plugin", "patch"):
+        fail("CPA_INTEGRATION must be plugin or patch")
+    return {"mode": mode, "oidc_enabled": oidc_enabled, "cpa_integration": cpa_integration}
 
 
 def deployment_settings(model):
@@ -138,7 +141,13 @@ def deployment_settings(model):
     oidc = squid.get("OIDC_ENABLED", "false")
     if gateway.get("OIDC_ENABLED", "false") != oidc:
         fail("rendered Gateway and Squid OIDC settings disagree")
+    # The Gateway's integration and the CPA image are switched together.
+    cpa_integration = gateway.get("CPA_INTEGRATION", "plugin")
+    compat = services.get("codex-compat", {}).get("build", {}).get("dockerfile", "")
+    if compat and compat.endswith("plugin.Dockerfile") != (cpa_integration == "plugin"):
+        fail("CPA_INTEGRATION and the rendered CPA image disagree")
     env = {
+        "CPA_INTEGRATION": cpa_integration,
         "EGRESS_MODE": squid.get("EGRESS_MODE", ""),
         "CODEX_RELAY_IP": squid.get("CODEX_RELAY_IP", ""),
         "CODEX_RELAY_PORT": squid.get("CODEX_RELAY_PORT", "3128"),

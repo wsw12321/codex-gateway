@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 )
 
 const (
@@ -21,8 +24,9 @@ func TestPickWritesTheBoundRouteBeforeUsingAnAccount(t *testing.T) {
 	f := newFixture(t, 2)
 	f.alloc.routes = map[string]Egress{f.ids["a"]: {ProxyURL: testRouteA, Revision: "r1"}}
 	f.alloc.prefer = []string{f.ids["a"], f.ids["b"]}
-	// The credential has no proxy yet. CPA snapshotted it before the pick, so
-	// this attempt cannot use a; it moves on to b and a's route is written.
+	// The credential still carries the global route. CPA snapshotted it before
+	// the pick, so this attempt cannot use a; it moves on to b and a's route
+	// is written.
 	if name, err := f.run(pickOptions{}, "succeeded"); err != nil || name != "b" {
 		t.Fatalf("picked %q, %v; want b while a's route is applied", name, err)
 	}
@@ -50,18 +54,91 @@ func TestPickWritesTheBoundRouteBeforeUsingAnAccount(t *testing.T) {
 }
 
 func TestPickReplacesAProxyTheGatewayDidNotBind(t *testing.T) {
+	// A credential uploaded with its own proxy, or with none: the Gateway
+	// binds it to the global route, which is written out explicitly before
+	// the account is used. An empty proxy is never left behind, because CPA
+	// has no proxy of its own to fall back on.
+	for name, planted := range map[string]string{"planted": "http://attacker.example:8080", "none": ""} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t, 1)
+			f.host.setProxy("idx-a", planted, f.clock)
+			if _, err := f.pick(pickOptions{}); !errors.Is(err, ErrUnavailable) {
+				t.Fatalf("got %v; the only account must be skipped until its route is written", err)
+			}
+			if len(f.applied) != 1 || f.applied[0] != "a="+testGlobalProxy {
+				t.Fatalf("applied %v, want the global route written out", f.applied)
+			}
+			if _, err := f.pick(pickOptions{}); err != nil {
+				t.Fatalf("the account stayed unusable after its route was written: %v", err)
+			}
+		})
+	}
+}
+
+func TestPickRefusesTheGlobalRouteWithoutAGlobalEgress(t *testing.T) {
 	f := newFixture(t, 1)
-	// A credential uploaded with its own proxy: the Gateway binds it to the
-	// global route, so the proxy is removed before the account is used.
-	f.host.setProxy("idx-a", "http://attacker.example:8080", f.clock)
-	if _, err := f.pick(pickOptions{}); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("got %v; the only account must be skipped until its proxy is removed", err)
+	f.plugin.cfg.GlobalProxyURL = ""
+	f.host.setProxy("idx-a", "", f.clock)
+	if _, err := f.pick(pickOptions{}); !errors.Is(err, ErrUnavailable) || len(f.applied) != 0 {
+		t.Fatalf("got %v and applied %v; an account must never be left without a route", err, f.applied)
 	}
-	if len(f.applied) != 1 || f.applied[0] != "a=" {
-		t.Fatalf("applied %v, want the proxy cleared", f.applied)
+}
+
+func TestReconcileWritesEveryCredentialsRoute(t *testing.T) {
+	f := newFixture(t, 3)
+	// a is bound to its own route, b arrived without a proxy, c is converged.
+	f.alloc.routes = map[string]Egress{f.ids["a"]: {ProxyURL: testRouteA, Revision: "r1"}}
+	f.host.setProxy("idx-b", "", f.clock)
+	accounts, failed := f.plugin.ReconcileEgress(context.Background())
+	if accounts != 3 || failed != 0 {
+		t.Fatalf("reconciled %d with %d failures", accounts, failed)
 	}
-	if _, err := f.pick(pickOptions{}); err != nil {
-		t.Fatalf("the account stayed unusable after its proxy was cleared: %v", err)
+	sort.Strings(f.applied)
+	if want := []string{"a=" + testRouteA, "b=" + testGlobalProxy}; strings.Join(f.applied, " ") != strings.Join(want, " ") {
+		t.Fatalf("applied %v, want %v", f.applied, want)
+	}
+	// Every credential now carries its route, so a's first pick uses it.
+	f.alloc.prefer = []string{f.ids["a"]}
+	if name, err := f.run(pickOptions{}, "succeeded"); err != nil || name != "a" {
+		t.Fatalf("picked %q, %v", name, err)
+	}
+	// A second pass changes nothing.
+	f.applied = nil
+	if _, failed = f.plugin.ReconcileEgress(context.Background()); failed != 0 || len(f.applied) != 0 {
+		t.Fatalf("an unchanged route was written again: %v (%d failures)", f.applied, failed)
+	}
+	// A route that cannot be confirmed leaves the credential as it was.
+	f.alloc.egressErr = map[string]error{f.ids["b"]: ErrUnavailable}
+	f.alloc.routes[f.ids["c"]] = Egress{ProxyURL: testRouteA2, Revision: "r2"}
+	if accounts, failed = f.plugin.ReconcileEgress(context.Background()); accounts != 3 || failed != 1 {
+		t.Fatalf("reconciled %d with %d failures, want one failure", accounts, failed)
+	}
+	if len(f.applied) != 1 || f.applied[0] != "c="+testRouteA2 {
+		t.Fatalf("applied %v", f.applied)
+	}
+}
+
+func TestBackgroundReconcileFollowsTheLifecycle(t *testing.T) {
+	f := newFixture(t, 1)
+	f.host.setProxy("idx-a", "", f.clock)
+	// The fixture's clock is frozen, so the plugin stays in its warm-up and
+	// passes every reconcileRetry; a real clock is not needed to see one.
+	f.plugin.cfg.EgressReconcileInterval = time.Hour
+	f.plugin.Handle(pluginabi.MethodPluginRegister, nil)
+	f.plugin.Handle(pluginabi.MethodPluginReconfigure, nil) // idempotent
+	deadline := time.Now().Add(3 * reconcileRetry)
+	for f.host.proxyOf("idx-a") != testGlobalProxy && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	f.plugin.Handle(pluginabi.MethodPluginShutdown, nil)
+	if got := f.host.proxyOf("idx-a"); got != testGlobalProxy {
+		t.Fatalf("background pass left %q", got)
+	}
+	f.plugin.reconcileMu.Lock()
+	stopped := f.plugin.reconcileStop == nil
+	f.plugin.reconcileMu.Unlock()
+	if !stopped {
+		t.Fatal("shutdown left the background pass running")
 	}
 }
 

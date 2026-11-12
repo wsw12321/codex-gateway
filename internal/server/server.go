@@ -28,7 +28,9 @@ type Server struct {
 	anthropic   *gatewayproxy.Client
 	// allocations is set with the CPA plugin integration: the plugin reports
 	// each allocation decision here instead of CPA stamping response headers.
-	allocations           *gatewayproxy.AllocationLedger
+	allocations *gatewayproxy.AllocationLedger
+	// probeAccountLimit reads a probe's pinned account limit; tests replace it.
+	probeAccountLimit     func(context.Context, *http.Request, string) (int64, error)
 	cpaAdmin              *cpaAdminState
 	egressOnce            sync.Once
 	egressRuntime         *accountEgressRuntime

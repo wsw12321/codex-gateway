@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"encoding/json"
 	"errors"
@@ -58,6 +59,10 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if isAntigravityAccountRequest(r) && !s.legacyEgressAllowed(w, r) {
+		return
+	}
+	if pinned, ok := s.allocations.ProbeAccount(userID); ok {
+		s.probeAccountSelection(w, r, request, pinned, eligibility)
 		return
 	}
 	// account_ids is the sidecar's current model/attempt candidate set. Group
@@ -476,4 +481,57 @@ func eligibilityRows(allowed []store.UpstreamAccountEligibility) []map[string]an
 		rows = append(rows, map[string]any{"id": account.ID, "concurrent_limit": account.ConcurrentLimit})
 	}
 	return rows
+}
+
+// probeAccountSelection answers the allocation callbacks of a model
+// identification probe. The probe identity is one the Gateway created for a
+// probe in flight and is pinned to one account: that account is the only
+// answer, whatever the Owner's own permissions, and only when CPA offers it.
+// A probe never carries funding layers.
+func (s *Server) probeAccountSelection(w http.ResponseWriter, r *http.Request, request upstreamSelectionRequest, pinned string, eligibility bool) {
+	offered := false
+	for _, id := range request.AccountIDs {
+		offered = offered || id == pinned
+	}
+	if len(request.Groups) > 0 {
+		offered = false
+	}
+	if eligibility {
+		rows := []map[string]any{}
+		if offered {
+			lookup := s.probeAccountLimit
+			if lookup == nil {
+				lookup = s.storedAccountLimit
+			}
+			limit, err := lookup(r.Context(), r, pinned)
+			if err != nil {
+				httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
+				return
+			}
+			rows = append(rows, map[string]any{"id": pinned, "concurrent_limit": limit})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"accounts": rows})
+		return
+	}
+	if !offered {
+		httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "upstream_concurrency_exceeded", "暂无可用的上游账号，请稍后重试")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"account_id": pinned})
+}
+
+// storedAccountLimit is the Owner-configured concurrency limit of one account,
+// so a probe occupies the same slots as any other request on it.
+func (s *Server) storedAccountLimit(ctx context.Context, r *http.Request, id string) (int64, error) {
+	accounts, err := s.accountStore(r).ListUpstreamAccounts(ctx)
+	if err != nil {
+		return 0, err
+	}
+	limit := int64(1)
+	for _, account := range accounts {
+		if account.ID == id && account.ConcurrentLimit > 0 {
+			limit = int64(account.ConcurrentLimit)
+		}
+	}
+	return limit, nil
 }

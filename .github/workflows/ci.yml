@@ -305,6 +305,15 @@ jobs:
               .env
             ./scripts/validate-compose.sh --oidc
           done
+          # The rollback to the source-patched CPA image, selected in .env.
+          cp "$ci_env_backup" .env
+          sed -i 's/^CPA_INTEGRATION=.*/CPA_INTEGRATION=patch/' .env
+          ./scripts/validate-compose.sh
+          rollback=$(./scripts/compose.sh config --format json)
+          jq -e '
+            .services.gateway.environment.CPA_INTEGRATION == "patch" and
+            (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/Dockerfile"))
+          ' <<<"$rollback" >/dev/null
       - name: Deployment and login regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Verify relay routing, fail-closed behavior and streaming
@@ -332,28 +341,35 @@ jobs:
           exit 1
       - name: Verify per-account Shadowsocks routing and hot updates
         run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v2
-      - name: Verify sidecar runtime without site credentials
-        run: ./scripts/test-sidecar-image.sh
+      # The source-patched image is the rollback for plugin mode; it is built
+      # from deploy/patch-cpa.override.yml and keeps its own runtime checks.
+      - name: Build and verify source-patched rollback CPA image
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./scripts/compose.sh -f deploy/patch-cpa.override.yml --progress plain build codex-compat
+          ./scripts/test-sidecar-image.sh "$(./scripts/compose.sh -f deploy/patch-cpa.override.yml config --format json | jq -er '.services["codex-compat"].image')"
       - name: Verify Antigravity keyring isolation without a Google account
         run: ./scripts/test-antigravity-image.sh
-      # Unmodified CPA with the Gateway plugin. The build itself runs the
+      # Unmodified CPA with the Gateway plugin is the default image; it was
+      # built with the application images, and the build itself ran the
       # plugin's end-to-end suite against the binary it ships.
-      - name: Build and verify plugin-mode CPA image
+      - name: Verify plugin-mode CPA image
         shell: bash
         run: |
           set -euo pipefail
           lock=deploy/codex-compat/plugin.lock.json
           plugin_image=$(jq -er .image "$lock")
-          merged=$(./scripts/compose.sh -f deploy/cpa-plugin.override.yml config --format json)
+          merged=$(./scripts/compose.sh config --format json)
           jq -e --arg image "$plugin_image" '
             .services.gateway.environment.CPA_INTEGRATION == "plugin" and
             .services["codex-compat"].image == $image and
             (.services["codex-compat"].build.dockerfile | endswith("plugin.Dockerfile")) and
             .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
+            .services["codex-compat"].environment.HTTPS_PROXY == null and
             ([.services["codex-compat"].tmpfs[] | select(startswith("/tmp:"))] | length == 1) and
             ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:"))] | length == 1)
           ' <<<"$merged" >/dev/null
-          ./scripts/compose.sh -f deploy/cpa-plugin.override.yml --progress plain build codex-compat
           ./scripts/test-cpa-plugin-image.sh "$plugin_image"
       - name: Build and verify compatible CPA rollback image
         shell: bash
@@ -403,7 +419,7 @@ jobs:
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
-            --severity HIGH,CRITICAL "$(jq -er .image deploy/codex-compat/plugin.lock.json)"
+            --severity HIGH,CRITICAL "$(./scripts/compose.sh -f deploy/patch-cpa.override.yml config --format json | jq -er '.services["codex-compat"].image')"
       - name: Export tested images for publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash

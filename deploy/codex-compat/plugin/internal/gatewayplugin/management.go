@@ -62,7 +62,78 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
 		)
 	}
+	routes = append(routes, managementRoute{http.MethodPost, managementPrefix + "upstream-accounts/quota", "Report one Codex account's quota as CPA observed it"},
+		managementRoute{http.MethodGet, managementPrefix + modelIdentificationPrefix + "capabilities", "Report the model identification protocol"},
+		managementRoute{http.MethodGet, managementPrefix + modelIdentificationPrefix + "accounts/models", "List the models CPA registered for one Codex account"},
+	)
+	for _, provider := range facadeProviders {
+		base := managementPrefix + facadeNamespace + "/" + provider.name
+		routes = append(routes,
+			managementRoute{http.MethodPost, base + "/accounts/quota", "Report one account's quota on the credential page"},
+			managementRoute{http.MethodPost, base + "/oauth", "Start a login through CPA with a fixed egress"},
+			managementRoute{http.MethodPost, base + "/oauth/callback", "Hand an authorization code to CPA"},
+			managementRoute{http.MethodPost, base + "/oauth/status", "Report a login and bind its account"},
+			managementRoute{http.MethodPost, base + "/credentials", "Import tokens and let CPA refresh them"},
+			managementRoute{http.MethodPost, base + "/accounts/refresh", "Refresh one account's credential through CPA"},
+			managementRoute{http.MethodDelete, base + "/accounts", "Delete one disabled, idle account's credential"},
+		)
+	}
 	return managementRegistration{Routes: routes}
+}
+
+// The credential page reaches CPA under /internal/gateway-management/ in the
+// source-patched image; the Gateway maps that prefix to this namespace.
+const facadeNamespace = "gateway-management"
+
+// facadeProviders maps the credential page's provider names to providers.
+var facadeProviders = []struct{ name, provider string }{
+	{"codex", ProviderCodex},
+	{"antigravity", ProviderAntigravity},
+	{"anthropic", ProviderClaude},
+}
+
+// facadeManagement serves the credential page's routes: quota, login,
+// import, refresh and delete. Each operation is carried out by CPA's own
+// management API; see credentials.go.
+func (p *Plugin) facadeManagement(method, path string, query url.Values, body []byte) []byte {
+	name, action, _ := strings.Cut(path, "/")
+	provider := ""
+	for _, candidate := range facadeProviders {
+		if candidate.name == name {
+			provider = candidate.provider
+		}
+	}
+	if provider == "" {
+		return managementError(http.StatusNotFound, "not_found")
+	}
+	if provider == ProviderAntigravity && !p.cfg.AntigravityEnabled {
+		// During a bridge rollback this CPA must not touch Google credentials.
+		return facadeError(http.StatusServiceUnavailable)
+	}
+	switch {
+	case method == http.MethodPost && action == "accounts/quota":
+		switch provider {
+		case ProviderCodex:
+			return p.codexQuotaFacade(query, body)
+		case ProviderAntigravity:
+			return p.antigravityQuotaFacade(query, body)
+		default:
+			return p.anthropicQuotaFacade(query, body)
+		}
+	case method == http.MethodPost && action == "oauth" && len(query) == 0:
+		return p.oauthBegin(provider, body)
+	case method == http.MethodPost && action == "oauth/callback" && len(query) == 0:
+		return p.oauthCallback(provider, body)
+	case method == http.MethodPost && action == "oauth/status" && len(query) == 0:
+		return p.oauthStatus(provider, body)
+	case method == http.MethodPost && action == "credentials" && len(query) == 0:
+		return p.importCredential(provider, body)
+	case method == http.MethodPost && action == "accounts/refresh":
+		return p.refreshCredential(provider, query, body)
+	case method == http.MethodDelete && action == "accounts":
+		return p.deleteCredential(provider, query, body)
+	}
+	return managementError(http.StatusNotFound, "not_found")
 }
 
 func managementJSON(status int, value any) []byte {
@@ -100,6 +171,12 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return managementError(http.StatusServiceUnavailable, "account_registry_unavailable")
 	}
 	path = strings.TrimPrefix(strings.TrimPrefix(path, managementBase), managementPrefix)
+	if facade, ok := strings.CutPrefix(path, facadeNamespace+"/"); ok {
+		return p.facadeManagement(method, facade, query, body)
+	}
+	if action, ok := strings.CutPrefix(path, modelIdentificationPrefix); ok {
+		return p.modelIdentification(method, action, query)
+	}
 	name, action, _ := strings.Cut(path, "/")
 	provider := ""
 	for _, namespace := range accountNamespaces {
@@ -127,6 +204,8 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return p.setAccountStatus(provider, query, body)
 	case method == http.MethodPut && action == "egress":
 		return p.syncAccountEgress(provider, query, body)
+	case method == http.MethodPost && action == "quota" && provider == ProviderCodex:
+		return p.codexQuota(query, body)
 	}
 	return managementError(http.StatusNotFound, "not_found")
 }

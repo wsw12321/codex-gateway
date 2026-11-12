@@ -763,6 +763,8 @@ function upstreamQuotaReadings(provider, result, receivedAt) {
     }
     return readings;
   }
+  // In CPA plugin mode the Codex snapshot is CPA's observation of a response.
+  if (result?.observed_at) readings.observed_at = result.observed_at;
   const limits = result?.rateLimits && typeof result.rateLimits === "object" ? result.rateLimits : {};
   for (const window of [limits.primary, limits.secondary]) {
     if (!window || !Number.isInteger(window.usedPercent)) continue;
@@ -8202,22 +8204,29 @@ function scheduleUpstreamQuotaStale(accountID, container, receivedAt) {
 
 function renderUpstreamQuota(account, container, result, receivedAt) {
   if (upstreamAccountProvider === "anthropic") { renderAnthropicQuota(container, result); return; }
+  // An observed snapshot ages from when CPA saw the response, not from now.
+  const observedAt = result?.observed_at ? new Date(result.observed_at) : null;
+  const observed = observedAt && !Number.isNaN(observedAt.getTime());
   const freshness = statusBadge("ok");
   freshness.classList.add("upstream-quota-freshness");
-  freshness.textContent = "刚刚查询";
+  freshness.textContent = observed ? "最近观测" : "刚刚查询";
   const windows = upstreamQuotaWindows(result);
+  const asOf = observed ? observedAt : receivedAt;
   container.dataset.state = "fresh";
-  container.dataset.queriedAt = receivedAt.toISOString();
+  container.dataset.queriedAt = asOf.toISOString();
   container.setAttribute("aria-busy", "false");
   container.replaceChildren(
     element("div", {className: "upstream-quota-result-head"},
-      element("span", {text: `查询于 ${formatDataTime(receivedAt)} · ${String(account.plan || "套餐未知")}`}),
+      element("span", {text: `${observed ? "观测于" : "查询于"} ${formatDataTime(asOf)} · ${String(account.plan || "套餐未知")}`}),
       freshness,
     ),
     element("div", {className: "upstream-quota-windows"}, ...windows),
-    element("p", {className: "upstream-quota-stale-note hidden", text: "此结果已超过 5 分钟，可能不再反映当前额度。请重新查询。"}),
+    element("p", {className: "upstream-quota-stale-note hidden", text: observed
+      ? "此观测已超过 5 分钟。额度取自 CPA 记录的真实请求响应，账号处理新的请求后才会更新。"
+      : "此结果已超过 5 分钟，可能不再反映当前额度。请重新查询。"}),
+    observed ? element("p", {className: "muted", text: "额度取自 CPA 对该账号真实请求响应的记录，不单独向官方查询。"}) : null,
   );
-  scheduleUpstreamQuotaStale(account.id, container, receivedAt);
+  scheduleUpstreamQuotaStale(account.id, container, asOf);
 }
 
 function renderAnthropicQuota(container, result) {
@@ -8254,7 +8263,7 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
   clearUpstreamQuotaTimer(account.id);
   container.dataset.state = "loading";
   container.setAttribute("aria-busy", "true");
-  container.replaceChildren(element("p", {className: "upstream-quota-state", text: provider === "anthropic" ? "正在读取 CPA 最新状态…" : "正在实时查询官方额度…"}));
+  container.replaceChildren(element("p", {className: "upstream-quota-state", text: provider === "anthropic" ? "正在读取 CPA 最新状态…" : "正在读取官方额度…"}));
   try {
     const request = () => api(provider === "anthropic" ? `/admin/cpa/api/anthropic/accounts/${encodeURIComponent(account.id)}/quota` : upstreamAccountAPI(`/admin/upstream-accounts/${encodeURIComponent(account.id)}/quota`), {method: "POST", body: provider === "anthropic" ? "{}" : upstreamQuotaRequestBody}, current);
     const response = provider === "anthropic" ? await sensitiveAction(request, current) : await request();
@@ -8272,9 +8281,10 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
       throw new Error("官方额度响应格式异常，请稍后重试。");
     }
     if (!current()) return;
-    upstreamAccountRowState(account.id, provider).quota = {result: response.result, receivedAt};
-    renderUpstreamQuota(account, container, response.result, receivedAt);
-    applyUpstreamQuotaReadings(account, provider, response.result, receivedAt);
+    const result = typeof response.observed_at === "string" ? {...response.result, observed_at: response.observed_at} : response.result;
+    upstreamAccountRowState(account.id, provider).quota = {result, receivedAt};
+    renderUpstreamQuota(account, container, result, receivedAt);
+    applyUpstreamQuotaReadings(account, provider, result, receivedAt);
     announce(`已查询 ${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 的官方额度。`);
   } catch (error) {
     if (!current()) return;

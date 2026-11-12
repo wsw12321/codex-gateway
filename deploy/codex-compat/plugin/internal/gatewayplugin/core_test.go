@@ -35,20 +35,46 @@ func TestLoadConfig(t *testing.T) {
 	env := func(values map[string]string) func(string) string {
 		return func(key string) string { return values[key] }
 	}
-	base := map[string]string{"CLIPROXY_API_KEY_FILE": "/k/internal", "CPA_MANAGEMENT_KEY_FILE": "/k/manage", "CPA_PLUGIN_AUTH_DIR": "/auth"}
+	base := map[string]string{"CLIPROXY_API_KEY_FILE": "/k/internal", "CPA_MANAGEMENT_KEY_FILE": "/k/manage", "CPA_PLUGIN_AUTH_DIR": "/auth", "CPA_PLUGIN_GLOBAL_PROXY_URL": testGlobalProxy}
 	cfg, err := LoadConfig(env(base), read)
-	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL || !cfg.AntigravityEnabled {
+	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL || !cfg.AntigravityEnabled ||
+		cfg.GlobalProxyURL != testGlobalProxy || cfg.EgressReconcileInterval != time.Minute {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
 	}
+	with := func(key, value string) map[string]string {
+		values := map[string]string{key: value}
+		for k, v := range base {
+			if k != key {
+				values[k] = v
+			}
+		}
+		return values
+	}
+	if cfg, err = LoadConfig(env(with("CPA_PLUGIN_GLOBAL_PROXY_URL", testGlobalProxy+"/")), read); err != nil || cfg.GlobalProxyURL != testGlobalProxy {
+		t.Fatalf("trailing slash: %+v, %v", cfg, err)
+	}
+	if cfg, err = LoadConfig(env(with("CPA_PLUGIN_EGRESS_RECONCILE_SECONDS", "3600")), read); err != nil || cfg.EgressReconcileInterval != time.Hour {
+		t.Fatalf("reconcile interval: %+v, %v", cfg, err)
+	}
 	for name, change := range map[string][2]string{
-		"missing auth dir":       {"CPA_PLUGIN_AUTH_DIR", ""},
-		"missing key":            {"CLIPROXY_API_KEY_FILE", "/k/none"},
-		"short key":              {"CLIPROXY_API_KEY_FILE", "/k/short"},
-		"invalid key":            {"CLIPROXY_API_KEY_FILE", "/k/bad"},
-		"shared management key":  {"CPA_MANAGEMENT_KEY_FILE", "/k/internal"},
-		"gateway url with path":  {"CPA_PLUGIN_GATEWAY_URL", "http://gateway:8080/x"},
-		"gateway url with creds": {"CPA_PLUGIN_GATEWAY_URL", "http://u:p@gateway:8080"},
-		"https gateway":          {"CPA_PLUGIN_GATEWAY_URL", "https://gateway"},
+		"missing global proxy":          {"CPA_PLUGIN_GLOBAL_PROXY_URL", ""},
+		"global proxy is the route one": {"CPA_PLUGIN_GLOBAL_PROXY_URL", "http://egress-allowlist:3129"},
+		"global proxy with creds":       {"CPA_PLUGIN_GLOBAL_PROXY_URL", "http://u:p@egress:3128"},
+		"socks global proxy":            {"CPA_PLUGIN_GLOBAL_PROXY_URL", "socks5h://egress:1080"},
+		"reconcile too often":           {"CPA_PLUGIN_EGRESS_RECONCILE_SECONDS", "9"},
+		"reconcile too rarely":          {"CPA_PLUGIN_EGRESS_RECONCILE_SECONDS", "3601"},
+		"reconcile not a number":        {"CPA_PLUGIN_EGRESS_RECONCILE_SECONDS", "1m"},
+		"missing auth dir":              {"CPA_PLUGIN_AUTH_DIR", ""},
+		"missing key":                   {"CLIPROXY_API_KEY_FILE", "/k/none"},
+		"short key":                     {"CLIPROXY_API_KEY_FILE", "/k/short"},
+		"invalid key":                   {"CLIPROXY_API_KEY_FILE", "/k/bad"},
+		"shared management key":         {"CPA_MANAGEMENT_KEY_FILE", "/k/internal"},
+		"gateway url with path":         {"CPA_PLUGIN_GATEWAY_URL", "http://gateway:8080/x"},
+		"gateway url with creds":        {"CPA_PLUGIN_GATEWAY_URL", "http://u:p@gateway:8080"},
+		"https gateway":                 {"CPA_PLUGIN_GATEWAY_URL", "https://gateway"},
+		"global proxy with path":        {"CPA_PLUGIN_GLOBAL_PROXY_URL", "http://egress:3128/x"},
+		"global proxy scheme":           {"CPA_PLUGIN_GLOBAL_PROXY_URL", "ftp://egress:21"},
+		"global proxy no host":          {"CPA_PLUGIN_GLOBAL_PROXY_URL", "direct"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			values := map[string]string{}

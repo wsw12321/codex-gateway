@@ -372,7 +372,12 @@ func (s *Server) readCodexAccountUsage(ctx context.Context, accountID string) (a
 // per-feature buckets are not shown to members.
 func codexAccountUsage(quota gatewayproxy.UpstreamQuota, at time.Time) accountUsage {
 	limits := quota.Result.RateLimits
-	usage := accountUsage{Source: "live", UpdatedAt: &at,
+	source := "live"
+	if quota.ObservedAt != nil {
+		// Plugin mode: CPA's passive observation of a real response.
+		source, at = "observed", *quota.ObservedAt
+	}
+	usage := accountUsage{Source: source, UpdatedAt: &at,
 		Limited: limits.RateLimitReachedType != nil && strings.TrimSpace(*limits.RateLimitReachedType) != ""}
 	for _, window := range []*gatewayproxy.RateLimitWindow{limits.Primary, limits.Secondary} {
 		if window == nil || window.WindowDurationMins == nil {

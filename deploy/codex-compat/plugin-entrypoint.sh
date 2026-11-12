@@ -49,8 +49,14 @@ esac
 case "$listen_addr" in
     *[!0-9A-Fa-f.:]*|'') fail "listen address is invalid" ;;
 esac
+# The global egress is a plain HTTP listener. The plugin writes it into every
+# credential the Gateway leaves on the global egress; CPA itself gets no proxy.
 case "$proxy_url" in
-    *[!A-Za-z0-9._~:/@%+-]*) fail "proxy URL has an invalid format" ;;
+    http://*) ;;
+    *) fail "proxy URL has an invalid format" ;;
+esac
+case "${proxy_url#http://}" in
+    *[!A-Za-z0-9.:-]*|'') fail "proxy URL has an invalid format" ;;
 esac
 
 internal_key=$(read_key "$key_file" "internal API key")
@@ -82,7 +88,11 @@ cat > "$config_file" <<CONFIG
 host: "${listen_addr}"
 port: ${listen_port}
 auth-dir: "${auth_dir}"
-proxy-url: "${proxy_url}"
+# No proxy-url: every credential carries its own route, written by the plugin
+# (the global egress included). CPA falls back to its global proxy, and then to
+# a direct connection, when a credential's proxy is missing or unusable; with
+# neither configured the fallback is a direct connection, which this network
+# refuses. An account's egress therefore fails closed.
 # The Gateway is the only client. Keep its internal SSE uncompressed so usage
 # and first-token timing are parsed from the stream as it is produced.
 response-compression:
@@ -147,15 +157,18 @@ chmod 0600 "$config_file"
 # an account's route may be redirected through the environment.
 export CPA_PLUGIN_GATEWAY_URL=http://gateway:8080
 export CPA_PLUGIN_EGRESS_PROXY_HOST=egress-allowlist:3129
+# The global egress, written into credentials explicitly; never CPA's own.
+export CPA_PLUGIN_GLOBAL_PROXY_URL="$proxy_url"
+# Proxy variables would give CPA's standard transport a path of its own.
+unset HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy
 export CPA_PLUGIN_LOOPBACK_URL="http://127.0.0.1:${listen_port}"
 export CPA_PLUGIN_AUTH_DIR="$auth_dir"
 export CLIPROXY_API_KEY_FILE="$key_file"
 export CPA_MANAGEMENT_KEY_FILE="$management_key_file"
 
-if test "$#" -eq 0; then
-    set -- -config "$config_file" -local-model
-else
-    set -- -config "$config_file" -local-model "$@"
-fi
+# Logins and imports go through the credential page, where CPA runs them with
+# the egress the Owner chose. A command-line login would run without any
+# egress (CPA has no proxy of its own here) and outside the registration.
+test "$#" -eq 0 || fail "command-line logins are not available in plugin mode; use the CPA credential page, or set CPA_INTEGRATION=patch for the rollback image"
 
-exec "$cpa_binary" "$@"
+exec "$cpa_binary" -config "$config_file" -local-model

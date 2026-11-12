@@ -1,8 +1,23 @@
 # CPA 插件模式路线图
 
-本文记录插件模式从“可选”走到“默认”还需要做的事，以及每一步的验收标准。插件模式的
-设计与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式可选尚非默认)，已完成
+本文记录插件模式从“可选”走到“默认”、再到删除源码补丁所需的事，以及每一步的验收标准。插件模式的
+设计与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式默认)，已完成
 的验证见[验证记录](cpa-plugin-migration-validation.md)。
+
+## 原则
+
+以下三条约束所有步骤，与之冲突的旧方案已经改写。
+
+1. **上游请求只由 CPA 生成并发出。** 推理、令牌刷新、OAuth 授权、模型列表和额度信息
+   都来自 CPA 原生代码路径。插件和 Gateway 不构造 provider 请求（不写死 provider 的 URL、
+   头部或 User-Agent，不自带 TLS 客户端），也不通过补丁改变 CPA 生成请求的方式。CPA 不
+   提供的能力宁可不提供，也不自行实现。
+2. **只保留残余补丁。** 补丁镜像的大补丁会被删除。残余补丁
+   （`residual/cliproxy-plugin-only-selector.patch`）不改请求的内容和格式，只在插件没有
+   选号时拒绝请求；它会提交给上游，合并后删除。
+3. **账号出口失败时拒绝，不回退。** “出口服务器”功能保留。账号绑定的出口不可用时，
+   该账号的请求、刷新和授权直接失败，绝不改走全局出口或直连。调度器仍可按原规则换另一个
+   有权限的账号，并使用那个账号自己的出口。
 
 ## 现状（2026-11-12）
 
@@ -13,24 +28,29 @@
 - 残余补丁 139 行，只新增 `routing.strategy: "plugin-only"`，同一份补丁可无 fuzz 应用到
   v8.0.59 和 v8.0.67。
 - Gateway 的 `CPA_INTEGRATION=plugin`：请求账本归因、`/v0/management/gateway/*` 路由映射、
-  出口推送。默认仍是 `patch`。
-- 构建（`plugin.Dockerfile`）、部署（`deploy/cpa-plugin.override.yml`）、CI 步骤、镜像探针、
-  部署静态校验。
-- 自动化测试：插件单测与竞态检测、9 组端到端测试、Gateway 单测、部署静态校验，均通过。
+  出口推送。
+- 插件模式是默认部署（第 8 步第 1 项）；源码补丁镜像经 `.env` 的 `CPA_INTEGRATION=patch`
+  回退（`deploy/patch-cpa.override.yml`）。
+- 构建（`plugin.Dockerfile`）、CI 步骤、镜像探针、部署静态校验。
+- 自动化测试：插件单测与竞态检测、12 组端到端测试、Gateway 单测、部署静态校验，均通过。
+- 账号出口不回退（第 7 步的出口部分）：每个凭证都带显式出口，CPA 不配置任何代理，
+  插件后台对账。
+- 额度只读取 CPA 的被动观测（第 4 步），插件不再自行发出供应商请求。
+- “CPA 授权管理”页面的凭证操作经 CPA 原生管理接口完成，先选出口再授权（第 5 步）。
+- 模型鉴定的探针是由 CPA 生成的普通请求，由 Gateway 固定到被鉴定的账号（第 6 步）。
 - Go 工具链 1.26.11（第 1 步），两个 module 的 govulncheck 与 gosec 在本地均无发现。
 - 插件镜像在 CI 中构建、测试、探针与 Trivy 扫描全部通过（第 2 步，PR #4）。
 
 尚未具备：
 
-- 上游额度查询、模型鉴定、“CPA 授权管理”页面的凭证操作（新增/重新授权、导入、刷新、
-  删除，以及先选出口再授权的登记流程）。
 - 没有真实账号验收。
 - CPA 内部各 Provider 缓存键是否按调用方隔离尚未逐个核对。
 
 ## 步骤
 
-按顺序执行。每一步单独提交，并在[验证记录](cpa-plugin-migration-validation.md)中补充
-结果。
+第 1、2 步已完成。其余按 7（出口部分）→ 4 → 5 → 6 → 8 的顺序执行：凭证操作和模型鉴定
+都依赖“每个凭证都带显式出口”。每一步单独提交，并在[验证记录](cpa-plugin-migration-validation.md)
+中补充结果。
 
 ### 1. 升级 Go 工具链到 1.26.11，让 CI 恢复绿色
 
@@ -88,75 +108,118 @@ Docker 守护进程，以下几处只有 CI 能暴露问题，需重点看：
 | 禁用与重新启用 | 立即生效；重启 sidecar 后保持 |
 | 额度锁 | 真实 `usage_limit_reached` 后账号锁定，Owner 启用后恢复（如验收期间自然出现） |
 | 账号独立出口 | 绑定节点后，流量与刷新都经该节点（看出口运行时的连接记录）；解绑后回到全局 |
+| 出口失败不回退 | 停掉绑定的节点后，该账号的请求失败，Squid 3128 上没有该账号的连接；其他账号照常 |
+| 凭证中的出口 | 每个凭证都带显式 `proxy_url`（未绑定的账号为全局出口地址） |
 | 刷新后重启 | 凭证刷新后重启 sidecar，账号仍可用 |
+| 额度 | 有请求后，Codex 与 Claude 显示最近一次观测及观测时间；“CPA 授权管理”页面三个 Provider 的额度列可用（Antigravity 显示不可用） |
 | 回退演练 | 去掉覆盖文件回到补丁镜像，账号状态、禁用与额度锁保持 |
 
-### 4. 迁移额度查询
+### 4. 额度改为 CPA 的被动观测
 
-**原因。** 管理页面的额度列和 Owner 的额度查询依赖它。
+**原因。** 第一次实现（[验证记录](cpa-plugin-migration-validation.md#路线图第-4-步额度查询)）
+由插件自己向 `chatgpt.com/backend-api/wham/usage` 和 `cloudcode-pa` 发请求，URL、头部和
+User-Agent 都是写死的，用的是 Go 标准 TLS 客户端，违反原则 1。
 
-**做法。** CPA v8 的 `POST /v0/management/quota/fetch` 把额度查询委托给声明了
-`QuotaProvider` 能力的插件。先评估让本插件实现 `QuotaProvider`，并在插件路由
-`/v0/management/gateway/{namespace}/quota?id=` 中按补丁镜像的严格格式输出（Codex 的
-`account/rateLimits/read` RPC 信封、脱敏规则、固定错误码）。上游请求必须走该账号的出口，
-不跟随重定向，不返回原始上游文本。Claude 的被动额度快照需要确认插件能否从 usage 记录的
-响应头中取得。
+**做法。** CPA 会把 Codex（`x-codex-*`）和 Claude（`anthropic-ratelimit-unified-*`）
+响应头记录进凭证的被动观测（`QuotaState.Signals`），这些头来自 CPA 自己发出的真实请求。
 
-**验收。** Gateway 现有的额度解析测试在插件模式下通过；端到端增加额度场景（假上游返回
-各类合法与非法额度响应）。
+- 插件删除全部主动查询代码，改为读取 CPA 管理列表中的观测：Codex 映射成补丁镜像的
+  `account/rateLimits/read` 信封并附加 `observed_at`，还没有观测时返回固定码
+  `quota_not_observed`；Claude 维持现有的被动快照；Antigravity 没有被动来源，返回固定码
+  `quota_unavailable`。
+- Gateway 接受 `observed_at` 与上述错误码；控制台显示“最近观测于 …”或“暂无观测”。
+  请求后的额度检查（`upstream_quota_guard`）读取的是该请求刚产生的观测。
+
+**验收。** 插件的“信号 → 信封”表驱动测试（含非法值）；端到端测试中，假上游在普通
+`/v1/responses` 上返回 `x-codex-*` 头后额度路由返回快照，且额度路由本身不产生任何上游请求；
+Gateway 的额度解析与界面测试通过。
+
+**状态（2026-11-12）。** 已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-4-步改写额度改为-cpa-被动观测)。
 
 ### 5. 迁移“CPA 授权管理”页面的凭证操作
 
-**做法。** 插件路由包装 CPA 原生管理接口，Gateway 的 `/internal/gateway-management/*`
+**做法。** 插件路由经回环调用 CPA 原生管理接口，Gateway 的 `/internal/gateway-management/*`
 映射过去，页面不改：
 
-| 操作 | 原生接口 | 插件需补充的部分 |
+| 操作 | 原生接口 | 出口与身份 |
 |---|---|---|
-| 新增/重新授权 | `GET /v0/management/{provider}-auth-url`、`/oauth-callback`、`/get-auth-status` | 原生接口接受请求体中的 `proxy_url` 作为本次授权的出口，可实现“先选出口再授权”；完成后按身份登记规则分配稳定账号 ID |
-| 导入 | `POST /v0/management/auth-files` | 只接受刷新令牌等必要字段；导入后立即刷新并核验身份（Antigravity 的 Google subject、Anthropic 的账号与组织 UUID） |
+| 新增/重新授权 | `GET /v0/management/{provider}-auth-url?proxy_url=…`、`/get-auth-status` | 出口由 Gateway 的出口登记解析；CPA 经该出口完成授权，并把 `proxy_url` 写入凭证。解析失败时拒绝开始授权 |
+| 导入 | `POST /v0/management/auth-files`（凭证带 `proxy_url`），然后 `POST /auth-files/refresh` | 刷新由 CPA 经该出口完成 |
 | 刷新 | `POST /v0/management/auth-files/refresh` | 只针对单个账号 |
 | 删除 | `DELETE /v0/management/auth-files` | 先禁用并等待进行中的请求结束，再删除；保留身份登记与控制状态 |
 
-身份核验必须调用供应商的固定身份端点，且走该账号的出口。重复身份的处理沿用补丁镜像的
-规则。
+身份只取 CPA 保存在凭证中的字段（Codex 的 id_token 声明、Antigravity 由 CPA 获取的
+用户信息与项目、Claude 的账号与组织），插件不调用 provider 的身份端点。缺少必要字段时拒绝
+登记。重复身份的处理沿用补丁镜像的规则。
 
-**验收。** Gateway 的 `TestCPAManagement*` 在插件模式下通过；端到端增加授权、导入、刷新、
-删除场景（假 OAuth 端点）。
+**验收。** Gateway 的 `TestCPAManagement*` 在插件模式下通过；插件管理路由单测；端到端增加
+导入、刷新、删除场景（假 OAuth 端点经 TLS 拦截代理提供）。
+
+**状态（2026-11-12）。** 已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-5-步凭证操作改用-cpa-原生管理接口)。
+Antigravity 新增账号以 CPA 记录的邮箱为身份；Antigravity 与仅有访问令牌的 Claude 凭证不能
+导入，需改用授权。
 
 ### 6. 迁移模型鉴定
 
-**做法。** 插件路由 `/v0/management/gateway/model-identification/*`。探针用插件自己的
-HTTP 客户端，读取该账号的凭证，走该账号的出口，直连固定的 Codex Responses URL；不刷新
-凭证、不重放、不跨账号，沿用补丁镜像的单题超时、事件大小、输出长度和错误码限制。也可
-评估 CPA 的 `host.model.execute` 回调能否固定到单个凭证，以减少自写的协议处理。
+**做法。** 模型鉴定的探针改为 CPA 的普通 `/v1/responses` 请求，上游请求由 CPA 生成：
 
-**验收。** Gateway 的模型鉴定测试在插件模式下通过；端到端增加探针场景。
+- Gateway 在请求账本中把该请求令牌标记为固定到某个账号的探针，选号回调只回答这个账号；
+  CPA 重试时该账号已试过，回调回答不可用，探针不会换到别的账号。
+- 回答取自 CPA 标准的 Responses 输出，沿用现有的输出长度、超时和错误码限制。
+- 账号可用的模型列表由插件路由包装 CPA 的 `GET /v0/management/auth-files/models`。
+- 与补丁镜像的差异：CPA 可能按原生规则刷新令牌并在同一账号上重试，这一点接受。
 
-### 7. 补齐剩余差异
+**验收。** Gateway 的模型鉴定测试在插件模式下通过；端到端增加探针场景（固定账号成功；
+固定账号失败时不换号）。
 
+**状态（2026-11-12）。** 已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-6-步模型鉴定走-cpa-的普通请求路径)。
+探针以一次性身份固定账号，Gateway 的分配回调只对它回答该账号。
+
+### 7. 账号出口不回退，补齐剩余差异
+
+- **出口不回退（最先做）。** 插件把 Gateway 的“继承全局出口”也写成凭证上的显式
+  `proxy_url`（全局出口地址），CPA 的配置与环境中不再有全局代理。这样 CPA 任何忽略账号
+  代理或代理无法构建时的退路都只剩直连，而 CPA 所在的网络没有外网，直连必然失败。
+  Gateway 对推送失败的出口绑定持续重试，并在启动时推送全部账号，关闭“绑定变更后后台
+  刷新仍用旧出口”的窗口。
 - **Provider 缓存键。** 逐个阅读 CPA 中 Claude 工具别名、Gemini 签名、提示缓存等缓存的
-  键，确认都包含调用方作用域与账号。有缺口时优先向上游提交修复，否则加入残余补丁并配
-  测试。
+  键，确认都包含调用方作用域与账号。有缺口时向上游提交修复；不加入残余补丁。
 - **Antigravity 模型限制。** 在 `plugin-entrypoint.sh` 生成的配置中用
   `oauth-excluded-models` 限定为五个已审模型，并加入部署静态校验。
-- **后台刷新的出口窗口。** 绑定变更后、账号下一次被选中或收到推送前，后台刷新使用
-  凭证中原来的代理。评估在插件中定期对账（例如每分钟对有绑定的账号调用一次
-  `resolve-egress`），或在 Gateway 的出口同步循环中推送有变化的绑定。
+
+**验收（出口部分）。** 插件单测覆盖“全局出口写成显式地址”“写入失败排除账号”；端到端
+测试中给账号绑定不可用的代理，该账号的请求失败、provider 没有经其他代理收到该账号的请求，
+另一个账号照常成功；部署静态校验确认配置中没有 `proxy-url`、覆盖文件清空了代理环境变量。
+
+**状态（2026-11-12）。** 出口部分已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-7-步出口部分账号出口不回退)。
+Gateway 侧的推送重试改由插件的后台对账承担（启动后到确认全部凭证前每 2 秒一轮，之后
+每分钟一轮）。
 
 ### 8. 改为默认并清理
 
-前提：第 1–7 步完成，真实账号验收通过，生产稳定运行至少两周。
-
 **做法。**
 
-1. 把插件镜像与 `CPA_INTEGRATION=plugin` 写入 `docker-compose.yml`；补丁镜像改为回退用的
-   覆盖文件（参照 `deploy/legacy-cpa.override.yml`），保留至少 7 天。
-2. 回退窗口结束后删除 `cliproxy-v8.0.*-gateway*.patch`、`Dockerfile` 中按名字断言的补丁
-   测试清单，以及只为补丁镜像存在的 `/internal/*` 兼容代码路径。
+1. 第 4–7 步完成后，把插件镜像与 `CPA_INTEGRATION=plugin` 写入 `docker-compose.yml`；
+   补丁镜像改为回退用的覆盖文件 `deploy/patch-cpa.override.yml`（参照
+   `deploy/legacy-cpa.override.yml`）。
+2. 真实账号验收（第 3 步）通过并稳定运行 7 天后，删除 `cliproxy-v8.0.*-gateway*.patch`
+   及各阶段补丁、`Dockerfile` 中按名字断言的补丁测试清单、只为补丁镜像存在的 `/internal/*`
+   兼容代码路径和 `CPA_INTEGRATION=patch`；同时删除自写的 Antigravity 旧桥接
+   （`cmd/antigravity-bridge`、`internal/antigravity`），它同样违反原则 1。
 3. 更新 `README.md`、`CLAUDE.md`、`docs/compatibility-upgrades.md`、
    `docs/threat-model.md` 与 `THIRD_PARTY_NOTICES`。
 
 **验收。** CI 全绿；默认部署的镜像探针与端到端测试通过；回退覆盖文件可用。
+
+**状态（2026-11-12）。** 第 1 项已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-8-步第-1-项插件模式成为默认)。回退不靠
+`-f`：`.env` 的 `CPA_INTEGRATION=patch` 让 `scripts/compose.sh` 的每次调用都叠加回退覆盖文件，
+登录脚本和之后的 `up -d` 也不会切回插件镜像。第 2、3 项等真实账号验收（第 3 步）通过并
+稳定 7 天后进行。
 
 ### 9. 减少残余补丁并提前发现上游变化
 
@@ -189,9 +252,11 @@ HTTP 客户端，读取该账号的凭证，走该账号的出口，直连固定
 | 可执行的临时目录 | 64 MB tmpfs，仅服务用户可写 | 削弱“容器内无可写可执行目录”的加固 |
 | CPA 原生换号规则 | 403 会换账号，补丁镜像不会 | 可用 `oauth-request-scoped-errors` 调整；视验收结果决定 |
 | 执行器内的重定向与主机限制 | 只由出口白名单约束 | 若需保留，考虑向上游提交可配置项 |
+| 被动额度的时效 | 只在账号有请求后更新 | 长时间无请求的账号显示较旧的观测，界面标明观测时间 |
 
 ## 明确不做
 
+- 不自行实现 CPA 没有的 provider 请求（主动额度查询、身份核验端点、模型鉴定专用探针）。
 - 不迁移“无显式会话标识时按对话内容推导亲和”。它需要解析请求体；Codex CLI 与 Claude Code
   都带显式会话标识。
 - 不迁移 Gemini 历史校验返回 `new_session_required`。改为上游原生错误。

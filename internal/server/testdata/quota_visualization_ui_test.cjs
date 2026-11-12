@@ -496,6 +496,11 @@ test("a live quota query refreshes the summary bars from Codex minutes or Claude
   assert.deepEqual(JSON.parse(JSON.stringify(codex)), {observed_at: "2026-11-06T06:00:00.000Z",
     five_hour: {used_percent: 40, reset_at: new Date(1800000000 * 1000).toISOString()},
     seven_day: {used_percent: 25, reset_at: new Date(1800600000 * 1000).toISOString()}});
+  // In CPA plugin mode the Codex snapshot is an observation with its own time.
+  const observedCodex = ui.run(`upstreamQuotaReadings("codex", {observed_at: "2026-11-06T05:30:00Z",
+    rateLimits: {primary: {usedPercent: 40, windowDurationMins: 300}}}, at)`);
+  assert.deepEqual(JSON.parse(JSON.stringify(observedCodex)), {observed_at: "2026-11-06T05:30:00Z",
+    five_hour: {used_percent: 40, reset_at: null}});
   const claude = ui.run(`upstreamQuotaReadings("anthropic", {observed_at: "2026-11-06T05:58:00Z", windows: [
     {window: "five_hour", used_percent: 41.6, reset_at: "2026-11-06T09:00:00Z"}, {window: "seven_day", used_percent: null}]}, at)`);
   assert.deepEqual(JSON.parse(JSON.stringify(claude)), {observed_at: "2026-11-06T05:58:00Z", five_hour: {used_percent: 42, reset_at: "2026-11-06T09:00:00Z"}});
@@ -530,4 +535,31 @@ test("live quota windows in the account details carry the same bars", () => {
   ui.run(`renderAnthropicQuota(container, {observed_at: "2026-11-06T05:58:00Z", windows: [{window: "five_hour", used_percent: 30, status: "allowed"}]})`);
   assert.deepEqual(container.querySelectorAll("progress").map((bar) => bar.attributes.value), ["30"]);
   assert.match(container.textContent, /观测时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}:00/);
+});
+
+test("an observed Codex quota shows when CPA saw it and ages from then", () => {
+  const ui = dashboard();
+  ui.context.account = {id: "0123456789abcdef", plan: "Pro"};
+  ui.context.container = new Element("div");
+  const received = new Date();
+  const observedAt = new Date(received.getTime() - 60 * 1000);
+  ui.context.received = received;
+  ui.context.result = {observed_at: observedAt.toISOString(),
+    rateLimits: {limitId: "codex", primary: {usedPercent: 30, windowDurationMins: 300, resetsAt: null}, secondary: null},
+    rateLimitsByLimitId: {codex: {limitId: "codex", primary: {usedPercent: 30, windowDurationMins: 300, resetsAt: null}, secondary: null}}};
+  ui.run(`upstreamAccountProvider = "codex"; renderUpstreamQuota(account, container, result, received)`);
+  const text = ui.context.container.textContent;
+  assert.match(text, /^观测于 .* · Pro最近观测/);
+  assert.match(text, /额度取自 CPA 对该账号真实请求响应的记录/);
+  assert.equal(ui.context.container.dataset.queriedAt, observedAt.toISOString(), "staleness counts from the observation");
+
+  // A live query (the source-patched image) keeps its wording.
+  const live = new Element("div");
+  ui.context.live = live;
+  ui.context.liveResult = {...ui.context.result};
+  delete ui.context.liveResult.observed_at;
+  ui.run(`renderUpstreamQuota(account, live, liveResult, received)`);
+  assert.match(live.textContent, /^查询于 .* · Pro刚刚查询/);
+  assert.doesNotMatch(live.textContent, /CPA 对该账号真实请求响应/);
+  ui.run(`clearUpstreamQuotaTimer(account.id)`);
 });

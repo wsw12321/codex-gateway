@@ -24,7 +24,7 @@ probe() {
         --entrypoint /bin/sh "$image" /probe.sh "$1"
 }
 
-# The mount from deploy/cpa-plugin.override.yml.
+# The mount from docker-compose.yml.
 probe serving rw,exec,nosuid,nodev,size=64m,mode=0700,uid=10001,gid=10001
 # Without it CPA cannot map the plugin; the image must then stay closed.
 probe no-exec-tmp rw,noexec,nosuid,nodev,size=64m,mode=0700,uid=10001,gid=10001

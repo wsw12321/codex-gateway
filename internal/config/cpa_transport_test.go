@@ -55,7 +55,8 @@ func TestCPAIntegrationSetting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The source-patched image stays the default until the plugin is accepted.
+	// Without a setting the Gateway assumes the source-patched contract, which
+	// needs no management key; the Compose deployment sets plugin explicitly.
 	if cfg.CPAIntegration != "patch" || cfg.UsesCPAPlugin() {
 		t.Fatalf("default integration = %q", cfg.CPAIntegration)
 	}

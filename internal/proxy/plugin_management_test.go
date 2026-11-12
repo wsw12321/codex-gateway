@@ -2,9 +2,12 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,13 +15,18 @@ import (
 
 func TestPluginManagementPath(t *testing.T) {
 	for path, want := range map[string][2]string{
-		"/internal/upstream-accounts":                                    {"/v0/management/gateway/upstream-accounts", ""},
-		"/internal/upstream-accounts/capabilities":                       {"/v0/management/gateway/upstream-accounts/capabilities", ""},
-		"/internal/anthropic-accounts/concurrency":                       {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
-		"/internal/upstream-accounts/0123456789abcdef/status":            {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
-		"/internal/antigravity-accounts/0123456789abcdef/quota":          {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
-		"/internal/model-identification/accounts/0123456789abcdef/probe": {"/v0/management/gateway/model-identification/accounts/probe", "id=0123456789abcdef"},
-		"/internal/gateway-management/codex/oauth":                       {"/v0/management/gateway/gateway-management/codex/oauth", ""},
+		"/internal/upstream-accounts":                                          {"/v0/management/gateway/upstream-accounts", ""},
+		"/internal/upstream-accounts/capabilities":                             {"/v0/management/gateway/upstream-accounts/capabilities", ""},
+		"/internal/anthropic-accounts/concurrency":                             {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
+		"/internal/upstream-accounts/0123456789abcdef/status":                  {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
+		"/internal/antigravity-accounts/0123456789abcdef/quota":                {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
+		"/internal/model-identification/accounts/0123456789abcdef/probe":       {"/v0/management/gateway/model-identification/accounts/probe", "id=0123456789abcdef"},
+		"/internal/gateway-management/codex/oauth":                             {"/v0/management/gateway/gateway-management/codex/oauth", ""},
+		"/internal/gateway-management/anthropic/oauth/callback":                {"/v0/management/gateway/gateway-management/anthropic/oauth/callback", ""},
+		"/internal/gateway-management/antigravity/oauth/status":                {"/v0/management/gateway/gateway-management/antigravity/oauth/status", ""},
+		"/internal/gateway-management/codex/credentials":                       {"/v0/management/gateway/gateway-management/codex/credentials", ""},
+		"/internal/gateway-management/codex/accounts/0123456789abcdef/refresh": {"/v0/management/gateway/gateway-management/codex/accounts/refresh", "id=0123456789abcdef"},
+		"/internal/gateway-management/codex/accounts/0123456789abcdef":         {"/v0/management/gateway/gateway-management/codex/accounts", "id=0123456789abcdef"},
 		// Only a well-formed account id is lifted out of the path.
 		"/internal/upstream-accounts/0123456789ABCDEF/status": {"/v0/management/gateway/upstream-accounts/0123456789ABCDEF/status", ""},
 	} {
@@ -162,5 +170,85 @@ func TestSyncAccountEgress(t *testing.T) {
 	client.UsePluginManagement("")
 	if err := client.SyncAccountEgress(context.Background(), account); err == nil {
 		t.Fatal("pushed without the plugin integration")
+	}
+}
+
+// TestPluginQuotaContract feeds the plugin's own golden output to the strict
+// quota parser, so the two modules cannot drift apart unnoticed.
+func TestPluginQuotaContract(t *testing.T) {
+	golden, err := os.ReadFile(filepath.Join("..", "..", "deploy", "codex-compat", "plugin", "internal", "gatewayplugin", "testdata", "codex_quota_rpc.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const account = "0123456789abcdef"
+	var seen []*http.Request
+	client := pluginManagementClient(t, "codex", &seen, func(r *http.Request) (int, string) {
+		if r.URL.Path == "/v0/management/gateway/upstream-accounts/capabilities" {
+			return 200, `{"protocol":"` + AccountAccessProtocolV1 + `","group_upstream_account_scope":"` + GroupUpstreamAccountScopeV1 + `"}`
+		}
+		return 200, string(golden)
+	})
+	quota, err := client.QueryUpstreamAccountQuota(context.Background(), account)
+	if err != nil {
+		t.Fatalf("the plugin's quota answer was rejected: %v", err)
+	}
+	request := seen[len(seen)-1]
+	body, _ := io.ReadAll(request.Body)
+	if request.Method != http.MethodPost || request.URL.Path != "/v0/management/gateway/upstream-accounts/quota" ||
+		request.URL.RawQuery != "id="+account || request.Header.Get("Authorization") != "Bearer management-secret" ||
+		string(body) != accountRateLimitsRequestBody {
+		t.Fatalf("unexpected quota request: %s %s %q", request.Method, request.URL, body)
+	}
+	primary := quota.Result.RateLimits.Primary
+	review := quota.Result.RateLimitsByLimitID["code_review"]
+	if primary == nil || primary.UsedPercent != 25 || primary.WindowDurationMins == nil || *primary.WindowDurationMins != 300 ||
+		quota.Result.RateLimits.RateLimitReachedType == nil || review.Primary == nil || review.Secondary != nil {
+		t.Fatalf("parsed quota %+v", quota.Result)
+	}
+	// The plugin answers from CPA's passive observation and says when it was
+	// made.
+	if quota.ObservedAt == nil || !quota.ObservedAt.Equal(time.Date(2026, 11, 9, 2, 6, 40, 0, time.UTC)) {
+		t.Fatalf("observation time %v", quota.ObservedAt)
+	}
+	for name, observed := range map[string]string{
+		"not a time":  `"yesterday"`,
+		"no timezone": `"2026-11-09T02:06:40"`,
+		"far future":  `"` + time.Now().Add(time.Hour).UTC().Format(time.RFC3339) + `"`,
+		"before 2000": `"1999-12-31T23:59:59Z"`,
+		"number":      `1794190000`,
+		"null":        `null`,
+	} {
+		answer := strings.Replace(string(golden), `"2026-11-09T02:06:40Z"`, observed, 1)
+		invalid := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return 200, answer })
+		if _, err := invalid.QueryUpstreamAccountQuota(context.Background(), account); err == nil && name != "null" {
+			t.Fatalf("%s observation time was accepted", name)
+		} else if name == "null" && err != nil {
+			t.Fatalf("an absent observation time was refused: %v", err)
+		}
+	}
+
+	// The plugin's fixed error codes map to the same Gateway codes as the
+	// source-patched image's.
+	for _, test := range []struct {
+		status int
+		body   string
+		code   string
+	}{
+		{401, `{"error":"quota_reauthentication_required"}`, "upstream_reauthentication_required"},
+		{409, `{"error":"upstream_account_disabled"}`, "upstream_account_disabled"},
+		{429, `{"error":"quota_upstream_rate_limited"}`, "upstream_quota_rate_limited"},
+		{502, `{"error":"quota_rate_limit_missing"}`, "upstream_quota_rate_limit_missing"},
+		{502, `{"error":"quota_upstream_unavailable"}`, "upstream_quota_unavailable"},
+		{502, `{"error":"quota_account_identity_unavailable"}`, "upstream_quota_account_identity_unavailable"},
+		{409, `{"error":"quota_not_observed"}`, "upstream_quota_not_observed"},
+		{503, `{"error":"quota_observation_unavailable"}`, "upstream_quota_observation_unavailable"},
+		{504, `{"error":"quota_upstream_timeout"}`, "upstream_quota_timeout"},
+	} {
+		failing := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return test.status, test.body })
+		_, err = failing.QueryUpstreamAccountQuota(context.Background(), account)
+		var internalErr *InternalAPIError
+		if !errors.As(err, &internalErr) || internalErr.SafeCode() != test.code {
+			t.Fatalf("%d %s: got %v, want %s", test.status, test.body, err, test.code)
+		}
 	}
 }
