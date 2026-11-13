@@ -470,6 +470,7 @@ CPA 生成，插件不自行构造供应商请求：额度取自 CPA 对真实�
 只用于回退的补丁镜像。源码补丁镜像保留为回退：在 `.env` 中设置 `CPA_INTEGRATION=patch`，
 见[运维手册](docs/operations.md#cpa-插件模式的切换与回退)。说明见
 [兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式默认)，
+调用方之间的隔离见 [CPA Provider 缓存键核对](docs/cpa-provider-cache-audit.md)，
 后续步骤见 [CPA 插件模式路线图](docs/cpa-plugin-roadmap.md)。
 
 ```sh

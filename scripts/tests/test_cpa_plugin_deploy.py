@@ -161,6 +161,51 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn("/v0/management/gateway/upstream-accounts/capabilities", self.healthcheck)
         self.assertIn("upstream_account_access_v1", self.healthcheck)
 
+    def test_antigravity_serves_only_the_reviewed_models(self):
+        config = self.entrypoint[self.entrypoint.index("<<CONFIG"):self.entrypoint.index("\nCONFIG\n") + 1]
+        block = re.search(r'^oauth-excluded-models:\n  antigravity:\n((?:    - "[^"\n]+"\n)+)(?! )', config, flags=re.M)
+        self.assertIsNotNone(block, "the generated configuration does not restrict Antigravity models")
+        # One rule set, for Antigravity only: Codex and Claude register CPA's
+        # catalog unchanged, as they did in the source-patched image.
+        self.assertEqual(config.count("oauth-excluded-models:"), 1)
+        rules = re.findall(r'^    - "([^"]+)"$', block.group(1), flags=re.M)
+        self.assertEqual(rules, ["claude-*", "gpt-*", "gemini-3.1-flash-image"])
+
+        def excluded(model):
+            # CPA matches case-insensitively and knows no wildcard but "*".
+            return any(re.fullmatch(".*".join(map(re.escape, rule.lower().split("*"))), model.lower())
+                       for rule in rules)
+
+        # The reviewed models are the Gateway's own allowlist; no rule may hide
+        # one, and every other model the pinned catalog names for the provider
+        # must be covered.
+        gateway = read(ROOT / "internal" / "config" / "antigravity.go")
+        body = gateway[gateway.index("func AntigravityModels() []string {"):gateway.index("// LegacyAntigravityModels")]
+        reviewed = re.findall(r'"([a-z0-9.-]+)"', body)
+        self.assertEqual(len(reviewed), 5)
+        for model in reviewed:
+            self.assertFalse(excluded(model), model)
+        for model in ("claude-opus-4-6-thinking", "claude-sonnet-4-6", "claude-opus-5-5-high",
+                      "claude-sonnet-5-5-high", "gemini-3.1-flash-image", "gpt-oss-120b-medium"):
+            self.assertTrue(excluded(model), model)
+
+        # The catalog itself lives in the CPA binary, so the proof is the
+        # end-to-end test: it starts CPA with exactly this block, lets the
+        # provider report the binary's whole catalog, and requires the same
+        # five models. The Dockerfile asserts that test by name (see above).
+        harness = read(PLUGIN / "e2e" / "harness_test.go")
+        self.assertIn(block.group(0), harness)
+        catalog_test = read(PLUGIN / "e2e" / "catalog_e2e_test.go")
+        declared = catalog_test[catalog_test.index("var reviewedAntigravityModels = []string{"):]
+        declared = declared[:declared.index("}\n")]
+        self.assertEqual(sorted(re.findall(r'"([a-z0-9.-]+)"', declared)), sorted(reviewed))
+        self.assertIn("/v0/management/model-definitions/antigravity", catalog_test)
+        self.assertIn("TestAntigravityModelCatalog", self.dockerfile)
+        # The image probe confirms the shipped binary parsed the rule.
+        probe = read(ROOT / "scripts" / "tests" / "cpa-plugin-image-probe.sh")
+        self.assertIn("/v0/management/oauth-excluded-models", probe)
+        self.assertIn('"antigravity":[{}]'.format(",".join(f'"{rule}"' for rule in rules)), probe)
+
     def compat_service(self):
         start = self.compose.index("\n  codex-compat:\n")
         end = self.compose.index("\n  antigravity-bridge:\n")

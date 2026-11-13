@@ -24,7 +24,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -71,7 +70,9 @@ type fakeGateway struct {
 	prefer    []string
 	reports   []attemptReport
 	calls     []string
-	unauth    int
+	// namespaces records the account namespace of every callback.
+	namespaces []string
+	unauth     int
 	// routes binds an account to an egress proxy URL; a missing account uses
 	// the global egress. egressDown makes every resolution fail.
 	routes     map[string]string
@@ -100,8 +101,10 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := "/internal/upstream-accounts/"
-	if strings.HasPrefix(r.URL.Path, "/internal/anthropic-accounts/") {
-		prefix = "/internal/anthropic-accounts/"
+	for _, namespace := range []string{"/internal/anthropic-accounts/", "/internal/antigravity-accounts/"} {
+		if strings.HasPrefix(r.URL.Path, namespace) {
+			prefix = namespace
+		}
 	}
 	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, prefix) {
 		w.WriteHeader(http.StatusNotFound)
@@ -109,6 +112,7 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	action := strings.TrimPrefix(r.URL.Path, prefix)
 	g.calls = append(g.calls, action)
+	g.namespaces = append(g.namespaces, strings.Trim(strings.TrimPrefix(prefix, "/internal/"), "/"))
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 	var selection struct {
 		AccountIDs []string `json:"account_ids"`
@@ -213,7 +217,7 @@ func (g *fakeGateway) egressState(global string, ids []string) (resolved map[str
 func (g *fakeGateway) reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.reports, g.calls = nil, nil
+	g.reports, g.calls, g.namespaces = nil, nil, nil
 }
 
 func (g *fakeGateway) reportsFor(token string) []attemptReport {
@@ -255,7 +259,12 @@ type fakeProvider struct {
 	leaves   map[string]*tls.Certificate
 	// refused records CONNECTs refused because their route is down.
 	refused []upstreamCall
+	// discovered is the catalog Google reports for every Antigravity account.
+	discovered []string
 }
+
+// antigravityHost is where CPA discovers an Antigravity account's models.
+const antigravityHost = "daily-cloudcode-pa.googleapis.com"
 
 // deadRouteUser names a route whose egress node is down: the account
 // listener refuses its CONNECT the way Squid does when the account's parent
@@ -336,7 +345,7 @@ func (p *fakeProvider) tunnel(via string, conn net.Conn) {
 		return
 	}
 	host, _, _ := net.SplitHostPort(request.Host)
-	if host != "chatgpt.com" && host != "api.anthropic.com" && host != "auth.openai.com" {
+	if host != "chatgpt.com" && host != "api.anthropic.com" && host != "auth.openai.com" && host != antigravityHost {
 		// CPA's own background lookups are not part of any scenario.
 		_, _ = io.WriteString(conn, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
 		return
@@ -434,6 +443,10 @@ func (p *fakeProvider) serve(via, host, proxyAuth string, w http.ResponseWriter,
 		serveCodexToken(r, form, w)
 		return
 	}
+	if host == antigravityHost {
+		p.serveAntigravity(r, w)
+		return
+	}
 	switch behavior {
 	case "limit":
 		w.Header().Set("Content-Type", "application/json")
@@ -513,6 +526,23 @@ func serveCodexToken(r *http.Request, form url.Values, w http.ResponseWriter) {
 		"access_token": "at-" + name, "refresh_token": "rt2-" + name, "id_token": fakeJWT("acct-" + name),
 		"token_type": "Bearer", "expires_in": 3600,
 	})
+}
+
+// serveAntigravity answers the model discovery CPA runs for an Antigravity
+// account. Nothing else of the provider is part of a scenario.
+func (p *fakeProvider) serveAntigravity(r *http.Request, w http.ResponseWriter) {
+	if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	p.mu.Lock()
+	models := make(map[string]any, len(p.discovered))
+	for _, id := range p.discovered {
+		models[id] = map[string]any{}
+	}
+	p.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 }
 
 // serveClaude answers a Messages request with the unified rate limit headers
@@ -632,6 +662,13 @@ type harness struct {
 	// anthropicIdentities is the verified identity registry written before
 	// CPA starts, as the credential page's registration would leave it.
 	anthropicIdentities map[string]string
+	// antigravityIdentities is the same for Antigravity, keyed by the e-mail
+	// address CPA records with the credential.
+	antigravityIdentities map[string]string
+	// files maps an account name to its credential file.
+	files map[string]string
+	// readyModel is the model whose listing marks CPA as ready.
+	readyModel string
 }
 
 func requireEnv(t *testing.T, name string) string {
@@ -656,6 +693,7 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{
 		t: t, dir: dir, authDir: filepath.Join(dir, "auth"), gateway: newFakeGateway(t), provider: newFakeProvider(t),
 		accounts: map[string]account{}, logs: &bytes.Buffer{}, pluginEnabled: true, strategy: "plugin-only",
+		files: map[string]string{}, readyModel: model,
 	}
 	h.gatewayURL = h.gateway.server.URL
 	h.proxy = h.provider.listen("global")
@@ -684,13 +722,21 @@ func (h *harness) addAccount(name string, extra map[string]any) account {
 		h.t.Fatal(err)
 	}
 	created := account{name: name, token: token, id: stableIndex(accountID)}
-	h.accounts[name] = created
+	h.accounts[name], h.files[name] = created, "codex-"+name+".json"
 	return created
 }
 
 // addClaudeAccount writes a Claude OAuth credential whose verified identity
 // is already registered, and returns the account with the given stable id.
 func (h *harness) addClaudeAccount(name, id string) account {
+	h.t.Helper()
+	return h.addClaudeAccountWithToken(name, id, "claude-token-"+name)
+}
+
+// addClaudeAccountWithToken is addClaudeAccount with a chosen access token.
+// CPA takes its Claude Code request path, the one a real OAuth account uses,
+// only for a token shaped like Anthropic's OAuth access tokens.
+func (h *harness) addClaudeAccountWithToken(name, id, token string) account {
 	h.t.Helper()
 	accountUUID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa" + fmt.Sprintf("%02x", len(h.accounts))
 	organizationUUID := "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
@@ -699,7 +745,6 @@ func (h *harness) addClaudeAccount(name, id string) account {
 		h.anthropicIdentities = map[string]string{}
 	}
 	h.anthropicIdentities[subject] = id
-	token := "claude-token-" + name
 	document := map[string]any{
 		"type": "claude", "email": name + "@example.com", "access_token": token, "refresh_token": "refresh-" + name,
 		"expired": time.Now().Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339), "last_refresh": time.Now().UTC().Format(time.RFC3339),
@@ -710,7 +755,34 @@ func (h *harness) addClaudeAccount(name, id string) account {
 		h.t.Fatal(err)
 	}
 	created := account{name: name, token: token, id: id}
-	h.accounts[name] = created
+	h.accounts[name], h.files[name] = created, "claude-"+name+".json"
+	return created
+}
+
+// addAntigravityAccount writes an Antigravity OAuth credential as CPA's own
+// login stores it, with its e-mail identity already registered. The file
+// carries the global egress from the start, as every credential in a running
+// deployment does, so CPA's first model discovery already has its route.
+func (h *harness) addAntigravityAccount(name, id string) account {
+	h.t.Helper()
+	email := name + "@example.com"
+	if h.antigravityIdentities == nil {
+		h.antigravityIdentities = map[string]string{}
+	}
+	h.antigravityIdentities[email] = id
+	token := "antigravity-token-" + name
+	now := time.Now()
+	document := map[string]any{
+		"type": "antigravity", "email": email, "project_id": "project-" + name, "access_token": token, "refresh_token": "refresh-" + name,
+		"expires_in": 30 * 24 * 3600, "timestamp": now.UnixMilli(), "expired": now.Add(30 * 24 * time.Hour).UTC().Format(time.RFC3339),
+		"proxy_url": h.proxy,
+	}
+	raw, _ := json.Marshal(document)
+	if err := os.WriteFile(filepath.Join(h.authDir, "antigravity-"+name+".json"), raw, 0o600); err != nil {
+		h.t.Fatal(err)
+	}
+	created := account{name: name, token: token, id: id}
+	h.accounts[name], h.files[name] = created, "antigravity-"+name+".json"
 	return created
 }
 
@@ -742,12 +814,23 @@ func (h *harness) start() {
 			h.t.Fatal(err)
 		}
 	}
+	if len(h.antigravityIdentities) > 0 {
+		registry, _ := json.Marshal(map[string]any{"version": 1, "accounts": h.antigravityIdentities})
+		if err := os.WriteFile(filepath.Join(h.authDir, ".gateway-antigravity-email-identities"), registry, 0o600); err != nil {
+			h.t.Fatal(err)
+		}
+	}
 	keyFile := write("sidecar_api_key", internalKey+"\n")
 	managementFile := write("cpa_management_key", managementKey+"\n")
 	caFile := write("ca.pem", string(h.provider.caPEM))
 	config := write("config.yaml", fmt.Sprintf(`host: "127.0.0.1"
 port: %d
 auth-dir: %q
+oauth-excluded-models:
+  antigravity:
+    - "claude-*"
+    - "gpt-*"
+    - "gemini-3.1-flash-image"
 response-compression:
   enabled: false
 plugins:
@@ -884,7 +967,7 @@ func (h *harness) modelsReady() bool {
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, _ := io.ReadAll(response.Body)
-	return response.StatusCode == http.StatusOK && strings.Contains(string(body), `"`+model+`"`)
+	return response.StatusCode == http.StatusOK && strings.Contains(string(body), `"`+h.readyModel+`"`)
 }
 
 func (h *harness) stop() {
@@ -920,7 +1003,9 @@ type call struct {
 	path     string
 	headers  map[string]string
 	noToken  bool
-	timeout  time.Duration
+	// noScope omits the caller scope header.
+	noScope bool
+	timeout time.Duration
 	// body replaces the default Responses request.
 	body string
 }
@@ -970,7 +1055,9 @@ func (h *harness) do(c call) result {
 	request.Header.Set("Authorization", "Bearer "+c.key)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Codex-Gateway-User", c.user)
-	request.Header.Set("X-Codex-Gateway-Affinity", scope(c.affinity))
+	if !c.noScope {
+		request.Header.Set("X-Codex-Gateway-Affinity", scope(c.affinity))
+	}
 	if !c.noToken {
 		request.Header.Set("X-Codex-Gateway-Request", c.token)
 	}
@@ -1056,10 +1143,7 @@ func (h *harness) route(name, secret string) string {
 // credentialProxy reads the proxy stored in an account's credential file.
 func (h *harness) credentialProxy(name string) string {
 	h.t.Helper()
-	raw, err := os.ReadFile(filepath.Join(h.authDir, "codex-"+name+".json"))
-	if errors.Is(err, os.ErrNotExist) {
-		raw, err = os.ReadFile(filepath.Join(h.authDir, "claude-"+name+".json"))
-	}
+	raw, err := os.ReadFile(filepath.Join(h.authDir, h.files[name]))
 	if err != nil {
 		h.t.Fatal(err)
 	}

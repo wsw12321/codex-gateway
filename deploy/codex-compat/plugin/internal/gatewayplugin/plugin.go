@@ -213,7 +213,7 @@ func (p *Plugin) handleFrontendAuth(raw []byte) []byte {
 // Authenticate admits only the Gateway. The principal is the Gateway's opaque
 // per-caller scope, which makes CPA's native caller scope differ per caller;
 // requests without one (model listing, health checks) share a fixed principal
-// and are never allocated an account.
+// and are never allocated an account: Pick requires the scope.
 func (p *Plugin) Authenticate(headers http.Header) pluginapi.FrontendAuthResponse {
 	if p.unavailable != nil || !bearerMatches(headers, p.cfg.InternalKey) {
 		return pluginapi.FrontendAuthResponse{DenyStatusCode: http.StatusUnauthorized, DenyMessage: "invalid_internal_key"}

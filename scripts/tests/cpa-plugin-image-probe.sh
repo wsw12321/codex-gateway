@@ -144,6 +144,14 @@ request GET /v0/management/gateway/anthropic-accounts/capabilities "$management"
 grep -Fq '"anthropic_messages":"anthropic_messages_v1"' "$run/response" || fail "anthropic namespace lacks the Messages protocol"
 request GET /v0/management/auth-files "$internal"
 expect_status 401 "native management API with the data-plane key"
+# The rule that confines Antigravity accounts to the reviewed models must be
+# the one this binary parsed, not merely text in the generated file.
+request GET /v0/management/oauth-excluded-models "$management"
+expect_status 200 "model exclusion rules"
+grep -Fq '"antigravity":["claude-*","gpt-*","gemini-3.1-flash-image"]' "$run/response" || fail "Antigravity models are not confined to the reviewed catalog"
+if grep -Fq '"codex":' "$run/response" || grep -Fq '"claude":' "$run/response"; then
+    fail "an exclusion rule exists for a provider other than Antigravity"
+fi
 request GET /v1/models "$management"
 expect_status 401 "data plane with the management key"
 

@@ -158,6 +158,9 @@ func TestAllocation(t *testing.T) {
 		h.resetObservations()
 		for name, c := range map[string]call{
 			"no request token": {noToken: true},
+			// Without its own scope a caller would share CPA's per-caller
+			// state with every other such request.
+			"no caller scope":  {noScope: true},
 			"malformed user":   {user: "not-a-uuid"},
 			"malformed groups": {groups: `[{"group_id":"x"}]`},
 		} {

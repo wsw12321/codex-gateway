@@ -505,3 +505,88 @@ ID）、未知账号的诊断错误、畸形列表；探针本身没有插件路
 
 - 镜像构建、`test-cpa-plugin-image.sh`、`test-sidecar-image.sh` 与 Trivy 只能在 CI 中运行。
 - 真实账号验收（第 3 步）。
+
+## 路线图第 7 步（其余部分）：缓存键核对与 Antigravity 模型限制
+
+日期 2026-11-13。完成第 7 步剩下的两项。设计见
+[兼容层升级规程](compatibility-upgrades.md#antigravity-模型限制)，缓存键的逐项结果见
+[CPA Provider 缓存键核对](cpa-provider-cache-audit.md)，行为差异见升级规程第 4、5 项。
+
+### 依据：CPA 的模型注册
+
+在固定提交 `c5251b57` 的 CPA 源码中确认：
+
+- Antigravity 账号注册的模型是内置目录（`registry.GetAntigravityModels()`）与
+  `fetchAvailableModels` 为该账号返回的 ID 的交集，再经 `applyExcludedModels` 过滤。两条
+  注册路径（`service_models.go` 与 `antigravity_models.go`）都读取
+  `oauth-excluded-models` 中键为 `antigravity` 的规则。
+- 规则不区分大小写，通配符只有 `*`，没有“除此之外”的写法，所以只能列出要排除的部分。
+- 内置目录在该提交有 11 个 ID：五个已审模型，以及 `claude-opus-4-6-thinking`、
+  `claude-sonnet-4-6`、`claude-opus-5-5-high`、`claude-sonnet-5-5-high`、
+  `gemini-3.1-flash-image`、`gpt-oss-120b-medium`。
+- `GET /v0/management/model-definitions/antigravity` 返回二进制内置的这份目录，测试据此
+  取得目录，不依赖源码树。
+
+### 改动
+
+- 入口脚本生成的配置增加 `oauth-excluded-models`（`claude-*`、`gpt-*`、
+  `gemini-3.1-flash-image`），只针对 Antigravity。
+- 插件为生成请求选号时要求 `X-Codex-Gateway-Affinity`。缺少它的请求在 CPA 中共用固定的
+  principal，按调用方隔离的状态对它们不起作用。Gateway 的生成请求和模型鉴定探针都带这个
+  头，行为不变。
+- 端到端 harness 增加 Antigravity 凭证、假的 `fetchAvailableModels`、OAuth 形态的 Claude
+  令牌，并使用与入口脚本相同的排除规则。
+- 镜像探针和部署静态校验各增加一项检查。
+
+### 测试
+
+插件单测（含 `-race`）：`TestPickRequiresTrustedIdentity` 增加“缺少调用方作用域”一例，
+不调用 Gateway 回调，不占用名额。
+
+端到端（真实 CPA 进程，新增 2 组，共 16 组）：
+
+| 测试 | 覆盖 |
+|---|---|
+| `TestAntigravityModelCatalog` | 从二进制取得 Antigravity 内置目录，确认五个已审模型都在、且目录中确有其他 Provider 的模型；供应商为账号返回整份目录外加已退役的 Gemini ID、Claude 与 Codex 的模型 ID；账号注册的模型恰好是五个已审模型；模型探测由 CPA 发出，使用账号的令牌并经凭证中的出口；数据面的模型列表不含被排除且无其他 Provider 提供的模型；Antigravity 目录与 Claude 目录共有的 `claude-sonnet-4-6` 由 Claude 账号完成，分配只走 Anthropic 回调 |
+| `TestProviderSessionsAreCallerScoped` | 同一个上游账号、相同请求、不带任何会话标识：同一个调用方两次请求向上游呈现相同的会话标识，另一个调用方呈现不同的值，调用方作用域本身不出现在上游。分别对 Codex（`Session-Id`）和走 Claude Code 请求路径的 Claude（`X-Claude-Code-Session-Id`）检查 |
+| `TestAllocation` | “没有可信身份的请求被拒绝”增加缺少调用方作用域一例，上游零调用 |
+
+反向验证（临时去掉规则，不提交）：
+
+- harness 的配置去掉排除规则后，`TestAntigravityModelCatalog` 失败：账号注册了全部 11 个
+  模型；`claude-sonnet-4-6` 的 `/v1/messages` 请求得到 503 `gateway_allocation_unavailable`，
+  因为候选同时包含 Claude 与 Antigravity 账号，插件拒绝跨 Provider 的候选。
+- 入口脚本去掉排除规则后，镜像探针以
+  `Antigravity models are not confined to the reviewed catalog` 失败。
+
+部署静态校验（`test_antigravity_serves_only_the_reviewed_models`）：生成的配置中只有
+Antigravity 一组规则；规则不匹配任何已审模型，并覆盖固定目录中的其余六个 ID；已审列表与
+`internal/config/antigravity.go` 的 `AntigravityModels()` 及端到端测试一致；harness 中的
+规则与入口脚本逐字相同；Dockerfile 按名字断言该测试；镜像探针包含对应检查。
+
+镜像探针：通过 `GET /v0/management/oauth-excluded-models` 确认运行中的 CPA 解析到的规则
+恰好是上述三条，且没有针对 Codex 或 Claude 的规则。
+
+缓存键核对中“实测”的三条（不带会话标识时按调用方区分、`prompt_cache_key` 原样转发、
+客户端的 `X-Claude-Code-Session-Id` 映射后两个调用方相同）在同一套 harness 上用一次性的
+测试观察上游收到的请求头得到，第一条保留为上表的回归测试。
+
+本地结果：
+
+- 按 `plugin.Dockerfile` 的步骤（固定提交、残余补丁、`CGO_ENABLED=1` 编译 CPA 与插件）
+  运行端到端测试，16 组全部通过，无跳过。改动前的基线为 14 组通过。
+- 插件 module：`gofmt`、`go vet`（含 `-tags e2e`）、`go test -race` 通过；gosec v2.22.8
+  为 0 个问题，govulncheck v1.1.4 无发现（两者用 Go 1.26.11 构建）。
+- Gateway：`gofmt -l .` 无输出，`go vet ./...`、`go test -count=1 ./...` 通过（去掉会话
+  环境中的 `ANTHROPIC_BASE_URL` 与 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`，原因同上文）。
+- 脚本测试共 179 个，178 个通过，1 个需 Docker 守护进程的跳过。
+- 镜像探针在本机的私有挂载命名空间中模拟容器挂载、以 UID 10001 运行，`serving` 与
+  `no-exec-tmp` 两种模式都通过。
+
+### 未验证
+
+- 镜像构建、`test-cpa-plugin-image.sh` 与 Trivy 只能在 CI 中运行。
+- Google 为真实账号返回的模型列表。规则对照的是 CPA 内置的目录，账号实际注册的是两者的
+  交集，所以真实列表不会让结果超出五个模型；在第 3 步的验收清单中确认模型列表。
+- 缓存键核对表中未标“实测”的项目来自阅读源码。缺口的利用条件没有做攻击性验证。
+- 三份上游报告尚未提交。

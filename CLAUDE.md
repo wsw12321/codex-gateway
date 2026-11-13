@@ -145,7 +145,7 @@ The Node tests load `app.js` by slicing it at the last `\nstart().catch(` and ev
 
 Regenerate or check the locks with `./scripts/lock-images.sh [--check]`.
 
-**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `docker-compose.yml` and the plugin's `go.mod`; the rollback pins it in `deploy/patch-cpa.override.yml` and `deploy/codex-compat/source.lock.json`. `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. Remaining work is in `docs/cpa-plugin-roadmap.md`.
+**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `docker-compose.yml` and the plugin's `go.mod`; the rollback pins it in `deploy/patch-cpa.override.yml` and `deploy/codex-compat/source.lock.json`. `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. The plugin image build also tests CPA's own behavior at the new commit: `TestAntigravityModelCatalog` fails when CPA's Antigravity catalog names a model that is neither reviewed nor excluded (`oauth-excluded-models` in `plugin-entrypoint.sh`, repeated verbatim in the e2e harness), and `TestProviderSessionsAreCallerScoped` fails when CPA stops deriving provider sessions per caller. `docs/cpa-provider-cache-audit.md` lists the CPA cache code to re-read on an upgrade. Remaining work is in `docs/cpa-plugin-roadmap.md`.
 
 ## Conventions
 

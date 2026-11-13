@@ -306,6 +306,9 @@ type pickOptions struct {
 	noUser    bool
 	extraHdr  http.Header
 	selection string
+	// noAffinity omits the caller scope header; CPA then reports the scope of
+	// the principal every such request shares.
+	noAffinity bool
 }
 
 func (f *fixture) request(o pickOptions) pluginapi.SchedulerPickRequest {
@@ -329,7 +332,9 @@ func (f *fixture) request(o pickOptions) pluginapi.SchedulerPickRequest {
 		o.selection = fmt.Sprintf("sel-%d", f.seq)
 	}
 	headers := http.Header{}
-	headers.Set(HeaderAffinity, b64(o.affinity))
+	if !o.noAffinity {
+		headers.Set(HeaderAffinity, b64(o.affinity))
+	}
 	if !o.noUser {
 		headers.Set(HeaderUser, o.user)
 	}

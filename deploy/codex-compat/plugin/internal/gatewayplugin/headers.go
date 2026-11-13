@@ -76,7 +76,9 @@ func singleHeader(headers http.Header, name string) (value string, present, ok b
 
 // ParseTrusted validates the trusted headers of a request that the frontend
 // provider has already authenticated. requireIdentity is set for generation
-// requests, which cannot be allocated without a user and a request token.
+// requests, which cannot be allocated without a user, a request token and the
+// caller's own scope: a request without the scope runs under the principal
+// every such request shares, and CPA keys its per-caller state by it.
 func ParseTrusted(headers http.Header, requireIdentity bool) (Trusted, bool) {
 	var trusted Trusted
 	user, present, ok := singleHeader(headers, HeaderUser)
@@ -86,7 +88,7 @@ func ParseTrusted(headers http.Header, requireIdentity bool) (Trusted, bool) {
 	trusted.UserID = user
 
 	affinity, present, ok := singleHeader(headers, HeaderAffinity)
-	if !ok || present && !validAffinity(affinity) {
+	if !ok || present && !validAffinity(affinity) || requireIdentity && !present {
 		return Trusted{}, false
 	}
 	trusted.Affinity = affinity

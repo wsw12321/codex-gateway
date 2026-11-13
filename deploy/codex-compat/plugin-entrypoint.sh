@@ -93,6 +93,16 @@ auth-dir: "${auth_dir}"
 # a direct connection, when a credential's proxy is missing or unusable; with
 # neither configured the fallback is a direct connection, which this network
 # refuses. An account's egress therefore fails closed.
+# An Antigravity account serves the five Gemini models the Gateway reviewed
+# and prices, and nothing else. CPA's catalog for the provider also names
+# Claude, GPT and image models; left registered, an Antigravity credential
+# would become a candidate for another provider's model. The rule is checked
+# against the catalog this binary embeds when the image is built.
+oauth-excluded-models:
+  antigravity:
+    - "claude-*"
+    - "gpt-*"
+    - "gemini-3.1-flash-image"
 # The Gateway is the only client. Keep its internal SSE uncompressed so usage
 # and first-token timing are parsed from the stream as it is produced.
 response-compression:

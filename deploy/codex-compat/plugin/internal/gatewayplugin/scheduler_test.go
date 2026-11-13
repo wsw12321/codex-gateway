@@ -16,6 +16,7 @@ func TestPickRequiresTrustedIdentity(t *testing.T) {
 	cases := map[string]pickOptions{
 		"missing token":      {noToken: true},
 		"missing user":       {noUser: true},
+		"missing affinity":   {noAffinity: true},
 		"malformed user":     {user: "not-a-uuid"},
 		"uppercase user":     {user: "11111111-1111-4111-8111-11111111111A"},
 		"malformed token":    {token: "short"},

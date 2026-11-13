@@ -236,7 +236,7 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 
 | 扩展点 | 插件做的事 |
 |---|---|
-| 前端认证（独占） | 只接受 Gateway 的内部密钥；校验 `X-Codex-Gateway-User`、`-Affinity`、`-Groups`、`-Request`；把调用方作用域交给 CPA，使会话身份按调用方隔离 |
+| 前端认证（独占） | 只接受 Gateway 的内部密钥；校验 `X-Codex-Gateway-User`、`-Affinity`、`-Groups`、`-Request`；把调用方作用域（`-Affinity`）交给 CPA，使会话身份按调用方隔离。生成请求缺少其中的用户、作用域或请求令牌时不选号 |
 | 调度 | 每次选号都调用 Gateway 的 `eligible`，按账号控制状态、账号池范围、并发名额过滤；已绑定的会话复用原账号，否则按资金层顺序调用 `select`；把最终决定上报到 `attempt` |
 | 请求拦截 | 选号后移除全部内部请求头 |
 | 请求终态 | 释放并发名额；成功的对话保留名额 5 分钟 |
@@ -278,6 +278,49 @@ Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行�
 - 路由凭据会写进 OAuth 卷里的凭证文件（`0600`），补丁镜像只保存在内存中。
 - 绑定变更后、通知或下一轮对账之前（最长约一分钟），CPA 的后台刷新仍使用凭证里原来的
   路由。原来的路由若已失效，刷新失败而不会改走其他出口。
+
+### Antigravity 模型限制
+
+Antigravity 账号只注册 Gateway 已审并定价的五个模型：`gemini-3-flash`、
+`gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`、`gemini-3.8-flash-high`、
+`gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT 和图像模型
+（v8.0.59 中另有六个），账号实际注册的是这份目录与 Google 为该账号返回的模型列表的交集。
+入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余部分：
+
+```yaml
+oauth-excluded-models:
+  antigravity:
+    - "claude-*"
+    - "gpt-*"
+    - "gemini-3.1-flash-image"
+```
+
+规则是排除列表，不是允许列表，所以由三处检查保证它与目录保持一致：
+
+- 端到端测试 `TestAntigravityModelCatalog` 在镜像构建中运行。它向正在测试的 CPA 二进制
+  查询其内置目录（`GET /v0/management/model-definitions/antigravity`），让假的供应商为
+  账号返回整份目录外加已退役和属于其他 Provider 的 ID，然后要求该账号注册的模型恰好是
+  这五个。CPA 升级后目录里多出一个模型时，构建失败。
+- 部署静态校验核对入口脚本与端到端测试使用同一段配置，规则不遮住任何已审模型，并且已审
+  列表与 `internal/config/antigravity.go` 一致。
+- 镜像探针通过 CPA 的管理 API 确认运行中的二进制解析到了这条规则，且没有针对其他 Provider
+  的规则。
+
+不加限制时，Antigravity 账号会注册 `claude-sonnet-4-6` 等模型。CPA 把同一模型的候选账号
+一起交给调度插件，而插件要求一次选号的候选属于同一个 Provider，于是这个模型的请求得到
+503。Gateway 不为这些模型定价，本来就不会发出这类请求；排除规则让 CPA 一侧也不依赖这一点。
+
+目录新增模型导致构建失败时，二选一：把它加入排除规则；或者评审后为它定价
+（`deploy/pricing-v2.example.json` 及其各份副本），并加入 `AntigravityModels()` 与测试中的
+已审列表，目录的范围见 [CPA 原生模型与定价迁移](cpa-native-models.md)。
+
+### Provider 缓存与会话标识
+
+补丁镜像把各 Provider 的缓存键改成了“调用方 + 用户 + 账号”的哈希。插件模式依靠 CPA 原生的
+调用方作用域：CPA 推导的会话身份和按会话保存的重放状态都按调用方隔离，但不按账号隔离；
+客户端自带的会话标识（如 `prompt_cache_key`）原样发给上游；另有两处可达的缓存的键不含
+调用方。逐项结果、影响和准备提交上游的报告见
+[CPA Provider 缓存键核对](cpa-provider-cache-audit.md)。
 
 ### 额度查询
 
@@ -362,8 +405,8 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 | 1 | 自定义“哪些错误可以换账号” | CPA 原生规则，上限仍是 4 个账号。实测 429、500、403 会换账号，400 直接返回 | 判定逻辑在执行循环内部，插件接触不到 |
 | 2 | 归因写在响应头里 | Gateway 请求账本 | 只依赖调度这一个扩展点，对所有端点一致 |
 | 3 | 执行器内拒绝重定向、固定上游主机 | 不保留，依靠出口白名单 | 属于 CPA 内部代码 |
-| 4 | Provider 缓存按调用方和账号隔离 | 依赖 CPA 原生的调用方作用域。会话绑定和会话哈希已验证按调用方隔离；各 Provider 缓存的键尚未逐个核对 | 同上 |
-| 5 | Antigravity 只注册五个已审模型 | 只靠 Gateway 的模型权限和价格目录限制 | 尚未配置 CPA 侧的排除列表 |
+| 4 | Provider 缓存按调用方和账号隔离；发给上游的会话标识换成含用户和账号的哈希 | CPA 原生按调用方隔离，不按账号隔离；客户端自带的会话标识原样发给上游；两处缓存的键不含调用方，利用需要知道对方的上游消息 ID（见[核对记录](cpa-provider-cache-audit.md)） | 属于 CPA 内部代码；缺口提交上游，不进残余补丁 |
+| 5 | Antigravity 只注册五个已审模型 | 相同，改用 CPA 原生的 `oauth-excluded-models` 实现，构建时按二进制内置的目录核对 | 排除列表需要随目录维护，由构建中的测试把关 |
 | 6 | Gemini 历史校验返回 `new_session_required` | 返回上游原生错误 | 需要让完整请求体经过插件 |
 | 7 | 重复凭证在加载时隔离 | Codex 重复文件在选号时过滤，只用最近刷新的一份；Antigravity/Claude 同一身份有多份时全部不可用 | 插件没有加载期钩子 |
 | 8 | CPA 管理 API 关闭 | 开启，使用独立密钥，仅内部网络可达 | 插件路由挂在管理 API 之下 |
@@ -400,7 +443,11 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 4. 残余补丁应用失败时，说明 `sdk/cliproxy/service_config.go` 中选择策略的那段代码
    变了，按新代码重新生成补丁并更新锁文件中的 SHA-256。插件编译失败时，说明插件接口
    的类型变了，按编译错误修改。
-5. 运行 `./scripts/test-cpa-plugin-image.sh`，然后按上文规程做真实账号验收。
+5. `TestAntigravityModelCatalog` 失败时，说明 CPA 的 Antigravity 目录变了，按上文
+   “Antigravity 模型限制”处理。`TestProviderSessionsAreCallerScoped` 失败时，说明 CPA
+   推导会话身份的方式变了。无论是否失败，都按
+   [缓存键核对的升级清单](cpa-provider-cache-audit.md#cpa-升级时)比较新旧版本的缓存代码。
+6. 运行 `./scripts/test-cpa-plugin-image.sh`，然后按上文规程做真实账号验收。
 
 作为参照，2026-11-12 对 v8.0.67 做了一次实际演练。v8.0.59 到 v8.0.67 之间上游改了
 289 个文件，其中调度与插件接口所在的 `conductor_selection.go` 改了 648 行。插件源码
