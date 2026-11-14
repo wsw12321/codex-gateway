@@ -1,8 +1,6 @@
 #!/bin/sh
-# Entrypoint of the plugin-mode CPA image: unmodified CPA, the residual
-# plugin-only selector and the Gateway plugin. deploy/codex-compat/entrypoint.sh
-# remains the entrypoint of the source-patched image and is reused here for the
-# credential-store checks, so both images accept exactly the same volume.
+# Entrypoint of the CPA image: unmodified CPA, the residual plugin-only
+# selector and the Gateway plugin.
 set -eu
 umask 077
 
@@ -14,7 +12,6 @@ management_key_file=${CPA_MANAGEMENT_KEY_FILE:-/run/secrets/cpa_management_key}
 listen_addr=${CLIPROXY_LISTEN_ADDR:-0.0.0.0}
 listen_port=${CLIPROXY_PORT:-8317}
 proxy_url=${CLIPROXY_PROXY_URL:-http://egress-allowlist:3128}
-oauth_entrypoint=/usr/local/bin/sidecar-oauth-entrypoint
 plugin_dir=/usr/local/lib/cliproxy/plugins
 plugin_file=${plugin_dir}/codex-gateway-v1.0.0.so
 cpa_binary=/usr/local/bin/cli-proxy-api
@@ -36,12 +33,33 @@ read_key() {
     unset key_value
 }
 
-case "${1:-}" in
-    verify-oauth|oauth-inventory)
-        exec "$oauth_entrypoint" "$@"
-        ;;
-esac
-"$oauth_entrypoint" verify-oauth
+# The credential store holds every upstream refresh token. Only the service
+# user may own or read any of it, and nothing in it may point elsewhere.
+verify_oauth() {
+    test -d "$auth_dir" || fail "OAuth directory is missing"
+    test ! -L "$auth_dir" || fail "OAuth directory must not be a symlink"
+
+    bad_link=$(find "$auth_dir" -type l -print -quit)
+    test -z "$bad_link" || fail "OAuth directory contains a symlink"
+
+    bad_type=$(find "$auth_dir" ! -type d ! -type f -print -quit)
+    test -z "$bad_type" || fail "OAuth directory contains a non-regular entry"
+
+    bad_dir_mode=$(find "$auth_dir" -type d ! -perm 0700 -print -quit)
+    test -z "$bad_dir_mode" || fail "every OAuth directory must have mode 0700"
+
+    bad_dir_owner=$(find "$auth_dir" -type d ! -user 10001 -print -quit)
+    test -z "$bad_dir_owner" || fail "every OAuth directory must be owned by uid 10001"
+
+    bad_mode=$(find "$auth_dir" -type f ! -perm 0600 -print -quit)
+    test -z "$bad_mode" || fail "every OAuth file must have mode 0600"
+
+    bad_owner=$(find "$auth_dir" -type f ! -user 10001 -print -quit)
+    test -z "$bad_owner" || fail "every OAuth file must be owned by uid 10001"
+}
+
+verify_oauth
+test "${1:-}" != verify-oauth || exit 0
 
 case "$listen_port" in
     *[!0-9]*|'') fail "listen port is invalid" ;;
@@ -96,13 +114,18 @@ auth-dir: "${auth_dir}"
 # An Antigravity account serves the five Gemini models the Gateway reviewed
 # and prices, and nothing else. CPA's catalog for the provider also names
 # Claude, GPT and image models; left registered, an Antigravity credential
-# would become a candidate for another provider's model. The rule is checked
-# against the catalog this binary embeds when the image is built.
+# would become a candidate for another provider's model. Gemini models CPA
+# added after the review (v8.0.69: Flash Tiered, Carbon, Hydrogen) stay out
+# until they are reviewed and priced. The rule is checked against the catalog
+# this binary embeds when the image is built.
 oauth-excluded-models:
   antigravity:
     - "claude-*"
     - "gpt-*"
     - "gemini-3.1-flash-image"
+    - "gemini-3.8-flash-tiered"
+    - "gemini-4-carbon-high"
+    - "gemini-4-hydrogen-xhigh"
 # The Gateway is the only client. Keep its internal SSE uncompressed so usage
 # and first-token timing are parsed from the stream as it is produced.
 response-compression:
@@ -179,6 +202,6 @@ export CPA_MANAGEMENT_KEY_FILE="$management_key_file"
 # Logins and imports go through the credential page, where CPA runs them with
 # the egress the Owner chose. A command-line login would run without any
 # egress (CPA has no proxy of its own here) and outside the registration.
-test "$#" -eq 0 || fail "command-line logins are not available in plugin mode; use the CPA credential page, or set CPA_INTEGRATION=patch for the rollback image"
+test "$#" -eq 0 || fail "command-line logins are not available; use the CPA credential page"
 
 exec "$cpa_binary" -config "$config_file" -local-model

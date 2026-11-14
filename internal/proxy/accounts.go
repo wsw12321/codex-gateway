@@ -220,7 +220,7 @@ func (c *Client) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, e
 	var response struct {
 		Accounts *[]upstreamAccountWire `json:"accounts"`
 	}
-	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts", &response); err != nil {
+	if err := c.accountJSON(ctx, http.MethodGet, "", &response); err != nil {
 		return nil, err
 	}
 	if response.Accounts == nil {
@@ -283,7 +283,7 @@ func (c *Client) SetUpstreamAccountStatus(ctx context.Context, accountID string,
 	// as the duplicate-key and trailing-value checks in internalJSONBody.
 	var wire map[string]json.RawMessage
 	body := `{"enabled":` + strconv.FormatBool(enabled) + `}`
-	if err := c.internalJSONBody(ctx, http.MethodPut, "/internal/upstream-accounts/"+accountID+"/status", body, &wire); err != nil {
+	if err := c.accountJSONBody(ctx, http.MethodPut, accountID+"/status", body, &wire); err != nil {
 		return UpstreamAccountStatus{}, err
 	}
 	var result UpstreamAccountStatus
@@ -318,7 +318,7 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadRequest, Code: "invalid_upstream_account"}
 	}
 	var wire upstreamQuotaWire
-	if err := c.internalJSONBody(ctx, http.MethodPost, "/internal/upstream-accounts/"+accountID+"/quota", accountRateLimitsRequestBody, &wire); err != nil {
+	if err := c.accountJSONBody(ctx, http.MethodPost, accountID+"/quota", accountRateLimitsRequestBody, &wire); err != nil {
 		return UpstreamQuota{}, err
 	}
 	if wire.ID == nil || *wire.ID != AccountRateLimitsRequestID || wire.Result == nil ||
@@ -369,22 +369,23 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 	return quota, nil
 }
 
-func (c *Client) internalJSON(ctx context.Context, method, path string, destination any) error {
-	return c.internalJSONBody(ctx, method, path, "", destination)
+// accountJSON calls a route of this provider's account namespace on the
+// plugin; route is relative to that namespace and may be empty.
+func (c *Client) accountJSON(ctx context.Context, method, route string, destination any) error {
+	return c.accountJSONBody(ctx, method, route, "", destination)
 }
 
-func (c *Client) internalJSONBody(ctx context.Context, method, path, body string, destination any) error {
-	return c.internalJSONBodyWithHeaders(ctx, method, path, body, nil, destination)
+func (c *Client) accountJSONBody(ctx context.Context, method, route, body string, destination any) error {
+	return c.managementJSON(ctx, method, c.accountNamespace()+"/"+route, body, destination)
 }
 
-func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, body string, headers http.Header, destination any) error {
-	if c.anthropic && strings.HasPrefix(path, "/internal/upstream-accounts") {
-		path = "/internal/anthropic-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
+// managementJSON calls one plugin management route and decodes its strict
+// JSON reply.
+func (c *Client) managementJSON(ctx context.Context, method, route, body string, destination any) error {
+	target, ok := c.managementTarget(route)
+	if !ok {
+		return &InternalAPIError{StatusCode: http.StatusServiceUnavailable, Code: "sidecar_unavailable"}
 	}
-	if c.cpaNative && strings.HasPrefix(path, "/internal/upstream-accounts") {
-		path = "/internal/antigravity-accounts" + strings.TrimPrefix(path, "/internal/upstream-accounts")
-	}
-	target, token := c.internalTarget(path)
 	var requestBody io.Reader
 	if body != "" {
 		requestBody = strings.NewReader(body)
@@ -393,14 +394,9 @@ func (c *Client) internalJSONBodyWithHeaders(ctx context.Context, method, path, 
 	if err != nil {
 		return &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_unavailable", Cause: err}
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+c.managementToken)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
-	for key, values := range headers {
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
 	if body != "" {
 		request.Header.Set("Content-Type", "application/json")
 	}

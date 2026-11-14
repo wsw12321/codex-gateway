@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/wsw/codex-gateway/internal/config"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
 	"github.com/wsw/codex-gateway/internal/store"
 )
@@ -34,8 +33,8 @@ func TestPushPluginEgressReachesEachProvidersNamespace(t *testing.T) {
 	}))
 	defer cpa.Close()
 	base, _ := url.Parse(cpa.URL)
-	s := &Server{config: config.Config{CPAIntegration: "plugin"},
-		upstream: gatewayproxy.New(base, "data"), anthropic: gatewayproxy.NewCPAAnthropic(base, "data"), antigravity: gatewayproxy.NewCPAAntigravity(base, "data")}
+	s := &Server{
+		upstream: withManagement(gatewayproxy.New(base, "data")), anthropic: withManagement(gatewayproxy.NewCPAAnthropic(base, "data")), antigravity: withManagement(gatewayproxy.NewCPAAntigravity(base, "data"))}
 	for _, client := range []*gatewayproxy.Client{s.upstream, s.anthropic, s.antigravity} {
 		client.UsePluginManagement("manage")
 	}
@@ -58,12 +57,10 @@ func TestPushPluginEgressReachesEachProvidersNamespace(t *testing.T) {
 	if strings.Join(seen, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("pushed:\n%s\nwant:\n%s", strings.Join(seen, "\n"), strings.Join(want, "\n"))
 	}
-	// The source-patched image resolves routes per operation and has no
-	// such route, so nothing is pushed there.
+	// A node nothing is bound to pushes nothing.
 	seen = nil
-	s.config.CPAIntegration = "patch"
-	s.pushPluginEgress(context.Background(), nodeBindings(state, "node-1"))
+	s.pushPluginEgress(context.Background(), nodeBindings(state, "node-3"))
 	if len(seen) != 0 {
-		t.Fatalf("pushed in patch mode: %v", seen)
+		t.Fatalf("pushed for an unbound node: %v", seen)
 	}
 }

@@ -36,13 +36,13 @@ func TestGroupUpstreamAccessHTTPPostgresIntegration(t *testing.T) {
 	remoteFailed := false
 	for _, provider := range providers {
 		id := accountIDs[provider]
-		client := gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		client := withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			if remoteFailed {
 				return nil, errors.New("sidecar unavailable secret-canary")
 			}
 			body := `{"accounts":[{"id":"` + id + `","display_name":"` + provider + `-account","masked_email":"u***@example.com","plan":"plus","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available","last_synced_at":"2026-10-06T00:00:00Z"}]}`
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
-		})})
+		})}))
 		switch provider {
 		case store.UpstreamProviderCodex:
 			f.s.upstream = client

@@ -141,10 +141,6 @@ func (s *Server) cpaAccountRequest(w http.ResponseWriter, r *http.Request) (*htt
 		http.NotFound(w, r)
 		return nil, false
 	}
-	if provider == "antigravity" && !s.config.UsesCPAAntigravity() {
-		httpx.WriteError(w, r, http.StatusServiceUnavailable, "upstream_error", "cpa_antigravity_not_active", "当前使用旧 bridge 回滚链路，请在 Gateway 原账号页面管理状态；恢复 CPA 后再维护凭据")
-		return nil, false
-	}
 	request := r.Clone(r.Context())
 	request.URL = new(url.URL)
 	*request.URL = *r.URL
@@ -189,11 +185,6 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 			return errors.New("cpa account egress unavailable")
 		}
 	}
-	// A rollback activates the bridge as the sole Google credential refresher.
-	// Never mutate or refresh the stopped CPA credential set through this UI.
-	if strings.HasPrefix(path, "antigravity/") && !s.config.UsesCPAAntigravity() {
-		return errors.New("cpa antigravity inactive")
-	}
 	var body io.Reader
 	if input != nil {
 		data, err := json.Marshal(input)
@@ -204,11 +195,8 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 	}
 	target := *s.config.SidecarURL
 	target.RawPath, target.RawQuery, target.Fragment = "", "", ""
-	internalPath := "/internal/gateway-management/" + path
-	if s.config.UsesCPAPlugin() {
-		internalPath, target.RawQuery = gatewayproxy.PluginManagementPath(internalPath)
-	}
-	target.Path = strings.TrimRight(target.Path, "/") + internalPath
+	managementPath, query := gatewayproxy.PluginManagementPath("gateway-management/" + path)
+	target.Path, target.RawQuery = strings.TrimRight(target.Path, "/")+managementPath, query
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return err

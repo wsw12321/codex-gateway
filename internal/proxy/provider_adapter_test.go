@@ -74,25 +74,25 @@ func TestClientAdapterExactDispatchValidationAndSpoofStripping(t *testing.T) {
 	const scope = "0123456789012345678901234567890123456789012"
 	calls := 0
 	base, _ := url.Parse("http://adapter.invalid")
-	client := NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		calls++
-		if request.Header.Get("Authorization") != "Bearer internal-secret" || request.Header.Get("Cookie") != "" || request.Header.Get(upstreamAccountHeader) != "" {
+		if request.Header.Get("Authorization") != "Bearer internal-secret" || request.Header.Get("Cookie") != "" || request.Header.Get(retiredAccountHeader) != "" {
 			return nil, errors.New("spoofed credential crossed provider boundary")
 		}
 		if request.Header.Get(affinityHeader) != scope {
 			return nil, errors.New("trusted affinity missing")
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, upstreamAccountHeader: {"0123456789abcdef"}}, Body: io.NopCloser(strings.NewReader(`{"model":"gpt-test"}`))}, nil
-	})})
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}, retiredAccountHeader: {"0123456789abcdef"}}, Body: io.NopCloser(strings.NewReader(`{"model":"gpt-test"}`))}, nil
+	})}))
 	adapter := NewClientAdapter(client, ProviderCapabilities{Provider: "codex", Routes: []ProviderRoute{{Provider: "codex", Model: model, Method: http.MethodPost, Path: "/v1/responses"}}})
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.invalid/v1/responses", strings.NewReader(`{"model":"gpt-test"}`))
 	request.Header.Set("Authorization", "Bearer caller-secret")
 	request.Header.Set("Cookie", "caller-cookie")
-	request.Header.Set(upstreamAccountHeader, "fedcba9876543210")
+	request.Header.Set(retiredAccountHeader, "fedcba9876543210")
 	request.Header.Set(affinityHeader, "spoofed")
 	recorder := httptest.NewRecorder()
 	result, failure := adapter.Forward(context.Background(), recorder, request, model, "/v1/responses", TrustedRequestMetadata{AffinityScope: scope})
-	if failure != nil || result.UpstreamAccountID != "0123456789abcdef" || calls != 1 {
+	if failure != nil || result.UpstreamAccountID != "" || calls != 1 {
 		t.Fatalf("result=%+v failure=%v calls=%d", result, failure, calls)
 	}
 	_, failure = adapter.Forward(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`)), "gpt-other", "/v1/responses", TrustedRequestMetadata{})

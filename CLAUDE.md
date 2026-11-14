@@ -19,11 +19,11 @@ go test -race -count=1 ./...    # needs a C compiler
 go test -count=1 -run '^TestName$' ./internal/server   # single test
 ```
 
-**CPA plugin module.** `deploy/codex-compat/plugin/` is a separate Go module, so `./...` from the root does not reach it. Its end-to-end suite (`-tags e2e`) needs a CPA binary built with the residual patch and the compiled plugin; it runs inside `plugin.Dockerfile`. See the plugin-mode section of `docs/compatibility-upgrades.md`.
+**CPA plugin module.** `deploy/codex-compat/plugin/` is a separate Go module, so `./...` from the root does not reach it. Its end-to-end suite (`-tags e2e`) needs a CPA binary built with the residual patch and the compiled plugin; it runs inside `plugin.Dockerfile`. See the plugin section of `docs/compatibility-upgrades.md`.
 
 ```sh
 (cd deploy/codex-compat/plugin && go vet ./... && go test -race -count=1 ./...)
-python3 -m unittest scripts.tests.test_cpa_plugin_deploy   # lock/patch/Dockerfile/override consistency
+python3 -m unittest scripts.tests.test_cpa_plugin_deploy   # lock/residual patch/Dockerfile/Compose consistency
 ```
 
 **Dashboard JS tests.** Some Go tests (e.g. `TestOverviewUI`) shell out to `node --test internal/server/testdata/*.cjs`. If `node` is not on PATH they are skipped silently, so install Node to actually exercise them. You can run one directly from the repo root:
@@ -51,7 +51,7 @@ TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmo
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ./scripts/validate-compose.sh
 ./scripts/compose.sh config --quiet       # always use this wrapper, never bare `docker compose`
-./scripts/compose.sh build gateway codex-compat antigravity-bridge
+./scripts/compose.sh build gateway codex-compat account-egress
 ```
 
 `scripts/compose.sh` clears inherited env, then loads `.env` plus `deploy/images.lock.env`, so the image digest locks cannot be bypassed. CI also runs `govulncheck`, `gosec`, `go-licenses` (allowed: Apache-2.0, BSD-2/3, ISC, MIT, MPL-2.0), Trivy, and the `scripts/test-*-image.sh` container checks.
@@ -62,15 +62,13 @@ Gateway subcommands: `serve` (default; runs migrations first), `migrate`, `boots
 
 ### Topology
 
-cloudflared → Caddy → `gateway` → `codex-compat` (CPA v8.0.59 + the residual plugin-only selector patch + the Gateway plugin in `deploy/codex-compat/plugin/`) → Squid egress allowlist. No service publishes host ports.
+cloudflared → Caddy → `gateway` → `codex-compat` (unmodified CPA at the commit in `deploy/codex-compat/plugin.lock.json` + the residual plugin-only selector patch + the Gateway plugin in `deploy/codex-compat/plugin/`) → Squid egress allowlist. No service publishes host ports. CPA serves Codex, Claude and Antigravity in one process.
 
-`CPA_INTEGRATION` in `.env` selects the image: `plugin` (default) or `patch`, the source-patched rollback image (`deploy/codex-compat/cliproxy-v8.0.59-gateway.patch`, added by `scripts/compose.sh` as `deploy/patch-cpa.override.yml`). The Gateway's own `CPA_INTEGRATION` always matches the image. The source patch and its `/internal/*` code paths are removed once plugin mode has passed real-account acceptance (`docs/cpa-plugin-roadmap.md`, step 8).
+There is one CPA image. The source-patched image, the Antigravity bridge and the `CPA_INTEGRATION`/`ANTIGRAVITY_TRANSPORT` switches were removed (`docs/cpa-plugin-roadmap.md`, step 8); the Gateway and `scripts/compose.sh` refuse to start when an old `.env` still selects them.
 
-The gateway reaches CPA at `SIDECAR_URL` with a fixed internal bearer (`SIDECAR_API_KEY`). It strips client auth, cookies, and hop-by-hop headers first.
+The gateway reaches CPA at `SIDECAR_URL`. Generation requests carry the data-plane bearer (`SIDECAR_API_KEY`); the plugin's account routes under `/v0/management/gateway/*` carry CPA's management key (`CPA_MANAGEMENT_KEY`, required). The gateway strips client auth, cookies, and hop-by-hop headers first. Attribution (which account served a request) comes only from the request ledger, never from response headers.
 
-**The plugin calls back into the gateway** at `POST /internal/{upstream,antigravity,anthropic}-accounts/{select,eligible,attempt,resolve-egress,register-egress}` to pick which OAuth account serves each request, report the decision (the request ledger in `internal/proxy/ledger.go`) and resolve each account's egress. Allocation weights, per-user account scopes, dedicated grants, and concurrency all live in the gateway (`internal/server/upstream_allocation.go`). CPA only executes. A change to the selection contract must land on both sides: the Go handler and the plugin (and the CPA patch while the rollback image exists).
-
-`cmd/antigravity-bridge` with `internal/antigravity` is the legacy AGY transport. It is kept only for the `legacy-bridge` Compose profile and rollback. The default is `ANTIGRAVITY_TRANSPORT=cpa`.
+**The plugin calls back into the gateway** at `POST /internal/{upstream,antigravity,anthropic}-accounts/{select,eligible,attempt,resolve-egress,register-egress}` to pick which OAuth account serves each request, report the decision (the request ledger in `internal/proxy/ledger.go`) and resolve each account's egress. Allocation weights, per-user account scopes, dedicated grants, and concurrency all live in the gateway (`internal/server/upstream_allocation.go`). CPA only executes. A change to the selection contract must land on both sides: the Go handler and the plugin.
 
 ### Request lifecycle (`internal/server/api.go` `executeAPIRequest`)
 
@@ -108,7 +106,7 @@ Settlement always runs, even on failure or client disconnect. Usage is settled e
 - `internal/security`: API key format `cgk_v1_<id>_<secret>`, peppered HMAC, AES-GCM key cipher, and `RedactText`.
 - `internal/identity`: WebAuthn, passwords (Argon2id), sessions, and OIDC.
 - `internal/modelid`: upstream model fingerprinting against embedded, SHA-256-pinned reference data. It fails closed if an asset changes.
-- `cmd/cpa-pricing-migrate` and `cmd/cpa-credentials-migrate`: offline stdin/stdout conversion tools. They never touch a live deployment.
+- `cmd/cpa-pricing-migrate`: offline stdin/stdout pricing conversion tool. It never touches a live deployment.
 
 ### Startup (`cmd/gateway/main.go`)
 
@@ -140,12 +138,12 @@ The Node tests load `app.js` by slicing it at the last `\nstart().catch(` and ev
 - `GO_VERSION` in `ci.yml`
 - `deploy/images.sources`
 - `deploy/images.lock.env`
-- the `ARG GOLANG_IMAGE=` line in all six Dockerfiles that build Go (including `deploy/codex-compat/plugin.Dockerfile`)
-- `go_version` in `deploy/codex-compat/source.lock.json` and `deploy/codex-compat/plugin.lock.json`
+- the `ARG GOLANG_IMAGE=` line in `Dockerfile` and `deploy/codex-compat/plugin.Dockerfile`
+- `go_version` in `deploy/codex-compat/plugin.lock.json`
 
 Regenerate or check the locks with `./scripts/lock-images.sh [--check]`.
 
-**CPA version bump.** Follow `docs/compatibility-upgrades.md`. The pinned commit is also asserted in `THIRD_PARTY_NOTICES` and `docker-compose.yml` by CI. Plugin mode pins the same commit in `deploy/codex-compat/plugin.lock.json`, `docker-compose.yml` and the plugin's `go.mod`; the rollback pins it in `deploy/patch-cpa.override.yml` and `deploy/codex-compat/source.lock.json`. `scripts/tests/test_cpa_plugin_deploy.py` checks that they agree. The plugin image build also tests CPA's own behavior at the new commit: `TestAntigravityModelCatalog` fails when CPA's Antigravity catalog names a model that is neither reviewed nor excluded (`oauth-excluded-models` in `plugin-entrypoint.sh`, repeated verbatim in the e2e harness), and `TestProviderSessionsAreCallerScoped` fails when CPA stops deriving provider sessions per caller. `docs/cpa-provider-cache-audit.md` lists the CPA cache code to re-read on an upgrade. Remaining work is in `docs/cpa-plugin-roadmap.md`.
+**CPA version bump.** Follow `docs/compatibility-upgrades.md`. `deploy/codex-compat/plugin.lock.json` is the source of truth (tag, commit, residual patch digest, model catalog digest, image tag); `docker-compose.yml`, the plugin's `go.mod`/`go.sum`, the model catalog digest in `plugin.Dockerfile` and `THIRD_PARTY_NOTICES` must match it. `scripts/tests/test_cpa_plugin_deploy.py`, `scripts/validate-compose.sh` and CI check that they agree. The plugin image build also tests CPA's own behavior at the new commit: `TestAntigravityModelCatalog` fails when CPA's Antigravity catalog names a model that is neither reviewed nor excluded (`oauth-excluded-models` in `plugin-entrypoint.sh`, repeated verbatim in the e2e harness), and `TestProviderSessionsAreCallerScoped` fails when CPA stops deriving provider sessions per caller. `docs/cpa-provider-cache-audit.md` lists the CPA cache code to re-read on an upgrade. Remaining work is in `docs/cpa-plugin-roadmap.md`.
 
 ## Conventions
 

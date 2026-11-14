@@ -18,8 +18,9 @@ func TestCPANativeGeminiStreamUsageAndSignature(t *testing.T) {
 		`{"responseId":"r","modelVersion":"gemini-3.1-pro-preview","candidates":[{"index":0,"content":{"role":"model","parts":[{"text":"thinking","thought":true,"thoughtSignature":"opaque"}]}}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":0,"thoughtsTokenCount":2,"cachedContentTokenCount":3,"totalTokenCount":12}}`,
 		`{"responseId":"r","candidates":[{"content":{"parts":[{"functionCall":{"name":"lookup","args":{"q":"x"}},"thoughtSignature":"opaque-tool-signature"}]},"finishReason":"STOP","safetyRatings":[]}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":2,"cachedContentTokenCount":3,"totalTokenCount":17},"createTime":"2026-09-30T00:00:00Z"}`,
 	}
+	ledger := NewAllocationLedger()
 	u := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/internal/antigravity-accounts/capabilities" {
+		if r.URL.Path == pluginPath("antigravity-accounts/capabilities") {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"protocol":"upstream_account_access_v1"}`)
 			return
@@ -27,18 +28,19 @@ func TestCPANativeGeminiStreamUsageAndSignature(t *testing.T) {
 		if r.URL.Path != "/v1beta/models/"+model+":streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
 			t.Errorf("wrong URL %s", r.URL)
 		}
-		if r.Header.Get("X-Provider") != "" || r.Header.Get(geminiStreamHeader) != "" || r.Header.Get(affinityHeader) != scope || r.Header.Get("Authorization") != "Bearer internal" {
+		if r.Header.Get("X-Provider") != "" || r.Header.Get(affinityHeader) != scope || r.Header.Get("Authorization") != "Bearer internal" {
 			t.Error("untrusted header or missing caller scope")
 		}
+		reportAllocation(t, ledger, "antigravity", r, "0123456789abcdef", "")
 		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set(upstreamAccountHeader, "0123456789abcdef")
 		for _, frame := range frames {
 			_, _ = fmt.Fprintf(w, "data: %s\n\n", frame)
 		}
 	}))
 	defer u.Close()
 	base, _ := url.Parse(u.URL)
-	c := NewCPAAntigravity(base, "internal")
+	c := withManagement(NewCPAAntigravity(base, "internal"))
+	c.UseAllocationLedger(ledger)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"lookup"}]}]}`))
 	req.Header.Set("X-Provider", "codex")
 	w := httptest.NewRecorder()
@@ -65,7 +67,7 @@ func TestCPANativeMissingUsageCannotSettleSuccess(t *testing.T) {
 				body = "data: " + body + "\n\n"
 			}
 			resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {kind}}, Body: io.NopCloser(strings.NewReader(body))}
-			c := &Client{cpaNative: true}
+			c := &Client{antigravity: true}
 			w := httptest.NewRecorder()
 			result, failure := c.forwardNativeGemini(context.Background(), w, resp, model, nil, stream, Result{})
 			if failure == nil || !stream && w.Body.Len() != 0 || stream && !result.AbortStream {
@@ -88,7 +90,7 @@ func TestCPANativeResponsesReasoningIsIncludedOnce(t *testing.T) {
 		}
 	}
 	resp := &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: io.NopCloser(strings.NewReader("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":" + data + "}\n\ndata: [DONE]\n\n"))}
-	c := &Client{cpaNative: true}
+	c := &Client{antigravity: true}
 	r, f := c.forwardNativeResponses(context.Background(), httptest.NewRecorder(), resp, model, nil, Result{})
 	if f != nil || r.Usage.OutputTokens != 7 {
 		t.Fatalf("native SSE result %+v %v", r, f)

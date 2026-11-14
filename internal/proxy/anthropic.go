@@ -85,7 +85,7 @@ func (c *Client) ForwardMessages(ctx context.Context, w http.ResponseWriter, inc
 	}
 	defer response.Body.Close()
 	result := Result{StatusCode: response.StatusCode, ContentType: response.Header.Get("Content-Type"),
-		Model: model, UpstreamAccountID: safeUpstreamAccountHeader(response.Header), ConversationHash: safeConversationHashHeader(response.Header),
+		Model:             model,
 		UpstreamRequestID: firstHeader(response.Header, "Request-Id", "X-Request-Id")}
 	opened.apply(&result)
 	notifyUpstreamAccount(options, result.UpstreamAccountID)

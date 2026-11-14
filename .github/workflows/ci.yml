@@ -48,7 +48,6 @@ jobs:
         run: |
           set -eu
           test "$(sed -n 's/^toolchain go//p' go.mod)" = "$GO_VERSION"
-          test "$(jq -r .go_version deploy/codex-compat/source.lock.json)" = "$GO_VERSION"
           test "$(jq -r .go_version deploy/codex-compat/plugin.lock.json)" = "$GO_VERSION"
           test "$(sed -n 's/^GO_VERSION=//p' deploy/shadowsocks/upstream/source.lock.env)" = "$GO_VERSION"
           go_image="docker.io/library/golang:${GO_VERSION}-bookworm"
@@ -57,7 +56,7 @@ jobs:
           locked_go_image=$(sed -n 's/^GOLANG_IMAGE=//p' deploy/images.lock.env)
           test "${locked_go_image%@sha256:*}" = "$go_image"
           test "$(sed -n 's/^CLIPROXY_GOLANG_IMAGE=//p' deploy/images.lock.env)" = "$locked_go_image"
-          for dockerfile in Dockerfile deploy/codex-compat/Dockerfile deploy/codex-compat/plugin.Dockerfile deploy/antigravity-bridge/Dockerfile deploy/codex-compat/legacy.Dockerfile deploy/cpa-migrate/Dockerfile; do
+          for dockerfile in Dockerfile deploy/codex-compat/plugin.Dockerfile; do
             grep -Fxq "ARG GOLANG_IMAGE=$locked_go_image" "$dockerfile"
           done
       - name: Install locked Go toolchain
@@ -192,32 +191,20 @@ jobs:
         shell: bash
         run: |
           set -eu
-          agy_manifest_url=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
-          agy_url=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz
-          agy_sha512=5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897
-          grep -q 'CLIProxyAPI v8.0.59' THIRD_PARTY_NOTICES
-          grep -q 'c5251b57b3fa5dcbc689f514f4aa166daacb4481' THIRD_PARTY_NOTICES
-          grep -q 'c5251b57b3fa5dcbc689f514f4aa166daacb4481' docker-compose.yml
-          grep -q 'Google Antigravity CLI' THIRD_PARTY_NOTICES
-          grep -Fq "$agy_url" THIRD_PARTY_NOTICES
-          grep -Fq "$agy_sha512" THIRD_PARTY_NOTICES
-          jq -e \
-            --arg manifest_url "$agy_manifest_url" \
-            --arg url "$agy_url" \
-            --arg sha512 "$agy_sha512" \
-            '.version == "1.2.4" and
-             .platform == "linux_amd64" and
-             .manifest_url == $manifest_url and
-             .url == $url and
-             .sha512 == $sha512' \
-            deploy/antigravity-bridge/agy.lock.json >/dev/null
-          grep -Fq 'sha512sum -c -' deploy/antigravity-bridge/Dockerfile
-          grep -Fq 'AGY_CLI_DISABLE_AUTO_UPDATE=true' deploy/antigravity-bridge/Dockerfile
+          lock=deploy/codex-compat/plugin.lock.json
+          grep -q "CLIProxyAPI $(jq -er .tag "$lock")" THIRD_PARTY_NOTICES
+          grep -q "$(jq -er .commit "$lock")" THIRD_PARTY_NOTICES
+          grep -q "$(jq -er .commit "$lock")" docker-compose.yml
           test ! -e scripts/gemini-login.sh
           test ! -e deploy/codex-compat/cliproxy-v7.2.150-gemini.patch
           test ! -e deploy/codex-compat/gemini-cli-19d9868-gateway.patch
+          # The source-patched CPA image and the Antigravity bridge were
+          # removed; neither may come back through a stray file.
+          test ! -e deploy/codex-compat/Dockerfile
+          test ! -e deploy/patch-cpa.override.yml
+          test ! -e deploy/antigravity-bridge
           if grep -Eq 'GEMINI_PLUGIN|geminicli-login|gemini-cli[.]so|cpa-plugin-gemini-cli' \
-            deploy/codex-compat/Dockerfile deploy/codex-compat/entrypoint.sh docker-compose.yml; then
+            deploy/codex-compat/plugin.Dockerfile deploy/codex-compat/plugin-entrypoint.sh docker-compose.yml; then
             printf '%s\n' 'retired Gemini plugin path remains in the deployable configuration' >&2
             exit 1
           fi
@@ -270,7 +257,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh deploy/cpa-migrate/*.sh deploy/egress/*.sh deploy/shadowsocks/upstream/*.sh deploy/relay/wg-codex; do
+          for script in scripts/*.sh deploy/codex-compat/*.sh deploy/egress/*.sh deploy/shadowsocks/upstream/*.sh deploy/relay/wg-codex; do
             case "$(sed -n '1p' "$script")" in
               '#!/bin/sh') sh -n "$script" ;;
               '#!/sbin/openrc-run') sh -n "$script" ;;
@@ -305,15 +292,14 @@ jobs:
               .env
             ./scripts/validate-compose.sh --oidc
           done
-          # The rollback to the source-patched CPA image, selected in .env.
+          # An .env that still selects the removed source-patched image must
+          # stop every Compose call.
           cp "$ci_env_backup" .env
-          sed -i 's/^CPA_INTEGRATION=.*/CPA_INTEGRATION=patch/' .env
-          ./scripts/validate-compose.sh
-          rollback=$(./scripts/compose.sh config --format json)
-          jq -e '
-            .services.gateway.environment.CPA_INTEGRATION == "patch" and
-            (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/Dockerfile"))
-          ' <<<"$rollback" >/dev/null
+          printf '%s\n' 'CPA_INTEGRATION=patch' >> .env
+          if ./scripts/compose.sh config --quiet; then
+            printf '%s\n' 'the removed source-patched CPA image was accepted' >&2
+            exit 1
+          fi
       - name: Deployment and login regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Verify relay routing, fail-closed behavior and streaming
@@ -326,7 +312,7 @@ jobs:
           set -euo pipefail
           build_output=$(mktemp)
           trap 'rm -f "$build_output"' EXIT
-          if ./scripts/compose.sh --progress plain build gateway codex-compat antigravity-bridge account-egress 2>&1 | tee "$build_output"; then
+          if ./scripts/compose.sh --progress plain build gateway codex-compat account-egress 2>&1 | tee "$build_output"; then
             exit 0
           fi
           while IFS= read -r line; do
@@ -341,20 +327,10 @@ jobs:
           exit 1
       - name: Verify per-account Shadowsocks routing and hot updates
         run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v2
-      # The source-patched image is the rollback for plugin mode; it is built
-      # from deploy/patch-cpa.override.yml and keeps its own runtime checks.
-      - name: Build and verify source-patched rollback CPA image
-        shell: bash
-        run: |
-          set -euo pipefail
-          ./scripts/compose.sh -f deploy/patch-cpa.override.yml --progress plain build codex-compat
-          ./scripts/test-sidecar-image.sh "$(./scripts/compose.sh -f deploy/patch-cpa.override.yml config --format json | jq -er '.services["codex-compat"].image')"
-      - name: Verify Antigravity keyring isolation without a Google account
-        run: ./scripts/test-antigravity-image.sh
-      # Unmodified CPA with the Gateway plugin is the default image; it was
-      # built with the application images, and the build itself ran the
-      # plugin's end-to-end suite against the binary it ships.
-      - name: Verify plugin-mode CPA image
+      # Unmodified CPA with the Gateway plugin; it was built with the
+      # application images, and the build itself ran the plugin's end-to-end
+      # suite against the binary it ships.
+      - name: Verify CPA image
         shell: bash
         run: |
           set -euo pipefail
@@ -362,7 +338,6 @@ jobs:
           plugin_image=$(jq -er .image "$lock")
           merged=$(./scripts/compose.sh config --format json)
           jq -e --arg image "$plugin_image" '
-            .services.gateway.environment.CPA_INTEGRATION == "plugin" and
             .services["codex-compat"].image == $image and
             (.services["codex-compat"].build.dockerfile | endswith("plugin.Dockerfile")) and
             .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
@@ -371,24 +346,6 @@ jobs:
             ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:"))] | length == 1)
           ' <<<"$merged" >/dev/null
           ./scripts/test-cpa-plugin-image.sh "$plugin_image"
-      - name: Build and verify compatible CPA rollback image
-        shell: bash
-        run: |
-          set -eu
-          legacy_image=codex-gateway-compat:v7.3.15-673131f5-2dc404c8b22496a6-rollback
-          docker build -f deploy/codex-compat/legacy.Dockerfile -t "$legacy_image" .
-          ./scripts/test-legacy-sidecar-image.sh "$legacy_image"
-      - name: Build and verify credential migration and rollback tooling
-        shell: bash
-        run: |
-          set -eu
-          bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
-          bridge_id=$(docker image inspect "$bridge_image" --format '{{.Id}}')
-          docker build -f deploy/cpa-migrate/Dockerfile \
-            --build-arg LEGACY_BRIDGE_IMAGE="$bridge_image" \
-            -t codex-gateway-cpa-migrate:validation .
-          test "$(docker image inspect "$bridge_image" --format '{{.Id}}')" = "$bridge_id"
-          ./scripts/test-cpa-migration-image.sh
       - name: Scan application images with digest-locked Trivy
         shell: bash
         run: |
@@ -397,9 +354,8 @@ jobs:
           . deploy/images.lock.env
           . ./.env
           set +a
-          compat_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["codex-compat"].image')
-          bridge_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["antigravity-bridge"].image')
-          account_egress_image=$(./scripts/compose.sh --profile legacy-bridge config --format json | jq -er '.services["account-egress"].image')
+          compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["codex-compat"].image')
+          account_egress_image=$(./scripts/compose.sh config --format json | jq -er '.services["account-egress"].image')
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
@@ -411,15 +367,7 @@ jobs:
           docker run --rm \
             --volume /var/run/docker.sock:/var/run/docker.sock \
             "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
-            --severity HIGH,CRITICAL "$bridge_image"
-          docker run --rm \
-            --volume /var/run/docker.sock:/var/run/docker.sock \
-            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
             --severity HIGH,CRITICAL "$account_egress_image"
-          docker run --rm \
-            --volume /var/run/docker.sock:/var/run/docker.sock \
-            "$TRIVY_IMAGE" image --exit-code 1 --ignore-unfixed \
-            --severity HIGH,CRITICAL "$(./scripts/compose.sh -f deploy/patch-cpa.override.yml config --format json | jq -er '.services["codex-compat"].image')"
       - name: Export tested images for publication
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash
@@ -427,10 +375,9 @@ jobs:
           set -euo pipefail
           bundle=$RUNNER_TEMP/ci-images
           mkdir -p "$bundle"
-          ./scripts/compose.sh --profile legacy-bridge config --format json | jq '{
+          ./scripts/compose.sh config --format json | jq '{
             gateway: .services.gateway.image,
             "codex-compat": .services["codex-compat"].image,
-            "antigravity-bridge": .services["antigravity-bridge"].image,
             "account-egress": .services["account-egress"].image
           }' > "$bundle/local-images.json"
           mapfile -t images < <(jq -er '.[]' "$bundle/local-images.json")
@@ -482,7 +429,7 @@ jobs:
             platform: "linux/amd64",
             images: {}
           }' > deployment-images.json
-          for service in gateway codex-compat antigravity-bridge account-egress; do
+          for service in gateway codex-compat account-egress; do
             local_image=$(jq -er --arg service "$service" '.[$service]' ci-images/local-images.json)
             remote_image=ghcr.io/$repository/$service
             remote_tag=$remote_image:sha-$GITHUB_SHA
@@ -499,7 +446,7 @@ jobs:
             printf 'Published images for commit `%s` (linux/amd64).\n\n' "$GITHUB_SHA"
             jq -r '.images | to_entries[] | "- `" + .key + "`: `" + .value + "`"' deployment-images.json
             printf '\nDownload the deployment-images artifact and follow docs/ci-image-deployment.md.\n'
-            printf '\nFor anonymous pulls, set all four GHCR packages to Public after the first publication.\n'
+            printf '\nFor anonymous pulls, set all three GHCR packages to Public after the first publication.\n'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload deployment manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

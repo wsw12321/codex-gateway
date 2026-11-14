@@ -26,35 +26,37 @@ func TestForwardStripsCredentialsAndParsesJSONUsage(t *testing.T) {
 		if got := r.Header.Get(affinityHeader); got != affinityScope {
 			t.Errorf("affinity scope = %q", got)
 		}
-		if got := r.Header.Get(upstreamAccountHeader); got != "" {
+		if got := r.Header.Get(retiredAccountHeader); got != "" {
 			t.Errorf("caller-controlled account trace leaked upstream: %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(upstreamAccountHeader, "0123456789abcdef")
+		w.Header().Set(retiredAccountHeader, "0123456789abcdef")
 		_, _ = io.WriteString(w, `{"id":"r1","model":"gpt-test","service_tier":"priority","output":[],"usage":{"input_tokens":12,"input_tokens_details":{"cached_tokens":5,"cache_write_tokens":2},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":3}}}`)
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
 
 	req := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gpt-requested"}`))
 	req.Header.Set("Authorization", "Bearer cgk_v1_public_secret")
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("X-Forwarded-For", "203.0.113.1")
-	req.Header.Set(upstreamAccountHeader, "fedcba9876543210")
+	req.Header.Set(retiredAccountHeader, "fedcba9876543210")
 	recorder := httptest.NewRecorder()
 	result, failure := client.ForwardWithOptions(context.Background(), recorder, req, "/v1/responses", ForwardOptions{AffinityScope: affinityScope})
 	if failure != nil {
 		t.Fatal(failure)
 	}
+	// No allocation was reported for this request, so nothing attributes it,
+	// least of all a header in the response.
 	if result.Model != "gpt-test" || result.ServiceTier != "priority" ||
-		result.UpstreamAccountID != "0123456789abcdef" ||
+		result.UpstreamAccountID != "" ||
 		result.Usage.Total() != 19 || result.Usage.CachedTokens != 5 ||
 		result.Usage.CacheWriteTokens != 2 || !result.Usage.CacheWriteTokensPresent ||
 		result.Usage.ReasoningTokens != 3 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
-	if got := recorder.Header().Get(upstreamAccountHeader); got != "" {
+	if got := recorder.Header().Get(retiredAccountHeader); got != "" {
 		t.Fatalf("internal account header leaked downstream: %q", got)
 	}
 }
@@ -64,12 +66,12 @@ func TestForwardRejectsInvalidAffinityAndAccountTrace(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls++
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set(upstreamAccountHeader, "../../oauth-token")
+		w.Header().Set(retiredAccountHeader, "../../oauth-token")
 		_, _ = io.WriteString(w, `{"data":[]}`)
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "secret", upstream.Client()))
 
 	req := httptest.NewRequest(http.MethodGet, "https://gateway.test/v1/models", nil)
 	_, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), req, "/v1/models", ForwardOptions{AffinityScope: "invalid scope"})
@@ -97,7 +99,7 @@ func TestForwardModelsFiltersOnlyAfterValidatingCatalog(t *testing.T) {
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "secret", upstream.Client()))
 	recorder := httptest.NewRecorder()
 
 	result, failure := client.ForwardModelsWithOptions(
@@ -147,7 +149,7 @@ func TestForwardModelsRejectsMalformedOrOversizedCatalogWithoutWriting(t *testin
 			}))
 			defer upstream.Close()
 			base, _ := url.Parse(upstream.URL)
-			client := NewWithHTTPClient(base, "secret", upstream.Client())
+			client := withManagement(NewWithHTTPClient(base, "secret", upstream.Client()))
 			recorder := httptest.NewRecorder()
 
 			_, failure := client.ForwardModels(
@@ -165,20 +167,6 @@ func TestForwardModelsRejectsMalformedOrOversizedCatalogWithoutWriting(t *testin
 	}
 }
 
-func TestSafeUpstreamAccountHeaderRejectsAmbiguousValues(t *testing.T) {
-	header := make(http.Header)
-	header.Add(upstreamAccountHeader, "0123456789abcdef")
-	header.Add(upstreamAccountHeader, "fedcba9876543210")
-	if got := safeUpstreamAccountHeader(header); got != "" {
-		t.Fatalf("ambiguous account trace accepted: %q", got)
-	}
-	header = make(http.Header)
-	header.Set(upstreamAccountHeader, "0123456789abcdef")
-	if got := safeUpstreamAccountHeader(header); got != "0123456789abcdef" {
-		t.Fatalf("single account trace = %q", got)
-	}
-}
-
 func TestForwardSSEUsageAcrossChunks(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -188,7 +176,7 @@ func TestForwardSSEUsageAcrossChunks(t *testing.T) {
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "secret", upstream.Client()))
 	req := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader("{}"))
 	recorder := httptest.NewRecorder()
 	result, failure := client.Forward(context.Background(), recorder, req, "/v1/responses")
@@ -298,7 +286,7 @@ func TestUpstreamUnauthorizedIsReauthenticationError(t *testing.T) {
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "secret", upstream.Client()))
 	req := httptest.NewRequest(http.MethodGet, "https://gateway.test/v1/models", nil)
 	_, failure := client.Forward(context.Background(), httptest.NewRecorder(), req, "/v1/models")
 	if failure == nil || failure.Status != http.StatusServiceUnavailable || failure.Code != "upstream_reauthentication_required" {
@@ -308,7 +296,7 @@ func TestUpstreamUnauthorizedIsReauthenticationError(t *testing.T) {
 
 func TestOnlyKnownPaths(t *testing.T) {
 	base, _ := url.Parse("http://example.invalid")
-	client := NewWithHTTPClient(base, "secret", http.DefaultClient)
+	client := withManagement(NewWithHTTPClient(base, "secret", http.DefaultClient))
 	req := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/chat/completions", nil)
 	_, failure := client.Forward(context.Background(), httptest.NewRecorder(), req, "/v1/chat/completions")
 	if failure == nil || failure.Code != "unsupported_endpoint" {

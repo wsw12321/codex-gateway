@@ -30,8 +30,6 @@ const (
 	maxSSEEventBytes             = 4 << 20
 	affinityHeader               = "X-Codex-Gateway-Affinity"
 	gatewayUserHeader            = "X-Codex-Gateway-User"
-	upstreamAccountHeader        = "X-Codex-Upstream-Account"
-	conversationHashHeader       = "X-Codex-Conversation-Hash"
 	gatewayGroupsHeader          = "X-Codex-Gateway-Groups"
 	maxInternalResponseBodyBytes = 1 << 20
 )
@@ -65,7 +63,7 @@ var allowedRequestHeaders = map[string]struct{}{
 // compatibility sidecar. They intentionally cross the Gateway/sidecar
 // boundary so the sidecar can derive a caller-scoped root session. The sidecar
 // strips hierarchy hints at the provider boundary while preserving native
-// session/cache protocol headers. None go to the independent Antigravity bridge.
+// session/cache protocol headers. Antigravity requests carry none of them.
 var sidecarRelationHeaders = map[string]struct{}{
 	"session-id":                      {},
 	"thread-id":                       {},
@@ -156,13 +154,13 @@ type Client struct {
 	http           *http.Client
 	diagnosticHTTP *http.Client
 	antigravity    bool
-	cpaNative      bool
 	anthropic      bool
 	requireEgress  bool
-	// ledger is set with the CPA plugin integration; see UseAllocationLedger.
+	// ledger attributes each dispatch to the account CPA's plugin allocated;
+	// see UseAllocationLedger. Without one a dispatch has no attribution.
 	ledger *AllocationLedger
-	// managementToken is set with the CPA plugin integration; see
-	// UsePluginManagement.
+	// managementToken authenticates the plugin's management routes; see
+	// UsePluginManagement. Without one no account route can be called.
 	managementToken string
 }
 
@@ -210,15 +208,15 @@ type ForwardOptions struct {
 	// accepted only in the fixed base64url form emitted by the gateway and is
 	// consumed by the sidecar rather than forwarded to the service provider.
 	AffinityScope string
-	// OnUpstreamAccount is called after a valid, single-valued upstream account
-	// attribution header is received and before the response body is streamed.
-	// The callback is intentionally only given the validated stable account ID;
-	// malformed or ambiguous headers are ignored. Callers must keep the
-	// callback lightweight because it runs on the forwarding goroutine.
+	// OnUpstreamAccount is called with the account the allocation ledger
+	// recorded for this dispatch, after CPA's response headers arrive and
+	// before the body is streamed. Nothing CPA renders in the response can set
+	// it. Callers must keep the callback lightweight because it runs on the
+	// forwarding goroutine.
 	OnUpstreamAccount func(accountID string)
-	// OnConversation is called after a trusted sidecar response supplies the
-	// canonical opaque conversation hash. The hash is never accepted from the
-	// caller request and is not forwarded back to the caller.
+	// OnConversation is called with the conversation hash the ledger recorded
+	// for this dispatch. The hash is never accepted from the caller request
+	// and is not forwarded back to the caller.
 	OnConversation func(conversationHash string)
 }
 
@@ -308,17 +306,14 @@ func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, 
 	}
 	defer response.Body.Close()
 
+	// A catalog request allocates no account, so it has no attribution.
 	result := Result{
 		StatusCode:        response.StatusCode,
 		ContentType:       response.Header.Get("Content-Type"),
-		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
-		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
-	notifyUpstreamAccount(options, result.UpstreamAccountID)
-	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := c.sanitizeFailure(response)
+		failure := sanitizeUpstreamFailure(response)
 		result.CompletedAt = time.Now()
 		return nil, result, failure
 	}
@@ -500,7 +495,7 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	requestBody := incoming.Body
 	var nativeModel string
 	nativeTools := map[string]struct{}{}
-	if c.cpaNative {
+	if c.antigravity {
 		data, err := io.ReadAll(io.LimitReader(incoming.Body, maxInternalResponseBodyBytes+1))
 		if err != nil || len(data) > maxInternalResponseBodyBytes || cpaprotocol.ResponsesRequest(data) != nil {
 			return Result{}, &Failure{Status: http.StatusBadRequest, Type: "invalid_request_error", Code: "antigravity_request_unsupported", Message: "Antigravity 请求格式无效"}
@@ -564,19 +559,17 @@ func (c *Client) ForwardWithOptions(ctx context.Context, w http.ResponseWriter, 
 	result := Result{
 		StatusCode:        response.StatusCode,
 		ContentType:       response.Header.Get("Content-Type"),
-		UpstreamAccountID: safeUpstreamAccountHeader(response.Header),
-		ConversationHash:  safeConversationHashHeader(response.Header),
 		UpstreamRequestID: firstHeader(response.Header, "X-Request-Id", "Openai-Request-Id"),
 	}
 	opened.apply(&result)
 	notifyUpstreamAccount(options, result.UpstreamAccountID)
 	notifyConversation(options, result.ConversationHash)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		failure := opened.failure(c.sanitizeFailure(response), parseRetryAfter(response.Header.Get("Retry-After")))
+		failure := opened.failure(sanitizeUpstreamFailure(response), parseRetryAfter(response.Header.Get("Retry-After")))
 		result.CompletedAt = time.Now()
 		return result, failure
 	}
-	if c.cpaNative {
+	if c.antigravity {
 		return c.forwardNativeResponses(ctx, w, response, nativeModel, nativeTools, result)
 	}
 
@@ -650,43 +643,11 @@ func firstHeader(header http.Header, names ...string) string {
 	return ""
 }
 
-func safeUpstreamAccountID(value string) string {
-	value = strings.TrimSpace(value)
-	if !upstreamAccountPattern.MatchString(value) {
-		return ""
-	}
-	return value
-}
-
-func safeUpstreamAccountHeader(header http.Header) string {
-	values := header.Values(upstreamAccountHeader)
-	if len(values) != 1 || strings.Contains(values[0], ",") {
-		return ""
-	}
-	return safeUpstreamAccountID(values[0])
-}
-
 func notifyUpstreamAccount(options ForwardOptions, accountID string) {
 	if accountID == "" || options.OnUpstreamAccount == nil {
 		return
 	}
 	options.OnUpstreamAccount(accountID)
-}
-
-func safeConversationHash(value string) string {
-	value = strings.TrimSpace(value)
-	if !conversationHashPattern.MatchString(value) {
-		return ""
-	}
-	return value
-}
-
-func safeConversationHashHeader(header http.Header) string {
-	values := header.Values(conversationHashHeader)
-	if len(values) != 1 || strings.Contains(values[0], ",") {
-		return ""
-	}
-	return safeConversationHash(values[0])
 }
 
 func notifyConversation(options ForwardOptions, conversationHash string) {

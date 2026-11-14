@@ -166,7 +166,7 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 		{"success", "", "", 3},
 		{"disabled remains testable", "disabled", "", 3},
 		{"unconfigured native model remains testable", "unpriced", "", 3},
-		{"account removed", "removed", "model_identification_account_not_found", 1},
+		{"pinned account unavailable", "removed", "model_identification_unavailable", 1},
 		{"returned account mismatch", "mismatch", "model_identification_account_mismatch", 1},
 		{"invalid first answer", "invalid", "model_identification_invalid_answer", 1},
 		{"duplicate second answer", "duplicate", "model_identification_invalid_answer", 2},
@@ -176,38 +176,52 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			probes := 0
+			var s *Server
 			transport := identificationRoundTripper(func(request *http.Request) (*http.Response, error) {
-				if request.Header.Get("Authorization") != "Bearer secret" {
-					t.Error("missing internal bearer")
+				// Plugin routes carry the management key; the probe is an
+				// ordinary request with the data-plane key.
+				wantKey := "Bearer " + testManagementKey
+				if request.URL.Path == "/v1/responses" {
+					wantKey = "Bearer secret"
+				}
+				if request.Header.Get("Authorization") != wantKey {
+					t.Errorf("wrong credential for %s", request.URL.Path)
 				}
 				switch request.URL.Path {
-				case "/internal/model-identification/capabilities":
-					protocol := gatewayproxy.ModelIdentificationProtocol
+				case pluginPath("model-identification/capabilities"):
+					protocol := gatewayproxy.ModelIdentificationCPAProtocol
 					if test.failure == "protocol" {
 						protocol = "old_v0"
 					}
 					return identificationResponse(200, `{"protocol":"`+protocol+`"}`), nil
-				case "/internal/upstream-accounts":
+				case pluginPath("upstream-accounts"):
 					status, manual := "available", "enabled"
 					if test.failure == "disabled" {
 						status, manual = "unavailable", "manual_disabled"
 					}
 					return identificationResponse(200, `{"accounts":[{"id":"`+identificationTestAccount+`","masked_email":"u***@example.com","plan":"plus","status":"`+status+`","cliproxy_status":"active","gateway_manual_status":"`+manual+`","gateway_quota_status":"available","last_synced_at":"2026-09-25T00:00:00Z"}]}`), nil
-				case "/internal/model-identification/accounts/" + identificationTestAccount + "/models":
+				case pluginPath("model-identification/accounts/models"):
+					if request.URL.RawQuery != "id="+identificationTestAccount {
+						t.Errorf("model list for %q", request.URL.RawQuery)
+					}
 					return identificationResponse(200, `{"account_id":"`+identificationTestAccount+`","models":["gpt-6-sol","native-unpriced"]}`), nil
-				case "/internal/model-identification/accounts/" + identificationTestAccount + "/probe":
-					if request.Header.Get("X-Codex-Gateway-User") != identificationTestUser || request.Header.Get("X-Codex-Diagnostic-Run") != identificationTestRun().RunID {
-						t.Error("missing trusted actor or run")
+				case "/v1/responses":
+					// The probe travels under a one-time identity that the
+					// ledger pins to the account under test, never the actor's.
+					identity := request.Header.Get("X-Codex-Gateway-User")
+					if pinned, ok := s.allocations.ProbeAccount(identity); !ok || pinned != identificationTestAccount || identity == identificationTestUser {
+						t.Errorf("probe identity %q pinned to %q", identity, pinned)
 					}
 					var body struct {
 						Model           string `json:"model"`
 						Input           string `json:"input"`
 						MaxOutputTokens int    `json:"max_output_tokens"`
+						Stream          *bool  `json:"stream"`
 					}
 					if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
 						t.Fatal(err)
 					}
-					if body.Input != modelid.Challenges()[probes].Prompt || body.MaxOutputTokens != 16384 {
+					if body.Input != modelid.Challenges()[probes].Prompt || body.MaxOutputTokens != 16384 || body.Stream == nil || *body.Stream {
 						t.Error("unexpected challenge")
 					}
 					if test.failure == "unpriced" && body.Model != "native-unpriced" {
@@ -218,21 +232,33 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 						reply = replies[0]
 					}
 					probes++
+					report := gatewayproxy.AllocationReport{Token: request.Header.Get("X-Codex-Gateway-Request"), UserID: identity, AccountID: identificationTestAccount}
 					switch test.failure {
 					case "timeout":
 						return nil, context.DeadlineExceeded
 					case "invalid":
 						reply = "1,2,3"
 					case "removed":
-						return identificationResponse(404, `{"error":{"code":"probe_account_not_found","stage":"preflight"}}`), nil
+						// The pinned account is not among CPA's candidates, so
+						// the plugin reports that nothing could be allocated.
+						report.AccountID, report.Rejected = "", "gateway_allocation_unavailable"
+					case "mismatch":
+						report.AccountID = "ffffffffffffffff"
+					}
+					if err := s.allocations.Record("codex", report); err != nil {
+						t.Errorf("record allocation: %v", err)
+					}
+					switch test.failure {
+					case "removed":
+						return identificationResponse(503, `{"error":{"code":"gateway_allocation_unavailable"}}`), nil
 					case "limited":
-						return identificationResponse(502, `{"error":{"code":"probe_rate_limited","stage":"probing","upstream_status":429,"retry_after":12}}`), nil
+						limited := identificationResponse(429, `{"error":{"code":"rate_limit_exceeded"}}`)
+						limited.Header.Set("Retry-After", "12")
+						return limited, nil
 					}
-					account := identificationTestAccount
-					if test.failure == "mismatch" {
-						account = "ffffffffffffffff"
-					}
-					encoded, _ := json.Marshal(map[string]string{"account_id": account, "output_text": reply})
+					encoded, _ := json.Marshal(map[string]any{"status": "completed", "output": []map[string]any{{
+						"type": "message", "content": []map[string]string{{"type": "output_text", "text": reply}},
+					}}})
 					return identificationResponse(200, string(encoded)), nil
 				}
 				return nil, errors.New("unexpected sidecar path")
@@ -242,7 +268,8 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 			if test.failure == "unpriced" {
 				repository.item.RequestedModel = "native-unpriced"
 			}
-			s := &Server{upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}), modelIdentificationRepo: repository, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			s = &Server{upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})), modelIdentificationRepo: repository, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+			useLedger(s, s.upstream)
 			if test.failure != "protocol" {
 				options, err := s.resolveModelIdentificationOptions(context.Background(), identificationTestAccount)
 				if err != nil || len(options.Models) != 2 {
@@ -274,11 +301,11 @@ func TestModelIdentificationGracefulStopMarksInterrupted(t *testing.T) {
 	probeStarted := make(chan struct{})
 	transport := identificationRoundTripper(func(request *http.Request) (*http.Response, error) {
 		switch request.URL.Path {
-		case "/internal/model-identification/capabilities":
-			return identificationResponse(200, `{"protocol":"`+gatewayproxy.ModelIdentificationProtocol+`"}`), nil
-		case "/internal/model-identification/accounts/" + identificationTestAccount + "/models":
+		case pluginPath("model-identification/capabilities"):
+			return identificationResponse(200, `{"protocol":"`+gatewayproxy.ModelIdentificationCPAProtocol+`"}`), nil
+		case pluginPath("model-identification/accounts/models"):
 			return identificationResponse(200, `{"account_id":"`+identificationTestAccount+`","models":["gpt-6-sol"]}`), nil
-		case "/internal/model-identification/accounts/" + identificationTestAccount + "/probe":
+		case "/v1/responses":
 			close(probeStarted)
 			<-request.Context().Done()
 			return nil, request.Context().Err()
@@ -288,7 +315,8 @@ func TestModelIdentificationGracefulStopMarksInterrupted(t *testing.T) {
 	base, _ := url.Parse("http://sidecar.test")
 	parent, cancel := context.WithCancel(context.Background())
 	repository := &fakeIdentificationRepo{item: identificationTestRun()}
-	s := &Server{upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}), modelIdentificationRepo: repository, identificationContext: parent, identificationCancel: cancel, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s := &Server{upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})), modelIdentificationRepo: repository, identificationContext: parent, identificationCancel: cancel, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	useLedger(s, s.upstream)
 	s.identificationWG.Add(1)
 	go func() { defer s.identificationWG.Done(); s.runModelIdentification(repository.item) }()
 	select {
@@ -362,7 +390,7 @@ func TestCreateModelIdentificationReturnsReservedRunWithoutPricingOrStatusGate(t
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			transport := identificationRoundTripper(func(request *http.Request) (*http.Response, error) {
-				if request.URL.Path != "/internal/upstream-accounts" {
+				if request.URL.Path != pluginPath("upstream-accounts") {
 					t.Errorf("unexpected request before canceled worker: %s", request.URL.Path)
 				}
 				return identificationResponse(200, `{"accounts":`+test.accounts+`}`), nil
@@ -371,7 +399,7 @@ func TestCreateModelIdentificationReturnsReservedRunWithoutPricingOrStatusGate(t
 			parent, cancel := context.WithCancel(context.Background())
 			cancel()
 			repository := &fakeIdentificationRepo{item: identificationTestRun(), beginErr: test.beginErr}
-			s := &Server{modelIdentificationRepo: repository, upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}), identificationContext: parent}
+			s := &Server{modelIdentificationRepo: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})), identificationContext: parent}
 			r := httptest.NewRequest(http.MethodPost, "/admin/model-identifications/runs", strings.NewReader(`{"account_id":"`+identificationTestAccount+`","model":"native/name"}`))
 			r = r.WithContext(context.WithValue(r.Context(), userContextKey, store.User{ID: identificationTestUser, Role: store.UserRoleOwner}))
 			w := httptest.NewRecorder()

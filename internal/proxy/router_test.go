@@ -2,27 +2,28 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-const antigravityPublicModel = "gemini-3.1-pro-high"
+const antigravityPublicModel = "gemini-3.8-flash-high"
 
-func testRouterClient(bridge bool, fn roundTripFunc) *Client {
+// testRouterClient builds a CPA client over a fake transport. The Antigravity
+// client gets its own token here so a test can tell which client was used; in
+// a deployment both use the one internal key.
+func testRouterClient(antigravity bool, fn roundTripFunc) *Client {
 	base, _ := url.Parse("http://internal.test")
-	client := NewWithHTTPClient(base, "codex-secret", &http.Client{Transport: fn})
-	if bridge {
+	client := withManagement(NewWithHTTPClient(base, "codex-secret", &http.Client{Transport: fn}))
+	if antigravity {
 		client.antigravity = true
-		client.token = "bridge-secret"
+		client.token = "antigravity-secret"
 	}
 	return client
 }
@@ -31,28 +32,28 @@ func routerTestResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
 }
 
-func TestRouterUsesExactModelsAndIndependentCredentials(t *testing.T) {
+func TestRouterUsesExactModelsAndTheMatchingClient(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
-		model  string
-		bridge bool
+		model       string
+		antigravity bool
 	}{
 		{antigravityPublicModel, true},
-		{"gemini-3.1-pro-high-other", false},
-		{"gemini-3.1-pro-preview", false},
+		{"gemini-3.8-flash-high-other", false},
+		{"gemini-3.8-flash", false},
 		{"gemini-other", false},
 		{"gpt-6-astra", false},
 	} {
 		t.Run(test.model, func(t *testing.T) {
 			body := `{"model":"` + test.model + `","input":"private prompt"}`
-			var primaryCalls, bridgeCalls atomic.Int64
-			transport := func(bridge bool) roundTripFunc {
+			scope := strings.Repeat("a", 43)
+			var primaryCalls, antigravityCalls atomic.Int64
+			transport := func(antigravity bool) roundTripFunc {
 				return func(request *http.Request) (*http.Response, error) {
 					wantAuth := "Bearer codex-secret"
-					wantAffinity := strings.Repeat("a", 43)
-					if bridge {
-						bridgeCalls.Add(1)
-						wantAuth, wantAffinity = "Bearer bridge-secret", ""
+					if antigravity {
+						antigravityCalls.Add(1)
+						wantAuth = "Bearer antigravity-secret"
 					} else {
 						primaryCalls.Add(1)
 					}
@@ -60,13 +61,14 @@ func TestRouterUsesExactModelsAndIndependentCredentials(t *testing.T) {
 					if err != nil || string(gotBody) != body {
 						t.Errorf("request body changed: %q, %v", gotBody, err)
 					}
-					if request.Header.Get("Authorization") != wantAuth || request.Header.Get(affinityHeader) != wantAffinity || request.Header.Get("Cookie") != "" {
+					// The caller scope is the Gateway's, never the client's.
+					if request.Header.Get("Authorization") != wantAuth || request.Header.Get(affinityHeader) != scope || request.Header.Get("Cookie") != "" {
 						t.Error("upstream received incorrect credentials, affinity, or client cookie")
 					}
-					return routerTestResponse(http.StatusOK, `{"model":"`+test.model+`","usage":{"input_tokens":2,"output_tokens":3}}`), nil
+					return routerTestResponse(http.StatusOK, `{"model":"`+test.model+`","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}}`), nil
 				}
 			}
-			routes := map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"}
+			routes := map[string]string{antigravityPublicModel: antigravityPublicModel}
 			router := NewRouter(testRouterClient(false, transport(false)), testRouterClient(true, transport(true)), routes)
 			// The router owns a snapshot of configured routing.
 			delete(routes, antigravityPublicModel)
@@ -74,18 +76,18 @@ func TestRouterUsesExactModelsAndIndependentCredentials(t *testing.T) {
 			request.Header.Set("Authorization", "Bearer public-key")
 			request.Header.Set("Cookie", "session=client-cookie")
 			request.Header.Set(affinityHeader, "spoofed-affinity")
-			result, failure := router.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, test.model, "/v1/responses", ForwardOptions{AffinityScope: strings.Repeat("a", 43)})
+			result, failure := router.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, test.model, "/v1/responses", ForwardOptions{AffinityScope: scope})
 			if failure != nil || result.Model != test.model || result.Usage.Total() != 5 {
 				t.Fatalf("result = %+v, failure = %v", result, failure)
 			}
-			if got := bridgeCalls.Load(); (got == 1) != test.bridge || primaryCalls.Load()+got != 1 {
-				t.Fatalf("wrong upstream: primary=%d bridge=%d", primaryCalls.Load(), got)
+			if got := antigravityCalls.Load(); (got == 1) != test.antigravity || primaryCalls.Load()+got != 1 {
+				t.Fatalf("wrong client: primary=%d antigravity=%d", primaryCalls.Load(), got)
 			}
 		})
 	}
 }
 
-func TestRouterUnavailableBridgeNeverFallsBack(t *testing.T) {
+func TestRouterUnavailableAntigravityNeverFallsBack(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
 	primary := testRouterClient(false, func(*http.Request) (*http.Response, error) {
@@ -95,164 +97,102 @@ func TestRouterUnavailableBridgeNeverFallsBack(t *testing.T) {
 	broken := testRouterClient(true, func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("connection refused")
 	})
-	for _, bridge := range []*Client{nil, broken} {
-		router := NewRouter(primary, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
-		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":"hello"}`))
+	for _, antigravity := range []*Client{nil, broken} {
+		router := NewRouter(primary, antigravity, map[string]string{antigravityPublicModel: antigravityPublicModel})
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+antigravityPublicModel+`","input":"hello"}`))
 		recorder := httptest.NewRecorder()
 		_, failure := router.ForwardWithOptions(context.Background(), recorder, request, antigravityPublicModel, "/v1/responses", ForwardOptions{})
 		if failure == nil || failure.Status != http.StatusServiceUnavailable || failure.Code != "upstream_unavailable" || recorder.Body.Len() != 0 {
-			t.Fatalf("unavailable bridge failure = %+v", failure)
+			t.Fatalf("unavailable Antigravity failure = %+v", failure)
 		}
 	}
 	if calls.Load() != 0 {
-		t.Fatal("bridge requests fell back to the primary upstream")
+		t.Fatal("Antigravity requests fell back to the primary client")
 	}
 }
 
-func TestRouterModelCatalogMergeAndOutage(t *testing.T) {
+func TestRouterRejectsAntigravityCompactBeforeDispatch(t *testing.T) {
 	t.Parallel()
-	for _, test := range []struct {
-		name         string
-		primary      string
-		bridge       string
-		bridgeStatus int
-		allowed      map[string]struct{}
-		want         []string
-		wantFailure  bool
-	}{
-		{name: "merge", primary: `{"object":"list","data":[{"id":"gpt-6-astra","owned_by":"codex"}]}`, bridge: `{"object":"list","data":[{"id":"gemini-3.1-pro-high","owned_by":"antigravity"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
-		{name: "same effective permission filter", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}}, want: []string{"gpt-6-astra"}},
-		{name: "bridge unavailable", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridgeStatus: http.StatusServiceUnavailable, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra"}},
-		{name: "routed models hidden even if primary advertises during outage", primary: `{"data":[{"id":"gpt-6-astra"},{"id":"gemini-3.1-pro-high"}]}`, bridgeStatus: http.StatusServiceUnavailable, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}, want: []string{"gpt-6-astra"}},
-		{name: "unrouted bridge models excluded", primary: `{"data":[{"id":"gpt-6-astra"}]}`, bridge: `{"data":[{"id":"gemini-unconfigured"},{"id":"gemini-3.1-pro-high"}]}`, allowed: map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}, "gemini-unconfigured": {}}, want: []string{"gpt-6-astra", antigravityPublicModel}},
-		{name: "duplicate across upstreams", primary: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"}]}`, wantFailure: true},
-		{name: "duplicate hidden models across upstreams", primary: `{"data":[{"id":"gpt-hidden"}]}`, bridge: `{"data":[{"id":"gpt-hidden"}]}`, allowed: map[string]struct{}{antigravityPublicModel: {}}, wantFailure: true},
-		{name: "duplicate in primary", primary: `{"data":[{"id":"gpt-6-astra"},{"id":"gpt-6-astra"}]}`, bridge: `{"data":[]}`, wantFailure: true},
-		{name: "duplicate in bridge", primary: `{"data":[]}`, bridge: `{"data":[{"id":"gemini-3.1-pro-high"},{"id":"gemini-3.1-pro-high"}]}`, wantFailure: true},
-		{name: "malformed bridge", primary: `{"data":[]}`, bridge: `{"data":[{"id":42}]}`, wantFailure: true},
-		{name: "malformed primary", primary: `{"data":[`, bridge: `{"data":[]}`, wantFailure: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			primary := testRouterClient(false, func(request *http.Request) (*http.Response, error) {
-				if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer codex-secret" {
-					t.Error("invalid primary catalog request")
-				}
-				return routerTestResponse(http.StatusOK, test.primary), nil
-			})
-			bridge := testRouterClient(true, func(request *http.Request) (*http.Response, error) {
-				if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer bridge-secret" || request.Header.Get(affinityHeader) != "" || request.Header.Get(gatewayUserHeader) != "00000000-0000-0000-0000-000000000001" {
-					t.Error("invalid bridge catalog request")
-				}
-				status := test.bridgeStatus
-				if status == 0 {
-					status = http.StatusOK
-				}
-				return routerTestResponse(status, test.bridge), nil
-			})
-			router := NewRouter(primary, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
-			recorder := httptest.NewRecorder()
-			result, failure := router.ForwardModelsWithOptions(context.Background(), recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil), test.allowed, ForwardOptions{AffinityScope: strings.Repeat("a", 43), UserID: "00000000-0000-0000-0000-000000000001"})
-			if test.wantFailure {
-				if failure == nil || failure.Status != http.StatusBadGateway || failure.Code != "upstream_invalid_model_catalog" || recorder.Body.Len() != 0 {
-					t.Fatalf("invalid catalog result=%+v failure=%v body=%s", result, failure, recorder.Body)
-				}
-				return
+	unexpected := func(*http.Request) (*http.Response, error) {
+		t.Error("compact request for an Antigravity model was dispatched")
+		return nil, errors.New("unexpected request")
+	}
+	router := NewRouter(testRouterClient(false, unexpected), testRouterClient(true, unexpected), map[string]string{antigravityPublicModel: antigravityPublicModel})
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", strings.NewReader(`{"model":"`+antigravityPublicModel+`","input":"hello"}`))
+	_, failure := router.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, antigravityPublicModel, "/v1/responses/compact", ForwardOptions{})
+	if failure == nil || failure.Status != http.StatusNotImplemented || failure.Code != "endpoint_not_supported" {
+		t.Fatalf("failure = %+v", failure)
+	}
+}
+
+// One CPA instance lists every provider's models, so the catalog is a single
+// request through the primary client whatever routes are configured.
+func TestRouterModelCatalogComesFromThePrimaryClientOnly(t *testing.T) {
+	t.Parallel()
+	for _, routes := range []map[string]string{nil, {antigravityPublicModel: antigravityPublicModel}} {
+		var calls atomic.Int64
+		primary := testRouterClient(false, func(request *http.Request) (*http.Response, error) {
+			calls.Add(1)
+			if request.URL.Path != "/v1/models" || request.Header.Get("Authorization") != "Bearer codex-secret" {
+				t.Error("invalid catalog request")
 			}
-			if failure != nil || result.StatusCode != http.StatusOK || result.BytesOut != int64(recorder.Body.Len()) {
-				t.Fatalf("result=%+v failure=%v", result, failure)
-			}
-			var catalog struct {
-				Data []struct {
-					ID string `json:"id"`
-				} `json:"data"`
-			}
-			if err := json.Unmarshal(recorder.Body.Bytes(), &catalog); err != nil {
-				t.Fatal(err)
-			}
-			got := make([]string, 0, len(catalog.Data))
-			for _, model := range catalog.Data {
-				got = append(got, model.ID)
-			}
-			if !reflect.DeepEqual(got, test.want) {
-				t.Fatalf("models = %v, want %v", got, test.want)
-			}
+			return routerTestResponse(http.StatusOK, `{"object":"list","data":[{"id":"gpt-6-astra"},{"id":"`+antigravityPublicModel+`"},{"id":"gpt-hidden"}]}`), nil
 		})
+		antigravity := testRouterClient(true, func(*http.Request) (*http.Response, error) {
+			t.Error("the Antigravity client fetched a catalog of its own")
+			return nil, errors.New("unexpected request")
+		})
+		router := NewRouter(primary, antigravity, routes)
+		recorder := httptest.NewRecorder()
+		allowed := map[string]struct{}{"gpt-6-astra": {}, antigravityPublicModel: {}}
+		result, failure := router.ForwardModelsWithOptions(context.Background(), recorder, httptest.NewRequest(http.MethodGet, "/v1/models", nil), allowed, ForwardOptions{})
+		if failure != nil || result.StatusCode != http.StatusOK || calls.Load() != 1 {
+			t.Fatalf("result=%+v failure=%v calls=%d", result, failure, calls.Load())
+		}
+		body := recorder.Body.String()
+		if !strings.Contains(body, "gpt-6-astra") || !strings.Contains(body, antigravityPublicModel) || strings.Contains(body, "gpt-hidden") {
+			t.Fatalf("catalog = %s", body)
+		}
+		if _, failure := router.ForwardModelsWithOptions(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/models", nil), allowed, ForwardOptions{}); failure == nil || failure.Status != http.StatusNotFound {
+			t.Fatalf("non-GET catalog failure = %+v", failure)
+		}
 	}
 }
 
-func TestRouterWithoutRoutesOnlyFetchesPrimaryCatalog(t *testing.T) {
+func TestCPAAntigravityClientTransport(t *testing.T) {
 	t.Parallel()
-	primary := testRouterClient(false, func(*http.Request) (*http.Response, error) {
-		return routerTestResponse(http.StatusOK, `{"data":[]}`), nil
-	})
-	bridge := testRouterClient(true, func(*http.Request) (*http.Response, error) {
-		t.Error("unconfigured bridge catalog requested")
-		return nil, errors.New("unconfigured")
-	})
-	router := NewRouter(primary, bridge, nil)
-	_, failure := router.ForwardModelsWithOptions(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/v1/models", nil), nil, ForwardOptions{})
-	if failure != nil {
-		t.Fatal(failure)
-	}
-}
-
-func TestAntigravityClientTimeoutAndErrorMapping(t *testing.T) {
-	t.Parallel()
-	base, _ := url.Parse("http://antigravity-bridge:8318")
-	client := NewAntigravity(base, "bridge-secret")
+	base, _ := url.Parse("http://codex-compat:8317")
+	client := withManagement(NewCPAAntigravity(base, "internal-secret"))
 	transport := client.http.Transport.(*http.Transport)
 	if transport.Proxy != nil || transport.ResponseHeaderTimeout < 5*time.Minute+15*time.Second {
-		t.Fatal("bridge needs direct internal traffic and a timeout longer than the CLI timeout")
+		t.Fatal("Antigravity needs direct internal traffic and a header timeout longer than a slow reply")
 	}
-	for _, test := range []struct {
-		status     int
-		code       string
-		wantStatus int
-		wantCode   string
-	}{
-		{400, "antigravity_tools_unsupported", 400, "antigravity_tools_unsupported"},
-		{400, "antigravity_invalid_request", 400, "antigravity_invalid_request"},
-		{400, "secret_token", 502, "upstream_protocol_error"},
-		{401, "anything", 503, "upstream_reauthentication_required"},
-		{403, "anything", 503, "upstream_reauthentication_required"},
-		{429, "upstream_concurrency_exceeded", 429, "upstream_concurrency_exceeded"},
-		{429, "upstream_rate_limited", 429, "upstream_rate_limited"},
-		{503, "upstream_unavailable", 503, "upstream_unavailable"},
-		{503, "upstream_reauthentication_required", 503, "upstream_reauthentication_required"},
-		{504, "upstream_timeout", 504, "upstream_timeout"},
-		{502, "upstream_protocol_error", 502, "upstream_protocol_error"},
-		{502, "upstream_process_error", 502, "upstream_process_error"},
-		{500, "anything", 502, "upstream_protocol_error"},
-	} {
-		response := routerTestResponse(test.status, `{"error":{"code":"`+test.code+`","message":"private prompt or credentials"}}`)
-		response.Header.Set("Retry-After", "2")
-		failure := client.sanitizeFailure(response)
-		if failure.Status != test.wantStatus || failure.Code != test.wantCode || strings.Contains(failure.Message, "private prompt") || strings.Contains(failure.Message, "credentials") {
-			t.Fatalf("status=%d code=%s: failure=%+v", test.status, test.code, failure)
-		}
+	if client.AccountProvider() != "antigravity" {
+		t.Fatalf("provider = %q", client.AccountProvider())
 	}
 }
 
 func TestAntigravityForwardCancellationWhileWaitingForResult(t *testing.T) {
 	t.Parallel()
 	started := make(chan struct{})
-	bridge := testRouterClient(true, func(request *http.Request) (*http.Response, error) {
+	antigravity := testRouterClient(true, func(request *http.Request) (*http.Response, error) {
 		close(started)
 		<-request.Context().Done()
 		return nil, request.Context().Err()
 	})
-	router := NewRouter(nil, bridge, map[string]string{antigravityPublicModel: "gemini-3.1-pro-high"})
+	router := NewRouter(nil, antigravity, map[string]string{antigravityPublicModel: antigravityPublicModel})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan *Failure, 1)
 	go func() {
-		_, failure := router.ForwardWithOptions(ctx, httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/responses", nil), antigravityPublicModel, "/v1/responses", ForwardOptions{})
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+antigravityPublicModel+`","input":"hello"}`))
+		_, failure := router.ForwardWithOptions(ctx, httptest.NewRecorder(), request, antigravityPublicModel, "/v1/responses", ForwardOptions{})
 		done <- failure
 	}()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
-		t.Fatal("bridge request did not start")
+		t.Fatal("Antigravity request did not start")
 	}
 	cancel()
 	select {
@@ -261,6 +201,6 @@ func TestAntigravityForwardCancellationWhileWaitingForResult(t *testing.T) {
 			t.Fatalf("failure = %+v", failure)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("bridge request survived cancellation")
+		t.Fatal("Antigravity request survived cancellation")
 	}
 }

@@ -125,8 +125,8 @@ until /usr/local/bin/sidecar-healthcheck; do
     test "$attempt" -lt 30 || { cat "$run/startup.log" >&2; fail "the plugin never became healthy"; }
     sleep 1
 done
-grep -Fq "Version: ${CPA_PLUGIN_PROBE_VERSION:-v8.0.59}" "$run/startup.log" || fail "unexpected CPA version"
-grep -Fq "Commit: ${CPA_PLUGIN_PROBE_COMMIT:-c5251b57b3fa5dcbc689f514f4aa166daacb4481}" "$run/startup.log" || fail "unexpected CPA commit"
+grep -Fq "Version: ${CPA_PLUGIN_PROBE_VERSION:?}" "$run/startup.log" || fail "unexpected CPA version"
+grep -Fq "Commit: ${CPA_PLUGIN_PROBE_COMMIT:?}" "$run/startup.log" || fail "unexpected CPA commit"
 
 for namespace in upstream-accounts antigravity-accounts anthropic-accounts; do
     request GET "/v0/management/gateway/$namespace/capabilities" "$management"
@@ -148,7 +148,7 @@ expect_status 401 "native management API with the data-plane key"
 # the one this binary parsed, not merely text in the generated file.
 request GET /v0/management/oauth-excluded-models "$management"
 expect_status 200 "model exclusion rules"
-grep -Fq '"antigravity":["claude-*","gpt-*","gemini-3.1-flash-image"]' "$run/response" || fail "Antigravity models are not confined to the reviewed catalog"
+grep -Fq '"antigravity":["claude-*","gpt-*","gemini-3.1-flash-image","gemini-3.8-flash-tiered","gemini-4-carbon-high","gemini-4-hydrogen-xhigh"]' "$run/response" || fail "Antigravity models are not confined to the reviewed catalog"
 if grep -Fq '"codex":' "$run/response" || grep -Fq '"claude":' "$run/response"; then
     fail "an exclusion rule exists for a provider other than Antigravity"
 fi

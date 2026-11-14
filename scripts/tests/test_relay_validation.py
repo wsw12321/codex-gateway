@@ -58,7 +58,7 @@ class RelayValidationTests(unittest.TestCase):
             if shadowsocks:
                 files += ["-f", str(cls.root / "deploy/shadowsocks.override.yml")]
             result = subprocess.run(
-                ["docker", "compose", "--profile", "legacy-bridge", "--env-file", str(cls.root / ".env"),
+                ["docker", "compose", "--env-file", str(cls.root / ".env"),
                  "--env-file", str(cls.root / "deploy/images.lock.env"),
                  *files, "config", "--format", "json"],
                 env=cls.env, capture_output=True, text=True, timeout=30,
@@ -453,8 +453,8 @@ else:
                 self.assertEqual(self.run_log.read_text(), "")
 
     def test_static_config_cannot_bypass_parent(self):
-        for directive in ("always_direct allow all", "never_direct deny antigravity_clients",
-                          "cache_peer_access codex_relay deny antigravity_clients"):
+        for directive in ("always_direct allow all", "never_direct deny codex_clients",
+                          "cache_peer_access codex_relay deny codex_clients"):
             with self.subTest(directive=directive):
                 self.egress_config.write_text(self.egress_baseline + f"\n{directive}\n")
                 result = self.validate()
@@ -462,8 +462,8 @@ else:
                 self.assertIn("generated relay routing fragment", result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
-    def test_both_client_groups_require_parent_access_and_no_direct_fallback(self):
-        for client in ("codex_clients", "antigravity_clients"):
+    def test_provider_clients_require_parent_access_and_no_direct_fallback(self):
+        for client in ("codex_clients",):
             for directive in (f"cache_peer_access codex_relay allow {client}",
                               f"never_direct allow {client}"):
                 with self.subTest(directive=directive):
@@ -476,19 +476,19 @@ else:
 
     def test_a_keeps_provider_destination_rules_separate(self):
         for client, destinations in (("codex_clients", "codex_upstreams"),
-                                     ("codex_clients", "cpa_anthropic_upstreams"),
-                                     ("antigravity_clients", "antigravity_upstreams")):
+                                     ("codex_clients", "cpa_google_upstreams"),
+                                     ("codex_clients", "cpa_anthropic_upstreams")):
             with self.subTest(client=client):
                 self.egress_config.write_text(self.egress_baseline.replace(
                     f"http_access allow CONNECT {client} {destinations}",
                     f"http_access allow CONNECT {client}"))
                 result = self.validate()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("separate Codex and Antigravity destination rules", result.stderr)
+                self.assertIn("CPA only its exact provider destination rules", result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
     def test_a_must_not_authorize_literal_ips_via_reverse_dns(self):
-        for destinations in ("codex_upstreams", "cpa_anthropic_upstreams", "antigravity_upstreams"):
+        for destinations in ("codex_upstreams", "cpa_google_upstreams", "cpa_anthropic_upstreams"):
             with self.subTest(destinations=destinations):
                 self.egress_config.write_text(self.egress_baseline.replace(
                     f"acl {destinations} dstdomain -n ",
@@ -505,8 +505,8 @@ else:
             ("accounts.google.com", ".google.com"),
             ("cloudcode-pa.googleapis.com ", ".googleapis.com "),
             ("oauth2.googleapis.com ", ""),
-            ("playwright-verizon.azureedge.net", "playwright-verizon.azureedge.net example.com"),
-            ("antigravity_upstreams dstdomain -n", "antigravity_upstreams dstdomain"),
+            ("daily-cloudcode-pa.sandbox.googleapis.com", "daily-cloudcode-pa.sandbox.googleapis.com example.com"),
+            ("cpa_google_upstreams dstdomain -n", "cpa_google_upstreams dstdomain"),
         ):
             with self.subTest(original=original, replacement=replacement):
                 self.b_config.write_text(self.b_baseline.replace(original, replacement))
@@ -515,8 +515,8 @@ else:
                 self.assertIn("B must accept only A", result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
-    def test_both_client_logs_must_identify_the_forwarding_path(self):
-        for name in ("codex_destinations", "bridge_destinations"):
+    def test_provider_logs_must_identify_the_forwarding_path(self):
+        for name in ("codex_destinations",):
             with self.subTest(name=name):
                 self.egress_config.write_text(self.egress_baseline.replace(
                     f"logformat {name} %ts.%03tu %ru %>Hs %Sh/%<a",

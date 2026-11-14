@@ -24,7 +24,7 @@ func TestProviderAccountFacadeRejectsBadAuthWithoutFallback(t *testing.T) {
 	}))
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
-	facade := NewAccountFacade(NewClientAccountAdapter("codex", New(base, "bad-token")))
+	facade := NewAccountFacade(NewClientAccountAdapter("codex", withManagement(New(base, "bad-token"))))
 	_, err := facade.ListAccounts(context.Background(), "codex")
 	if err == nil {
 		t.Fatal("bad sidecar auth unexpectedly succeeded")
@@ -35,7 +35,7 @@ func TestProviderAccountFacadeRejectsBadAuthWithoutFallback(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(paths) != 1 || !strings.HasSuffix(paths[0], "/internal/upstream-accounts/capabilities") {
+	if len(paths) != 1 || !strings.HasSuffix(paths[0], pluginPath("upstream-accounts/capabilities")) {
 		t.Fatalf("bad auth dispatched unexpected paths: %v", paths)
 	}
 	if _, err := facade.ListAccounts(context.Background(), "missing"); err == nil {
@@ -55,9 +55,9 @@ func TestProviderAccountFacadeRejectsMalformedAndDuplicateAccountIDs(t *testing.
 			sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch r.URL.Path {
-				case "/internal/upstream-accounts/capabilities":
+				case pluginPath("upstream-accounts/capabilities"):
 					io.WriteString(w, `{"protocol":"upstream_account_access_v1"}`)
-				case "/internal/upstream-accounts":
+				case pluginPath("upstream-accounts"):
 					io.WriteString(w, tc.body)
 				default:
 					http.NotFound(w, r)
@@ -65,7 +65,7 @@ func TestProviderAccountFacadeRejectsMalformedAndDuplicateAccountIDs(t *testing.
 			}))
 			defer sidecar.Close()
 			base, _ := url.Parse(sidecar.URL)
-			facade := NewAccountFacade(NewClientAccountAdapter("codex", New(base, "token")))
+			facade := NewAccountFacade(NewClientAccountAdapter("codex", withManagement(New(base, "token"))))
 			_, err := facade.ListAccounts(context.Background(), "codex")
 			if err == nil {
 				t.Fatal("invalid account response unexpectedly succeeded")
@@ -82,7 +82,7 @@ func TestProviderAccountFacadeRejectsStaleCapabilityBeforeQuota(t *testing.T) {
 	var quotaCalls int
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/internal/upstream-accounts/capabilities" {
+		if r.URL.Path == pluginPath("upstream-accounts/capabilities") {
 			io.WriteString(w, `{"protocol":"old"}`)
 			return
 		}
@@ -91,7 +91,7 @@ func TestProviderAccountFacadeRejectsStaleCapabilityBeforeQuota(t *testing.T) {
 	}))
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
-	facade := NewAccountFacade(NewClientAccountAdapter("codex", New(base, "token")))
+	facade := NewAccountFacade(NewClientAccountAdapter("codex", withManagement(New(base, "token"))))
 	_, err := facade.Quota(context.Background(), "codex", "0123456789abcdef")
 	apiErr, ok := err.(*InternalAPIError)
 	if !ok || apiErr.Code != "upstream_access_protocol_unavailable" || quotaCalls != 0 {
@@ -103,9 +103,9 @@ func TestProviderAccountFacadeRejectsQuotaSchemaDuplicates(t *testing.T) {
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/internal/upstream-accounts/capabilities":
+		case pluginPath("upstream-accounts/capabilities"):
 			io.WriteString(w, `{"protocol":"upstream_account_access_v1"}`)
-		case "/internal/upstream-accounts/0123456789abcdef/quota":
+		case pluginPath("upstream-accounts/quota"):
 			io.WriteString(w, `{"id":6,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null},"codex":{"limitId":"codex","limitName":null,"primary":null,"secondary":null,"rateLimitReachedType":null}},"rateLimitResetCredits":null}}`)
 		default:
 			http.NotFound(w, r)
@@ -113,7 +113,7 @@ func TestProviderAccountFacadeRejectsQuotaSchemaDuplicates(t *testing.T) {
 	}))
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
-	facade := NewAccountFacade(NewClientAccountAdapter("codex", New(base, "token")))
+	facade := NewAccountFacade(NewClientAccountAdapter("codex", withManagement(New(base, "token"))))
 	_, err := facade.Quota(context.Background(), "codex", "0123456789abcdef")
 	apiErr, ok := err.(*InternalAPIError)
 	if !ok || apiErr.Code != "sidecar_invalid_response" {
@@ -134,8 +134,8 @@ func TestProviderAccountFacadeKeepsProviderPathsIsolated(t *testing.T) {
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
 	facade := NewAccountFacade(
-		NewClientAccountAdapter("codex", New(base, "token")),
-		NewClientAccountAdapter("anthropic", NewCPAAnthropic(base, "token")),
+		NewClientAccountAdapter("codex", withManagement(New(base, "token"))),
+		NewClientAccountAdapter("anthropic", withManagement(NewCPAAnthropic(base, "token"))),
 	)
 	if caps, err := facade.Capabilities(context.Background(), "codex"); err != nil || caps.GroupAccountScope != GroupUpstreamAccountScopeV1 {
 		t.Fatalf("codex capabilities: %+v, %v", caps, err)
@@ -145,7 +145,7 @@ func TestProviderAccountFacadeKeepsProviderPathsIsolated(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(paths) != 2 || paths[0] != "/internal/upstream-accounts/capabilities" || paths[1] != "/internal/anthropic-accounts/capabilities" {
+	if len(paths) != 2 || paths[0] != pluginPath("upstream-accounts/capabilities") || paths[1] != pluginPath("anthropic-accounts/capabilities") {
 		t.Fatalf("provider capability paths crossed: %v", paths)
 	}
 }

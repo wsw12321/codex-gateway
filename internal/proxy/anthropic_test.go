@@ -51,8 +51,12 @@ func TestAnthropicNativeRequestAndResponse(t *testing.T) {
 			if count {
 				path, response = "/v1/messages/count_tokens", `{"input_tokens":91}`
 			}
+			ledger := NewAllocationLedger()
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/internal/anthropic-accounts/capabilities" {
+				if r.URL.Path == pluginPath("anthropic-accounts/capabilities") {
+					if r.Header.Get("Authorization") != "Bearer "+testManagementKey {
+						t.Error("capability probe without the management key")
+					}
 					w.Header().Set("Content-Type", "application/json")
 					fmt.Fprint(w, `{"protocol":"upstream_account_access_v1","anthropic_messages":"anthropic_messages_v1"}`)
 					return
@@ -67,13 +71,14 @@ func TestAnthropicNativeRequestAndResponse(t *testing.T) {
 				if r.Header.Get("Anthropic-Version") != "2023-06-01" || r.Header.Get("Anthropic-Beta") != "thinking-test" || r.Header.Get("X-Claude-Code-Parent-Session-Id") != "parent" {
 					t.Error("native headers lost")
 				}
+				reportAllocation(t, ledger, "anthropic", r, "0123456789abcdef", "")
 				w.Header().Set("Content-Type", "application/json")
-				w.Header().Set(upstreamAccountHeader, "0123456789abcdef")
 				fmt.Fprint(w, response)
 			}))
 			defer upstream.Close()
 			base, _ := url.Parse(upstream.URL)
-			client := NewCPAAnthropic(base, "internal")
+			client := withManagement(NewCPAAnthropic(base, "internal"))
+			client.UseAllocationLedger(ledger)
 			r := httptest.NewRequest(http.MethodPost, path+"?beta=true", strings.NewReader(requestBody))
 			for name, value := range map[string]string{"Authorization": "Bearer caller", "X-Api-Key": "caller", "X-Provider": "codex", "Cookie": "private", "Anthropic-Version": "2023-06-01", "Anthropic-Beta": "thinking-test", "X-Claude-Code-Parent-Session-Id": "parent"} {
 				r.Header.Set(name, value)
@@ -153,7 +158,7 @@ func TestAnthropicNativeErrorsRetainRecoveryWording(t *testing.T) {
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
 	w := httptest.NewRecorder()
-	result, failure := NewCPAAnthropic(base, "internal").ForwardMessages(context.Background(), w, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`)), "claude-test", "/v1/messages", ForwardOptions{})
+	result, failure := withManagement(NewCPAAnthropic(base, "internal")).ForwardMessages(context.Background(), w, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{}`)), "claude-test", "/v1/messages", ForwardOptions{})
 	if failure == nil || failure.Status != 0 || result.StatusCode != 400 || w.Body.String() != body {
 		t.Fatalf("native error %+v %v %s", result, failure, w.Body)
 	}

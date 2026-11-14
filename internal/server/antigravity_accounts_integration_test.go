@@ -27,7 +27,7 @@ import (
 )
 
 // Exercise the real routes, authentication, provider selection and database
-// queries together; replace only the private bridge's account management API.
+// queries together; replace only CPA's Antigravity account management API.
 func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
@@ -76,7 +76,7 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	enabled.Store(true)
 	bridge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bridgeCalls.Add(1)
-		if r.Header.Get("Authorization") != "Bearer agy-integration-secret" {
+		if r.Header.Get("Authorization") != "Bearer "+testManagementKey {
 			t.Error("Antigravity management used the wrong upstream credentials")
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid_api_key"})
 			return
@@ -85,7 +85,11 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "upstream_unavailable"})
 			return
 		}
-		if r.Method == http.MethodPut && r.URL.Path == "/internal/upstream-accounts/"+agyID+"/status" {
+		if r.URL.Path == pluginPath("antigravity-accounts/status") && r.URL.Query().Get("id") != agyID {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "upstream_account_not_found"})
+			return
+		}
+		if r.Method == http.MethodPut && r.URL.Path == pluginPath("antigravity-accounts/status") {
 			var input struct {
 				Enabled bool `json:"enabled"`
 			}
@@ -99,14 +103,14 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 			status, manual = "unavailable", "manual_disabled"
 		}
 		switch r.Method + " " + r.URL.Path {
-		case "GET /internal/upstream-accounts":
+		case "GET " + pluginPath("antigravity-accounts"):
 			writeJSON(w, http.StatusOK, map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{
 				ID: agyID, DisplayName: "primary", Plan: "unknown", Status: status,
 				CliproxyStatus: "active", GatewayManualStatus: manual, GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC(),
 			}}})
-		case "GET /internal/upstream-accounts/concurrency":
+		case "GET " + pluginPath("antigravity-accounts/concurrency"):
 			writeJSON(w, http.StatusOK, gatewayproxy.UpstreamConcurrency{SampledAt: time.Now().UTC(), Accounts: []gatewayproxy.UpstreamAccountConcurrency{{ID: agyID, ActiveRequests: 2}}})
-		case "PUT /internal/upstream-accounts/" + agyID + "/status":
+		case "PUT " + pluginPath("antigravity-accounts/status"):
 			writeJSON(w, http.StatusOK, gatewayproxy.UpstreamAccountStatus{ID: agyID, Status: status, CliproxyStatus: "active", GatewayManualStatus: manual, GatewayQuotaStatus: "available"})
 		default:
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "upstream_account_not_found"})
@@ -117,9 +121,9 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	s := &Server{
 		store: repository, mux: http.NewServeMux(), logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		config: config.Config{RPOrigins: []string{"https://gateway.test"}, TokenPepper: []byte(strings.Repeat("p", 32)), ReauthMaxAge: 5 * time.Minute,
-			SidecarToken: "codex-integration-secret", AntigravityBridgeToken: "agy-integration-secret"},
-		antigravity: gatewayproxy.NewAntigravity(bridgeURL, "agy-integration-secret"),
-		upstream:    gatewayproxy.New(bridgeURL, "codex-integration-secret"),
+			SidecarToken: "sidecar-integration-secret"},
+		antigravity: withManagement(gatewayproxy.NewCPAAntigravity(bridgeURL, "sidecar-integration-secret")),
+		upstream:    withManagement(gatewayproxy.New(bridgeURL, "sidecar-integration-secret")),
 	}
 	s.routes()
 	newSession := func(userID string, verified bool) string {
@@ -225,7 +229,7 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &concurrency) != nil || len(concurrency.Accounts) != 1 || concurrency.Accounts[0].ID != agyID || concurrency.Accounts[0].ActiveRequests != 2 {
 		t.Fatalf("AGY live concurrency: %d %s", w.Code, w.Body)
 	}
-	// Verify callback bearer selection and SQL scope with both providers in
+	// Verify callback authentication and SQL scope with both providers in
 	// the candidate set, including access denial and a foreign-only candidate.
 	for _, tc := range []struct {
 		provider, token, action, user string
@@ -233,12 +237,12 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 		want                          int
 		selected                      string
 	}{
-		{"antigravity", "agy-integration-secret", "select", owner.ID, []string{codexID, agyID}, 200, agyID},
-		{"upstream", "codex-integration-secret", "select", owner.ID, []string{codexID, agyID}, 200, codexID},
-		{"antigravity", "codex-integration-secret", "select", owner.ID, []string{agyID}, 401, ""},
-		{"antigravity", "agy-integration-secret", "select", owner.ID, []string{codexID}, 429, ""},
-		{"antigravity", "agy-integration-secret", "select", member.ID, []string{agyID}, 429, ""},
-		{"antigravity", "agy-integration-secret", "eligible", owner.ID, []string{codexID, agyID}, 200, agyID},
+		{"antigravity", "sidecar-integration-secret", "select", owner.ID, []string{codexID, agyID}, 200, agyID},
+		{"upstream", "sidecar-integration-secret", "select", owner.ID, []string{codexID, agyID}, 200, codexID},
+		{"antigravity", "other-integration-secret", "select", owner.ID, []string{agyID}, 401, ""},
+		{"antigravity", "sidecar-integration-secret", "select", owner.ID, []string{codexID}, 429, ""},
+		{"antigravity", "sidecar-integration-secret", "select", member.ID, []string{agyID}, 429, ""},
+		{"antigravity", "sidecar-integration-secret", "eligible", owner.ID, []string{codexID, agyID}, 200, agyID},
 	} {
 		body, _ := json.Marshal(map[string]any{"user_id": tc.user, "account_ids": tc.ids})
 		r := httptest.NewRequest(http.MethodPost, "/internal/"+tc.provider+"-accounts/"+tc.action, strings.NewReader(string(body)))
@@ -279,7 +283,7 @@ func TestAntigravityAccountManagementPostgresIntegration(t *testing.T) {
 	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "invalid_origin") || bridgeCalls.Load() != beforeDenied {
 		t.Fatalf("AGY foreign-origin guard: %d %s", w.Code, w.Body)
 	}
-	// A bridge outage preserves historical display/statistics but must never
+	// A CPA outage preserves historical display/statistics but must never
 	// expose the stale 'available' status or manufacture a zero live count.
 	unavailable.Store(true)
 	fallback := list()

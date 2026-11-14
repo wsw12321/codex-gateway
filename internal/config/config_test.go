@@ -14,6 +14,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://gateway:test@postgres/gateway")
 	t.Setenv("SIDECAR_URL", "http://codex-compat:8317")
 	t.Setenv("SIDECAR_API_KEY", "internal-only")
+	t.Setenv("CPA_MANAGEMENT_KEY", "management-only-"+strings.Repeat("m", 27))
 	secret := base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat("x", 32)))
 	t.Setenv("KEY_HMAC_PEPPER", secret)
 	t.Setenv("TOKEN_HMAC_PEPPER", secret)
@@ -149,6 +150,12 @@ func setValidLoadEnvironment(t *testing.T) {
 	t.Setenv("API_KEY_ENCRYPTION_KEY", secret)
 	t.Setenv("API_KEY_ENCRYPTION_KEY_FILE", "")
 	t.Setenv("GATEWAY_USAGE_PRICING_JSON", validUsagePricingJSON)
+	t.Setenv("CPA_MANAGEMENT_KEY", "management-only-"+strings.Repeat("m", 27))
+	t.Setenv("CPA_MANAGEMENT_KEY_FILE", "")
+	// Retired settings refuse startup; keep the ambient environment out.
+	for _, name := range []string{"CPA_INTEGRATION", "ANTIGRAVITY_TRANSPORT", "ANTIGRAVITY_BRIDGE_URL", "ANTIGRAVITY_BRIDGE_API_KEY", "ANTIGRAVITY_BRIDGE_API_KEY_FILE"} {
+		t.Setenv(name, "")
+	}
 }
 
 func validConfigForValidation(t *testing.T) Config {
@@ -164,7 +171,8 @@ func validConfigForValidation(t *testing.T) Config {
 	return Config{
 		PublicURL: publicURL, SidecarURL: sidecarURL,
 		DatabaseURL: "postgres://example", SidecarToken: "internal-only",
-		KeyPepper: make([]byte, 32), TokenPepper: make([]byte, 32),
+		CPAManagementToken: "management-only-" + strings.Repeat("m", 27),
+		KeyPepper:          make([]byte, 32), TokenPepper: make([]byte, 32),
 		APIKeyEncryptionKey: make([]byte, 32),
 		RPID:                "codex.example.test", RPOrigins: []string{"https://codex.example.test"},
 		BodyLimit: defaultBodyLimit,

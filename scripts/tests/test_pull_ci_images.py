@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 REVISION = "a" * 40
-SERVICES = ("gateway", "codex-compat", "antigravity-bridge", "account-egress")
+SERVICES = ("gateway", "codex-compat", "account-egress")
 
 
 @unittest.skipUnless(shutil.which("jq"), "jq is required")
@@ -40,9 +40,6 @@ class PullCIImagesTests(unittest.TestCase):
                     "build": {"args": {"REVISION": REVISION, "VERSION": REVISION}},
                 },
                 "codex-compat": {"image": "codex-gateway-compat:reviewed"},
-                "antigravity-bridge": {
-                    "image": f"codex-gateway-antigravity:agy1.2.4-{REVISION}"
-                },
                 "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v2"},
             }
         }

@@ -19,6 +19,11 @@ import (
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
+// Generation controls captured from the official AGY 1.2.12 client with
+// --model gemini-3.8-flash-high and --model gemini-3.8-flash-medium.
+const nativeFlashHigh = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":65536,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":-1}}}`
+const nativeFlashMedium = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"generationConfig":{"maxOutputTokens":65536,"thinkingConfig":{"includeThoughts":true,"thinkingBudget":4000}}}`
+
 func TestCPAAGYAliasesPreserveAdmissionBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		name, alias, model, body, allowlist string
@@ -47,7 +52,6 @@ func TestCPAAGYAliasesPreserveAdmissionBoundaries(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newResponsesWebSocketTestHarness(t)
-			h.server.config.AntigravityTransport = "cpa"
 			h.server.config.UsagePricing = nativeGeminiPricing(t)
 			if tc.noPrice {
 				delete(h.server.config.UsagePricing.Models, tc.model)
@@ -83,7 +87,6 @@ func TestCPAAGYFlashRealCLIUsesCanonicalPermissions(t *testing.T) {
 		t.Skip("AGY_CLI_TEST_BINARY is not set")
 	}
 	h := newResponsesWebSocketTestHarness(t)
-	h.server.config.AntigravityTransport = "cpa"
 	h.server.config.UsagePricing = nativeGeminiPricing(t)
 	h.server.config.AntigravityModelRoutes = map[string]string{
 		"gemini-3.8-flash-high": "gemini-3.8-flash-high",

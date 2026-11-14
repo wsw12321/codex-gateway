@@ -15,7 +15,7 @@ import (
 func TestUpstreamAccountConcurrencyAuthenticatedSnapshot(t *testing.T) {
 	now := time.Now().UTC()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet || r.URL.Path != "/internal/upstream-accounts/concurrency" || r.Header.Get("Authorization") != "Bearer internal-secret" {
+		if r.Method != http.MethodGet || r.URL.Path != pluginPath("upstream-accounts/concurrency") || r.Header.Get("Authorization") != "Bearer "+testManagementKey {
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -23,7 +23,7 @@ func TestUpstreamAccountConcurrencyAuthenticatedSnapshot(t *testing.T) {
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
-	result, err := NewWithHTTPClient(base, "internal-secret", server.Client()).UpstreamAccountConcurrency(context.Background())
+	result, err := withManagement(NewWithHTTPClient(base, "internal-secret", server.Client())).UpstreamAccountConcurrency(context.Background())
 	if err != nil || !result.SampledAt.Equal(now) || len(result.Accounts) != 2 || result.Accounts[0].ActiveRequests != 0 || result.Accounts[1].ActiveRequests != 3 {
 		t.Fatalf("snapshot=%+v err=%v", result, err)
 	}
@@ -50,7 +50,7 @@ func TestUpstreamAccountConcurrencySidecarWireFormat(t *testing.T) {
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			result, err := NewWithHTTPClient(base, "internal-secret", server.Client()).UpstreamAccountConcurrency(context.Background())
+			result, err := withManagement(NewWithHTTPClient(base, "internal-secret", server.Client())).UpstreamAccountConcurrency(context.Background())
 			if err != nil || !result.SampledAt.Equal(now) || len(result.Accounts) != 2 || result.Accounts[0].ActiveRequests != 0 || result.Accounts[1].ActiveRequests != 3 {
 				t.Fatalf("snapshot=%+v err=%v", result, err)
 			}
@@ -85,7 +85,7 @@ func TestUpstreamAccountConcurrencyRejectsMissingStaleOrUnsafeValues(t *testing.
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			result, err := NewWithHTTPClient(base, "secret", server.Client()).UpstreamAccountConcurrency(context.Background())
+			result, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).UpstreamAccountConcurrency(context.Background())
 			if err == nil || len(result.Accounts) != 0 || strings.Contains(err.Error(), "example.com") {
 				t.Fatalf("result=%+v err=%v", result, err)
 			}
@@ -97,7 +97,7 @@ func TestUpstreamAccountConcurrencyOldCompatUnavailable(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
-	result, err := NewWithHTTPClient(base, "secret", server.Client()).UpstreamAccountConcurrency(context.Background())
+	result, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).UpstreamAccountConcurrency(context.Background())
 	if err == nil || result.Accounts != nil {
 		t.Fatalf("old sidecar falsely produced zero: %+v %v", result, err)
 	}

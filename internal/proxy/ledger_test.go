@@ -19,14 +19,21 @@ const (
 )
 
 // ledgerSidecar plays CPA with the plugin: it answers the capability probe
-// and, for a generation request, lets report act as the plugin's callback
-// before returning the response.
+// (which must carry the management key, never the data-plane key) and, for a
+// generation request, lets report act as the plugin's callback before
+// returning the response.
 func ledgerSidecar(t *testing.T, status int, header http.Header, body string, report func(token string)) http.RoundTripper {
 	t.Helper()
 	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			if r.URL.Path != pluginPath("upstream-accounts/capabilities") || r.Header.Get("Authorization") != "Bearer "+testManagementKey {
+				t.Errorf("capability probe = %s with %q", r.URL.Path, r.Header.Get("Authorization"))
+			}
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(
 				`{"protocol":"` + AccountAccessProtocolV1 + `","group_upstream_account_scope":"` + GroupUpstreamAccountScopeV1 + `"}`))}, nil
+		}
+		if r.Header.Get("Authorization") != "Bearer secret" {
+			t.Errorf("generation request authorization = %q", r.Header.Get("Authorization"))
 		}
 		token := r.Header.Get(dispatchHeader)
 		if !requestTokenPattern.MatchString(token) {
@@ -48,7 +55,7 @@ func ledgerSidecar(t *testing.T, status int, header http.Header, body string, re
 func ledgerForward(t *testing.T, ledger *AllocationLedger, transport http.RoundTripper, options ForwardOptions) (Result, *Failure) {
 	t.Helper()
 	base, _ := url.Parse("http://compat.invalid")
-	client := NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})
+	client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}))
 	client.UseAllocationLedger(ledger)
 	request := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
 	return client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, "/v1/responses", options)
@@ -60,9 +67,9 @@ func TestLedgerAttributesDispatchFromPluginReport(t *testing.T) {
 	ledger := NewAllocationLedger()
 	var notified, conversation string
 	options := ForwardOptions{UserID: ledgerUser, OnUpstreamAccount: func(id string) { notified = id }, OnConversation: func(hash string) { conversation = hash }}
-	// CPA with the plugin sets no attribution header; one that shows up anyway
-	// must not be believed.
-	spoofed := http.Header{upstreamAccountHeader: {ledgerOther}, conversationHashHeader: {"conv-ffffffffffffffffffffffffffffffff"}}
+	// CPA sets no attribution header; one that shows up anyway must not be
+	// believed.
+	spoofed := http.Header{retiredAccountHeader: {ledgerOther}, retiredConversationHeader: {"conv-ffffffffffffffffffffffffffffffff"}}
 	transport := ledgerSidecar(t, 200, spoofed, ledgerBody, func(token string) {
 		// A failed first attempt followed by the account that answered.
 		for _, account := range []string{ledgerOther, ledgerAccount} {
@@ -85,7 +92,7 @@ func TestLedgerAttributesDispatchFromPluginReport(t *testing.T) {
 
 func TestLedgerWithoutReportLeavesDispatchUnattributed(t *testing.T) {
 	ledger := NewAllocationLedger()
-	spoofed := http.Header{upstreamAccountHeader: {ledgerOther}}
+	spoofed := http.Header{retiredAccountHeader: {ledgerOther}}
 	result, failure := ledgerForward(t, ledger, ledgerSidecar(t, 200, spoofed, ledgerBody, nil), ForwardOptions{UserID: ledgerUser})
 	if failure != nil || result.UpstreamAccountID != "" {
 		t.Fatalf("an unreported dispatch was attributed to %q (%v)", result.UpstreamAccountID, failure)
@@ -170,23 +177,5 @@ func TestLedgerRecordRejectsForeignAndOutOfScopeReports(t *testing.T) {
 	opened.close()
 	if err = ledger.Record("codex", report); !errors.Is(err, ErrUnknownDispatch) {
 		t.Fatalf("a finished dispatch accepted a report: %v", err)
-	}
-}
-
-func TestPatchIntegrationKeepsHeaderAttribution(t *testing.T) {
-	// No ledger: the source-patched image stamps the response and no request
-	// token is sent.
-	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if strings.HasSuffix(r.URL.Path, "/capabilities") {
-			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"protocol":"` + AccountAccessProtocolV1 + `"}`))}, nil
-		}
-		if r.Header.Get(dispatchHeader) != "" {
-			t.Error("a request token was sent without the plugin integration")
-		}
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}, upstreamAccountHeader: {ledgerAccount}}, Body: io.NopCloser(strings.NewReader(ledgerBody))}, nil
-	})
-	result, failure := ledgerForward(t, nil, transport, ForwardOptions{UserID: ledgerUser})
-	if failure != nil || result.UpstreamAccountID != ledgerAccount {
-		t.Fatalf("header attribution was lost: %q, %v", result.UpstreamAccountID, failure)
 	}
 }

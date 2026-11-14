@@ -171,14 +171,14 @@ func TestCPAManagementDeleteMissingConcurrencyFailsClosed(t *testing.T) {
 		client := &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 			var body []byte
 			switch r.URL.Path {
-			case "/internal/upstream-accounts/0123456789abcdef/status":
+			case pluginPath("upstream-accounts/status"):
 				data, _ := io.ReadAll(r.Body)
 				if string(data) != `{"enabled":false}` {
 					t.Errorf("delete did not disable: %s", data)
 				}
 				disabled = true
 				body = []byte(`{"id":"0123456789abcdef","status":"unavailable","cliproxy_status":"active","gateway_manual_status":"manual_disabled","gateway_quota_status":"available"}`)
-			case "/internal/upstream-accounts/concurrency":
+			case pluginPath("upstream-accounts/concurrency"):
 				if !disabled {
 					t.Error("sample before disable")
 				}
@@ -187,7 +187,7 @@ func TestCPAManagementDeleteMissingConcurrencyFailsClosed(t *testing.T) {
 					accounts = append(accounts, gatewayproxy.UpstreamAccountConcurrency{ID: "0123456789abcdef", ActiveRequests: 0})
 				}
 				body, _ = json.Marshal(gatewayproxy.UpstreamConcurrency{SampledAt: time.Now().UTC(), Accounts: accounts})
-			case "/internal/gateway-management/codex/accounts/0123456789abcdef":
+			case pluginPath("gateway-management/codex/accounts"):
 				deleted = true
 				body = []byte(`{"status":"deleted"}`)
 			default:
@@ -195,7 +195,7 @@ func TestCPAManagementDeleteMissingConcurrencyFailsClosed(t *testing.T) {
 			}
 			return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
 		})}
-		s := &Server{config: config.Config{SidecarURL: base, CPAManagementToken: "server-only"}, upstream: gatewayproxy.NewWithHTTPClient(base, "data-plane", client), cpaAdmin: &cpaAdminState{client: client}}
+		s := &Server{config: config.Config{SidecarURL: base, CPAManagementToken: "server-only"}, upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "data-plane", client)), cpaAdmin: &cpaAdminState{client: client}}
 		r := httptest.NewRequest(http.MethodDelete, "/admin/cpa/api/codex/accounts/0123456789abcdef", strings.NewReader(`{}`))
 		r.SetPathValue("provider", "codex")
 		r.SetPathValue("id", "0123456789abcdef")
@@ -216,7 +216,7 @@ func TestCPAManagementClientPinsRouteKeyAndDoesNotFollowRedirect(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { forwarded.Add(1) }))
 	defer target.Close()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/gateway-management/codex/oauth" || r.URL.RawQuery != "" {
+		if r.URL.Path != pluginPath("gateway-management/codex/oauth") || r.URL.RawQuery != "" {
 			t.Errorf("unsafe URL %s", r.URL)
 		}
 		if r.Header.Get("Authorization") != "Bearer management-only" || r.Header.Get("Cookie") != "" {
@@ -233,19 +233,6 @@ func TestCPAManagementClientPinsRouteKeyAndDoesNotFollowRedirect(t *testing.T) {
 	}
 	if forwarded.Load() != 0 {
 		t.Fatal("management credential followed redirect")
-	}
-}
-
-func TestCPAManagementLegacyRollbackCannotRefreshGoogleCredentials(t *testing.T) {
-	base, _ := url.Parse("http://sidecar.invalid")
-	s := &Server{config: config.Config{SidecarURL: base, CPAManagementToken: "server-only", AntigravityTransport: "legacy-bridge"}, cpaAdmin: &cpaAdminState{client: &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("inactive CPA received credential operation")
-		return nil, nil
-	})}}}
-	for _, path := range []string{"antigravity/oauth", "antigravity/credentials", "antigravity/accounts/0123456789abcdef/refresh", "antigravity/accounts/0123456789abcdef"} {
-		if err := s.cpaCall(context.Background(), http.MethodPost, path, struct{}{}, nil); err == nil {
-			t.Errorf("legacy mode accepted %s", path)
-		}
 	}
 }
 

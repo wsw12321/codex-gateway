@@ -158,9 +158,8 @@ sys.exit("unexpected daemon operation in egress test")
             EGRESS_MODE="shadowsocks", CODEX_RELAY_IP="10.77.0.2",
             CODEX_RELAY_PORT="bad", SHADOWSOCKS_SERVER="bad\ninjection",
             OIDC_ENABLED="true", GATEWAY_SECRET_GID="9999", SQUID_IMAGE="bad:image",
-            COMPOSE_PROFILES="legacy-bridge", COMPOSE_REMOVE_ORPHANS="1"))
+            COMPOSE_PROFILES="unreviewed", COMPOSE_REMOVE_ORPHANS="1"))
         self.assertNotIn("ss-egress", config["services"])
-        self.assertNotIn("antigravity-bridge", config["services"])
         self.assertEqual(config["services"]["egress-allowlist"]["environment"]["CODEX_RELAY_IP"], "")
         self.assertNotEqual(config["services"]["egress-allowlist"]["image"], "bad:image")
 
@@ -296,7 +295,7 @@ sys.exit("unexpected daemon operation in egress test")
                 self.assertEqual(record["remove_orphans"], "false")
 
     def test_frozen_model_roundtrip_preserves_healthcheck_shell_and_literal_dollars(self):
-        result = self.run_script({"CODEX_SMOKE_MODEL": "'synthetic-$VALUE-${literal}'"}, apply=True)
+        result = self.run_script({"GATEWAY_BROWSER_CLIENT_URL": "'https://synthetic.invalid/$VALUE-${literal}'"}, apply=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         model = self.mutations()[0]["snapshot"]
         path = self.root / "roundtrip.json"

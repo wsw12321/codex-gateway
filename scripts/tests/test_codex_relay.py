@@ -59,10 +59,8 @@ class CodexRelayTests(unittest.TestCase):
                         f"cache_peer {ip} parent {expected} 0 no-query default name=codex_relay",
                         "cache_peer_access codex_relay deny account_route",
                         "cache_peer_access codex_relay allow codex_clients",
-                        "cache_peer_access codex_relay allow antigravity_clients",
                         "cache_peer_access codex_relay deny all",
                         "never_direct allow codex_clients",
-                        "never_direct allow antigravity_clients",
                         "never_direct deny all",
                     ])
 
@@ -129,7 +127,7 @@ class CodexRelayTests(unittest.TestCase):
             self.assertEqual(result.stdout.count("cache_peer "), 2)
             self.assertNotIn("10.77.0.2", result.stdout)
             self.assertIn("never_direct allow codex_clients", result.stdout)
-            self.assertIn("never_direct allow antigravity_clients", result.stdout)
+            self.assertNotIn("antigravity_clients", result.stdout)
 
     def test_account_parent_is_mandatory_before_global_rules_in_every_mode(self):
         for mode in ("direct", "relay", "shadowsocks"):

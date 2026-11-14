@@ -1,224 +1,21 @@
 # CLIProxyAPI 兼容层升级规程
 
-> 以下旧 bridge / CPA v7 内容保留用于历史排障；当前默认部署以 [CPA v8 切换与回滚](cpa-v8-cutover.md) 和 [原生模型目录](cpa-native-models.md) 为准。
+兼容层是未修改的 CLIProxyAPI（CPA）加 Gateway 插件，在一个进程中服务 Codex、Claude 和
+Antigravity。CPA 的版本、提交、残余补丁与模型目录摘要统一记录在
+`deploy/codex-compat/plugin.lock.json`；`docker-compose.yml`、插件的 `go.mod`、
+`plugin.Dockerfile` 与 `THIRD_PARTY_NOTICES` 必须与它一致，部署静态校验和 CI 都会核对。
 
-兼容层继续使用独立锁定的 Debian slim/glibc 运行镜像。旧第三方 Gemini 插件
-和对应补丁已经移除；构建回归检查确认历史 Gemini OAuth 文件被忽略且保留，
-Codex 凭证继续加载。Antigravity 使用独立服务、官方 CLI 和 Keyring 卷，详见
-[Antigravity 接入说明](gemini-pro.md)。
+2026-11-13 起，源码补丁镜像（`cliproxy-v8.0.*-gateway.patch`、`deploy/codex-compat/Dockerfile`、
+`deploy/patch-cpa.override.yml`）、旧 Antigravity 桥接（`cmd/antigravity-bridge`、
+`internal/antigravity`、`legacy-bridge` profile）以及 v7 回退镜像和凭证迁移工具都已删除，
+`CPA_INTEGRATION`、`ANTIGRAVITY_TRANSPORT` 两个开关随之取消（[路线图第 8 步](cpa-plugin-roadmap.md#8-改为默认并清理)）。
+`.env` 仍选择 `CPA_INTEGRATION=patch` 时，`scripts/compose.sh` 拒绝执行；Gateway 环境中仍有
+`CPA_INTEGRATION`（非 `plugin`）、`ANTIGRAVITY_TRANSPORT`（非 `cpa`）或任何 `ANTIGRAVITY_BRIDGE_*`
+时拒绝启动。旧补丁镜像的设计与历次重基记录保留在 Git 历史以及各 `docs/cpa-v8.0.*-validation.md` 中。
 
-仓库固定在 2026-09-23 核对的[最新稳定版本 CLIProxyAPI `v7.3.15`](https://github.com/router-for-me/CLIProxyAPI/releases/tag/v7.3.15)、commit
-`673131f57484517c3a1eae7e36c4cfa7b9bb4efc`。版本号和 commit 必须作为一组
-更新，Docker 构建会验证 tag 指向该 commit。仓库同时固定
-`deploy/codex-compat/cliproxy-v7.3.15-multi-account.patch`；本次从 `v7.3.12`
-重基，保留 Gateway 权限分配、账号锁定、并发计数和两账号重试上限，并适配
-上游 Codex cloaking 请求头签名变化及 compact 模型目录字段修复。补丁 SHA256 为
-`2dc404c8b22496a6de935a8fd07ca6006d3681bcf503ea33f2cd529610f3096b`。
-构建必须先用 `git apply --check --ignore-space-change` 验证补丁上下文，
-再用 `git apply --ignore-space-change` 应用补丁并运行补丁内的聚焦测试，任一步
-失败都不得生成镜像。该选项允许上下文空白差异，不能跳过补丁校验或测试。
-
-上游统一的会话解析器继续识别父会话，Gateway 在解析后的身份上隔离调用方。
-重基保留已有模型目录、HTTP/SSE/compact、额度锁定和请求头安全回归，并增加新版
-优先级选择、凭证更新序号与 WebSocket 额度信号测试。上游传输使用模拟服务验证。
-部署配置显式禁用 `discovery.enabled` 和实验性 `codex.response-steering`，
-继续由 Gateway 返回 426 引导客户端使用 HTTPS/SSE。
-
-兼容层镜像标签固定为 `v7.3.15-673131f5-2dc404c8b22496a6-codex-only`，记录主程序、提交、多账号补丁及仅 Codex 的构建。
-Compose、校验脚本和 CI 必须使用同一完整标签，CI 扫描实际构建的镜像。
-兼容层构建镜像使用 Go 1.26.10；补丁保留 go-git/v6 `v6.0.0-alpha.5`、
-go-billy/v6 `v6.0.0-alpha.2` 与 x/text `v0.41.0`，并将 `golang.org/x/crypto`
-更新到 `v0.56.0`、`klauspost/compress` 更新到 `v1.18.7`，修复扫描发现的
-SSH 死锁及压缩库越界读取问题。Debian 运行时显式安装 `libpcre2-8-0`，
-确保继承的基础包获得已发布的安全更新。`CLIPROXY_RUNTIME_IMAGE` 独立锁定 Debian
-`bookworm-20260824-slim`，Gateway 的 `RUNTIME_IMAGE` 仍为 Alpine。Responses API
-请求契约保持兼容，保留现有价格目录。配套的模型鉴定流程需要 Gateway 应用
-`0019_model_identification_diagnostics.sql`，新增任务阶段、发起人和安全错误元数据；
-Owner 账号状态管理接口仍只管理 Codex。
-
-模型鉴定的直连请求显式遵守 Responses Lite 约束：设置
-`reasoning.context=all_turns`、`parallel_tool_calls=false`，避免首题被上游以
-HTTP 400 拒绝。上游成功 SSE 可以省略 `Content-Type`，此时仍须通过原有事件、
-完成状态、文本和大小校验；显式空值、重复或非 SSE 类型继续拒绝。补丁携带这两项
-回归，镜像构建检查测试存在并执行。该修复无需新的 Gateway 或数据库迁移。
-
-本次交付范围为仓库升级和构建验证，不代表生产已经切换。真实 OAuth 账号的
-Astra 冒烟和生产切换按下文规程执行。
-
-每次兼容层升级都必须重新执行 Gateway 单元测试、race、vet、部署脚本回归、
-合成配置下的 Compose 校验，以及 CLIProxyAPI 补丁覆盖的相关包、账号与 watcher
-竞态测试和执行器安全回归；还要确认容器内二进制报告本节锁定的版本与完整 commit。
-生产切换前按下文规程完成固定 Trivy 条件扫描、真实 OAuth 冒烟和回滚演练；原版补丁
-应能从升级前的 Git revision 恢复。
-
-该补丁属于部署安全边界，而不是可选功能：
-
-- Gateway 在每次生成请求前验证内部 `capabilities` 接口的
-  `upstream_account_access_v1` 能力，再以 `X-Codex-Gateway-User` 传递已认证用户 ID。
-  兼容层在请求日志记录前消费此头，并在所有上游传输中再次移除它。
-  每次派发、绑定复用和重试均先调用 `/internal/upstream-accounts/eligible`，
-  冷分配再由数据库按用户权限过滤候选。专属账号仅允许名单内用户；共享账号不受
-  专属名单限制。权限查询或能力校验失败时拒绝生成，不使用旧绑定绕过检查。
-- 使用 `gateway-allocation` 加一小时 session affinity。新分配由 Gateway 按
-  候选账号系数及近 24 小时已结算实际费用选择；系数 0 停止接收新对话，已有
-  有效绑定继续使用。单候选、无显式会话、LCP 派生会话和故障切换均受同一规则约束。
-  兼容层以 sidecar Bearer 密钥回调固定
-  `http://gateway:8080/internal/upstream-accounts/select`，两秒超时，不使用代理、
-  不跟随重定向，传播取消。回调期间不持有管理器及绑定锁，返回后重查账号可用性
-  和并发绑定；失败返回 503，不回退轮询。插件调度器不能绕过此选择器，Home
-  调度与此模式不兼容并拒绝请求。Gateway 发送的
-  `X-Codex-Gateway-Affinity` 是每个调用方的 43 字符不透明 HMAC 作用域；sidecar
-  校验并消费该头，所有显式及派生 session ID 都以该作用域命名空间隔离，且该头
-  永不发送给 OpenAI。
-- sidecar 会把主会话、Codex/Claude subagent、fork、LCP parent 和 side 对话解析为
-  caller-scoped 的 root session。root 关系只来自已识别的 session/parent/turn 元数据；
-  无法解析父关系时使用当前会话自身，缺少会话标识时保留请求级行为。生成给 Gateway
-  的 `conversation_hash` 使用 root identity，客户端伪造的同名请求头不可信，也不会
-  被转发到真实上游。
-  parent registry 在单个 sidecar 实例内保存，TTL 为一小时、容量为 65536；重启、过期
-  或逐出后，仅依据当前请求能识别的关系解析 root。亲和绑定仍使用叶子 session、provider
-  和 model，不新增 root 级账号绑定。新 hash 继续写入 `usage_requests.conversation_hash`，
-  使用独立 root hash domain；不增加数据库列，也不回填历史 leaf hash。
-- 每个请求最多触达两个不同 OAuth 账号。仅认证、额度、429、408、网络错误和
-  5xx 可在首个下游字节前切换账号；3xx、其他 4xx、客户端取消及首字节后的流式
-  错误都不得重放。部署配置必须把 handler 层 `streaming.bootstrap-retries` 固定为
-  `0`，防止它为同一请求重新分配一组两账号预算。
-- 最终选中的稳定账号索引通过 `X-Codex-Upstream-Account` 返回给 Gateway；Gateway
-  必须消费该头，不得转发给 API 客户端。该索引只接受 16 位小写十六进制，基于
-  OAuth `account_id` 的不可逆摘要而不是含邮箱的文件名；同一真实账号的重复文件
-  只能有一个进入路由池。
-- 只开放 Bearer 认证的 `GET /internal/upstream-accounts`、
-  `GET /internal/upstream-accounts/capabilities`、
-  `GET /internal/upstream-accounts/concurrency`、
-  `PUT /internal/upstream-accounts/{id}/status`、固定 URL 的
-  `POST /internal/upstream-accounts/{id}/quota`。模型鉴定使用独立的
-  `GET /internal/model-identification/capabilities`，协议为 `model_identification_direct_v1`，
-  以及 `GET /internal/model-identification/accounts/{id}/models`、
-  `POST /internal/model-identification/accounts/{id}/probe`；旧账号权限 capability 的严格
-  JSON 保持不变。模型选项是本地 Codex Free/Plus/Team/Pro 原生目录的去重并集，表示
-  “可尝试模型”，不依赖套餐元数据、禁用状态、已注册模型、业务别名或价格配置；实际
-  支持情况由上游答复确定。Gateway 必须先完成 Owner、来源和近期验证校验，再调用
-  内部 Bearer 认证的诊断接口。POST 还必须携带合法 `X-Codex-Gateway-User`、UUID
-  `X-Codex-Diagnostic-Run` 和 `X-Codex-Diagnostic-Probe`（1 至 3）；只用于审计，
-  不发送给上游。普通 `/v1` 请求不能通过请求头或执行 metadata 获得诊断权限。
-  探针仅接受模型、单道纯文本题和 `max_output_tokens`，每题重新取得相同稳定账号的
-  最新凭证快照，直接访问固定 Codex Responses URL，保留出口代理并禁止重定向。
-  Owner 诊断跳过普通用户账号授权、分配权重、禁用/额度/冷却及并发策略，但绝不临时
-  启用账号或修改这些控制。诊断不刷新凭证、不自动重放，也不跨账号；真实凭证缺失、
-  上游认证/权限/限流/模型拒绝仍明确失败。请求使用全新会话、空工具和禁止工具选择，
-  不进入普通业务提示注入、模型路由、usage 发布、回答缓存或账号结果写回链路。
-  每题超时 180 秒；SSE 单事件最多 512 KiB、整流最多 8 MiB，只接受完整 completed，
-  `output_tokens` 不超过请求上限（最大 16,384）、文本不超过 16 KiB，且无工具调用。
-  错误仅输出固定 code、preflight/probing/validating 阶段以及可选上游状态和重试等待秒数，
-  不输出原始上游错误文本。诊断路径无条件排除请求/响应正文及错误日志，审计只含
-  actor、run、题号、稳定账号、固定结果码、阶段和耗时；不保存回答。
-  Codex 上游不支持 `max_output_tokens`，因此 token/文本上限属于结果验收限制，无法
-  保证上游生成或计费不超过该额度。额度接口只接受精确的
-  `{"method":"account/rateLimits/read","id":6}`（不得包含 `params` 或其他字段），
-  并且只能请求 `https://chatgpt.com/backend-api/wham/usage`，不能接收调用方提供的
-  URL、方法或上游 Header，且 Codex HTTP client 不跟随任何重定向。账号列表只输出严格
-  `a***@example.com` 形式的 ASCII 脱敏邮箱；额度只输出 `{id,result}` RPC envelope、
-  经过严格标识符校验的限额桶、整数使用百分比、分钟窗口和 Unix 秒重置时间，不能返回
-  或记录 token、完整邮箱、任意上游显示文本或原始上游响应。
-  CLIProxyAPI 完整管理 API 仍保持关闭。
-- 兼容服务并发接口按稳定账号 ID 返回 `sampled_at` 和
-  `{id,active_requests,concurrent_limit}`。Gateway 接受并校验非负整数
-  `concurrent_limit`（未启用分配选择器时为 `0`），也兼容省略该字段的旧快照；
-  Owner 接口仅输出 `{id,active_requests}`，其他未知字段仍拒绝解析。其中
-  `active_requests` 表示该账号当前活跃的 root 对话数。首响应等待和长流均计数；同一
-  root 在同一账号上的重叠执行只占一个名额，root 的最后一个执行结束、失败、取消或流
-  关闭后才释放。不同 root 分别计数，同一 root 切换到另一个账号时在另一个账号独立计数。
-  禁用账号不会隐藏已有执行。接口只返回计数，缺失账号不代表零；Gateway 自身的请求级
-  lease 仍按每个请求计数。
-  Gateway 的 `/admin/upstream-accounts/concurrency` 仅 Owner 可访问，并拒绝超出一分钟
-  时钟偏差的快照；旧服务不支持或读取失败时页面显示“暂不可用”。
-- 状态接口只接受 `{"enabled":true}` 或 `{"enabled":false}`，返回确认后的稳定
-  账号 ID、CLIProxyAPI 来源状态、Gateway 手动状态、Gateway 额度状态，以及仅在三者
-  均正常时为 `available` 的最终状态。手动禁用与生成请求的结构化
-  `usage_limit_reached` 都锁定整个账号，直到 Owner 手动重新启用。普通 429
-  仍按现有退避冷却；额度查询只读，认证和网络错误不触发额度锁定。
-- 控制状态按稳定 ID 写入 OAuth 持久卷中的 `.gateway-account-state`，通过
-  `0600` 临时文件、文件同步、原子替换及目录同步确认持久化。加载器和文件监听
-  忽略该文件及其临时文件；现存文件不可读或无效时启动失败。OAuth 刷新、同账号
-  重复文件替换及重启均保留锁定；持久化失败返回固定错误，启用失败保持禁止分流。
-- 重新启用清除账号及所有模型的冷却，不预查额度；上游再次明确耗尽时重新锁定。
-  调度器、模型可用性和会话亲和使用同一控制状态，管理操作前已开始的请求和 SSE
-  继续执行；稳定账号 ID 与控制版本保证旧请求结果不能覆盖新的管理操作。
-- 额度解析不依赖上游或本地 OAuth 的 `plan_type` 元数据；套餐缺失、名称未知或类型
-  变化都不会阻断有效额度。响应必须包含 `rate_limit`（可为 null）或非 null 的
-  `additional_rate_limits` 数组，不能将任意 JSON 当成空额度。账号列表仍只输出
-  Plus/Pro/unknown 套餐分类。
-- 额度解析失败按固定条件返回错误码，区分 JSON、字段类型、额度结构缺失、百分比、窗口、
-  重置时间和额外额度标识问题。错误不包含原始上游字段值；Gateway 使用固定白名单
-  映射并写入查询审计。百分比、窗口与标识符的校验约束保持不变，收到错误码不等于
-  已经证实上游改版；Gateway 仍识别旧 sidecar 的套餐错误以支持滚动更新。
-
-升级候选必须先在隔离环境覆盖以下契约：
-
-- 认证后的 `GET /v1/responses` 返回一次
-  `426 responses_websocket_unsupported` 后客户端立即改用 HTTPS/SSE，探测不进入
-  usage、配额、计费、并发租约或 sidecar；
-- Astra（`gpt-6-astra`）模型列表、非流式和 SSE `POST /v1/responses`；
-- Astra 的 `POST /v1/responses/compact`；
-- 两账号重试上限、最终账号归因以及内部账号列表和额度接口；
-- 系数 0 排空、唯一候选为 0、并发首次绑定、回调超时／失败、绑定到期及重启；
-- 安全清理后的 401、429、5xx；
-- usage 分散在多个 SSE chunk 时的 input、cached input、output、reasoning；
-- 客户端断开取消、首 token 超时和总超时；
-- OAuth refresh 成功、refresh 失效和 reauthentication required；
-- 禁用／启用后的分流、持续额度锁定、普通 429 到期恢复、再次耗尽；重启、重复文件
-  替换、并发控制、旧请求结果、状态读写失败、账号消失及全部账号不可用；
-- sidecar 不记录请求/响应正文或 token，完整管理 API 无法从兼容层网络远程访问，
-  窄内部接口只返回脱敏、规范化字段。
-
-仓库验证至少执行 `./scripts/validate-compose.sh`、
-`./scripts/compose.sh build gateway codex-compat antigravity-bridge`、
-`./scripts/test-sidecar-image.sh`、`./scripts/test-antigravity-image.sh`、
-`go test -count=1 ./...`、
-`go test -race -count=1 ./...` 和 `go vet ./...`，并检查构建内现有安全回归测试通过。
-隔离测试的模型目录和 HTTP 契约验证不能替代真实 OAuth 冒烟。
-
-切换生产前运行加密数据库备份，但不要复制 OAuth volume。持有设备登录锁，
-停止旧 sidecar，确认其容器状态不是 running，才允许候选版本挂载现有 token。
-完成 Astra 模型列表和至少一个已授权 Plus/Pro 账号的普通及 SSE Responses、
-compact 人工冒烟后才能恢复 Gateway 流量。
-
-Gateway 必须支持现有用户账号权限、加权分配、账号控制及并发接口。模型鉴定需配套
-升级 Gateway 和兼容层，并应用上述 `0019` 迁移；旧兼容层缺少诊断能力时，新 Gateway
-会明确返回 `model_identification_protocol_unsupported`。兼容层
-启动与健康检查不等待 Gateway，保持 `Gateway -> healthy sidecar` 的启动顺序；
-首次部署和登录后的生成冒烟必须等 Gateway `/readyz` 返回 200。
-登录脚本在 sidecar 健康后启动 Gateway 并等待就绪；独立
-`scripts/smoke-sidecar.sh` 与容器内 `sidecar-smoke` 都会先检查 Gateway。
-这两个脚本只验证账号元数据、模型目录和权限能力；普通及 SSE 生成冒烟须通过
-Gateway 使用真实用户 API Key，确保经过个人账务和群组额度准入。直接调用兼容层
-不会生成可信用户身份，因此拒绝生成请求。
-Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从公网进入。
-未同步的新 OAuth 账号自动按系数 1、无历史费用参与首次分配，无须先打开管理员页面。
-
-失败回滚时保持停写，先停止候选实例。本次仅升级兼容层且没有写入新迁移时，
-可切回升级前仍支持相同权限、加权分配和账号控制契约的镜像；若同时部署了带新迁移
-的 Gateway，则须将升级前数据库备份恢复到新的隔离卷并配套回退。
-任何时刻都不允许两个 sidecar
-共享同一组 refresh token。若任一 token 已因候选版本失效，保持服务关闭并重新
-执行 `scripts/codex-device-login.sh`。
-
-账号控制上线后，回滚镜像也必须理解 `.gateway-account-state`。不支持该文件的
-旧镜像会忽略禁用与额度锁定，不能直接恢复流量；保持 Gateway 停流量，使用包含
-账号控制补丁的修复镜像。不要通过删除状态文件或复制 OAuth 卷来恢复账号。
-
-## 插件模式（默认）
-
-上文描述的是源码补丁镜像：一个 25,177 行、改动 219 个文件的补丁，每次 CPA 升级都要
-重基。CPA v8 提供了正式的插件接口，同一段时间里（v8.0.48 → v8.0.59）补丁改到的 127 个
-上游文件中有 85 个被上游修改，而插件接口只变了 48 行。插件模式把 Gateway 需要的功能
-移到这个接口之后，残余补丁只剩 139 行。
-
-插件模式是默认部署（`docker-compose.yml`）。源码补丁镜像保留为回退：在 `.env` 中设置
-`CPA_INTEGRATION=patch`，`scripts/compose.sh` 就会叠加 `deploy/patch-cpa.override.yml`；
-真实账号验收稳定后删除。插件模式覆盖了补丁镜像的功能，差异见下文“与补丁镜像的行为差异”。
-上游请求全部由 CPA 生成，插件和 Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成
-请求的方式。
+残余补丁只有 139 行：CPA v8 提供了正式的插件接口，同一段时间里（v8.0.48 → v8.0.59）原补丁改到的
+127 个上游文件中有 85 个被上游修改，而插件接口只变了 48 行。上游请求全部由 CPA 生成，插件和
+Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成请求的方式。
 验证过程见 [CPA 插件迁移验证记录](cpa-plugin-migration-validation.md)，后续步骤见
 [CPA 插件模式路线图](cpa-plugin-roadmap.md)。
 
@@ -230,7 +27,7 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 | Gateway 插件 | `deploy/codex-compat/plugin/` | 独立 Go module，编译为 `codex-gateway-v1.0.0.so`。除 CPA 的插件接口定义外没有第三方依赖 |
 | 构建 | `deploy/codex-compat/plugin.Dockerfile`、`plugin.lock.json` | 固定同一 CPA 提交；安全依赖改用 `go get` 升级；构建时运行插件单测和端到端测试 |
 | 运行 | `plugin-entrypoint.sh`、`plugin-healthcheck.sh` | 凭证目录检查沿用 `entrypoint.sh`；健康检查要求插件正在提供服务 |
-| Gateway | `CPA_INTEGRATION=plugin` | 用请求账本做归因；账号路由改走 `/v0/management/gateway/*`，使用 `CPA_MANAGEMENT_KEY` |
+| Gateway | `CPA_MANAGEMENT_KEY`（必填） | 用请求账本做归因（不读取任何响应头）；账号路由走 `/v0/management/gateway/*`，使用管理密钥；生成请求使用数据面密钥 |
 
 插件通过 CPA 的以下扩展点工作：
 
@@ -244,8 +41,8 @@ Caddy 对 `/internal` 和 `/internal/*` 返回 404，内部选择接口不能从
 | 管理路由 | Codex、Antigravity、Anthropic 三个命名空间的 capabilities、funding-layers、账号列表、并发快照、启用/禁用、出口同步；Codex 额度（CPA 被动观测）；“CPA 授权管理”页面三个 Provider 的额度 |
 
 `.gateway-account-state`、`.gateway-antigravity-identities`、`.gateway-anthropic-identities`
-沿用补丁镜像的文件名和格式，稳定账号 ID 的算法也相同，所以两种镜像可以挂载同一个
-凭证卷互相替换。
+沿用已删除的补丁镜像的文件名和格式，稳定账号 ID 的算法也相同，所以它写下的凭证卷无需
+转换即可继续使用。
 
 ### 账号独立出口
 
@@ -283,9 +80,10 @@ Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行�
 
 Antigravity 账号只注册 Gateway 已审并定价的五个模型：`gemini-3-flash`、
 `gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`、`gemini-3.8-flash-high`、
-`gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT 和图像模型
-（v8.0.59 中另有六个），账号实际注册的是这份目录与 Google 为该账号返回的模型列表的交集。
-入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余部分：
+`gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT、图像模型以及尚未
+评审定价的 Gemini 模型（v8.0.69 中另有九个），账号实际注册的是这份目录与 Google 为该账号
+返回的模型列表的交集。入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余
+部分：
 
 ```yaml
 oauth-excluded-models:
@@ -293,7 +91,14 @@ oauth-excluded-models:
     - "claude-*"
     - "gpt-*"
     - "gemini-3.1-flash-image"
+    - "gemini-3.8-flash-tiered"
+    - "gemini-4-carbon-high"
+    - "gemini-4-hydrogen-xhigh"
 ```
+
+后三条在升级到 v8.0.69 时加入：这一版目录新增了 Gemini 3.8 Flash Tiered、Gemini 4 Carbon 与
+Gemini 4 Hydrogen。它们在评审并定价之前不注册；排除写成精确 ID，因为 `gemini-4-*` 会同时
+遮住已审的 `gemini-4-argon-high`。
 
 规则是排除列表，不是允许列表，所以由三处检查保证它与目录保持一致：
 
@@ -398,7 +203,9 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 `model_identification_cpa_v1`；`model-identification/accounts/models?id=` 包装 CPA 的
 `GET /v0/management/auth-files/models`，列出 CPA 为该凭证注册的模型。
 
-### 与补丁镜像的行为差异
+### 与已删除的补丁镜像的行为差异
+
+下表保留供排查从补丁镜像迁移过来的部署时参考。补丁镜像已删除，第 21 项不再适用。
 
 | # | 补丁镜像 | 插件模式 | 原因 |
 |---|---|---|---|
@@ -431,12 +238,15 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 
 ### 升级 CPA
 
-1. 在 `deploy/codex-compat/plugin.lock.json`、`docker-compose.yml` 中更新
-   tag、commit 和镜像标签；在 `deploy/codex-compat/plugin/go.mod` 中更新 CPA 版本并运行
-   `go mod tidy`。补丁镜像与插件镜像必须固定同一个提交，`source.lock.json` 随补丁镜像
-   的升级一起更新。
-2. 运行 `python3 -m unittest scripts.tests.test_cpa_plugin_deploy`，确认锁文件、补丁、
-   Dockerfile、入口脚本和覆盖文件一致。
+1. 在 `deploy/codex-compat/plugin.lock.json` 中更新 tag、commit、模型目录摘要
+   （上游 `internal/registry/models/models.json` 的 SHA-256）和镜像标签，在
+   `docker-compose.yml` 中更新 tag、commit 和镜像标签，在 `plugin.Dockerfile` 中更新模型
+   目录摘要，在 `THIRD_PARTY_NOTICES` 中更新版本与提交；在
+   `deploy/codex-compat/plugin/go.mod` 中更新 CPA 版本并运行 `go mod tidy`。
+2. 运行 `python3 -m unittest scripts.tests.test_cpa_plugin_deploy` 和
+   `./scripts/validate-compose.sh`，确认锁文件、残余补丁、Dockerfile、入口脚本和 Compose 一致。
+   比较新旧两版的模型目录：Gateway 已定价的模型若被上游删除，按
+   [CPA 原生模型与定价迁移](cpa-native-models.md) 处理。
 3. 构建镜像。构建会依次检查：残余补丁无 fuzz 应用、残余补丁的测试、CPA 自己的插件
    宿主与账号管理器测试、插件单测与竞态检测、针对所产出二进制的端到端测试。任何一步
    失败都不产生镜像。
@@ -447,7 +257,8 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
    “Antigravity 模型限制”处理。`TestProviderSessionsAreCallerScoped` 失败时，说明 CPA
    推导会话身份的方式变了。无论是否失败，都按
    [缓存键核对的升级清单](cpa-provider-cache-audit.md#cpa-升级时)比较新旧版本的缓存代码。
-6. 运行 `./scripts/test-cpa-plugin-image.sh`，然后按上文规程做真实账号验收。
+6. 运行 `./scripts/test-cpa-plugin-image.sh`，然后按[路线图第 3 步](cpa-plugin-roadmap.md#3-维护窗口内的真实账号验收)
+   的清单做真实账号冒烟。
 
 作为参照，2026-11-12 对 v8.0.67 做了一次实际演练。v8.0.59 到 v8.0.67 之间上游改了
 289 个文件，其中调度与插件接口所在的 `conductor_selection.go` 改了 648 行。插件源码
@@ -456,12 +267,15 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 两版都相同的 `switch` 之后即可，现在同一份补丁可以无 fuzz 地应用到 v8.0.59 和 v8.0.67。
 对比之下，源码补丁镜像在同一区间需要重基 127 个被修改的上游文件中改动过的那部分。
 
-### 启用与回退
+2026-11-13 实际升级到 v8.0.69（上游 100 个提交、382 个文件）：残余补丁与插件源码都未改；
+`TestAntigravityModelCatalog` 按设计指出目录新增的三个 Antigravity 模型，把它们加入排除规则
+后全部端到端测试通过。过程见 [v8.0.69 验证记录](cpa-v8.0.69-validation.md)。
 
-见[运维手册](operations.md#cpa-插件模式的切换与回退)。要点：`.env` 中的
-`CPA_INTEGRATION`（`plugin` 或 `patch`）决定镜像，Gateway 与 CPA 总是一起切换；不要用 `-f`
-手动叠加覆盖文件。启用前阅读上面的行为差异，特别是第 19–22 项。切换会重置会话绑定，进行中
-的对话会被重新分配账号。
+### 回退
+
+不再有源码补丁镜像可以切换。CPA 升级出现问题时，回到上一个 Gateway revision（它固定了
+上一个 CPA 提交）重新构建并部署，见[运维手册](operations.md#cpa-插件镜像的升级与回退)。凭证卷
+在 CPA 版本之间不需要转换；不要复制 OAuth 卷，也不要让两个 CPA 实例同时挂载同一个卷。
 
 ### 本地验证
 

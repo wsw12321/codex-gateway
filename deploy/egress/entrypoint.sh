@@ -90,7 +90,7 @@ render_config() {
         'cache_peer_access account_egress deny all' \
         'never_direct allow account_route'
     if test "$egress_mode" = direct; then
-        printf '%s\n' '# Shared Codex/Antigravity relay disabled; preserve direct egress.'
+        printf '%s\n' '# Provider relay disabled; preserve direct egress.'
         printf '%s\n' 'never_direct deny all'
         return
     fi
@@ -104,10 +104,8 @@ render_config() {
     printf '%s\n' \
         'cache_peer_access codex_relay deny account_route' \
         'cache_peer_access codex_relay allow codex_clients' \
-        'cache_peer_access codex_relay allow antigravity_clients' \
         'cache_peer_access codex_relay deny all' \
         'never_direct allow codex_clients' \
-        'never_direct allow antigravity_clients' \
         'never_direct deny all'
 }
 

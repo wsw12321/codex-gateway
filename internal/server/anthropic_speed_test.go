@@ -105,7 +105,7 @@ func TestAnthropicMessagesRejectsUnsupportedSpeedBeforeAdmission(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				h.server.anthropic = gatewayproxy.NewCPAAnthropic(base, "internal")
+				h.server.anthropic = withManagement(gatewayproxy.NewCPAAnthropic(base, "internal"))
 				body := fmt.Sprintf(`{"model":"claude-test","max_tokens":100,"stream":%t,"messages":[],%s}`, stream, test.fields)
 				request := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
 				request.Header.Set("X-Api-Key", h.apiKey)

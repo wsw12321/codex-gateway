@@ -171,11 +171,7 @@ Cloudflare Tunnel token 不得写入 `.env`。把它保存为
 ./scripts/compose.sh ps
 ```
 
-完成 sidecar OAuth 登录后验证模型：
-
-```sh
-./scripts/smoke-sidecar.sh
-```
+在“CPA 授权管理”页面完成账号授权后，用真实用户 Key 请求 `GET /v1/models` 验证模型。
 
 首次启动后确认 `schema_migrations` 包含 `0005_official_token_pricing.sql` 和
 `0006_api_key_lifecycle.sql`，再按本页模型集合做结算冒烟。已有旧数据库升级不能

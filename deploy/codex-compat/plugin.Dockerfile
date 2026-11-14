@@ -1,9 +1,9 @@
 ARG GOLANG_IMAGE=docker.io/library/golang:1.26.11-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0
 ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-20260824-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
-# Unmodified CPA plus the Gateway plugin. Unlike deploy/codex-compat/Dockerfile
-# this build carries no feature patch: the only source change is the residual
-# fail-closed selector, and everything the Gateway needs lives in the plugin.
+# Unmodified CPA plus the Gateway plugin. The build carries no feature patch:
+# the only source change is the residual fail-closed selector, and everything
+# the Gateway needs lives in the plugin.
 
 FROM ${RUNTIME_IMAGE} AS runtime-base
 # Keep the reviewed glibc runtime: the plugin is a cgo shared library loaded by
@@ -49,12 +49,11 @@ RUN printf "%s  /tmp/cliproxy-residual.patch\n" "$CLIPROXY_RESIDUAL_PATCH_SHA256
     && test "$(git status --porcelain | wc -l)" = 4
 # The model catalog is the reviewed one embedded in the pinned source.
 RUN printf '%s  internal/registry/models/models.json\n' \
-    '99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0' | sha256sum -c -
+    'e47744d81d04b5b7c8eee17057fd4d4110a8b8b5867d4015a0718e05d98b616c' | sha256sum -c -
 
-# Security dependency floors. The source-patched build carried these as
-# go.mod hunks; here they are ordinary module upgrades and never conflict. A
-# module upstream already requires at or above its floor is left alone: go get
-# with an older version would downgrade it.
+# Security dependency floors, as ordinary module upgrades. A module upstream
+# already requires at or above its floor is left alone: go get with an older
+# version would downgrade it.
 RUN set -eu; \
     for pin in \
         github.com/klauspost/compress@v1.18.7 \
@@ -130,9 +129,7 @@ COPY --from=build --chown=10001:10001 --chmod=0555 /out/cli-proxy-api /usr/local
 # Root-owned and read-only: the service user can load the plugin but cannot
 # replace it, and CPA cannot install another one next to it.
 COPY --from=build --chown=0:0 --chmod=0444 /out/plugins/codex-gateway-v1.0.0.so /usr/local/lib/cliproxy/plugins/codex-gateway-v1.0.0.so
-# The shared entrypoint keeps the credential-store checks and the login
-# helpers; the plugin entrypoint wraps it and writes the plugin configuration.
-COPY --chown=10001:10001 --chmod=0555 deploy/codex-compat/entrypoint.sh /usr/local/bin/sidecar-oauth-entrypoint
+# The entrypoint checks the credential store and writes CPA's configuration.
 COPY --chown=10001:10001 --chmod=0555 deploy/codex-compat/plugin-entrypoint.sh /usr/local/bin/sidecar-entrypoint
 COPY --chown=10001:10001 --chmod=0555 deploy/codex-compat/plugin-healthcheck.sh /usr/local/bin/sidecar-healthcheck
 

@@ -108,11 +108,3 @@ func TestEgressInternalAuthorizationAndStrictInput(t *testing.T) {
 		}
 	}
 }
-
-func TestLegacyBridgeRejectsUnknownEgressState(t *testing.T) {
-	s := &Server{config: config.Config{AntigravityTransport: "legacy-bridge"}}
-	w := httptest.NewRecorder()
-	if s.legacyEgressAllowed(w, httptest.NewRequest("POST", "/v1/responses", nil)) || w.Code != 503 {
-		t.Fatal("legacy bridge bypassed binding guard")
-	}
-}

@@ -116,15 +116,14 @@ func TestFundingLayersGatewayPostgresIntegration(t *testing.T) {
 	h.server.modelAccessRepo = repo
 	h.server.config.UsagePricing = pricing
 	h.server.config.BodyLimit = 64 << 20
-	h.server.config.AntigravityTransport = "cpa"
 	h.server.config.AntigravityModelRoutes = map[string]string{model: model}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 100}
 
 	var mu sync.Mutex
 	layered := true
 	var groupsHeader string
-	generation := func(w http.ResponseWriter) {
-		w.Header().Set("X-Codex-Upstream-Account", exclusive)
+	generation := func(w http.ResponseWriter, r *http.Request) {
+		reportAllocation(t, h.server, "antigravity", r, exclusive)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"model":"` + model + `","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":100,"output_tokens":37,"total_tokens":137}}`))
 	}
@@ -132,14 +131,14 @@ func TestFundingLayersGatewayPostgresIntegration(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		switch r.URL.Path {
-		case "/internal/antigravity-accounts":
+		case pluginPath("antigravity-accounts"):
 			writeJSON(w, 200, map[string]any{"accounts": []gatewayproxy.UpstreamAccount{
 				{ID: exclusive, DisplayName: "exclusive", MaskedEmail: "e***@example.com", Plan: "unknown", Status: "available", CliproxyStatus: "active", GatewayManualStatus: "enabled", GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC()},
 				{ID: reauth, DisplayName: "reauth", MaskedEmail: "r***@example.com", Plan: "unknown", Status: "available", CliproxyStatus: "active", GatewayManualStatus: "enabled", GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC()},
 			}})
-		case "/internal/antigravity-accounts/capabilities":
+		case pluginPath("antigravity-accounts/capabilities"):
 			writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1", "group_upstream_account_scope": gatewayproxy.GroupUpstreamAccountScopeV1})
-		case "/internal/antigravity-accounts/funding-layers":
+		case pluginPath("antigravity-accounts/funding-layers"):
 			if !layered {
 				http.NotFound(w, r)
 				return
@@ -154,14 +153,15 @@ func TestFundingLayersGatewayPostgresIntegration(t *testing.T) {
 					"message": "upstream_concurrency_exceeded: upstream account concurrency limit reached", "type": "rate_limit_error", "code": "upstream_concurrency_exceeded"}})
 				return
 			}
-			generation(w)
+			generation(w, r)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer cpa.Close()
 	base, _ := url.Parse(cpa.URL)
-	h.server.antigravity = gatewayproxy.NewCPAAntigravity(base, "internal-cpa")
+	h.server.antigravity = withManagement(gatewayproxy.NewCPAAntigravity(base, "internal-cpa"))
+	useLedger(h.server, h.server.antigravity)
 	send := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"`+model+`","input":"hello"}`))
 		r.Header.Set("Authorization", "Bearer "+h.apiKey)

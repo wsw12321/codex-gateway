@@ -1,7 +1,7 @@
 # CPA 插件模式路线图
 
 本文记录插件模式从“可选”走到“默认”、再到删除源码补丁所需的事，以及每一步的验收标准。插件模式的
-设计与升级规程见[兼容层升级规程](compatibility-upgrades.md#插件模式默认)，已完成
+设计与升级规程见[兼容层升级规程](compatibility-upgrades.md)，已完成
 的验证见[验证记录](cpa-plugin-migration-validation.md)。
 
 ## 原则
@@ -12,7 +12,7 @@
    都来自 CPA 原生代码路径。插件和 Gateway 不构造 provider 请求（不写死 provider 的 URL、
    头部或 User-Agent，不自带 TLS 客户端），也不通过补丁改变 CPA 生成请求的方式。CPA 不
    提供的能力宁可不提供，也不自行实现。
-2. **只保留残余补丁。** 补丁镜像的大补丁会被删除。残余补丁
+2. **只保留残余补丁。** 补丁镜像的大补丁已删除。残余补丁
    （`residual/cliproxy-plugin-only-selector.patch`）不改请求的内容和格式，只在插件没有
    选号时拒绝请求；它会提交给上游，合并后删除。
 3. **账号出口失败时拒绝，不回退。** “出口服务器”功能保留。账号绑定的出口不可用时，
@@ -26,11 +26,11 @@
 - 插件 `deploy/codex-compat/plugin/` 承担选号、身份隔离、会话绑定、并发名额、账号控制
   （启用/禁用、额度锁）、账号独立出口、归因上报。
 - 残余补丁 139 行，只新增 `routing.strategy: "plugin-only"`，同一份补丁可无 fuzz 应用到
-  v8.0.59 和 v8.0.67。
-- Gateway 的 `CPA_INTEGRATION=plugin`：请求账本归因、`/v0/management/gateway/*` 路由映射、
-  出口推送。
-- 插件模式是默认部署（第 8 步第 1 项）；源码补丁镜像经 `.env` 的 `CPA_INTEGRATION=patch`
-  回退（`deploy/patch-cpa.override.yml`）。
+  v8.0.59、v8.0.67 和当前固定的 v8.0.69。
+- Gateway：请求账本归因、`/v0/management/gateway/*` 账号路由、出口推送。
+- 插件模式是唯一的部署形态（第 8 步）：源码补丁镜像、旧 Antigravity 桥接、v7 回退镜像、
+  凭证迁移工具、命令行登录脚本以及 `CPA_INTEGRATION`/`ANTIGRAVITY_TRANSPORT` 开关已删除，
+  Gateway 只走插件的管理路由并只按请求账本归因。
 - 构建（`plugin.Dockerfile`）、CI 步骤、镜像探针、部署静态校验。
 - 自动化测试：插件单测与竞态检测、16 组端到端测试、Gateway 单测、部署静态校验，均通过。
 - 账号出口不回退（第 7 步）：每个凭证都带显式出口，CPA 不配置任何代理，插件后台对账。
@@ -45,13 +45,14 @@
 
 尚未具备：
 
-- 没有真实账号验收。
+- 没有真实账号验收。第 8 步第 2、3 项应 Owner 要求在验收之前完成，因此已经没有可切换的
+  回退镜像：验收中发现问题时只能回到上一个 revision 整体重新部署（见第 8 步状态）。
 - 缓存键核对发现的缺口尚未提交上游（见第 9 步）。
 
 ## 步骤
 
-第 1、2、4–7 步和第 8 步第 1 项已完成，执行顺序是 7（出口部分）→ 4 → 5 → 6 → 8（第 1 项）
-→ 7（其余部分）：凭证操作和模型鉴定都依赖“每个凭证都带显式出口”。每一步单独提交，并在[验证记录](cpa-plugin-migration-validation.md)
+第 1、2、4–8 步已完成，执行顺序是 7（出口部分）→ 4 → 5 → 6 → 8（第 1 项）→ 7（其余部分）
+→ 8（第 2、3 项）：凭证操作和模型鉴定都依赖“每个凭证都带显式出口”。每一步单独提交，并在[验证记录](cpa-plugin-migration-validation.md)
 中补充结果。
 
 ### 1. 升级 Go 工具链到 1.26.11，让 CI 恢复绿色
@@ -94,14 +95,14 @@ Docker 守护进程，以下几处只有 CI 能暴露问题，需重点看：
 
 ### 3. 维护窗口内的真实账号验收
 
-**做法。** 按[运维手册](operations.md#cpa-插件模式的切换与回退)切换。验收期间不要使用
-尚未迁移的功能；需要维护凭证时先回退到补丁镜像。
+**做法。** 按[运维手册](operations.md#cpa-插件镜像的升级与回退)部署。补丁镜像已删除，
+验收期间凭证只能在“CPA 授权管理”页面维护。
 
 **验收清单。**
 
 | 项 | 通过条件 |
 |---|---|
-| 模型列表 | Codex、Claude、Antigravity 模型与补丁镜像一致；Antigravity 只出现五个已审模型 |
+| 模型列表 | Codex、Claude、Antigravity 模型与切换前的部署一致；Antigravity 只出现五个已审模型 |
 | Responses 普通与 SSE、compact | 成功；请求明细中的上游账号、会话哈希、扣费层正确 |
 | `/v1/messages`、Claude 模型走 `/v1/responses` | 成功；Claude 账号归因正确 |
 | Gemini 原生 `/v1beta/models/*` | 成功；Antigravity 账号归因正确 |
@@ -114,7 +115,7 @@ Docker 守护进程，以下几处只有 CI 能暴露问题，需重点看：
 | 凭证中的出口 | 每个凭证都带显式 `proxy_url`（未绑定的账号为全局出口地址） |
 | 刷新后重启 | 凭证刷新后重启 sidecar，账号仍可用 |
 | 额度 | 有请求后，Codex 与 Claude 显示最近一次观测及观测时间；“CPA 授权管理”页面三个 Provider 的额度列可用（Antigravity 显示不可用） |
-| 回退演练 | 去掉覆盖文件回到补丁镜像，账号状态、禁用与额度锁保持 |
+| 回退演练 | 回到上一个 revision 重新部署 CPA 镜像，账号状态、禁用与额度锁保持 |
 
 ### 4. 额度改为 CPA 的被动观测
 
@@ -234,10 +235,24 @@ Gateway 侧的推送重试改由插件的后台对账承担（启动后到确认
 **验收。** CI 全绿；默认部署的镜像探针与端到端测试通过；回退覆盖文件可用。
 
 **状态（2026-11-12）。** 第 1 项已完成，结果见
-[验证记录](cpa-plugin-migration-validation.md#路线图第-8-步第-1-项插件模式成为默认)。回退不靠
-`-f`：`.env` 的 `CPA_INTEGRATION=patch` 让 `scripts/compose.sh` 的每次调用都叠加回退覆盖文件，
-登录脚本和之后的 `up -d` 也不会切回插件镜像。第 2、3 项等真实账号验收（第 3 步）通过并
-稳定 7 天后进行。
+[验证记录](cpa-plugin-migration-validation.md#路线图第-8-步第-1-项插件模式成为默认)。
+
+**状态（2026-11-13）。** 第 2、3 项已完成，结果见
+[验证记录](cpa-plugin-migration-validation.md#路线图第-8-步第-23-项删除补丁镜像与旧桥接)。
+与原计划不同，这两项应 Owner 要求在真实账号验收（第 3 步）之前完成，因此：
+
+- 没有补丁镜像可以回退。插件或 CPA 出现问题时，回到上一个 revision 整体重新部署；
+  需要补丁镜像时只能从 Git 历史中恢复 2026-11-13 之前的 revision。
+- `.env` 中残留 `CPA_INTEGRATION=patch` 时 `scripts/compose.sh` 拒绝执行；Gateway 环境中
+  残留 `CPA_INTEGRATION`（非 `plugin`）、`ANTIGRAVITY_TRANSPORT`（非 `cpa`）或
+  `ANTIGRAVITY_BRIDGE_*` 时拒绝启动，不会在运维人员不知情时换用别的链路。
+- 第 3 步的验收清单不变，仍需在维护窗口内完成。
+
+除计划列出的文件外，同时删除了只为补丁镜像或旧桥接存在的部分：v7 回退镜像
+（`legacy.Dockerfile`、`deploy/legacy-cpa.override.yml`）、凭证迁移工具（`cmd/cpa-credentials-migrate`、
+`internal/cpamigrate`、`deploy/cpa-migrate`）、命令行登录与冒烟脚本、Squid 中旧桥接的来源与
+目的地规则、`antigravity_internal` 网络、旧桥接的两个 secret，以及插件中只为桥接回退存在的
+`CPA_ANTIGRAVITY_ENABLED` 开关。
 
 ### 9. 减少残余补丁并提前发现上游变化
 
@@ -255,14 +270,16 @@ Gateway 侧的推送重试改由插件的后台对账承担（启动后到确认
 插件模式成为默认后，CPA 升级按以下步骤进行（细节见
 [兼容层升级规程](compatibility-upgrades.md#升级-cpa)）：
 
-1. 更新 `plugin.lock.json`、覆盖文件（或默认 Compose）中的 tag、commit、镜像标签，以及
-   插件 `go.mod` 中的 CPA 版本。
+1. 更新 `plugin.lock.json`（tag、commit、模型目录摘要、镜像标签）、`docker-compose.yml`、
+   `plugin.Dockerfile` 中的模型目录摘要、`THIRD_PARTY_NOTICES`，以及插件 `go.mod` 中的 CPA 版本。
 2. 运行 `python3 -m unittest scripts.tests.test_cpa_plugin_deploy`。
 3. 构建镜像。残余补丁应用失败时，按新代码调整插入点并更新锁文件中的 SHA-256；插件编译
    失败时，按插件接口的变化修改插件。
 4. 运行 `scripts/test-cpa-plugin-image.sh`，再做真实账号冒烟。
 
 2026-11-12 的 v8.0.67 演练中，第 3 步只需调整一次残余补丁的插入点，插件未改。
+2026-11-13 升级到 v8.0.69：残余补丁与插件源码都未改，只有 Antigravity 目录新增的三个模型
+需要加入排除规则（见[验证记录](cpa-v8.0.69-validation.md)）。
 
 ## 开放问题
 

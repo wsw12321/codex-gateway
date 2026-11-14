@@ -28,8 +28,6 @@ type Config struct {
 	LoopbackURL string
 	// AuthDir holds the OAuth credentials and the Gateway control documents.
 	AuthDir string
-	// AntigravityEnabled mirrors CPA_ANTIGRAVITY_ENABLED from the bridge rollback.
-	AntigravityEnabled bool
 	// BindingTTL bounds how long a conversation stays bound to an account.
 	BindingTTL time.Duration
 	// HoldTTL keeps a conversation's account slot between turns.
@@ -76,15 +74,14 @@ func LoadConfig(getenv func(string) string, readFile func(string) ([]byte, error
 		readFile = os.ReadFile
 	}
 	cfg := Config{
-		GatewayURL:         strings.TrimRight(valueOr(getenv("CPA_PLUGIN_GATEWAY_URL"), defaultGatewayURL), "/"),
-		LoopbackURL:        strings.TrimRight(valueOr(getenv("CPA_PLUGIN_LOOPBACK_URL"), defaultLoopbackURL), "/"),
-		AuthDir:            strings.TrimSpace(getenv("CPA_PLUGIN_AUTH_DIR")),
-		AntigravityEnabled: !strings.EqualFold(strings.TrimSpace(getenv("CPA_ANTIGRAVITY_ENABLED")), "false"),
-		BindingTTL:         time.Hour,
-		HoldTTL:            5 * time.Minute,
-		CallbackTimeout:    2 * time.Second,
-		EgressProxyHost:    valueOr(getenv("CPA_PLUGIN_EGRESS_PROXY_HOST"), defaultEgressProxyHost),
-		GlobalProxyURL:     strings.TrimRight(strings.TrimSpace(getenv("CPA_PLUGIN_GLOBAL_PROXY_URL")), "/"),
+		GatewayURL:      strings.TrimRight(valueOr(getenv("CPA_PLUGIN_GATEWAY_URL"), defaultGatewayURL), "/"),
+		LoopbackURL:     strings.TrimRight(valueOr(getenv("CPA_PLUGIN_LOOPBACK_URL"), defaultLoopbackURL), "/"),
+		AuthDir:         strings.TrimSpace(getenv("CPA_PLUGIN_AUTH_DIR")),
+		BindingTTL:      time.Hour,
+		HoldTTL:         5 * time.Minute,
+		CallbackTimeout: 2 * time.Second,
+		EgressProxyHost: valueOr(getenv("CPA_PLUGIN_EGRESS_PROXY_HOST"), defaultEgressProxyHost),
+		GlobalProxyURL:  strings.TrimRight(strings.TrimSpace(getenv("CPA_PLUGIN_GLOBAL_PROXY_URL")), "/"),
 	}
 	if !validOrigin(cfg.GatewayURL) || !validOrigin(cfg.LoopbackURL) || cfg.AuthDir == "" || !validOrigin("http://"+cfg.EgressProxyHost) {
 		return Config{}, ErrConfig

@@ -281,7 +281,7 @@ func accountUsageCodexServer(t *testing.T, handler http.HandlerFunc) (*Server, *
 	t.Cleanup(sidecar.Close)
 	repository, capture := newUpstreamAuditStore(t)
 	baseURL, _ := url.Parse(sidecar.URL)
-	return &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client()), quotas: newUpstreamQuotaLimiter()}, capture
+	return &Server{store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client())), quotas: newUpstreamQuotaLimiter()}, capture
 }
 
 func TestReadCodexAccountUsageAuditsAndMapsErrors(t *testing.T) {

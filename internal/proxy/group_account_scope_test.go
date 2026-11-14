@@ -22,7 +22,6 @@ func TestGenerationRequiresAndForwardsGroupAccountScope(t *testing.T) {
 		{"antigravity responses", "antigravity", "/v1/responses"},
 		{"antigravity native", "antigravity", "/v1beta/models/gemini-3.8-flash-high:generateContent"},
 		{"antigravity native stream", "antigravity", "/v1beta/models/gemini-3.8-flash-high:streamGenerateContent"},
-		{"legacy antigravity native", "legacy", "/v1beta/models/gemini-3.8-flash-high:generateContent"},
 		{"anthropic messages", "anthropic", "/v1/messages"},
 	} {
 		for _, scope := range []struct {
@@ -39,21 +38,19 @@ func TestGenerationRequiresAndForwardsGroupAccountScope(t *testing.T) {
 		} {
 			t.Run(route.name+"/"+scope.name, func(t *testing.T) {
 				base, _ := url.Parse("http://sidecar.invalid")
-				client := New(base, "internal-test-key")
+				client := withManagement(New(base, "internal-test-key"))
 				switch route.provider {
 				case "antigravity":
-					client = NewCPAAntigravity(base, "internal-test-key")
-				case "legacy":
-					client = NewAntigravity(base, "internal-test-key")
+					client = withManagement(NewCPAAntigravity(base, "internal-test-key"))
 				case "anthropic":
-					client = NewCPAAnthropic(base, "internal-test-key")
+					client = withManagement(NewCPAAnthropic(base, "internal-test-key"))
 				}
 				dispatches, probes := 0, 0
 				client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-					if r.Header.Get("Authorization") != "Bearer internal-test-key" {
-						t.Error("missing internal authentication")
-					}
 					if strings.HasSuffix(r.URL.Path, "/capabilities") {
+						if r.Header.Get("Authorization") != "Bearer "+testManagementKey {
+							t.Error("capability probe without the management key")
+						}
 						probes++
 						capabilities := map[string]string{
 							"protocol": AccountAccessProtocolV1, "anthropic_messages": AnthropicMessagesProtocolV1,
@@ -65,6 +62,9 @@ func TestGenerationRequiresAndForwardsGroupAccountScope(t *testing.T) {
 						return routerTestResponse(http.StatusOK, string(body)), nil
 					}
 					dispatches++
+					if r.Header.Get("Authorization") != "Bearer internal-test-key" {
+						t.Error("missing internal authentication")
+					}
 					if r.URL.Path != route.path || r.Header.Get(gatewayUserHeader) != userID {
 						t.Errorf("wrong dispatch path or user: %s", r.URL.Path)
 					}
@@ -116,21 +116,18 @@ func TestGenerationRequiresAndForwardsGroupAccountScope(t *testing.T) {
 }
 
 func TestGenerationRejectsGroupAccountScopeWithoutIdentity(t *testing.T) {
-	for _, provider := range []string{"codex", "antigravity", "legacy", "anthropic"} {
+	for _, provider := range []string{"codex", "antigravity", "anthropic"} {
 		for _, userID := range []string{"", "forged-user"} {
 			t.Run(provider+"/"+userID, func(t *testing.T) {
 				base, _ := url.Parse("http://sidecar.invalid")
-				client := New(base, "internal-test-key")
+				client := withManagement(New(base, "internal-test-key"))
 				path := "/v1/responses"
 				switch provider {
 				case "antigravity":
-					client = NewCPAAntigravity(base, "internal-test-key")
-					path = "/v1beta/models/gemini-3.8-flash-high:generateContent"
-				case "legacy":
-					client = NewAntigravity(base, "internal-test-key")
+					client = withManagement(NewCPAAntigravity(base, "internal-test-key"))
 					path = "/v1beta/models/gemini-3.8-flash-high:generateContent"
 				case "anthropic":
-					client = NewCPAAnthropic(base, "internal-test-key")
+					client = withManagement(NewCPAAnthropic(base, "internal-test-key"))
 					path = "/v1/messages"
 				}
 				requests := 0
@@ -144,7 +141,7 @@ func TestGenerationRejectsGroupAccountScopeWithoutIdentity(t *testing.T) {
 				switch provider {
 				case "anthropic":
 					_, failure = client.ForwardMessages(context.Background(), httptest.NewRecorder(), incoming, "claude-test", path, options)
-				case "antigravity", "legacy":
+				case "antigravity":
 					_, failure = client.forwardGemini(context.Background(), httptest.NewRecorder(), incoming, "gemini-3.8-flash-high", path, options)
 				default:
 					_, failure = client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), incoming, path, options)

@@ -12,35 +12,11 @@
 
 “刷新状态”读取 CPA 最新被动观测快照，展示五小时/七天窗口、重置时间、冷却时间和观测时间。没有新上游响应时刷新不会改变观测时间；未知套餐和未观测到的额度不会显示为零或满额。冷却沿用上游自动恢复逻辑，手动启用不会跳过冷却。
 
-## SSH 终端授权
+## 授权
 
-已有 Docker 操作权限的服务器管理员可以在仓库目录运行以下任一入口，新增 Claude 账号或为已有账号重新授权：
-
-```sh
-./scripts/claude-login.sh
-# 等价入口：
-./scripts/oauth-login.sh claude
-```
-
-宿主机需要 Python 3、Docker Compose、`jq` 和 util-linux 的 `flock`，并已按现有 Compose 部署流程配置环境与 secrets。`codex-compat` 必须正在运行，且提供 `anthropic_messages_v1` 能力；脚本会先检查依赖、连通性与能力。它与现有登录、升级流程共用 `.device-login.lock`，使用正在运行的 CPA，不停服、不重建镜像、不创建第二个 CPA 实例，也不修改数据库。首版 SSH 入口仅支持浏览器授权，凭据导入仍使用控制台。
-
-1. 在 SSH 终端启动脚本，将显示的 HTTPS `claude.ai` 授权链接复制到本地浏览器完成登录。
-2. 浏览器跳转后，从地址栏复制**完整回调 URL**，回到 SSH 终端粘贴并按回车。回调必须是 HTTP 回环地址（`localhost`、`127.0.0.1` 或 `[::1]`）、端口 `54545`、路径 `/callback`，包含本次授权的 `code` 和 `state`。本地没有回调监听器时，浏览器可能显示连接失败；仍可复制地址栏中的完整 URL，无需转发端口。
-3. 输入仅从 `/dev/tty` 读取且不回显，最长等待五分钟。不要把回调放进命令参数、环境变量或文件。无效输入可在剩余时间内重试；重复参数、state 不匹配、错误参数、片段和超限输入都会被拒绝。脚本只解析 URL，不访问回调地址。
-4. 脚本最多提交一次授权码，然后每两秒查询状态，最多等待两分钟；每次内部请求最多等待十秒。只有 CPA 返回最终 `status=ok`，才表示身份验证及凭据保存完成。
-
-成功后脚本检查 OAuth 文件的所有权与权限，并显示当前 Claude 账号的脱敏列表。状态接口不返回本次账号 ID，因此列表不标记哪个账号是本次新增或重新授权的账号。请到控制台核对账号状态、精确模型 ID 的价格，以及账号和模型授权。脚本不会自动发送付费生成请求，授权完成不代表已完成生成与账单验收。
-
-管理密钥与内部 API Key 由容器从现有 secret 文件分别读取，不传回宿主机；授权码仅通过标准输入提交。脚本只调用固定的容器内部接口，不输出原始接口响应或容器错误输出。此入口面向可操作 Docker 的管理员，网页端原有 Owner 权限与近期验证要求不变。
-
-| 情况 | 处理方式 |
-| --- | --- |
-| 依赖缺失、CPA 未运行或能力检查失败 | 按现有部署流程补齐依赖、启动或升级 CPA，确认就绪后重新运行。脚本不会替你停止或启动服务。 |
-| 提示锁被占用 | 等待正在进行的登录或升级操作结束；不要删除锁文件绕过互斥。 |
-| 回调被拒绝或输入超时 | 确认复制了当前浏览器授权流程的完整回调。五分钟内可重新输入；输入超时后重新运行会创建新的授权流程。 |
-| 提交结果不明、状态查询失败或等待超时 | 授权仍可能完成；先到控制台核对账号状态，不要重复提交原回调或立即重试登录。脚本不会自动重发授权码。 |
-| 显示“凭据已保存，检查未通过” | CPA 已完成保存，后续权限或账号列表检查失败。检查部署及 OAuth 文件权限，必要时运行 `./scripts/verify-oauth-permissions.sh`；不要删除账号或重新授权来掩盖检查失败。 |
-| 按 Ctrl-C 或收到中断 | 脚本恢复终端设置并释放锁。提交前退出由 CPA 原有等待流程自行超时；提交后退出不会撤销授权，仍可能保存成功，需到控制台确认。 |
+Claude 账号在“CPA 授权管理”页面新增或重新授权：Owner 先选出口，CPA 经该出口完成 `claude.ai`
+授权并把出口写进凭证。原来的 SSH 终端授权脚本（`claude-login.sh`、`oauth-login.sh claude`）只适用于
+已删除的源码补丁镜像，已随之删除；CPA 入口脚本拒绝命令行登录。
 
 ## 用户配置
 
@@ -71,7 +47,6 @@ node internal/server/testdata/configure_client_test.cjs
 node internal/server/testdata/model_prices_ui_test.cjs
 node internal/server/testdata/user_upstream_access_ui_test.cjs
 node internal/server/testdata/overview_ui_test.cjs
-sh -n scripts/claude-login.sh && sh -n scripts/oauth-login.sh
 python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 ./scripts/validate-cpa-panel.sh
 PLAYWRIGHT_MODULE=/path/to/playwright PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/chrome \

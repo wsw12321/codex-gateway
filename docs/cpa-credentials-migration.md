@@ -1,5 +1,11 @@
 # Antigravity 凭据双向迁移
 
+> **历史记录。** 本页描述旧 Antigravity 桥接时期的流程。旧桥接、凭证迁移工具与源码补丁镜像已于
+> 2026-11-13 删除（[路线图第 8 步](cpa-plugin-roadmap.md#8-改为默认并清理)）：Antigravity 由 CPA
+> 在同一进程中提供，账号在“CPA 授权管理”页面授权，文中的桥接、`legacy-bridge` profile、
+> 命令行登录与回滚步骤都已不可用。当前流程见[兼容层升级规程](compatibility-upgrades.md)和
+> [运维手册](operations.md#cpa-插件镜像的升级与回退)。
+
 `cpa-credentials-migrate` 是维护窗口内的服务端工具。它优先直接转换旧 Keyring；只有
 刷新、身份、项目或模型额度验证失败的账号需要重新授权。当前工作区没有真实部署账号，
 单元测试中的合成凭据不构成真实账号验收。

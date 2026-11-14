@@ -93,12 +93,12 @@ func TestUpstreamStatusUsesConfirmationAndAuditsOutcome(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			repository, capture := newUpstreamAuditStore(t)
 			base, _ := url.Parse("http://sidecar.internal")
-			server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			server := &Server{store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				if r.Method != http.MethodPut {
 					t.Errorf("unexpected refresh during control request: %s", r.Method)
 				}
 				return &http.Response{StatusCode: test.remoteStatus, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(test.remoteBody))}, nil
-			})})}
+			})}))}
 			response := httptest.NewRecorder()
 			server.setUpstreamAccountStatus(response, statusTestRequest(test.body))
 			if response.Code != test.wantStatus || strings.Contains(response.Body.String(), "sensitive-canary") {
@@ -127,9 +127,9 @@ func TestUpstreamStatusSuccessSurvivesAuditDatabaseFailure(t *testing.T) {
 	}}})
 	defer db.Close()
 	base, _ := url.Parse("http://sidecar.internal")
-	server := &Server{store: store.New(db), upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	server := &Server{store: store.New(db), upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available"}`))}, nil
-	})})}
+	})}))}
 	response := httptest.NewRecorder()
 	server.setUpstreamAccountStatus(response, statusTestRequest(`{"enabled":true}`))
 	if response.Code != 200 || !strings.Contains(response.Body.String(), `"status":"available"`) {
@@ -140,9 +140,9 @@ func TestUpstreamStatusSuccessSurvivesAuditDatabaseFailure(t *testing.T) {
 func TestUpstreamStatusRejectsLegacyConfirmationWithoutSourceStates(t *testing.T) {
 	repository, _ := newUpstreamAuditStore(t)
 	base, _ := url.Parse("http://sidecar.internal")
-	server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	server := &Server{store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"available"}`))}, nil
-	})})}
+	})}))}
 	response := httptest.NewRecorder()
 	server.setUpstreamAccountStatus(response, statusTestRequest(`{"enabled":true}`))
 	if response.Code != http.StatusBadGateway || !strings.Contains(response.Body.String(), "sidecar_account_status_protocol_error") {
@@ -230,7 +230,7 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 			defer db.Close()
 			var controls atomic.Int32
 			base, _ := url.Parse("http://sidecar.internal")
-			server := &Server{store: store.New(db), upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			server := &Server{store: store.New(db), upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 				body := `{"accounts":[]}`
 				if r.Method == http.MethodPut {
 					controls.Add(1)
@@ -239,7 +239,7 @@ func TestUpstreamAccountsManageabilityAndStatusSerialization(t *testing.T) {
 					body = `{"accounts":[{"id":"0123456789abcdef","masked_email":"u***@example.com","plan":"plus","status":"available","cliproxy_status":"active","gateway_manual_status":"enabled","gateway_quota_status":"available","last_synced_at":"2026-09-01T00:00:00Z"}]}`
 				}
 				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
-			})})}
+			})}))}
 			listResponse, statusResponse := httptest.NewRecorder(), httptest.NewRecorder()
 			listDone, statusDone := make(chan struct{}), make(chan struct{})
 			go func() {
@@ -279,7 +279,7 @@ func TestUpstreamStatusSerializesConcurrentOperations(t *testing.T) {
 	firstStarted, releaseFirst := make(chan struct{}), make(chan struct{})
 	var calls atomic.Int32
 	base, _ := url.Parse("http://sidecar.internal")
-	server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+	server := &Server{store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if calls.Add(1) == 1 {
 			close(firstStarted)
 			<-releaseFirst
@@ -292,7 +292,7 @@ func TestUpstreamStatusSerializesConcurrentOperations(t *testing.T) {
 			manualStatus = "enabled"
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"0123456789abcdef","status":"` + status + `","cliproxy_status":"active","gateway_manual_status":"` + manualStatus + `","gateway_quota_status":"available"}`))}, nil
-	})})}
+	})}))}
 	firstDone, secondDone := make(chan struct{}), make(chan struct{})
 	firstResponse, secondResponse := httptest.NewRecorder(), httptest.NewRecorder()
 	go func() {

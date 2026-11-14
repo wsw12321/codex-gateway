@@ -53,7 +53,7 @@ func TestModelIdentificationProbeThroughCPA(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				identity = r.Header.Get(gatewayUserHeader)
 				if r.URL.Path != "/v1/responses" || r.Header.Get("Authorization") != "Bearer data-plane" ||
-					!affinityScopePattern.MatchString(r.Header.Get(affinityHeader)) || r.Header.Get(diagnosticRunHeader) != "" {
+					!affinityScopePattern.MatchString(r.Header.Get(affinityHeader)) {
 					t.Errorf("not an ordinary pinned request: %s %v", r.URL.Path, r.Header)
 				}
 				if pinned, ok := ledger.ProbeAccount(identity); !ok || pinned != account || identity == "6b4ec2a8-3d1f-4a9e-9c6f-2f1e0d9c8b7a" {
@@ -79,9 +79,8 @@ func TestModelIdentificationProbeThroughCPA(t *testing.T) {
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			client = NewWithHTTPClient(base, "data-plane", server.Client())
+			client = withManagement(NewWithHTTPClient(base, "data-plane", server.Client()))
 			client.UseAllocationLedger(ledger)
-			client.UsePluginManagement("management")
 			text, err := client.ProbeModelIdentification(context.Background(), ModelIdentificationProbe{
 				RunID: "11111111-1111-4111-8111-111111111111", UserID: "6b4ec2a8-3d1f-4a9e-9c6f-2f1e0d9c8b7a",
 				AccountID: account, Model: "gpt-6", Prompt: "which model are you?", ProbeIndex: 1,
@@ -97,31 +96,6 @@ func TestModelIdentificationProbeThroughCPA(t *testing.T) {
 				t.Fatal("the probe identity outlived the probe")
 			}
 		})
-	}
-}
-
-func TestModelIdentificationCapabilityFollowsTheIntegration(t *testing.T) {
-	var protocol string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v0/management/gateway/model-identification/capabilities" || r.Header.Get("Authorization") != "Bearer management" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"protocol": protocol})
-	}))
-	defer server.Close()
-	base, _ := url.Parse(server.URL)
-	client := NewWithHTTPClient(base, "data-plane", server.Client())
-	client.UseAllocationLedger(NewAllocationLedger())
-	client.UsePluginManagement("management")
-	protocol = ModelIdentificationCPAProtocol
-	if err := client.RequireModelIdentificationCapability(context.Background()); err != nil {
-		t.Fatalf("the plugin's protocol was refused: %v", err)
-	}
-	protocol = ModelIdentificationProtocol
-	if err := client.RequireModelIdentificationCapability(context.Background()); err == nil {
-		t.Fatal("the source-patched protocol was accepted in plugin mode")
 	}
 }
 

@@ -18,7 +18,6 @@ __pycache__
 node_modules
 *.py[cod]
 /gateway
-/antigravity-bridge
 /upload-test*.bin
 /deployment-images*.json
 /deployment-images-*

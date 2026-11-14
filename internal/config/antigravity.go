@@ -5,14 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
 const (
 	// The default is a native CPA ID. Reasoning settings belong in the request.
-	AntigravityPublicModel       = "gemini-3.8-flash-high"
-	LegacyAntigravityPublicModel = "gemini-3.1-pro-high"
-	AntigravityCLIModel          = AntigravityPublicModel
+	AntigravityPublicModel = "gemini-3.8-flash-high"
+	AntigravityCLIModel    = AntigravityPublicModel
 )
 
 // AntigravityModels returns the reviewed native CPA catalog. Returning a fresh
@@ -23,26 +23,6 @@ func AntigravityModels() []string {
 		"gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
 		"gemini-4-argon-high",
 	}
-}
-
-// LegacyAntigravityModels is exclusively for the controlled legacy bridge
-// rollback transport. These IDs must never extend the native CPA allowlist.
-func LegacyAntigravityModels() []string {
-	return []string{
-		"gemini-3.1-pro-high",
-		"gemini-3.6-flash-high", "gemini-3.6-flash-medium",
-		"gemini-3.7-flash-high", "gemini-3.7-flash-medium",
-		"gemini-3.8-flash-high", "gemini-3.8-flash-medium",
-	}
-}
-
-func IsLegacyAntigravityModel(model string) bool {
-	for _, legacy := range LegacyAntigravityModels() {
-		if model == legacy {
-			return true
-		}
-	}
-	return false
 }
 
 // RetiredAntigravityModels retains names only for configuration migration and
@@ -134,65 +114,39 @@ func validRouteModel(model string) bool {
 	return true
 }
 
-func (c Config) UsesCPAAntigravity() bool { return c.AntigravityTransport == "cpa" }
-
-// UsesCPAPlugin reports whether CPA runs unmodified with the Gateway plugin.
-func (c Config) UsesCPAPlugin() bool { return c.CPAIntegration == "plugin" }
+// rejectRetiredIntegrations refuses a deployment that still selects the
+// source-patched CPA image or the Antigravity bridge. Both were removed;
+// ignoring the setting would run the plugin contract against an image that
+// does not speak it, or silently move bridge traffic to CPA accounts.
+func rejectRetiredIntegrations() error {
+	if integration := strings.TrimSpace(os.Getenv("CPA_INTEGRATION")); integration != "" && integration != "plugin" {
+		return errors.New("CPA_INTEGRATION only supports plugin; the source-patched CPA image was removed")
+	}
+	if transport := strings.TrimSpace(os.Getenv("ANTIGRAVITY_TRANSPORT")); transport != "" && transport != "cpa" {
+		return errors.New("ANTIGRAVITY_TRANSPORT only supports cpa; the legacy bridge was removed")
+	}
+	for _, name := range []string{"ANTIGRAVITY_BRIDGE_URL", "ANTIGRAVITY_BRIDGE_API_KEY", "ANTIGRAVITY_BRIDGE_API_KEY_FILE"} {
+		if strings.TrimSpace(os.Getenv(name)) != "" {
+			return fmt.Errorf("%s is no longer supported; the legacy Antigravity bridge was removed", name)
+		}
+	}
+	return nil
+}
 
 func (c Config) validateAntigravity() error {
-	if c.CPAIntegration != "" && c.CPAIntegration != "patch" && c.CPAIntegration != "plugin" {
-		return errors.New("CPA_INTEGRATION must be patch or plugin")
-	}
-	if c.AntigravityTransport != "" && c.AntigravityTransport != "cpa" && c.AntigravityTransport != "legacy-bridge" {
-		return errors.New("ANTIGRAVITY_TRANSPORT must be cpa or legacy-bridge")
-	}
-	// The plugin allocates every provider inside one CPA process; the legacy
-	// bridge is a separate service with its own allocation callbacks.
-	if c.UsesCPAPlugin() && !c.UsesCPAAntigravity() {
-		return errors.New("CPA_INTEGRATION=plugin requires ANTIGRAVITY_TRANSPORT=cpa")
-	}
-	// The plugin's account routes are served behind CPA's management key.
-	if c.UsesCPAPlugin() && c.CPAManagementToken == "" {
-		return errors.New("CPA_INTEGRATION=plugin requires CPA_MANAGEMENT_KEY")
-	}
-	if c.CPAManagementToken != "" && (len(c.CPAManagementToken) < minSecretBytes || c.CPAManagementToken == c.SidecarToken) {
-		return errors.New("CPA_MANAGEMENT_KEY must contain at least 32 bytes and differ from SIDECAR_API_KEY")
+	// The plugin's account routes are served behind CPA's management key, which
+	// must never be the key that travels with every generation request.
+	if len(c.CPAManagementToken) < minSecretBytes || c.CPAManagementToken == c.SidecarToken {
+		return errors.New("CPA_MANAGEMENT_KEY is required, must contain at least 32 bytes and differ from SIDECAR_API_KEY")
 	}
 	for model := range c.UsagePricing.Models {
-		if strings.HasPrefix(model, "gemini-") && !IsAntigravityModel(model) && (c.UsesCPAAntigravity() || !IsLegacyAntigravityModel(model)) {
+		if strings.HasPrefix(model, "gemini-") && !IsAntigravityModel(model) {
 			return fmt.Errorf("ANTIGRAVITY pricing catalog contains unsupported model %q; use the reviewed AGY model IDs", model)
 		}
 	}
-	if c.UsesCPAAntigravity() {
-		if c.AntigravityBridgeURL != nil || c.AntigravityBridgeToken != "" {
-			return errors.New("ANTIGRAVITY_TRANSPORT=cpa cannot configure legacy bridge credentials or URL")
-		}
-		for public, native := range c.AntigravityModelRoutes {
-			if !IsAntigravityModel(public) || public != native {
-				return errors.New("ANTIGRAVITY_MODEL_ROUTES_JSON requires reviewed CPA native IDs mapped to themselves")
-			}
-		}
-		return nil
-	}
-	if c.AntigravityBridgeURL == nil {
-		if len(c.AntigravityModelRoutes) > 0 {
-			return errors.New("ANTIGRAVITY_BRIDGE_URL is required when model routes are configured")
-		}
-		return nil
-	}
-	u := c.AntigravityBridgeURL
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("ANTIGRAVITY_BRIDGE_URL must use http or https without credentials, query, or fragment")
-	}
-	if len(c.AntigravityBridgeToken) < minSecretBytes {
-		return errors.New("ANTIGRAVITY_BRIDGE_API_KEY must contain at least 32 bytes when the bridge URL is configured")
-	}
-	if c.AntigravityBridgeToken == c.SidecarToken {
-		return errors.New("ANTIGRAVITY_BRIDGE_API_KEY must differ from SIDECAR_API_KEY")
-	}
-	for public, cli := range c.AntigravityModelRoutes {
-		if !IsLegacyAntigravityModel(public) || public != cli {
-			return errors.New("ANTIGRAVITY_MODEL_ROUTES_JSON only supports reviewed AGY model IDs mapped to themselves")
+	for public, native := range c.AntigravityModelRoutes {
+		if !IsAntigravityModel(public) || public != native {
+			return errors.New("ANTIGRAVITY_MODEL_ROUTES_JSON requires reviewed CPA native IDs mapped to themselves")
 		}
 	}
 	return nil

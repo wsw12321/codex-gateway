@@ -263,11 +263,11 @@ func TestUpstreamAccountsFallsBackToDurableLocalSummary(t *testing.T) {
 	baseURL, _ := url.Parse("http://sidecar.internal")
 	server := &Server{
 		store: store.New(db),
-		upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", &http.Client{
+		upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", &http.Client{
 			Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 				return nil, errors.New("sidecar offline")
 			}),
-		}),
+		})),
 	}
 	response := httptest.NewRecorder()
 	server.upstreamAccountsJSON(response, httptest.NewRequest(http.MethodGet, "/admin/upstream-accounts", nil))
@@ -319,9 +319,9 @@ func TestUpstreamAllocationWindowIsIndependentOfHistoryFilter(t *testing.T) {
 	}}})
 	t.Cleanup(func() { _ = db.Close() })
 	baseURL, _ := url.Parse("http://sidecar.internal")
-	server := &Server{store: store.New(db), upstream: gatewayproxy.NewWithHTTPClient(baseURL, "test", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+	server := &Server{store: store.New(db), upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "test", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("sidecar offline")
-	})})}
+	})}))}
 	query := url.Values{"from": {now.Add(-48 * time.Hour).Format(time.RFC3339)}, "until": {historicalUntil.Format(time.RFC3339)}}
 	w := httptest.NewRecorder()
 	server.upstreamAccountsJSON(w, httptest.NewRequest(http.MethodGet, "/admin/upstream-accounts?"+query.Encode(), nil))
@@ -361,7 +361,7 @@ func TestUpstreamQuotaMapsReauthenticationAndTimeouts(t *testing.T) {
 			repository, capture := newUpstreamAuditStore(t)
 			server := &Server{
 				store:    repository,
-				upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", &http.Client{Transport: test.transport}),
+				upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", &http.Client{Transport: test.transport})),
 				quotas:   newUpstreamQuotaLimiter(),
 			}
 			response := httptest.NewRecorder()
@@ -429,7 +429,7 @@ func TestUpstreamQuotaPreservesSidecarErrorClassification(t *testing.T) {
 					Header: http.Header{"Content-Type": {"application/json"}},
 				}, nil
 			})}
-			server := &Server{store: repository, upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", client)}
+			server := &Server{store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", client))}
 			response := httptest.NewRecorder()
 			server.upstreamAccountQuota(response, quotaTestRequest("0123456789abcdef"))
 			var payload struct {
@@ -524,7 +524,7 @@ func TestUpstreamQuotaErrorAndAuditAreSanitized(t *testing.T) {
 	upstreamCalls := 0
 	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls++
-		if r.URL.Path != "/internal/upstream-accounts/0123456789abcdef/quota" {
+		if r.URL.Path != pluginPath("upstream-accounts/quota") {
 			t.Errorf("path = %q", r.URL.Path)
 		}
 		w.Header().Set("Retry-After", "7")
@@ -536,7 +536,7 @@ func TestUpstreamQuotaErrorAndAuditAreSanitized(t *testing.T) {
 	repository, capture := newUpstreamAuditStore(t)
 	baseURL, _ := url.Parse(sidecar.URL)
 	server := &Server{
-		store: repository, upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client()),
+		store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client())),
 		quotas: newUpstreamQuotaLimiter(),
 	}
 	request := quotaTestRequest("0123456789abcdef")
@@ -575,7 +575,7 @@ func TestUpstreamQuotaResponseAndSuccessAuditContainOnlyNormalizedFields(t *test
 	repository, capture := newUpstreamAuditStore(t)
 	baseURL, _ := url.Parse(sidecar.URL)
 	server := &Server{
-		store: repository, upstream: gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client()),
+		store: repository, upstream: withManagement(gatewayproxy.NewWithHTTPClient(baseURL, "sidecar-secret", sidecar.Client())),
 		quotas: newUpstreamQuotaLimiter(),
 	}
 	response := httptest.NewRecorder()

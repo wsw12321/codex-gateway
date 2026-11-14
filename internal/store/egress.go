@@ -408,12 +408,6 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 	return result, err
 }
 
-func (s *Store) HasProviderEgressBinding(ctx context.Context, provider string) (bool, error) {
-	var bound bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_account_egress b JOIN upstream_accounts a ON a.id=b.account_id WHERE a.provider=$1 AND b.node_id IS NOT NULL)`, provider).Scan(&bound)
-	return bound, mapDBError("check legacy account egress", err)
-}
-
 func (s *Store) EgressSnapshot(ctx context.Context) (EgressState, error) {
 	result := EgressState{Nodes: []EgressServer{}, Bindings: []EgressBinding{}, Registrations: []EgressRegistration{}}
 	err := s.withTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true}, func(tx *sql.Tx) error {

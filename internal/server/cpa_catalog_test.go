@@ -48,7 +48,6 @@ func TestCPAV830CatalogIntersectsPricingPermissionsKeyAndUpstream(t *testing.T) 
 			}
 			s := newModelAccessHandlerServer(repository)
 			s.config.UsagePricing = pricing
-			s.config.AntigravityTransport = "cpa"
 			if !tc.noRoute {
 				s.config.AntigravityModelRoutes = map[string]string{argon: argon}
 			}
@@ -72,7 +71,7 @@ func TestCPAV830CatalogIntersectsPricingPermissionsKeyAndUpstream(t *testing.T) 
 			}))
 			defer upstream.Close()
 			base, _ := url.Parse(upstream.URL)
-			client := gatewayproxy.NewWithHTTPClient(base, "internal-test", upstream.Client())
+			client := withManagement(gatewayproxy.NewWithHTTPClient(base, "internal-test", upstream.Client()))
 			w := httptest.NewRecorder()
 			_, failure := client.ForwardModelsWithOptions(context.Background(), w,
 				httptest.NewRequest(http.MethodGet, "/v1/models", nil), allowed, gatewayproxy.ForwardOptions{})
@@ -102,7 +101,6 @@ func TestCPAV830RemovedModelsRejectBeforeAdmission(t *testing.T) {
 		for _, native := range []bool{false, true} {
 			t.Run(model+map[bool]string{false: "/responses", true: "/native"}[native], func(t *testing.T) {
 				h := newResponsesWebSocketTestHarness(t)
-				h.server.config.AntigravityTransport = "cpa"
 				h.server.config.BodyLimit = 64 << 20
 				h.server.config.UsagePricing = nativeGeminiPricing(t)
 				h.server.config.AntigravityModelRoutes = map[string]string{config.AntigravityPublicModel: config.AntigravityPublicModel}

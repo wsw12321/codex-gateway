@@ -1,5 +1,11 @@
 # 通过 Antigravity 订阅接入 Gemini
 
+> **历史记录。** 本页描述旧 Antigravity 桥接时期的流程。旧桥接、凭证迁移工具与源码补丁镜像已于
+> 2026-11-13 删除（[路线图第 8 步](cpa-plugin-roadmap.md#8-改为默认并清理)）：Antigravity 由 CPA
+> 在同一进程中提供，账号在“CPA 授权管理”页面授权，文中的桥接、`legacy-bridge` profile、
+> 命令行登录与回滚步骤都已不可用。当前流程见[兼容层升级规程](compatibility-upgrades.md)和
+> [运维手册](operations.md#cpa-插件镜像的升级与回退)。
+
 当前默认链路为客户端 → Gateway → CPA v8.0.59 → Antigravity。Gateway 管理模型和账号权限、并发、
 配额与账单，CPA 管理 OAuth、供应商协议和刷新。`antigravity-bridge` 仅用于受控 legacy 回滚，
 不会随默认部署启动。当前升级步骤见 [CPA 切换与回滚](cpa-v8-cutover.md)。

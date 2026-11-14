@@ -41,7 +41,6 @@ egress_prepare() {
     unset egress_raw_settings
     egress_mode=$(printf '%s' "$egress_settings" | jq -r '.mode')
     egress_oidc_enabled=$(printf '%s' "$egress_settings" | jq -r '.oidc_enabled')
-    egress_cpa_integration=$(printf '%s' "$egress_settings" | jq -r '.cpa_integration')
 }
 
 egress_compose() {
@@ -52,11 +51,6 @@ egress_compose() {
     fi
     if test "$egress_mode" = shadowsocks; then
         set -- -f "$egress_root/deploy/shadowsocks.override.yml" "$@"
-    fi
-    # CPA_INTEGRATION=patch rolls CPA and the Gateway back to the
-    # source-patched image together, for every command of the deployment.
-    if test "$egress_cpa_integration" = patch; then
-        set -- -f "$egress_root/deploy/patch-cpa.override.yml" "$@"
     fi
     docker compose \
         --project-name codex-gateway --project-directory "$egress_root" \

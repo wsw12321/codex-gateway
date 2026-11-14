@@ -64,7 +64,7 @@ func TestGeminiResponsesPreservesFunctionRoundTrip(t *testing.T) {
 			}))
 			defer upstream.Close()
 			base, _ := url.Parse(upstream.URL)
-			client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
+			client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
 
 			for index, body := range requests {
 				request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(body))
@@ -125,7 +125,7 @@ func TestGeminiUpstreamRateLimitDoesNotReportUsage(t *testing.T) {
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","input":[]}`))
 	response := httptest.NewRecorder()
 	result, failure := client.Forward(context.Background(), response, request, "/v1/responses")
@@ -150,7 +150,7 @@ func TestGeminiSSEClientCancellationStopsUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 	base, _ := url.Parse(upstream.URL)
-	client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(`{"model":"gemini-3.1-pro-high","stream":true,"input":[]}`))

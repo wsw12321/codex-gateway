@@ -831,6 +831,9 @@ oauth-excluded-models:
     - "claude-*"
     - "gpt-*"
     - "gemini-3.1-flash-image"
+    - "gemini-3.8-flash-tiered"
+    - "gemini-4-carbon-high"
+    - "gemini-4-hydrogen-xhigh"
 response-compression:
   enabled: false
 plugins:

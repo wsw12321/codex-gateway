@@ -2,9 +2,9 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +14,16 @@ import (
 	"testing/synctest"
 	"time"
 )
+
+type identificationTransportFunc func(*http.Request) (*http.Response, error)
+
+func (fn identificationTransportFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
+}
+
+func identificationInternalResponse(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}
+}
 
 func diagnosticTestProbe() ModelIdentificationProbe {
 	return ModelIdentificationProbe{
@@ -31,38 +41,53 @@ func assertDiagnosticCode(t *testing.T, err error, want string) *ModelIdentifica
 	return diagnostic
 }
 
-func TestModelIdentificationDirectProtocolAndTrustedMetadata(t *testing.T) {
+// diagnosticClient builds a client the way the server does: with CPA's
+// management key and an allocation ledger.
+func diagnosticClient(httpClient *http.Client) (*Client, *AllocationLedger) {
+	ledger := NewAllocationLedger()
+	client := withManagement(NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "internal-secret", httpClient))
+	client.UseAllocationLedger(ledger)
+	return client, ledger
+}
+
+const diagnosticCompleted = `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":" 17, 82 \n"}]}]}`
+
+// The capability and the model list are plugin routes behind the management
+// key; the probe itself is an ordinary request with the data-plane key.
+func TestModelIdentificationRoutesKeysAndDeadline(t *testing.T) {
 	probe := diagnosticTestProbe()
 	var calls []string
-	client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "internal-secret", &http.Client{
+	var ledger *AllocationLedger
+	client, ledger := diagnosticClient(&http.Client{
 		Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
-			calls = append(calls, r.Method+" "+r.URL.Path)
-			if r.Header.Get("Authorization") != "Bearer internal-secret" || r.Header.Get("Cache-Control") != "no-store" {
-				t.Error("missing trusted internal authentication")
+			calls = append(calls, r.Method+" "+r.URL.RequestURI())
+			if r.Header.Get("Cache-Control") != "no-store" {
+				t.Error("diagnostic request may be cached")
 			}
-			switch r.URL.Path {
-			case modelIdentificationPath + "/capabilities":
-				return identificationInternalResponse(200, `{"protocol":"model_identification_direct_v1"}`), nil
-			case modelIdentificationPath + "/accounts/" + probe.AccountID + "/models":
+			management := r.Header.Get("Authorization") == "Bearer "+testManagementKey
+			switch r.URL.RequestURI() {
+			case pluginPath("model-identification/capabilities"):
+				if !management {
+					t.Error("capability route without the management key")
+				}
+				return identificationInternalResponse(200, `{"protocol":"model_identification_cpa_v1"}`), nil
+			case pluginPath("model-identification/accounts/models") + "?id=" + probe.AccountID:
+				if !management {
+					t.Error("model route without the management key")
+				}
 				return identificationInternalResponse(200, `{"account_id":"`+probe.AccountID+`","models":["gpt-6-sol","unpriced-model"]}`), nil
-			case modelIdentificationPath + "/accounts/" + probe.AccountID + "/probe":
-				if r.Header.Get(gatewayUserHeader) != probe.UserID || r.Header.Get(diagnosticRunHeader) != probe.RunID || r.Header.Get(diagnosticProbeHeader) != "1" {
-					t.Error("untrusted diagnostic identity")
-				}
-				var body map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-					t.Fatal(err)
-				}
-				if len(body) != 3 || body["model"] != probe.Model || body["input"] != probe.Prompt || body["max_output_tokens"] != float64(16384) {
-					t.Error("unexpected probe body")
+			case "/v1/responses":
+				if r.Header.Get("Authorization") != "Bearer internal-secret" {
+					t.Error("the probe must use the data-plane key")
 				}
 				deadline, ok := r.Context().Deadline()
 				if !ok || time.Until(deadline) > ModelIdentificationProbeTimeout || time.Until(deadline) < 180*time.Second {
 					t.Error("incorrect diagnostic deadline")
 				}
-				return identificationInternalResponse(200, `{"account_id":"`+probe.AccountID+`","output_text":" 17, 82 \n"}`), nil
+				reportAllocation(t, ledger, "codex", r, probe.AccountID, "")
+				return identificationInternalResponse(200, diagnosticCompleted), nil
 			default:
-				t.Errorf("unexpected ordinary-routing endpoint %q", r.URL.Path)
+				t.Errorf("unexpected request %q", r.URL.RequestURI())
 				return identificationInternalResponse(404, `{}`), nil
 			}
 		}),
@@ -89,15 +114,18 @@ func TestModelIdentificationCapabilityFailsClosed(t *testing.T) {
 		{"old version", `{"protocol":"old"}`, 200, "protocol_unsupported"},
 		{"no route", `not found`, 404, "protocol_unsupported"},
 		{"ordinary capability", `{"protocol":"upstream_account_access_v1"}`, 200, "protocol_unsupported"},
-		{"duplicate", `{"protocol":"old","protocol":"model_identification_direct_v1"}`, 200, "probe_invalid_response"},
-		{"extra", `{"protocol":"model_identification_direct_v1","secret":"do not log"}`, 200, "probe_invalid_response"},
+		// The removed source-patched image's protocol sent probes down a
+		// path of its own; it is not this one.
+		{"source-patched protocol", `{"protocol":"model_identification_direct_v1"}`, 200, "protocol_unsupported"},
+		{"duplicate", `{"protocol":"old","protocol":"model_identification_cpa_v1"}`, 200, "probe_invalid_response"},
+		{"extra", `{"protocol":"model_identification_cpa_v1","secret":"do not log"}`, 200, "probe_invalid_response"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
-			client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
+			client, _ := diagnosticClient(&http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.URL.Path != modelIdentificationPath+"/capabilities" {
-					t.Error("fell back to legacy probe")
+				if r.URL.Path != pluginPath("model-identification/capabilities") {
+					t.Error("fell back to another route")
 				}
 				return identificationInternalResponse(tc.status, tc.body), nil
 			})})
@@ -107,6 +135,25 @@ func TestModelIdentificationCapabilityFailsClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Without the management key there is no route to ask, and without a ledger
+// nothing pins a probe to its account: both refuse before any request.
+func TestModelIdentificationRequiresManagementKeyAndLedger(t *testing.T) {
+	transport := identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("unexpected request %s", r.URL.Path)
+		return nil, errors.New("unexpected")
+	})
+	base := &url.URL{Scheme: "http", Host: "sidecar.test"}
+	unkeyed := NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: transport})
+	unkeyed.UseAllocationLedger(NewAllocationLedger())
+	assertDiagnosticCode(t, unkeyed.RequireModelIdentificationCapability(context.Background()), "probe_unavailable")
+	_, err := unkeyed.ListModelIdentificationModels(context.Background(), diagnosticTestProbe().AccountID)
+	assertDiagnosticCode(t, err, "probe_unavailable")
+
+	unpinned := withManagement(NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: transport}))
+	_, err = unpinned.ProbeModelIdentification(context.Background(), diagnosticTestProbe())
+	assertDiagnosticCode(t, err, "probe_unavailable")
 }
 
 func TestModelIdentificationErrorEnvelopeIsBoundedAndSafe(t *testing.T) {
@@ -140,7 +187,7 @@ func TestModelIdentificationErrorEnvelopeIsBoundedAndSafe(t *testing.T) {
 }
 
 func TestModelIdentificationRejectsInvalidSelectionsWithoutDispatch(t *testing.T) {
-	client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(*http.Request) (*http.Response, error) {
+	client, _ := diagnosticClient(&http.Client{Transport: identificationTransportFunc(func(*http.Request) (*http.Response, error) {
 		t.Error("invalid selection dispatched")
 		return nil, errors.New("unexpected")
 	})})
@@ -157,26 +204,8 @@ func TestModelIdentificationRejectsInvalidSelectionsWithoutDispatch(t *testing.T
 	}
 }
 
-func TestModelIdentificationRejectsMalformedSuccess(t *testing.T) {
-	probe := diagnosticTestProbe()
-	for _, tc := range []struct{ name, body, want string }{
-		{"wrong account", `{"account_id":"ffffffffffffffff","output_text":"answer"}`, "probe_account_mismatch"},
-		{"empty", `{"account_id":"` + probe.AccountID + `","output_text":" \n"}`, "probe_empty_output"},
-		{"large", `{"account_id":"` + probe.AccountID + `","output_text":"` + strings.Repeat("x", (16<<10)+1) + `"}`, "probe_output_too_large"},
-		{"trailing", `{"account_id":"` + probe.AccountID + `","output_text":"answer"} {}`, "probe_invalid_response"},
-		{"unexpected field", `{"account_id":"` + probe.AccountID + `","output_text":"answer","debug":"secret"}`, "probe_invalid_response"},
-		{"invalid UTF-8", "{\"account_id\":\"" + probe.AccountID + "\",\"output_text\":\"\xff\"}", "probe_invalid_response"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(*http.Request) (*http.Response, error) { return identificationInternalResponse(200, tc.body), nil })})
-			_, err := client.ProbeModelIdentification(context.Background(), probe)
-			assertDiagnosticCode(t, err, tc.want)
-		})
-	}
-}
-
 func TestModelIdentificationWaitsBeyondOrdinaryHeaderTimeout(t *testing.T) {
-	client := New(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key")
+	client := withManagement(New(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key"))
 	ordinary := client.http.Transport.(*http.Transport)
 	diagnostic := client.diagnosticHTTP.Transport.(*http.Transport)
 	if ordinary == diagnostic || ordinary.ResponseHeaderTimeout != 90*time.Second || diagnostic.ResponseHeaderTimeout != 0 {
@@ -184,10 +213,12 @@ func TestModelIdentificationWaitsBeyondOrdinaryHeaderTimeout(t *testing.T) {
 	}
 	synctest.Test(t, func(t *testing.T) {
 		probe := diagnosticTestProbe()
-		client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Timeout: 90 * time.Second, Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
+		var ledger *AllocationLedger
+		client, ledger := diagnosticClient(&http.Client{Timeout: 90 * time.Second, Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
 			select {
 			case <-time.After(91 * time.Second):
-				return identificationInternalResponse(200, `{"account_id":"`+probe.AccountID+`","output_text":"answer"}`), nil
+				reportAllocation(t, ledger, "codex", r, probe.AccountID, "")
+				return identificationInternalResponse(200, diagnosticCompleted), nil
 			case <-r.Context().Done():
 				return nil, r.Context().Err()
 			}
@@ -204,7 +235,7 @@ func TestModelIdentificationDeadlineAndCancellation(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
+				client, _ := diagnosticClient(&http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
 					if cancelEarly {
 						cancel()
 					}
@@ -236,21 +267,25 @@ func TestModelIdentificationNeverFollowsRedirectsOrForwardsUntrustedHeaders(t *t
 	}))
 	defer sidecar.Close()
 	base, _ := url.Parse(sidecar.URL)
-	client := NewWithHTTPClient(base, "secret", &http.Client{})
+	client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{}))
+	client.UseAllocationLedger(NewAllocationLedger())
 	_, err := client.ProbeModelIdentification(context.Background(), diagnosticTestProbe())
-	assertDiagnosticCode(t, err, "probe_unavailable")
+	assertDiagnosticCode(t, err, "probe_upstream_rejected")
+	assertDiagnosticCode(t, client.RequireModelIdentificationCapability(context.Background()), "probe_unavailable")
 	if downstream.Load() != 0 {
 		t.Fatal("leaked diagnostic credentials through redirect")
 	}
+	// An ordinary caller can supply neither a dispatch token nor an identity,
+	// so it cannot make its request look like a pinned probe.
 	out := make(http.Header)
-	client.copyAllowedHeaders(out, http.Header{diagnosticRunHeader: {"forged"}, diagnosticProbeHeader: {"1"}})
-	if out.Get(diagnosticRunHeader) != "" || out.Get(diagnosticProbeHeader) != "" {
-		t.Fatal("ordinary callers can inject diagnostic metadata")
+	client.copyAllowedHeaders(out, http.Header{dispatchHeader: {strings.Repeat("A", 43)}, gatewayUserHeader: {"00000000-0000-0000-0000-000000000009"}})
+	if out.Get(dispatchHeader) != "" || out.Get(gatewayUserHeader) != "" {
+		t.Fatal("ordinary callers can inject probe metadata")
 	}
 }
 
 func TestModelIdentificationNetworkErrorsNeverExposeRequestDetails(t *testing.T) {
-	client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("secret URL or credential") })})
+	client, _ := diagnosticClient(&http.Client{Transport: identificationTransportFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("secret URL or credential") })})
 	_, err := client.ProbeModelIdentification(context.Background(), diagnosticTestProbe())
 	assertDiagnosticCode(t, err, "probe_network_failed")
 	if strings.Contains(err.Error(), "secret") {
@@ -277,7 +312,7 @@ func TestModelIdentificationCancellationWhileReadingErrorBody(t *testing.T) {
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				var body *diagnosticBlockedBody
-				client := NewWithHTTPClient(&url.URL{Scheme: "http", Host: "sidecar.test"}, "key", &http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
+				client, _ := diagnosticClient(&http.Client{Transport: identificationTransportFunc(func(r *http.Request) (*http.Response, error) {
 					body = &diagnosticBlockedBody{ctx: r.Context()}
 					if cancelEarly {
 						cancel()

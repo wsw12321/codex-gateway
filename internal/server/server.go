@@ -127,11 +127,7 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 	s.oidcFlows = newOIDCFlowStore(maxOIDCFlows)
 	s.identificationContext, s.identificationCancel = context.WithCancel(context.Background())
 	s.anthropic = gatewayproxy.NewCPAAnthropic(cfg.SidecarURL, cfg.SidecarToken)
-	if cfg.UsesCPAAntigravity() {
-		s.antigravity = gatewayproxy.NewCPAAntigravity(cfg.SidecarURL, cfg.SidecarToken)
-	} else if cfg.AntigravityBridgeURL != nil {
-		s.antigravity = gatewayproxy.NewAntigravity(cfg.AntigravityBridgeURL, cfg.AntigravityBridgeToken)
-	}
+	s.antigravity = gatewayproxy.NewCPAAntigravity(cfg.SidecarURL, cfg.SidecarToken)
 	requireAccountEgress := cfg.EgressControlKey != ""
 	if !requireAccountEgress {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -148,18 +144,16 @@ func New(cfg config.Config, repository *store.Store, logger *slog.Logger) (*Serv
 			}
 		}
 	}
-	if cfg.UsesCPAPlugin() {
-		s.allocations = gatewayproxy.NewAllocationLedger()
-		for _, client := range []*gatewayproxy.Client{s.upstream, s.anthropic, s.antigravity} {
-			client.UseAllocationLedger(s.allocations)
-			client.UsePluginManagement(cfg.CPAManagementToken)
-		}
+	// CPA runs unmodified with the Gateway plugin: each dispatch is attributed
+	// through the ledger, and account routes sit behind CPA's management key.
+	s.allocations = gatewayproxy.NewAllocationLedger()
+	for _, client := range []*gatewayproxy.Client{s.upstream, s.anthropic, s.antigravity} {
+		client.UseAllocationLedger(s.allocations)
+		client.UsePluginManagement(cfg.CPAManagementToken)
 	}
 	s.upstream.RequireAccountEgress(requireAccountEgress)
 	s.anthropic.RequireAccountEgress(requireAccountEgress)
-	if cfg.UsesCPAAntigravity() {
-		s.antigravity.RequireAccountEgress(requireAccountEgress)
-	}
+	s.antigravity.RequireAccountEgress(requireAccountEgress)
 	s.routes()
 	return s, nil
 }

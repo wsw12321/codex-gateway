@@ -50,7 +50,7 @@ func attemptDispatch(t *testing.T, server *Server, provider string, groups []gat
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"model":"m","usage":{"input_tokens":1,"output_tokens":1}}`))}, nil
 	})
 	base, _ := url.Parse("http://compat.invalid")
-	client := gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})
+	client := withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}))
 	client.UseAllocationLedger(server.allocations)
 	incoming := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
 	result, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), incoming, "/v1/responses", gatewayproxy.ForwardOptions{UserID: attemptUser, Groups: groups})
@@ -156,16 +156,6 @@ func TestUpstreamAttemptRejectsReportsWithoutADispatch(t *testing.T) {
 	server.recordUpstreamAttempt(w, r)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("a query string was accepted: %d", w.Code)
-	}
-}
-
-func TestUpstreamAttemptUnsupportedWithPatchIntegration(t *testing.T) {
-	var queries []string
-	server := groupAllocationTestServer(t, store.UpstreamProviderCodex, "", "", &queries)
-	w := httptest.NewRecorder()
-	server.recordUpstreamAttempt(w, attemptRequest("/internal/upstream-accounts/attempt", attemptBody(map[string]string{"request_token": strings.Repeat("A", 43), "user_id": attemptUser, "account_id": attemptAccount})))
-	if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "upstream_attempt_unsupported") {
-		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
 }
 
