@@ -67,6 +67,8 @@ caller_scope = hex(sha256("cli-proxy-api:caller-scope:v1\0" + principal))
 | 7 | Claude 网页搜索结果 | `internal/cache/claude_web_search_result_cache.go`，键由 `claudeWebSearchResultCacheScope` 生成 | 凭证哈希、调用方哈希、会话键、`tool_use_id` | 是 | 是 | 否（默认关闭，部署未开启） |
 | 8 | Claude 兼容接口的思考重放 | `internal/cache/claude_thinking_replay_cache.go` | 凭证哈希、模型、调用方哈希、会话键 | 是 | 是 | 否（只用于 API Key 凭证） |
 | 9 | Antigravity Interactions 续接 | `internal/runtime/executor/helps/antigravity_interactions_state.go` | 调用方、凭证 ID、Provider、模型、会话身份的摘要 | 是 | 是 | 否（只用于 `antigravity*` 的 Interactions 模型） |
+| 10 | Claude Thread 的账号归属（v8.0.69 新增） | `sdk/cliproxy/session/claude_thread.go` | 调用方作用域的哈希、上游消息 ID 的哈希 → 凭证 ID | 是 | 值是账号 | 是（带 `thread.previous_message_id` 的 `/v1/messages`） |
+| 11 | Claude Thread 的 beta 画像（v8.0.69 新增） | `internal/runtime/executor/helps/claude_thread.go` | Provider、上游 URL、凭证身份、调用方作用域的哈希，加上游消息 ID | 是 | 是 | 是（同上） |
 
 说明：
 
@@ -81,6 +83,11 @@ caller_scope = hex(sha256("cli-proxy-api:caller-scope:v1\0" + principal))
   `/v1/messages` 只放行 `claude-*` 模型，Codex 的目录里没有这类模型。
 - Kimi、xAI、Devin、Meta 的缓存，Responses WebSocket 的工具输出缓存和视频任务的账号
   绑定，对应的 Provider 或端点在本部署中不存在，未列入。
+- 第 10 项让同一调用方的 Claude Thread 续接请求固定到上一轮成功的账号
+  （`withClaudeThreadAuth` 写入 `PinnedAuthMetadataKey`）。固定只把候选缩小到该账号，
+  `pickViaPluginScheduler` 仍然调用插件，插件仍向 Gateway 核对该用户对这个账号的权限和本次
+  请求的账号池；不允许时请求失败，不会换到别的账号，也不会绕过 Gateway 的分配。CPA 配置了
+  KV 存储时这两项会落盘，本部署没有配置。
 
 ### 只描述账号或连接的状态
 
@@ -210,3 +217,11 @@ Codex 与 Claude 两行经过实测（真实 CPA 进程，同一个上游账号�
    ```
 
 3. 查看上文三份报告在上游的状态，已修复的从缺口表中移除。
+
+### 升级记录
+
+- **v8.0.59 → v8.0.69（2026-11-13）。** 上面第 2 步的 `git grep` 从 178 处增加到 187 处。
+  新增的九处中七处是函数内的局部 map，两处是新的进程级状态，补入上表第 10、11 项，键都含
+  调用方作用域。第 2、3 项的重放缓存只改了存储格式并增加只读的 `Peek*`，键不变。缺口 1、2
+  涉及的 `trailing_signature.go` 与 `claude_executor_tool_state.go` 在这一版没有变化，三份
+  报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。

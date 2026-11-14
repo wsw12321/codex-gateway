@@ -80,9 +80,10 @@ Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行�
 
 Antigravity 账号只注册 Gateway 已审并定价的五个模型：`gemini-3-flash`、
 `gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`、`gemini-3.8-flash-high`、
-`gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT 和图像模型
-（v8.0.59 中另有六个），账号实际注册的是这份目录与 Google 为该账号返回的模型列表的交集。
-入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余部分：
+`gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT、图像模型以及尚未
+评审定价的 Gemini 模型（v8.0.69 中另有九个），账号实际注册的是这份目录与 Google 为该账号
+返回的模型列表的交集。入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余
+部分：
 
 ```yaml
 oauth-excluded-models:
@@ -90,7 +91,14 @@ oauth-excluded-models:
     - "claude-*"
     - "gpt-*"
     - "gemini-3.1-flash-image"
+    - "gemini-3.8-flash-tiered"
+    - "gemini-4-carbon-high"
+    - "gemini-4-hydrogen-xhigh"
 ```
+
+后三条在升级到 v8.0.69 时加入：这一版目录新增了 Gemini 3.8 Flash Tiered、Gemini 4 Carbon 与
+Gemini 4 Hydrogen。它们在评审并定价之前不注册；排除写成精确 ID，因为 `gemini-4-*` 会同时
+遮住已审的 `gemini-4-argon-high`。
 
 规则是排除列表，不是允许列表，所以由三处检查保证它与目录保持一致：
 
@@ -258,6 +266,10 @@ Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观
 第一版无法应用，因为上游把它修改的 `newRoutingSelector` 拆成了两个函数；把插入点移到
 两版都相同的 `switch` 之后即可，现在同一份补丁可以无 fuzz 地应用到 v8.0.59 和 v8.0.67。
 对比之下，源码补丁镜像在同一区间需要重基 127 个被修改的上游文件中改动过的那部分。
+
+2026-11-13 实际升级到 v8.0.69（上游 100 个提交、382 个文件）：残余补丁与插件源码都未改；
+`TestAntigravityModelCatalog` 按设计指出目录新增的三个 Antigravity 模型，把它们加入排除规则
+后全部端到端测试通过。过程见 [v8.0.69 验证记录](cpa-v8.0.69-validation.md)。
 
 ### 回退
 

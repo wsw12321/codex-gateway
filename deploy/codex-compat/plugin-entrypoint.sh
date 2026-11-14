@@ -114,13 +114,18 @@ auth-dir: "${auth_dir}"
 # An Antigravity account serves the five Gemini models the Gateway reviewed
 # and prices, and nothing else. CPA's catalog for the provider also names
 # Claude, GPT and image models; left registered, an Antigravity credential
-# would become a candidate for another provider's model. The rule is checked
-# against the catalog this binary embeds when the image is built.
+# would become a candidate for another provider's model. Gemini models CPA
+# added after the review (v8.0.69: Flash Tiered, Carbon, Hydrogen) stay out
+# until they are reviewed and priced. The rule is checked against the catalog
+# this binary embeds when the image is built.
 oauth-excluded-models:
   antigravity:
     - "claude-*"
     - "gpt-*"
     - "gemini-3.1-flash-image"
+    - "gemini-3.8-flash-tiered"
+    - "gemini-4-carbon-high"
+    - "gemini-4-hydrogen-xhigh"
 # The Gateway is the only client. Keep its internal SSE uncompressed so usage
 # and first-token timing are parsed from the stream as it is produced.
 response-compression:

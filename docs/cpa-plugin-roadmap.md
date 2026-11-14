@@ -26,9 +26,8 @@
 - 插件 `deploy/codex-compat/plugin/` 承担选号、身份隔离、会话绑定、并发名额、账号控制
   （启用/禁用、额度锁）、账号独立出口、归因上报。
 - 残余补丁 139 行，只新增 `routing.strategy: "plugin-only"`，同一份补丁可无 fuzz 应用到
-  v8.0.59 和 v8.0.67。
-- Gateway 的 `CPA_INTEGRATION=plugin`：请求账本归因、`/v0/management/gateway/*` 路由映射、
-  出口推送。
+  v8.0.59、v8.0.67 和当前固定的 v8.0.69。
+- Gateway：请求账本归因、`/v0/management/gateway/*` 账号路由、出口推送。
 - 插件模式是唯一的部署形态（第 8 步）：源码补丁镜像、旧 Antigravity 桥接、v7 回退镜像、
   凭证迁移工具、命令行登录脚本以及 `CPA_INTEGRATION`/`ANTIGRAVITY_TRANSPORT` 开关已删除，
   Gateway 只走插件的管理路由并只按请求账本归因。
@@ -279,6 +278,8 @@ Gateway 侧的推送重试改由插件的后台对账承担（启动后到确认
 4. 运行 `scripts/test-cpa-plugin-image.sh`，再做真实账号冒烟。
 
 2026-11-12 的 v8.0.67 演练中，第 3 步只需调整一次残余补丁的插入点，插件未改。
+2026-11-13 升级到 v8.0.69：残余补丁与插件源码都未改，只有 Antigravity 目录新增的三个模型
+需要加入排除规则（见[验证记录](cpa-v8.0.69-validation.md)）。
 
 ## 开放问题
 
