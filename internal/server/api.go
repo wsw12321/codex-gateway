@@ -141,7 +141,7 @@ func (s *Server) proxyCodex(w http.ResponseWriter, r *http.Request, upstreamPath
 			writeServiceTierNotSupported(w, r)
 			return
 		}
-		if s.config.UsesCPAAntigravity() && config.IsAntigravityModel(routing.Model) {
+		if config.IsAntigravityModel(routing.Model) {
 			data, readErr := io.ReadAll(io.LimitReader(parsedBody, (1<<20)+1))
 			_ = parsedBody.Close()
 			if readErr != nil || len(data) > 1<<20 {
@@ -267,9 +267,6 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	provider := store.UpstreamProviderCodex
 	if upstreams.IsAntigravityModel(model) {
 		provider = store.UpstreamProviderAntigravity
-		if !s.legacyEgressAllowed(w, r) {
-			return
-		}
 	}
 	if prepared.claude {
 		provider = store.UpstreamProviderAnthropic

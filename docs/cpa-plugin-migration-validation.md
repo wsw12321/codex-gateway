@@ -590,3 +590,73 @@ Antigravity 一组规则；规则不匹配任何已审模型，并覆盖固定�
   交集，所以真实列表不会让结果超出五个模型；在第 3 步的验收清单中确认模型列表。
 - 缓存键核对表中未标“实测”的项目来自阅读源码。缺口的利用条件没有做攻击性验证。
 - 三份上游报告尚未提交。
+
+## 路线图第 8 步第 2、3 项：删除补丁镜像与旧桥接
+
+日期 2026-11-13。应 Owner 要求，在真实账号验收（第 3 步）之前完成。此后只有一种 CPA 镜像，
+没有可切换的回退镜像。
+
+### 删除
+
+- 源码补丁镜像：`deploy/codex-compat/Dockerfile`、全部 `cliproxy-v8.0.*-gateway*.patch`
+  （含各阶段补丁）、`entrypoint.sh`、`healthcheck.sh`、`smoke.sh`、`legacy-credentials*.test.txt`、
+  `source.lock.json`、`deploy/patch-cpa.override.yml`、`scripts/test-sidecar-image.sh`。
+- v7 回退镜像：`legacy.Dockerfile`、`legacy-entrypoint.sh`、`cliproxy-v7.3.15-multi-account.patch`、
+  `deploy/legacy-cpa.override.yml`、`scripts/test-legacy-sidecar-image.sh`。
+- 旧 Antigravity 桥接：`cmd/antigravity-bridge`、`internal/antigravity`、`deploy/antigravity-bridge`、
+  `deploy/legacy-bridge.override.yml`、`scripts/antigravity-login.sh`、`scripts/test-antigravity-image.sh`；
+  Compose 中的 `antigravity-bridge` 服务、`antigravity_internal` 网络、`antigravity_keyring` 卷与
+  两个 secret；Squid A/B 中旧桥接的来源 ACL、目的地清单与日志格式；`THIRD_PARTY_NOTICES` 中
+  Antigravity CLI 与为桥接构建的 Expat 两节。
+- 只能与旧桥接配套的凭证迁移工具：`cmd/cpa-credentials-migrate`、`internal/cpamigrate`、
+  `deploy/cpa-migrate`、`scripts/test-cpa-migration-image.sh`。
+- 补丁镜像的命令行登录与冒烟脚本：`oauth-login.sh`、`codex-device-login.sh`、`claude-login.sh`、
+  `claude-login.py`、`smoke-sidecar.sh` 及其测试。插件镜像本就拒绝命令行登录。
+
+### Gateway 改动
+
+- 配置：删除 `CPAIntegration`、`AntigravityTransport`、`AntigravityBridgeURL/Token`；
+  `CPA_MANAGEMENT_KEY` 改为必填。环境中仍有 `CPA_INTEGRATION`（非 `plugin`）、
+  `ANTIGRAVITY_TRANSPORT`（非 `cpa`）或任何 `ANTIGRAVITY_BRIDGE_*` 时拒绝启动，避免运维人员
+  以为仍在使用旧链路。删除只为桥接存在的 `LegacyAntigravityModels`。
+- 账号接口：`/internal/*` 兼容路径与路径映射删除，账号、并发、额度、状态、出口同步和能力
+  探测一律走插件的 `/v0/management/gateway/<namespace>/*` 路由，只用管理密钥；没有管理密钥时
+  不发任何请求（`sidecar_unavailable`）。生成请求仍只用数据面密钥。
+- 归因：删除读取 `X-Codex-Upstream-Account`/`X-Codex-Conversation-Hash` 响应头的代码，
+  归因只来自请求账本；模型目录请求不再产生归因。账本对所有客户端始终启用，`attempt`
+  回调不再有“当前集成方式不接收”的分支。
+- 模型鉴定：删除补丁镜像的直连探针协议（`model_identification_direct_v1`）及
+  `ListUpstreamAccountModels`/`ProbeUpstreamAccount*`；没有账本时探针拒绝发出。顺带修正：
+  探针在读取错误响应体时被取消或超时，现在报告取消/超时而不是 HTTP 状态。
+- Antigravity：客户端只剩 CPA 原生一种；删除桥接专用的错误映射、增量流协议、请求校验和
+  目录合并；`legacyEgressAllowed` 与 `HasProviderEgressBinding` 删除。
+- 插件：删除只为桥接回退存在的 `CPA_ANTIGRAVITY_ENABLED` 开关。
+- 部署：`scripts/compose.sh` 在 `.env` 选择 `CPA_INTEGRATION=patch` 时拒绝执行；
+  `validate-compose.sh` 改为从 `plugin.lock.json` 读取版本与提交，检查插件入口脚本的配置
+  （plugin-only、关闭会话亲和、无全局代理、管理 API 独立密钥），并断言旧桥接的服务、卷、
+  secret 和 Gateway 变量不再出现。CI 去掉补丁镜像、桥接、v7 回退和迁移工具的构建与扫描，
+  CPA 版本与提交改为从锁文件读取。
+
+### 测试
+
+- Gateway：`gofmt -l .` 无输出；`go vet ./...`、`go vet -tags integration ./...`、
+  `go test -count=1 ./...`、`go test -race -count=1 ./...` 通过（去掉会话环境中的
+  `ANTHROPIC_*`/`CLAUDE_*` 变量，原因同上文）。PostgreSQL 16 本地实例上
+  `go test -count=1 -tags=integration ./internal/store ./internal/server` 通过。
+- 新增或改写的单测覆盖：退役设置拒绝启动、管理密钥必填；账号路由只带管理密钥且缺少时
+  不发请求；任何形态的归因响应头都不被采信（有无账本均如此）；Antigravity 请求不带客户端
+  会话头；模型鉴定的能力、模型列表走管理路由、探针走数据面并由账本固定账号。
+- 插件 module：`go vet ./...`、`go vet -tags e2e ./...`、`go test -race -count=1 ./...` 通过。
+  按 `plugin.Dockerfile` 的步骤在本机构建（v8.0.59 固定提交、残余补丁无 fuzz 应用与其测试、
+  CPA 插件宿主测试、`CGO_ENABLED=1` 编译 CPA 与插件），端到端测试 16 组全部通过，无跳过。
+- `go mod tidy` 只把 `golang.org/x/sys` 改为间接依赖（原先由旧桥接直接使用）。
+- 脚本测试 100 个通过，1 个需要 Docker 镜像构建的跳过。用 CI 的方式生成非生产 `.env` 与
+  secret 后，`./scripts/validate-compose.sh` 完整通过（含 Squid A/B 解析和三种出口模式，
+  使用本地 Docker 守护进程）；`.env` 追加 `CPA_INTEGRATION=patch` 后 `compose.sh config`
+  按预期拒绝；CI 的工具链一致性与上游声明两个步骤在本地按原样执行通过；
+  `./scripts/lock-images.sh --check` 通过。
+
+### 未验证
+
+- 镜像构建、`test-cpa-plugin-image.sh`、出口容器测试与 Trivy 在 CI 中运行。
+- 真实账号验收（第 3 步）。没有补丁镜像可回退，验收中发现问题只能回到上一个 revision。

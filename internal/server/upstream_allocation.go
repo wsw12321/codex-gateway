@@ -35,9 +35,6 @@ func (s *Server) eligibleUpstreamAccounts(w http.ResponseWriter, r *http.Request
 
 func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request, eligibility bool) {
 	token := s.config.SidecarToken
-	if isAntigravityAccountRequest(r) && !s.config.UsesCPAAntigravity() {
-		token = s.config.AntigravityBridgeToken
-	}
 	authorization := r.Header.Values("Authorization")
 	if token == "" || len(authorization) != 1 ||
 		!hmac.Equal([]byte(authorization[0]), []byte("Bearer "+token)) {
@@ -56,9 +53,6 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 	ids, userID := request.AccountIDs, request.UserID
 	if !validUpstreamSelectionRequest(request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_candidates", "候选账号列表无效")
-		return
-	}
-	if isAntigravityAccountRequest(r) && !s.legacyEgressAllowed(w, r) {
 		return
 	}
 	if pinned, ok := s.allocations.ProbeAccount(userID); ok {

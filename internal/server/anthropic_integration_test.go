@@ -52,14 +52,19 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		if r.Header.Get("Authorization") != "Bearer internal-cpa" {
-			t.Error("missing internal credentials")
+		// Plugin routes carry the management key, generation the data-plane key.
+		wantKey := "Bearer internal-cpa"
+		if strings.HasPrefix(r.URL.Path, pluginRoutePrefix) {
+			wantKey = "Bearer " + testManagementKey
+		}
+		if r.Header.Get("Authorization") != wantKey {
+			t.Errorf("wrong internal credentials for %s", r.URL.Path)
 		}
 		switch r.URL.Path {
-		case "/internal/anthropic-accounts":
+		case pluginPath("anthropic-accounts"):
 			writeJSON(w, 200, map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{ID: account, DisplayName: "claude", MaskedEmail: "c***@example.com", Plan: "unknown", Status: "available", CliproxyStatus: "active", GatewayManualStatus: "enabled", GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC()}}})
 			return
-		case "/internal/anthropic-accounts/capabilities":
+		case pluginPath("anthropic-accounts/capabilities"):
 			writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1", "anthropic_messages": "anthropic_messages_v1"})
 			return
 		}
@@ -75,7 +80,7 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 			fmt.Fprint(w, `{"type":"error","error":{"type":"permission_error","message":"No eligible Claude account"}}`)
 			return
 		}
-		w.Header().Set("X-Codex-Upstream-Account", account)
+		reportAllocation(t, s, "anthropic", r, account)
 		if r.URL.Path == "/v1/messages/count_tokens" {
 			fmt.Fprint(w, `{"input_tokens":60}`)
 			return
@@ -113,7 +118,8 @@ func TestAnthropicMessagesAndCountTokensPostgresIntegration(t *testing.T) {
 	}))
 	defer cpa.Close()
 	base, _ := url.Parse(cpa.URL)
-	s.anthropic = gatewayproxy.NewCPAAnthropic(base, "internal-cpa")
+	s.anthropic = withManagement(gatewayproxy.NewCPAAnthropic(base, "internal-cpa"))
+	useLedger(s, s.anthropic)
 	send := func(path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest("POST", path, strings.NewReader(body))
 		r.Header.Set("X-Api-Key", h.apiKey)

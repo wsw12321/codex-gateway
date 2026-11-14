@@ -1,17 +1,12 @@
 package config
 
 import (
-	"net/url"
 	"strings"
 	"testing"
 )
 
-func TestCPATransportDefaultsAndBoundaries(t *testing.T) {
+func TestCPADefaultsAndBoundaries(t *testing.T) {
 	setValidLoadEnvironment(t)
-	t.Setenv("ANTIGRAVITY_TRANSPORT", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_URL", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY_FILE", "")
 	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", "{}")
 	t.Setenv("CPA_MANAGEMENT_KEY", strings.Repeat("m", 43))
 	t.Setenv("CPA_MANAGEMENT_KEY_FILE", "")
@@ -19,15 +14,15 @@ func TestCPATransportDefaultsAndBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.UsesCPAAntigravity() || len(cfg.AntigravityModelRoutes) != 5 || cfg.CPAManagementToken != strings.Repeat("m", 43) {
+	if len(cfg.AntigravityModelRoutes) != 5 || cfg.CPAManagementToken != strings.Repeat("m", 43) {
 		t.Fatal("CPA defaults missing")
 	}
 	for _, change := range []func(*Config){
-		func(c *Config) { c.AntigravityBridgeURL, _ = url.Parse("http://legacy:8318") },
-		func(c *Config) { c.AntigravityBridgeToken = strings.Repeat("b", 43) },
+		// The plugin's account routes need CPA's management key, and it must
+		// not be the key sent with every generation request.
+		func(c *Config) { c.CPAManagementToken = "" },
 		func(c *Config) { c.CPAManagementToken = c.SidecarToken },
 		func(c *Config) { c.CPAManagementToken = "short" },
-		func(c *Config) { c.AntigravityTransport = "automatic" },
 		func(c *Config) {
 			c.AntigravityModelRoutes = map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}
 		},
@@ -43,40 +38,28 @@ func TestCPATransportDefaultsAndBoundaries(t *testing.T) {
 	}
 }
 
-func TestCPAIntegrationSetting(t *testing.T) {
+func TestCPAManagementKeyIsRequired(t *testing.T) {
 	setValidLoadEnvironment(t)
-	t.Setenv("ANTIGRAVITY_TRANSPORT", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_URL", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY_FILE", "")
-	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", "{}")
-	t.Setenv("CPA_INTEGRATION", "")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
+	t.Setenv("CPA_MANAGEMENT_KEY", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CPA_MANAGEMENT_KEY") {
+		t.Fatalf("Load() = %v, want a refusal naming CPA_MANAGEMENT_KEY", err)
 	}
-	// Without a setting the Gateway assumes the source-patched contract, which
-	// needs no management key; the Compose deployment sets plugin explicitly.
-	if cfg.CPAIntegration != "patch" || cfg.UsesCPAPlugin() {
-		t.Fatalf("default integration = %q", cfg.CPAIntegration)
-	}
-	t.Setenv("CPA_INTEGRATION", "plugin")
-	t.Setenv("CPA_MANAGEMENT_KEY", strings.Repeat("m", 43))
-	t.Setenv("CPA_MANAGEMENT_KEY_FILE", "")
-	if cfg, err = Load(); err != nil || !cfg.UsesCPAPlugin() {
-		t.Fatalf("plugin integration rejected: %v", err)
-	}
-	for _, change := range []func(*Config){
-		func(c *Config) { c.CPAIntegration = "automatic" },
-		// The legacy bridge allocates on its own; the plugin cannot cover it.
-		func(c *Config) { c.AntigravityTransport = "legacy-bridge" },
-		// The plugin's account routes need CPA's management key.
-		func(c *Config) { c.CPAManagementToken = "" },
-	} {
-		test := cfg
-		change(&test)
-		if err := test.Validate(); err == nil {
-			t.Fatal("accepted an unsupported CPA integration")
+}
+
+// The source-patched CPA image is gone. A deployment that still selects it
+// must not start as if it had selected the plugin.
+func TestRetiredCPAIntegrationRefusesStartup(t *testing.T) {
+	for _, value := range []string{"patch", "automatic"} {
+		setValidLoadEnvironment(t)
+		t.Setenv("CPA_INTEGRATION", value)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "CPA_INTEGRATION") {
+			t.Fatalf("CPA_INTEGRATION=%s: Load() = %v", value, err)
 		}
+	}
+	// The value earlier Compose files set stays accepted.
+	setValidLoadEnvironment(t)
+	t.Setenv("CPA_INTEGRATION", "plugin")
+	if _, err := Load(); err != nil {
+		t.Fatal(err)
 	}
 }

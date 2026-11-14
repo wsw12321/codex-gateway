@@ -58,8 +58,7 @@ Compose 中的服务职责如下：
 | `caddy` | 内部反向代理、安全头、64 MiB 请求上限和 SSE 刷新 | 无 |
 | `gateway` | 身份、Key、配额、统计、管理界面及固定 Responses / Gemini 代理 | 无 |
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
-| `codex-compat` | 在同一 CPA 中维护 Codex/Antigravity OAuth、刷新和模型执行 | 无 |
-| `antigravity-bridge` | 仅在 `legacy-bridge` profile 中保留旧 AGY 传输供回滚 | 无 |
+| `codex-compat` | 未修改的 CLIProxyAPI 加 Gateway 插件，在同一进程中维护 Codex/Claude/Antigravity OAuth、刷新和模型执行 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
 | `account-egress` | 管理网站配置的按账号 SS 出口运行时 | 无 |
 
@@ -129,7 +128,7 @@ CPA 转换后的用量不含缓存写入数量，结算时按所有未命中缓�
 API Key 模型限制、价格、计费方式、扣费来源和上游账号池都按目标模型判断，
 使用记录同时保留客户端请求的模型和实际模型，控制台显示为“请求模型 → 实际模型”。
 响应不改写，客户端看到的是目标模型。路由只跳转一次，目标不能再是另一条规则的原模型。
-`/v1/messages` 只能路由到 Claude 模型（CPA 补丁对原生 Messages 固定使用 Claude
+`/v1/messages` 只能路由到 Claude 模型（CPA 对原生 Messages 固定使用 Claude
 执行器），`/v1/responses/compact` 只能路由到 Codex 模型；经 `/v1/responses` 路由到 Claude
 模型还需要 Owner 开启模型协议转换。不兼容时在转发和扣费前返回
 `400 model_route_incompatible`；Gemini 原生接口的模型在 URL 路径中，不参与路由；
@@ -451,36 +450,37 @@ connector token 以精确 `0640` 保存为
 
 服务器资源较少或电脑上传镜像缓慢时，可以使用
 [GitHub Actions 构建并从 GHCR 免登录拉取](docs/ci-image-deployment.md)。
-CI 检查通过后发布四个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
+CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取，再手动更新服务。
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
-锁定；CLIProxyAPI 固定为 `v8.0.59` / commit
-`c5251b57b3fa5dcbc689f514f4aa166daacb4481`。CPA 补丁和本地构建产物另行记录 SHA-256；
-镜像构建必须通过补丁回放与受影响模块回归，部署使用 CI 产出的不可变镜像 digest。
+锁定；CLIProxyAPI 的版本、commit、残余补丁和模型目录的 SHA-256 记录在
+[deploy/codex-compat/plugin.lock.json](deploy/codex-compat/plugin.lock.json)（当前为 `v8.0.59` / commit
+`c5251b57b3fa5dcbc689f514f4aa166daacb4481`）。镜像构建必须通过残余补丁的无 fuzz 应用、插件单测
+与针对所产出二进制的端到端测试，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
 此次版本升级的源码、镜像与数据库验证状态见 [v8.0.59 验证记录](docs/cpa-v8.0.59-validation.md)。生产切换及真实 OAuth 账号验收
 按 [CPA v8 切换与回滚](docs/cpa-v8-cutover.md) 执行。
 
-默认部署运行**插件模式**：未修改的 CLIProxyAPI，Gateway 需要的账号分配、身份隔离、
+部署运行**插件模式**：未修改的 CLIProxyAPI，Gateway 需要的账号分配、身份隔离、
 账号控制和账号独立出口由 `deploy/codex-compat/plugin/` 中的插件实现，源码改动只剩一个
 139 行的残余补丁（插件未选号时拒绝请求），CPA 升级不再需要重基大补丁。上游请求全部由
 CPA 生成，插件不自行构造供应商请求：额度取自 CPA 对真实请求响应的被动观测，“CPA 授权
 管理”页面的凭证操作经 CPA 原生管理接口完成，模型鉴定的探针也是由 CPA 生成的普通请求，
-账号出口失败时不会改走全局出口或直连。凭证只在“CPA 授权管理”页面维护，命令行登录脚本
-只用于回退的补丁镜像。源码补丁镜像保留为回退：在 `.env` 中设置 `CPA_INTEGRATION=patch`，
-见[运维手册](docs/operations.md#cpa-插件模式的切换与回退)。说明见
-[兼容层升级规程的插件模式一节](docs/compatibility-upgrades.md#插件模式默认)，
+账号出口失败时不会改走全局出口或直连。凭证只在“CPA 授权管理”页面维护。源码补丁镜像、
+旧 Antigravity 桥接和命令行登录脚本已删除（[路线图第 8 步](docs/cpa-plugin-roadmap.md#8-改为默认并清理)），
+升级与回退见[运维手册](docs/operations.md#cpa-插件镜像的升级与回退)。说明见
+[兼容层升级规程](docs/compatibility-upgrades.md)，
 调用方之间的隔离见 [CPA Provider 缓存键核对](docs/cpa-provider-cache-audit.md)，
 后续步骤见 [CPA 插件模式路线图](docs/cpa-plugin-roadmap.md)。
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+./scripts/compose.sh build gateway codex-compat account-egress
 ./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 
-默认路由为 `{}`，Antigravity Bridge 由后续登录脚本验收成功后启动。
+默认路由为 `{}`，即全部五个已审 Antigravity 模型；上游账号在服务启动后添加。
 
 Codex 与 Gemini 共用 `.env` 中的 `EGRESS_MODE`：`direct`、`relay` 或 `shadowsocks`。
 修改后执行 `./scripts/apply-egress.sh`；SS 组件和认证出口会按配置自动选择。
@@ -523,21 +523,11 @@ Codex 与 Claude 账号另有 Gateway 自有的“剩余用量保险额度”：
 CPA 的观测快照。Owner 可用卡片按钮手动切换，下一次自动查询仍按实际额度判断。
 该状态独立于 CPA 的额度锁定，见[验证记录](docs/upstream-quota-guard-validation.md)。
 
-```sh
-./scripts/codex-device-login.sh
-```
-
-该 SSH 运维脚本会持有本机锁、停止唯一 sidecar，并在每次执行中添加或刷新一个
-ChatGPT Plus/Pro 账号。它用内部 Sidecar Key 加域的 SHA-256 确认其他 OAuth 文件
-没有被覆盖或删除，检查
-目录为 UID 10001/`0700`、文件为 UID 10001/`0600`，然后重启并做账号列表、模型
-列表、账号归因与最小 Responses 冒烟。需要更多账号时逐次重复执行；任何时刻都
-不得让两个 sidecar 共享同一组 refresh token。
-
-CPA 固定为 **v8.0.59**，同时执行 Codex 和 Antigravity；独立 bridge 仅保留在
-`legacy-bridge` profile。Owner 在 `/admin/cpa/` 进行 OAuth、导入、重新授权、刷新、删除
-和额度查询，复用 Gateway 会话；权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。
-管理面板使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。
+上游账号（Codex、Claude、Antigravity）都由 Owner 在 `/admin/cpa/`（“CPA 授权管理”）进行
+OAuth 授权、导入、重新授权、刷新、删除和额度查询，复用 Gateway 会话：Owner 先选出口，CPA 经该
+出口完成授权并把出口写进凭证。权重、共享/专属权限、会话并发、计费仍由 Gateway 管理。管理面板
+使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。CPA 不接受
+命令行登录；任何时刻都不得让两个 sidecar 共享同一组 refresh token。
 
 公开模型按 CPA v8.0.59 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。v8.0.59 未改变上游模型目录；v8.0.58 新增的 `gpt-6-chat-thinking` 仍需完成 Gateway 价格与权限审核后才会公开。既有目录已退役上游
 Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `claude-haiku-5-5` 和
@@ -547,10 +537,8 @@ Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `
 旧模型仍可读取历史 usage 和账单，但新请求会被拒绝。`0035` 与 `0038` 迁移各只执行一次，更新目录并保存
 配置快照；缺失倍率继续按 1 计费，重启不会覆盖管理员选择。
 
-升级须在维护窗口完成价格合并、数据库迁移及账号验收，不能仅替换镜像标签。已有 CPA v8 凭据继续复用；
-首次从 bridge 切换时再执行凭据转换。参见
-[切换与回滚](docs/cpa-v8-cutover.md)、[凭据迁移](docs/cpa-credentials-migration.md)、
-[模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
+升级须在维护窗口完成价格合并、数据库迁移及账号验收，不能仅替换镜像标签。已有 CPA v8 凭据继续复用。
+参见[切换与回滚](docs/cpa-v8-cutover.md)、[模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
 [v8.0.59 验证记录](docs/cpa-v8.0.59-validation.md)（[v8.0.58](docs/cpa-v8.0.58-validation.md)、[v8.0.30](docs/cpa-v8.0.30-validation.md) 保留为历史）。首次 v8 切换的
 [历史验证记录](docs/cpa-v8-validation.md)仍保留。
 
@@ -605,8 +593,7 @@ AGY 1.2.14 的 Flash-high 和标题请求名称，权限与计费使用解析后
 
 ## 开发与验证
 
-项目工具链固定为 Go 1.26.11；`go.mod`、CI、Gateway 和 Antigravity Bridge
-构建镜像使用同一版本。普通测试不需要外部数据库：
+项目工具链固定为 Go 1.26.11；`go.mod`、CI、Gateway 和 CPA 插件构建镜像使用同一版本。普通测试不需要外部数据库：
 
 ```sh
 gofmt -l .
@@ -627,7 +614,7 @@ TEST_DATABASE_URL='postgres://gateway:password@127.0.0.1:5432/gateway_test?sslmo
 ```sh
 ./scripts/validate-compose.sh
 ./scripts/compose.sh config --quiet
-for script in scripts/*.sh deploy/codex-compat/*.sh deploy/antigravity-bridge/*.sh; do
+for script in scripts/*.sh deploy/codex-compat/*.sh; do
   case "$(sed -n '1p' "$script")" in
     '#!/bin/sh') sh -n "$script" ;;
     '#!/usr/bin/env bash') bash -n "$script" ;;
@@ -643,8 +630,6 @@ CI 还配置了 `govulncheck`、`gosec`、Trivy 容器扫描、CycloneDX SBOM、
 
 ```text
 cmd/gateway/             进程入口和 bootstrap-owner/maintenance 命令
-cmd/antigravity-bridge/  独立 Antigravity HTTP Bridge 入口
-internal/antigravity/    agy 进程隔离、协议校验和 Responses 转换
 internal/config/         配置与 secret 文件加载
 internal/identity/       WebAuthn、会话、邀请与恢复流程
 internal/server/         HTTP 路由、管理界面、API 认证与统计
@@ -652,15 +637,15 @@ internal/proxy/          Responses/compact/models 转发与 SSE usage 解析
 internal/limit/          限额领域逻辑
 internal/store/          PostgreSQL store、迁移、配额和 usage 聚合
 internal/maintenance/    聚合、保留期和陈旧 lease 清理
-deploy/                  Caddy、Squid、sidecar 构建及镜像锁
-scripts/                 secret、登录、验证、备份和恢复脚本
+deploy/                  Caddy、Squid、CPA 插件与镜像构建及镜像锁
+scripts/                 secret、验证、出口切换、备份和恢复脚本
 docs/                    运维、客户端、安全与兼容层升级文档
 ```
 
 ## 安全边界与限制
 
 - ChatGPT Pro 登录不是官方通用服务端 API。兼容层依赖当前 Codex 协议，可能随
-  上游变化失效；Antigravity 路径同样依赖固定版本官方 CLI 的 Headless 契约。
+  上游变化失效；Antigravity 路径同样依赖 CPA 固定版本的 Google OAuth 与 Cloud Code 契约。
 - 项目不会配置 Platform API 自动计费回退。OAuth 失效时应 fail closed、返回
   明确错误并在后台告警。
 - 该部署只适用于同一订阅者本人控制的账号与设备。如果向其他真实用户提供
@@ -696,8 +681,7 @@ gateway version           显示版本与 revision
 ./scripts/restore-drill.sh backups/gateway-YYYYmmddTHHMMSSZ.dump.age
 ```
 
-OAuth 和 Antigravity Keyring volume 永不进入数据库备份；灾备后必须分别重新执行
-设备码登录和 `./scripts/antigravity-login.sh`。
+OAuth volume 永不进入数据库备份；灾备后在“CPA 授权管理”页面重新授权各账号。
 生产数据库由固定 Compose 命名卷持久化；禁止执行
 `./scripts/compose.sh down -v`。每日 03:00 UTC 的本地 age 备份、14 组保留、
 每月/升级前恢复演练及计划迁机步骤见[部署与运维手册](docs/operations.md)。

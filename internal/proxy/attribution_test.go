@@ -31,6 +31,12 @@ func (b *attributionInterruptedBody) Read(p []byte) (int, error) {
 }
 func (*attributionInterruptedBody) Close() error { return nil }
 
+// attributionCapabilities answers the capability probe of a dispatch.
+func attributionCapabilities() *http.Response {
+	return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(
+		`{"protocol":"` + AccountAccessProtocolV1 + `"}`))}
+}
+
 func TestForwardPreservesFinalAttributionForAllTerminalResults(t *testing.T) {
 	const account = "fedcba9876543210"
 	for _, test := range []struct {
@@ -46,7 +52,7 @@ func TestForwardPreservesFinalAttributionForAllTerminalResults(t *testing.T) {
 		{name: "stream disconnect", status: 200, stream: true, readErr: io.ErrUnexpectedEOF, account: account},
 		{name: "stream cancellation", status: 200, stream: true, readErr: context.Canceled, account: account},
 		{name: "ordinary cancellation", status: 200, readErr: context.Canceled, account: account},
-		{name: "unknown historical attribution", status: 200},
+		{name: "no allocation reported", status: 200},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			content := "application/json"
@@ -59,89 +65,94 @@ func TestForwardPreservesFinalAttributionForAllTerminalResults(t *testing.T) {
 			if test.readErr != nil {
 				body = &attributionInterruptedBody{first: strings.NewReader(payload), err: test.readErr}
 			}
+			ledger := NewAllocationLedger()
 			transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
-				if r.Header.Get(upstreamAccountHeader) != "" {
+				if strings.HasSuffix(r.URL.Path, "/capabilities") {
+					return attributionCapabilities(), nil
+				}
+				if r.Header.Get(retiredAccountHeader) != "" {
 					t.Fatal("caller attribution forwarded")
 				}
-				header := http.Header{"Content-Type": {content}}
 				if test.account != "" {
-					header.Set(upstreamAccountHeader, test.account)
+					reportAllocation(t, ledger, "codex", r, test.account, "")
 				}
-				return &http.Response{StatusCode: test.status, Header: header, Body: body}, nil
+				// Whatever CPA renders in the response attributes nothing.
+				return &http.Response{StatusCode: test.status, Header: http.Header{"Content-Type": {content}, retiredAccountHeader: {"0123456789abcdef"}}, Body: body}, nil
 			})
 			base, _ := url.Parse("http://compat.invalid")
-			client := NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})
+			client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}))
+			client.UseAllocationLedger(ledger)
 			request := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
-			request.Header.Set(upstreamAccountHeader, "0123456789abcdef")
+			request.Header.Set(retiredAccountHeader, "0123456789abcdef")
 			response := httptest.NewRecorder()
-			result, failure := client.Forward(context.Background(), response, request, "/v1/responses")
+			result, failure := client.ForwardWithOptions(context.Background(), response, request, "/v1/responses", ForwardOptions{UserID: ledgerUser})
 			if result.UpstreamAccountID != test.account {
 				t.Fatalf("attribution=%q want %q", result.UpstreamAccountID, test.account)
 			}
 			if (failure != nil) != (test.status >= 400 || test.readErr != nil) {
 				t.Fatalf("failure=%+v", failure)
 			}
-			if response.Header().Get(upstreamAccountHeader) != "" {
+			if response.Header().Get(retiredAccountHeader) != "" {
 				t.Fatal("internal attribution leaked to caller")
 			}
 		})
 	}
 }
 
-func TestForwardNotifiesOnlyForValidSingleValuedAttributionHeader(t *testing.T) {
-	const valid = "fedcba9876543210"
+// The removed source-patched image attributed a request through response
+// headers. Nothing in a response may attribute one now, whatever its shape and
+// whether or not the dispatch has a ledger entry.
+func TestForwardNeverAttributesFromResponseHeaders(t *testing.T) {
+	const account, hash = "fedcba9876543210", "conv-0123456789abcdef0123456789abcdef"
 	for _, test := range []struct {
-		name       string
-		header     []string
-		wantID     string
-		wantNotify string
+		name          string
+		accounts      []string
+		conversations []string
 	}{
-		{name: "valid", header: []string{valid}, wantID: valid, wantNotify: valid},
-		{name: "trimmed valid", header: []string{"  " + valid + "  "}, wantID: valid, wantNotify: valid},
-		{name: "invalid characters", header: []string{"FEDCBA9876543210"}},
-		{name: "wrong length", header: []string{"0123456789abcde"}},
-		{name: "comma separated", header: []string{valid + ",0123456789abcdef"}},
-		{name: "multiple values", header: []string{valid, "0123456789abcdef"}},
-		{name: "missing"},
+		{name: "well-formed", accounts: []string{account}, conversations: []string{hash}},
+		{name: "padded", accounts: []string{"  " + account + "  "}},
+		{name: "path traversal", accounts: []string{"../../oauth-token"}},
+		{name: "comma separated", accounts: []string{account + ",0123456789abcdef"}, conversations: []string{hash + "," + hash}},
+		{name: "multiple values", accounts: []string{account, "0123456789abcdef"}, conversations: []string{hash, hash}},
+		{name: "malformed hash", conversations: []string{"conv-0123456789abcdef0123456789abcde"}},
 	} {
-		t.Run(test.name, func(t *testing.T) {
-			transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
-				header := http.Header{"Content-Type": {"application/json"}}
-				if test.header != nil {
-					header[upstreamAccountHeader] = append([]string(nil), test.header...)
+		for _, userID := range []string{"", ledgerUser} {
+			t.Run(test.name+"/user="+userID, func(t *testing.T) {
+				transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					if strings.HasSuffix(r.URL.Path, "/capabilities") {
+						return attributionCapabilities(), nil
+					}
+					if r.Header.Get(retiredAccountHeader) != "" || r.Header.Get(retiredConversationHeader) != "" {
+						t.Error("caller-supplied attribution was forwarded")
+					}
+					header := http.Header{"Content-Type": {"application/json"}}
+					header[retiredAccountHeader] = append([]string(nil), test.accounts...)
+					header[retiredConversationHeader] = append([]string(nil), test.conversations...)
+					return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(`{"model":"model"}`))}, nil
+				})
+				base, _ := url.Parse("http://compat.invalid")
+				client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{Transport: transport}))
+				client.UseAllocationLedger(NewAllocationLedger())
+				var notifications atomic.Int64
+				request := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
+				request.Header.Set(retiredAccountHeader, "0123456789abcdef")
+				request.Header.Set(retiredConversationHeader, "conv-deadbeef")
+				recorder := httptest.NewRecorder()
+				result, failure := client.ForwardWithOptions(context.Background(), recorder, request, "/v1/responses", ForwardOptions{
+					UserID:            userID,
+					OnUpstreamAccount: func(string) { notifications.Add(1) },
+					OnConversation:    func(string) { notifications.Add(1) },
+				})
+				if failure != nil {
+					t.Fatalf("failure=%v", failure)
 				}
-				return &http.Response{
-					StatusCode: http.StatusOK, Header: header,
-					Body: io.NopCloser(strings.NewReader(`{"model":"model"}`)),
-				}, nil
+				if result.UpstreamAccountID != "" || result.ConversationHash != "" || notifications.Load() != 0 {
+					t.Fatalf("a response header attributed the request: %q %q notifications=%d", result.UpstreamAccountID, result.ConversationHash, notifications.Load())
+				}
+				if recorder.Header().Get(retiredAccountHeader) != "" || recorder.Header().Get(retiredConversationHeader) != "" {
+					t.Fatal("an internal header leaked to the caller")
+				}
 			})
-			base, _ := url.Parse("http://compat.invalid")
-			client := NewWithHTTPClient(base, "secret", &http.Client{Transport: transport})
-			var notifications atomic.Int64
-			var notified atomic.Value
-			request := httptest.NewRequest(http.MethodPost, "http://gateway.invalid/v1/responses", strings.NewReader(`{}`))
-			result, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), request, "/v1/responses", ForwardOptions{
-				OnUpstreamAccount: func(accountID string) {
-					notifications.Add(1)
-					notified.Store(accountID)
-				},
-			})
-			if failure != nil {
-				t.Fatalf("failure=%v", failure)
-			}
-			if result.UpstreamAccountID != test.wantID {
-				t.Fatalf("result attribution=%q want %q", result.UpstreamAccountID, test.wantID)
-			}
-			wantCount := int64(0)
-			if test.wantNotify != "" {
-				wantCount = 1
-			}
-			if notifications.Load() != wantCount {
-				t.Fatalf("notifications=%d want %d", notifications.Load(), wantCount)
-			}
-			if test.wantNotify != "" && notified.Load() != test.wantNotify {
-				t.Fatalf("notified=%v want %q", notified.Load(), test.wantNotify)
-			}
-		})
+		}
 	}
 }

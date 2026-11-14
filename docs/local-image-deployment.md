@@ -12,10 +12,8 @@
 git status --short
 git rev-parse HEAD
 DOCKER_DEFAULT_PLATFORM=linux/amd64 \
-  ./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+  ./scripts/compose.sh build gateway codex-compat account-egress
 ```
-
-不使用 Antigravity 时可省略 `antigravity-bridge`。
 
 ## 2. 传送镜像
 
@@ -27,7 +25,6 @@ compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["co
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
   "$compat_image" \
-  "codex-gateway-antigravity:agy1.2.4-${gateway_tag}" \
   "codex-gateway-account-egress:1.19.32-v2" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
@@ -54,7 +51,7 @@ git checkout --detach <与本地相同的完整Git-SHA>
 
 近 24 小时费用分配功能必须同时导入并升级本次 Gateway 和兼容层，应用
 `0009_upstream_allocation.sql`。兼容层启动不等待 Gateway；等 Gateway
-`/readyz` 返回 200 后再运行 `./scripts/smoke-sidecar.sh`。回调失败或全部候选
+`/readyz` 返回 200 后再做真实 OAuth 冒烟。回调失败或全部候选
 系数为 0 时，新分配返回 503。上线前按升级规程完成备份与真实 OAuth 冒烟。
 
 模型鉴定流程还需同时升级 Gateway 与兼容层，并应用

@@ -1,8 +1,6 @@
 package config
 
 import (
-	"net/url"
-	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,62 +32,48 @@ func TestParseAntigravityModelRoutes(t *testing.T) {
 	}
 }
 
-func TestLoadAntigravityBridgeSecretFileAndRoutes(t *testing.T) {
+func TestRetiredAntigravityBridgeSettingsRefuseStartup(t *testing.T) {
+	for _, setting := range [][2]string{
+		{"ANTIGRAVITY_TRANSPORT", "legacy-bridge"},
+		{"ANTIGRAVITY_TRANSPORT", "automatic"},
+		{"ANTIGRAVITY_BRIDGE_URL", "http://antigravity-bridge:8318"},
+		{"ANTIGRAVITY_BRIDGE_API_KEY", "independent-antigravity-bridge-secret"},
+		{"ANTIGRAVITY_BRIDGE_API_KEY_FILE", "/run/secrets/antigravity_bridge_api_key"},
+	} {
+		t.Run(setting[0]+"="+setting[1], func(t *testing.T) {
+			setValidLoadEnvironment(t)
+			t.Setenv(setting[0], setting[1])
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), setting[0]) {
+				t.Fatalf("Load() = %v, want a refusal naming %s", err, setting[0])
+			}
+		})
+	}
+	// The value the Compose file used to set stays accepted.
 	setValidLoadEnvironment(t)
-	t.Setenv("ANTIGRAVITY_TRANSPORT", "legacy-bridge")
-	path := t.TempDir() + "/antigravity-secret"
-	if err := os.WriteFile(path, []byte("independent-antigravity-bridge-secret\n"), 0o600); err != nil {
+	t.Setenv("ANTIGRAVITY_TRANSPORT", "cpa")
+	if _, err := Load(); err != nil {
 		t.Fatal(err)
-	}
-	t.Setenv("ANTIGRAVITY_BRIDGE_URL", "http://antigravity-bridge:8318/")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY", "")
-	t.Setenv("ANTIGRAVITY_BRIDGE_API_KEY_FILE", path)
-	t.Setenv("ANTIGRAVITY_MODEL_ROUTES_JSON", `{"gemini-3.1-pro-high":"gemini-3.1-pro-high"}`)
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.AntigravityBridgeURL.String() != "http://antigravity-bridge:8318" ||
-		cfg.AntigravityBridgeToken != "independent-antigravity-bridge-secret" ||
-		cfg.AntigravityModelRoutes["gemini-3.1-pro-high"] != "gemini-3.1-pro-high" {
-		t.Fatal("bridge URL, secret, or model routes were not loaded")
 	}
 }
 
-func TestValidateAntigravityConfiguration(t *testing.T) {
+func TestValidateAntigravityModelRoutes(t *testing.T) {
 	t.Parallel()
-	const bridgeToken = "independent-antigravity-bridge-secret"
 	for _, test := range []struct {
 		name      string
-		url       string
-		token     string
 		routes    map[string]string
 		wantError bool
 	}{
-		{name: "disabled"},
-		{name: "unrouted bridge for rollback", url: "http://antigravity-bridge:8318", token: bridgeToken},
-		{name: "supported mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{LegacyAntigravityPublicModel: LegacyAntigravityPublicModel}},
-		{name: "missing URL", routes: map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}, wantError: true},
-		{name: "missing secret", url: "http://antigravity-bridge:8318", wantError: true},
-		{name: "short secret", url: "http://antigravity-bridge:8318", token: strings.Repeat("x", 31), wantError: true},
-		{name: "reused secret", url: "http://antigravity-bridge:8318", token: strings.Repeat("s", 32), wantError: true},
-		{name: "invalid scheme", url: "file://antigravity-bridge", token: bridgeToken, wantError: true},
-		{name: "URL credential", url: "http://user:password@antigravity-bridge:8318", token: bridgeToken, wantError: true},
-		{name: "URL query", url: "http://antigravity-bridge:8318/?secret=x", token: bridgeToken, wantError: true},
-		{name: "URL fragment", url: "http://antigravity-bridge:8318/#x", token: bridgeToken, wantError: true},
-		{name: "invalid model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"a b": "model"}, wantError: true},
-		{name: "unsupported public model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-other": AntigravityCLIModel}, wantError: true},
-		{name: "unsupported CLI model", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{AntigravityPublicModel: "gemini-3.1-pro-low"}, wantError: true},
-		{name: "retired API alias", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-3.1-pro-preview": AntigravityCLIModel}, wantError: true},
-		{name: "cross-model mapping", url: "http://antigravity-bridge:8318", token: bridgeToken, routes: map[string]string{"gemini-3.8-flash-high": "gemini-3.8-flash-medium"}, wantError: true},
+		{name: "none"},
+		{name: "reviewed model", routes: map[string]string{AntigravityPublicModel: AntigravityPublicModel}},
+		{name: "invalid model", routes: map[string]string{"a b": "model"}, wantError: true},
+		{name: "unsupported public model", routes: map[string]string{"gemini-other": AntigravityCLIModel}, wantError: true},
+		{name: "unsupported native model", routes: map[string]string{AntigravityPublicModel: "gemini-3.1-pro-low"}, wantError: true},
+		{name: "retired bridge model", routes: map[string]string{"gemini-3.1-pro-high": "gemini-3.1-pro-high"}, wantError: true},
+		{name: "retired API alias", routes: map[string]string{"gemini-3.1-pro-preview": AntigravityCLIModel}, wantError: true},
+		{name: "cross-model mapping", routes: map[string]string{"gemini-3.8-flash-high": "gemini-3-flash"}, wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := validConfigForValidation(t)
-			cfg.SidecarToken = strings.Repeat("s", 32)
-			if test.url != "" {
-				cfg.AntigravityBridgeURL, _ = url.Parse(test.url)
-			}
-			cfg.AntigravityBridgeToken = test.token
 			cfg.AntigravityModelRoutes = test.routes
 			err := cfg.Validate()
 			if (err != nil) != test.wantError || err != nil && !strings.Contains(err.Error(), "ANTIGRAVITY_") {
@@ -116,7 +100,6 @@ func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	cfg := validConfigForValidation(t)
-	cfg.AntigravityTransport = "cpa"
 	cfg.AntigravityModelRoutes = map[string]string{}
 	for _, model := range models {
 		family, ok := AntigravityPricingModel(model)
@@ -143,7 +126,6 @@ func TestAntigravityCatalogUsesExactCPAIDs(t *testing.T) {
 func TestRetiredGeminiPricingCannotReactivateModelAccess(t *testing.T) {
 	for _, model := range []string{"gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high", "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.8-flash"} {
 		cfg := validConfigForValidation(t)
-		cfg.AntigravityTransport = "cpa"
 		cfg.UsagePricing.Models = map[string]ModelPricing{
 			model: {InputUSDPerMillion: "2", CachedInputUSDPerMillion: "0.2", OutputUSDPerMillion: "12"},
 		}

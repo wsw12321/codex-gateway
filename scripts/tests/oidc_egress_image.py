@@ -11,6 +11,8 @@ from relay_image import ALL_HOSTS, FIXTURE, ROOT, Sandbox, eventually
 
 
 GATEWAY = "127.0.0.4"
+# CPA, and the address the removed Antigravity bridge used. Neither may reach
+# the OIDC host.
 MODEL_SOURCES = ("127.0.0.2", "127.0.0.3")
 OIDC_HOSTS = ("auth.example.test", "project.supabase.co")
 
@@ -88,7 +90,7 @@ class OIDCSandbox(Sandbox):
 
     def provider_checks(self):
         for source, host in ((MODEL_SOURCES[0], "chatgpt.com"),
-                             (MODEL_SOURCES[1], "cloudcode-pa.googleapis.com")):
+                             (MODEL_SOURCES[0], "cloudcode-pa.googleapis.com")):
             if self.mode == "shadowsocks":
                 # The real configured SS peer is intentionally unreachable in
                 # --network none. Model traffic must not fall back to direct.
@@ -123,7 +125,6 @@ def run(image, log_dir):
         # method ACLs and the deployed rendering entrypoint remain unchanged.
         config = (ROOT / "deploy/egress/squid.conf").read_text()
         for original, replacement in (("172.28.30.3/32", f"{MODEL_SOURCES[0]}/32"),
-                                      ("172.28.40.3/32", f"{MODEL_SOURCES[1]}/32"),
                                       ("172.28.30.2/32", f"{GATEWAY}/32"),
                                       ("http_port 3128", "http_port 127.0.0.1:3128"),
                                       ("http_port 172.28.30.4:3129", "http_port 127.0.0.1:3130")):

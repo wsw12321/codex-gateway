@@ -15,7 +15,7 @@ import (
 	"github.com/wsw/codex-gateway/internal/store"
 )
 
-// Exercise the unchanged callback protocol used by both sidecars. In
+// Exercise the allocation callback protocol for both providers. In
 // particular, an existing binding must see the new policy on its next
 // eligibility check, including when that binding has zero allocation weight.
 func TestUserUpstreamRoutingPostgresIntegration(t *testing.T) {
@@ -23,12 +23,11 @@ func TestUserUpstreamRoutingPostgresIntegration(t *testing.T) {
 		t.Run(provider, func(t *testing.T) {
 			f := newInvitationHTTPFixture(t)
 			ctx := context.Background()
-			f.s.config.SidecarToken = "codex-routing-test"
-			f.s.config.AntigravityBridgeToken = "antigravity-routing-test"
+			f.s.config.SidecarToken = "sidecar-routing-test"
 			repository := f.s.store.WithUpstreamProvider(provider)
 			prefix, token := "/internal/upstream-accounts/", f.s.config.SidecarToken
 			if provider == store.UpstreamProviderAntigravity {
-				prefix, token = "/internal/antigravity-accounts/", f.s.config.AntigravityBridgeToken
+				prefix = "/internal/antigravity-accounts/"
 			}
 			const first, second, unknown = "1122334455667788", "2233445566778899", "3344556677889900"
 			if err := repository.SyncUpstreamAccounts(ctx, []store.UpstreamAccountSnapshot{

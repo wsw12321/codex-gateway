@@ -278,12 +278,8 @@ func (c *Client) AccountProvider() string {
 	if c.anthropic {
 		return "anthropic"
 	}
-	if c.cpaNative {
-		return "antigravity"
-	}
 	if c.antigravity {
-		// The legacy bridge does not implement the CPA management namespace.
-		return ""
+		return "antigravity"
 	}
 	return "codex"
 }
@@ -300,7 +296,7 @@ func (c *Client) AccountCapabilities(ctx context.Context) (ProviderAccountCapabi
 		GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
 		AccountEgress     string `json:"account_egress,omitempty"`
 	}
-	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
+	if err := c.accountJSON(ctx, http.MethodGet, "capabilities", &response); err != nil {
 		return ProviderAccountCapabilities{}, err
 	}
 	if response.Protocol != AccountAccessProtocolV1 || (c.anthropic && response.AnthropicMessages != AnthropicMessagesProtocolV1) {

@@ -122,7 +122,7 @@ func TestModelRouteRejectionsHappenBeforeUpstreamOrAdmission(t *testing.T) {
 			}))
 			defer cpa.Close()
 			base, _ := url.Parse(cpa.URL)
-			h.server.anthropic = gatewayproxy.NewCPAAnthropic(base, "internal")
+			h.server.anthropic = withManagement(gatewayproxy.NewCPAAnthropic(base, "internal"))
 			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
 			if strings.HasPrefix(test.path, "/v1/messages") {
 				request.Header.Set("X-Api-Key", h.apiKey)

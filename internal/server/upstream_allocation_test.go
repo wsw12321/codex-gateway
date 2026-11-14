@@ -576,5 +576,5 @@ func groupAllocationTestServer(t *testing.T, provider, denied, zeroWeight string
 		return &responsesWebSocketTestRows{columns: columns, values: rows}, nil
 	}}})
 	t.Cleanup(func() { _ = db.Close() })
-	return &Server{store: store.New(db), config: config.Config{SidecarToken: "sidecar-test-secret", AntigravityBridgeToken: "sidecar-test-secret"}}
+	return &Server{store: store.New(db), config: config.Config{SidecarToken: "sidecar-test-secret"}}
 }

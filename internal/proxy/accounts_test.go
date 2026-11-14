@@ -17,12 +17,13 @@ import (
 func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 	now := time.Date(2026, time.August, 24, 12, 0, 0, 0, time.UTC)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer sidecar-secret" {
+		// Account routes carry CPA's management key, never the data-plane key.
+		if got := r.Header.Get("Authorization"); got != "Bearer "+testManagementKey {
 			t.Errorf("authorization = %q", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/internal/upstream-accounts":
+		case pluginPath("upstream-accounts"):
 			if r.Method != http.MethodGet {
 				t.Errorf("account method = %q", r.Method)
 			}
@@ -30,9 +31,9 @@ func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 				"id": "0123456789abcdef", "masked_email": "u***@example.com", "plan": "plus",
 				"status": "active", "last_synced_at": now,
 			}}})
-		case "/internal/upstream-accounts/0123456789abcdef/quota":
-			if r.Method != http.MethodPost {
-				t.Errorf("quota method = %q", r.Method)
+		case pluginPath("upstream-accounts/quota"):
+			if r.Method != http.MethodPost || r.URL.RawQuery != "id=0123456789abcdef" {
+				t.Errorf("quota request = %s %s", r.Method, r.URL.RequestURI())
 			}
 			if got := r.Header.Get("Content-Type"); got != "application/json" {
 				t.Errorf("content type = %q", got)
@@ -52,7 +53,7 @@ func TestInternalAccountAPIIsNarrowAndNormalized(t *testing.T) {
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
-	client := NewWithHTTPClient(base, "sidecar-secret", server.Client())
+	client := withManagement(NewWithHTTPClient(base, "sidecar-secret", server.Client()))
 
 	accounts, err := client.ListUpstreamAccounts(context.Background())
 	if err != nil || len(accounts) != 1 || accounts[0].MaskedEmail != "u***@example.com" {
@@ -97,7 +98,7 @@ func TestInternalAccountAPIValidatesSplitStatusCombinations(t *testing.T) {
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			accounts, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+			accounts, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).ListUpstreamAccounts(context.Background())
 			if err != nil || len(accounts) != 1 {
 				t.Fatalf("accounts=%+v err=%v", accounts, err)
 			}
@@ -116,7 +117,7 @@ func TestInternalAccountAPIRejectsInconsistentSplitStatus(t *testing.T) {
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
-	_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+	_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).ListUpstreamAccounts(context.Background())
 	var internalErr *InternalAPIError
 	if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
 		t.Fatalf("error=%v", err)
@@ -147,7 +148,7 @@ func TestInternalAccountAPIRejectsLeaksAndSchemaDrift(t *testing.T) {
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+			_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).ListUpstreamAccounts(context.Background())
 			var internalErr *InternalAPIError
 			if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" || strings.Contains(err.Error(), "secret") {
 				t.Fatalf("error = %#v", err)
@@ -196,7 +197,7 @@ func TestInternalQuotaRejectsInvalidRPCResponses(t *testing.T) {
 			}))
 			defer server.Close()
 			base, _ := url.Parse(server.URL)
-			_, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
+			_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 			var internalErr *InternalAPIError
 			if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" ||
 				strings.Contains(err.Error(), "Bearer-secret") || strings.Contains(fmt.Sprintf("%#v", internalErr), "Bearer-secret") {
@@ -215,7 +216,7 @@ func TestInternalQuotaAcceptsDynamicWindowsAndNullableMetadata(t *testing.T) {
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
 
-	quota, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
+	quota, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +243,7 @@ func TestInternalQuotaRejectsArbitraryAccountPathAndSanitizesFailures(t *testing
 	}))
 	defer server.Close()
 	base, _ := url.Parse(server.URL)
-	client := NewWithHTTPClient(base, "secret", server.Client())
+	client := withManagement(NewWithHTTPClient(base, "secret", server.Client()))
 
 	if _, err := client.QueryUpstreamAccountQuota(context.Background(), "../../metadata"); err == nil || calls != 0 {
 		t.Fatalf("invalid id error=%v calls=%d", err, calls)
@@ -283,7 +284,7 @@ func TestInternalQuotaMapsReauthenticationAndTimeouts(t *testing.T) {
 				ctx, cancel = context.WithTimeout(ctx, time.Millisecond)
 				defer cancel()
 			}
-			client := NewWithHTTPClient(base, "secret", &http.Client{Transport: test.transport})
+			client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{Transport: test.transport}))
 			_, err := client.QueryUpstreamAccountQuota(ctx, "0123456789abcdef")
 			var internalErr *InternalAPIError
 			if !errors.As(err, &internalErr) || internalErr.SafeCode() != test.wantCode || internalErr.StatusCode != test.wantStatus {
@@ -312,7 +313,7 @@ func TestInternalAccountAPIRejectsOversizedAndSensitiveMalformedJSON(t *testing.
 		defer server.Close()
 		base, _ := url.Parse(server.URL)
 
-		_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+		_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).ListUpstreamAccounts(context.Background())
 		var internalErr *InternalAPIError
 		if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
 			t.Fatalf("error = %#v", err)
@@ -328,7 +329,7 @@ func TestInternalAccountAPIRejectsOversizedAndSensitiveMalformedJSON(t *testing.
 		defer server.Close()
 		base, _ := url.Parse(server.URL)
 
-		_, err := NewWithHTTPClient(base, "secret", server.Client()).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
+		_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 		var internalErr *InternalAPIError
 		if !errors.As(err, &internalErr) || internalErr.SafeCode() != "sidecar_invalid_response" {
 			t.Fatalf("error = %#v", err)
@@ -344,7 +345,7 @@ func TestInternalAccountAPIRejectsOversizedAndSensitiveMalformedJSON(t *testing.
 		defer server.Close()
 		base, _ := url.Parse(server.URL)
 
-		_, err := NewWithHTTPClient(base, "secret", server.Client()).ListUpstreamAccounts(context.Background())
+		_, err := withManagement(NewWithHTTPClient(base, "secret", server.Client())).ListUpstreamAccounts(context.Background())
 		var internalErr *InternalAPIError
 		if !errors.As(err, &internalErr) {
 			t.Fatalf("error = %#v", err)

@@ -106,10 +106,6 @@ func (p *Plugin) facadeManagement(method, path string, query url.Values, body []
 	if provider == "" {
 		return managementError(http.StatusNotFound, "not_found")
 	}
-	if provider == ProviderAntigravity && !p.cfg.AntigravityEnabled {
-		// During a bridge rollback this CPA must not touch Google credentials.
-		return facadeError(http.StatusServiceUnavailable)
-	}
 	switch {
 	case method == http.MethodPost && action == "accounts/quota":
 		switch provider {
@@ -186,10 +182,6 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 	}
 	if provider == "" {
 		return managementError(http.StatusNotFound, "not_found")
-	}
-	if provider == ProviderAntigravity && !p.cfg.AntigravityEnabled {
-		// During a bridge rollback this CPA must not touch Google credentials.
-		return managementError(http.StatusServiceUnavailable, "provider_disabled")
 	}
 	switch {
 	case method == http.MethodGet && action == "capabilities":

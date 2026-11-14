@@ -16,15 +16,18 @@ func TestAccountAccessCapabilityAndAuthenticatedIdentity(t *testing.T) {
 		t.Run(protocol, func(t *testing.T) {
 			requests := 0
 			sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer test-key" {
-					t.Error("internal authentication missing")
-				}
-				if r.URL.Path == "/internal/upstream-accounts/capabilities" {
+				if r.URL.Path == pluginPath("upstream-accounts/capabilities") {
+					if r.Header.Get("Authorization") != "Bearer "+testManagementKey {
+						t.Error("capability probe without the management key")
+					}
 					w.Header().Set("Content-Type", "application/json")
 					io.WriteString(w, `{"protocol":"`+protocol+`"}`)
 					return
 				}
 				requests++
+				if r.Header.Get("Authorization") != "Bearer test-key" {
+					t.Error("internal authentication missing")
+				}
 				if r.Header.Get(gatewayUserHeader) != userID {
 					t.Errorf("untrusted user identity: %s", r.Header.Get(gatewayUserHeader))
 				}
@@ -33,7 +36,7 @@ func TestAccountAccessCapabilityAndAuthenticatedIdentity(t *testing.T) {
 			}))
 			defer sidecar.Close()
 			base, _ := url.Parse(sidecar.URL)
-			client := New(base, "test-key")
+			client := withManagement(New(base, "test-key"))
 			incoming := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
 			incoming.Header.Set(gatewayUserHeader, "forged-user")
 			_, failure := client.ForwardWithOptions(context.Background(), httptest.NewRecorder(), incoming, "/v1/responses", ForwardOptions{UserID: userID})
@@ -49,7 +52,7 @@ func TestAccountAccessCapabilityAndAuthenticatedIdentity(t *testing.T) {
 }
 
 func TestForgedGatewayUserHeaderNeverForwardedWithoutIdentity(t *testing.T) {
-	client := New(&url.URL{Scheme: "http", Host: "example.test"}, "test")
+	client := withManagement(New(&url.URL{Scheme: "http", Host: "example.test"}, "test"))
 	out := make(http.Header)
 	client.copyAllowedHeaders(out, http.Header{gatewayUserHeader: {"forged"}})
 	if out.Get(gatewayUserHeader) != "" {

@@ -80,7 +80,7 @@ func TestUsageMetadataInitialReadFillsOnlyKnownAttribution(t *testing.T) {
 	calls := 0
 	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if r.URL.Path != "/internal/upstream-accounts" {
+		if r.URL.Path != pluginPath("upstream-accounts") {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -88,7 +88,7 @@ func TestUsageMetadataInitialReadFillsOnlyKnownAttribution(t *testing.T) {
 	}))
 	defer remote.Close()
 	base, _ := url.Parse(remote.URL)
-	server := &Server{upstream: gatewayproxy.NewWithHTTPClient(base, "secret", remote.Client())}
+	server := &Server{upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", remote.Client()))}
 	emails := make(map[string]string)
 	rows := []store.UsageRequest{{UpstreamAccountID: &id}, {RequestID: "unattributed"}}
 	server.completeUsageAccountEmails(context.Background(), rows, emails)

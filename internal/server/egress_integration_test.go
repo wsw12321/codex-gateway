@@ -167,17 +167,6 @@ func TestEgressHTTPPostgresRuntimeIsolation(t *testing.T) {
 		t.Fatal("registration replay mutated config")
 	}
 	f.send(t, "PUT", "/admin/upstream-accounts/"+other+"/egress", map[string]any{"egress_server_id": second}, memberCookie, 403)
-	if err := f.s.store.WithUpstreamProvider("antigravity").EnsureUpstreamAccount(context.Background(), "aaaabbbbccccdddd", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.s.store.WithUpstreamProvider("antigravity").SetEgressBinding(context.Background(), "aaaabbbbccccdddd", second, store.EgressActor{UserID: f.owner.ID}); err != nil {
-		t.Fatal(err)
-	}
-	f.s.config.AntigravityTransport = "legacy-bridge"
-	w := httptest.NewRecorder()
-	if f.s.legacyEgressAllowed(w, httptest.NewRequest("POST", "/v1/responses", nil)) || w.Code != 503 {
-		t.Fatal("rollback bridge accepted bound AGY account")
-	}
 }
 
 func TestEgressSS2022AndConnectivityProbePostgres(t *testing.T) {

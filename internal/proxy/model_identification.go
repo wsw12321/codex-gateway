@@ -1,30 +1,24 @@
 package proxy
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
 const (
-	ModelIdentificationProtocol = "model_identification_direct_v1"
 	// ModelIdentificationCPAProtocol is the plugin's: probes are ordinary
 	// Responses requests that CPA builds, pinned to one account by the
 	// Gateway's allocation callbacks.
 	ModelIdentificationCPAProtocol = "model_identification_cpa_v1"
-	// The sidecar stops a probe at 180 seconds; allow time for its terminal reply.
+	// A probe is given 180 seconds upstream; allow time for its terminal reply.
 	ModelIdentificationProbeTimeout = 185 * time.Second
-	modelIdentificationPath         = "/internal/model-identification"
-	diagnosticRunHeader             = "X-Codex-Diagnostic-Run"
-	diagnosticProbeHeader           = "X-Codex-Diagnostic-Probe"
+	modelIdentificationRoute        = "model-identification"
 )
 
 // ModelIdentificationProbe contains trusted task metadata, not client headers.
@@ -43,7 +37,7 @@ type ModelIdentificationProbe struct {
 func ValidModelIdentificationModel(model string) bool { return validSidecarModelID(model) }
 
 // ModelIdentificationError retains safe diagnostic facts without retaining a
-// sidecar or upstream response. Cause is available only for cancellation checks.
+// CPA or upstream response. Cause is available only for cancellation checks.
 type ModelIdentificationError struct {
 	Code           string
 	Stage          string
@@ -64,8 +58,8 @@ func (e *ModelIdentificationError) SafeCode() string {
 	return "probe_unavailable"
 }
 
-// Restrict both the code and its source stage to values emitted by the pinned
-// diagnostic protocol. Neither an arbitrary upstream message nor its code is safe.
+// Restrict both the code and its source stage to the diagnostic protocol's
+// fixed values. Neither an arbitrary upstream message nor its code is safe.
 var diagnosticErrorStages = map[string]string{
 	"protocol_unsupported":         "preflight",
 	"probe_request_invalid":        "preflight",
@@ -122,14 +116,10 @@ func (c *Client) RequireModelIdentificationCapability(ctx context.Context) error
 	var response struct {
 		Protocol string `json:"protocol"`
 	}
-	if err := c.diagnosticJSON(ctx, http.MethodGet, modelIdentificationPath+"/capabilities", nil, nil, &response); err != nil {
+	if err := c.diagnosticJSON(ctx, modelIdentificationRoute+"/capabilities", &response); err != nil {
 		return err
 	}
-	want := ModelIdentificationProtocol
-	if c.ledger != nil {
-		want = ModelIdentificationCPAProtocol
-	}
-	if response.Protocol != want {
+	if response.Protocol != ModelIdentificationCPAProtocol {
 		return diagnosticError("protocol_unsupported", http.StatusServiceUnavailable)
 	}
 	return nil
@@ -147,7 +137,7 @@ func (c *Client) ListModelIdentificationModels(ctx context.Context, accountID st
 		AccountID string    `json:"account_id"`
 		Models    *[]string `json:"models"`
 	}
-	if err := c.diagnosticJSON(ctx, http.MethodGet, modelIdentificationPath+"/accounts/"+accountID+"/models", nil, nil, &response); err != nil {
+	if err := c.diagnosticJSON(ctx, modelIdentificationRoute+"/accounts/"+accountID+"/models", &response); err != nil {
 		return nil, err
 	}
 	if response.AccountID != accountID || response.Models == nil || len(*response.Models) > 256 {
@@ -174,65 +164,32 @@ func (c *Client) ProbeModelIdentification(ctx context.Context, probe ModelIdenti
 		len(probe.Prompt) > 8<<10 || !utf8.ValidString(probe.Prompt) || strings.ContainsRune(probe.Prompt, 0) {
 		return "", diagnosticError("probe_request_invalid", http.StatusBadRequest)
 	}
-	if c.ledger != nil {
-		return c.probeThroughCPA(ctx, probe)
+	// Pinning a probe to its account is the ledger's job; without one the
+	// probe could reach any account, so it is not sent.
+	if c.ledger == nil {
+		return "", diagnosticError("probe_unavailable", http.StatusServiceUnavailable)
 	}
-	body, err := json.Marshal(struct {
-		Model           string `json:"model"`
-		Input           string `json:"input"`
-		MaxOutputTokens int    `json:"max_output_tokens"`
-	}{probe.Model, probe.Prompt, 16384})
-	if err != nil {
-		return "", diagnosticError("probe_request_invalid", http.StatusBadRequest)
-	}
-	ctx, cancel := context.WithTimeout(ctx, ModelIdentificationProbeTimeout)
-	defer cancel()
-	headers := http.Header{
-		gatewayUserHeader:     {probe.UserID},
-		diagnosticRunHeader:   {probe.RunID},
-		diagnosticProbeHeader: {strconv.Itoa(probe.ProbeIndex)},
-	}
-	var response struct {
-		AccountID  string `json:"account_id"`
-		OutputText string `json:"output_text"`
-	}
-	if err := c.diagnosticJSON(ctx, http.MethodPost, modelIdentificationPath+"/accounts/"+probe.AccountID+"/probe", body, headers, &response); err != nil {
-		return "", err
-	}
-	if response.AccountID != probe.AccountID {
-		return "", diagnosticError("probe_account_mismatch", http.StatusBadGateway)
-	}
-	if !utf8.ValidString(response.OutputText) || len(response.OutputText) > 16<<10 {
-		return "", diagnosticError("probe_output_too_large", http.StatusBadGateway)
-	}
-	if strings.TrimSpace(response.OutputText) == "" {
-		return "", diagnosticError("probe_empty_output", http.StatusBadGateway)
-	}
-	return response.OutputText, nil
+	return c.probeThroughCPA(ctx, probe)
 }
 
-func (c *Client) diagnosticJSON(ctx context.Context, method, path string, body []byte, headers http.Header, destination any) error {
+// diagnosticJSON reads one of the plugin's model identification routes.
+func (c *Client) diagnosticJSON(ctx context.Context, route string, destination any) error {
 	if c.requireEgress {
 		if err := c.RequireAccountAccessCapability(ctx); err != nil {
 			return err
 		}
 	}
-	target, token := c.internalTarget(path)
-	request, err := http.NewRequestWithContext(ctx, method, target.String(), bytes.NewReader(body))
+	target, ok := c.managementTarget(route)
+	if !ok {
+		return diagnosticError("probe_unavailable", http.StatusServiceUnavailable)
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return diagnosticError("probe_request_invalid", http.StatusBadRequest)
 	}
-	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Authorization", "Bearer "+c.managementToken)
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
-	if len(body) > 0 {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	for key, values := range headers {
-		for _, value := range values {
-			request.Header.Add(key, value)
-		}
-	}
 	response, err := c.diagnosticHTTP.Do(request)
 	if err != nil {
 		return diagnosticTransportError(ctx, err)

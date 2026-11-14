@@ -88,7 +88,7 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 		p.unavailable = err
 		return p
 	}
-	inventory, err := NewInventory(host, cfg.AuthDir, cfg.AntigravityEnabled)
+	inventory, err := NewInventory(host, cfg.AuthDir)
 	if err != nil {
 		p.unavailable = err
 		return p

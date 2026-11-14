@@ -242,7 +242,7 @@ func newFixture(t *testing.T, n int) *fixture {
 }
 
 func (f *fixture) build() {
-	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, AntigravityEnabled: true, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317", GlobalProxyURL: testGlobalProxy, EgressProxyHost: "egress-allowlist:3129"}
+	cfg := Config{InternalKey: testInternalKey, ManagementKey: testManagementKey, AuthDir: f.dir, BindingTTL: time.Hour, HoldTTL: 5 * time.Minute, CallbackTimeout: time.Second, GatewayURL: "http://gateway:8080", LoopbackURL: "http://127.0.0.1:8317", GlobalProxyURL: testGlobalProxy, EgressProxyHost: "egress-allowlist:3129"}
 	f.plugin = NewWithConfig(cfg, f.host, f.alloc)
 	if f.plugin.unavailable != nil {
 		return

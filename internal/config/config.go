@@ -32,30 +32,21 @@ type Limits struct {
 }
 
 type Config struct {
-	ListenAddress      string
-	PublicURL          *url.URL
-	BrowserClientURL   *url.URL
-	RPID               string
-	RPOrigins          []string
-	DatabaseURL        string
-	SidecarURL         *url.URL
-	SidecarToken       string
+	ListenAddress    string
+	PublicURL        *url.URL
+	BrowserClientURL *url.URL
+	RPID             string
+	RPOrigins        []string
+	DatabaseURL      string
+	SidecarURL       *url.URL
+	SidecarToken     string
+	// CPAManagementToken is CPA's management key. The Gateway plugin serves
+	// its account routes behind it, so the Gateway cannot run without one.
 	CPAManagementToken string
 	EgressControlKey   string
 	EgressControlURL   *url.URL
-	// CPAIntegration selects how the Gateway integrates with CPA. "plugin" is
-	// unmodified CPA with the Gateway plugin: allocation is attributed through
-	// the request ledger instead of response headers. It is what the default
-	// Compose deployment sets. "patch" is the source-patched rollback image
-	// and its /internal/* endpoints; it stays the value when nothing is set,
-	// because it needs no CPA management key. A mismatch with the running
-	// image fails closed at the Gateway's capability probe.
-	CPAIntegration string
-	// AntigravityTransport is cpa by default. legacy-bridge is reserved for
-	// the rehearsed rollback build and requires separate bridge credentials.
-	AntigravityTransport   string
-	AntigravityBridgeURL   *url.URL
-	AntigravityBridgeToken string
+	// AntigravityModelRoutes names the reviewed CPA Antigravity models this
+	// deployment serves, each mapped to itself. Unset means all of them.
 	AntigravityModelRoutes map[string]string
 	KeyPepper              []byte
 	TokenPepper            []byte
@@ -89,8 +80,7 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	antigravityToken, err := envOrFile("ANTIGRAVITY_BRIDGE_API_KEY")
-	if err != nil {
+	if err := rejectRetiredIntegrations(); err != nil {
 		return Config{}, err
 	}
 	antigravityRoutes, err := ParseAntigravityModelRoutes(os.Getenv("ANTIGRAVITY_MODEL_ROUTES_JSON"))
@@ -118,9 +108,6 @@ func Load() (Config, error) {
 		DatabaseURL:            databaseURL,
 		SidecarToken:           sidecarToken,
 		CPAManagementToken:     cpaManagementToken,
-		CPAIntegration:         envDefault("CPA_INTEGRATION", "patch"),
-		AntigravityTransport:   envDefault("ANTIGRAVITY_TRANSPORT", "cpa"),
-		AntigravityBridgeToken: antigravityToken,
 		AntigravityModelRoutes: antigravityRoutes,
 		BodyLimit:              defaultBodyLimit,
 		SessionIdle:            12 * time.Hour,
@@ -153,12 +140,7 @@ func Load() (Config, error) {
 	if cfg.SidecarURL, err = parseURL("SIDECAR_URL", os.Getenv("SIDECAR_URL")); err != nil {
 		return Config{}, err
 	}
-	if value := strings.TrimSpace(os.Getenv("ANTIGRAVITY_BRIDGE_URL")); value != "" {
-		if cfg.AntigravityBridgeURL, err = parseURL("ANTIGRAVITY_BRIDGE_URL", value); err != nil {
-			return Config{}, err
-		}
-	}
-	if cfg.UsesCPAAntigravity() && len(cfg.AntigravityModelRoutes) == 0 {
+	if len(cfg.AntigravityModelRoutes) == 0 {
 		cfg.AntigravityModelRoutes = make(map[string]string)
 		for _, model := range AntigravityModels() {
 			cfg.AntigravityModelRoutes[model] = model

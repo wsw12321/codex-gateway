@@ -382,7 +382,6 @@ type Inventory struct {
 	antigravity      *identityRegistry
 	antigravityEmail *identityRegistry
 	anthropic        *identityRegistry
-	antigravOn       bool
 	now              func() time.Time
 	maxAge           time.Duration
 
@@ -402,7 +401,7 @@ type resolvedIdentity struct {
 }
 
 // NewInventory loads the identity registries from authDir.
-func NewInventory(host Host, authDir string, antigravityEnabled bool) (*Inventory, error) {
+func NewInventory(host Host, authDir string) (*Inventory, error) {
 	antigravity, err := loadIdentityRegistry(authDir, AntigravityIdentityFile, antigravityIdentityDomain, validGoogleSubject)
 	if err != nil {
 		return nil, err
@@ -416,7 +415,7 @@ func NewInventory(host Host, authDir string, antigravityEnabled bool) (*Inventor
 		return nil, err
 	}
 	return &Inventory{
-		host: host, antigravity: antigravity, antigravityEmail: antigravityEmail, anthropic: anthropic, antigravOn: antigravityEnabled,
+		host: host, antigravity: antigravity, antigravityEmail: antigravityEmail, anthropic: anthropic,
 		now: time.Now, maxAge: 15 * time.Second,
 		byAuthID: map[string]*Account{}, fingerprint: map[string]string{}, identity: map[string]resolvedIdentity{},
 	}, nil
@@ -542,9 +541,6 @@ func (inv *Inventory) refreshLocked(now time.Time) error {
 			continue
 		}
 		if provider != ProviderCodex && provider != ProviderAntigravity && provider != ProviderClaude {
-			continue
-		}
-		if provider == ProviderAntigravity && !inv.antigravOn {
 			continue
 		}
 		fingerprint := entry.AuthIndex + "|" + entry.ModTime.UTC().Format(time.RFC3339Nano) + "|" + entry.UpdatedAt.UTC().Format(time.RFC3339Nano) + "|" + itoa(entry.Size)

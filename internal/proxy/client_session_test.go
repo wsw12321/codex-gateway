@@ -30,11 +30,10 @@ func TestForwardSessionHeaders(t *testing.T) {
 		{name: "models", path: "/v1/models", contentType: "application/json", response: `{"data":[{"id":"gpt-test"}]}`},
 	}
 	tests := []struct {
-		name        string
-		headers     http.Header
-		want        http.Header
-		scope       string
-		antigravity bool
+		name    string
+		headers http.Header
+		want    http.Header
+		scope   string
 	}{
 		{name: "no session header"},
 		{
@@ -71,11 +70,6 @@ func TestForwardSessionHeaders(t *testing.T) {
 			},
 			want: http.Header{"Session-Id": {"first-hyphen", "last-hyphen"}, "Session_id": {"first-underscore", "last-underscore"}},
 		},
-		{
-			name:        "antigravity strips both spellings",
-			headers:     http.Header{"sEsSiOn-iD": {"hyphen-session"}, "sEsSiOn_iD": {"underscore-session"}},
-			antigravity: true,
-		},
 	}
 	for _, endpoint := range endpoints {
 		t.Run(endpoint.name, func(t *testing.T) {
@@ -96,12 +90,8 @@ func TestForwardSessionHeaders(t *testing.T) {
 								t.Errorf("%s = %q, want %q", header, got, want)
 							}
 						}
-						wantMetadata := metadata
-						if test.antigravity {
-							wantMetadata = ""
-						}
-						if got := r.Header.Get("X-Codex-Turn-Metadata"); got != wantMetadata {
-							t.Errorf("turn metadata = %q, want %q", got, wantMetadata)
+						if got := r.Header.Get("X-Codex-Turn-Metadata"); got != metadata {
+							t.Errorf("turn metadata = %q, want %q", got, metadata)
 						}
 						var wantScopes []string
 						if test.scope != "" {
@@ -113,7 +103,7 @@ func TestForwardSessionHeaders(t *testing.T) {
 						if got := r.Header.Get("Authorization"); got != "Bearer internal-secret" {
 							t.Errorf("authorization = %q", got)
 						}
-						for _, header := range []string{upstreamAccountHeader, "Cookie", "X-Injected"} {
+						for _, header := range []string{retiredAccountHeader, "Cookie", "X-Injected"} {
 							if values := r.Header.Values(header); len(values) != 0 {
 								t.Errorf("forbidden header %s leaked upstream: %q", header, values)
 							}
@@ -133,8 +123,7 @@ func TestForwardSessionHeaders(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					client := NewWithHTTPClient(base, "internal-secret", upstream.Client())
-					client.antigravity = test.antigravity
+					client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
 					request := httptest.NewRequest(method, "https://gateway.test"+endpoint.path, strings.NewReader(body))
 					for key, values := range test.headers {
 						// Preserve noncanonical key casing to exercise HTTP case-insensitive matching.
@@ -166,6 +155,52 @@ func TestForwardSessionHeaders(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// An Antigravity request carries the Gateway's caller scope and nothing the
+// client sent to identify a session, in either header spelling.
+func TestAntigravityForwardStripsSessionHeaders(t *testing.T) {
+	const scope = "0123456789012345678901234567890123456789012"
+	const body = `{"model":"gemini-3.8-flash-high","input":"hello"}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, header := range []string{"Session-Id", "Session_id", "X-Codex-Turn-Metadata", "X-Parent-Session-Id", retiredAccountHeader, "Cookie"} {
+			if values := r.Header.Values(header); len(values) != 0 {
+				t.Errorf("%s reached Antigravity: %q", header, values)
+			}
+		}
+		if got := r.Header.Values(affinityHeader); !slices.Equal(got, []string{scope}) {
+			t.Errorf("affinity scopes = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer internal-secret" {
+			t.Errorf("authorization = %q", got)
+		}
+		if gotBody, err := io.ReadAll(r.Body); err != nil || string(gotBody) != body {
+			t.Errorf("request body = %q, %v", gotBody, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"gemini-3.8-flash-high","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	base, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", upstream.Client()))
+	client.antigravity = true
+	request := httptest.NewRequest(http.MethodPost, "https://gateway.test/v1/responses", strings.NewReader(body))
+	request.Header["sEsSiOn-iD"] = []string{"hyphen-session"}
+	request.Header["sEsSiOn_iD"] = []string{"underscore-session"}
+	request.Header.Set("X-Codex-Turn-Metadata", `{"session_id":"metadata-session"}`)
+	request.Header.Set("X-Parent-Session-Id", "parent")
+	request.Header.Set("Authorization", "Bearer caller-api-key")
+	request.Header.Set("Cookie", "session=caller-cookie")
+	request.Header["x-codex-gateway-affinity"] = []string{strings.Repeat("z", 43)}
+	request.Header["x-codex-upstream-account"] = []string{"fedcba9876543210"}
+	recorder := httptest.NewRecorder()
+	result, failure := client.ForwardWithOptions(context.Background(), recorder, request, "/v1/responses", ForwardOptions{AffinityScope: scope})
+	if failure != nil || result.StatusCode != http.StatusOK || recorder.Body.Len() == 0 {
+		t.Fatalf("result=%+v failure=%v", result, failure)
 	}
 }
 
@@ -224,10 +259,10 @@ func TestCopyAllowedHeadersSidecarRelations(t *testing.T) {
 	}
 
 	client.antigravity = true
-	bridge := make(http.Header)
-	client.copyAllowedHeaders(bridge, source)
+	stripped := make(http.Header)
+	client.copyAllowedHeaders(stripped, source)
 	for key := range want {
-		if values := bridge.Values(key); len(values) != 0 {
+		if values := stripped.Values(key); len(values) != 0 {
 			t.Errorf("relation header %s leaked to Antigravity: %q", key, values)
 		}
 	}

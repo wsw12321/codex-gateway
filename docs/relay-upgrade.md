@@ -1,5 +1,11 @@
 # 现有双服务器中转升级：让 Gemini 同样经 B
 
+> **历史记录。** 本页描述旧 Antigravity 桥接时期的流程。旧桥接、凭证迁移工具与源码补丁镜像已于
+> 2026-11-13 删除（[路线图第 8 步](cpa-plugin-roadmap.md#8-改为默认并清理)）：Antigravity 由 CPA
+> 在同一进程中提供，账号在“CPA 授权管理”页面授权，文中的桥接、`legacy-bridge` profile、
+> 命令行登录与回滚步骤都已不可用。当前流程见[兼容层升级规程](compatibility-upgrades.md)和
+> [运维手册](operations.md#cpa-插件镜像的升级与回退)。
+
 适用于 A 上网关与 Gemini 已正常运行、Codex 已按旧版
 [双服务器教程](openai-relay.md) 经 WireGuard 和 B Squid 出网的部署。
 首次配置双机中转请使用该教程。

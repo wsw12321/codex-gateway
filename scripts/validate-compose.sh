@@ -24,14 +24,9 @@ egress_entrypoint=$root/deploy/egress/entrypoint.sh
 relay_config=$root/deploy/relay/squid.conf
 relay_compose=$root/deploy/relay/docker-compose.yml
 relay_service=$root/deploy/relay/wg-codex
-compat_dockerfile=$root/deploy/codex-compat/Dockerfile
-compat_entrypoint=$root/deploy/codex-compat/entrypoint.sh
-compat_patch=$root/deploy/codex-compat/cliproxy-v8.0.59-gateway.patch
-compat_patch_sha256=f6d25e7f06e227775a3edaeff53341600b39696db1b94fc664cab0f91500233e
-bridge_dockerfile=$root/deploy/antigravity-bridge/Dockerfile
-bridge_entrypoint=$root/deploy/antigravity-bridge/entrypoint.sh
-agy_lock=$root/deploy/antigravity-bridge/agy.lock.json
-compat_image=codex-gateway-compat:v8.0.59-c5251b57-f6d25e7f06e22777-cpa
+compat_dockerfile=$root/deploy/codex-compat/plugin.Dockerfile
+compat_entrypoint=$root/deploy/codex-compat/plugin-entrypoint.sh
+plugin_lock=$root/deploy/codex-compat/plugin.lock.json
 tmp=$(mktemp)
 relay_tmp=$(mktemp)
 trap 'rm -f "$tmp" "$relay_tmp"' EXIT HUP INT TERM
@@ -51,64 +46,49 @@ test -r "$lock" || {
 test -r "$env_file" || {
     fail 'copy deploy/env.example to .env and configure it first'
 }
-test -s "$compat_patch" || fail 'reviewed CLIProxyAPI multi-account patch is missing'
-test "$(sha256sum "$compat_patch" | awk '{print $1}')" = "$compat_patch_sha256" || \
-    fail 'reviewed CLIProxyAPI multi-account patch checksum changed'
-jq -e --arg patch "$compat_patch_sha256" '
+# The CPA source, the residual patch and the model catalog are pinned
+# together in the plugin lock; the image tag records all three.
+jq -e '
     .repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .tag == "v8.0.59" and
-    .commit == "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and
-    .patch == "cliproxy-v8.0.59-gateway.patch" and
-    .patch_sha256 == $patch and .go_version == "1.26.11" and
-    .automatic_updates == false and
-    .model_catalog.repository == "https://github.com/router-for-me/CLIProxyAPI" and
-    .model_catalog.commit == "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and
-    .model_catalog.file == "internal/registry/models/models.json" and
-    .model_catalog.sha256 == "99037d47cc67751a02847f8a5ed3463c694de88319ee458e527844821b9a9bd0"
-' "$root/deploy/codex-compat/source.lock.json" >/dev/null || \
-    fail 'CPA source and reviewed local model provenance must remain locked'
+    (.tag | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+    (.commit | test("^[0-9a-f]{40}$")) and
+    .residual_patch == "residual/cliproxy-plugin-only-selector.patch" and
+    (.residual_patch_sha256 | test("^[0-9a-f]{64}$")) and
+    (.model_catalog_sha256 | test("^[0-9a-f]{64}$")) and
+    .go_version == "1.26.11" and .automatic_updates == false and
+    .image == ("codex-gateway-compat:" + .tag + "-" + .commit[:8] + "-" + .residual_patch_sha256[:16] + "-plugin")
+' "$plugin_lock" >/dev/null || fail 'CPA source, residual patch and model catalog must remain locked together'
+cpa_version=$(jq -er .tag "$plugin_lock")
+cpa_commit=$(jq -er .commit "$plugin_lock")
+residual_patch=$root/deploy/codex-compat/$(jq -er .residual_patch "$plugin_lock")
+residual_sha256=$(jq -er .residual_patch_sha256 "$plugin_lock")
+test "$(sha256sum "$residual_patch" | awk '{print $1}')" = "$residual_sha256" || \
+    fail 'the reviewed residual plugin-only patch checksum changed'
+grep -Fq "$(jq -er .model_catalog_sha256 "$plugin_lock")" "$compat_dockerfile" || \
+    fail 'codex-compat image must verify the locked CPA model catalog'
 if grep -Eq 'gemini-cli|GEMINI_PLUGIN|geminicli-login|cliproxy-v7.2.150-gemini.patch' "$compat_dockerfile" "$compat_entrypoint"; then
     fail 'codex-compat must not build or load the retired Gemini plugin'
 fi
-grep -A1 '^plugins:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' || \
-    fail 'codex-compat must disable plugins and ignore legacy Gemini credentials'
-grep -A1 '^discovery:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' && \
-    grep -A1 '^codex:' "$compat_entrypoint" | grep -Eq 'response-steering:[[:space:]]*false' || \
-    fail 'codex-compat must disable LAN advertising and experimental websocket steering'
-grep -Fq 'legacy-credentials.test.txt' "$compat_dockerfile" || \
-    fail 'codex-compat must test preservation and rejection of legacy Gemini credentials'
-jq -e '.version == "1.2.4" and .platform == "linux_amd64" and
-    .url == "https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz" and
-    .sha512 == "5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897"' \
-    "$agy_lock" >/dev/null || fail 'agy version, official artifact and SHA512 must remain pinned'
-grep -Fq 'sha512sum -c -' "$bridge_dockerfile" && \
-    grep -Fq 'AGY_CLI_DISABLE_AUTO_UPDATE=true' "$bridge_dockerfile" && \
-    grep -Fq 'dbus-run-session' "$bridge_entrypoint" && \
-    grep -Fq 'gnome-keyring-daemon --unlock' "$bridge_entrypoint" || \
-    fail 'Bridge requires checksum verification, disabled updates and a local Secret Service'
 grep -Fxq 'http_access deny !CONNECT' "$egress_config" && \
     grep -Fxq 'http_access deny !TLS_port' "$egress_config" && \
     grep -Fxq 'http_access deny all' "$egress_config" && \
     grep -Fxq 'request_header_access Forwarded deny all' "$egress_config" || \
     fail 'egress must retain HTTPS CONNECT restrictions and exact reviewed provider domains'
-test "$(awk '$1 == "acl" && ($2 == "codex_clients" || $2 == "antigravity_clients" || $2 == "gateway_oidc_clients" || $2 == "codex_upstreams" || $2 == "cpa_google_upstreams" || $2 == "cpa_anthropic_upstreams" || $2 == "antigravity_upstreams") { print }' "$egress_config")" = \
+test "$(awk '$1 == "acl" && ($2 ~ /_clients$/ || $2 ~ /_upstreams$/) { print }' "$egress_config")" = \
     "$(printf '%s\n' \
         'acl codex_clients src 172.28.30.3/32' \
-        'acl antigravity_clients src 172.28.40.3/32' \
         'acl gateway_oidc_clients src 172.28.30.2/32' \
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
         'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
-        'acl cpa_anthropic_upstreams dstdomain -n platform.claude.com api.anthropic.com' \
-        'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net')" || \
+        'acl cpa_anthropic_upstreams dstdomain -n platform.claude.com api.anthropic.com')" || \
     fail 'egress source and destination ACLs must equal the reviewed exact lists'
 test "$(awk '$1 == "http_access" { print }' "$egress_config")" = \
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' \
         'http_access deny account_route !codex_clients' \
         'http_access allow CONNECT codex_clients codex_upstreams' \
         'http_access allow CONNECT codex_clients cpa_google_upstreams' \
-        'http_access allow CONNECT codex_clients cpa_anthropic_upstreams' \
-        'http_access allow CONNECT antigravity_clients antigravity_upstreams' 'http_access deny all')" || \
-    fail 'egress must separate Codex and Antigravity destination rules'
+        'http_access allow CONNECT codex_clients cpa_anthropic_upstreams' 'http_access deny all')" || \
+    fail 'egress must allow CPA only its exact provider destination rules'
 # The generated fragment is the only place permitted to select an upstream or
 # change direct routing. Check its output as well as parsing it with Squid below.
 sh -n "$egress_entrypoint" && sh -n "$relay_service" || fail 'relay shell syntax is invalid'
@@ -131,11 +111,9 @@ test "$relay_rules" = "$(printf '%s\n' \
     'cache_peer 10.77.0.2 parent 3128 0 no-query default name=codex_relay' \
     'cache_peer_access codex_relay deny account_route' \
     'cache_peer_access codex_relay allow codex_clients' \
-    'cache_peer_access codex_relay allow antigravity_clients' \
     'cache_peer_access codex_relay deny all' \
     'never_direct allow codex_clients' \
-    'never_direct allow antigravity_clients' \
-    'never_direct deny all')" || fail 'Codex and Antigravity must share a unique mandatory parent without direct fallback'
+    'never_direct deny all')" || fail 'CPA provider traffic must use a unique mandatory parent without direct fallback'
 direct_rules=$(EGRESS_MODE=direct OIDC_ENABLED=false OIDC_AUTH_HOST= CODEX_RELAY_IP=10.77.0.2 CODEX_RELAY_PORT=3128 sh "$egress_entrypoint" --render-config) || \
     fail 'explicit direct fragment generation failed'
 test "$(printf '%s\n' "$direct_rules" | awk 'NF && $1 !~ /^#/ { print }')" = \
@@ -167,10 +145,8 @@ test "$(awk '$1 == "http_access" || ($1 == "include" && $2 == "/run/gateway-oidc
     "$(printf '%s\n' 'http_access deny !CONNECT' 'http_access deny !TLS_port' 'http_access deny account_route !codex_clients' 'include /run/gateway-oidc.conf')" || \
     fail 'OIDC egress must follow the global CONNECT and TLS port denials'
 grep -Fxq 'logformat codex_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
-    grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" && \
-    grep -Fxq 'logformat bridge_destinations %ts.%03tu %ru %>Hs %Sh/%<a' "$egress_config" && \
-    grep -Fxq 'access_log stdio:/var/log/squid/access.log bridge_destinations CONNECT antigravity_clients' "$egress_config" || \
-    fail 'Codex and Antigravity CONNECT logs must include destination, status and the selected forwarding path'
+    grep -Fxq 'access_log stdio:/var/log/squid/access.log codex_destinations CONNECT codex_clients' "$egress_config" || \
+    fail 'CPA CONNECT logs must include destination, status and the selected forwarding path'
 test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cache_peer_access|always_direct|never_direct|ssl_bump)$/ { print }' "$relay_config")" = \
     "$(printf '%s\n' \
         'http_port 10.77.0.2:3128' \
@@ -180,14 +156,12 @@ test "$(awk '$1 ~ /^(acl|http_port|https_port|http_access|include|cache_peer|cac
         'acl codex_upstreams dstdomain -n auth.openai.com chatgpt.com' \
         'acl cpa_google_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com daily-cloudcode-pa.sandbox.googleapis.com' \
         'acl cpa_anthropic_upstreams dstdomain -n platform.claude.com api.anthropic.com' \
-        'acl antigravity_upstreams dstdomain -n accounts.google.com oauth2.googleapis.com www.googleapis.com cloudcode-pa.googleapis.com daily-cloudcode-pa.googleapis.com aicode.googleapis.com businessaicode.googleapis.com generativelanguage.googleapis.com lh3.googleusercontent.com antigravity-unleash.goog play.googleapis.com playwright.azureedge.net playwright-akamai.azureedge.net playwright-verizon.azureedge.net' \
         'http_access deny !CONNECT' \
         'http_access deny !TLS_port' \
         'http_access allow CONNECT relay_clients codex_upstreams' \
         'http_access allow CONNECT relay_clients cpa_google_upstreams' \
         'http_access allow CONNECT relay_clients cpa_anthropic_upstreams' \
-        'http_access allow CONNECT relay_clients antigravity_upstreams' \
-        'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact Codex and Antigravity HTTPS destinations'
+        'http_access deny all')" || fail 'B must accept only A over WireGuard for the exact CPA provider HTTPS destinations'
 test "$(awk '$1 == "cache_mem" { print }' "$relay_config")" = 'cache_mem 0 MB' || \
     fail 'B CONNECT-only relay must disable the object memory cache'
 grep -Fxq '    need net' "$relay_service" && \
@@ -195,94 +169,43 @@ grep -Fxq '    need net' "$relay_service" && \
     grep -Fq '/usr/bin/wg-quick up wg-codex' "$relay_service" && \
     grep -Fq '/usr/bin/wg-quick down wg-codex' "$relay_service" || \
     fail 'B requires a WireGuard OpenRC service ordered before Docker'
-grep -Fq 'git apply --check --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" && \
-    grep -Fq 'git apply --ignore-space-change /tmp/cliproxy-multi-account.patch' "$compat_dockerfile" || \
-    fail 'codex-compat image must fail closed when the reviewed patch no longer applies'
-grep -Fq 'go test -count=1' "$compat_dockerfile" || \
-    fail 'codex-compat image must run the patch regression tests'
-grep -Fq 'go test -list' "$compat_dockerfile" && grep -Fq 'grep -Fxq "$test_name"' "$compat_dockerfile" || \
-    fail 'codex-compat image must fail closed when a named runtime regression test is missing'
-grep -Fq 'TestCodexAstraUpgradeHTTPTransports' "$compat_dockerfile" && \
-    grep -Fq 'TestAstraUpgradeModels' "$compat_patch" && \
-    grep -Fq 'TestAstraUpgradeResponses' "$compat_patch" || \
-    fail 'codex-compat must verify Astra models, Responses, SSE, and compact'
-grep -Fq './internal/watcher' "$compat_dockerfile" && \
-    grep -Fq './internal/auth/codex' "$compat_dockerfile" && \
-    grep -Fq './sdk/auth' "$compat_dockerfile" || \
-    fail 'codex-compat image must test OAuth redirects, stable-index, and duplicate-file reconciliation'
+grep -Fq 'git apply --check /tmp/cliproxy-residual.patch' "$compat_dockerfile" && \
+    ! grep -Fq -- '--ignore-space-change' "$compat_dockerfile" || \
+    fail 'codex-compat image must fail closed when the residual patch no longer applies exactly'
+grep -Fq "! grep -q -- '--- SKIP' /tmp/e2e.log" "$compat_dockerfile" && \
+    grep -Fq 'grep -Fq -- "--- PASS: $test_name " /tmp/e2e.log' "$compat_dockerfile" || \
+    fail 'codex-compat image must fail closed when a named end-to-end test is skipped or missing'
 grep -Eq '^max-retry-credentials:[[:space:]]*4[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must cap each request at four credentials'
 grep -Eq '^request-retry:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^max-retry-interval:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must not allocate handler-layer request retry attempts'
-grep -Eq '^[[:space:]]+strategy:[[:space:]]*"gateway-allocation"[[:space:]]*$' "$compat_entrypoint" && \
-    grep -Eq '^[[:space:]]+session-affinity:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" || \
-    fail 'codex-compat must use Gateway account allocation with session affinity'
-grep -Fq 'http://gateway:8080/internal/upstream-accounts/select' "$compat_patch" && \
-    grep -Fq 'TestGatewayAllocationConcurrentFirstBinding' "$compat_patch" && \
-    grep -Fq 'TestGatewayAllocationFailoverFinalAttribution' "$compat_patch" && \
-    grep -Fq 'TestGatewayAllocationRejectsAlternateSchedulers' "$compat_patch" && \
-    grep -Fq 'TestGatewayAllocationRechecksControlWithoutHoldingManagerLock' "$compat_patch" || \
-    fail 'codex-compat must carry bounded Gateway allocation and concurrency regressions'
-grep -Fq 'http://gateway:8080/internal/upstream-accounts/eligible' "$compat_patch" && \
-    grep -Fq 'upstream_account_access_v1' "$compat_patch" && \
-    grep -Fq 'TestGatewayAllocationAccessRechecksBindingsAndPreservesOtherSessions' "$compat_patch" && \
-    grep -Fq 'TestGatewayUserIdentityConsumedAndValidated' "$compat_patch" || \
-    fail 'codex-compat must enforce authenticated per-user account eligibility before binding reuse'
-grep -Eq '^[[:space:]]+session-affinity-ttl:[[:space:]]*"1h"[[:space:]]*$' "$compat_entrypoint" || \
-    fail 'codex-compat must retain session affinity for one hour'
+grep -Eq '^[[:space:]]+strategy:[[:space:]]*"plugin-only"[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+session-affinity:[[:space:]]*false[[:space:]]*$' "$compat_entrypoint" || \
+    fail 'codex-compat must leave account selection and bindings to the Gateway plugin alone'
 grep -Eq '^[[:space:]]+bootstrap-retries:[[:space:]]*0[[:space:]]*$' "$compat_entrypoint" || \
     fail 'codex-compat must disable handler-layer stream bootstrap retries'
 grep -A1 -E '^response-compression:[[:space:]]*$' "$compat_entrypoint" | grep -Eq '^[[:space:]]+enabled:[[:space:]]*false[[:space:]]*$' || \
     fail 'codex-compat must keep internal Gateway responses uncompressed'
-grep -Eq '^[[:space:]]+allow-remote:[[:space:]]*false[[:space:]]*$' "$compat_entrypoint" && \
-    grep -Eq '^[[:space:]]+secret-key:[[:space:]]*""[[:space:]]*$' "$compat_entrypoint" && \
+grep -A1 '^discovery:' "$compat_entrypoint" | grep -Eq 'enabled:[[:space:]]*false' && \
+    grep -A1 '^codex:' "$compat_entrypoint" | grep -Eq 'response-steering:[[:space:]]*false' || \
+    fail 'codex-compat must disable LAN advertising and experimental websocket steering'
+grep -Eq '^[[:space:]]+allow-remote:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" && \
+    grep -Eq '^[[:space:]]+secret-key:[[:space:]]*"\$\{management_key\}"[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^[[:space:]]+disable-control-panel:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" && \
     grep -Eq '^[[:space:]]+disable-auto-update-panel:[[:space:]]*true[[:space:]]*$' "$compat_entrypoint" || \
-    fail 'codex-compat full management API and control panels must remain disabled'
-grep -Fq 'X-Codex-Gateway-Affinity' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the reviewed caller-scope header contract'
-grep -Fq 'X-Codex-Upstream-Account' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the reviewed account attribution contract'
-grep -Fq '/internal/upstream-accounts' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the narrow internal account API'
-grep -Fq 'internalAccounts.GET("/concurrency", s.getUpstreamConcurrency)' "$compat_patch" && \
-    grep -Fq 'TestGatewayConcurrencyRepeatedReleaseAndRaces' "$compat_patch" && \
-    grep -Fq 'TestGatewayConcurrencyStreamWaitOutputCloseCancelAndFailure' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamConcurrencyRequiresBearerAndReturnsOnlyCounters' "$compat_patch" || \
-    fail 'CLIProxyAPI must expose authenticated execution concurrency with lifecycle regressions'
-grep -Fq 'TestConversationRootRecognizedHierarchy' "$compat_patch" && \
-    grep -Fq 'TestConversationRootConcurrentManagerExecutions' "$compat_patch" && \
-    grep -Fq 'TestGatewayConcurrencyDeduplicatesRootExecutions' "$compat_patch" && \
-    grep -Fq 'TestGatewayConcurrencySameRootCountsPerAccount' "$compat_patch" && \
-    grep -Fxq 'RUN go test -race -count=1 ./sdk/cliproxy/auth ./internal/watcher ./sdk/cliproxy' "$compat_dockerfile" || \
-    fail 'CLIProxyAPI must test caller-scoped root identity and account root concurrency under the race detector'
-grep -Fq 'internalAccounts.PUT("/:id/status", s.setUpstreamAccountStatus)' "$compat_patch" && \
-    grep -Fq '.gateway-account-state' "$compat_patch" && \
-    grep -Fq 'TestGatewayAccountConcurrentControlsRemainDurable' "$compat_patch" && \
-    grep -Fq 'TestGatewayAccountStateLoadRejectsInvalidExistingState' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountStatusPersistenceFailure' "$compat_patch" && \
-    grep -Fq 'TestCodexGatewayQuotaHTTPTransports' "$compat_dockerfile" && \
-    grep -Fq './sdk/cliproxy' "$compat_dockerfile" || \
-    fail 'CLIProxyAPI must test persistent account controls, fail-closed state, and quota signals'
-grep -Fq 'codexQuotaRPCMethod          = "account/rateLimits/read"' "$compat_patch" && \
-    grep -Fq 'codexQuotaRequestMaxBodySize = 256' "$compat_patch" && \
-    grep -Fq 'internalAccounts.POST("/:id/quota", s.getUpstreamAccountQuota)' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the strict POST quota RPC contract'
-grep -Fq 'TestInternalUpstreamAccountQuotaRequiresExactRPCRequest' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountQuotaIgnoresPlanMetadata' "$compat_patch" && \
-    grep -Fq 'TestNormalizeUpstreamUsageSupportsNullableWindowsAndCeilsDuration' "$compat_patch" && \
-    grep -Fq 'TestQuotaSchemaErrorCodeRejectsUnrecognizedErrors' "$compat_patch" && \
-    grep -Fq 'TestInternalUpstreamAccountQuotaRejectsOversizedSensitiveResponse' "$compat_patch" || \
-    fail 'CLIProxyAPI patch must carry the quota RPC security regressions'
+    fail 'codex-compat management API must use its own key with the control panels disabled'
+if grep -Eq '^proxy-url:' "$compat_entrypoint"; then
+    fail 'codex-compat must not configure a global proxy: every credential carries its own route'
+fi
 test -d "$secret_dir" && test ! -L "$secret_dir" || {
     fail "secret directory must be a real directory: $secret_dir"
 }
 
 if test "$oidc_overlay" = true; then
-    "$compose" -f "$root/deploy/oidc.override.yml" --profile legacy-bridge config --format json > "$tmp"
+    "$compose" -f "$root/deploy/oidc.override.yml" config --format json > "$tmp"
 else
-    "$compose" --profile legacy-bridge config --format json > "$tmp"
+    "$compose" config --format json > "$tmp"
 fi
 
 # Validate JSON strings before extracting them: command substitution strips
@@ -693,7 +616,7 @@ jq -e --arg mode "$egress_mode" '
   .networks.edge_internal.internal == true and
   .networks.data_internal.internal == true and
   .networks.compat_internal.internal == true and
-  .networks.antigravity_internal.internal == true and
+  .networks.antigravity_internal == null and
   ((.networks.tunnel_external.internal // false) == false) and
   ((.networks.egress_external.internal // false) == false) and
   ([.networks | to_entries[] | select((.value.internal // false) == false) | .key] | sort) ==
@@ -709,9 +632,6 @@ jq -e --arg mode "$egress_mode" '
   .services.gateway.networks.compat_internal.ipv4_address == "172.28.30.2" and
   .services["codex-compat"].networks.compat_internal.ipv4_address == "172.28.30.3" and
   .services["egress-allowlist"].networks.compat_internal.ipv4_address == "172.28.30.4" and
-  .services.gateway.networks.antigravity_internal.ipv4_address == "172.28.40.2" and
-  .services["antigravity-bridge"].networks.antigravity_internal.ipv4_address == "172.28.40.3" and
-  .services["egress-allowlist"].networks.antigravity_internal.ipv4_address == "172.28.40.4" and
   .services.gateway.environment.TRUSTED_PROXY_CIDRS ==
     (.services.caddy.networks.edge_internal.ipv4_address + "/32")
 ' "$tmp" >/dev/null
@@ -882,8 +802,8 @@ jq -e --slurpfile relay "$relay_tmp" --arg squid "$squid_image" --arg mode "$egr
   (.services["egress-allowlist"] |
     squid_security and .network_mode == null and
     (.networks | keys | sort) ==
-      (if $mode == "shadowsocks" then ["account_egress_data", "antigravity_internal", "compat_internal", "egress_external", "ss_internal"]
-       else ["account_egress_data", "antigravity_internal", "compat_internal", "egress_external"] end) and
+      (if $mode == "shadowsocks" then ["account_egress_data", "compat_internal", "egress_external", "ss_internal"]
+       else ["account_egress_data", "compat_internal", "egress_external"] end) and
     .entrypoint == ["/usr/local/bin/codex-egress-entrypoint.sh"] and
     .command == ["-f", "/etc/squid/squid.conf", "-NYC"] and
     (.volumes | length == 2) and
@@ -923,55 +843,27 @@ jq -e \
   .services.gateway.build.args.GOLANG_IMAGE == $golang and
   .services.gateway.build.args.RUNTIME_IMAGE == $runtime and
   .services["codex-compat"].build.args.GOLANG_IMAGE == $cliproxy_golang and
-  .services["codex-compat"].build.args.RUNTIME_IMAGE == $cliproxy_runtime and
-  .services["antigravity-bridge"].build.args.GOLANG_IMAGE == $golang and
-  .services["antigravity-bridge"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
+  .services["codex-compat"].build.args.RUNTIME_IMAGE == $cliproxy_runtime
 ' "$tmp" >/dev/null
 
-jq -e '
-  .services["codex-compat"].build.args.CLIPROXY_VERSION == "v8.0.59" and
-  .services["codex-compat"].build.args.CLIPROXY_COMMIT ==
-    "c5251b57b3fa5dcbc689f514f4aa166daacb4481" and
-  .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null
-' "$tmp" >/dev/null || fail 'codex-compat must remain pinned to the reviewed host without the Gemini plugin'
-# CPA_INTEGRATION in .env selects the image: plugin mode by default, the
-# source-patched image (deploy/patch-cpa.override.yml) for a rollback. The
-# Gateway and the CPA image must always agree.
-compat_integration=$(jq -r '.services.gateway.environment.CPA_INTEGRATION' "$tmp")
-case "$compat_integration" in
-    plugin)
-        plugin_lock=$root/deploy/codex-compat/plugin.lock.json
-        residual_patch=$root/deploy/codex-compat/$(jq -er .residual_patch "$plugin_lock")
-        residual_sha256=$(jq -er .residual_patch_sha256 "$plugin_lock")
-        test "$(sha256sum "$residual_patch" | awk '{print $1}')" = "$residual_sha256" || \
-            fail 'the reviewed residual plugin-only patch checksum changed'
-        jq -e --arg image "$(jq -er .image "$plugin_lock")" --arg residual "$residual_sha256" '
-          .services["codex-compat"].image == $image and
-          (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/plugin.Dockerfile")) and
-          .services["codex-compat"].build.args.CLIPROXY_RESIDUAL_PATCH_SHA256 == $residual and
-          .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == null and
-          .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
-          .services["codex-compat"].environment.CLIPROXY_PROXY_URL == "http://egress-allowlist:3128" and
-          .services["codex-compat"].environment.HTTP_PROXY == null and
-          .services["codex-compat"].environment.HTTPS_PROXY == null and
-          .services["codex-compat"].environment.ALL_PROXY == null and
-          ([.services["codex-compat"].tmpfs[] | select(startswith("/tmp:rw,noexec,"))] | length == 1) and
-          ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:rw,exec,nosuid,nodev,"))] | length == 1)
-        ' "$tmp" >/dev/null || fail 'plugin-mode codex-compat must use the locked plugin image with no proxy of its own'
-        ;;
-    patch)
-        jq -e --arg patch "$compat_patch_sha256" --arg image "$compat_image" '
-          .services["codex-compat"].image == $image and
-          (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/Dockerfile")) and
-          .services["codex-compat"].build.args.CLIPROXY_PATCH_SHA256 == $patch and
-          .services["codex-compat"].environment.HTTPS_PROXY == "http://egress-allowlist:3128" and
-          .services["codex-compat"].environment.TMPDIR == "/tmp"
-        ' "$tmp" >/dev/null || fail 'the rollback codex-compat must use the reviewed source-patched image'
-        ;;
-    *)
-        fail 'CPA_INTEGRATION must be plugin or patch'
-        ;;
-esac
+jq -e --arg version "$cpa_version" --arg commit "$cpa_commit" \
+    --arg image "$(jq -er .image "$plugin_lock")" --arg residual "$residual_sha256" '
+  .services["codex-compat"].build.args.CLIPROXY_VERSION == $version and
+  .services["codex-compat"].build.args.CLIPROXY_COMMIT == $commit and
+  .services["codex-compat"].build.args.GEMINI_PLUGIN_COMMIT == null and
+  .services["codex-compat"].image == $image and
+  (.services["codex-compat"].build.dockerfile | endswith("deploy/codex-compat/plugin.Dockerfile")) and
+  .services["codex-compat"].build.args.CLIPROXY_RESIDUAL_PATCH_SHA256 == $residual and
+  ((.services["codex-compat"].build.args | keys | sort) ==
+    ["CLIPROXY_COMMIT", "CLIPROXY_RESIDUAL_PATCH_SHA256", "CLIPROXY_VERSION", "GOLANG_IMAGE", "RUNTIME_IMAGE"]) and
+  .services["codex-compat"].environment.TMPDIR == "/run/cliproxy-plugin" and
+  .services["codex-compat"].environment.CLIPROXY_PROXY_URL == "http://egress-allowlist:3128" and
+  .services["codex-compat"].environment.HTTP_PROXY == null and
+  .services["codex-compat"].environment.HTTPS_PROXY == null and
+  .services["codex-compat"].environment.ALL_PROXY == null and
+  ([.services["codex-compat"].tmpfs[] | select(startswith("/tmp:rw,noexec,"))] | length == 1) and
+  ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:rw,exec,nosuid,nodev,"))] | length == 1)
+' "$tmp" >/dev/null || fail 'codex-compat must use the locked plugin image with no proxy of its own'
 jq -e '.services["codex-compat"].depends_on.gateway == null and
     .services.gateway.depends_on["codex-compat"].condition == "service_healthy" and
     .services.gateway.environment.GATEWAY_LISTEN == ":8080"' "$tmp" >/dev/null || \
@@ -1030,58 +922,25 @@ jq -e --arg encryption_key_file "$secret_dir/gateway_api_key_encryption_key" '
 ' "$tmp" >/dev/null || \
     fail 'API key encryption key must be mounted only into Gateway through its required file setting'
 
-# Bridge receives only its dedicated secrets/keyring and an internal network.
-# Neither the Docker socket, host filesystem nor the Codex OAuth volume exists
-# in this container. Gateway availability does not depend on Bridge readiness.
+# CPA serves Antigravity in the same process as the other providers. The
+# removed bridge, its keyring and its secrets must not come back, and the
+# Gateway must not be configured for it.
 jq -e '
-  .services["antigravity-bridge"] as $bridge |
-  $bridge.profiles == ["legacy-bridge"] and
-  $bridge.read_only == true and
-  ($bridge.user | test("^10002:[1-9][0-9]*$")) and
-  ($bridge.cap_drop | sort) == ["ALL"] and
-  ($bridge.security_opt | index("no-new-privileges:true")) != null and
-  $bridge.init == true and $bridge.pids_limit == 128 and
-  $bridge.platform == "linux/amd64" and
-  ($bridge.networks | keys) == ["antigravity_internal"] and
-  ($bridge.volumes | length) == 1 and
-  $bridge.volumes[0].type == "volume" and
-  $bridge.volumes[0].source == "antigravity_keyring" and
-  $bridge.volumes[0].target == "/var/lib/antigravity/keyrings" and
-  ([.services | to_entries[] | select(any(.value.volumes[]?; .source == "antigravity_keyring")) | .key]) == ["antigravity-bridge"] and
+  .services["antigravity-bridge"] == null and
+  .volumes.antigravity_keyring == null and
+  .secrets.antigravity_bridge_api_key == null and
+  .secrets.antigravity_keyring_password == null and
   ([.services | to_entries[] | select(any(.value.volumes[]?; .source == "codex_oauth")) | .key]) == ["codex-compat"] and
-  ($bridge.secrets | map(.source) | sort) == ["antigravity_bridge_api_key", "antigravity_keyring_password"] and
-  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_keyring_password")) | .key]) == ["antigravity-bridge"] and
-  ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "antigravity_bridge_api_key")) | .key] | sort) == ["antigravity-bridge"] and
-  ($bridge.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | fromjson) == {
-    "gemini-3.8-flash-high": "gemini-3.8-flash-high",
-    "gemini-3.8-flash-medium": "gemini-3.8-flash-medium",
-    "gemini-3.7-flash-high": "gemini-3.7-flash-high",
-    "gemini-3.7-flash-medium": "gemini-3.7-flash-medium",
-    "gemini-3.6-flash-high": "gemini-3.6-flash-high",
-    "gemini-3.6-flash-medium": "gemini-3.6-flash-medium",
-    "gemini-3.1-pro-high": "gemini-3.1-pro-high"
-  } and
-  $bridge.environment.AGY_CLI_DISABLE_AUTO_UPDATE == "true" and
-  $bridge.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == "/run/secrets/antigravity_bridge_api_key" and
-  $bridge.environment.ANTIGRAVITY_GATEWAY_URL == "http://gateway:8080" and
-  .services.gateway.environment.ANTIGRAVITY_TRANSPORT == "cpa" and
-  .services.gateway.environment.ANTIGRAVITY_BRIDGE_URL == null and
-  .services.gateway.environment.ANTIGRAVITY_BRIDGE_API_KEY_FILE == null and
-  .services.gateway.depends_on["antigravity-bridge"] == null and
-  ($bridge.tmpfs | sort) == [
-    "/run/antigravity:rw,noexec,nosuid,nodev,size=16m,mode=0700,uid=10002,gid=10002",
-    "/tmp:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10002,gid=10002"
-  ] and
+  (.services.gateway.environment | keys | all(.[]; IN(
+    "CPA_INTEGRATION", "ANTIGRAVITY_TRANSPORT", "ANTIGRAVITY_BRIDGE_URL",
+    "ANTIGRAVITY_BRIDGE_API_KEY", "ANTIGRAVITY_BRIDGE_API_KEY_FILE") | not)) and
   (.services.gateway.environment.ANTIGRAVITY_MODEL_ROUTES_JSON | if . == "" then {} else fromjson end |
     type == "object" and all(to_entries[];
       .key == .value and (.key | IN(
         "gemini-3-flash", "gemini-3.8-flash-high",
         "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
         "gemini-4-argon-high"))))
-' "$tmp" >/dev/null || fail 'Antigravity process, network, route, keyring or secret isolation failed'
-if cmp -s "$secret_dir/sidecar_api_key" "$secret_dir/antigravity_bridge_api_key"; then
-    fail 'Codex and Antigravity must use distinct internal Bearer secrets'
-fi
+' "$tmp" >/dev/null || fail 'Antigravity must be served by CPA alone, on the reviewed model IDs'
 
 jq -e '
   .services.gateway.environment.CPA_MANAGEMENT_KEY_FILE == "/run/secrets/cpa_management_key" and
@@ -1119,8 +978,6 @@ for secret_name in \
     sidecar_api_key \
     cpa_management_key \
     egress_control_key \
-    antigravity_bridge_api_key \
-    antigravity_keyring_password \
     database_url $optional_secret
 do
     secret=$secret_dir/$secret_name

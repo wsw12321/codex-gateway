@@ -80,21 +80,25 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 	h.server.modelAccessRepo = repo
 	h.server.config.UsagePricing = pricing
 	h.server.config.BodyLimit = 64 << 20
-	h.server.config.AntigravityTransport = "cpa"
 	h.server.config.AntigravityModelRoutes = map[string]string{"gemini-3.8-flash-high": "gemini-3.8-flash-high"}
 	h.server.config.Limits = config.Limits{KeyRPM: 100, UserRPM: 100, KeyConcurrent: 3, UserConcurrent: 3, GlobalConcurrent: 10, KeyRequestsPerDay: 100}
 	var missingUsage atomic.Bool
 	var calls atomic.Int64
 	const account = "1122334455667788"
 	cpa := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer internal-cpa" || r.Header.Get("X-Provider") != "" || r.Header.Get("X-Goog-Api-Key") != "" {
+		// Plugin routes carry the management key, generation the data-plane key.
+		wantKey := "Bearer internal-cpa"
+		if strings.HasPrefix(r.URL.Path, pluginRoutePrefix) {
+			wantKey = "Bearer " + testManagementKey
+		}
+		if r.Header.Get("Authorization") != wantKey || r.Header.Get("X-Provider") != "" || r.Header.Get("X-Goog-Api-Key") != "" {
 			t.Error("untrusted provider or credential header")
 		}
 		switch r.URL.Path {
-		case "/internal/antigravity-accounts":
+		case pluginPath("antigravity-accounts"):
 			writeJSON(w, 200, map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{ID: account, DisplayName: "migrated", MaskedEmail: "a***@example.com", Plan: "unknown", Status: "available", CliproxyStatus: "active", GatewayManualStatus: "enabled", GatewayQuotaStatus: "available", LastSyncedAt: time.Now().UTC()}}})
 			return
-		case "/internal/antigravity-accounts/capabilities":
+		case pluginPath("antigravity-accounts/capabilities"):
 			writeJSON(w, 200, map[string]string{"protocol": "upstream_account_access_v1"})
 			return
 		}
@@ -102,7 +106,7 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 		if r.Header.Get("X-Codex-Gateway-User") != user.ID || r.Header.Get("X-Codex-Gateway-Affinity") != upstreamAffinityScope(h.server.config.KeyPepper, key.ID) {
 			t.Error("caller identity lost")
 		}
-		w.Header().Set("X-Codex-Upstream-Account", account)
+		reportAllocation(t, h.server, "antigravity", r, account)
 		if r.URL.Path == "/v1/responses" {
 			usage := `,"usage":{"input_tokens":100,"output_tokens":37,"total_tokens":137,"input_tokens_details":{"cached_tokens":20},"output_tokens_details":{"reasoning_tokens":7}}`
 			if missingUsage.Load() {
@@ -127,7 +131,8 @@ func TestCPANativeGatewayPostgresIntegration(t *testing.T) {
 	}))
 	defer cpa.Close()
 	base, _ := url.Parse(cpa.URL)
-	h.server.antigravity = gatewayproxy.NewCPAAntigravity(base, "internal-cpa")
+	h.server.antigravity = withManagement(gatewayproxy.NewCPAAntigravity(base, "internal-cpa"))
+	useLedger(h.server, h.server.antigravity)
 	send := func(path, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+h.apiKey)

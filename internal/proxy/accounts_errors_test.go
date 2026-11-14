@@ -58,12 +58,12 @@ func TestInternalQuotaErrorEnvelopeValidation(t *testing.T) {
 			}
 			body := &internalErrorCountingReader{Reader: strings.NewReader(test.body)}
 			base, _ := url.Parse("http://sidecar.internal")
-			client := NewWithHTTPClient(base, "secret", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			client := withManagement(NewWithHTTPClient(base, "secret", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
 					StatusCode: status, Body: io.NopCloser(body),
 					Header: http.Header{"Content-Type": {test.contentType}, "Retry-After": {"7"}},
 				}, nil
-			})})
+			})}))
 			_, err := client.QueryUpstreamAccountQuota(context.Background(), "0123456789abcdef")
 			var internalErr *InternalAPIError
 			if !errors.As(err, &internalErr) || internalErr.SafeCode() != wantCode || internalErr.StatusCode != status || internalErr.RetryAfter != 7 {

@@ -15,14 +15,16 @@ import (
 	"time"
 )
 
-const nativeGeminiModel = "gemini-3.1-pro-high"
+const nativeGeminiModel = antigravityPublicModel
 const nativeGeminiRequest = `{"contents":[{"role":"user","parts":[{"text":"hello"}]}],"tools":[{"functionDeclarations":[{"name":"read_file","parametersJsonSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}]}]}`
-const nativeGeminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP","index":0}],"modelVersion":"gemini-3.1-pro-high","responseId":"response-1","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"cachedContentTokenCount":3,"totalTokenCount":22}}`
+
+// CPA reports the provider's model version, which is not the public model ID.
+const nativeGeminiResponse = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hello"}]},"finishReason":"STOP","index":0}],"modelVersion":"gemini-3.8-flash","responseId":"response-1","usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":7,"cachedContentTokenCount":3,"totalTokenCount":22}}`
 
 func nativeGeminiRouter(t *testing.T, fn roundTripFunc) *Router {
 	t.Helper()
 	primary := testRouterClient(false, func(*http.Request) (*http.Response, error) {
-		t.Error("native Gemini request reached primary upstream")
+		t.Error("native Gemini request reached the primary client")
 		return nil, errors.New("unexpected primary request")
 	})
 	return NewRouter(primary, testRouterClient(true, fn), map[string]string{nativeGeminiModel: nativeGeminiModel})
@@ -49,8 +51,12 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 					output = "data: " + output + "\n\n"
 				}
 				path := "/v1beta/models/" + nativeGeminiModel + operation
+				ledger := NewAllocationLedger()
 				router := nativeGeminiRouter(t, func(r *http.Request) (*http.Response, error) {
-					if r.URL.Path == "/internal/upstream-accounts/capabilities" {
+					if r.URL.Path == pluginPath("antigravity-accounts/capabilities") {
+						if r.Header.Get("Authorization") != "Bearer "+testManagementKey {
+							t.Error("capability probe without the management key")
+						}
 						return routerTestResponse(http.StatusOK, `{"protocol":"upstream_account_access_v1"}`), nil
 					}
 					if r.Header.Get(gatewayUserHeader) != "00000000-0000-0000-0000-000000000001" {
@@ -67,24 +73,27 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 					if stream {
 						query = "alt=sse"
 					}
-					if r.URL.RawQuery != query || r.Header.Get("Authorization") != "Bearer bridge-secret" {
+					if r.URL.RawQuery != query || r.Header.Get("Authorization") != "Bearer antigravity-secret" {
 						t.Error("wrong internal query or credential")
 					}
 					for key := range r.Header {
-						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader && key != affinityHeader && !(stream && key == geminiStreamHeader) {
-							t.Errorf("caller header crossed bridge boundary: %s", key)
+						if key != "Authorization" && key != "Content-Type" && key != "Cache-Control" && key != "Accept" && key != gatewayUserHeader && key != affinityHeader && key != dispatchHeader {
+							t.Errorf("caller header crossed the CPA boundary: %s", key)
 						}
 					}
+					reportAllocation(t, ledger, "antigravity", r, "0123456789abcdef", conversationHash)
 					response := routerTestResponse(http.StatusOK, output)
 					response.Header.Set("Content-Type", mediaType)
-					response.Header.Set(upstreamAccountHeader, "0123456789abcdef")
-					response.Header.Set(conversationHashHeader, conversationHash)
+					// Attribution comes from the plugin's report alone.
+					response.Header.Set(retiredAccountHeader, "fedcba9876543210")
+					response.Header.Set(retiredConversationHeader, "conv-ffffffffffffffffffffffffffffffff")
 					response.Header.Set("Set-Cookie", "provider=secret")
 					response.Body = io.NopCloser(iotest.OneByteReader(strings.NewReader(output)))
 					return response, nil
 				})
+				router.antigravity.UseAllocationLedger(ledger)
 				request := httptest.NewRequest(http.MethodPost, path+"?key=public-key&token=public-secret&alt=sse", strings.NewReader(requestBody))
-				for _, key := range []string{"Authorization", "X-Goog-Api-Key", "Cookie", affinityHeader, conversationHashHeader, gatewayUserHeader, "X-Api-Key", "User-Agent", "Session-Id", "X-Goog-User-Project"} {
+				for _, key := range []string{"Authorization", "X-Goog-Api-Key", "Cookie", affinityHeader, retiredConversationHeader, gatewayUserHeader, dispatchHeader, "X-Api-Key", "User-Agent", "Session-Id", "X-Goog-User-Project"} {
 					request.Header.Set(key, "caller-secret")
 				}
 				recorder := httptest.NewRecorder()
@@ -107,7 +116,7 @@ func TestNativeGeminiCredentialsUsageAndToolRoundTrip(t *testing.T) {
 				if result.ConversationHash != conversationHash || conversation != conversationHash {
 					t.Fatalf("missing conversation attribution: result=%q callback=%q", result.ConversationHash, conversation)
 				}
-				for _, key := range []string{affinityHeader, conversationHashHeader, upstreamAccountHeader} {
+				for _, key := range []string{affinityHeader, dispatchHeader, retiredConversationHeader, retiredAccountHeader} {
 					if recorder.Header().Get(key) != "" {
 						t.Errorf("internal header leaked to caller: %s", key)
 					}
@@ -125,15 +134,15 @@ func TestNativeGeminiAffinityRequiresTrustedValidScope(t *testing.T) {
 			calls := 0
 			router := nativeGeminiRouter(t, func(r *http.Request) (*http.Response, error) {
 				calls++
-				if r.Header.Get(affinityHeader) != "" || r.Header.Get(conversationHashHeader) != "" {
-					t.Error("caller supplied conversation identity crossed bridge boundary")
+				if r.Header.Get(affinityHeader) != "" || r.Header.Get(retiredConversationHeader) != "" {
+					t.Error("caller supplied conversation identity crossed the CPA boundary")
 				}
 				return routerTestResponse(http.StatusOK, nativeGeminiResponse), nil
 			})
 			path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
 			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest))
 			request.Header.Set(affinityHeader, strings.Repeat("a", 43))
-			request.Header.Set(conversationHashHeader, "conv-0123456789abcdef0123456789abcdef")
+			request.Header.Set(retiredConversationHeader, "conv-0123456789abcdef0123456789abcdef")
 			recorder := httptest.NewRecorder()
 			result, failure := router.ForwardGemini(context.Background(), recorder, request, nativeGeminiModel, path, ForwardOptions{AffinityScope: scope})
 			if scope != "" {
@@ -147,29 +156,31 @@ func TestNativeGeminiAffinityRequiresTrustedValidScope(t *testing.T) {
 	}
 }
 
-func TestNativeGeminiRejectsAmbiguousOrMalformedConversationHash(t *testing.T) {
+// A response header never attributes a native Gemini request, even a
+// well-formed one on a dispatch that has a ledger entry.
+func TestNativeGeminiNeverAttributesFromResponseHeaders(t *testing.T) {
 	t.Parallel()
-	for _, values := range [][]string{
-		{"conv-0123456789abcdef0123456789abcde"},
-		{"conv-0123456789abcdef0123456789abcdef", "conv-0123456789abcdef0123456789abcdef"},
-		{"conv-0123456789abcdef0123456789abcdef,conv-0123456789abcdef0123456789abcdef"},
-	} {
-		t.Run(strings.Join(values, ","), func(t *testing.T) {
-			router := nativeGeminiRouter(t, func(*http.Request) (*http.Response, error) {
-				response := routerTestResponse(http.StatusOK, nativeGeminiResponse)
-				response.Header[conversationHashHeader] = values
-				return response, nil
-			})
-			path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
-			conversation := ""
-			recorder := httptest.NewRecorder()
-			result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{
-				OnConversation: func(hash string) { conversation = hash },
-			})
-			if failure != nil || result.ConversationHash != "" || conversation != "" || recorder.Header().Get(conversationHashHeader) != "" {
-				t.Fatalf("invalid conversation attributed: result=%+v callback=%q failure=%v", result, conversation, failure)
-			}
-		})
+	router := nativeGeminiRouter(t, func(r *http.Request) (*http.Response, error) {
+		if strings.HasSuffix(r.URL.Path, "/capabilities") {
+			return routerTestResponse(http.StatusOK, `{"protocol":"upstream_account_access_v1"}`), nil
+		}
+		response := routerTestResponse(http.StatusOK, nativeGeminiResponse)
+		response.Header.Set(retiredAccountHeader, "0123456789abcdef")
+		response.Header.Set(retiredConversationHeader, "conv-0123456789abcdef0123456789abcdef")
+		return response, nil
+	})
+	router.antigravity.UseAllocationLedger(NewAllocationLedger())
+	path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
+	notified := 0
+	recorder := httptest.NewRecorder()
+	result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{
+		UserID:            "00000000-0000-0000-0000-000000000001",
+		OnUpstreamAccount: func(string) { notified++ },
+		OnConversation:    func(string) { notified++ },
+	})
+	if failure != nil || result.UpstreamAccountID != "" || result.ConversationHash != "" || notified != 0 ||
+		recorder.Header().Get(retiredAccountHeader) != "" || recorder.Header().Get(retiredConversationHeader) != "" {
+		t.Fatalf("a response header attributed the request: result=%+v notified=%d failure=%v", result, notified, failure)
 	}
 }
 
@@ -182,13 +193,15 @@ func TestNativeGeminiRejectsInvalidResponseBeforeWriting(t *testing.T) {
 		{"invalid JSON", `{`},
 		{"trailing JSON", nativeGeminiResponse + `{}`},
 		{"duplicate field", strings.Replace(nativeGeminiResponse, `"index":0`, `"index":0,"index":0`, 1)},
-		{"unknown response field", strings.Replace(nativeGeminiResponse, `"responseId"`, `"unsafeMetadata"`, 1)},
-		{"wrong model", strings.Replace(nativeGeminiResponse, nativeGeminiModel, "gpt-6", 1)},
+		{"provider error", strings.Replace(nativeGeminiResponse, `"responseId"`, `"error":{"code":500},"responseId"`, 1)},
+		{"second candidate", strings.Replace(nativeGeminiResponse, `"candidates":[`, `"candidates":[{"content":{"role":"model","parts":[{"text":"other"}]},"finishReason":"STOP","index":0},`, 1)},
+		{"wrong candidate index", strings.Replace(nativeGeminiResponse, `"index":0`, `"index":1`, 1)},
+		{"wrong role", strings.Replace(nativeGeminiResponse, `"role":"model"`, `"role":"user"`, 1)},
 		{"unfinished candidate", strings.Replace(nativeGeminiResponse, `"STOP"`, `""`, 1)},
+		{"unsupported finish reason", strings.Replace(nativeGeminiResponse, `"STOP"`, `"SAFETY"`, 1)},
 		{"missing usage", strings.Replace(nativeGeminiResponse, `"usageMetadata":{`, `"usageMetadataMissing":{`, 1)},
 		{"missing prompt count", strings.Replace(nativeGeminiResponse, `"promptTokenCount":10,`, ``, 1)},
 		{"missing output count", strings.Replace(nativeGeminiResponse, `"candidatesTokenCount":5,`, ``, 1)},
-		{"missing thought count", strings.Replace(nativeGeminiResponse, `"thoughtsTokenCount":7,`, ``, 1)},
 		{"null thought count", strings.Replace(nativeGeminiResponse, `"thoughtsTokenCount":7`, `"thoughtsTokenCount":null`, 1)},
 		{"null cache count", strings.Replace(nativeGeminiResponse, `"cachedContentTokenCount":3`, `"cachedContentTokenCount":null`, 1)},
 		{"null total", strings.Replace(nativeGeminiResponse, `"totalTokenCount":22`, `"totalTokenCount":null`, 1)},
@@ -199,12 +212,11 @@ func TestNativeGeminiRejectsInvalidResponseBeforeWriting(t *testing.T) {
 		{"total overflow", strings.Replace(nativeGeminiResponse, `"promptTokenCount":10`, `"promptTokenCount":9223372036854775807`, 1)},
 		{"incorrect total", strings.Replace(nativeGeminiResponse, `"totalTokenCount":22`, `"totalTokenCount":29`, 1)},
 		{"invalid UTF-8", strings.Replace(nativeGeminiResponse, `hello`, string([]byte{0xff}), 1)},
-		{"empty text", strings.Replace(nativeGeminiResponse, `"text":"hello"`, `"text":""`, 1)},
+		{"unsupported part", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"inlineData":{"mimeType":"image/png","data":"AA=="}}`, 1)},
 		{"undeclared call", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"functionCall":{"name":"shell","args":{},"id":"x"}}`, 1)},
 		{"non-object args", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"functionCall":{"name":"read_file","args":[],"id":"x"}}`, 1)},
 		{"null args", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"functionCall":{"name":"read_file","args":null,"id":"x"}}`, 1)},
 		{"mixed part", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"text":"hello","functionCall":{"name":"read_file","args":{},"id":"x"}}`, 1)},
-		{"duplicate call ID", strings.Replace(nativeGeminiResponse, `{"text":"hello"}`, `{"functionCall":{"name":"read_file","args":{},"id":"x"}},{"functionCall":{"name":"read_file","args":{},"id":"x"}}`, 1)},
 		{"oversized", strings.Repeat(" ", maxGeminiResponseBytes+1)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -219,24 +231,24 @@ func TestNativeGeminiRejectsInvalidResponseBeforeWriting(t *testing.T) {
 	}
 }
 
+// A stream is relayed as it arrives, so an invalid one can only be cut off:
+// it never settles usage, and once bytes are out the handler must abort.
 func TestNativeGeminiSSECompletionValidation(t *testing.T) {
 	t.Parallel()
+	complete := "data: " + nativeGeminiResponse + "\n\n"
 	for _, test := range []struct {
-		name string
-		body string
-		ok   bool
+		name, body, want string
 	}{
-		{"complete", "data: " + nativeGeminiResponse + "\n\n", true},
-		{"CRLF and comments", ": waiting\r\n\r\ndata: " + nativeGeminiResponse + "\r\n\r\n", true},
-		{"multiline", "data: " + strings.Replace(nativeGeminiResponse, `,"modelVersion"`, ",\ndata: \"modelVersion\"", 1) + "\n\n", true},
-		{"empty", "", false},
-		{"no event delimiter", "data: " + nativeGeminiResponse + "\n", false},
-		{"partial JSON", "data: {\n\n", false},
-		{"DONE", "data: [DONE]\n\n", false},
-		{"trailing DONE", "data: " + nativeGeminiResponse + "\n\ndata: [DONE]\n\n", false},
-		{"duplicate complete", strings.Repeat("data: "+nativeGeminiResponse+"\n\n", 2), false},
-		{"trailing partial", "data: " + nativeGeminiResponse + "\n\ndata: {", false},
-		{"unexpected event", "event: response.completed\ndata: " + nativeGeminiResponse + "\n\n", false},
+		{"complete", complete, complete},
+		{"CRLF and comments", ": waiting\r\n\r\ndata: " + nativeGeminiResponse + "\r\n\r\n", complete},
+		{"empty", "", ""},
+		{"no event delimiter", "data: " + nativeGeminiResponse + "\n", ""},
+		{"partial JSON", "data: {\n\n", ""},
+		{"DONE", "data: [DONE]\n\n", ""},
+		{"trailing DONE", complete + "data: [DONE]\n\n", ""},
+		{"duplicate complete", complete + complete, ""},
+		{"trailing partial", complete + "data: {", ""},
+		{"unexpected event", "event: response.completed\ndata: " + nativeGeminiResponse + "\n\n", ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			router := nativeGeminiRouter(t, func(*http.Request) (*http.Response, error) {
@@ -247,40 +259,47 @@ func TestNativeGeminiSSECompletionValidation(t *testing.T) {
 			path := "/v1beta/models/" + nativeGeminiModel + ":streamGenerateContent"
 			recorder := httptest.NewRecorder()
 			result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{})
-			if test.ok {
-				if failure != nil || recorder.Body.String() != test.body || result.Usage.Total() != 22 {
-					t.Fatalf("valid SSE rejected: %+v, %v", result, failure)
+			if test.want != "" {
+				if failure != nil || recorder.Body.String() != test.want || result.Usage.Total() != 22 || result.AbortStream {
+					t.Fatalf("valid SSE rejected: %+v, %v, body=%q", result, failure, recorder.Body)
 				}
-			} else if failure == nil || failure.Status != http.StatusBadGateway || recorder.Body.Len() != 0 || result.Usage != (Usage{}) {
-				t.Fatalf("invalid SSE accepted: %+v, %v", result, failure)
+				return
+			}
+			if failure == nil || result.Usage != (Usage{}) || result.AbortStream != (recorder.Body.Len() > 0) {
+				t.Fatalf("invalid SSE accepted: %+v, %v, body=%q", result, failure, recorder.Body)
+			}
+			if recorder.Body.Len() == 0 && failure.Status != http.StatusBadGateway {
+				t.Fatalf("unstarted stream failure = %+v", failure)
 			}
 		})
 	}
 }
 
-func TestNativeGeminiBridgeFailuresAndRouting(t *testing.T) {
+func TestNativeGeminiFailuresAndRouting(t *testing.T) {
 	t.Parallel()
 	for _, test := range []struct {
 		name, model, path string
-		status, want      int
+		status            int
 		code              string
+		want              int
+		wantCode          string
 	}{
-		{"unknown model", "other", "/v1beta/models/other:generateContent", 200, 404, "model_not_found"},
-		{"invalid path", nativeGeminiModel, "/v1/responses", 200, 404, "unsupported_endpoint"},
-		{"unsupported parameter", nativeGeminiModel, "", 400, 400, "antigravity_parameter_unsupported"},
-		{"request too large", nativeGeminiModel, "", 413, 413, "antigravity_request_too_large"},
-		{"reauthenticate", nativeGeminiModel, "", 401, 503, "upstream_reauthentication_required"},
-		{"rate limited", nativeGeminiModel, "", 429, 429, "upstream_rate_limited"},
-		{"busy", nativeGeminiModel, "", 429, 429, "upstream_concurrency_exceeded"},
-		{"unavailable", nativeGeminiModel, "", 503, 503, "upstream_unavailable"},
-		{"timeout", nativeGeminiModel, "", 504, 504, "upstream_timeout"},
-		{"bad gateway", nativeGeminiModel, "", 502, 502, "upstream_protocol_error"},
+		{"unknown model", "other", "/v1beta/models/other:generateContent", 200, "", 404, "model_not_found"},
+		{"invalid path", nativeGeminiModel, "/v1/responses", 200, "", 404, "unsupported_endpoint"},
+		{"reauthenticate", nativeGeminiModel, "", 401, "anything", 503, "upstream_reauthentication_required"},
+		{"forbidden", nativeGeminiModel, "", 403, "anything", 503, "upstream_reauthentication_required"},
+		{"rate limited", nativeGeminiModel, "", 429, "resource_exhausted", 429, "upstream_rate_limited"},
+		{"busy", nativeGeminiModel, "", 429, "upstream_concurrency_exceeded", 429, "upstream_concurrency_exceeded"},
+		{"no account", nativeGeminiModel, "", 503, "gateway_allocation_unavailable", 503, "upstream_allocation_unavailable"},
+		{"rejected request", nativeGeminiModel, "", 400, "invalid_argument", 400, "invalid_argument"},
+		{"provider failure", nativeGeminiModel, "", 500, "internal", 502, "internal"},
+		{"timeout", nativeGeminiModel, "", 504, "deadline_exceeded", 502, "deadline_exceeded"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var calls atomic.Int64
 			router := nativeGeminiRouter(t, func(*http.Request) (*http.Response, error) {
 				calls.Add(1)
-				response := routerTestResponse(test.status, `{"error":{"code":"`+test.code+`","message":"provider-secret"}}`)
+				response := routerTestResponse(test.status, `{"error":{"code":"`+test.code+`","message":"Authorization: Bearer provider-secret"}}`)
 				response.Header.Set("Retry-After", "120")
 				return response, nil
 			})
@@ -290,24 +309,24 @@ func TestNativeGeminiBridgeFailuresAndRouting(t *testing.T) {
 			}
 			recorder := httptest.NewRecorder()
 			result, failure := router.ForwardGemini(context.Background(), recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), test.model, path, ForwardOptions{})
-			if failure == nil || failure.Status != test.want || failure.Code != test.code || strings.Contains(failure.Message, "provider-secret") || recorder.Body.Len() != 0 || result.Usage != (Usage{}) {
+			if failure == nil || failure.Status != test.want || failure.Code != test.wantCode || strings.Contains(failure.Message, "provider-secret") || recorder.Body.Len() != 0 || result.Usage != (Usage{}) {
 				t.Fatalf("wrong failure: %+v, %v", result, failure)
 			}
 			if test.want == 404 && calls.Load() != 0 {
-				t.Fatal("invalid native route reached bridge")
+				t.Fatal("invalid native route reached CPA")
 			}
 			if test.want != 404 && failure.RetryAfter != 120 {
 				t.Fatalf("Retry-After lost: %+v", failure)
 			}
 		})
 	}
-	for _, bridge := range []*Client{nil, testRouterClient(true, func(*http.Request) (*http.Response, error) { return nil, errors.New("unavailable") })} {
+	for _, antigravity := range []*Client{nil, testRouterClient(true, func(*http.Request) (*http.Response, error) { return nil, errors.New("unavailable") })} {
 		router := nativeGeminiRouter(t, nil)
-		router.antigravity = bridge
+		router.antigravity = antigravity
 		path := "/v1beta/models/" + nativeGeminiModel + ":generateContent"
 		_, failure := router.ForwardGemini(context.Background(), httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{})
 		if failure == nil || failure.Status != http.StatusServiceUnavailable {
-			t.Fatalf("bridge outage failure: %+v", failure)
+			t.Fatalf("Antigravity outage failure: %+v", failure)
 		}
 	}
 }
@@ -326,7 +345,8 @@ func TestNativeGeminiBoundedRequestAndResponseTransport(t *testing.T) {
 		{name: "wrong content type", contentType: "text/html", status: 200, wantStatus: 502, wantCalls: 1},
 		{name: "unexpected success status", contentType: "application/json", status: 201, wantStatus: 502, wantCalls: 1},
 		{name: "empty response", contentType: "application/json", status: 204, wantStatus: 502, wantCalls: 1},
-		{name: "trailing transport failure", contentType: "application/json", status: 200, readFailure: true, wantStatus: 502, wantCalls: 1},
+		// A reply cut short is an unavailable upstream, never a partial answer.
+		{name: "trailing transport failure", contentType: "application/json", status: 200, readFailure: true, wantStatus: 503, wantCalls: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
@@ -352,7 +372,7 @@ func TestNativeGeminiBoundedRequestAndResponseTransport(t *testing.T) {
 	}
 }
 
-func TestNativeGeminiCancellationAndTimeoutDoNotReleaseBufferedData(t *testing.T) {
+func TestNativeGeminiCancellationAndTimeoutAbortWithoutUsage(t *testing.T) {
 	t.Parallel()
 	for _, timeout := range []bool{false, true} {
 		name := "cancel"
@@ -372,9 +392,9 @@ func TestNativeGeminiCancellationAndTimeoutDoNotReleaseBufferedData(t *testing.T
 			}))
 			defer upstream.Close()
 			base, _ := url.Parse(upstream.URL)
-			bridge := NewWithHTTPClient(base, "bridge-secret", upstream.Client())
-			bridge.antigravity = true
-			router := NewRouter(nil, bridge, map[string]string{nativeGeminiModel: nativeGeminiModel})
+			antigravity := withManagement(NewWithHTTPClient(base, "antigravity-secret", upstream.Client()))
+			antigravity.antigravity = true
+			router := NewRouter(nil, antigravity, map[string]string{nativeGeminiModel: nativeGeminiModel})
 			var ctx context.Context
 			var cancel context.CancelFunc
 			if timeout {
@@ -383,12 +403,15 @@ func TestNativeGeminiCancellationAndTimeoutDoNotReleaseBufferedData(t *testing.T
 				ctx, cancel = context.WithCancel(context.Background())
 			}
 			defer cancel()
-			done := make(chan *Failure, 1)
-			recorder := httptest.NewRecorder()
+			type outcome struct {
+				result  Result
+				failure *Failure
+			}
+			done := make(chan outcome, 1)
 			go func() {
 				path := "/v1beta/models/" + nativeGeminiModel + ":streamGenerateContent"
-				_, failure := router.ForwardGemini(ctx, recorder, httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{})
-				done <- failure
+				result, failure := router.ForwardGemini(ctx, httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, path, strings.NewReader(nativeGeminiRequest)), nativeGeminiModel, path, ForwardOptions{})
+				done <- outcome{result, failure}
 			}()
 			select {
 			case <-started:
@@ -399,13 +422,18 @@ func TestNativeGeminiCancellationAndTimeoutDoNotReleaseBufferedData(t *testing.T
 				cancel()
 			}
 			select {
-			case failure := <-done:
+			case got := <-done:
 				wantCode, wantErr := "client_disconnected", context.Canceled
 				if timeout {
 					wantCode, wantErr = "upstream_timeout", context.DeadlineExceeded
 				}
-				if failure == nil || failure.Code != wantCode || !errors.Is(failure, wantErr) || recorder.Body.Len() != 0 || len(recorder.Header()) != 0 {
-					t.Fatalf("buffered data escaped cancellation: %+v, body=%s", failure, recorder.Body)
+				// The stream never ended, so even a frame that carried a
+				// finish reason and usage must not settle as a success.
+				if got.failure == nil || got.failure.Code != wantCode || !errors.Is(got.failure, wantErr) || got.result.Usage != (Usage{}) {
+					t.Fatalf("interrupted stream settled: %+v, %+v", got.result, got.failure)
+				}
+				if got.result.BytesOut > 0 && !got.result.AbortStream {
+					t.Fatalf("started stream was not aborted: %+v", got.result)
 				}
 			case <-time.After(5 * time.Second):
 				t.Fatal("forwarder did not stop")

@@ -14,7 +14,7 @@ import (
 func TestAnthropicUnknownQuotaRemainsEmptySnapshot(t *testing.T) {
 	base, _ := url.Parse("http://sidecar.invalid")
 	s := &Server{config: config.Config{SidecarURL: base, CPAManagementToken: "internal"}, cpaAdmin: &cpaAdminState{client: &http.Client{Transport: quotaRoundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/internal/gateway-management/anthropic/accounts/0123456789abcdef/quota" {
+		if r.URL.Path != pluginPath("gateway-management/anthropic/accounts/quota") {
 			t.Fatal(r.URL.Path)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"status":"ok","quota":[],"windows":[]}`))}, nil

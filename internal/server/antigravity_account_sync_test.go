@@ -24,10 +24,10 @@ func TestTrySyncAntigravityAccountsDoesNotWaitForBusyLock(t *testing.T) {
 	t.Parallel()
 	var calls atomic.Int64
 	base, _ := url.Parse("http://antigravity.test")
-	s := &Server{antigravity: gatewayproxy.NewWithHTTPClient(base, "bridge-token", &http.Client{
+	s := &Server{antigravity: withManagement(gatewayproxy.NewWithHTTPClient(base, "sidecar-token", &http.Client{
 		Transport: antigravitySyncTransport(func(request *http.Request) (*http.Response, error) {
 			calls.Add(1)
-			if request.URL.Path != "/internal/upstream-accounts" || request.Header.Get("Authorization") != "Bearer bridge-token" {
+			if request.URL.Path != pluginPath("upstream-accounts") || request.Header.Get("Authorization") != "Bearer "+testManagementKey {
 				t.Error("account synchronization used an incorrect endpoint or credentials")
 			}
 			if deadline, ok := request.Context().Deadline(); !ok || time.Until(deadline) > upstreamAccountSyncTimeout {
@@ -37,7 +37,7 @@ func TestTrySyncAntigravityAccountsDoesNotWaitForBusyLock(t *testing.T) {
 				Header: http.Header{"Content-Type": {"application/json"}},
 				Body:   io.NopCloser(strings.NewReader(`{"error":{"code":"upstream_unavailable"}}`))}, nil
 		}),
-	})}
+	}))}
 	s.upstreamAccountSyncMu.Lock()
 	locked := true
 	defer func() {
@@ -80,12 +80,12 @@ func TestTrySyncAntigravityAccountsDoesNotWaitForBusyLock(t *testing.T) {
 func TestTrySyncAntigravityAccountsPreservesContextDeadline(t *testing.T) {
 	t.Parallel()
 	base, _ := url.Parse("http://antigravity.test")
-	s := &Server{antigravity: gatewayproxy.NewWithHTTPClient(base, "bridge-token", &http.Client{
+	s := &Server{antigravity: withManagement(gatewayproxy.NewWithHTTPClient(base, "sidecar-token", &http.Client{
 		Transport: antigravitySyncTransport(func(request *http.Request) (*http.Response, error) {
 			<-request.Context().Done()
 			return nil, request.Context().Err()
 		}),
-	})}
+	}))}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	started := time.Now()

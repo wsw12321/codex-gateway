@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/wsw/codex-gateway/internal/antigravity"
 	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/cpaprotocol"
 	"github.com/wsw/codex-gateway/internal/httpx"
@@ -57,17 +56,9 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The official AGY client rewrites model names on the native endpoint.
-	// Resolve its title model to the same native family before authorization;
-	// the legacy bridge retains its separate Pro compatibility behavior.
-	if s.config.UsesCPAAntigravity() {
-		if model == "gemini-3.1-flash-lite-preview" {
-			model = "gemini-3.1-flash-lite"
-		}
-	} else {
-		switch model {
-		case "gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools", "gemini-3.1-flash-lite-preview":
-			model = antigravity.PublicModel
-		}
+	// Resolve its title model to the same native family before authorization.
+	if model == "gemini-3.1-flash-lite-preview" {
+		model = "gemini-3.1-flash-lite"
 	}
 	flashAlias := model == "gemini-3.8-flash"
 	if !flashAlias && !s.configuredGeminiModel(model) {
@@ -107,39 +98,24 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	if s.config.UsesCPAAntigravity() {
-		if err := cpaprotocol.GeminiRequest(data); err != nil {
-			writeCPANativeRequestError(w, r, err)
-			return
-		}
+	if err := cpaprotocol.GeminiRequest(data); err != nil {
+		writeCPANativeRequestError(w, r, err)
+		return
 	}
 	// AGY 1.2.12 sends the same Flash URL for both reasoning presets. Resolve
 	// its bounded body before permissions, quota, forwarding and billing.
 	if flashAlias {
-		if s.config.UsesCPAAntigravity() {
-			// CPA accepts arbitrary reasoning controls for exact IDs. The CLI
-			// alias supports only observed presets, and cannot infer a model
-			// from duplicate keys or silently change a custom reasoning budget.
-			var err error
-			model, err = cpaFlashModel(data)
-			if err != nil {
-				writeCPANativeRequestError(w, r, err)
-				return
-			}
-		} else {
-			model = nativeFlashModel(data)
+		// CPA accepts arbitrary reasoning controls for exact IDs. The CLI
+		// alias supports only observed presets, and cannot infer a model
+		// from duplicate keys or silently change a custom reasoning budget.
+		var err error
+		model, err = cpaFlashModel(data)
+		if err != nil {
+			writeCPANativeRequestError(w, r, err)
+			return
 		}
 		if !s.configuredGeminiModel(model) {
 			httpx.WriteError(w, r, 404, "invalid_request_error", "model_not_found", "未配置此 Gemini 模型")
-			return
-		}
-	}
-	// Apply the bridge's complete schema/control validation before any quota
-	// or billing reservation. The isolated bridge validates independently too.
-	if !s.config.UsesCPAAntigravity() {
-		_, failure := antigravity.DecodeGeminiRequest(model, data)
-		if failure != nil {
-			httpx.WriteError(w, r, failure.Status, "invalid_request_error", failure.Code, failure.Message)
 			return
 		}
 	}
@@ -155,11 +131,7 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 func (s *Server) configuredGeminiModel(model string) bool {
 	_, configured := s.config.AntigravityModelRoutes[model]
 	_, priced := s.config.UsagePricing.Models[model]
-	valid := config.IsAntigravityModel(model)
-	if !s.config.UsesCPAAntigravity() {
-		valid = config.IsLegacyAntigravityModel(model)
-	}
-	return valid && configured && priced
+	return config.IsAntigravityModel(model) && configured && priced
 }
 
 func writeCPANativeRequestError(w http.ResponseWriter, r *http.Request, err error) {
@@ -168,22 +140,6 @@ func writeCPANativeRequestError(w http.ResponseWriter, r *http.Request, err erro
 		code, message = "antigravity_new_session_required", "旧会话无法继续；请新建会话并使用当前响应中的工具签名"
 	}
 	httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", code, message)
-}
-
-func nativeFlashModel(body []byte) string {
-	var request struct {
-		GenerationConfig struct {
-			ThinkingConfig struct {
-				ThinkingBudget json.RawMessage `json:"thinkingBudget"`
-			} `json:"thinkingConfig"`
-		} `json:"generationConfig"`
-	}
-	// This projection selects the preset only. The original body still passes
-	// complete validation, including duplicate keys and unsupported controls.
-	if json.Unmarshal(body, &request) == nil && bytes.Equal(bytes.TrimSpace(request.GenerationConfig.ThinkingConfig.ThinkingBudget), []byte("4000")) {
-		return "gemini-3.8-flash-medium"
-	}
-	return "gemini-3.8-flash-high"
 }
 
 // cpaFlashModel is called after full protocol validation. The CLI's high

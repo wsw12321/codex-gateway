@@ -30,7 +30,7 @@ func (c *Client) UpstreamAccountConcurrency(ctx context.Context) (UpstreamConcur
 			ConcurrentLimit json.RawMessage `json:"concurrent_limit"`
 		} `json:"accounts"`
 	}
-	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/concurrency", &wire); err != nil {
+	if err := c.accountJSON(ctx, http.MethodGet, "concurrency", &wire); err != nil {
 		return UpstreamConcurrency{}, err
 	}
 	invalid := &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}

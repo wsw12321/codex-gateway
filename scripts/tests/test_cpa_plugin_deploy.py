@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Static invariants of the plugin-mode CPA deployment.
+"""Static invariants of the CPA deployment: unmodified CPA, the residual
+plugin-only selector and the Gateway plugin.
 
-The plugin image cannot be the default until it passes real-account
-acceptance, so nothing else exercises these files on every change. The checks
-here need no Docker: they keep the lock file, the residual patch, the
-Dockerfile, the entrypoint and the Compose override telling the same story.
+The checks here need no Docker: they keep the lock file, the residual patch,
+the Dockerfile, the entrypoint and Compose telling the same story.
 """
 
 import hashlib
@@ -28,23 +27,20 @@ class CPAPluginDeploymentTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.lock = json.loads(read(COMPAT / "plugin.lock.json"))
-        cls.source_lock = json.loads(read(COMPAT / "source.lock.json"))
         cls.dockerfile = read(COMPAT / "plugin.Dockerfile")
         cls.entrypoint = read(COMPAT / "plugin-entrypoint.sh")
         cls.healthcheck = read(COMPAT / "plugin-healthcheck.sh")
         cls.compose = read(ROOT / "docker-compose.yml")
-        cls.rollback = read(ROOT / "deploy" / "patch-cpa.override.yml")
         cls.patch_path = COMPAT / cls.lock["residual_patch"]
         cls.patch = read(cls.patch_path)
 
     def test_lock_matches_residual_patch_and_pinned_source(self):
         digest = hashlib.sha256(self.patch_path.read_bytes()).hexdigest()
         self.assertEqual(self.lock["residual_patch_sha256"], digest)
-        # Both images are built from the same reviewed CPA commit, so moving
-        # between them never changes the upstream source underneath.
-        for key in ("repository", "tag", "commit", "go_version"):
-            self.assertEqual(self.lock[key], self.source_lock[key], key)
-        self.assertEqual(self.lock["model_catalog_sha256"], self.source_lock["model_catalog"]["sha256"])
+        self.assertEqual(self.lock["repository"], "https://github.com/router-for-me/CLIProxyAPI")
+        self.assertRegex(self.lock["tag"], r"^v\d+\.\d+\.\d+$")
+        self.assertRegex(self.lock["commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(self.lock["model_catalog_sha256"], r"^[0-9a-f]{64}$")
         self.assertIs(self.lock["automatic_updates"], False)
         expected_image = "codex-gateway-compat:{}-{}-{}-plugin".format(
             self.lock["tag"], self.lock["commit"][:8], digest[:16])
@@ -68,10 +64,10 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn("wrapRequestStopError", self.patch)
 
     def test_dockerfile_pins_and_gates(self):
-        patched = read(COMPAT / "Dockerfile")
-        for arg in ("GOLANG_IMAGE", "RUNTIME_IMAGE"):
-            line = re.search(rf"^ARG {arg}=\S+$", patched, flags=re.M).group(0)
-            self.assertIn(line + "\n", self.dockerfile, f"{arg} differs from the source-patched image")
+        locks = read(ROOT / "deploy" / "images.lock.env")
+        for arg, name in (("GOLANG_IMAGE", "CLIPROXY_GOLANG_IMAGE"), ("RUNTIME_IMAGE", "CLIPROXY_RUNTIME_IMAGE")):
+            locked = re.search(rf"^{name}=(\S+)$", locks, flags=re.M).group(1)
+            self.assertIn(f"ARG {arg}={locked}\n", self.dockerfile, f"{arg} differs from {name}")
         self.assertIn(self.lock["model_catalog_sha256"], self.dockerfile)
         for module, version in self.lock["security_modules"].items():
             self.assertIn(f"{module}@{version}", self.dockerfile)
@@ -153,7 +149,10 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         gateway = read(ROOT / "internal" / "server" / "egress_runtime.go")
         self.assertIn('const accountEgressProxy = "http://egress-allowlist:3129"', gateway)
         self.assertIn('test "$internal_key" != "$management_key"', self.entrypoint)
-        self.assertIn('"$oauth_entrypoint" verify-oauth', self.entrypoint)
+        # The credential store is checked before anything else runs.
+        self.assertLess(self.entrypoint.index("\nverify_oauth\n"), self.entrypoint.index("\nexec 9>"))
+        for check in ("! -perm 0600", "! -perm 0700", "! -user 10001", "-type l"):
+            self.assertIn(check, self.entrypoint)
         self.assertIn('flock -n 9 || fail "OAuth store is owned by another refresh process"', self.entrypoint)
         self.assertIn('chmod 0600 "$config_file"', self.entrypoint)
         # The healthcheck proves the plugin serves; a bare port probe would
@@ -180,7 +179,7 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         # one, and every other model the pinned catalog names for the provider
         # must be covered.
         gateway = read(ROOT / "internal" / "config" / "antigravity.go")
-        body = gateway[gateway.index("func AntigravityModels() []string {"):gateway.index("// LegacyAntigravityModels")]
+        body = gateway[gateway.index("func AntigravityModels() []string {"):gateway.index("// RetiredAntigravityModels")]
         reviewed = re.findall(r'"([a-z0-9.-]+)"', body)
         self.assertEqual(len(reviewed), 5)
         for model in reviewed:
@@ -208,11 +207,15 @@ class CPAPluginDeploymentTests(unittest.TestCase):
 
     def compat_service(self):
         start = self.compose.index("\n  codex-compat:\n")
-        end = self.compose.index("\n  antigravity-bridge:\n")
+        end = self.compose.index("\n  account-egress:\n")
         return self.compose[start:end]
 
-    def test_default_compose_runs_plugin_mode(self):
-        self.assertIn("      CPA_INTEGRATION: plugin\n", self.compose)
+    def test_compose_runs_the_plugin_image(self):
+        # The integration switch and the bridge are gone: the Gateway refuses
+        # to start with either set, and Compose sets neither.
+        for retired in ("CPA_INTEGRATION", "ANTIGRAVITY_TRANSPORT", "ANTIGRAVITY_BRIDGE", "antigravity-bridge",
+                        "antigravity_internal", "antigravity_keyring", "legacy-bridge"):
+            self.assertNotIn(retired, self.compose)
         service = self.compat_service()
         self.assertIn("      dockerfile: deploy/codex-compat/plugin.Dockerfile\n", service)
         self.assertIn("    image: {}\n".format(self.lock["image"]), service)
@@ -241,36 +244,27 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn(self.lock["commit"], self.compose)
         self.assertFalse((ROOT / "deploy" / "cpa-plugin.override.yml").exists())
 
-    def test_rollback_override_restores_the_source_patched_image(self):
-        patch_sha = self.source_lock["patch_sha256"]
-        image = "codex-gateway-compat:{}-{}-{}-cpa".format(
-            self.source_lock["tag"], self.source_lock["commit"][:8], patch_sha[:16])
-        self.assertIn("  gateway:\n    environment:\n      CPA_INTEGRATION: patch\n", self.rollback)
-        self.assertIn("    image: {}\n".format(image), self.rollback)
-        self.assertIn("      dockerfile: deploy/codex-compat/Dockerfile\n", self.rollback)
-        self.assertIn(f"        CLIPROXY_PATCH_SHA256: {patch_sha}\n", self.rollback)
-        self.assertIn("      HTTPS_PROXY: http://egress-allowlist:3128\n", self.rollback)
-        self.assertIn("      TMPDIR: /tmp\n", self.rollback)
-        validate = read(ROOT / "scripts" / "validate-compose.sh")
-        self.assertIn(f"compat_image={image}\n", validate)
-        self.assertIn(f"compat_patch_sha256={patch_sha}\n", validate)
-
-    def test_env_selects_the_rollback_for_every_compose_call(self):
+    def test_the_source_patched_image_is_gone(self):
+        for retired in ("Dockerfile", "entrypoint.sh", "healthcheck.sh", "smoke.sh", "source.lock.json"):
+            self.assertFalse((COMPAT / retired).exists(), retired)
+        self.assertEqual(sorted(path.name for path in COMPAT.glob("*.patch")), [])
+        for retired in ("patch-cpa.override.yml", "legacy-cpa.override.yml", "legacy-bridge.override.yml"):
+            self.assertFalse((ROOT / "deploy" / retired).exists(), retired)
+        # An .env that still selects the removed image stops every Compose call.
+        validator = read(ROOT / "scripts" / "validate-egress.py")
+        self.assertIn('if env.get("CPA_INTEGRATION", "plugin") != "plugin":', validator)
         settings = read(ROOT / "scripts" / "egress-settings.compose.yml")
         self.assertIn("      CPA_INTEGRATION: ${CPA_INTEGRATION:-plugin}\n", settings)
-        common = read(ROOT / "scripts" / "egress-common.sh")
-        self.assertIn('if test "$egress_cpa_integration" = patch; then\n'
-                      '        set -- -f "$egress_root/deploy/patch-cpa.override.yml" "$@"', common)
-        self.assertIn(" CPA_INTEGRATION ", common)
-        validator = read(ROOT / "scripts" / "validate-egress.py")
-        self.assertIn('fail("CPA_INTEGRATION must be plugin or patch")', validator)
-        self.assertIn('fail("CPA_INTEGRATION and the rendered CPA image disagree")', validator)
+        self.assertNotIn("patch-cpa", read(ROOT / "scripts" / "egress-common.sh"))
         for example in ("env.example", "env.gpt-5.6.example"):
-            self.assertIn("\nCPA_INTEGRATION=plugin\n", read(ROOT / "deploy" / example))
-        # A command-line login cannot run in plugin mode: CPA would have no
-        # egress for it and the login would bypass the egress registration.
-        self.assertIn('test "$#" -eq 0 || fail "command-line logins are not available in plugin mode', self.entrypoint)
+            self.assertNotIn("CPA_INTEGRATION", read(ROOT / "deploy" / example))
+
+    def test_command_line_logins_are_refused(self):
+        # CPA would have no egress for such a login, and it would bypass the
+        # egress registration of the credential page.
+        self.assertIn('test "$#" -eq 0 || fail "command-line logins are not available', self.entrypoint)
         self.assertIn('exec "$cpa_binary" -config "$config_file" -local-model\n', self.entrypoint)
+
 
 if __name__ == "__main__":
     unittest.main()

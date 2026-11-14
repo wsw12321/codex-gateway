@@ -9,19 +9,21 @@ import (
 	"github.com/wsw/codex-gateway/internal/config"
 )
 
-func TestAntigravityAccountCallbacksHaveIndependentAuthentication(t *testing.T) {
-	s := &Server{config: config.Config{SidecarToken: "codex-secret", AntigravityBridgeToken: "agy-secret"}, mux: http.NewServeMux()}
+// Every provider's allocation callback comes from the one CPA instance and is
+// authenticated with its internal key alone.
+func TestAccountCallbacksRequireTheSidecarKey(t *testing.T) {
+	s := &Server{config: config.Config{SidecarToken: "sidecar-secret"}, mux: http.NewServeMux()}
 	s.routes()
 	for _, endpoint := range []string{"select", "eligible"} {
 		for _, provider := range []string{"upstream", "antigravity"} {
-			for _, token := range []string{"codex-secret", "agy-secret", ""} {
+			for _, token := range []string{"sidecar-secret", "other-secret", ""} {
 				r := httptest.NewRequest(http.MethodPost, "/internal/"+provider+"-accounts/"+endpoint, strings.NewReader(`{}`))
 				r.Header.Set("Authorization", "Bearer "+token)
 				r.Header.Set("Content-Type", "application/json")
 				w := httptest.NewRecorder()
 				s.mux.ServeHTTP(w, r)
 				want := http.StatusUnauthorized
-				if (provider == "upstream" && token == "codex-secret") || (provider == "antigravity" && token == "agy-secret") {
+				if token == "sidecar-secret" {
 					want = http.StatusBadRequest // Authenticated; malformed candidate protocol.
 				}
 				if w.Code != want {

@@ -62,23 +62,6 @@ type egressServerDTO struct {
 
 func publicEgressStatus(status egress.Status) egress.Status { status.RouteIDs = nil; return status }
 
-// The rollback bridge has no account egress transport. Block its data plane
-// when any AGY account has a binding, including direct/single-account paths
-// which do not consult the allocation callbacks.
-func (s *Server) legacyEgressAllowed(w http.ResponseWriter, r *http.Request) bool {
-	if s.config.AntigravityTransport != "legacy-bridge" {
-		return true
-	}
-	if s.store != nil {
-		bound, err := s.store.HasProviderEgressBinding(r.Context(), store.UpstreamProviderAntigravity)
-		if err == nil && !bound {
-			return true
-		}
-	}
-	httpx.WriteError(w, r, 503, "upstream_error", "egress_legacy_unsupported", "旧版 Antigravity 桥接不支持已绑定的账号出口，请切回 CPA 或先解除出口绑定")
-	return false
-}
-
 func egressNodeDTO(n store.EgressServer) egressServerDTO {
 	return egressServerDTO{ID: n.ID, Name: n.Name, Protocol: "ss", Server: n.Server, Port: n.Port, Cipher: n.Cipher, UDP: n.UDP, HasPassword: len(n.PasswordCiphertext) > 0, Revision: n.Revision, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt}
 }
@@ -300,10 +283,6 @@ func (s *Server) setAccountEgress(w http.ResponseWriter, r *http.Request) {
 	nodeID := ""
 	if selected != nil {
 		nodeID = *selected
-	}
-	if nodeID != "" && isAntigravityAccountRequest(r) && s.config.AntigravityTransport == "legacy-bridge" {
-		httpx.WriteError(w, r, 503, "upstream_error", "egress_legacy_unsupported", "旧版 Antigravity 桥接不支持账号出口绑定，请先切回 CPA")
-		return
 	}
 	binding, err := s.accountStore(r).SetEgressBinding(r.Context(), r.PathValue("id"), nodeID, egressActor(r))
 	if err != nil {

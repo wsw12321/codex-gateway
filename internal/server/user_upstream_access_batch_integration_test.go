@@ -33,7 +33,7 @@ func TestUserUpstreamAccessBatchHTTPPostgresIntegration(t *testing.T) {
 			store.UpstreamProviderAntigravity: {agyID},
 			store.UpstreamProviderAnthropic:   {anthropicID},
 		}[provider]
-		client := gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		client := withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", &http.Client{Transport: quotaRoundTripFunc(func(*http.Request) (*http.Response, error) {
 			if remoteFailed {
 				return nil, errors.New("sidecar unavailable secret-canary")
 			}
@@ -43,7 +43,7 @@ func TestUserUpstreamAccessBatchHTTPPostgresIntegration(t *testing.T) {
 			}
 			body := `{"accounts":[` + strings.Join(entries, ",") + `]}`
 			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
-		})})
+		})}))
 		switch provider {
 		case store.UpstreamProviderCodex:
 			f.s.upstream = client

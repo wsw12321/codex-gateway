@@ -87,10 +87,6 @@ func TestManagementCapabilities(t *testing.T) {
 		t.Fatalf("capabilities answered %d while the credential registry is unreadable", status)
 	}
 	f.host.listErr = nil
-	f.plugin.cfg.AntigravityEnabled = false
-	if status, _, _ := f.manage(http.MethodGet, managementPrefix+"antigravity-accounts/capabilities", nil, ""); status != http.StatusServiceUnavailable {
-		t.Fatalf("a disabled provider answered %d", status)
-	}
 	f.plugin.unavailable = ErrStateUnavailable
 	if status, _, _ := f.manage(http.MethodGet, managementPrefix+"upstream-accounts/capabilities", nil, ""); status != http.StatusServiceUnavailable {
 		t.Fatalf("an unavailable plugin answered %d", status)

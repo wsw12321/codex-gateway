@@ -19,8 +19,9 @@ const GroupUpstreamAccountLayersV1 = "group_upstream_account_layers_v1"
 
 const AccountEgressProtocolV1 = "account_egress_v1"
 
-// Check each dispatch, so replacing a sidecar with an old image cannot retain a
-// cached authorization capability. The endpoint uses the normal internal token.
+// Check each dispatch, so replacing CPA with an image that lacks the plugin
+// cannot retain a cached authorization capability. The plugin serves the route
+// behind CPA's management key.
 func (c *Client) requireAccountAccessCapability(ctx context.Context, groupScoped bool) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -30,7 +31,7 @@ func (c *Client) requireAccountAccessCapability(ctx context.Context, groupScoped
 		GroupAccountScope string `json:"group_upstream_account_scope,omitempty"`
 		AccountEgress     string `json:"account_egress,omitempty"`
 	}
-	if err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/capabilities", &response); err != nil {
+	if err := c.accountJSON(ctx, http.MethodGet, "capabilities", &response); err != nil {
 		return err
 	}
 	if response.Protocol != AccountAccessProtocolV1 {
@@ -65,7 +66,7 @@ func (c *Client) resolveFundingLayers(ctx context.Context, groups []AllocationGr
 	var response struct {
 		Protocol string `json:"protocol"`
 	}
-	err := c.internalJSON(ctx, http.MethodGet, "/internal/upstream-accounts/funding-layers", &response)
+	err := c.accountJSON(ctx, http.MethodGet, "funding-layers", &response)
 	var apiErr *InternalAPIError
 	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 		if groups[0].AllAccounts {

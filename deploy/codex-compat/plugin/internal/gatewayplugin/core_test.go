@@ -37,7 +37,7 @@ func TestLoadConfig(t *testing.T) {
 	}
 	base := map[string]string{"CLIPROXY_API_KEY_FILE": "/k/internal", "CPA_MANAGEMENT_KEY_FILE": "/k/manage", "CPA_PLUGIN_AUTH_DIR": "/auth", "CPA_PLUGIN_GLOBAL_PROXY_URL": testGlobalProxy}
 	cfg, err := LoadConfig(env(base), read)
-	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL || !cfg.AntigravityEnabled ||
+	if err != nil || cfg.InternalKey != testInternalKey || cfg.ManagementKey != testManagementKey || cfg.GatewayURL != defaultGatewayURL ||
 		cfg.GlobalProxyURL != testGlobalProxy || cfg.EgressReconcileInterval != time.Minute {
 		t.Fatalf("unexpected config %+v, %v", cfg, err)
 	}

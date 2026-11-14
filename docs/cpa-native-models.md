@@ -65,7 +65,7 @@ v8.0.30 从活动目录移除以下上游删除的 ID：
 
 删除只会将 `model_access_defaults.catalog_active` 设为 `false`。旧名称保留在历史 usage、账单快照和受限
 API Key allowlist 中，因此历史记录仍可读取；新请求会被拒绝。受限 Key 不会被清空，也不会因目录同步而
-获得新模型。旧 bridge 回滚所需的其它 ID 存放在 legacy 目录，不能通过 CPA 原生路由重新启用。
+获得新模型。旧桥接时期的其它 ID 只保留为退役名称，不能通过 CPA 原生路由重新启用。
 
 完整示例在 [pricing-v2.example.json](../deploy/pricing-v2.example.json)。现有部署不要直接以示例覆盖整个
 `GATEWAY_USAGE_PRICING_JSON`，应先保存当前纯 JSON，再使用离线工具合并：
@@ -89,7 +89,7 @@ v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义�
 - 保存默认权限、用户权限和倍率的 before/applied 快照；缺失倍率行继续按 `1` 计费，不伪造管理员归属；
 - 不修改 API Key allowlist、历史 usage、余额、账单、已结算记录或 admission pricing snapshot。
 
-## 条件恢复快照与 legacy bridge 配置
+## 条件恢复快照
 
 迁移具有 forward-only 语义。旧 Gateway 二进制会因未知迁移保护而拒绝启动，回滚时必须使用包含已应用迁移
 （含 `0038`）的兼容构建。数据库配置回滚使用 [rollback-cpa-model-config.sql](../scripts/rollback-cpa-model-config.sql)：
@@ -107,40 +107,8 @@ v1 配置必须先人工转换到 v2；工具不会隐式改变旧计费语义�
 它可能恢复 v8.0.20 的 `gemini-pro-agent` 等价格；本次 Gateway 在普通 `cpa` 模式下仍拒绝退役 ID，
 不会因为价格恢复而重新开放。价格快照恢复与选择可运行的回滚传输是两个步骤。
 
-若启用受控 legacy bridge，先按 [切换与回滚](cpa-v8-cutover.md#回滚) 停止 Google 刷新并转换最新凭据。
-然后另行生成 `pricing.legacy.json`：只保留已恢复价格、所选 bridge 路由和
-[`LegacyAntigravityModels()`](../internal/config/antigravity.go) 合法 ID 的交集，不添加或改名任何模型。
-其他供应商价格、汇率、fallback 及其余配置字段完整保留。默认
-[legacy bridge override](../deploy/legacy-bridge.override.yml) 只配置三个 Flash-high 路由，对应命令如下：
-
-```sh
-umask 077
-jq -ce --argjson routes '{"gemini-3.6-flash-high":"gemini-3.6-flash-high","gemini-3.7-flash-high":"gemini-3.7-flash-high","gemini-3.8-flash-high":"gemini-3.8-flash-high"}' '
-  ["gemini-3.1-pro-high", "gemini-3.6-flash-high", "gemini-3.6-flash-medium",
-   "gemini-3.7-flash-high", "gemini-3.7-flash-medium",
-   "gemini-3.8-flash-high", "gemini-3.8-flash-medium"] as $legacy |
-  if .schema_version != 2 or (.models | type) != "object" then
-    error("rollback snapshot must contain pricing v2 models")
-  elif ($routes | to_entries | all(.key == .value and (.key as $id | $legacy | index($id) != null))) | not then
-    error("bridge routes must map reviewed legacy IDs to themselves")
-  else
-    .models |= with_entries(select(
-      (.key | startswith("gemini-") | not) or ($routes[.key] == .key)
-    ))
-  end
-' pricing.rollback.json > pricing.legacy.json
-```
-
-如果选择其他合法 legacy 路由，须同步修改上述 `$routes` 和实际 Compose override；不能只改价格文件。
-缺失价格的路由不会由此命令补齐，仍不可公开。`gemini-pro-agent`、`gemini-3.1-pro-low`、
-基础 Argon、Argon-high 等不在 legacy 路由交集中的 Gemini ID 会被排除，不能映射成 Flash 或旧 Pro。
-
-审阅 `pricing.legacy.json` 后，以其完整单行 JSON 更新 `GATEWAY_USAGE_PRICING_JSON`，并确认最终 Compose
-配置为 `ANTIGRAVITY_TRANSPORT=legacy-bridge`、对应精确路由及 `CPA_ANTIGRAVITY_ENABLED=false`。
-由兼容 Gateway 启动时执行目录同步；只保留价格、权限、路由和账号能力共同允许的模型。验收 `/v1/models`、
-未路由模型拒绝、历史账单可读性及账户归因。原始 before/applied/current/rollback 快照均保留，
-不以 `pricing.legacy.json` 覆盖它们，也不重写历史请求的价格快照。
-
+旧 Antigravity 桥接与 legacy 路由已于 2026-11-13 删除（[路线图第 8 步](cpa-plugin-roadmap.md#8-改为默认并清理)），
+不再能用恢复快照为它生成 `pricing.legacy.json`；Gateway 在 Antigravity 价格目录中出现未审 ID 时拒绝启动。
 若继续使用普通 CPA 传输，则保持当前审核过的 CPA 模型集合，不能用完整恢复快照或 legacy 路由重新开放旧 ID。
 
 ## 当前 CPA 请求示例

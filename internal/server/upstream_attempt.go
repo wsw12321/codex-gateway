@@ -38,10 +38,6 @@ func (s *Server) recordUpstreamAttempt(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusUnauthorized, "authentication_error", "invalid_sidecar_token", "内部服务认证失败")
 		return
 	}
-	if s.allocations == nil {
-		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "upstream_attempt_unsupported", "当前集成方式不接收分配上报")
-		return
-	}
 	if !strictJSONRequest(r) || r.ContentLength > upstreamAttemptRequestBytes {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_attempt", "分配上报无效")
 		return

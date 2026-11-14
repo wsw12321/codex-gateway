@@ -70,10 +70,10 @@ func TestAdapterRegistryCatalogRouteUsesRegisteredAdapter(t *testing.T) {
 
 func TestAdapterRegistryLeavesLegacyRouterPathValidationIntact(t *testing.T) {
 	base, _ := url.Parse("http://registry.invalid")
-	client := NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+	client := withManagement(NewWithHTTPClient(base, "internal-secret", &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		t.Fatal("unsupported path reached upstream transport")
 		return nil, nil
-	})})
+	})}))
 	registry := NewAdapterRegistry(NewRouterAdapter(NewRouter(client, nil, nil), ProviderCapabilities{Provider: "gateway"}))
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	_, failure := registry.Forward(context.Background(), httptest.NewRecorder(), request, "gpt-test", "/v1/chat/completions", TrustedRequestMetadata{})

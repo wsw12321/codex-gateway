@@ -33,7 +33,7 @@ func modelCatalogOptions(models []string) []sessionModelOption {
 		seen[model] = true
 		group := "GPT"
 		switch {
-		case config.IsAntigravityModel(model), config.IsLegacyAntigravityModel(model), strings.HasPrefix(model, "gemini-"):
+		case config.IsAntigravityModel(model), strings.HasPrefix(model, "gemini-"):
 			group = "Gemini"
 		case strings.HasPrefix(model, "claude-"):
 			group = "Claude"

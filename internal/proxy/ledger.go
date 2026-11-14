@@ -115,7 +115,7 @@ func (l *AllocationLedger) ProbeAccount(userID string) (string, bool) {
 }
 
 // dispatch is one open ledger entry. A nil dispatch is valid and inert, which
-// is what every forward path gets when the ledger is not in use.
+// is what a forward path gets for a request that allocates for no user.
 type dispatch struct {
 	ledger *AllocationLedger
 	token  string
@@ -188,9 +188,8 @@ func (d *dispatch) snapshot() ledgerEntry {
 	return ledgerEntry{}
 }
 
-// apply replaces header-derived attribution with the ledger's. With the plugin
-// integration CPA sets no attribution headers, so a value found there could
-// only have come from somewhere it should not, and is discarded.
+// apply sets the result's attribution from the ledger, its only source. CPA
+// sets no attribution headers, and none is read from its response.
 func (d *dispatch) apply(result *Result) {
 	if d == nil {
 		return
@@ -214,9 +213,9 @@ func (d *dispatch) failure(failure *Failure, retryAfter int) *Failure {
 	return failure
 }
 
-// UseAllocationLedger switches the client to the plugin integration: every
-// dispatch that carries a user identity gets a request token, and attribution
-// comes from the ledger instead of response headers.
+// UseAllocationLedger gives the client its allocation ledger: every dispatch
+// that carries a user identity gets a request token, and its attribution is
+// what the plugin reported for that token.
 func (c *Client) UseAllocationLedger(ledger *AllocationLedger) {
 	if c != nil {
 		c.ledger = ledger

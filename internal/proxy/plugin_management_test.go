@@ -14,31 +14,32 @@ import (
 )
 
 func TestPluginManagementPath(t *testing.T) {
-	for path, want := range map[string][2]string{
-		"/internal/upstream-accounts":                                          {"/v0/management/gateway/upstream-accounts", ""},
-		"/internal/upstream-accounts/capabilities":                             {"/v0/management/gateway/upstream-accounts/capabilities", ""},
-		"/internal/anthropic-accounts/concurrency":                             {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
-		"/internal/upstream-accounts/0123456789abcdef/status":                  {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
-		"/internal/antigravity-accounts/0123456789abcdef/quota":                {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
-		"/internal/model-identification/accounts/0123456789abcdef/probe":       {"/v0/management/gateway/model-identification/accounts/probe", "id=0123456789abcdef"},
-		"/internal/gateway-management/codex/oauth":                             {"/v0/management/gateway/gateway-management/codex/oauth", ""},
-		"/internal/gateway-management/anthropic/oauth/callback":                {"/v0/management/gateway/gateway-management/anthropic/oauth/callback", ""},
-		"/internal/gateway-management/antigravity/oauth/status":                {"/v0/management/gateway/gateway-management/antigravity/oauth/status", ""},
-		"/internal/gateway-management/codex/credentials":                       {"/v0/management/gateway/gateway-management/codex/credentials", ""},
-		"/internal/gateway-management/codex/accounts/0123456789abcdef/refresh": {"/v0/management/gateway/gateway-management/codex/accounts/refresh", "id=0123456789abcdef"},
-		"/internal/gateway-management/codex/accounts/0123456789abcdef":         {"/v0/management/gateway/gateway-management/codex/accounts", "id=0123456789abcdef"},
+	for route, want := range map[string][2]string{
+		"upstream-accounts":                                          {"/v0/management/gateway/upstream-accounts", ""},
+		"upstream-accounts/":                                         {"/v0/management/gateway/upstream-accounts", ""},
+		"upstream-accounts/capabilities":                             {"/v0/management/gateway/upstream-accounts/capabilities", ""},
+		"anthropic-accounts/concurrency":                             {"/v0/management/gateway/anthropic-accounts/concurrency", ""},
+		"upstream-accounts/0123456789abcdef/status":                  {"/v0/management/gateway/upstream-accounts/status", "id=0123456789abcdef"},
+		"antigravity-accounts/0123456789abcdef/quota":                {"/v0/management/gateway/antigravity-accounts/quota", "id=0123456789abcdef"},
+		"model-identification/accounts/0123456789abcdef/models":      {"/v0/management/gateway/model-identification/accounts/models", "id=0123456789abcdef"},
+		"gateway-management/codex/oauth":                             {"/v0/management/gateway/gateway-management/codex/oauth", ""},
+		"gateway-management/anthropic/oauth/callback":                {"/v0/management/gateway/gateway-management/anthropic/oauth/callback", ""},
+		"gateway-management/antigravity/oauth/status":                {"/v0/management/gateway/gateway-management/antigravity/oauth/status", ""},
+		"gateway-management/codex/credentials":                       {"/v0/management/gateway/gateway-management/codex/credentials", ""},
+		"gateway-management/codex/accounts/0123456789abcdef/refresh": {"/v0/management/gateway/gateway-management/codex/accounts/refresh", "id=0123456789abcdef"},
+		"gateway-management/codex/accounts/0123456789abcdef":         {"/v0/management/gateway/gateway-management/codex/accounts", "id=0123456789abcdef"},
 		// Only a well-formed account id is lifted out of the path.
-		"/internal/upstream-accounts/0123456789ABCDEF/status": {"/v0/management/gateway/upstream-accounts/0123456789ABCDEF/status", ""},
+		"upstream-accounts/0123456789ABCDEF/status": {"/v0/management/gateway/upstream-accounts/0123456789ABCDEF/status", ""},
 	} {
-		mapped, query := PluginManagementPath(path)
+		mapped, query := PluginManagementPath(route)
 		if mapped != want[0] || query != want[1] {
-			t.Errorf("PluginManagementPath(%q) = %q, %q; want %q, %q", path, mapped, query, want[0], want[1])
+			t.Errorf("PluginManagementPath(%q) = %q, %q; want %q, %q", route, mapped, query, want[0], want[1])
 		}
 	}
 }
 
-// pluginManagementClient returns a client in plugin mode whose transport
-// records each internal request and answers with body.
+// pluginManagementClient returns a client whose transport records each
+// management request and answers with body.
 func pluginManagementClient(t *testing.T, kind string, seen *[]*http.Request, respond func(*http.Request) (int, string)) *Client {
 	t.Helper()
 	transport := roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -52,7 +53,7 @@ func pluginManagementClient(t *testing.T, kind string, seen *[]*http.Request, re
 	case "anthropic":
 		client.anthropic = true
 	case "antigravity":
-		client.antigravity, client.cpaNative = true, true
+		client.antigravity = true
 	}
 	client.UsePluginManagement("management-secret")
 	return client
@@ -128,6 +129,32 @@ func TestPluginIntegrationFailsClosedWithoutThePlugin(t *testing.T) {
 	}
 }
 
+// The data-plane key must never be offered to an account route. A client
+// without the management key calls none of them.
+func TestAccountRoutesNeedTheManagementKey(t *testing.T) {
+	const account = "0123456789abcdef"
+	var seen []*http.Request
+	client := pluginManagementClient(t, "codex", &seen, func(*http.Request) (int, string) { return 200, `{}` })
+	client.UsePluginManagement("")
+	ctx := context.Background()
+	_, errList := client.ListUpstreamAccounts(ctx)
+	_, errStatus := client.SetUpstreamAccountStatus(ctx, account, true)
+	_, errQuota := client.QueryUpstreamAccountQuota(ctx, account)
+	_, errConcurrency := client.UpstreamAccountConcurrency(ctx)
+	for name, err := range map[string]error{
+		"capability": client.RequireAccountAccessCapability(ctx), "list": errList, "status": errStatus,
+		"quota": errQuota, "concurrency": errConcurrency,
+	} {
+		var failure *InternalAPIError
+		if !errors.As(err, &failure) || failure.Code != "sidecar_unavailable" {
+			t.Errorf("%s without the management key: %v", name, err)
+		}
+	}
+	if len(seen) != 0 {
+		t.Fatalf("%d requests were sent without the management key", len(seen))
+	}
+}
+
 func TestSyncAccountEgress(t *testing.T) {
 	const account = "0123456789abcdef"
 	for kind, namespace := range map[string]string{"codex": "upstream-accounts", "anthropic": "anthropic-accounts", "antigravity": "antigravity-accounts"} {
@@ -169,7 +196,7 @@ func TestSyncAccountEgress(t *testing.T) {
 	}
 	client.UsePluginManagement("")
 	if err := client.SyncAccountEgress(context.Background(), account); err == nil {
-		t.Fatal("pushed without the plugin integration")
+		t.Fatal("pushed without the management key")
 	}
 }
 

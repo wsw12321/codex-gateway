@@ -546,20 +546,6 @@ func TestRefreshAndDeleteGoThroughCPA(t *testing.T) {
 	}
 }
 
-func TestCredentialRoutesRespectTheAntigravityRollback(t *testing.T) {
-	f := newFixture(t, 1)
-	cpa := newFakeCPAManagement(f)
-	f.plugin.cfg.AntigravityEnabled = false
-	for _, action := range []string{"oauth", "oauth/status", "credentials", "accounts/refresh"} {
-		if status, _, _ := f.manage(http.MethodPost, facadePath("antigravity", action), nil, `{}`); status != http.StatusServiceUnavailable {
-			t.Fatalf("%s answered %d during a bridge rollback", action, status)
-		}
-	}
-	if len(cpa.seen("")) != 0 {
-		t.Fatal("a rollback-time request reached CPA")
-	}
-}
-
 func TestModelIdentificationRoutes(t *testing.T) {
 	f := newFixture(t, 1)
 	var asked []string

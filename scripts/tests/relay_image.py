@@ -25,16 +25,16 @@ def upstream_hosts(acl):
 
 
 CPA_GOOGLE_HOSTS = upstream_hosts("cpa_google_upstreams")
-ANTIGRAVITY_HOSTS = upstream_hosts("antigravity_upstreams")
 CPA_ANTHROPIC_HOSTS = upstream_hosts("cpa_anthropic_upstreams")
 CPA_HOSTS = (*CODEX_HOSTS, *CPA_GOOGLE_HOSTS, *CPA_ANTHROPIC_HOSTS)
-ALL_HOSTS = tuple(dict.fromkeys((*CPA_HOSTS, *ANTIGRAVITY_HOSTS)))
+ALL_HOSTS = tuple(dict.fromkeys(CPA_HOSTS))
 CLIENTS = (
     ("Codex", "127.0.0.2", "chatgpt.com"),
     ("CPA Google", "127.0.0.2", "daily-cloudcode-pa.sandbox.googleapis.com"),
     ("CPA Anthropic", "127.0.0.2", "api.anthropic.com"),
-    ("Antigravity", "127.0.0.3", "cloudcode-pa.googleapis.com"),
 )
+# The address the removed Antigravity bridge used. Nothing may tunnel from it.
+RETIRED_SOURCE = "127.0.0.3"
 
 
 def command(*args, check=True, timeout=45):
@@ -162,17 +162,12 @@ class Sandbox:
                          "sub.daily-cloudcode-pa.sandbox.googleapis.com"):
                 self.expect(403, source=source, host=host)
         if not self.relay:
-            for host in ANTIGRAVITY_HOSTS:
-                if host not in CPA_HOSTS:
-                    self.expect(403, source="127.0.0.2", host=host)
             for host in CPA_HOSTS:
-                if host not in ANTIGRAVITY_HOSTS:
-                    self.expect(403, source="127.0.0.3", host=host)
+                self.expect(403, source=RETIRED_SOURCE, host=host)
 
     def allowed_destinations(self):
-        for hosts, source in ((CPA_HOSTS, "127.0.0.2"), (ANTIGRAVITY_HOSTS, "127.0.0.3")):
-            for host in hosts:
-                self.expect(200, source="127.0.0.1" if self.relay else source, host=host)
+        for host in CPA_HOSTS:
+            self.expect(200, source="127.0.0.1" if self.relay else "127.0.0.2", host=host)
 
 
 def run(image):
@@ -183,7 +178,6 @@ def run(image):
         for label, source in (("a", "deploy/egress/squid.conf"), ("b", "deploy/relay/squid.conf")):
             config = (ROOT / source).read_text()
             config = config.replace("172.28.30.3/32", "127.0.0.2/32")
-            config = config.replace("172.28.40.3/32", "127.0.0.3/32")
             config = config.replace("10.77.0.1/32", "127.0.0.1/32")
             config = config.replace("http_port 10.77.0.2:3128", "http_port 127.0.0.1:3128")
             config = config.replace("http_port 3128", "http_port 127.0.0.1:3128")
@@ -196,7 +190,7 @@ def run(image):
         with Sandbox(image, paths["a"]) as sandbox:
             sandbox.allowed_destinations()
             sandbox.acl_checks()
-            print("A without relay: Codex, CPA Google and legacy Antigravity direct tunnels and access restrictions passed", flush=True)
+            print("A without relay: Codex, CPA Google and CPA Anthropic direct tunnels and access restrictions passed", flush=True)
 
         with Sandbox(image, paths["a"], enabled=True) as sandbox:
             sandbox.allowed_destinations()
@@ -247,7 +241,7 @@ def run(image):
                                              sandbox.contents("/var/log/squid/access.log")),
                            f"{label} log identifies the actual parent")
             eventually(sandbox.no_active_targets, "recovered tunnels close after cancellation")
-            print("A with relay: Codex, CPA Google and legacy Antigravity require the parent; fail-closed outage, streaming, cancellation and recovery passed", flush=True)
+            print("A with relay: Codex, CPA Google and CPA Anthropic require the parent; fail-closed outage, streaming, cancellation and recovery passed", flush=True)
 
         with Sandbox(image, paths["b"], relay=True) as sandbox:
             sandbox.allowed_destinations()

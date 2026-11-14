@@ -25,15 +25,15 @@ func (s *Server) providerAccountClient(provider string) *gatewayproxy.Client {
 	return nil
 }
 
-// pushPluginEgress applies changed bindings to CPA at once, in plugin mode.
-// It is an optimisation, not the guarantee: the plugin checks each account's
+// pushPluginEgress applies changed bindings to CPA at once. It is an
+// optimisation, not the guarantee: the plugin checks each account's
 // route with the Gateway on every request and never uses an account whose
 // credential carries anything else, and a background pass in the plugin
 // writes every credential's route at start-up and once a minute, which bounds
 // how long CPA's own refreshes can use an old route. A failed push only means
 // the account is skipped once while the plugin writes the route itself.
 func (s *Server) pushPluginEgress(ctx context.Context, bindings []store.EgressBinding) {
-	if !s.config.UsesCPAPlugin() || len(bindings) == 0 {
+	if len(bindings) == 0 {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, pluginEgressPushTimeout)

@@ -7,18 +7,17 @@
 启用中转后的链路：
 
 ```text
-Gateway → codex-compat ───────┐
-                            ├→ A Squid → WireGuard → B Squid → 对应上游
-Gateway → antigravity-bridge ┘
+Gateway → codex-compat（CPA：Codex、Claude、Antigravity）→ A Squid → WireGuard → B Squid → 对应上游
 ```
 
-A 仍按容器来源分别限制 OpenAI 和 Antigravity 的精确域名。两者共用
-`CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；变量名为兼容旧部署而保留。
-本教程显式设置 `EGRESS_MODE=relay`，两者均强制经 B，B 故障就失败，不自动回退 A。
-旧 `.env` 未设置模式或值为空时，仍按 IP 是否非空选择旧中转或直连。
+A 只放行 CPA 容器的来源，并按 OpenAI、Google 与 Anthropic 的精确域名限制目的地。
+中转使用 `CODEX_RELAY_IP` / `CODEX_RELAY_PORT`；变量名为兼容旧部署而保留。
+本教程显式设置 `EGRESS_MODE=relay`，CPA 的全部 Provider 流量都强制经 B，B 故障就失败，
+不自动回退 A。旧 `.env` 未设置模式或值为空时，仍按 IP 是否非空选择旧中转或直连。
 
-这会迁移整个 Antigravity Bridge 的获准出口，包括服务器侧登录、刷新、模型查询
-和生成请求，不只按 Gemini 模型名分流。用户本地浏览器的授权流量不在此链路内。
+这会迁移 CPA 的全部获准出口，包括服务器侧授权、刷新、模型查询和生成请求，不只按模型名
+分流。用户本地浏览器的授权流量不在此链路内。绑定了独立出口的账号不经此中转，见
+[出口模式说明](egress.md)。
 B 只转发 HTTPS CONNECT，不终止上游 TLS，也不保存上游凭据。
 
 ## 1. 前提与变量
@@ -300,44 +299,25 @@ done
 让 WireGuard hooks 保存的子网失效。
 
 若 A 的其他网关服务尚未启动，此时继续 README 的服务启动步骤。
-尚未登录的账号此时再执行：
-
-```bash
-./scripts/codex-device-login.sh
-./scripts/antigravity-login.sh
-```
-
-Antigravity 必须出现 `Antigravity login persisted; readiness, JSON and SSE passed.`。
-然后按 [Gemini 部署说明](gemini-pro.md#部署和登录) 启用精确模型路由并更新 Gateway。
-已有有效凭据无需因为切换出口重新登录。
+尚未授权的账号此时在“CPA 授权管理”页面添加。已有有效凭据无需因为切换出口重新授权。
 
 ## 7. 连通性与真实上游验收
 
-先区分检查的范围。在 A 仓库根目录执行：
+只有经 Gateway 的真实生成才能证明中转链路与故障策略；容器健康、账号列表或模型列表都不能。
 
-```bash
-./scripts/smoke-sidecar.sh
-./scripts/compose.sh exec -T -e TERM=dumb antigravity-bridge \
-    /usr/local/bin/antigravity-smoke
-```
-
-`smoke-sidecar.sh` 只检查 Gateway readiness 和 Sidecar 的账号、模型、访问能力元数据，
-**不发起 Codex 生成**，B 停止后也可能成功；它不能证明 Codex 的生成链路或故障策略。
-第二条 `antigravity-smoke` 才会实际检查 Gemini JSON/SSE 生成，成功以退出码 0
-为准，不输出模型内容。执行时避开其他 Gemini 请求占用 Bridge 的单并发槽。
-
-### Codex 真实生成
+### 真实生成
 
 Codex 生成必须经 Gateway 的真实用户鉴权、模型权限和计费准入。
 在 A 使用用户明确提供的私有 API Key 文件；它须只含一行 Gateway 用户 Key，
 权限为 `0600` 或 `0400`。不要用 Sidecar 内部 Key，也不要把 Key 写入命令、
 项目 `.env` 或日志。下面只填写文件路径、本站 HTTPS origin 和该用户获准使用的
-可用 Codex 模型名；主机需要 `curl`、`jq` 和 Linux `/dev/shm`：
+可用模型名（先用 Codex 模型，再换成一个 Antigravity 模型如 `gemini-3.8-flash-high`
+重复一次，以覆盖 Google 出口）；主机需要 `curl`、`jq` 和 Linux `/dev/shm`：
 
 ```bash
 GATEWAY_URL='https://填写本站域名'
 GATEWAY_API_KEY_FILE='/填写用户指定的私有Key文件绝对路径'
-CODEX_CHECK_MODEL='填写该用户已获准使用且上游可用的Codex模型'
+CODEX_CHECK_MODEL='填写该用户已获准使用且上游可用的模型'
 ```
 
 在同一 Bash 会话定义函数，后续用于正常、断链与恢复验证：
@@ -452,15 +432,10 @@ if declare -F codex_generation_check >/dev/null &&
 else
     printf '%s\n' '未提供用户Key或未准备生成检查：Codex真实生成故障验收未完成'
 fi
-if ./scripts/compose.sh exec -T -e TERM=dumb antigravity-bridge \
-    /usr/local/bin/antigravity-smoke; then
-    printf '%s\n' '验收失败：B 停止后 Gemini 仍成功' >&2
-else
-    printf '%s\n' 'Gemini 生成未完成；结合中转失败日志确认故障原因'
-fi
 ```
 
-`smoke-sidecar.sh` 不用于此处，它在 B 停止后仍成功不是直连回退的证据。
+再把 `CODEX_CHECK_MODEL` 换成 Antigravity 模型重复上面的检查；B 停止时同样必须失败。
+
 任何真实生成意外成功都算故障验收失败；本地准备失败、无 Key，或鉴权/额度等无关错误
 不能算作中转故障验收通过。对照 A 的失败日志，确认没有成功的 `HIER_DIRECT`。
 无论结果如何，检查后立即在 B 恢复 relay：
@@ -469,8 +444,8 @@ fi
 docker compose --env-file ../images.lock.env up -d relay
 ```
 
-恢复后在 A 重跑 `codex_generation_check false`、`codex_generation_check true`
-和 `antigravity-smoke`，检查生成恢复、父代理日志及用量记录。
+恢复后在 A 用 Codex 与 Antigravity 模型分别重跑 `codex_generation_check false` 和
+`codex_generation_check true`，检查生成恢复、父代理日志及用量记录。
 若没有用户 Key，报告已完成的 CONNECT/其他检查范围，保留 Codex 生成与故障验收未完成状态。
 
 B 重启后检查 `rc-service wg-codex status`、`wg show wg-codex` 和 relay 的

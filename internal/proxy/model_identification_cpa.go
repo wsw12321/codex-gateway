@@ -92,7 +92,11 @@ func (c *Client) probeThroughCPA(ctx context.Context, probe ModelIdentificationP
 	defer response.Body.Close()
 	entry := opened.snapshot()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxInternalErrorBodyBytes))
+		// A probe cancelled or timed out while its error body was still
+		// arriving ended for that reason, not for the status it began with.
+		if _, err := io.Copy(io.Discard, io.LimitReader(response.Body, maxInternalErrorBodyBytes)); err != nil && ctx.Err() != nil {
+			return "", diagnosticTransportError(ctx, err)
+		}
 		return "", probeStatusError(response, entry.rejected)
 	}
 	if entry.accountID != probe.AccountID {

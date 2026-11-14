@@ -31,36 +31,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Google Antigravity CLI
-======================
-
-The optional subscription bridge image downloads Google's official Antigravity
-CLI 1.2.4 from the versioned artifact recorded in
-deploy/antigravity-bridge/agy.lock.json:
-
-  https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.4-6085322963025920/linux-x64/cli_linux_x64.tar.gz
-  SHA512: 5811d39ec1bf96a82ed06de6b8ee2bb7f5be8d74423b8c52b6b975e8f0e2c84c6cc2fa0baf902aad942c7566509c3ba6ddb5ef076260c6a635c4616e6ae17897
-
-The upstream binary is distributed separately from the gateway source and
-remains subject to its upstream terms. Documentation and product information:
-
-  https://antigravity.google/docs/cli/install/
-  https://antigravity.google/
-
-The retired third-party Gemini CLI plugin is no longer included in this build.
-
-Expat
-=====
-
-The Antigravity bridge builds Debian's Expat 2.5.0-1+deb12u4 security source
-package to include the DLA-4807-1 fixes before the amd64 binary is published.
-The official source URLs and SHA256 checksums are recorded in
-deploy/antigravity-bridge/Dockerfile and deploy/antigravity-bridge/expat.sha256.
-Expat is licensed under the MIT License; the Debian package retains its
-copyright and license notices in /usr/share/doc/libexpat1/copyright.
-
-  https://www.debian.org/lts/security/2026/dla-4807
-  https://deb.debian.org/debian-security/pool/updates/main/e/expat/
+The retired third-party Gemini CLI plugin and the Google Antigravity CLI bridge
+are no longer included in this build.
 
 WhatsMyLLM and ModelTrace fingerprint data
 ==========================================

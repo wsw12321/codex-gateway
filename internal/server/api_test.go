@@ -469,9 +469,9 @@ func newResponsesWebSocketTestHarness(t *testing.T) responsesWebSocketTestHarnes
 	server := &Server{
 		config: config.Config{KeyPepper: pepper, APIKeyEncryptionKey: encryptionKey},
 		store:  store.New(db),
-		upstream: gatewayproxy.NewWithHTTPClient(upstreamURL, "internal-test-token", &http.Client{
+		upstream: withManagement(gatewayproxy.NewWithHTTPClient(upstreamURL, "internal-test-token", &http.Client{
 			Transport: responsesWebSocketTestRoundTripper{calls: upstreamCalls},
-		}),
+		})),
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
 		mux:      http.NewServeMux(),
 		attempts: newAttemptLimiter(),

@@ -14,7 +14,6 @@ require (
 	golang.org/x/crypto v0.56.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.22.0
-	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.41.0
 )
 
@@ -27,4 +26,5 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )

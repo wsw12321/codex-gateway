@@ -26,7 +26,7 @@ func TestUpstreamConcurrencyOwnerOnlyAndNoStore(t *testing.T) {
 	}))
 	defer remote.Close()
 	base, _ := url.Parse(remote.URL)
-	server := &Server{upstream: gatewayproxy.NewWithHTTPClient(base, "secret", remote.Client())}
+	server := &Server{upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", remote.Client()))}
 	for _, role := range []string{store.UserRoleMember, store.UserRoleOwner} {
 		request := httptest.NewRequest(http.MethodGet, "/admin/upstream-accounts/concurrency", nil)
 		request = request.WithContext(context.WithValue(request.Context(), userContextKey, store.User{ID: "user-1", Role: role}))

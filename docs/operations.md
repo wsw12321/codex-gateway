@@ -22,7 +22,7 @@ ledger 增加可空账号归因；迁移前历史保持 `NULL`，不得猜测或
 并行度 2，不需要新增部署 secret。
 
 本项目按单台 Linux 云服务器、单个隔离 sidecar 中的多个 ChatGPT Plus/Pro 上游
-账号和独立 Antigravity Bridge 设计。Cloudflare
+账号（同一 CPA 进程同时服务 Codex、Claude 与 Antigravity）设计。Cloudflare
 Tunnel 是唯一公网入口，connector 只建立出站连接；所有 Compose 服务均不得
 发布宿主机端口。服务器只接受固定管理 IP 的 SSH 入站。所有命令都应从目标
 服务器上的仓库根目录执行。
@@ -57,7 +57,7 @@ chmod 0600 .env
 把 `GATEWAY_DOMAIN` 改成真实域名，并按[构建和首次启动](#4-构建和首次启动)
 设置不可变版本字段。若 Docker 网段与主机已有网段冲突，应在首次启动前同时
 调整 Compose 中的内部子网与静态地址、Caddy 信任的 cloudflared `/32`、
-`GATEWAY_TRUSTED_PROXY_CIDRS`、Squid 只放行 Sidecar/Bridge 的两个来源 `/32`，
+`GATEWAY_TRUSTED_PROXY_CIDRS`、Squid 只放行 Sidecar 的来源 `/32`，
 以及 `validate-compose.sh` 中验证这些地址的对应不变量。网关只应信任 Caddy 的
 单一 `/32` 地址，Squid 也不得按整个内部子网授权出站。
 
@@ -253,10 +253,9 @@ git diff -- deploy/images.sources deploy/images.lock.env
 ```
 
 确认版本和 digest 的差异后再提交。不要手写 digest，也不要在生产中使用
-`latest`。CLIProxyAPI 的构建证明 `v8.0.59` 的 peeled commit 正是
-`c5251b57b3fa5dcbc689f514f4aa166daacb4481`，并校验补丁 SHA-256，不匹配就会失败。默认的插件模式镜像标签为
-`v8.0.59-c5251b57-8f3381084e4e1055-plugin`（见 `deploy/codex-compat/plugin.lock.json`），回退用的源码补丁镜像为
-`v8.0.59-c5251b57-f6d25e7f06e22777-cpa`；两者统一提供 Codex、Antigravity 与 Claude，校验脚本和 CI 使用实际完整标签。
+`latest`。CLIProxyAPI 的构建证明 `deploy/codex-compat/plugin.lock.json` 中的 tag 的 peeled
+commit 正是锁定的 commit，并校验残余补丁和模型目录的 SHA-256，不匹配就会失败。镜像标签同样
+记录在该锁文件中，统一提供 Codex、Antigravity 与 Claude，校验脚本和 CI 使用实际完整标签。
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
@@ -362,23 +361,23 @@ version 或完整 40 位 Git SHA，`GATEWAY_REVISION` 设为完整 SHA，
 
 ```sh
 ./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+./scripts/compose.sh build gateway codex-compat account-egress
 ./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 
-首次部署保持 `ANTIGRAVITY_MODEL_ROUTES_JSON={}`，Bridge 由第 5 节的隔离登录脚本
-在登录和持久化验收后启动；不使用 Antigravity 时继续保持停止。
+首次部署保持 `ANTIGRAVITY_MODEL_ROUTES_JSON={}`（全部五个已审 Antigravity 模型）；上游账号
+在服务启动后按第 5 节在“CPA 授权管理”页面添加。
 
 `scripts/compose.sh` 会先清除宿主环境中与两个 env 文件同名的变量，再依次读取
 `.env` 和 `deploy/images.lock.env`，并固定 Compose project 名。这样既不会遗漏
 `GATEWAY_DOMAIN`，也不能用导出的环境变量绕过不可变镜像引用。
 
 `validate-compose.sh` 会检查：没有服务发布宿主机端口、内部网络隔离、
-`cloudflared` 与 Squid 只能连接各自需要的出站网络、Squid 只接受固定 Sidecar/
-Bridge 地址、PostgreSQL 本地初始化和 host 连接都强制使用 SCRAM、v2 价格目录
+`cloudflared` 与 Squid 只能连接各自需要的出站网络、Squid 只接受固定 Sidecar
+地址、PostgreSQL 本地初始化和 host 连接都强制使用 SCRAM、v2 价格目录
 结构和必要占位符、两个上游容器只读且非 root、API Key 加密 secret 的格式和仅
-Gateway 挂载、Bridge Keyring/secret 隔离、其他 secret 权限及所有基础镜像的
+Gateway 挂载、已删除的 Antigravity 桥接及其 Keyring/secret 不得重新出现、其他 secret 权限及所有基础镜像的
 SHA-256 digest。
 
 确认主机监听：
@@ -388,7 +387,7 @@ ss -lntup
 ```
 
 Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公网不应看到 80、
-443、5432、8080、8317、8318 或 3128；必须从另一网络扫描服务器公网 IP 验证。随后
+443、5432、8080、8317 或 3128；必须从另一网络扫描服务器公网 IP 验证。随后
 从公网域名验证 Cloudflare Tunnel 返回 `/healthz` 和 `/readyz`。
 
 数据库迁移由 Gateway 启动过程从嵌入迁移执行。Gateway 的 `/healthz` 是
@@ -396,56 +395,31 @@ Compose 不应增加任何监听。除固定管理 IP 可访问的 SSH 外，公
 仅在 Gateway ready 后启动，`cloudflared` 再把 Dashboard hostname 转到 Caddy
 的内部 HTTP 端口。
 
-## 5. 上游设备码登录
+## 5. 上游账号授权
 
-Gemini 订阅使用独立的 `./scripts/antigravity-login.sh` 和 Keyring 卷；旧 Gemini
-OAuth 文件留在原卷但不再加载。AGY 的文件凭据由 Bridge 编码存入加密 Keyring，
-每次调用恢复到独立 HOME，刷新后写回；设置和聊天记录不持久化。登录脚本依次
-完成交互授权、保存、独立容器恢复检查和服务 HTTP 验收，只有打印
-`Antigravity login persisted; readiness, JSON and SSE passed.` 才表示全部成功。
-若旧容器退出后登录丢失，重新运行该脚本；错误中的 `stage`、`category` 和
-`exit_code` 用于定位恢复、保存或验收阶段。登录、出口审核及文本 JSON/SSE 验收见
-[Antigravity 接入说明](gemini-pro.md)。Codex 继续使用以下设备码流程。
+Codex、Claude 与 Antigravity 账号都在 Dashboard 的“CPA 授权管理”页面（`/admin/cpa/`，
+仅 Owner，需近期身份验证）新增、导入、重新授权、刷新和删除。授权由 CPA 自己的管理接口
+完成：Owner 先为账号选择出口（未选时使用全局出口），CPA 经该出口完成授权并把出口写进凭证；
+插件随后从 CPA 保存的字段识别账号身份并登记出口。任何一步失败，账号都不会带着别的出口
+运行。细节见[兼容层升级规程](compatibility-upgrades.md#凭证操作)和
+[CPA 授权管理](cpa-management.md)。
 
-登录只能通过 SSH 执行：
+CPA 入口脚本拒绝命令行登录。原来的 `codex-device-login.sh`、`oauth-login.sh`、
+`claude-login.sh`、`antigravity-login.sh` 与 `smoke-sidecar.sh` 只适用于已删除的源码补丁
+镜像和旧桥接，已随之删除。
 
-```sh
-./scripts/codex-device-login.sh
-```
-
-脚本持有本机互斥锁并执行以下顺序：
-
-1. 停止唯一的 `codex-compat` 实例，确认已停止后移除容器以释放固定 IP；命名
-   OAuth volume 始终保留。
-2. 通过 sidecar 的本地命令记录所有 OAuth JSON 文件名和内容的 secret-keyed
-   SHA-256；不输出可离线猜测的裸文件名哈希、文件名、邮箱或 token。
-3. 保持域名白名单出口代理运行，执行一次 `--codex-device-login`，添加一个新账号
-   或刷新同一账号。
-4. 拒绝任何 symlink、非 UID 10001、目录非 `0700` 或文件非 `0600` 的 OAuth
-   状态；再次取得哈希清单，并要求恰好一个账号新增或变化、零账号消失。
-5. 重启唯一 sidecar，等待健康检查，再启动配套 Gateway 并等待 `/readyz`。
-   兼容层启动不等待 Gateway，避免依赖循环；生成前必须能访问 Gateway 的
-   内部分配接口。
-6. 使用内部固定凭证调用脱敏账号列表、模型列表及最小流式 Responses，验证最终
-   账号归因头，且不输出响应正文。
-
-每次执行只处理一个 ChatGPT Plus/Pro 账号；重复执行可逐个加入更多账号。刷新
-已有账号时，其他 OAuth 文件必须保持原样。差异标识由内部 Sidecar Key 加域，不能
-在不知道该 Key 时对常见邮箱做离线字典匹配，仅用于阻止登录工具意外覆盖或删除其他
-账号。
-
-任何一步失败都会让 sidecar 保持停止，防止继续使用不确定的一组 refresh token。
-修复原因后重新执行。严禁手动启动第二个挂载同一 `codex_oauth` 卷的容器。
-
-可独立复查：
+可独立复查 OAuth 卷的属主与权限：
 
 ```sh
 ./scripts/verify-oauth-permissions.sh
-./scripts/smoke-sidecar.sh
 ```
 
-OAuth 卷不属于备份。灾备恢复、卷损坏或 refresh token 失效后，按账号逐次重新
-执行设备码登录，不要从旧快照复制 token。
+入口脚本每次启动都执行同样的检查：任何 symlink、非 UID 10001、目录非 `0700` 或文件非
+`0600` 的 OAuth 状态都会让 CPA 拒绝启动。严禁手动启动第二个挂载同一 `codex_oauth` 卷的
+容器；入口脚本持有卷内的 `.gateway-refresh.lock`，第二个实例会拒绝启动。
+
+OAuth 卷不属于备份。灾备恢复、卷损坏或 refresh token 失效后，在“CPA 授权管理”页面逐个
+重新授权，不要从旧快照复制 token。
 
 ## 6. Owner 初始化和日常身份运维
 
@@ -1046,44 +1020,26 @@ Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-sec
 并保管必填的 `gateway_api_key_encryption_key`；配置加载发生在迁移前，缺少该文件时
 迁移命令也会拒绝启动。然后在服务器检出已审阅 revision、更新
 `.env` 的三个版本字段、验证工作树为空并现场构建；不要覆盖或清理上一 revision
-镜像。升级 CLIProxyAPI 前还必须：
+镜像。升级 CLIProxyAPI 按[兼容层升级规程](compatibility-upgrades.md#升级-cpa)更新锁文件
+并在 CI 中构建镜像（构建本身运行残余补丁测试、插件单测与竞态检测以及针对所产出二进制的
+端到端测试），部署按下文“CPA 插件镜像的升级与回退”执行。单实例替换；失败时停止新实例，
+再回到旧镜像，不能并行回滚。
 
-1. 审阅新版本、commit、MIT notice 和依赖差异；更新 sources/lock。
-2. 将固定多账号补丁重放到新 commit；对 `v7.3.15` 使用
-   `git apply --check --ignore-space-change` 校验，再用
-   `git apply --ignore-space-change` 应用。审阅完整 diff，并在 CI 运行调用方作用域
-   隔离、按费用加权新分配／既有会话粘滞、两账号失败切换、SSE 首字节边界、窄内部接口、Responses
-   普通/SSE、compact、401、429、跨 chunk usage 和刷新 token 契约测试；同时确认
-   认证后的 Responses WebSocket 探测返回一次 426 后立即降级到 HTTPS/SSE。
-3. 持有 `.device-login.lock` 的 `flock` 并停止生产 sidecar，确保没有两个实例
-   共享 token。
-4. 用测试 OAuth 状态完成契约验证，再用至少一个已授权 Plus/Pro 账号进行人工冒烟。
-5. 单实例滚动替换；失败时停止新实例，再回到旧镜像，不能并行回滚。
+### CPA 插件镜像的升级与回退
 
-`v7.3.15` 仓库升级沿用现有 Go 1.26 构建镜像，不更改公共 API、数据库结构或模型
-价格配置。仓库交付覆盖 Compose、两个镜像构建、构建内安全回归及 Gateway 单元
-测试、race 和 vet；生产切换与真实 OAuth 账号的 Astra 模型列表、普通/SSE
-Responses、compact 冒烟仍按上述步骤及
-[兼容层升级规程](compatibility-upgrades.md) 执行。
-
-### CPA 插件模式的切换与回退
-
-默认部署运行插件模式：未修改的 CLIProxyAPI 加 Gateway 插件（残余补丁只有“插件未选号时
+部署只有一种 CPA 镜像：未修改的 CLIProxyAPI 加 Gateway 插件（残余补丁只有“插件未选号时
 拒绝”）。上游请求全部由 CPA 生成；账号出口失败时请求失败，不会改走全局出口或直连。源码
-补丁镜像保留为回退，在真实账号验收稳定后删除。差异与升级规程见
-[兼容层升级规程](compatibility-upgrades.md#插件模式默认)，信任边界见
+补丁镜像、旧 Antigravity 桥接和 `CPA_INTEGRATION` 开关已删除；`.env` 中残留
+`CPA_INTEGRATION=patch` 时 `scripts/compose.sh` 会拒绝执行，删除该行即可。升级规程见
+[兼容层升级规程](compatibility-upgrades.md#升级-cpa)，信任边界见
 [威胁模型](threat-model.md#cpa-插件模式默认)。
 
-`.env` 中的 `CPA_INTEGRATION` 决定使用哪种镜像：`plugin`（默认）或 `patch`（回退）。
-`scripts/compose.sh` 的每次调用都读取它：`patch` 时自动叠加
-`deploy/patch-cpa.override.yml`，Gateway 与 sidecar 一起切换，登录脚本和之后的
-`up -d` 也都留在所选镜像上。不要用 `-f` 手动叠加覆盖文件。
+**升级 CPA 或首次从补丁镜像切换过来**（在维护窗口内）：
 
-**从补丁镜像升级到默认的插件模式**（在维护窗口内）：
-
-1. 按第 8 节生成并演练数据库备份。插件模式不写数据库迁移，但会重置进程内的会话绑定。
-2. 持有 `.device-login.lock` 的 `flock`，确保没有登录或迁移进程在使用 OAuth 卷。
-3. 确认 `.env` 中没有 `CPA_INTEGRATION=patch`（缺省即 `plugin`），然后构建并检查：
+1. 按第 8 节生成并演练数据库备份。CPA 升级不写数据库迁移，但会重置进程内的会话绑定。
+2. 确保没有其他进程在使用 OAuth 卷（入口脚本持有卷内 `.gateway-refresh.lock`，第二个实例
+   会拒绝启动）。
+3. 构建并检查：
 
    ```sh
    ./scripts/validate-compose.sh
@@ -1104,24 +1060,13 @@ Responses、compact 冒烟仍按上述步骤及
    请求明细中的上游账号归因和扣费层、禁用与重新启用、账号独立出口、出口失败不回退、额度
    观测、授权与导入、模型鉴定。
 
-插件模式下凭证只能在“CPA 授权管理”页面新增、导入、刷新和删除。命令行登录脚本
-（`scripts/oauth-login.sh`、`scripts/claude-login.sh`）和 `scripts/smoke-sidecar.sh`
-属于补丁镜像；插件镜像的入口脚本会拒绝命令行登录，因为 CPA 在这里没有自己的出口，登录也
-绕过了出口登记。
+凭证只能在“CPA 授权管理”页面新增、导入、刷新和删除。入口脚本拒绝命令行登录：CPA 在这里
+没有自己的出口，命令行登录也会绕过出口登记。原来的命令行登录脚本和 `smoke-sidecar.sh`
+随补丁镜像一起删除。
 
-**回退到补丁镜像**：在 `.env` 中设置 `CPA_INTEGRATION=patch`，然后
-
-```sh
-./scripts/validate-compose.sh
-./scripts/compose.sh build gateway codex-compat
-./scripts/compose.sh up -d gateway codex-compat
-```
-
-恢复时删除该行（或改回 `plugin`）并重复同样的命令。两种镜像使用相同的
-`.gateway-account-state` 与身份登记文件，账号禁用、额度锁和稳定账号 ID 保持不变。插件
-模式写入凭证文件的 `proxy_url` 不影响补丁镜像：补丁镜像在每次操作时向 Gateway 解析出口。
-例外：插件模式下新增的 Claude 账号和以邮箱为身份的 Antigravity 账号，补丁镜像不认识，
-回退期间需在补丁镜像中重新授权。
+**回退**：检出上一个 Gateway revision（它固定了上一个 CPA 提交），重复上面第 3、4 步。
+CPA 版本之间凭证卷不需要转换。不再能回退到源码补丁镜像；需要它时只能从 Git 历史中
+恢复对应 revision 整体部署。
 
 Gateway 启动会写入嵌入式迁移记录；旧二进制检测到未知迁移会明确拒绝数据库
 降级。因此，只在确认新 revision **没有写入任何新迁移** 时才可直接把镜像标签
@@ -1295,9 +1240,8 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
 管理页的账号首次使用自动按系数 1、无历史费用参与分配。
 
 兼容层先通过本地健康检查，再启动 Gateway；兼容层启动不等待 Gateway，
-避免启动依赖环。等 Gateway `/readyz` 返回 200 后执行
-`./scripts/smoke-sidecar.sh`，然后完成真实 OAuth 普通和 SSE Responses 冒烟。
-设备登录脚本已按此顺序等待两者。公网 `/internal` 与 `/internal/*` 必须返回
+避免启动依赖环。等 Gateway `/readyz` 返回 200 后完成真实 OAuth 普通和 SSE
+Responses 冒烟。公网 `/internal` 与 `/internal/*` 必须返回
 404；内部分配只接受 sidecar 密钥，回调不经过出口代理。
 
 Owner 在“上游账号”页设置系数，需要近期身份验证；配置与审计在同一事务保存。
@@ -1320,9 +1264,8 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
 ## 11. 计划迁机
 
 计划迁机使用数据库逻辑备份，不复制运行中的 PostgreSQL 原始 volume，也不
-复制 `codex_oauth` 或 `antigravity_keyring` volume。新旧服务器任何时刻只能有
-一个 Tunnel connector 承载该 hostname，也不能让两端的 Sidecar/Bridge 同时使用
-同一组账号凭据。
+复制 `codex_oauth` volume。新旧服务器任何时刻只能有一个 Tunnel connector 承载该
+hostname，也不能让两端的 Sidecar 同时使用同一组账号凭据。
 
 1. 在新服务器安装相同依赖，配置仅固定管理 IP 可访问的 SSH，并关闭所有其他
    入站端口。检出旧服务器正在运行的**同一完整 revision**，确认工作树为空；
@@ -1331,7 +1274,7 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
 
    ```sh
    ./scripts/compose.sh stop cloudflared
-   ./scripts/compose.sh stop caddy gateway codex-compat antigravity-bridge
+   ./scripts/compose.sh stop caddy gateway codex-compat
    ./scripts/backup-postgres.sh
    ./scripts/compose.sh stop postgres egress-allowlist
    ```
@@ -1343,15 +1286,14 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
    `.env` 的 `0600`、`deploy/secrets` 目录的 `0700`、服务/Tunnel secret 的
    `0640`、age key 文件与备份文件的 `0600`。把 `.env` 中
    `GATEWAY_SECRET_GID` 更新为新部署用户的主组并将 service secret 设为该组；
-   不复制 `.device-login.lock`、`.antigravity-login.lock`、容器、PostgreSQL
-   volume、OAuth 文件或 Keyring 数据。
-4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway、兼容层、Bridge 和账号出口运行时。核对
+   不复制容器、PostgreSQL volume 或 OAuth 文件。
+4. 在新服务器运行静态校验并从同一 revision 现场构建 Gateway、兼容层和账号出口运行时。核对
    `.env` 中版本字段与 `git rev-parse HEAD`，不要使用 `local/dev/unknown`：
 
    ```sh
    ./scripts/bootstrap-secrets.sh
    ./scripts/validate-compose.sh
-   ./scripts/compose.sh build gateway codex-compat antigravity-bridge account-egress
+   ./scripts/compose.sh build gateway codex-compat account-egress
    ```
 
 5. 确认新服务器的 `postgres_data` 是首次创建的空命名卷，只启动 PostgreSQL，
@@ -1371,27 +1313,22 @@ Owner 在“上游账号”页设置系数，需要近期身份验证；配置�
      '
    ```
 
-6. 不恢复旧 OAuth 或 Keyring volume。在新服务器重新执行
-   `./scripts/codex-device-login.sh` 和 `./scripts/antigravity-login.sh`，完成权限
-   检查、登录持久化、模型列表和最小 Responses 冒烟；旧服务器的 Sidecar 与
-   Bridge 必须继续停止。没有 Antigravity 账号时保持路由为 `{}` 并让 Bridge 停止。
+6. 不恢复旧 OAuth volume。新服务器的服务启动后（第 7 步），在“CPA 授权管理”页面逐个
+   重新授权账号，再做模型列表和最小 Responses 冒烟；旧服务器的 Sidecar 必须继续停止。
 7. 先启动除 Tunnel 外的服务并确认全部 healthy、数据库 migration ledger 和
    管理数据正确；按第 8 节在新机重新安装备份 wrapper 及 cron 或 systemd timer，
    手工成功执行一次后，再单独启动新 connector。最后从公网验证健康检查、
    Passkey、普通 Responses、首事件及时到达及超过两分钟的 SSE：
 
-   没有 Antigravity 账号时从下面的启动命令中移除 `antigravity-bridge`，并保持
-   `ANTIGRAVITY_MODEL_ROUTES_JSON={}`。
-
    ```sh
-   ./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat antigravity-bridge gateway caddy
+   ./scripts/compose.sh up -d postgres account-egress egress-allowlist codex-compat gateway caddy
    ./scripts/compose.sh ps
    ./scripts/compose.sh up -d cloudflared
    ```
 
 8. 验证审计中的客户端 IP、零宿主端口和每日备份 timer 后再退役旧服务器。迁机
-   失败时保持新 connector 停止；如需返回旧服务器，应先停止新机 Sidecar/Bridge，
-   再在旧机重新完成两个登录流程，不能同时启动两端的上游容器。只有确认新机稳定
+   失败时保持新 connector 停止；如需返回旧服务器，应先停止新机 Sidecar，再在旧机
+   重新授权账号，不能同时启动两端的上游容器。只有确认新机稳定
    且无需回退后，才按云厂商流程安全销毁旧数据库卷和 secret。
 
 ## 模型倍率迁移与升级

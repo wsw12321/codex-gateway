@@ -34,7 +34,7 @@ func TestFundingLayersNegotiateWithSidecar(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			base, _ := url.Parse("http://sidecar.invalid")
-			client := New(base, "internal-test-key")
+			client := withManagement(New(base, "internal-test-key"))
 			layerProbes, dispatches := 0, 0
 			client.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 				switch {
