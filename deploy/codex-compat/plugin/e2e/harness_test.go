@@ -83,6 +83,13 @@ type fakeGateway struct {
 	committed     []string
 	// resolved counts the routes confirmed per account.
 	resolved map[string]int
+	// quotaPushes records each quota report the plugin delivered.
+	quotaPushes []quotaPush
+}
+
+type quotaPush struct {
+	Namespace string
+	Body      string
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
@@ -193,6 +200,9 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.Unmarshal(body, &report)
 		g.reports = append(g.reports, report)
 		w.WriteHeader(http.StatusNoContent)
+	case "quota-observed":
+		g.quotaPushes = append(g.quotaPushes, quotaPush{Namespace: g.namespaces[len(g.namespaces)-1], Body: string(body)})
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -218,6 +228,12 @@ func (g *fakeGateway) reset() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.reports, g.calls, g.namespaces = nil, nil, nil
+}
+
+func (g *fakeGateway) pushes() []quotaPush {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]quotaPush(nil), g.quotaPushes...)
 }
 
 func (g *fakeGateway) reportsFor(token string) []attemptReport {

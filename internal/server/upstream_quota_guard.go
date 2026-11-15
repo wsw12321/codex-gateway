@@ -197,10 +197,10 @@ func (s *Server) readUpstreamQuotaGuard(ctx context.Context, provider, accountID
 	}
 }
 
-// queryCodexQuota sends one live ChatGPT quota request through the
-// per-account limiter shared with Owner and member queries, and audits it.
-// The limiter's own refusal is returned as upstream_quota_query_rate_limited
-// without an audit event, because no upstream request was made.
+// queryCodexQuota reads CPA's latest passive observation of one Codex account
+// through the per-account limiter shared with Owner and member queries, and
+// audits it. The limiter's own refusal is returned as
+// upstream_quota_query_rate_limited without an audit event.
 func (s *Server) queryCodexQuota(ctx context.Context, accountID, via string) (gatewayproxy.UpstreamQuota, string) {
 	if s.upstream == nil {
 		return gatewayproxy.UpstreamQuota{}, "sidecar_unavailable"

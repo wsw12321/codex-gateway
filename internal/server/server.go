@@ -181,6 +181,8 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /internal/upstream-accounts/attempt", s.recordUpstreamAttempt)
 	s.mux.HandleFunc("POST /internal/antigravity-accounts/attempt", s.recordUpstreamAttempt)
 	s.mux.HandleFunc("POST /internal/anthropic-accounts/attempt", s.recordUpstreamAttempt)
+	s.mux.HandleFunc("POST /internal/upstream-accounts/quota-observed", s.recordObservedUpstreamQuota)
+	s.mux.HandleFunc("POST /internal/anthropic-accounts/quota-observed", s.recordObservedUpstreamQuota)
 	s.antigravityAccountRoutes()
 	s.anthropicAccountRoutes()
 	s.cpaAdminRoutes()

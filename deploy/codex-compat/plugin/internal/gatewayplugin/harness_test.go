@@ -112,6 +112,46 @@ type fakeAllocator struct {
 	// registered records each committed registration as "registration=account".
 	registered  []string
 	registerErr error
+	// quotaReports records each delivered quota report; quotaErr fails them
+	// and quotaGate, when set, holds each delivery until it is closed.
+	quotaReports  []quotaCall
+	quotaAttempts int
+	quotaErr      error
+	quotaGate     chan struct{}
+}
+
+type quotaCall struct {
+	provider string
+	report   QuotaReport
+}
+
+func (a *fakeAllocator) ReportQuota(_ context.Context, provider string, report QuotaReport) error {
+	a.mu.Lock()
+	gate := a.quotaGate
+	a.mu.Unlock()
+	if gate != nil {
+		<-gate
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.quotaAttempts++
+	if a.quotaErr != nil {
+		return a.quotaErr
+	}
+	a.quotaReports = append(a.quotaReports, quotaCall{provider, report})
+	return nil
+}
+
+func (a *fakeAllocator) attempts() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.quotaAttempts
+}
+
+func (a *fakeAllocator) quotaCalls() []quotaCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return append([]quotaCall(nil), a.quotaReports...)
 }
 
 func (a *fakeAllocator) RegisterEgress(_ context.Context, _, registrationID, accountID string) error {

@@ -1,0 +1,1 @@
+{"account_id":"0c1a0de000000001","observed_at":"2026-11-09T02:06:40.000004Z","windows":[{"window":"five_hour","used_percent":42,"reset_at":"2026-11-09T04:53:20Z","status":"allowed_warning"},{"window":"seven_day","used_percent":10,"reset_at":"2026-11-14T23:46:40Z","status":"allowed"}]}

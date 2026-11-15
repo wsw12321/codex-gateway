@@ -51,6 +51,9 @@ type Plugin struct {
 	cpaManagement func(ctx context.Context, method, path string, query url.Values, body []byte) (int, []byte, error)
 	// oauth tracks the logins started through the credential page.
 	oauth *oauthSessions
+	// quotaPush delivers quota changes read from usage records; see
+	// observeQuota.
+	quotaPush *quotaPusher
 
 	// reconcileStop ends the background egress passes; see startReconcile.
 	reconcileMu   sync.Mutex
@@ -82,6 +85,7 @@ func NewWithConfig(cfg Config, host Host, alloc Allocator) *Plugin {
 	p.applyProxy = p.loopbackApplyProxy
 	p.cpaManagement = p.loopbackManagement
 	p.oauth = newOAuthSessions()
+	p.quotaPush = newQuotaPusher()
 	p.observeCredential = p.loopbackObserveCredential
 	control, err := LoadControlState(cfg.AuthDir)
 	if err != nil {
@@ -309,9 +313,13 @@ func (p *Plugin) Complete(requestID string, outcome pluginapi.RequestCompletionO
 
 func (p *Plugin) handleUsage(raw []byte) []byte {
 	var record pluginapi.UsageRecord
-	if json.Unmarshal(raw, &record) == nil && record.Failed {
+	if json.Unmarshal(raw, &record) != nil {
+		return okEnvelope(struct{}{})
+	}
+	if record.Failed {
 		p.ObserveFailure(record.SelectionID, record.Failure.StatusCode, record.Failure.Body)
 	}
+	p.observeQuota(record)
 	return okEnvelope(struct{}{})
 }
 

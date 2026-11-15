@@ -142,3 +142,72 @@ func TestClaudePassiveQuota(t *testing.T) {
 		t.Fatalf("a Codex account answered as Claude: %d", status)
 	}
 }
+
+// TestQuotaPush checks that the plugin reports an account's quota to the
+// Gateway from the response headers in CPA's usage record, once per change,
+// and that reporting sends nothing to a provider.
+func TestQuotaPush(t *testing.T) {
+	h := newHarness(t)
+	a := h.addAccount("a", nil)
+	c := h.addClaudeAccount("c", "0c1a0de000000001")
+	h.start()
+	h.provider.set(a.token, "quota-signals")
+	h.gateway.prefer = []string{a.id}
+
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("codex request: %d %s", got.status, got.body)
+	}
+	h.eventually("the Codex quota push", func() bool { return len(h.gateway.pushes()) == 1 })
+	push := h.gateway.pushes()[0]
+	var codex struct {
+		AccountID string `json:"account_id"`
+		Quota     struct {
+			ID     int `json:"id"`
+			Result struct {
+				RateLimits struct {
+					Primary   *struct{ UsedPercent, WindowDurationMins, ResetsAt int64 }
+					Secondary *struct{ UsedPercent, WindowDurationMins int64 }
+				} `json:"rateLimits"`
+			} `json:"result"`
+			ObservedAt time.Time `json:"observed_at"`
+		} `json:"quota"`
+	}
+	if err := json.Unmarshal([]byte(push.Body), &codex); err != nil || push.Namespace != "upstream-accounts" ||
+		codex.AccountID != a.id || codex.Quota.ID != 6 || codex.Quota.Result.RateLimits.Primary == nil ||
+		codex.Quota.Result.RateLimits.Primary.UsedPercent != 30 || codex.Quota.Result.RateLimits.Primary.WindowDurationMins != 300 ||
+		codex.Quota.Result.RateLimits.Primary.ResetsAt != 1794200000 || codex.Quota.Result.RateLimits.Secondary == nil ||
+		codex.Quota.Result.RateLimits.Secondary.UsedPercent != 55 || time.Since(codex.Quota.ObservedAt) > time.Minute {
+		t.Fatalf("codex push %s: %s", push.Namespace, push.Body)
+	}
+	if strings.Contains(push.Body, a.token) || strings.Contains(push.Body, "plus") {
+		t.Fatalf("credential or plan data reached the push: %s", push.Body)
+	}
+
+	// The same quota again is not news. CPA delivers usage records in order,
+	// so once the later Claude push arrives the second Codex record has been
+	// handled; the short wait covers a delivery that would still be running.
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("second codex request: %d %s", got.status, got.body)
+	}
+	r := h.do(call{path: "/v1/messages", body: `{"model":"claude-opus-5","max_tokens":16,"stream":false,"messages":[{"role":"user","content":"hi"}]}`})
+	if r.status != http.StatusOK {
+		t.Fatalf("claude request: %d %s", r.status, r.body)
+	}
+	h.eventually("the Claude quota push", func() bool { return len(h.gateway.pushes()) >= 2 })
+	time.Sleep(300 * time.Millisecond)
+	pushes := h.gateway.pushes()
+	if len(pushes) != 2 {
+		t.Fatalf("pushes = %+v", pushes)
+	}
+	want := `"windows":[{"window":"five_hour","used_percent":42,"reset_at":"2026-11-09T04:53:20Z","status":"allowed_warning"},` +
+		`{"window":"seven_day","used_percent":10,"status":"allowed"}]`
+	if pushes[1].Namespace != "anthropic-accounts" || !strings.HasPrefix(pushes[1].Body, `{"account_id":"`+c.id+`","observed_at":"`) ||
+		!strings.HasSuffix(pushes[1].Body, want+"}") || strings.Contains(pushes[1].Body, c.token) {
+		t.Fatalf("claude push %s: %s", pushes[1].Namespace, pushes[1].Body)
+	}
+
+	// Only the three client requests reached a provider.
+	if calls := h.provider.seen(); len(calls) != 3 {
+		t.Fatalf("provider calls = %+v", calls)
+	}
+}

@@ -30,6 +30,7 @@ func TestUpstreamQuotaGuardPostgresIntegration(t *testing.T) {
 	actor := usageSummaryUser(t, ctx, repository, "guard-actor-"+suffix)
 	codexID := upstreamIntegrationAccountID("guard-codex-" + suffix)
 	otherID := upstreamIntegrationAccountID("guard-other-" + suffix)
+	pushedID := upstreamIntegrationAccountID("guard-pushed-" + suffix)
 	claudeID := upstreamIntegrationAccountID("guard-claude-" + suffix)
 	agyID := upstreamIntegrationAccountID("guard-agy-" + suffix)
 	at := time.Now().UTC().Truncate(time.Microsecond)
@@ -38,6 +39,7 @@ func TestUpstreamQuotaGuardPostgresIntegration(t *testing.T) {
 	if err := repository.SyncUpstreamAccounts(ctx, []UpstreamAccountSnapshot{
 		{ID: codexID, MaskedEmail: "c***@example.com", Plan: "plus", Status: UpstreamAccountStatusAvailable},
 		{ID: otherID, MaskedEmail: "o***@example.com", Plan: "plus", Status: UpstreamAccountStatusAvailable},
+		{ID: pushedID, MaskedEmail: "p***@example.com", Plan: "plus", Status: UpstreamAccountStatusAvailable},
 	}, at); err != nil {
 		t.Fatal(err)
 	}
@@ -242,5 +244,46 @@ func TestUpstreamQuotaGuardPostgresIntegration(t *testing.T) {
 	}
 	if _, err := repository.SetUpstreamQuotaGuardSettings(ctx, SetUpstreamQuotaGuardSettingsParams{SafetyPercent: 51, ActorUserID: actor.ID}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("51%% accepted: %v", err)
+	}
+
+	// Readings pushed by the CPA plugin never move the snapshot back.
+	pushedAt := at.Add(time.Hour)
+	push := func(observedAt time.Time, used int) UpstreamQuotaGuardState {
+		t.Helper()
+		state, err := repository.RecordUpstreamQuotaObservation(ctx, RecordUpstreamQuotaObservationParams{
+			Provider: UpstreamProviderCodex, AccountID: pushedID, RequireNewer: true, At: observedAt.Add(time.Millisecond),
+			Observation: UpstreamQuotaObservation{ObservedAt: observedAt, FiveHour: quotaWindow(used, reset), SevenDay: quotaWindow(10, week)},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	if got := push(pushedAt, 50); got.Status != UpstreamQuotaGuardAvailable || got.ObservedAt == nil ||
+		!got.ObservedAt.Equal(pushedAt) || got.FiveHour == nil || got.FiveHour.UsedPercent != 50 {
+		t.Fatalf("first push=%+v", got)
+	}
+	for _, stale := range []time.Time{pushedAt, pushedAt.Add(-time.Second)} {
+		if got := push(stale, 97); got.Status != UpstreamQuotaGuardAvailable || !got.ObservedAt.Equal(pushedAt) || got.FiveHour.UsedPercent != 50 {
+			t.Fatalf("a reading observed at %s replaced a newer one: %+v", stale, got)
+		}
+	}
+	if audits(pushedID, "upstream_quota_guard.limited") != 0 {
+		t.Fatal("an ignored reading was audited")
+	}
+	newer := pushedAt.Add(time.Second)
+	if got := push(newer, 97); got.Status != UpstreamQuotaGuardLimited || got.Source != UpstreamQuotaGuardSourceAuto ||
+		got.FiveHour.UsedPercent != 97 || !got.ObservedAt.Equal(newer) || got.RestoreAt == nil || !got.RestoreAt.Equal(reset.Add(5*time.Minute)) {
+		t.Fatalf("newer push=%+v", got)
+	}
+	if audits(pushedID, "upstream_quota_guard.limited") != 1 {
+		t.Fatal("a pushed limit was not audited")
+	}
+	// Like an Owner query, a push keeps a manual state and updates its snapshot.
+	if _, err := repository.SetUpstreamQuotaGuardStatus(ctx, SetUpstreamQuotaGuardStatusParams{AccountID: pushedID, Limited: false, ActorUserID: actor.ID, At: newer.Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := push(newer.Add(2*time.Second), 98); got.Status != UpstreamQuotaGuardAvailable || got.Source != UpstreamQuotaGuardSourceManual || got.FiveHour.UsedPercent != 98 {
+		t.Fatalf("push overrode a manual state=%+v", got)
 	}
 }

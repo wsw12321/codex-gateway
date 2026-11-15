@@ -159,6 +159,34 @@ Codex 信号的映射：
 Gateway 把 `observed_at` 当作这次读数的时间：Owner 页面显示“观测于 …”，额度守卫和群组
 账号用量按观测时间记录。额度只在账号处理请求后更新；长时间没有请求的账号显示较旧的观测。
 
+#### 额度推送
+
+CPA 把每次上游尝试的完整响应头放进用量记录（`UsageRecord.ResponseHeaders`），交给插件的
+`usage.handle`。插件按 CPA 记录被动观测的同一规则取出限额头，用上表相同的归一方式生成
+快照，只在额度变化时回调 Gateway（`quotapush.go`）：
+
+| Provider | 回调 | 请求体 |
+|---|---|---|
+| Codex | `POST /internal/upstream-accounts/quota-observed` | `{"account_id","quota"}`，`quota` 就是 `upstream-accounts/quota` 返回的信封 |
+| Claude | `POST /internal/anthropic-accounts/quota-observed` | `{"account_id","observed_at","windows"}`，`windows` 与授权页面的 Claude 窗口相同 |
+
+- 账号取自插件自己的分配记录（按 `SelectionID` 查找），不采信用量记录里的 provider 和凭证字段。
+- “变化”指任一窗口的整数用量、窗口长度、状态或达到上限标记改变，或重置时间相差超过
+  60 秒。由 `Reset-After-Seconds` 换算的重置时间每次有一两秒抖动，不算变化。
+- 每个账号只保留最新一份待发报告，与正在发送或等待发送的相同就不再排队；由一个后台
+  goroutine 依次发送。CPA 的用量分发是单个
+  队列加反压，所以处理用量记录时从不做 I/O。
+- 发送失败（包括旧版 Gateway 返回的 404）后，该账号 1 分钟内不再发送，之后有新记录时
+  重发。新插件配旧 Gateway、旧插件配新 Gateway 都能工作，只是没有推送。
+- Antigravity 没有限额头，不推送。插件不发任何供应商请求，日志不含头的值。
+- 请求体固定在插件的 `testdata/quota_push_{codex,claude}.json`；Gateway 的
+  `TestObservedUpstreamQuotaAcceptsPluginGolden` 读取同一组文件，两个模块不会悄悄分叉。
+
+Gateway 用与 Owner 查询相同的非自动读数写入额度守卫，并要求观测时间比已存的新
+（`RequireNewer`），迟到或重复的报告不会让快照倒退。自动状态当即按规则判定，手动状态
+保留到下一次定时检查。每次写入都会把下次定时检查推到 10–60 分钟之后，所以有推送时
+定时检查自然退为兜底。详见[额度推送验证](upstream-quota-push-validation.md)。
+
 ### 失败时关闭的四道检查
 
 1. **选择器。** 插件未加载、在配置中被禁用或返回了无效账号时，CPA 落到 `plugin-only`
