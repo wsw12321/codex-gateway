@@ -61,6 +61,8 @@ type Allocator interface {
 	// RegisterEgress commits the egress the Owner chose before a login or an
 	// import to the account that login produced.
 	RegisterEgress(ctx context.Context, provider, registrationID, accountID string) error
+	// ReportQuota delivers one account's quota as observed on a response.
+	ReportQuota(ctx context.Context, provider string, report QuotaReport) error
 }
 
 // GatewayClient calls the fixed Gateway callbacks. It never uses a proxy,
@@ -302,6 +304,35 @@ func (c *GatewayClient) RegisterEgress(ctx context.Context, provider, registrati
 	}
 	if _, errObject := decodeObject(data); errObject != nil || json.Unmarshal(data, &answer) != nil ||
 		answer.RegistrationID != registrationID || answer.AccountID != accountID || answer.Status != "committed" {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// ReportQuota implements Allocator. Only Codex and Claude have quota headers;
+// the body is the same normalized shape the quota routes answer with.
+func (c *GatewayClient) ReportQuota(ctx context.Context, provider string, report QuotaReport) error {
+	if !validAccountID(report.AccountID) {
+		return ErrUnavailable
+	}
+	var body any
+	switch {
+	case provider == ProviderCodex && report.Codex != nil:
+		body = struct {
+			AccountID string            `json:"account_id"`
+			Quota     *quotaRPCResponse `json:"quota"`
+		}{report.AccountID, report.Codex}
+	case provider == ProviderClaude && report.ObservedAt != "" && len(report.Windows) > 0:
+		body = struct {
+			AccountID  string            `json:"account_id"`
+			ObservedAt string            `json:"observed_at"`
+			Windows    []anthropicWindow `json:"windows"`
+		}{report.AccountID, report.ObservedAt, report.Windows}
+	default:
+		return ErrUnavailable
+	}
+	status, _, err := c.post(ctx, provider, quotaPushAction, body, 1<<10)
+	if err != nil || status != http.StatusNoContent {
 		return ErrUnavailable
 	}
 	return nil

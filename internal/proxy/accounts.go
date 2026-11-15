@@ -321,36 +321,66 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 	if err := c.accountJSONBody(ctx, http.MethodPost, accountID+"/quota", accountRateLimitsRequestBody, &wire); err != nil {
 		return UpstreamQuota{}, err
 	}
-	if wire.ID == nil || *wire.ID != AccountRateLimitsRequestID || wire.Result == nil ||
-		wire.Result.RateLimits == nil || wire.Result.RateLimitsByLimitID == nil ||
-		!isJSONNull(wire.Result.RateLimitResetCredits) {
-		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
-	}
 	provider := "codex"
 	if c.anthropic {
 		provider = "anthropic"
 	}
-	rateLimits, ok := normalizedRateLimitSnapshot(*wire.Result.RateLimits, provider)
+	quota, ok := normalizeUpstreamQuotaWire(wire, provider, time.Now())
 	if !ok {
 		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
 	}
+	return quota, nil
+}
+
+// ErrInvalidObservedQuota means a quota report from the CPA plugin does not
+// hold to the quota envelope's contract.
+var ErrInvalidObservedQuota = errors.New("invalid observed upstream quota")
+
+// DecodeObservedUpstreamQuota decodes the Codex quota envelope the CPA plugin
+// reports from the rate-limit headers of one response. It is held to the same
+// contract as the quota route's answer and must name when it was observed.
+func DecodeObservedUpstreamQuota(body []byte, now time.Time) (UpstreamQuota, error) {
+	var wire upstreamQuotaWire
+	if rejectDuplicateJSONKeys(body) != nil || decodeStrictJSON(body, &wire) != nil || wire.ObservedAt == nil {
+		return UpstreamQuota{}, ErrInvalidObservedQuota
+	}
+	quota, ok := normalizeUpstreamQuotaWire(wire, "codex", now)
+	if !ok {
+		return UpstreamQuota{}, ErrInvalidObservedQuota
+	}
+	return quota, nil
+}
+
+// normalizeUpstreamQuotaWire validates one app-server rateLimits envelope.
+// An observation time may not lie further in the future than the shared
+// host clock allows.
+func normalizeUpstreamQuotaWire(wire upstreamQuotaWire, provider string, now time.Time) (UpstreamQuota, bool) {
+	if wire.ID == nil || *wire.ID != AccountRateLimitsRequestID || wire.Result == nil ||
+		wire.Result.RateLimits == nil || wire.Result.RateLimitsByLimitID == nil ||
+		!isJSONNull(wire.Result.RateLimitResetCredits) {
+		return UpstreamQuota{}, false
+	}
+	rateLimits, ok := normalizedRateLimitSnapshot(*wire.Result.RateLimits, provider)
+	if !ok {
+		return UpstreamQuota{}, false
+	}
 	byLimitIDWire := *wire.Result.RateLimitsByLimitID
 	if len(byLimitIDWire) == 0 || len(byLimitIDWire) > maxAccountRateLimitBuckets {
-		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+		return UpstreamQuota{}, false
 	}
 	byLimitID := make(map[string]RateLimitSnapshot, len(byLimitIDWire))
 	for limitID, snapshotWire := range byLimitIDWire {
 		if !rateLimitIDPattern.MatchString(limitID) {
-			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+			return UpstreamQuota{}, false
 		}
 		snapshot, valid := normalizedRateLimitSnapshot(snapshotWire, limitID)
 		if !valid {
-			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+			return UpstreamQuota{}, false
 		}
 		byLimitID[limitID] = snapshot
 	}
 	if primary, exists := byLimitID[provider]; !exists || !equalRateLimitSnapshot(rateLimits, primary) {
-		return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+		return UpstreamQuota{}, false
 	}
 	quota := UpstreamQuota{
 		ID: AccountRateLimitsRequestID,
@@ -360,13 +390,13 @@ func (c *Client) QueryUpstreamAccountQuota(ctx context.Context, accountID string
 	}
 	if wire.ObservedAt != nil {
 		observed, err := time.Parse(time.RFC3339, *wire.ObservedAt)
-		if err != nil || observed.Unix() < minRateLimitResetUnix || observed.After(time.Now().Add(maxQuotaObservationSkew)) {
-			return UpstreamQuota{}, &InternalAPIError{StatusCode: http.StatusBadGateway, Code: "sidecar_invalid_response"}
+		if err != nil || observed.Unix() < minRateLimitResetUnix || observed.After(now.Add(maxQuotaObservationSkew)) {
+			return UpstreamQuota{}, false
 		}
 		observed = observed.UTC()
 		quota.ObservedAt = &observed
 	}
-	return quota, nil
+	return quota, true
 }
 
 // accountJSON calls a route of this provider's account namespace on the

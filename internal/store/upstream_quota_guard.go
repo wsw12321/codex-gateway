@@ -107,7 +107,10 @@ type RecordUpstreamQuotaObservationParams struct {
 	// Automatic readings may override a manual state. Other readings, such as
 	// an Owner or member query, only update the snapshot of a manual state.
 	Automatic bool
-	At        time.Time
+	// RequireNewer ignores a reading that is not newer than the stored one, so
+	// reports that arrive late or twice never move the snapshot back.
+	RequireNewer bool
+	At           time.Time
 }
 
 type SetUpstreamQuotaGuardStatusParams struct {
@@ -476,6 +479,10 @@ func (s *Store) RecordUpstreamQuotaObservation(ctx context.Context, params Recor
 		current, err := lockUpstreamQuotaGuardRowTx(ctx, tx, params.AccountID, params.Provider)
 		if err != nil {
 			return err
+		}
+		if params.RequireNewer && current.observedAt != nil && !observation.ObservedAt.After(*current.observedAt) {
+			result = current.state(at)
+			return nil
 		}
 		fiveUsed, fiveReset := windowValues(observation.FiveHour)
 		sevenUsed, sevenReset := windowValues(observation.SevenDay)
