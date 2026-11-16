@@ -281,6 +281,79 @@ func TestLoginCompletesWithIdentityAndEgressBinding(t *testing.T) {
 	}
 }
 
+func TestLoginCompletesWithoutCPAAuthID(t *testing.T) {
+	f := newFixture(t, 1)
+	cpa := newFakeCPAManagement(f)
+	cpa.authURL = "https://claude.ai/oauth/authorize?state=" + testLoginState
+	if status, _, body := f.manage(http.MethodPost, facadePath("anthropic", "oauth"), nil,
+		`{"registration_id":"`+testRegistration+`"}`); status != http.StatusOK {
+		t.Fatalf("login start: %d %s", status, body)
+	}
+	// CPA's built-in Claude flow reports completion without auth_id. The
+	// credential listing contains the file written after this session started.
+	cpa.authStatus = `{"status":"ok"}`
+	f.advance(time.Second)
+	identity := map[string]any{
+		"type":              "claude",
+		"account_uuid":      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		"organization_uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		"refresh_token":     "r",
+	}
+	f.host.addEntry("claude-new", ProviderClaude, identity, f.clock)
+	status, fields, body := f.manage(http.MethodPost, facadePath("anthropic", "oauth/status"), nil,
+		`{"state":"`+testLoginState+`"}`)
+	if len(f.alloc.registered) != 1 {
+		t.Fatalf("egress registration %v", f.alloc.registered)
+	}
+	wantID := strings.TrimPrefix(f.alloc.registered[0], testRegistration+"=")
+	if status != http.StatusOK || string(fields["status"]) != `"ok"` || string(fields["account_id"]) != `"`+wantID+`"` {
+		t.Fatalf("completed login without auth_id: %d %s", status, body)
+	}
+	if len(f.alloc.registered) != 1 || f.alloc.registered[0] != testRegistration+"="+wantID {
+		t.Fatalf("egress registration %v", f.alloc.registered)
+	}
+}
+
+func TestLoginWithoutCPAAuthIDDoesNotAdoptOldCredential(t *testing.T) {
+	f := newFixture(t, 1)
+	cpa := newFakeCPAManagement(f)
+	cpa.authURL = "https://claude.ai/oauth/authorize?state=" + testLoginState
+	if status, _, body := f.manage(http.MethodPost, facadePath("anthropic", "oauth"), nil,
+		`{"registration_id":"`+testRegistration+`"}`); status != http.StatusOK {
+		t.Fatalf("login start: %d %s", status, body)
+	}
+	cpa.authStatus = `{"status":"ok"}`
+	oldIdentity := map[string]any{
+		"type":              "claude",
+		"account_uuid":      "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+		"organization_uuid": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+		"refresh_token":     "old",
+	}
+	identity := map[string]any{
+		"type":              "claude",
+		"account_uuid":      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		"organization_uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		"refresh_token":     "r",
+	}
+	// This file predates the login and must not be adopted as its result.
+	f.host.addEntry("claude-old", ProviderClaude, oldIdentity, f.clock.Add(-time.Second))
+	status, fields, body := f.manage(http.MethodPost, facadePath("anthropic", "oauth/status"), nil,
+		`{"state":"`+testLoginState+`"}`)
+	if status != http.StatusOK || string(fields["status"]) != `"wait"` || len(f.alloc.registered) != 0 {
+		t.Fatalf("old credential was adopted: %d %s", status, body)
+	}
+
+	// Once CPA lists the file written by this login, the same session can
+	// complete without a second callback or a new auth_id.
+	f.advance(time.Second)
+	f.host.addEntry("claude-new", ProviderClaude, identity, f.clock)
+	status, fields, body = f.manage(http.MethodPost, facadePath("anthropic", "oauth/status"), nil,
+		`{"state":"`+testLoginState+`"}`)
+	if status != http.StatusOK || string(fields["status"]) != `"ok"` || len(f.alloc.registered) != 1 {
+		t.Fatalf("new credential was not adopted: %d %s", status, body)
+	}
+}
+
 func TestLoginFailuresFailClosed(t *testing.T) {
 	start := func(t *testing.T, f *fixture, provider string) *fakeCPAManagement {
 		cpa := newFakeCPAManagement(f)

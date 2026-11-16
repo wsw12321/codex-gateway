@@ -55,7 +55,11 @@ var cpaOAuthProviders = map[string]struct{ name, host string }{
 type oauthSession struct {
 	provider       string
 	registrationID string
-	expires        time.Time
+	// startedAt bounds the credential listing fallback used when CPA marks a
+	// built-in OAuth session complete without returning auth_id. A credential
+	// that predates this login must never be adopted by that login.
+	startedAt time.Time
+	expires   time.Time
 	// accountID is set once the login produced an identified account, so a
 	// repeated status poll gets the same answer.
 	accountID string
@@ -263,7 +267,8 @@ func (p *Plugin) oauthBegin(provider string, body []byte) []byte {
 		!validOAuthState(answer.State) || !validOAuthURL(provider, answer.URL, answer.State) {
 		return credentialError(http.StatusBadGateway, "credential_login_unavailable")
 	}
-	if !p.oauth.add(answer.State, oauthSession{provider: provider, registrationID: registrationID, expires: p.now().Add(oauthSessionTTL)}, p.now()) {
+	now := p.now()
+	if !p.oauth.add(answer.State, oauthSession{provider: provider, registrationID: registrationID, startedAt: now, expires: now.Add(oauthSessionTTL)}, now) {
 		_, _, _ = p.cpaManagement(ctx, http.MethodDelete, "/v8/management/oauth/session", url.Values{"state": {answer.State}}, nil)
 		return credentialError(http.StatusServiceUnavailable, "credential_login_busy")
 	}
@@ -319,11 +324,25 @@ func (p *Plugin) oauthStatus(provider string, body []byte) []byte {
 	switch {
 	case answer.Status == "wait":
 		return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
-	case answer.Status != "ok" || strings.TrimSpace(answer.AuthID) == "":
+	case answer.Status != "ok":
 		p.oauth.drop(state)
 		return managementJSON(http.StatusOK, map[string]string{"status": "error"})
 	}
-	accountID, err := p.completeCredential(ctx, provider, strings.TrimSpace(answer.AuthID), session.registrationID)
+	authID := strings.TrimSpace(answer.AuthID)
+	if authID == "" {
+		// Built-in CPA OAuth completes non-targeted Claude/Antigravity sessions
+		// with status=ok but no auth_id. Wait for its auth listing to expose the
+		// file written by this session, and never adopt an older credential.
+		var errPending error
+		authID, errPending = p.newOAuthCredential(provider, session.startedAt)
+		if errors.Is(errPending, errCredentialPending) {
+			return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
+		}
+		if errPending != nil {
+			return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
+		}
+	}
+	accountID, err := p.completeCredential(ctx, provider, authID, session.registrationID)
 	if errors.Is(err, errCredentialPending) {
 		return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
 	}
@@ -334,6 +353,50 @@ func (p *Plugin) oauthStatus(provider string, body []byte) []byte {
 	}
 	p.oauth.complete(state, accountID)
 	return managementJSON(http.StatusOK, map[string]string{"status": "ok", "account_id": accountID})
+}
+
+// newOAuthCredential returns the newest credential of provider that CPA
+// reports as changed after this login began. CPA's built-in OAuth status does
+// not include auth_id for non-targeted Claude/Antigravity sessions, so this
+// listing is the safe fallback that lets the plugin finish its own identity
+// and egress binding. No pre-existing file is eligible.
+func (p *Plugin) newOAuthCredential(provider string, startedAt time.Time) (string, error) {
+	if startedAt.IsZero() {
+		return "", errCredentialPending
+	}
+	entries, err := p.host.AuthList()
+	if err != nil {
+		return "", errCredentialPending
+	}
+	var selected AuthEntry
+	var selectedAt time.Time
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Provider), provider) || entry.RuntimeOnly || entry.Source != "file" {
+			continue
+		}
+		updatedAt := entry.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = entry.ModTime
+		}
+		if updatedAt.IsZero() {
+			updatedAt = entry.CreatedAt
+		}
+		if updatedAt.IsZero() || !updatedAt.After(startedAt) {
+			continue
+		}
+		if (selected.ID != "" || selected.Name != "") && !updatedAt.After(selectedAt) {
+			continue
+		}
+		selected = entry
+		selectedAt = updatedAt
+	}
+	if selected.ID == "" && selected.Name == "" {
+		return "", errCredentialPending
+	}
+	if selected.ID != "" {
+		return selected.ID, nil
+	}
+	return selected.Name, nil
 }
 
 // completeCredential turns a credential CPA has just saved into a usable
