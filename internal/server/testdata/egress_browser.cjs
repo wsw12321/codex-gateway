@@ -1,6 +1,6 @@
 "use strict";
 
-// All API requests use synthetic fixtures. No real SS or OAuth credentials.
+// All API requests use synthetic fixtures. No real SS, SOCKS5 or OAuth credentials.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -17,7 +17,7 @@ const output = process.env.SCREENSHOT_DIR || "/tmp/gateway-egress-screenshots";
     const page = await browser.newPage({viewport: {width: 1440, height: 1000}, locale: "zh-CN"});
     const errors = [], writes = [];
     let servers = [], version = 1, binding = null;
-    const id = "11111111-1111-4111-8111-111111111111", ss2022ID = "22222222-2222-4222-8222-222222222222";
+    const id = "11111111-1111-4111-8111-111111111111", ss2022ID = "22222222-2222-4222-8222-222222222222", socksID = "33333333-3333-4333-8333-333333333333";
     const ss2022Key = "AAECAwQFBgcICQoLDA0ODw==", probes = [];
     page.on("pageerror", error => errors.push(error.message));
     await page.route("**/*", async route => {
@@ -35,16 +35,17 @@ const output = process.env.SCREENSHOT_DIR || "/tmp/gateway-egress-screenshots";
       if (url.pathname === "/admin/egress-servers" && request.method() === "GET") return send({servers, version, runtime: runtime()});
       if (url.pathname === "/admin/egress-servers" && request.method() === "POST") {
         const {password, ...node} = request.postDataJSON();
-        const nodeID = servers.length ? ss2022ID : id;
-        assert.equal(password, nodeID === id ? '  synthetic$"\\password  ' : ss2022Key);
-        servers.push({...node, id: nodeID, revision: ++version, has_password: true});
+        const nodeID = [id, ss2022ID, socksID][servers.length];
+        assert.equal(password, {[id]: '  synthetic$"\\password  ', [ss2022ID]: ss2022Key, [socksID]: "synthetic-socks-pass"}[nodeID]);
+        if (nodeID === socksID) assert.deepEqual(node, {name: "东京 SOCKS5", protocol: "socks5", server: "socks.example.test", port: 1080, udp: false, username: "relay-user"});
+        servers.push({cipher: "", username: "", ...node, id: nodeID, revision: ++version, has_password: Boolean(password)});
         return send({server: servers.at(-1), runtime: runtime()});
       }
       const nodePath = url.pathname.match(/^\/admin\/egress-servers\/([^/]+)(\/test)?$/);
       const index = nodePath ? servers.findIndex(node => node.id === nodePath[1]) : -1;
       if (nodePath?.[2] && request.method() === "POST") {
         const {target} = request.postDataJSON(); probes.push({id: nodePath[1], target});
-        const healthy = nodePath[1] === id;
+        const healthy = nodePath[1] !== ss2022ID;
         return send({id: nodePath[1], revision: servers[index].revision, target: "chatgpt.com", ok: healthy, code: healthy ? "ok" : "handshake_failed", latency_ms: healthy ? 186 : 10000, tested_at: "2026-11-06T08:15:30Z"});
       }
       if (index >= 0 && request.method() === "PUT") {
@@ -96,10 +97,29 @@ const output = process.env.SCREENSHOT_DIR || "/tmp/gateway-egress-screenshots";
     await dialog.locator('input[name="password"]').fill(ss2022Key);
     await dialog.getByRole("button", {name: "保存节点"}).click();
     await page.getByRole("heading", {name: "新加坡 SS2022"}).waitFor();
+    await page.getByRole("button", {name: "新增节点", exact: true}).click();
+    await dialog.getByLabel("节点名称").fill("东京 SOCKS5");
+    await dialog.getByLabel("协议").selectOption("socks5");
+    assert.equal(await dialog.getByLabel("加密方式").isVisible(), false);
+    assert.equal(await dialog.locator('input[name="password"]').isDisabled(), true);
+    await dialog.getByLabel("服务器地址").fill("socks.example.test");
+    await dialog.getByLabel("端口", {exact: true}).fill("1080");
+    await dialog.locator('input[name="username"]').fill("relay-user");
+    assert.equal(await dialog.locator('input[name="password"]').isDisabled(), false);
+    await dialog.locator('input[name="password"]').fill("synthetic-socks-pass");
+    await dialog.screenshot({path: path.join(output, "egress-socks5-dialog.png")});
+    await dialog.getByRole("button", {name: "保存节点"}).click();
+    await page.getByRole("heading", {name: "东京 SOCKS5"}).waitFor();
+    await page.locator(".egress-card", {hasText: "东京 SOCKS5"}).getByText("SOCKS5 · 用户名/密码认证 · UDP 关闭").waitFor();
+    await page.locator(".egress-card", {hasText: "东京 SOCKS5"}).getByRole("button", {name: "编辑", exact: true}).click();
+    assert.equal(await dialog.locator('input[name="username"]').inputValue(), "relay-user");
+    assert.equal(await dialog.getByLabel("协议").inputValue(), "socks5");
+    assert.match(await page.locator("#egress-password-help").textContent(), /留空保留现有密码/);
+    await dialog.getByRole("button", {name: "取消"}).click();
     await page.getByRole("button", {name: "全部测试", exact: true}).click();
-    await page.getByText(/^连通正常 · chatgpt\.com · 186 ms/).waitFor();
     await page.getByText(/^连通失败 · chatgpt\.com：未能与目标完成 TLS 握手/).waitFor();
-    assert.deepEqual(probes.map(probe => probe.target), ["codex", "codex"]);
+    await page.waitForFunction(() => [...egressProbes.values()].filter(probe => probe.state === "done").length === 3);
+    assert.deepEqual(probes.map(probe => probe.target), ["codex", "codex", "codex"]);
     await page.locator("#egress-probe-target").selectOption("anthropic");
     await page.locator(".egress-card", {hasText: "华东主出口"}).getByRole("button", {name: "测试连通性"}).click();
     await page.waitForFunction(() => egressProbes.get("11111111-1111-4111-8111-111111111111")?.state === "done");
@@ -122,15 +142,15 @@ const output = process.env.SCREENSHOT_DIR || "/tmp/gateway-egress-screenshots";
     await page.waitForFunction(() => !upstreamAccountOperation);
     assert.equal(binding, null);
     await page.evaluate(() => {location.hash = "egress-servers";});
-    for (const name of ["新加坡 SS2022", "华东主出口"]) {
+    for (const name of ["东京 SOCKS5", "新加坡 SS2022", "华东主出口"]) {
       const card = page.locator(".egress-card", {hasText: name});
       await card.getByRole("button", {name: "删除", exact: true}).click();
       await card.getByRole("button", {name: "确认删除", exact: true}).click();
       await card.waitFor({state: "detached"});
     }
-    await page.getByText("尚未配置出口服务器。新增 SS 节点后，可在上游账号设置中绑定。").waitFor();
+    await page.getByText("尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。").waitFor();
     assert.deepEqual(errors, []);
     assert.equal(writes.filter(write => write.path.endsWith("/egress")).length, 2);
-    console.log("Egress browser: CRUD, SS2022 key check, connectivity tests, secret clearing, per-account binding, unbind, desktop/mobile passed");
+    console.log("Egress browser: CRUD, SS2022 key check, SOCKS5 node, connectivity tests, secret clearing, per-account binding, unbind, desktop/mobile passed");
   } finally { await browser.close(); }
 })().catch(error => {console.error(error); process.exitCode = 1;});

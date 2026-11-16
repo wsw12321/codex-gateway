@@ -9,12 +9,17 @@ import (
 	"time"
 )
 
+// Node is one upstream egress server. Protocol is ProtocolSS (also when
+// empty) or ProtocolSOCKS5. A SOCKS5 node has no Cipher; Username and
+// Password are both empty for no authentication.
 type Node struct {
 	ID       string `json:"id"`
 	Revision int64  `json:"revision"`
+	Protocol string `json:"protocol,omitempty"`
 	Server   string `json:"server"`
 	Port     int    `json:"port"`
 	Cipher   string `json:"cipher"`
+	Username string `json:"username,omitempty"`
 	Password string `json:"password"`
 	UDP      bool   `json:"udp"`
 }

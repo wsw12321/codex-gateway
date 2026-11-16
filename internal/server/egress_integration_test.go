@@ -317,3 +317,122 @@ func TestEgressSS2022AndConnectivityProbePostgres(t *testing.T) {
 		t.Fatalf("unapplied node reached the runtime probe: %d", count)
 	}
 }
+
+func TestEgressSOCKS5HTTPPostgres(t *testing.T) {
+	f := newInvitationHTTPFixture(t)
+	f.s.config.EgressControlKey = strings.Repeat("c", 32)
+	f.s.config.APIKeyEncryptionKey = bytes.Repeat([]byte{0x66}, 32)
+	var mu sync.Mutex
+	status := egress.Status{InstanceID: "fixture", Ready: true}
+	var last egress.Snapshot
+	control := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer "+f.s.config.EgressControlKey {
+			w.WriteHeader(401)
+			return
+		}
+		if r.Method == "PUT" {
+			decoder := json.NewDecoder(r.Body)
+			decoder.DisallowUnknownFields()
+			last = egress.Snapshot{}
+			if err := decoder.Decode(&last); err != nil {
+				t.Error(err)
+			}
+			status.AppliedVersion = last.Version
+			status.NodeRevisions = map[string]int64{}
+			for _, node := range last.Nodes {
+				status.NodeRevisions[node.ID] = node.Revision
+			}
+		}
+		_ = json.NewEncoder(w).Encode(status)
+	}))
+	defer control.Close()
+	f.s.config.EgressControlURL, _ = url.Parse(control.URL)
+	saved := func(w *httptest.ResponseRecorder) egressServerDTO {
+		var response struct {
+			Server egressServerDTO `json:"server"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(w.Body.String(), "SOCKS-canary") || strings.Contains(w.Body.String(), "SS-canary") {
+			t.Fatalf("response leaked a password: %s", w.Body)
+		}
+		return response.Server
+	}
+	runtimeNode := func(id string) egress.Node {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, n := range last.Nodes {
+			if n.ID == id {
+				return n
+			}
+		}
+		t.Fatalf("node %s missing from runtime snapshot", id)
+		return egress.Node{}
+	}
+	socks := func(username, password string) map[string]any {
+		body := map[string]any{"name": "socks", "protocol": "socks5", "server": "SOCKS.example.com", "port": 1080, "username": username, "udp": true}
+		if password != "" {
+			body["password"] = password
+		}
+		return body
+	}
+	wantCode := func(w *httptest.ResponseRecorder, code string) {
+		t.Helper()
+		if !strings.Contains(w.Body.String(), code) || strings.Contains(w.Body.String(), "canary") {
+			t.Fatalf("want %s, got %s", code, w.Body)
+		}
+	}
+
+	open := saved(f.send(t, "POST", "/admin/egress-servers", socks("", ""), f.cookie, 201))
+	if open.Protocol != "socks5" || open.Server != "socks.example.com" || open.HasPassword || open.Cipher != "" || !open.UDP {
+		t.Fatalf("unauthenticated SOCKS5 node: %+v", open)
+	}
+	if n := runtimeNode(open.ID); n != (egress.Node{ID: open.ID, Revision: open.Revision, Protocol: "socks5", Server: "socks.example.com", Port: 1080, UDP: true}) {
+		t.Fatalf("runtime node = %+v", n)
+	}
+	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("user", ""), f.cookie, 400), "invalid_egress_request")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("", "SOCKS-canary"), f.cookie, 400), "invalid_egress_password")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("user", "SOCKS-canary\nx"), f.cookie, 400), "invalid_egress_password")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("user", strings.Repeat("p", 256)), f.cookie, 400), "invalid_egress_password")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "protocol": "socks5", "server": "socks.example.com", "port": 1080, "cipher": "aes-256-gcm", "udp": false}, f.cookie, 400), "invalid_egress_request")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "protocol": "http", "server": "socks.example.com", "port": 1080, "udp": false}, f.cookie, 400), "invalid_egress_request")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "server": "ss.example.com", "port": 8388, "cipher": "aes-256-gcm", "username": "user", "password": "SS-canary", "udp": false}, f.cookie, 400), "invalid_egress_request")
+
+	// Enabling authentication requires a password; then a blank one keeps it.
+	wantCode(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, socks("user", ""), f.cookie, 400), "egress_password_required")
+	authed := saved(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, socks("user", "SOCKS-canary"), f.cookie, 200))
+	if !authed.HasPassword || authed.Username != "user" {
+		t.Fatalf("authenticated SOCKS5 node: %+v", authed)
+	}
+	authed = saved(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, socks("user", ""), f.cookie, 200))
+	if n := runtimeNode(open.ID); n.Username != "user" || n.Password != "SOCKS-canary" || n.Cipher != "" || n.Revision != authed.Revision {
+		t.Fatalf("retained SOCKS5 credentials not applied: %+v", n)
+	}
+	// Switching to SS needs a new password: a SOCKS5 password is not an SS one.
+	ss := map[string]any{"name": "socks", "protocol": "ss", "server": "ss.example.com", "port": 8388, "cipher": "aes-256-gcm", "udp": false}
+	wantCode(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, ss, f.cookie, 400), "egress_password_required")
+	ss["password"] = "SS-canary"
+	switched := saved(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, ss, f.cookie, 200))
+	if switched.Protocol != "ss" || switched.Username != "" || switched.Cipher != "aes-256-gcm" {
+		t.Fatalf("switched node: %+v", switched)
+	}
+	if n := runtimeNode(open.ID); n.Protocol != "" || n.Password != "SS-canary" {
+		t.Fatalf("SS node runtime shape: %+v", n)
+	}
+	// And back to SOCKS5 with a username also needs a new password.
+	wantCode(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, socks("user", ""), f.cookie, 400), "egress_password_required")
+	cleared := saved(f.send(t, "PUT", "/admin/egress-servers/"+open.ID, socks("", ""), f.cookie, 200))
+	if cleared.HasPassword || cleared.Protocol != "socks5" {
+		t.Fatalf("SS to unauthenticated SOCKS5: %+v", cleared)
+	}
+	if n := runtimeNode(open.ID); n.Password != "" || n.Username != "" {
+		t.Fatalf("cleared SOCKS5 node still carries credentials: %+v", n)
+	}
+	list := f.send(t, "GET", "/admin/egress-servers", nil, f.cookie, 200)
+	if strings.Contains(list.Body.String(), "canary") || !strings.Contains(list.Body.String(), `"protocol":"socks5"`) {
+		t.Fatalf("list response: %s", list.Body)
+	}
+}

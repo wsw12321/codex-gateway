@@ -9164,11 +9164,16 @@ function renderEgressServers(result) {
     return element("article", {className: "panel egress-card"},
       element("div", {className: "panel-heading"}, element("h3", {text: node.name}), element("span", {className: "status-badge", text: nodeApplied ? "已应用" : "待应用"})),
       element("p", {className: "egress-address", text: `${node.server}:${node.port}`}),
-      element("p", {className: "muted", text: `SS · ${node.cipher} · UDP ${node.udp ? "开启" : "关闭"}`}),
+      element("p", {className: "muted", text: `${egressProtocolSummary(node)} · UDP ${node.udp ? "开启" : "关闭"}`}),
       probe && element("p", {className: "egress-probe", dataset: {kind: probe.kind}, text: probe.text}),
       element("div", {className: "actions"}, test, edit, remove));
   }));
-  if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 节点后，可在上游账号设置中绑定。"));
+  if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。"));
+}
+
+function egressProtocolSummary(node) {
+  if (node.protocol === "socks5") return `SOCKS5 · ${node.has_password ? "用户名/密码认证" : "无认证"}`;
+  return `SS · ${node.cipher}`;
 }
 
 function openEgressEditor(node = null) {
@@ -9176,33 +9181,84 @@ function openEgressEditor(node = null) {
   const form = byId("egress-form");
   form.reset();
   egressDraftID = node?.id || "";
-  for (const name of ["name", "server", "port", "cipher"]) form.elements[name].value = node?.[name] ?? (name === "cipher" ? "aes-128-gcm" : "");
+  for (const name of ["name", "server", "port", "username"]) form.elements[name].value = node?.[name] ?? "";
+  form.elements.protocol.value = node?.protocol || "ss";
+  form.elements.cipher.value = node?.cipher || "aes-128-gcm";
   form.elements.udp.checked = Boolean(node?.udp);
   form.dataset.savedCipher = node?.cipher || "";
-  syncEgressPasswordHelp(form);
+  form.dataset.savedProtocol = node ? node.protocol || "ss" : "";
+  form.dataset.savedPassword = node?.has_password ? "true" : "";
+  syncEgressProtocolFields(form);
   byId("egress-dialog-title").textContent = node ? "编辑出口服务器" : "新增出口服务器";
   setLocalMessage(form);
   openDialog("egress-dialog");
+}
+
+function egressFormProtocol(form) {
+  return form.elements.protocol?.value === "socks5" ? "socks5" : "ss";
+}
+
+// SS shows its cipher; SOCKS5 has no cipher and an optional username.
+function syncEgressProtocolFields(form) {
+  const socks5 = egressFormProtocol(form) === "socks5";
+  byId("egress-cipher-field")?.classList.toggle("hidden", socks5);
+  byId("egress-username-field")?.classList.toggle("hidden", !socks5);
+  syncEgressPasswordHelp(form);
+}
+
+// A retained password must belong to the same protocol, and a SOCKS5 node
+// without a username has no password at all.
+function syncEgressSOCKS5PasswordHelp(form) {
+  const editing = Boolean(egressDraftID);
+  const password = form.elements.password;
+  const authenticated = Boolean(form.elements.username?.value);
+  const retained = editing && form.dataset.savedProtocol === "socks5" && form.dataset.savedPassword === "true";
+  password.disabled = !authenticated;
+  if (!authenticated) password.value = "";
+  password.required = authenticated && !retained;
+  password.placeholder = "";
+  let help = "填写用户名后需要填写密码；用户名和密码各不超过 255 字节。";
+  if (!authenticated) help = "无认证。填写用户名后可设置密码。";
+  else if (retained) help = "留空保留现有密码。";
+  else if (editing) help = "启用认证或切换协议需重新填写密码。";
+  const target = byId("egress-password-help");
+  if (target) target.textContent = help;
 }
 
 // SS2022 uses the server's pre-shared key, not a free-form password. A
 // retained password from another cipher is rarely a valid key, so switching
 // asks for the key again; the server checks the format either way.
 function syncEgressPasswordHelp(form) {
+  if (egressFormProtocol(form) === "socks5") return syncEgressSOCKS5PasswordHelp(form);
+  form.elements.password.disabled = false;
   const editing = Boolean(egressDraftID);
+  const switched = editing && Boolean(form.dataset.savedProtocol) && form.dataset.savedProtocol !== "ss";
   const cipher = form.elements.cipher.value;
   const savedCipher = form.dataset.savedCipher || "";
   const ss2022 = cipher === egressSS2022Cipher;
   const needsKey = ss2022 && savedCipher !== cipher;
-  form.elements.password.required = !editing || needsKey;
+  form.elements.password.required = !editing || needsKey || switched;
   form.elements.password.placeholder = ss2022 ? "Base64 密钥" : "";
-  let help = editing ? "留空保留现有密码。" : "新增节点需要填写密码。";
+  let help = switched ? "切换协议需重新填写密码。" : editing ? "留空保留现有密码。" : "新增节点需要填写密码。";
   if (ss2022) {
     help = "填写服务端的 Base64 密钥（16 字节，可用 openssl rand -base64 16 生成）；多个密钥用英文冒号分隔。";
-    if (editing) help += needsKey ? "切换加密方式需重新填写密钥。" : "留空保留现有密钥。";
+    if (editing) help += needsKey || switched ? "切换加密方式需重新填写密钥。" : "留空保留现有密钥。";
   }
   const target = byId("egress-password-help");
   if (target) target.textContent = help;
+}
+
+// Mirrors the Gateway: no username means no authentication; otherwise each
+// field is single-line text of at most 255 UTF-8 bytes. A blank password may
+// retain the stored one; the server decides whether that is allowed.
+function validSOCKS5Credential(username, password) {
+  const bytes = (value) => [...value].reduce((total, c) => {
+    const code = c.codePointAt(0);
+    return total + (code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4);
+  }, 0);
+  const ok = (value) => bytes(value) <= 255 && !/[\0\r\n]/.test(value);
+  if (!username) return !password;
+  return ok(username) && ok(password);
 }
 
 function validSS2022Key(value) {
@@ -9212,15 +9268,22 @@ function validSS2022Key(value) {
 async function saveEgressServer(event) {
   if (egressOperation || egressDraftID === null) return;
   const form = event.currentTarget;
-  if (form.elements.cipher.value === egressSS2022Cipher && form.elements.password.value && !validSS2022Key(form.elements.password.value)) {
+  const protocol = egressFormProtocol(form);
+  const username = protocol === "socks5" ? form.elements.username?.value || "" : "";
+  if (protocol === "ss" && form.elements.cipher.value === egressSS2022Cipher && form.elements.password.value && !validSS2022Key(form.elements.password.value)) {
     throw new Error(`${egressSS2022Cipher} 的密码须为 Base64 编码的 16 字节密钥，多个密钥用英文冒号分隔。`);
+  }
+  if (protocol === "socks5" && !validSOCKS5Credential(username, form.elements.password.value)) {
+    throw new Error("SOCKS5 用户名和密码须为单行文本，各不超过 255 字节；未填写用户名时不能设置密码。");
   }
   const operation = {id: egressDraftID};
   const currentIdentity = egressIdentityCurrent();
   const current = () => currentIdentity() && egressOperation === operation;
-  const payload = {name: form.elements.name.value.trim(), server: form.elements.server.value.trim(),
-    port: Number(form.elements.port.value), cipher: form.elements.cipher.value, udp: form.elements.udp.checked};
-  if (form.elements.password.value) payload.password = form.elements.password.value;
+  const payload = {name: form.elements.name.value.trim(), protocol, server: form.elements.server.value.trim(),
+    port: Number(form.elements.port.value), udp: form.elements.udp.checked};
+  if (protocol === "ss") payload.cipher = form.elements.cipher.value;
+  else payload.username = username;
+  if (form.elements.password.value && (protocol === "ss" || username)) payload.password = form.elements.password.value;
   egressOperation = operation;
   try {
     await sensitiveAction(() => api(`/admin/egress-servers${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
@@ -10900,6 +10963,8 @@ function bindUI() {
   byId("egress-create").addEventListener("click", () => openEgressEditor());
   bindAsync("egress-test-all", "click", testAllEgressServers, "测试中…", egressIdentityCurrent);
   byId("egress-form").elements.cipher.addEventListener("change", () => syncEgressPasswordHelp(byId("egress-form")));
+  byId("egress-form").elements.protocol.addEventListener("change", () => syncEgressProtocolFields(byId("egress-form")));
+  byId("egress-form").elements.username.addEventListener("input", () => syncEgressPasswordHelp(byId("egress-form")));
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
     byId("egress-form").elements.password.value = "";

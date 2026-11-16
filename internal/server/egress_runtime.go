@@ -46,12 +46,23 @@ func (s *Server) runtimeSnapshot(state store.EgressState) (egress.Snapshot, erro
 	snapshot := egress.Snapshot{Version: state.Version, Nodes: []egress.Node{}, Routes: []egress.Route{}}
 	nodes := make(map[string]store.EgressServer, len(state.Nodes))
 	for _, n := range state.Nodes {
-		password, err := security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, n.ID, n.PasswordCiphertext)
-		if err != nil {
-			return snapshot, errEgressUnavailable
+		password := ""
+		// A SOCKS5 node without authentication stores no password.
+		if n.Protocol != egress.ProtocolSOCKS5 || n.Username != "" {
+			var err error
+			password, err = security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, n.ID, n.PasswordCiphertext)
+			if err != nil {
+				return snapshot, errEgressUnavailable
+			}
 		}
 		nodes[n.ID] = n
-		snapshot.Nodes = append(snapshot.Nodes, egress.Node{ID: n.ID, Revision: n.Revision, Server: n.Server, Port: n.Port, Cipher: n.Cipher, Password: password, UDP: n.UDP})
+		node := egress.Node{ID: n.ID, Revision: n.Revision, Server: n.Server, Port: n.Port, Cipher: n.Cipher, Password: password, UDP: n.UDP}
+		// SS nodes keep the pre-SOCKS5 wire shape (no protocol field), so a
+		// runtime that predates SOCKS5 still accepts an SS-only snapshot.
+		if n.Protocol == egress.ProtocolSOCKS5 {
+			node.Protocol, node.Username = egress.ProtocolSOCKS5, n.Username
+		}
+		snapshot.Nodes = append(snapshot.Nodes, node)
 	}
 	add := func(kind, id string, revision int64, nodeID string) {
 		if n, ok := nodes[nodeID]; ok {

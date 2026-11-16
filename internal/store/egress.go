@@ -17,9 +17,11 @@ import (
 type EgressServer struct {
 	ID                 string
 	Name               string
+	Protocol           string
 	Server             string
 	Port               int
 	Cipher             string
+	Username           string
 	PasswordCiphertext []byte
 	UDP                bool
 	Revision           int64
@@ -63,43 +65,60 @@ type EgressActor struct {
 }
 
 // ValidateEgressServer permits only a host, never a URL, path or credentials.
+// Protocol must already be normalized: "ss" with a supported cipher and no
+// username, or "socks5" with no cipher and an optional RFC 1929 username.
 func ValidateEgressServer(n EgressServer) error {
 	if n.Name == "" || len(n.Name) > 80 || strings.TrimSpace(n.Name) != n.Name || strings.IndexFunc(n.Name, unicode.IsControl) >= 0 || n.Port < 1 || n.Port > 65535 {
 		return fmt.Errorf("%w: invalid egress node", ErrInvalid)
 	}
-	if !egress.SupportedCipher(n.Cipher) {
-		return fmt.Errorf("%w: invalid SS cipher", ErrInvalid)
+	switch n.Protocol {
+	case egress.ProtocolSS:
+		if !egress.SupportedCipher(n.Cipher) || n.Username != "" {
+			return fmt.Errorf("%w: invalid SS cipher", ErrInvalid)
+		}
+	case egress.ProtocolSOCKS5:
+		if n.Cipher != "" || !egress.ValidSOCKS5Username(n.Username) {
+			return fmt.Errorf("%w: invalid SOCKS5 settings", ErrInvalid)
+		}
+	default:
+		return fmt.Errorf("%w: invalid egress protocol", ErrInvalid)
 	}
 	if n.Server == "" || len(n.Server) > 253 || strings.TrimSpace(n.Server) != n.Server {
-		return fmt.Errorf("%w: invalid SS host", ErrInvalid)
+		return fmt.Errorf("%w: invalid egress host", ErrInvalid)
 	}
 	if addr, err := netip.ParseAddr(n.Server); err == nil {
 		if !addr.Is4() || addr.String() != n.Server {
-			return fmt.Errorf("%w: invalid SS host", ErrInvalid)
+			return fmt.Errorf("%w: invalid egress host", ErrInvalid)
 		}
 		return nil
 	}
 	if strings.ToLower(n.Server) != n.Server || len(strings.Split(n.Server, ".")) < 2 {
-		return fmt.Errorf("%w: invalid SS host", ErrInvalid)
+		return fmt.Errorf("%w: invalid egress host", ErrInvalid)
 	}
 	for _, label := range strings.Split(n.Server, ".") {
 		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return fmt.Errorf("%w: invalid SS host", ErrInvalid)
+			return fmt.Errorf("%w: invalid egress host", ErrInvalid)
 		}
 		for _, c := range label {
 			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return fmt.Errorf("%w: invalid SS host", ErrInvalid)
+				return fmt.Errorf("%w: invalid egress host", ErrInvalid)
 			}
 		}
 	}
 	return nil
 }
 
-const egressServerColumns = `id::text,name,server,port,cipher,password_ciphertext,udp,revision,created_at,updated_at`
+// egressNeedsPassword reports whether n must carry an encrypted password: every
+// SS node, and a SOCKS5 node with a username.
+func egressNeedsPassword(n EgressServer) bool {
+	return n.Protocol == egress.ProtocolSS || n.Username != ""
+}
+
+const egressServerColumns = `id::text,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at`
 
 func scanEgressServer(row rowScanner) (EgressServer, error) {
 	var n EgressServer
-	err := row.Scan(&n.ID, &n.Name, &n.Server, &n.Port, &n.Cipher, &n.PasswordCiphertext, &n.UDP, &n.Revision, &n.CreatedAt, &n.UpdatedAt)
+	err := row.Scan(&n.ID, &n.Name, &n.Protocol, &n.Server, &n.Port, &n.Cipher, &n.Username, &n.PasswordCiphertext, &n.UDP, &n.Revision, &n.CreatedAt, &n.UpdatedAt)
 	return n, err
 }
 
@@ -119,21 +138,34 @@ func egressAudit(ctx context.Context, tx *sql.Tx, a EgressActor, event, subject 
 	return mapDBError("audit egress operation", err)
 }
 
-// An empty ciphertext on update retains the existing encrypted password. A
-// nonzero Revision on such an update is an optimistic guard: the row changes
-// only if it still has the revision whose password the caller validated.
+// An empty ciphertext on update retains the existing encrypted password,
+// except that a SOCKS5 node without a username has its password cleared. A
+// nonzero Revision on a retaining update is an optimistic guard: the row
+// changes only if it still has the revision whose password the caller
+// validated. The database CHECK rejects a retained password that does not fit
+// the new protocol (for example an SS node switched to SOCKS5 with a username
+// but no stored password).
 func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create bool, a EgressActor) (EgressServer, error) {
 	if a.UserID == "" {
 		return EgressServer{}, ErrInvalid
 	}
+	n.Protocol = egress.NormalizeProtocol(n.Protocol)
 	if err := ValidateEgressServer(n); err != nil {
 		return EgressServer{}, err
 	}
 	if parsed, err := uuid.Parse(n.ID); err != nil || parsed.String() != n.ID {
 		return EgressServer{}, fmt.Errorf("%w: invalid node id", ErrInvalid)
 	}
-	if create && len(n.PasswordCiphertext) < 29 {
-		return EgressServer{}, fmt.Errorf("%w: missing SS credential", ErrInvalid)
+	needsPassword := egressNeedsPassword(n)
+	if create && needsPassword && len(n.PasswordCiphertext) < 29 {
+		return EgressServer{}, fmt.Errorf("%w: missing egress credential", ErrInvalid)
+	}
+	if !needsPassword && len(n.PasswordCiphertext) != 0 {
+		return EgressServer{}, fmt.Errorf("%w: unexpected egress credential", ErrInvalid)
+	}
+	var ciphertext any
+	if len(n.PasswordCiphertext) != 0 {
+		ciphertext = n.PasswordCiphertext
 	}
 	var result EgressServer
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
@@ -142,13 +174,13 @@ func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create boo
 			return err
 		}
 		if create {
-			result, err = scanEgressServer(tx.QueryRowContext(ctx, `INSERT INTO egress_servers(id,name,server,port,cipher,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,now(),now()) RETURNING `+egressServerColumns, n.ID, n.Name, n.Server, n.Port, n.Cipher, n.PasswordCiphertext, n.UDP, v))
+			result, err = scanEgressServer(tx.QueryRowContext(ctx, `INSERT INTO egress_servers(id,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8::bytea,$9,$10,now(),now()) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, ciphertext, n.UDP, v))
 		} else {
 			expected := int64(0)
-			if len(n.PasswordCiphertext) == 0 {
+			if len(n.PasswordCiphertext) == 0 && needsPassword {
 				expected = n.Revision
 			}
-			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,server=$3,port=$4,cipher=$5,password_ciphertext=CASE WHEN octet_length($6::bytea)=0 THEN password_ciphertext ELSE $6 END,udp=$7,revision=$8,updated_at=now() WHERE id=$1::uuid AND ($9::bigint=0 OR revision=$9) RETURNING `+egressServerColumns, n.ID, n.Name, n.Server, n.Port, n.Cipher, nonNilBytes(n.PasswordCiphertext), n.UDP, v, expected))
+			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,protocol=$3,server=$4,port=$5,cipher=$6,username=$7,password_ciphertext=CASE WHEN NOT $11::boolean THEN NULL WHEN octet_length($8::bytea)=0 THEN password_ciphertext ELSE $8 END,udp=$9,revision=$10,updated_at=now() WHERE id=$1::uuid AND ($12::bigint=0 OR revision=$12) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, nonNilBytes(n.PasswordCiphertext), n.UDP, v, needsPassword, expected))
 			if errors.Is(err, sql.ErrNoRows) && expected > 0 {
 				var exists bool
 				if existsErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid)`, n.ID).Scan(&exists); existsErr != nil {
@@ -162,7 +194,7 @@ func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create boo
 		if err != nil {
 			return mapDBError("save egress node", err)
 		}
-		return egressAudit(ctx, tx, a, "egress_server.saved", n.ID, map[string]any{"revision": v, "created": create})
+		return egressAudit(ctx, tx, a, "egress_server.saved", n.ID, map[string]any{"revision": v, "created": create, "protocol": n.Protocol})
 	})
 	return result, err
 }

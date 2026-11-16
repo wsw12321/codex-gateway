@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real Squid PASSTHRU -> Go router -> Mihomo -> two independent native SS exits.
+"""Real Squid PASSTHRU -> Go router -> Mihomo -> independent native SS and SOCKS5 exits.
 
 All sockets live in one Docker --network none namespace. Only the temporary IP
 setup container receives NET_ADMIN; no production volume or network is used.
@@ -21,6 +21,9 @@ KEY = "synthetic-account-control-key-not-production-0123456789"
 PASSWORD = "synthetic SS: # $ ' \" \\ 中文"
 # Shadowsocks 2022 takes Base64 pre-shared keys; this one is synthetic.
 SS2022_KEY = "AAECAwQFBgcICQoLDA0ODw=="
+# Synthetic RFC 1929 credentials for the authenticated SOCKS5 exit.
+SOCKS_USER = "synthetic-socks-user"
+SOCKS_PASSWORD = "synthetic SOCKS: # $ ' \" \\ 中文"
 FIXTURE = "/fixture/account_egress_fixture.pl"
 
 
@@ -38,17 +41,25 @@ def snapshot(version, password=PASSWORD):
          "cipher": "chacha20-ietf-poly1305", "password": PASSWORD, "udp": False},
         {"id": "node-c", "revision": 1, "server": "127.0.0.5", "port": 24021,
          "cipher": "2022-blake3-aes-128-gcm", "password": SS2022_KEY, "udp": False},
+        {"id": "node-d", "revision": version, "protocol": "socks5", "server": "127.0.0.5", "port": 24022,
+         "cipher": "", "username": SOCKS_USER,
+         "password": SOCKS_PASSWORD if password == PASSWORD else "wrong-socks-password", "udp": False},
+        {"id": "node-e", "revision": 1, "protocol": "socks5", "server": "127.0.0.5", "port": 24023,
+         "cipher": "", "password": "", "udp": False},
     ], "routes": [route(f"account-a-revision-{version}", "node-a", version),
                   route("account-b-revision-1", "node-b", 1),
                   route(f"shared-account-revision-{version}", "node-a", version),
-                  route("account-c-revision-1", "node-c", 1)]}
+                  route("account-c-revision-1", "node-c", 1),
+                  route(f"account-d-revision-{version}", "node-d", version),
+                  route("account-e-revision-1", "node-e", 1)]}
 
 
 class AccountSandbox:
     def __init__(self, images, directory, helper):
         self.images, self.directory, self.helper = images, directory, helper
         self.name = "account-egress-test-" + uuid.uuid4().hex[:10]
-        self.router, self.server_a, self.server_b, self.server_c = (self.name + suffix for suffix in ("-router", "-a", "-b", "-c"))
+        self.router, self.server_a, self.server_b, self.server_c, self.server_d, self.server_e = (
+            self.name + suffix for suffix in ("-router", "-a", "-b", "-c", "-d", "-e"))
         self.containers = []
 
     def docker(self, *args, **kwargs):
@@ -77,11 +88,13 @@ class AccountSandbox:
             self.docker("run", "--rm", "--network", "container:" + self.name, "--read-only", "--cap-drop", "ALL",
                         "--cap-add", "NET_ADMIN", "--security-opt", "no-new-privileges:true", "--user", "0:0",
                         "--entrypoint", "/bin/sh", self.images["RUNTIME_IMAGE"], "-ec", setup)
-            for label, address in (("A", "127.0.0.6"), ("B", "127.0.0.7"), ("C", "127.0.0.8")):
+            for label, address in (("A", "127.0.0.6"), ("B", "127.0.0.7"), ("C", "127.0.0.8"), ("D", "127.0.0.11"), ("E", "127.0.0.12")):
                 self.docker("exec", "-d", self.name, "perl", FIXTURE, "serve", label, address)
             self.start_server(self.server_a, "server-a.json")
             self.start_server(self.server_b, "server-b.json")
             self.start_server(self.server_c, "server-c.json")
+            self.start_server(self.server_d, "server-d.json")
+            self.start_server(self.server_e, "server-e.json")
             self.docker("run", "-d", "--name", self.router, "--network", "container:" + self.name,
                         "--read-only", "--cap-drop", "ALL", "--user", f"10004:{os.getgid()}",
                         "--security-opt", "no-new-privileges:true",
@@ -130,6 +143,8 @@ class AccountSandbox:
             assert "EXIT_B" in self.probe(1, 1, "B").stdout
             assert "EXIT_A" in self.probe(1, 2, "A").stdout
             assert "EXIT_C" in self.probe(1, 3, "C").stdout
+            assert "EXIT_D" in self.probe(1, 4, "D").stdout
+            assert "EXIT_E" in self.probe(1, 5, "E").stdout
         for mode in ("bad-token", "missing-token", "bad-host"):
             result = self.probe(1, 0, "A", mode)
             assert not result.stdout.startswith("200\n"), result.stdout
@@ -148,6 +163,11 @@ class AccountSandbox:
         assert "BLOCKED" in self.probe(3, 0, "A", "reject-tunnel").stdout
         assert "EXIT_B" in self.probe(3, 1, "B").stdout
         assert "EXIT_C" in self.probe(3, 3, "C").stdout
+        # A wrong SOCKS5 password fails the upstream handshake without falling
+        # back to a direct connection; the unauthenticated SOCKS5 exit still works.
+        rejected = self.probe(3, 4, "D", "reject-tunnel").stdout
+        assert "BLOCKED" in rejected or not rejected.startswith("200\n"), rejected
+        assert "EXIT_E" in self.probe(3, 5, "E").stdout
         before = json.loads(self.fixture("control", "/status", "GET").stdout.split("\n", 1)[1])
         self.docker("restart", "--time", "1", self.router)
         eventually(lambda: self.fixture("control", "/status", "GET", check=False).stdout.startswith("200\n"), "runtime restarted")
@@ -160,13 +180,14 @@ class AccountSandbox:
         assert "BLOCKED" in self.probe(3, 1, "B", "reject-tunnel").stdout
         logs = self.docker("logs", self.router).stdout + self.docker("logs", self.router).stderr
         assert KEY not in logs and PASSWORD not in logs and SS2022_KEY not in logs
+        assert SOCKS_USER not in logs and SOCKS_PASSWORD not in logs
 
     def __exit__(self, kind, value, traceback):
         if kind and self.name in self.containers:
             print(self.contents("/var/log/squid/cache.log"), file=sys.stderr)
             if self.router in self.containers:
                 logs = self.docker("logs", self.router, check=False)
-                print((logs.stdout + logs.stderr).replace(KEY, "<redacted>").replace(PASSWORD, "<redacted>").replace(SS2022_KEY, "<redacted>"), file=sys.stderr)
+                print((logs.stdout + logs.stderr).replace(KEY, "<redacted>").replace(PASSWORD, "<redacted>").replace(SS2022_KEY, "<redacted>").replace(SOCKS_PASSWORD, "<redacted>").replace(SOCKS_USER, "<redacted>"), file=sys.stderr)
         for name in reversed(self.containers):
             self.docker("rm", "-f", name, check=False)
 
@@ -196,6 +217,15 @@ def run(helper=None):
                       "listeners": [{"name": f"server-{label}", "type": "shadowsocks", "listen": "127.0.0.5", "port": port, "cipher": cipher, "password": secret, "udp": True}],
                       "hosts": {host: target for host in ALL_HOSTS}, "rules": ["MATCH,DIRECT"]}
             (directory / f"server-{label}.json").write_text(json.dumps(native))
+        # SOCKS5 exits use the same pinned Mihomo as an inbound socks listener:
+        # D requires RFC 1929 credentials, E accepts unauthenticated clients.
+        for label, target, port, users in (("d", "127.0.0.11", 24022, [{"username": SOCKS_USER, "password": SOCKS_PASSWORD}]), ("e", "127.0.0.12", 24023, None)):
+            listener = {"name": f"server-{label}", "type": "socks", "listen": "127.0.0.5", "port": port, "udp": False}
+            if users:
+                listener["users"] = users
+            native = {"mode": "rule", "log-level": "silent", "ipv6": False, "listeners": [listener],
+                      "hosts": {host: target for host in ALL_HOSTS}, "rules": ["MATCH,DIRECT"]}
+            (directory / f"server-{label}.json").write_text(json.dumps(native))
         for version in (1, 2, 3):
             (directory / f"snapshot-{version}.json").write_text(json.dumps(snapshot(version, "wrong-password" if version == 3 else PASSWORD)))
         for path in directory.iterdir():
@@ -204,7 +234,7 @@ def run(helper=None):
         (directory / "key").chmod(0o640)
         with AccountSandbox(images, directory, helper) as sandbox:
             sandbox.checks()
-    print("Three real SS exits (including SS2022), shared nodes, global mode independence, authenticated routing, hot stream updates, restart recovery and failure without fallback passed.", flush=True)
+    print("Three real SS exits (including SS2022), authenticated and open SOCKS5 exits, shared nodes, global mode independence, authenticated routing, hot stream updates, restart recovery and failure without fallback passed.", flush=True)
 
 
 if __name__ == "__main__":

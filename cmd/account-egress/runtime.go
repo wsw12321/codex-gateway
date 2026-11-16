@@ -106,13 +106,22 @@ func validateSnapshot(snapshot egress.Snapshot, key string) error {
 		if !identifierPattern.MatchString(node.ID) || node.Revision < 1 || !validServer(node.Server) || node.Port < 1 || node.Port > 65535 {
 			return errors.New("invalid node")
 		}
-		if !egress.SupportedCipher(node.Cipher) {
-			return errors.New("invalid cipher")
-		}
-		// SS2022 keys are checked here as well: Mihomo rejects the whole
-		// configuration for one malformed key, which would block every node.
-		if !egress.ValidPassword(node.Cipher, node.Password) {
-			return errors.New("invalid node")
+		switch egress.NormalizeProtocol(node.Protocol) {
+		case egress.ProtocolSS:
+			if !egress.SupportedCipher(node.Cipher) {
+				return errors.New("invalid cipher")
+			}
+			// SS2022 keys are checked here as well: Mihomo rejects the whole
+			// configuration for one malformed key, which would block every node.
+			if node.Username != "" || !egress.ValidPassword(node.Cipher, node.Password) {
+				return errors.New("invalid node")
+			}
+		case egress.ProtocolSOCKS5:
+			if node.Cipher != "" || !egress.ValidSOCKS5Credentials(node.Username, node.Password) {
+				return errors.New("invalid node")
+			}
+		default:
+			return errors.New("invalid protocol")
 		}
 		id := nodeKey(node.ID, node.Revision)
 		if nodes[id] {
@@ -273,6 +282,19 @@ func (r *runtime) prune(ctx context.Context) {
 	}
 }
 
+// mihomoProxy renders one validated node as a Mihomo outbound. SOCKS5 has no
+// TLS here and sends credentials only when the node has a username.
+func mihomoProxy(name string, node egress.Node) map[string]any {
+	if egress.NormalizeProtocol(node.Protocol) == egress.ProtocolSOCKS5 {
+		proxy := map[string]any{"name": name, "type": "socks5", "server": node.Server, "port": node.Port, "udp": node.UDP}
+		if node.Username != "" {
+			proxy["username"], proxy["password"] = node.Username, node.Password
+		}
+		return proxy
+	}
+	return map[string]any{"name": name, "type": "ss", "server": node.Server, "port": node.Port, "cipher": node.Cipher, "password": node.Password, "udp": node.UDP}
+}
+
 func marshalMihomo(nodes map[string]*nodeRuntime, secret string) ([]byte, error) {
 	proxies := []map[string]any{}
 	listeners := []map[string]any{}
@@ -285,7 +307,7 @@ func marshalMihomo(nodes map[string]*nodeRuntime, secret string) ([]byte, error)
 	for _, id := range ids {
 		node := nodes[id]
 		name := "node-" + node.node.ID + "-" + strconv.FormatInt(node.node.Revision, 10)
-		proxies = append(proxies, map[string]any{"name": name, "type": "ss", "server": node.node.Server, "port": node.node.Port, "cipher": node.node.Cipher, "password": node.node.Password, "udp": node.node.UDP})
+		proxies = append(proxies, mihomoProxy(name, node.node))
 		listeners = append(listeners, map[string]any{"name": name, "type": "http", "listen": "127.0.0.1", "port": strconv.Itoa(node.port), "proxy": name, "users": []any{}})
 	}
 	return json.Marshal(map[string]any{"port": 0, "socks-port": 0, "mixed-port": 0, "allow-lan": false, "bind-address": "127.0.0.1", "mode": "rule", "log-level": "silent", "ipv6": true, "find-process-mode": "off", "geo-auto-update": false, "external-controller": controllerAddress, "secret": secret, "tun": map[string]bool{"enable": false}, "dns": map[string]bool{"enable": false}, "ntp": map[string]bool{"enable": false}, "profile": map[string]bool{"store-selected": false, "store-fake-ip": false}, "proxies": proxies, "listeners": listeners, "rules": []string{"MATCH,REJECT"}})

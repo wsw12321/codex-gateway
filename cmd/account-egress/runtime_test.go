@@ -432,6 +432,93 @@ func TestSS2022NodesRequireBase64KeysBeforeMihomo(t *testing.T) {
 	}
 }
 
+func TestSOCKS5NodesRenderAndValidateBeforeMihomo(t *testing.T) {
+	c := &fixtureController{}
+	r := newRuntime(fixtureKey, c)
+	snapshot := fixtureSnapshot(1)
+	snapshot.Nodes[0].Protocol, snapshot.Nodes[0].Cipher = egress.ProtocolSOCKS5, ""
+	snapshot.Nodes[0].Username, snapshot.Nodes[0].Password = "socks user", "p@ss 'word\\"
+	if err := r.install(context.Background(), snapshot); err != nil {
+		t.Fatalf("valid SOCKS5 node rejected: %v", err)
+	}
+	var configuration struct {
+		Proxies   []map[string]any `json:"proxies"`
+		Listeners []map[string]any `json:"listeners"`
+	}
+	if json.Unmarshal(c.configurations[len(c.configurations)-1], &configuration) != nil {
+		t.Fatal("invalid configuration")
+	}
+	proxy := configuration.Proxies[0]
+	if proxy["type"] != "socks5" || proxy["server"] != snapshot.Nodes[0].Server || proxy["username"] != "socks user" || proxy["password"] != snapshot.Nodes[0].Password || proxy["udp"] != true {
+		t.Fatalf("SOCKS5 settings were not passed to Mihomo literally: %v", proxy)
+	}
+	for _, key := range []string{"cipher", "tls", "skip-cert-verify"} {
+		if _, ok := proxy[key]; ok {
+			t.Fatalf("SOCKS5 proxy carries %q", key)
+		}
+	}
+	if configuration.Listeners[0]["type"] != "http" || configuration.Listeners[0]["listen"] != "127.0.0.1" || configuration.Listeners[0]["proxy"] != proxy["name"] {
+		t.Fatal("SOCKS5 node changed the isolated loopback listener")
+	}
+
+	open := fixtureSnapshot(2)
+	open.Nodes[0].Protocol, open.Nodes[0].Cipher, open.Nodes[0].Password = egress.ProtocolSOCKS5, "", ""
+	if err := r.install(context.Background(), open); err != nil {
+		t.Fatalf("SOCKS5 node without authentication rejected: %v", err)
+	}
+	configuration.Proxies = nil
+	if json.Unmarshal(c.configurations[len(c.configurations)-1], &configuration) != nil {
+		t.Fatal("invalid configuration")
+	}
+	if _, ok := configuration.Proxies[0]["username"]; ok || configuration.Proxies[0]["type"] != "socks5" {
+		t.Fatal("unauthenticated SOCKS5 node sent credentials")
+	}
+	if _, ok := configuration.Proxies[0]["password"]; ok {
+		t.Fatal("unauthenticated SOCKS5 node sent a password")
+	}
+
+	applied := len(c.configurations)
+	long := strings.Repeat("a", egress.MaxSOCKS5CredentialBytes+1)
+	for name, mutate := range map[string]func(*egress.Node){
+		"cipher":           func(n *egress.Node) { n.Cipher = "aes-256-gcm"; n.Username, n.Password = "u", "p" },
+		"username only":    func(n *egress.Node) { n.Username, n.Password = "u", "" },
+		"password only":    func(n *egress.Node) { n.Username, n.Password = "", "p" },
+		"long username":    func(n *egress.Node) { n.Username, n.Password = long, "p" },
+		"long password":    func(n *egress.Node) { n.Username, n.Password = "u", long },
+		"newline":          func(n *egress.Node) { n.Username, n.Password = "u", "p\nq" },
+		"unknown protocol": func(n *egress.Node) { n.Protocol = "http" },
+		"SS with username": func(n *egress.Node) {
+			n.Protocol, n.Cipher, n.Username, n.Password = egress.ProtocolSS, "aes-256-gcm", "u", "p"
+		},
+		"uppercase SOCKS5":  func(n *egress.Node) { n.Protocol = "SOCKS5" },
+		"legacy SS no pass": func(n *egress.Node) { n.Protocol, n.Cipher, n.Password = "", "aes-256-gcm", "" },
+	} {
+		bad := fixtureSnapshot(3)
+		bad.Nodes[0].Protocol, bad.Nodes[0].Cipher, bad.Nodes[0].Password = egress.ProtocolSOCKS5, "", ""
+		mutate(&bad.Nodes[0])
+		if r.install(context.Background(), bad) == nil {
+			t.Errorf("accepted invalid SOCKS5 node: %s", name)
+		}
+	}
+	if len(c.configurations) != applied || r.status.AppliedVersion != 2 || !r.status.Ready {
+		t.Fatal("invalid SOCKS5 node reached Mihomo or disturbed the applied configuration")
+	}
+}
+
+func TestLegacySnapshotsWithoutProtocolStayShadowsocks(t *testing.T) {
+	raw, err := json.Marshal(fixtureSnapshot(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "protocol") || strings.Contains(string(raw), "username") {
+		t.Fatal("SS node changed the pre-SOCKS5 wire shape")
+	}
+	proxy := mihomoProxy("legacy", fixtureSnapshot(1).Nodes[0])
+	if proxy["type"] != "ss" || proxy["cipher"] != "aes-256-gcm" {
+		t.Fatalf("protocol-less node did not render as SS: %v", proxy)
+	}
+}
+
 // providerTLS serves a certificate for chatgpt.com, standing in for the
 // provider reached through an SS exit.
 func providerTLS(t *testing.T) (string, *x509.CertPool) {

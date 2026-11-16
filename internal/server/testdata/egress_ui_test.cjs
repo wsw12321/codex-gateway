@@ -211,3 +211,106 @@ test("SS2022 keys are checked before any request and switching asks for a key", 
   assert.equal(form.elements.password.required, false);
   assert.equal(ui.nodes.get("egress-password-help").textContent, "留空保留现有密码。");
 });
+
+function egressForm(values) {
+  const classes = () => { const set = new Set(); return {toggle: (name, on) => (on ? set.add(name) : set.delete(name)), contains: name => set.has(name)}; };
+  const form = {dataset: {}, elements: Object.fromEntries(Object.entries(values).map(([key, value]) => [key, {value, checked: false, required: false, disabled: false, placeholder: ""}]))};
+  return {form, cipherField: {classList: classes()}, usernameField: {classList: classes()}};
+}
+
+test("SOCKS5 nodes send protocol and username, never a cipher, and check credentials first", async () => {
+  const calls = [];
+  const ui = dashboard(async (url, options) => { calls.push({url, options}); return {}; });
+  const {form} = egressForm({name: "socks", protocol: "socks5", server: "socks.example", port: "1080", cipher: "aes-256-gcm", username: "user", password: "secret", udp: ""});
+  ui.nodes.set("egress-form", form);
+  ui.nodes.set("egress-dialog", {close() {}});
+  ui.context.event = {currentTarget: form};
+  ui.run('egressDraftID = ""; loadEgressServers = async () => {}; egressMessage = () => {};');
+  for (const [username, password] of [["", "orphan"], ["us\ner", "secret"], ["user", "x".repeat(256)], ["user", "密".repeat(86)]]) {
+    form.elements.username.value = username;
+    form.elements.password.value = password;
+    await assert.rejects(ui.run("saveEgressServer(event)"), /SOCKS5/);
+  }
+  assert.equal(calls.length, 0);
+  form.elements.username.value = "user";
+  form.elements.password.value = "密".repeat(85);
+  await ui.run("saveEgressServer(event)");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {name: "socks", protocol: "socks5", server: "socks.example", port: 1080, udp: false, username: "user", password: "密".repeat(85)});
+
+  form.elements.username.value = "";
+  form.elements.password.value = "";
+  await ui.run("saveEgressServer(event)");
+  const open = JSON.parse(calls[1].options.body);
+  assert.equal(open.username, "");
+  assert.equal("password" in open || "cipher" in open, false);
+});
+
+test("SS payloads keep the cipher and drop a SOCKS5 username", async () => {
+  const calls = [];
+  const ui = dashboard(async (url, options) => { calls.push({url, options}); return {}; });
+  const {form} = egressForm({name: "ss", protocol: "ss", server: "ss.example", port: "8388", cipher: "aes-256-gcm", username: "stale", password: "pw", udp: ""});
+  ui.nodes.set("egress-form", form);
+  ui.nodes.set("egress-dialog", {close() {}});
+  ui.context.event = {currentTarget: form};
+  ui.run('egressDraftID = ""; loadEgressServers = async () => {}; egressMessage = () => {};');
+  await ui.run("saveEgressServer(event)");
+  assert.deepEqual(JSON.parse(calls[0].options.body), {name: "ss", protocol: "ss", server: "ss.example", port: 8388, udp: false, cipher: "aes-256-gcm", password: "pw"});
+});
+
+test("protocol switches toggle fields and require a new password", () => {
+  const ui = dashboard(async () => ({}));
+  const {form, cipherField, usernameField} = egressForm({name: "n", protocol: "socks5", server: "s.example", port: "1080", cipher: "aes-128-gcm", username: "", password: "typed", udp: ""});
+  ui.nodes.set("egress-form", form);
+  ui.nodes.set("egress-cipher-field", cipherField);
+  ui.nodes.set("egress-username-field", usernameField);
+  ui.nodes.set("egress-password-help", {textContent: ""});
+  const sync = () => ui.run("syncEgressProtocolFields(byId('egress-form'))");
+  const help = () => ui.nodes.get("egress-password-help").textContent;
+
+  ui.run('egressDraftID = "";');
+  sync();
+  assert.equal(cipherField.classList.contains("hidden"), true);
+  assert.equal(usernameField.classList.contains("hidden"), false);
+  assert.equal(form.elements.password.disabled, true);
+  assert.equal(form.elements.password.value, "");
+  assert.match(help(), /无认证/);
+  form.elements.username.value = "user";
+  sync();
+  assert.equal(form.elements.password.disabled, false);
+  assert.equal(form.elements.password.required, true);
+
+  // Editing an authenticated SOCKS5 node may keep its password.
+  ui.run('egressDraftID = "node";');
+  Object.assign(form.dataset, {savedProtocol: "socks5", savedPassword: "true", savedCipher: ""});
+  sync();
+  assert.equal(form.elements.password.required, false);
+  assert.match(help(), /留空保留现有密码/);
+  // An unauthenticated node gaining a username needs one.
+  form.dataset.savedPassword = "";
+  sync();
+  assert.equal(form.elements.password.required, true);
+  assert.match(help(), /重新填写密码/);
+
+  // SOCKS5 to SS asks for the SS password again.
+  form.dataset.savedPassword = "true";
+  form.elements.protocol.value = "ss";
+  sync();
+  assert.equal(cipherField.classList.contains("hidden"), false);
+  assert.equal(usernameField.classList.contains("hidden"), true);
+  assert.equal(form.elements.password.disabled, false);
+  assert.equal(form.elements.password.required, true);
+  assert.match(help(), /切换协议需重新填写密码/);
+  // SS to SOCKS5 with a username asks too.
+  Object.assign(form.dataset, {savedProtocol: "ss", savedCipher: "aes-128-gcm"});
+  form.elements.protocol.value = "socks5";
+  sync();
+  assert.equal(form.elements.password.required, true);
+});
+
+test("node cards describe the protocol and authentication", () => {
+  const ui = dashboard(async () => ({}));
+  assert.equal(ui.run('egressProtocolSummary({protocol: "ss", cipher: "aes-256-gcm"})'), "SS · aes-256-gcm");
+  assert.equal(ui.run('egressProtocolSummary({cipher: "aes-128-gcm"})'), "SS · aes-128-gcm");
+  assert.equal(ui.run('egressProtocolSummary({protocol: "socks5", cipher: "", has_password: true})'), "SOCKS5 · 用户名/密码认证");
+  assert.equal(ui.run('egressProtocolSummary({protocol: "socks5", cipher: "", has_password: false})'), "SOCKS5 · 无认证");
+});

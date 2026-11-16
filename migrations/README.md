@@ -85,6 +85,11 @@ Current migrations:
   switch for protocol conversion, off by default. While off, `claude-*` models
   are accepted only on native `/v1/messages`; Claude through OpenAI Responses
   (including model routes to a Claude target) is rejected before admission.
+- `internal/store/migrations/0048_socks5_egress.sql` — account egress nodes
+  gain `protocol` (`ss` or `socks5`) and `username`. A SOCKS5 node has no
+  cipher and either no authentication (empty username, no password) or a
+  username with an encrypted password. Existing nodes stay `ss` and are
+  unchanged.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

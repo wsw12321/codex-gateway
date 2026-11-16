@@ -85,6 +85,49 @@ func TestEgressSnapshotAndExactAppliedRoutes(t *testing.T) {
 	}
 }
 
+func TestEgressSnapshotCarriesSOCKS5Nodes(t *testing.T) {
+	s := &Server{config: config.Config{EgressControlKey: strings.Repeat("c", 32), APIKeyEncryptionKey: bytes.Repeat([]byte{1}, 32)}}
+	ss := store.EgressServer{ID: "node-ss", Name: "ss", Protocol: egress.ProtocolSS, Revision: 2, Server: "ss.example.com", Port: 8388, Cipher: "aes-256-gcm"}
+	ss.PasswordCiphertext, _ = security.EncryptEgressPassword(s.config.APIKeyEncryptionKey, ss.ID, "private-SS-password")
+	auth := store.EgressServer{ID: "node-socks-auth", Name: "socks", Protocol: egress.ProtocolSOCKS5, Revision: 3, Server: "socks.example.com", Port: 1080, Username: "socks-user", UDP: true}
+	auth.PasswordCiphertext, _ = security.EncryptEgressPassword(s.config.APIKeyEncryptionKey, auth.ID, "private-SOCKS-password")
+	open := store.EgressServer{ID: "node-socks-open", Name: "open", Protocol: egress.ProtocolSOCKS5, Revision: 4, Server: "203.0.113.9", Port: 1080}
+	snapshot, err := s.runtimeSnapshot(store.EgressState{Version: 5, Nodes: []store.EgressServer{ss, auth, open}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []egress.Node{
+		{ID: ss.ID, Revision: 2, Server: ss.Server, Port: 8388, Cipher: "aes-256-gcm", Password: "private-SS-password"},
+		{ID: auth.ID, Revision: 3, Protocol: egress.ProtocolSOCKS5, Server: auth.Server, Port: 1080, Username: "socks-user", Password: "private-SOCKS-password", UDP: true},
+		{ID: open.ID, Revision: 4, Protocol: egress.ProtocolSOCKS5, Server: open.Server, Port: 1080},
+	}
+	for i := range want {
+		if snapshot.Nodes[i] != want[i] {
+			t.Fatalf("snapshot node %d = %+v, want %+v", i, snapshot.Nodes[i], want[i])
+		}
+	}
+	raw, _ := json.Marshal(snapshot.Nodes[0])
+	if strings.Contains(string(raw), "protocol") || strings.Contains(string(raw), "username") {
+		t.Fatal("SS node changed the pre-SOCKS5 runtime wire shape")
+	}
+	public, _ := json.Marshal([]egressServerDTO{egressNodeDTO(auth), egressNodeDTO(open)})
+	if strings.Contains(string(public), "private-SOCKS-password") || strings.Contains(string(public), "password_ciphertext") {
+		t.Fatal("SOCKS5 password returned to browser")
+	}
+	if dto := egressNodeDTO(auth); dto.Protocol != "socks5" || dto.Username != "socks-user" || !dto.HasPassword || dto.Cipher != "" {
+		t.Fatalf("SOCKS5 DTO = %+v", dto)
+	}
+	if dto := egressNodeDTO(open); dto.HasPassword || dto.Username != "" {
+		t.Fatalf("unauthenticated SOCKS5 DTO = %+v", dto)
+	}
+	// An authenticated SOCKS5 node whose password cannot be decrypted blocks
+	// the snapshot instead of reaching the runtime without credentials.
+	auth.PasswordCiphertext = nil
+	if _, err = s.runtimeSnapshot(store.EgressState{Version: 6, Nodes: []store.EgressServer{auth}}); err == nil {
+		t.Fatal("authenticated SOCKS5 node without a password reached the runtime")
+	}
+}
+
 func TestEgressInternalAuthorizationAndStrictInput(t *testing.T) {
 	s := &Server{config: config.Config{SidecarToken: "internal"}, mux: http.NewServeMux()}
 	s.egressRoutes()
