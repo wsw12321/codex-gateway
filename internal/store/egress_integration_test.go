@@ -180,3 +180,106 @@ func TestEgressPostgresLifecycle(t *testing.T) {
 		t.Fatal("audit contains credential fields")
 	}
 }
+
+func TestSOCKS5EgressPostgresLifecycle(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	repository, err := Open(ctx, Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err = repository.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	suffix := strconv.FormatInt(time.Now().UnixNano(), 36)
+	actor := EgressActor{UserID: usageSummaryUser(t, ctx, repository, "socks5-egress-"+suffix).ID}
+	secret := bytes.Repeat([]byte{2}, 40)
+
+	open, err := repository.SaveEgressServer(ctx, EgressServer{ID: uuid.NewString(), Name: "open", Protocol: "socks5", Server: "203.0.113.5", Port: 1080}, true, actor)
+	if err != nil || open.Protocol != "socks5" || open.Username != "" || open.PasswordCiphertext != nil || open.Cipher != "" {
+		t.Fatalf("unauthenticated SOCKS5 node: %+v %v", open, err)
+	}
+	if _, err = repository.SaveEgressServer(ctx, EgressServer{ID: uuid.NewString(), Name: "no-pass", Protocol: "socks5", Server: "203.0.113.5", Port: 1080, Username: "user"}, true, actor); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("SOCKS5 username without password: %v", err)
+	}
+	if _, err = repository.SaveEgressServer(ctx, EgressServer{ID: uuid.NewString(), Name: "pass-only", Protocol: "socks5", Server: "203.0.113.5", Port: 1080, PasswordCiphertext: secret}, true, actor); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("SOCKS5 password without username: %v", err)
+	}
+	// Enabling authentication on an unauthenticated node needs a new password.
+	enable := open
+	enable.Username = "user"
+	if _, err = repository.SaveEgressServer(ctx, enable, false, actor); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("enabled SOCKS5 auth without a password: %v", err)
+	}
+	enable.PasswordCiphertext = secret
+	authed, err := repository.SaveEgressServer(ctx, enable, false, actor)
+	if err != nil || authed.Username != "user" || !bytes.Equal(authed.PasswordCiphertext, secret) {
+		t.Fatalf("enable SOCKS5 auth: %+v %v", authed, err)
+	}
+	// A blank password on the same protocol keeps the stored one.
+	authed.PasswordCiphertext, authed.Name = nil, "renamed"
+	if authed, err = repository.SaveEgressServer(ctx, authed, false, actor); err != nil || !bytes.Equal(authed.PasswordCiphertext, secret) {
+		t.Fatalf("SOCKS5 password was not retained: %v", err)
+	}
+	// Removing the username clears the password.
+	authed.Username, authed.PasswordCiphertext = "", nil
+	cleared, err := repository.SaveEgressServer(ctx, authed, false, actor)
+	if err != nil || cleared.PasswordCiphertext != nil || cleared.Username != "" {
+		t.Fatalf("SOCKS5 auth was not cleared: %+v %v", cleared, err)
+	}
+	// Switching an unauthenticated SOCKS5 node to SS cannot retain a password.
+	toSS := cleared
+	toSS.Protocol, toSS.Cipher = "ss", "aes-256-gcm"
+	if _, err = repository.SaveEgressServer(ctx, toSS, false, actor); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("SS node without a password: %v", err)
+	}
+	toSS.PasswordCiphertext = secret
+	if toSS, err = repository.SaveEgressServer(ctx, toSS, false, actor); err != nil || toSS.Protocol != "ss" {
+		t.Fatalf("switch to SS: %v", err)
+	}
+
+	snapshot, err := repository.EgressSnapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, n := range snapshot.Nodes {
+		if n.ID == open.ID {
+			found = n.Protocol == "ss" && n.Cipher == "aes-256-gcm" && bytes.Equal(n.PasswordCiphertext, secret)
+		}
+	}
+	if !found {
+		t.Fatal("snapshot lacks the switched node")
+	}
+	// The database refuses combinations the Go validation would also refuse.
+	for _, values := range [][]any{
+		{"socks5", "aes-256-gcm", "", nil},
+		{"socks5", "", "user", nil},
+		{"socks5", "", "", secret},
+		{"ss", "aes-256-gcm", "", nil},
+		{"ss", "aes-256-gcm", "user", secret},
+		{"http", "", "", nil},
+	} {
+		_, err := repository.db.ExecContext(ctx, `INSERT INTO egress_servers(id,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,'bad',$2,'203.0.113.5',1080,$3,$4,$5::bytea,false,1,now(),now())`, uuid.NewString(), values[0], values[1], values[2], values[3])
+		if err == nil {
+			t.Errorf("database accepted %v", values[:3])
+		}
+	}
+	var metadata string
+	if err = repository.db.QueryRowContext(ctx, `SELECT metadata::text FROM audit_events WHERE event_type='egress_server.saved' AND subject_id=$1 ORDER BY id DESC LIMIT 1`, open.ID).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains([]byte(metadata), []byte("user")) || bytes.Contains([]byte(metadata), []byte("password")) {
+		t.Fatalf("audit metadata leaked credentials: %s", metadata)
+	}
+	for _, id := range []string{open.ID} {
+		if err = repository.DeleteEgressServer(ctx, id, actor); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

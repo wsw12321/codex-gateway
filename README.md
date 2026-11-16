@@ -87,10 +87,11 @@ sidecar，不进入数据库或备份。
 
 ### 代理接口
 
-Owner 可在“出口服务器”管理 Shadowsocks 节点，为 Codex、Antigravity、Anthropic
-账号分别绑定出口；未绑定账号继承全局模式，绑定出口故障时不回退直连。
-节点支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和
-`2022-blake3-aes-128-gcm`，页面可对每个节点做 TLS 连通性测试。
+Owner 可在“出口服务器”管理 Shadowsocks 或 SOCKS5 节点，为 Codex、Antigravity、
+Anthropic 账号分别绑定出口；未绑定账号继承全局模式，绑定出口故障时不回退直连。
+SS 节点支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和
+`2022-blake3-aes-128-gcm`；SOCKS5 节点支持无认证或用户名/密码认证。页面可对每个
+节点做 TLS 连通性测试。
 配置、生效状态和升级步骤见[上游账号独立出口](docs/account-egress.md)。
 
 开放 Codex、AGY 所需的数据接口和 WebSocket 协商入口：

@@ -51,6 +51,7 @@ type egressServerDTO struct {
 	Server               string `json:"server"`
 	Port                 int    `json:"port"`
 	Cipher               string `json:"cipher"`
+	Username             string `json:"username"`
 	UDP                  bool   `json:"udp"`
 	HasPassword          bool   `json:"has_password"`
 	Revision             int64  `json:"revision"`
@@ -63,7 +64,7 @@ type egressServerDTO struct {
 func publicEgressStatus(status egress.Status) egress.Status { status.RouteIDs = nil; return status }
 
 func egressNodeDTO(n store.EgressServer) egressServerDTO {
-	return egressServerDTO{ID: n.ID, Name: n.Name, Protocol: "ss", Server: n.Server, Port: n.Port, Cipher: n.Cipher, UDP: n.UDP, HasPassword: len(n.PasswordCiphertext) > 0, Revision: n.Revision, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt}
+	return egressServerDTO{ID: n.ID, Name: n.Name, Protocol: n.Protocol, Server: n.Server, Port: n.Port, Cipher: n.Cipher, Username: n.Username, UDP: n.UDP, HasPassword: len(n.PasswordCiphertext) > 0, Revision: n.Revision, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt}
 }
 
 func (s *Server) egressServersJSON(w http.ResponseWriter, r *http.Request) {
@@ -117,10 +118,11 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		Server   string `json:"server"`
 		Port     int    `json:"port"`
 		Cipher   string `json:"cipher"`
+		Username string `json:"username"`
 		Password string `json:"password"`
 		UDP      bool   `json:"udp"`
 	}
-	if !cpaJSON(w, r, &input, 16<<10, "name", "protocol", "server", "port", "cipher", "password", "udp") {
+	if !cpaJSON(w, r, &input, 16<<10, "name", "protocol", "server", "port", "cipher", "username", "password", "udp") {
 		return
 	}
 	create := r.Method == http.MethodPost
@@ -128,38 +130,60 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 	if create {
 		id = uuid.NewString()
 	}
-	if input.Protocol != "" && input.Protocol != "ss" || create && input.Password == "" {
+	if !egress.SupportedProtocol(input.Protocol) {
 		egressError(w, r, store.ErrInvalid)
 		return
 	}
-	n := store.EgressServer{ID: id, Name: strings.TrimSpace(input.Name), Server: strings.ToLower(strings.TrimSpace(input.Server)), Port: input.Port, Cipher: input.Cipher, UDP: input.UDP}
+	n := store.EgressServer{ID: id, Name: strings.TrimSpace(input.Name), Protocol: egress.NormalizeProtocol(input.Protocol), Server: strings.ToLower(strings.TrimSpace(input.Server)), Port: input.Port, Cipher: input.Cipher, Username: input.Username, UDP: input.UDP}
 	if err := store.ValidateEgressServer(n); err != nil {
 		egressError(w, r, err)
 		return
 	}
-	if input.Password != "" && !egress.ValidPassword(n.Cipher, input.Password) {
-		input.Password = ""
-		egressPasswordError(w, r, n.Cipher, false)
+	socks5 := n.Protocol == egress.ProtocolSOCKS5
+	// Every SS node and a SOCKS5 node with a username carry a password; a
+	// SOCKS5 node without a username has no authentication.
+	needsPassword := !socks5 || n.Username != ""
+	if create && needsPassword && input.Password == "" {
+		egressError(w, r, store.ErrInvalid)
 		return
 	}
-	if !create && input.Password == "" && egress.IsSS2022(n.Cipher) {
-		// A retained password may predate the switch to SS2022. Check that it is
-		// a usable key, then save only if the node is still at that revision.
+	if input.Password != "" {
+		valid := egress.ValidPassword(n.Cipher, input.Password)
+		if socks5 {
+			valid = egress.ValidSOCKS5Credentials(n.Username, input.Password)
+		}
+		if !valid {
+			input.Password = ""
+			egressPasswordError(w, r, n, false)
+			return
+		}
+	}
+	if !create && needsPassword && input.Password == "" {
+		// The retained password must belong to the same protocol: an SS password
+		// is not a SOCKS5 credential, and a SOCKS5 node without authentication
+		// has none. It may also predate a switch to SS2022, so check that it is
+		// a usable key. Save only if the node is still at the checked revision.
 		current, err := s.store.EgressServer(r.Context(), id)
 		if err != nil {
 			egressError(w, r, err)
 			return
 		}
-		retained, err := security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, id, current.PasswordCiphertext)
-		if err != nil {
-			egressError(w, r, errEgressUnavailable)
+		if current.Protocol != n.Protocol || len(current.PasswordCiphertext) == 0 {
+			egressPasswordError(w, r, n, true)
 			return
 		}
-		valid := egress.ValidPassword(n.Cipher, retained)
-		retained = ""
-		if !valid {
-			egressPasswordError(w, r, n.Cipher, true)
-			return
+		if egress.IsSS2022(n.Cipher) {
+			retained, err := security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, id, current.PasswordCiphertext)
+			if err != nil {
+				egressError(w, r, errEgressUnavailable)
+				return
+			}
+			valid := egress.ValidPassword(n.Cipher, retained)
+			retained = ""
+			if !valid {
+				egressPasswordError(w, r, n, true)
+				return
+			}
 		}
 		n.Revision = current.Revision
 	}
@@ -388,10 +412,17 @@ func (s *Server) registerEgress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"registration_id": registration.ID, "account_id": registration.AccountID, "status": "committed", "revision": resolution.Revision})
 }
 
-func egressPasswordError(w http.ResponseWriter, r *http.Request, cipher string, retained bool) {
+func egressPasswordError(w http.ResponseWriter, r *http.Request, n store.EgressServer, retained bool) {
+	cipher := n.Cipher
 	switch {
-	case retained:
+	case retained && n.Protocol == egress.ProtocolSOCKS5:
+		httpx.WriteError(w, r, 400, "invalid_request_error", "egress_password_required", "切换协议或启用 SOCKS5 认证时须重新填写密码")
+	case retained && egress.IsSS2022(cipher):
 		httpx.WriteError(w, r, 400, "invalid_request_error", "egress_password_required", "现有密码不是有效的 "+cipher+" 密钥，请重新填写 Base64 密钥")
+	case retained:
+		httpx.WriteError(w, r, 400, "invalid_request_error", "egress_password_required", "切换协议时须重新填写 SS 密码")
+	case n.Protocol == egress.ProtocolSOCKS5:
+		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_password", "SOCKS5 用户名和密码须同时填写，均为单行文本，各不超过 255 字节")
 	case egress.IsSS2022(cipher):
 		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_password", cipher+" 的密码须为 Base64 编码的 16 字节密钥，多个密钥用英文冒号分隔")
 	default:
@@ -403,7 +434,7 @@ func egressError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message := http.StatusServiceUnavailable, "egress_unavailable", "出口配置已保存但暂未应用，请稍后刷新；绑定账号不会回退全局出口"
 	switch {
 	case errors.Is(err, store.ErrInvalid):
-		status, code, message = 400, "invalid_egress_request", "SS 节点或出口绑定参数无效"
+		status, code, message = 400, "invalid_egress_request", "出口节点或出口绑定参数无效"
 	case errors.Is(err, store.ErrNotFound):
 		status, code, message = 404, "egress_not_found", "出口节点、账号或注册流程不存在"
 	case errors.Is(err, store.ErrConflict):

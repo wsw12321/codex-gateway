@@ -1,14 +1,32 @@
 # 上游账号独立出口
 
-Owner 可在管理网站“出口服务器”页面维护 Shadowsocks 节点，并在 Codex、
+Owner 可在管理网站“出口服务器”页面维护 Shadowsocks 或 SOCKS5 节点，并在 Codex、
 Antigravity、Anthropic 的账号表格选择每个账号的出口。多个账号可以共用同一节点；
 “继承全局出口”沿用已有 `EGRESS_MODE=direct/relay/shadowsocks`。
 
-节点字段为名称、server、port、cipher、password 和 udp。支持
-`aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和 Shadowsocks 2022 的
-`2022-blake3-aes-128-gcm`。密码加密保存在 PostgreSQL，
-普通列表和编辑表单不回显密码；编辑时留空保留原值。节点的 `udp` 传给 SS 运行时，
-模型 HTTP(S) 和 SSE 仍使用 TCP，不增加公开 UDP 或 SOCKS 入口。
+节点字段为名称、协议（`ss` 或 `socks5`）、server、port、udp，以及按协议区分的认证：
+
+| 协议 | 字段 |
+|---|---|
+| Shadowsocks | cipher、password。支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和 Shadowsocks 2022 的 `2022-blake3-aes-128-gcm` |
+| SOCKS5 | 可选 username、password（RFC 1929）。用户名留空表示无认证，此时不保存密码；填写用户名则必须有密码。用户名和密码均为单行 UTF-8，各不超过 255 字节 |
+
+密码加密保存在 PostgreSQL，普通列表和编辑表单不回显密码；编辑时留空保留原值。
+SOCKS5 用户名明文保存，仅 Owner 可在列表和编辑表单看到，不写入审计记录。节点的
+`udp` 传给出口运行时，模型 HTTP(S) 和 SSE 仍使用 TCP，不增加公开 UDP 或 SOCKS 入口：
+SOCKS5 只是出口运行时连接上游代理的方式，CPA 与客户端仍只能经过 Squid 和运行时。
+
+### SOCKS5 节点
+
+- SOCKS5 本身不加密。用户名、密码和目标域名（如 `chatgpt.com:443`）在运行时到
+  SOCKS5 服务器之间的链路上可见；模型流量本身仍是端到端 TLS。请只在可信网络或
+  已加密的隧道中使用 SOCKS5 节点，并为它单独设置凭据。
+- 不支持 SOCKS5 over TLS，也不读取节点中的 URL；server 与 SS 节点一样只能是 IPv4 或
+  小写域名。
+- 切换协议（SS ↔ SOCKS5），或给无认证的 SOCKS5 节点加上用户名时，必须重新填写
+  密码，旧协议的密码不会沿用。清空用户名即改为无认证，并删除已保存的密码。
+- 连通性测试与 SS 节点相同：只有经该节点与目标完成 TLS 握手才算连通。地址不可达、
+  认证失败、或 SOCKS5 服务器拒绝连接目标都显示为 `handshake_failed`。
 
 `2022-blake3-aes-128-gcm` 的“密码”是服务端配置的预共享密钥：标准 Base64（带 `=`
 填充）编码的 16 字节随机值，例如 `openssl rand -base64 16` 的输出；服务端启用多用户
@@ -70,6 +88,11 @@ CPA 插件模式下，每个凭证都写有显式出口（未绑定的账号写�
 
 ## 部署
 
+SOCKS5 节点（迁移 `0048_socks5_egress.sql`）要求 `account-egress` 与 Gateway 同时升级：
+新运行时兼容旧 Gateway 的快照，但旧运行时会拒绝包含 SOCKS5 节点的快照（仍继续使用
+上一份已应用的配置，不会回退直连）。只有 SS 节点时快照格式不变。按下方命令先启动
+`account-egress` 再启动 Gateway 即可。
+
 升级前执行 `./scripts/bootstrap-secrets.sh`。它补充 `egress_control_key`，不会覆盖
 已有密钥。该文件以 `0640` 挂载给 Gateway 和 `account-egress`，属组仍须匹配
 `GATEWAY_SECRET_GID`。密码加密复用现有 API Key 加密根密钥并进行用途隔离，
@@ -94,7 +117,7 @@ CPA 插件模式下，每个凭证都写有显式出口（未绑定的账号写�
 
 ```text
 未绑定：CPA → Squid:3128 → 原全局出口
-已绑定：CPA → Squid:3129 → account-egress → 本机 Mihomo listener → 指定 SS
+已绑定：CPA → Squid:3129 → account-egress → 本机 Mihomo listener → 指定 SS 或 SOCKS5 节点
 ```
 
 Squid 的原精确 provider 域名、443 和 CONNECT 白名单继续生效。3129 是命名的
@@ -121,8 +144,10 @@ python3 -m unittest scripts.tests.test_codex_relay scripts.tests.test_relay_vali
 ```
 
 镜像测试使用无外网的临时 Docker namespace、锁定 Squid 和 Mihomo、三个合成
-SS 服务（其中一个为 `2022-blake3-aes-128-gcm`）及不同的回显目标，确认真实出口区别、三个全局模式下的独立绑定、内部
+SS 服务（其中一个为 `2022-blake3-aes-128-gcm`）、两个合成 SOCKS5 服务（一个要求
+用户名/密码，一个无认证）及不同的回显目标，确认真实出口区别、三个全局模式下的独立绑定、内部
 认证透传、配置更新时旧流存活、旧路由拒绝、错误密码/节点停止无直连回退，以及
 另一个节点继续可用。它不读取站点 `.env`、生产凭据或生产 volume。
 
-SS2022 与连通性测试的验证记录见[出口服务器 SS2022 与连通性测试验证](account-egress-ss2022-probe-validation.md)。
+SS2022 与连通性测试的验证记录见[出口服务器 SS2022 与连通性测试验证](account-egress-ss2022-probe-validation.md)，
+SOCKS5 节点见[出口服务器 SOCKS5 验证](egress-socks5-validation.md)。
