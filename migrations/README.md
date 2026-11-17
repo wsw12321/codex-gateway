@@ -90,6 +90,15 @@ Current migrations:
   cipher and either no authentication (empty username, no password) or a
   username with an encrypted password. Existing nodes stay `ss` and are
   unchanged.
+- `internal/store/migrations/0049_model_family_scopes.sql` — billing model
+  scopes (subscriptions, entitlements, plans, groups, cash) may name a whole
+  family (`family:gpt`, `family:gemini`, `family:claude`), which also covers
+  models priced later. One-time conversion: a row whose scope already names
+  every active model of a family, in the catalog the previous binary
+  synchronized, gains that family's token and keeps its exact models. Converted
+  plans get a new version, converted subscriptions a new configuration version;
+  plan snapshots and ledger rows are unchanged. One
+  `billing.model_families_converted` audit event records the counts.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

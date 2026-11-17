@@ -225,3 +225,10 @@ Codex 与 Claude 两行经过实测（真实 CPA 进程，同一个上游账号�
   调用方作用域。第 2、3 项的重放缓存只改了存储格式并增加只读的 `Peek*`，键不变。缺口 1、2
   涉及的 `trailing_signature.go` 与 `claude_executor_tool_state.go` 在这一版没有变化，三份
   报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。
+- **v8.0.69 → v8.0.76（2026-11-17）。** `git grep` 从 187 处增加到 191 处。两处是函数内的局部
+  map（`codex_websockets_errors.go`、`helps/payload_replace.go`）。两处是进程级状态，都不含
+  请求或调用方数据，不需要补入上表：`antigravityTOSPauseUntil` 只存池级暂停的截止时间，
+  键固定为 `pool`，且只有配置了 `antigravity.tos-pause-window` 时才写入（默认关闭，入口脚本
+  不配置）；`claudeMatcherCache` 缓存按配置编译的敏感词匹配器，键是配置项本身。第 2、3 项
+  重放缓存与 `sdk/cliproxy/session` 只把 JSON／正则库换成 `moego`，键不变。缺口 1、2 涉及的
+  两个文件没有变化，三份报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。

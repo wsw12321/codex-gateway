@@ -12,10 +12,10 @@ const owner = {id: "synthetic-owner", username: "lin", display_name: "林同学"
 const other = {id: "synthetic-other", username: "chen", display_name: "陈同学", role: "member", status: "active"};
 const session = {user: owner, recently_verified: true, login_methods: {password: true}, devices: [{id: "device", name: "测试设备", status: "active"}], projects: [], api_keys: [], passkeys: []};
 const models = [{id: "gpt-example", group: "GPT"}, {id: "gpt-extra", group: "GPT"}, {id: "gemini-example", group: "Gemini"}, {id: "claude-example", group: "Claude"}];
-const plans = [{id: "plan-one", name: "创作月卡", tier: "month", period_days: 31, price_usd: "20.000000000001", allowance_usd: "100", model_ids: models.map((m) => m.id), min_period_count: 1, active: true, version: 4},
+const plans = [{id: "plan-one", name: "创作月卡", tier: "month", period_days: 31, price_usd: "20.000000000001", allowance_usd: "100", model_ids: ["family:claude", "family:gpt", "gemini-example"], min_period_count: 1, active: true, version: 4},
   {id: "plan-custom", name: "十日体验", tier: "custom", period_days: 10, price_usd: "8", allowance_usd: "30", model_ids: ["gpt-example"], min_period_count: 1, active: true, version: 1}];
 let subscriptions = [{id: "sub-one", name: "已购月卡", tier: "month", period_days: 31, model_ids: ["gpt-example"], priority: 1, charge_enabled: true, enabled: true, quota_usd: "80", remaining_usd: "61.25", period_count: 3, current_period_number: 1, period_started_at: "2099-01-01T00:00:00Z", period_ends_at: "2099-02-01T00:00:00Z", expires_at: "2099-04-04T00:00:00Z", plan: plans[0], can_renew: true, config_version: 8},
-  {id: "sub-two", name: "团队月卡", tier: "month", period_days: 31, model_ids: ["gemini-example", "claude-example"], priority: 2, charge_enabled: false, enabled: true, quota_usd: "50", remaining_usd: "49.000000000001", period_count: 0, current_period_number: 1, period_started_at: "2099-01-01T00:00:00Z", period_ends_at: "2099-02-01T00:00:00Z", expires_at: null, plan: null, can_renew: false, config_version: 1},
+  {id: "sub-two", name: "团队月卡", tier: "month", period_days: 31, model_ids: ["family:claude", "gemini-example"], priority: 2, charge_enabled: false, enabled: true, quota_usd: "50", remaining_usd: "49.000000000001", period_count: 0, current_period_number: 1, period_started_at: "2099-01-01T00:00:00Z", period_ends_at: "2099-02-01T00:00:00Z", expires_at: null, plan: null, can_renew: false, config_version: 1},
   {id: "expired", name: "已到期", enabled: true, expires_at: "2000-01-01"}, {id: "disabled", name: "已停用", enabled: false}];
 subscriptions[0].entitlements = [
   {starts_at: "2099-01-01T00:00:00Z", ends_at: "2099-03-04T00:00:00Z", period_days: 31, allowance_usd: "80", model_ids: ["gpt-example"]},
@@ -85,11 +85,14 @@ async function main() {
     const settled = () => page.waitForFunction(() => !billingPlanOperation?.busy && !billingDetailLoading && !billingPlansLoading && !billingSourceOperation);
     const snapshot = async (name) => {
       await page.evaluate(() => hide("notice"));
+      // Dialogs fade in; capture the settled frame rather than the transition.
+      await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getTiming().iterations === Infinity), null, {timeout: 2000}).catch(() => {});
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "viewport overflow");
       await page.screenshot({path: path.join(screenshots, `${name}.png`), fullPage: false});
     };
     assert.equal(await page.locator(".subscription-card").count(), 2);
     assert.equal(await page.locator('[data-subscription-id="sub-two"] [data-billing-source-state]').textContent(), "已禁用扣费");
+    assert.equal(await page.locator('[data-subscription-id="sub-two"] .subscription-models').textContent(), "适用模型：Claude 全系、gemini-example");
     assert.equal(await page.locator('#billing-plans-panel').isVisible(), false);
     await snapshot("subscriptions-desktop");
     await page.locator('[data-billing-priority="cash"]').fill("2");
@@ -122,16 +125,23 @@ async function main() {
     await page.locator('[data-billing-plan-edit="plan-one"]').first().click();
     await page.waitForSelector("#billing-plan-models .model-picker-choice");
     assert.match(await page.locator("#billing-plan-edit-warning").textContent(), /保留已有绑定/);
+    // Saved family scopes load as families; the models they cover are locked.
+    assert.equal(await page.locator("#billing-plan-models").getByLabel("GPT 全系", {exact: true}).isChecked(), true);
+    assert.equal(await page.locator('#billing-plan-models [value="gpt-extra"]').isDisabled(), true);
     await page.locator('#billing-plan-models button', {hasText: "清空"}).click();
+    assert.equal(await page.locator("#billing-plan-models").getByLabel("GPT 全系", {exact: true}).isChecked(), false);
     await page.locator('#billing-plan-models [value="gpt-example"]').check();
     assert.equal(await page.getByLabel("全选 GPT 模型", {exact: true}).evaluate((input) => input.indeterminate), true);
     await page.getByLabel("全选 Gemini 模型", {exact: true}).check();
+    await page.locator("#billing-plan-models").getByLabel("Claude 全系", {exact: true}).check();
+    assert.equal(await page.locator('#billing-plan-models [value="claude-example"]').isChecked(), true);
+    assert.equal(await page.locator('#billing-plan-models [value="claude-example"]').isDisabled(), true);
     await page.locator('#billing-plan-form [name="tier"]').selectOption("custom");
     await page.locator('#billing-plan-form [name="period_days"]').fill("10");
     await page.locator('#billing-plan-form [name="reason"]').fill("调整后续售卖配置");
     await snapshot("plan-models-desktop");
     await page.locator("#billing-plan-submit").click(); await settled();
-    assert.deepEqual(writes.at(-1).body.model_ids, ["gpt-example", "gemini-example"]); assert.equal(writes.at(-1).body.period_days, 10);
+    assert.deepEqual(writes.at(-1).body.model_ids, ["family:claude", "gpt-example", "gemini-example"]); assert.equal(writes.at(-1).body.period_days, 10);
 
     await page.evaluate(() => { location.hash = "billing"; }); await page.waitForSelector('[data-section="billing"]:visible');
     await page.locator("#billing-subscription-create").click(); await page.waitForSelector("#billing-subscription-models .model-picker-choice");
@@ -140,9 +150,11 @@ async function main() {
     await page.locator('#billing-subscription-form [name="period_days"]').fill("10");
     await page.locator('#billing-subscription-form [name="quota_usd"]').fill("50");
     await page.locator('#billing-subscription-form [name="reason"]').fill("补充权益");
+    await page.locator("#billing-subscription-models").getByLabel("GPT 全系", {exact: true}).check();
     await page.locator('#billing-subscription-models [value="claude-example"]').check();
     await page.locator("#billing-subscription-save").click(); await page.waitForSelector("#billing-subscription-dialog", {state: "hidden"}); await settled();
     assert.equal(writes.at(-1).path, `/admin/billing/users/${owner.id}/subscriptions`); assert.equal(writes.at(-1).method, "POST");
+    assert.deepEqual(writes.at(-1).body.model_ids, ["family:gpt", "claude-example"]);
     await page.locator('[data-subscription-manage="sub-one"]').click();
     assert.match(await page.locator("#billing-subscription-replace").textContent(), /当前权益.*全部待生效权益.*解除套餐绑定/);
     await page.waitForSelector("#billing-subscription-models .model-picker-choice");
@@ -193,7 +205,7 @@ async function main() {
     assert.equal(await page.locator('[data-billing-priority]:enabled').count(), 0);
     assert.equal(await page.locator('[data-billing-renew]:visible').count(), 0);
     assert.deepEqual(errors, []);
-    console.log("Multiple subscriptions, preferences, ID renewals, exact retry, custom cycles, shared model picker, API Key restriction and desktop/mobile checks passed.");
+    console.log("Multiple subscriptions, preferences, ID renewals, exact retry, custom cycles, shared model picker with family scopes, API Key restriction and desktop/mobile checks passed.");
   } finally { await browser.close(); }
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

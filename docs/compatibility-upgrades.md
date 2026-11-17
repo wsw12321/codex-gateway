@@ -24,7 +24,7 @@ Gateway 不自行构造供应商请求，也不通过补丁改变 CPA 生成请�
 | 部分 | 位置 | 作用 |
 |---|---|---|
 | 残余补丁 | `deploy/codex-compat/residual/cliproxy-plugin-only-selector.patch` | 新增 `routing.strategy: "plugin-only"`：一个对任何选号都返回 `gateway_allocation_unavailable` 的选择器。纯新增，不删改上游行为 |
-| Gateway 插件 | `deploy/codex-compat/plugin/` | 独立 Go module，编译为 `codex-gateway-v1.0.0.so`。除 CPA 的插件接口定义外没有第三方依赖 |
+| Gateway 插件 | `deploy/codex-compat/plugin/` | 独立 Go module，编译为 `codex-gateway-v1.0.0.so`。直接依赖只有 CPA 的插件接口定义；v8.0.76 起该接口用 `MoeForge/moego`（MIT，自身无依赖）编解码 JSON，它是唯一的间接依赖 |
 | 构建 | `deploy/codex-compat/plugin.Dockerfile`、`plugin.lock.json` | 固定同一 CPA 提交；安全依赖改用 `go get` 升级；构建时运行插件单测和端到端测试 |
 | 运行 | `plugin-entrypoint.sh`、`plugin-healthcheck.sh` | 凭证目录检查沿用 `entrypoint.sh`；健康检查要求插件正在提供服务 |
 | Gateway | `CPA_MANAGEMENT_KEY`（必填） | 用请求账本做归因（不读取任何响应头）；账号路由走 `/v0/management/gateway/*`，使用管理密钥；生成请求使用数据面密钥 |
@@ -81,7 +81,7 @@ Gateway 仍是账号出口的唯一来源，插件只负责让 CPA 照着执行�
 Antigravity 账号只注册 Gateway 已审并定价的五个模型：`gemini-3-flash`、
 `gemini-3.1-flash-lite`、`gemini-3.5-flash-lite`、`gemini-3.8-flash-high`、
 `gemini-4-argon-high`。CPA 为该 Provider 内置的目录还列有 Claude、GPT、图像模型以及尚未
-评审定价的 Gemini 模型（v8.0.69 中另有九个），账号实际注册的是这份目录与 Google 为该账号
+评审定价的 Gemini 模型（v8.0.69 与 v8.0.76 中另有九个），账号实际注册的是这份目录与 Google 为该账号
 返回的模型列表的交集。入口脚本在生成的配置中用 CPA 原生的 `oauth-excluded-models` 排除其余
 部分：
 
@@ -298,6 +298,12 @@ Gateway 用与 Owner 查询相同的非自动读数写入额度守卫，并要�
 2026-11-13 实际升级到 v8.0.69（上游 100 个提交、382 个文件）：残余补丁与插件源码都未改；
 `TestAntigravityModelCatalog` 按设计指出目录新增的三个 Antigravity 模型，把它们加入排除规则
 后全部端到端测试通过。过程见 [v8.0.69 验证记录](cpa-v8.0.69-validation.md)。
+
+2026-11-17 升级到 v8.0.76（上游 60 个提交、661 个文件）：残余补丁与插件源码都未改，补丁的
+一处上下文偏移 13 行，仍无 fuzz 应用；Codex、Claude、Antigravity 的模型目录不变，排除规则不变。
+插件接口新增可选的 Codex 续接钩子与 `ExcludeCandidates`，插件都不使用；接口的 JSON 改用
+`moego`，插件 `go.mod` 因此多出一条间接依赖。全部 17 组端到端测试通过。过程见
+[v8.0.76 验证记录](cpa-v8.0.76-validation.md)。
 
 ### 回退
 

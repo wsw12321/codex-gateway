@@ -219,3 +219,18 @@ func TestDecodeLegacyGroupResponseUsesItsOwnSnapshot(t *testing.T) {
 		t.Fatalf("explicit unlimited snapshot = %+v %v", result, err)
 	}
 }
+
+func TestGroupModelAllowedCoversFamilies(t *testing.T) {
+	group := &GroupSummary{ModelIDs: []string{"claude-opus-5-5", "family:gpt"}}
+	for model, want := range map[string]bool{
+		"gpt-6-sol": true, "gpt-7-priced-later": true, "claude-opus-5-5": true,
+		"claude-sonnet-5-5": false, "gemini-4-argon-high": false, "family:gpt": false, "": false,
+	} {
+		if got := groupModelAllowed(group, model); got != want {
+			t.Errorf("groupModelAllowed(%q) = %v, want %v", model, got, want)
+		}
+	}
+	if groupModelAllowed(nil, "gpt-6-sol") {
+		t.Fatal("nil group allows a model")
+	}
+}

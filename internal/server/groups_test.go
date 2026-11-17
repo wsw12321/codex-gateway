@@ -424,7 +424,17 @@ func TestGroupModelIDsInputPreservesOmissionAndValidatesConfiguredModels(t *test
 		t.Fatalf("explicit models: status=%d put=%+v", w.Code, repo.put)
 	}
 
-	for _, value := range []any{[]string{}, []string{"retired-model"}, nil} {
+	repo.put = nil
+	e.body["model_ids"] = []string{"family:gpt", "family:claude"}
+	r = groupHandlerRequest(t, e)
+	addBillingSourceTestSession(t, r)
+	w = httptest.NewRecorder()
+	s.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusOK || repo.put == nil || !reflect.DeepEqual(repo.put.ModelIDs, []string{"family:gpt", "family:claude"}) {
+		t.Fatalf("family models: status=%d put=%+v", w.Code, repo.put)
+	}
+
+	for _, value := range []any{[]string{}, []string{"retired-model"}, []string{"family:xai"}, nil} {
 		repo.put = nil
 		e.body["model_ids"] = value
 		r = groupHandlerRequest(t, e)

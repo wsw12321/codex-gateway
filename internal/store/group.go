@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	decimal "github.com/wsw/codex-gateway/internal/billing"
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 func marshalGroupModels(models []string) []byte {
@@ -242,15 +243,7 @@ func groupPeriodActive(g *GroupSummary, at time.Time) bool {
 }
 
 func groupModelAllowed(g *GroupSummary, model string) bool {
-	if g == nil {
-		return false
-	}
-	for _, candidate := range g.ModelIDs {
-		if candidate == model {
-			return true
-		}
-	}
-	return false
+	return g != nil && config.ModelScopeAllows(g.ModelIDs, model)
 }
 
 func groupHasNextPeriod(g *GroupSummary) bool {
@@ -570,9 +563,12 @@ func (s *Store) PutGroup(ctx context.Context, params PutGroupParams) (Group, err
 					FROM model_access_defaults WHERE catalog_active`).Scan(&encoded); err != nil {
 					return Group{}, mapDBError("read group model catalog", err)
 				}
-				if err := json.Unmarshal(encoded, &g.ModelIDs); err != nil {
+				var catalog []string
+				if err := json.Unmarshal(encoded, &catalog); err != nil {
 					return Group{}, err
 				}
+				// An omitted scope means every model, including later ones.
+				g.ModelIDs = config.ModelFamilyScope(catalog)
 			}
 		} else {
 			if err := lockGroupTx(ctx, tx, params.GroupID); err != nil {

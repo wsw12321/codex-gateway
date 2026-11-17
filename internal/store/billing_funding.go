@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 // BillingFundingSource is an immutable admission-time position. RemainingUSD
@@ -57,8 +59,8 @@ func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model str
 	rows, err := tx.QueryContext(ctx, `SELECT s.id,p.id,s.priority,s.period_days,p.remaining_usd::text
 		FROM billing_subscriptions s JOIN billing_subscription_periods p ON p.id=s.current_period_id
 		WHERE s.user_id=$1 AND s.enabled AND s.charge_enabled AND s.models_initialized
-		AND s.model_ids ? $3 AND p.closed_at IS NULL AND p.starts_at<=$2 AND p.ends_at>$2
-		AND p.remaining_usd>0 ORDER BY s.id FOR UPDATE OF s,p`, userID, at, model)
+		AND s.model_ids ?| $3::text[] AND p.closed_at IS NULL AND p.starts_at<=$2 AND p.ends_at>$2
+		AND p.remaining_usd>0 ORDER BY s.id FOR UPDATE OF s,p`, userID, at, config.ModelScopeKeys(model))
 	if err != nil {
 		return nil, mapDBError("read ordered billing sources", err)
 	}
@@ -79,8 +81,8 @@ func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model str
 	}
 	if cashCutoff != nil {
 		var cashAllowed bool
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CASE WHEN models_initialized THEN model_ids ? $1 ELSE false END
-			FROM billing_settings WHERE singleton),false)`, model).Scan(&cashAllowed); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CASE WHEN models_initialized THEN model_ids ?| $1::text[] ELSE false END
+			FROM billing_settings WHERE singleton),false)`, config.ModelScopeKeys(model)).Scan(&cashAllowed); err != nil {
 			return nil, mapDBError("read cash model scope", err)
 		}
 		if cashAllowed {
@@ -102,9 +104,9 @@ func billingFundingRetryTx(ctx context.Context, tx *sql.Tx, userID, model string
 		JOIN billing_subscription_entitlements e ON e.subscription_id=s.id
 		LEFT JOIN billing_subscription_periods p ON p.id=s.current_period_id
 		WHERE s.user_id=$1 AND s.enabled AND s.charge_enabled AND s.models_initialized
-		AND e.superseded_at IS NULL AND e.model_ids ? $3 AND e.allowance_usd>0
+		AND e.superseded_at IS NULL AND e.model_ids ?| $3::text[] AND e.allowance_usd>0
 		AND (e.ends_at IS NULL OR e.ends_at>$2)
-	) candidates`, userID, at, model).Scan(&renewal)
+	) candidates`, userID, at, config.ModelScopeKeys(model)).Scan(&renewal)
 	if err != nil {
 		return 0, mapDBError("read model-scoped billing retry time", err)
 	}

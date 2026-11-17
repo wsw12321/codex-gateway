@@ -234,47 +234,93 @@ const billingTiers = [
 ];
 
 // A single native-control picker is shared by permissions, scopes, plans,
-// subscriptions, usage and identification. Selections always contain explicit IDs.
+// subscriptions, usage and identification. Selections contain explicit IDs;
+// billing scopes (options.families) may also name a whole family, which the
+// Gateway applies to models priced later (internal/config/model_family.go).
 let modelPickerCounter = 0;
 const modelCatalogRequests = new Map();
+const modelFamilyScopes = [
+  {token: "family:gpt", group: "GPT", label: "GPT 全系"},
+  {token: "family:gemini", group: "Gemini", label: "Gemini 全系"},
+  {token: "family:claude", group: "Claude", label: "Claude 全系"},
+];
+
+// Mirrors config.ModelFamilyOf for display only; admission decides on the server.
+function modelFamilyGroup(id) {
+  if (typeof id !== "string" || !id || id === "codex-auto-review" || id.startsWith("family:")) return "";
+  if (id.startsWith("claude-")) return "Claude";
+  if (id.startsWith("gemini-")) return "Gemini";
+  return "GPT";
+}
+
+function billingModelText(ids) {
+  const values = (Array.isArray(ids) ? ids : []).filter((id) => typeof id === "string" && id);
+  const families = modelFamilyScopes.filter((family) => values.includes(family.token));
+  const covered = new Set(families.map((family) => family.group));
+  const exact = values.filter((id) => !id.startsWith("family:") && !covered.has(modelFamilyGroup(id)));
+  const unknown = values.filter((id) => id.startsWith("family:") && !modelFamilyScopes.some((family) => family.token === id));
+  return [...families.map((family) => family.label), ...exact, ...unknown].join("、");
+}
 
 function renderModelPicker(host, candidates, options = {}) {
   const single = options.single === true;
+  const familyMode = options.families === true && !single;
   const models = [...new Map(candidates.filter((item) => item && typeof item.id === "string" && item.id)
     .map((item) => [item.id, item])).values()];
   const available = new Set(models.map((item) => item.id));
   const selected = new Set((options.selected || []).filter((id) => available.has(id)).slice(0, single ? 1 : undefined));
+  const families = new Set(familyMode ? (options.selected || []).filter((id) => modelFamilyScopes.some((family) => family.token === id)) : []);
+  const familyOf = (brand) => modelFamilyScopes.find((family) => family.group === brand) || null;
+  const familyCovers = (brand) => families.has(familyOf(brand)?.token);
   const name = `_model_picker_${++modelPickerCounter}`;
   const search = element("input", {type: "search", className: "model-picker-search", attributes: {placeholder: "搜索模型", "aria-label": "搜索候选模型", autocomplete: "off"}});
   const count = element("small", {className: "model-picker-count", attributes: {"aria-live": "polite"}});
   const clear = element("button", {type: "button", className: "secondary", text: single ? "清除选择" : "清空"});
   const selectAll = element("input", {type: "checkbox", attributes: {"aria-label": "全选当前目录模型"}});
   const rows = [], groups = [];
+  const brandOf = new Map();
+  const isCovered = (id) => selected.has(id) || familyCovers(brandOf.get(id));
+  const values = () => [
+    ...modelFamilyScopes.filter((family) => families.has(family.token)).map((family) => family.token),
+    ...[...selected].filter((id) => !familyCovers(brandOf.get(id))),
+  ];
   const sync = () => {
-    count.textContent = `已选 ${selected.size} / ${models.length}`;
-    selectAll.checked = models.length > 0 && selected.size === models.length;
-    selectAll.indeterminate = selected.size > 0 && selected.size < models.length;
+    const covered = models.filter((item) => isCovered(item.id)).length;
+    const labels = modelFamilyScopes.filter((family) => families.has(family.token)).map((family) => family.label);
+    count.textContent = `已选 ${covered} / ${models.length}${labels.length ? ` · ${labels.join("、")}（含以后新增）` : ""}`;
+    selectAll.checked = models.length > 0 && covered === models.length;
+    selectAll.indeterminate = covered > 0 && covered < models.length;
     selectAll.disabled = models.length === 0;
     selectAll.setAttribute("aria-checked", selectAll.indeterminate ? "mixed" : String(selectAll.checked));
-    for (const row of rows) row.input.checked = selected.has(row.id);
+    for (const row of rows) {
+      row.input.checked = isCovered(row.id);
+      row.input.disabled = familyCovers(row.brand);
+    }
     for (const group of groups) {
-      const n = group.ids.filter((id) => selected.has(id)).length;
+      const n = group.ids.filter((id) => isCovered(id)).length;
       group.toggle.checked = n > 0 && n === group.ids.length;
       group.toggle.indeterminate = n > 0 && n < group.ids.length;
-      group.toggle.disabled = group.ids.length === 0;
+      group.toggle.disabled = group.ids.length === 0 || familyCovers(group.brand);
       group.toggle.setAttribute("aria-checked", group.toggle.indeterminate ? "mixed" : String(group.toggle.checked));
+      if (group.family) {
+        group.family.checked = familyCovers(group.brand);
+        group.family.setAttribute("aria-checked", String(group.family.checked));
+      }
     }
   };
-  const changed = () => { sync(); options.onChange?.([...selected]); };
+  const changed = () => { sync(); options.onChange?.(values()); };
   const controls = element("div", {className: "model-picker-toolbar"}, search,
     single ? null : element("label", {className: "model-picker-select-all"}, selectAll, element("span", {text: "全选"})), clear, count);
-  clear.addEventListener("click", () => { selected.clear(); changed(); });
-  selectAll.addEventListener("change", () => { selected.clear(); if (selectAll.checked) models.forEach((item) => selected.add(item.id)); changed(); });
+  clear.addEventListener("click", () => { selected.clear(); families.clear(); changed(); });
+  selectAll.addEventListener("change", () => { selected.clear(); if (selectAll.checked) models.forEach((item) => selected.add(item.id)); else families.clear(); changed(); });
   const groupNames = ["GPT", "Gemini", "Claude"];
   if (models.some((item) => !groupNames.includes(item.group))) groupNames.push("其他");
   const sections = groupNames.map((brand) => {
     const members = models.filter((item) => (groupNames.includes(item.group) ? item.group : "其他") === brand);
+    members.forEach((item) => brandOf.set(item.id, brand));
     const toggle = element("input", {type: "checkbox", attributes: {"aria-label": `全选 ${brand} 模型`}});
+    const family = familyMode ? familyOf(brand) : null;
+    const familyToggle = family ? element("input", {type: "checkbox", attributes: {"aria-label": family.label, value: family.token}}) : null;
     const children = members.map((item) => {
       const input = element("input", {type: single ? "radio" : "checkbox", className: "model-picker-checkbox", attributes: {value: item.id, ...(single ? {name} : {})}});
       const label = element("label", {className: "model-picker-choice", dataset: {model: item.id}}, input, element("span", {text: item.id}));
@@ -288,11 +334,20 @@ function renderModelPicker(host, candidates, options = {}) {
     });
     const section = element("details", {className: "model-picker-brand", dataset: {brand}},
       element("summary", {text: `${brand} · ${members.length}`}),
+      familyToggle ? element("label", {className: "model-picker-select-all model-picker-family"}, familyToggle,
+        element("span", {text: `${family.label}（自动包含以后新增的 ${brand} 模型）`})) : null,
       single ? null : element("label", {className: "model-picker-select-all"}, toggle, element("span", {text: `${brand} 全选`})),
       element("div", {className: "model-picker-options", attributes: {role: single ? "radiogroup" : "group", "aria-label": `${brand} 模型`}}, ...children));
-    section.open = members.length > 0;
+    section.open = members.length > 0 || familyCovers(brand);
     toggle.addEventListener("change", () => { members.forEach((item) => { if (toggle.checked) selected.add(item.id); else selected.delete(item.id); }); changed(); });
-    groups.push({ids: members.map((item) => item.id), toggle, section, brand});
+    // Leaving a family keeps today's models selected one by one, so the scope
+    // never shrinks by surprise; the Owner removes models explicitly.
+    familyToggle?.addEventListener("change", () => {
+      if (familyToggle.checked) families.add(family.token);
+      else { families.delete(family.token); members.forEach((item) => selected.add(item.id)); }
+      changed();
+    });
+    groups.push({ids: members.map((item) => item.id), toggle, section, brand, family: familyToggle});
     return section;
   });
   search.addEventListener("input", () => {
@@ -306,7 +361,12 @@ function renderModelPicker(host, candidates, options = {}) {
   host.classList.add("model-picker");
   host.setAttribute("aria-busy", "false");
   host.replaceChildren(controls, ...sections, ...(models.length ? [] : [element("p", {text: "没有可选模型。"})]));
-  host.modelPicker = {values: () => [...selected], set: (values) => { selected.clear(); values.filter((id) => available.has(id)).slice(0, single ? 1 : undefined).forEach((id) => selected.add(id)); sync(); }, filter: (value) => { search.value = value; search.dispatchEvent(new Event("input")); }};
+  host.modelPicker = {values, set: (ids) => {
+    selected.clear(); families.clear();
+    ids.filter((id) => available.has(id)).slice(0, single ? 1 : undefined).forEach((id) => selected.add(id));
+    if (familyMode) ids.filter((id) => modelFamilyScopes.some((family) => family.token === id)).forEach((id) => families.add(id));
+    sync();
+  }, filter: (value) => { search.value = value; search.dispatchEvent(new Event("input")); }};
   sync();
   return host.modelPicker;
 }
@@ -345,7 +405,7 @@ async function loadFormModelPicker(id, scope, selected = null, options = {}) {
   try {
     const models = await modelCatalog(scope);
     const initial = options.defaultAll && !Array.isArray(selected)
-      ? models.map((item) => item.id)
+      ? (options.families ? modelFamilyScopes.map((family) => family.token) : models.map((item) => item.id))
       : selected;
     if (current()) renderModelPicker(host, models, {...options, selected: initial});
   } catch (error) {
@@ -3687,11 +3747,11 @@ function renderBillingSubscriptions(detail) {
       ratio == null ? null : element("progress", {className: "subscription-progress", attributes: {value: ratio, max: 100, "aria-label": `${name}剩余额度比例`}}),
       element("small", {text: `${billingPeriodEndLabel(subscription)}：${display.ends}`}),
       element("small", {text: `最终到期：${display.expires}`}),
-      element("small", {className: "subscription-models", text: `适用模型：${billingModels(subscription).join("、") || "无"}`}),
+      element("small", {className: "subscription-models", text: `适用模型：${billingModelText(billingModels(subscription)) || "无"}`}),
       billingPlanBinding(subscription), billingSourceControl(subscription.id),
       element("details", {className: "subscription-period-details"}, element("summary", {text: "已购权益详情"}),
         element("small", {text: `${billingPeriodProgress(subscription)} · 额度不结转`}),
-        ...(subscription.entitlements || []).map((segment) => element("small", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"} · 每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)} · ${billingModels(segment).join("、")}`}))));
+        ...(subscription.entitlements || []).map((segment) => element("small", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"} · 每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)} · ${billingModelText(billingModels(segment))}`}))));
     if (state?.user?.role === "owner") {
       const edit = element("button", {type: "button", className: "secondary", text: "重开或停用", dataset: {subscriptionManage: subscription.id}});
       edit.addEventListener("click", () => openBillingSubscriptionEditor(subscription));
@@ -4775,7 +4835,7 @@ function renderBillingSettings(result) {
   const models = Array.isArray(billingSettings.model_ids) ? billingSettings.model_ids : [];
   const host = byId("billing-cash-models");
   if (!host?.modelPicker || JSON.stringify(previousModels) !== JSON.stringify(models)) {
-    loadFormModelPicker("billing-cash-models", "manageable", models);
+    loadFormModelPicker("billing-cash-models", "manageable", models, {families: true});
   }
 }
 
@@ -5403,7 +5463,7 @@ function renderBillingPlans() {
       element("header", {}, element("h4", {text: plan.name}),
         element("span", {className: "status-badge", text: plan.active ? "已上架" : "已下架", dataset: {status: plan.active ? "active" : "disabled"}})),
       element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
-      element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModels(plan).join("、")}`}),
+      element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModelText(billingModels(plan))}`}),
       element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
       element("small", {text: "每次购买或续费最多 99 期，续费累计不限 99 期。"}));
     const actions = element("div", {className: "actions"});
@@ -5504,7 +5564,7 @@ function updateBillingPurchaseSummary() {
     const total = billingPlanTotal(plan.price_usd, count);
     const lines = [`本次金额：${formatUSD(plan.price_usd)} × ${count} 期 = ${formatUSD(total)}`,
       `每期额度：${formatUSD(plan.allowance_usd)} · 每期 ${billingPeriodDays(plan)} 天`,
-      `适用模型：${billingModels(plan).join("、")}`];
+      `适用模型：${billingModelText(billingModels(plan))}`];
     if (kind === "renewal") {
       lines.push(`追加权益生效：${formatDateTime(subscription.expires_at)}；追加 ${count} 期；新到期时间：${formatDateTime(billingRenewalExpiry(subscription, plan, count))}`);
       lines.push(`当前第 ${subscription.current_period_number} 期，剩余额度 ${formatUSD(subscription.remaining_usd)}；续费保留本周期和剩余额度。`);
@@ -5530,7 +5590,7 @@ function openBillingPlanEditor(plan = null) {
   setLocalMessage(form);
   syncBillingPlanControls();
   byId("billing-plan-dialog").showModal();
-  loadFormModelPicker("billing-plan-models", "manageable", billingModels(plan));
+  loadFormModelPicker("billing-plan-models", "manageable", billingModels(plan), {families: true});
 }
 
 function billingPlanOperationCurrent(operation) {
@@ -6112,12 +6172,12 @@ function openBillingSubscriptionEditor(subscription = null) {
     period_days: subscription?.period_days || 1, quota_usd: subscription?.quota_usd || "", period_count: "1", reason: ""})) form.elements[name].value = String(value);
   byId("billing-subscription-title").textContent = subscription ? `重开或停用：${subscription.name}` : "新增独立订阅";
   byId("billing-subscription-replace").textContent = subscription ? `重开将立即替换当前权益（余额 ${formatUSD(subscription.remaining_usd)}，本周期结束 ${formatDateTime(subscription.period_ends_at)}）及全部待生效权益（最终到期 ${subscription.expires_at ? formatDateTime(subscription.expires_at) : "无限期"}）。解除套餐绑定并从第 1 期重新计时。` : "新增订阅不绑定套餐，用户不能续费。周期数 0 表示无限期。";
-  byId("billing-subscription-entitlements").replaceChildren(...(subscription?.entitlements || []).map((segment) => element("p", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"}：每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)}，${billingModels(segment).join("、")}`})));
+  byId("billing-subscription-entitlements").replaceChildren(...(subscription?.entitlements || []).map((segment) => element("p", {text: `${formatDateTime(segment.starts_at)} → ${segment.ends_at ? formatDateTime(segment.ends_at) : "无限期"}：每 ${segment.period_days} 天 ${formatUSD(segment.quota_usd ?? segment.allowance_usd)}，${billingModelText(billingModels(segment))}`})));
   byId("billing-subscription-disable").classList.toggle("hidden", !subscription);
   byId("billing-subscription-save").textContent = subscription ? "确认重开" : "新增订阅";
   setLocalMessage(form);
   byId("billing-subscription-dialog").showModal();
-  loadFormModelPicker("billing-subscription-models", "manageable", billingModels(subscription));
+  loadFormModelPicker("billing-subscription-models", "manageable", billingModels(subscription), {families: true});
 }
 
 function billingSubscriptionEditCurrent(draft) {
@@ -7039,7 +7099,7 @@ function groupMetrics(group) {
 
 function groupModelLabel(group) {
   const models = Array.isArray(group?.model_ids) ? group.model_ids.filter(Boolean) : [];
-  return models.length ? `可用模型：${models.join("、")}` : "可用模型：未配置（兼容旧群组）";
+  return models.length ? `可用模型：${billingModelText(models)}` : "可用模型：未配置（兼容旧群组）";
 }
 
 function billingGroups(detail = billingDetail) {
@@ -7905,7 +7965,7 @@ function openGroupEditor(group = null) {
   form.dataset.modelIDsConfigured = String(!group || Object.prototype.hasOwnProperty.call(group, "model_ids"));
   form.dataset.modelIDsLoaded = "false";
   const selectedGroupModels = Array.isArray(group?.model_ids) ? group.model_ids : undefined;
-  loadFormModelPicker("group-models", "manageable", selectedGroupModels, {defaultAll: selectedGroupModels === undefined}).then(() => {
+  loadFormModelPicker("group-models", "manageable", selectedGroupModels, {defaultAll: selectedGroupModels === undefined, families: true}).then(() => {
     if (byId("group-form") === form) form.dataset.modelIDsLoaded = "true";
   });
   byId("group-dialog-title").textContent = group ? "编辑群组" : "创建群组";
@@ -10893,7 +10953,7 @@ function routeFromHash(focusContent = true) {
 async function loadDashboard() {
   await refreshState();
   loadUsageModelPickers();
-  if (state.user.role === "owner") loadFormModelPicker("billing-batch-models", "manageable");
+  if (state.user.role === "owner") loadFormModelPicker("billing-batch-models", "manageable", null, {families: true});
   usageDetailsStale = true;
   const tasks = [
     ...(usageDetailsOpen ? [loadPersonalUsage(queryFromForm(byId("usage-filter"))).catch((error) => {

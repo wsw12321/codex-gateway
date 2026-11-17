@@ -78,7 +78,7 @@ async function main() {
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       if (url.pathname === "/admin/billing/me") return send({user: initialState.user, cash_balance_usd: "0", subscriptions: {}});
       if (url.pathname === "/admin/billing/me/account-usage") return send({groups: []});
-      if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-5.6"}, {id: "claude-sonnet"}]});
+      if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-5.6", group: "GPT"}, {id: "claude-sonnet", group: "Claude"}]});
       if (url.pathname === "/admin/usage") return send({summary: {requests: 0}, requests: []});
       if (url.pathname === "/admin/upstream-accounts/concurrency") return send({sampled_at: new Date().toISOString(), accounts: [{id: account.id, active_requests: 0}]});
       if (url.pathname === "/admin/billing/users") return send({users});
@@ -275,11 +275,13 @@ async function main() {
     await page.locator("#group-edit").click();
     assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").inputValue(), "100");
     assert.equal(await page.getByLabel("总周期数（0 表示无限期）").inputValue(), "5");
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getTiming().iterations === Infinity), null, {timeout: 2000}).catch(() => {});
     await page.screenshot({path: path.join(screenshots, "groups-form-desktop.png")});
     await page.setViewportSize({width: 390, height: 844});
     assert.equal(await page.getByLabel("单个成员周期用量上限（USD）").isVisible(), true);
     assert.equal(await page.getByLabel("总周期数（0 表示无限期）").isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState !== "running" || animation.effect?.getTiming().iterations === Infinity), null, {timeout: 2000}).catch(() => {});
     await page.screenshot({path: path.join(screenshots, "groups-form-mobile.png")});
     await page.locator("#group-form [data-close]").click();
 

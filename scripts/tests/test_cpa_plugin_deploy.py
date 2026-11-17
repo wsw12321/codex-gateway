@@ -104,10 +104,13 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertIn(f"plugin_file=${{plugin_dir}}/codex-gateway-v{version}.so", self.entrypoint)
         go_mod = read(PLUGIN / "go.mod")
         self.assertIn("github.com/router-for-me/CLIProxyAPI/v8 {}".format(self.lock["tag"]), go_mod)
-        # The plugin must stay free of third-party dependencies: its only
-        # requirement is the CPA module that defines the plugin interface.
-        self.assertEqual(re.findall(r"^\s*(?:require\s+)?(\S+/\S+) v", go_mod, flags=re.M),
-                         ["github.com/router-for-me/CLIProxyAPI/v8"])
+        # The plugin itself depends only on the CPA module that defines the
+        # plugin interface. Since v8.0.76 that interface encodes JSON with
+        # MoeForge/moego (MIT, no dependencies of its own), which therefore
+        # appears as the single indirect requirement.
+        requirements = re.findall(r"^\s*(?:require\s+)?(\S+/\S+) (v\S+)( // indirect)?$", go_mod, flags=re.M)
+        self.assertEqual([(module, bool(indirect)) for module, _, indirect in requirements],
+                         [("github.com/router-for-me/CLIProxyAPI/v8", False), ("github.com/MoeForge/moego", True)])
 
     def test_entrypoint_writes_fail_closed_configuration(self):
         for script in (self.entrypoint, self.healthcheck):

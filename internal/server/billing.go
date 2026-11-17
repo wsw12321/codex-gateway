@@ -116,13 +116,13 @@ func (s *Server) validBillingModels(models []string) bool {
 // model-scope edits. Subscription writes retain the looser shape check above
 // so the store can preserve an already committed operation replay after a
 // catalog change; new cash and group scopes must always name currently
-// manageable models.
+// manageable models or a known model family.
 func (s *Server) validManageableBillingModels(models []string) bool {
 	if !s.validBillingModels(models) {
 		return false
 	}
 	for _, model := range models {
-		if !s.config.UsagePricing.IsManageableModel(model) {
+		if !config.IsModelFamilyToken(model) && !s.config.UsagePricing.IsManageableModel(model) {
 			return false
 		}
 	}

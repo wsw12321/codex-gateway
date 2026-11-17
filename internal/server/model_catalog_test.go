@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/wsw/codex-gateway/internal/config"
@@ -121,5 +122,28 @@ func TestBillingPeriodAndModelValidation(t *testing.T) {
 	}
 	if !s.validBillingModels([]string{"gpt-test"}) {
 		t.Fatal("rejected configured model")
+	}
+	for _, models := range [][]string{{"family:gpt"}, {"family:claude", "gpt-test"}, {"family:gpt", "family:gemini", "family:claude"}} {
+		if !s.validManageableBillingModels(models) {
+			t.Fatalf("rejected family scope %v", models)
+		}
+	}
+	for _, models := range [][]string{{"family:xai"}, {"family:"}, {"family:GPT"}, {"family:gpt", "family:gpt"}, {"gpt-missing", "family:gpt"}} {
+		if s.validManageableBillingModels(models) {
+			t.Fatalf("accepted scope %v", models)
+		}
+	}
+}
+
+func TestModelCatalogGroupsMatchBillingFamilies(t *testing.T) {
+	got := modelCatalogOptions([]string{"gpt-6-sol", "o9-preview", "claude-opus-5-5", "gemini-4-argon-high", config.InternalGovernanceModel})
+	want := []sessionModelOption{{"claude-opus-5-5", "Claude"}, {"gemini-4-argon-high", "Gemini"}, {"gpt-6-sol", "GPT"}, {"o9-preview", "GPT"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("catalog groups = %#v, want %#v", got, want)
+	}
+	for _, option := range got {
+		if !config.ModelScopeAllows([]string{"family:" + strings.ToLower(option.Group)}, option.ID) {
+			t.Fatalf("%s is shown under %s but not covered by that family", option.ID, option.Group)
+		}
 	}
 }

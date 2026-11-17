@@ -87,12 +87,15 @@ func TestBillingModelScopesPostgresIntegration(t *testing.T) {
 	if err := s.InitializeBillingModelScopes(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
+	// Uninitialized scopes covered every model; they now name every family
+	// present in the catalog, so later models of those families stay covered.
+	familyScope := []string{"family:gpt"}
 	settings, err := s.GetBillingSettings(ctx)
-	if err != nil || !reflect.DeepEqual(settings.ModelIDs, models) {
+	if err != nil || !reflect.DeepEqual(settings.ModelIDs, familyScope) {
 		t.Fatalf("cash initialization: %+v %v", settings, err)
 	}
 	initialized, err := s.GetGroup(ctx, group.ID)
-	if err != nil || !reflect.DeepEqual(initialized.ModelIDs, models) || initialized.PeriodID != group.PeriodID || !initialized.UpdatedAt.Equal(group.UpdatedAt) {
+	if err != nil || !reflect.DeepEqual(initialized.ModelIDs, familyScope) || initialized.PeriodID != group.PeriodID || !initialized.UpdatedAt.Equal(group.UpdatedAt) {
 		t.Fatalf("group initialization changed existing period or metadata: %+v %v", initialized, err)
 	}
 	// Capture funding before removing this model from both scopes. Settlement
