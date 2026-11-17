@@ -157,8 +157,10 @@ sidecar 运行未修改的 CLIProxyAPI，Gateway 的账号分配、身份隔离�
   知道另一调用方的上游消息 ID 才能利用，得到的是签名或工具名而不是对话内容，在上游修复前
   接受。见 [CPA Provider 缓存键核对](cpa-provider-cache-audit.md)。
 - **CPA 自带的数据面端点比 Gateway 用到的多。** 例如 v8.0.69 新增的 `/v1/tunnel`
-  （多租户 WebSocket 数据交换）无条件挂载。它们只接受 CPA 的 `api-keys`，即 Gateway 的内部
+  （多租户 WebSocket 数据交换）和 v8.0.76 新增的 `/muse-code/*`（Muse Code CLI 的模型列表
+  及转发到 Meta 的辅助端点）无条件挂载。它们只接受 CPA 的 `api-keys`，即 Gateway 的内部
   数据面密钥，只在私有兼容网络可达；Gateway 只把固定的几条路径转发给 CPA，不转发这类端点。
+  部署中没有 Meta 凭证，出口白名单也不含 Meta 主机，`/muse-code` 的转发无法成功。
 - **Antigravity 账号只服务五个已审模型。** CPA 为该 Provider 内置的目录还包含 Claude、
   GPT 和图像模型；入口脚本用 CPA 原生的排除规则去掉它们，镜像构建时对照二进制内置的目录
   核对。Antigravity 凭证因此不会成为其他 Provider 模型的候选。

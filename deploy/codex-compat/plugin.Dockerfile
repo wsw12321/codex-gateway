@@ -19,7 +19,8 @@ RUN apt-get update \
     && groupadd --system --gid 10001 cliproxy \
     && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \
     && install -d -o 10001 -g 10001 -m 0700 \
-        /var/lib/cliproxy /var/lib/cliproxy/oauth /run/cliproxy
+        /var/lib/cliproxy /var/lib/cliproxy/oauth /run/cliproxy \
+    && install -d -o 0 -g 0 -m 0555 /usr/local/lib/cliproxy /usr/local/lib/cliproxy/plugins
 USER 10001:10001
 
 FROM ${GOLANG_IMAGE} AS build
@@ -49,7 +50,7 @@ RUN printf "%s  /tmp/cliproxy-residual.patch\n" "$CLIPROXY_RESIDUAL_PATCH_SHA256
     && test "$(git status --porcelain | wc -l)" = 4
 # The model catalog is the reviewed one embedded in the pinned source.
 RUN printf '%s  internal/registry/models/models.json\n' \
-    'e47744d81d04b5b7c8eee17057fd4d4110a8b8b5867d4015a0718e05d98b616c' | sha256sum -c -
+    'fbca148e7e6ce79425441b637566073754dd8a6c18783fe1246a8337ba59d319' | sha256sum -c -
 
 # Security dependency floors, as ordinary module upgrades. A module upstream
 # already requires at or above its floor is left alone: go get with an older
@@ -128,7 +129,9 @@ RUN CPA_E2E_BINARY=/out/cli-proxy-api CPA_E2E_PLUGIN_DIR=/out/plugins \
 FROM runtime-base
 COPY --from=build --chown=10001:10001 --chmod=0555 /out/cli-proxy-api /usr/local/bin/cli-proxy-api
 # Root-owned and read-only: the service user can load the plugin but cannot
-# replace it, and CPA cannot install another one next to it.
+# replace it, and CPA cannot install another one next to it. The directory is
+# created in runtime-base: some BuildKit versions apply --chmod to the parent
+# directories COPY creates, which would leave them without search permission.
 COPY --from=build --chown=0:0 --chmod=0444 /out/plugins/codex-gateway-v1.0.0.so /usr/local/lib/cliproxy/plugins/codex-gateway-v1.0.0.so
 # The entrypoint checks the credential store and writes CPA's configuration.
 COPY --chown=10001:10001 --chmod=0555 deploy/codex-compat/plugin-entrypoint.sh /usr/local/bin/sidecar-entrypoint

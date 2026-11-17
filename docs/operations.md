@@ -259,11 +259,12 @@ commit 正是锁定的 commit，并校验残余补丁和模型目录的 SHA-256�
 本次升级只退役上游已删除的 `gpt-5.5`，不新增公开模型；一次性目录迁移、价格合并和兼容回滚见
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
-当前固定的 v8.0.69 没有删除任何模型，也没有新增数据库迁移；新增的模型在审核定价前不公开。
+当前固定的 v8.0.76 与 v8.0.69 一样没有删除任何模型，CPA 升级本身也不需要数据库迁移；Codex、Claude、
+Antigravity 目录与 v8.0.69 相同，新增的模型在审核定价前不公开。
 既有 v8.0.48 目录迁移仍按原流程保留：价格合并须先移除 `gpt-5.5`，数据库迁移
 `0038_cpa_v8_0_48_model_catalog.sql` 必须在镜像切换前完成。
 Codex refresh 结果不确定时不再重试，需重新授权，详见 [CPA v8 操作流程](cpa-v8-cutover.md)。
-本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.69-validation.md)。
+本地验证及后续 CI、真实账号验收范围见 [本次验证记录](cpa-v8.0.76-validation.md)。
 2026-10-12 安全更新使用 Go 1.26.9 构建，并将 CPA 的 `golang.org/x/net`
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。
 2026-11-07 安全更新将 CPA 与 mihomo 的 `golang.org/x/net` 升级到 `v0.62.0`（`CVE-2026-78661`），
