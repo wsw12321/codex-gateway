@@ -89,46 +89,107 @@ async function main() {
       bindUI(); initializeDateFilters(); renderState(value); setConnection("已连接", "ok");
     }, initialState);
     const guide = page.locator('[data-section="guide"]');
-    const agyGuide = page.locator("#guide-agy");
     await guide.waitFor({state: "visible"});
+    // The initial OS tab follows the browser platform.
+    const detected = await page.evaluate(() => detectGuideOS(navigator));
+    assert.equal(await page.locator(`#guide-os-${detected}`).getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#guide-tab-codex").getAttribute("aria-selected"), "true");
     assert.equal(await page.locator("#guide-base-url").textContent(), origin);
     assert.equal(await page.locator("#guide-codex-install-code").textContent(), "npm install -g @openai/codex");
+    assert.equal(await page.locator("#guide-codex-desktop-install-windows-code").textContent(), "winget install --id 9PLM9XGG6VKS -s msstore");
+    assert.equal(await page.locator("#guide-claude-install-windows-code").textContent(), "curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd");
+    assert.equal(await page.locator("#guide-claude-install-unix-code").textContent(), "curl -fsSL https://claude.ai/install.sh | bash");
     assert.equal(await page.locator("#guide-agy-install-windows-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd && install.cmd && del install.cmd");
     assert.equal(await page.locator("#guide-agy-install-unix-code").textContent(), "curl -fsSL https://antigravity.google/cli/install.sh | bash");
     assert.equal(await page.locator("#guide-codex-start-code").textContent(), "codex");
+    assert.equal(await page.locator("#guide-claude-start-code").textContent(), "claude");
     assert.equal(await page.locator("#guide-agy-start-code").textContent(), "agy --model gemini-3.8-flash-high");
-    for (const client of ["codex", "agy"]) {
+    for (const client of ["codex", "agy", "claude"]) {
       const command = await page.locator(`#guide-${client}-configure-code`).textContent();
       await verifyLauncher(command, client, origin);
     }
     const guideText = await guide.textContent();
-    for (const text of ["公共准备", "Codex CLI", "agy CLI", "Win+R", "cmd", "Node.js LTS", "CODEX_HOME", "0600", "CPA 原生模型 ID", "重新打开终端", "辅助标题请求也需使用已授权模型"]) {
+    for (const text of ["公共准备", "Codex CLI", "Codex 桌面端", "Codex IDE 扩展", "Claude Code", "CC Switch", "Claude Code IDE 扩展", "agy CLI",
+      "Win+R", "cmd", "Node.js LTS", "CODEX_HOME", "0600", "CPA 原生模型 ID", "重新打开终端", "辅助标题请求也需使用已授权模型",
+      "Windows 已验证", "farion1231/cc-switch", "claudeCode.disableLoginPrompt"]) {
       assert.ok(guideText.includes(text), `guide missing ${text}`);
     }
-    for (const model of ["gemini-3.8-flash-high"]) {
-      assert.ok(guideText.includes(model));
-    }
+    assert.equal(await guide.locator('a[href="https://ccswitch.io"]').count(), 1);
     assert.equal(await guide.locator('a[download]').count(), 0);
     assert.ok(!guideText.includes("本机 AGY"));
     assert.ok(!guideText.includes("configure-codex.bat"));
+
+    const cards = {codex: ["#guide-codex", "#guide-codex-desktop", "#guide-codex-ide"], claude: ["#guide-claude", "#guide-claude-desktop", "#guide-claude-ide"], agy: ["#guide-agy"]};
+    const osCode = {
+      codex: {windows: ["#guide-codex-desktop-install-windows-code"], unix: []},
+      claude: {windows: ["#guide-claude-install-windows-code"], unix: ["#guide-claude-install-unix-code"]},
+      agy: {windows: ["#guide-agy-install-windows-code"], unix: ["#guide-agy-install-unix-code"]},
+    };
     await page.evaluate(() => { window.guideCopied = ""; navigator.clipboard.writeText = async (value) => { window.guideCopied = value; }; });
-    for (const button of await guide.locator("[data-copy-target]").all()) {
-      const target = await button.getAttribute("data-copy-target");
-      await button.click();
-      assert.equal(await page.evaluate(() => window.guideCopied), await page.locator(`#${target}`).textContent());
+    for (const provider of Object.keys(cards)) {
+      await page.locator(`#guide-tab-${provider}`).click();
+      for (const platform of ["windows", "macos", "linux"]) {
+        await page.locator(`#guide-os-${platform}`).click();
+        assert.equal(await page.locator(`#guide-os-${platform}`).getAttribute("aria-selected"), "true");
+        for (const [other, ids] of Object.entries(cards)) {
+          for (const id of ids) assert.equal(await page.locator(id).isVisible(), other === provider, `${id} on ${provider}/${platform}`);
+        }
+        const windows = platform === "windows";
+        for (const id of osCode[provider].windows) assert.equal(await page.locator(id).isVisible(), windows, `${id} on ${platform}`);
+        for (const id of osCode[provider].unix) assert.equal(await page.locator(id).isVisible(), !windows, `${id} on ${platform}`);
+        for (const button of await guide.locator("[data-copy-target]:visible").all()) {
+          const target = await button.getAttribute("data-copy-target");
+          await button.click();
+          assert.equal(await page.evaluate(() => window.guideCopied), await page.locator(`#${target}`).textContent());
+        }
+      }
     }
+    // Keyboard navigation follows the WAI-ARIA tabs pattern with automatic activation.
+    await page.locator("#guide-tab-codex").click();
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await page.evaluate(() => [guideProvider, document.activeElement.id].join()), "claude,guide-tab-claude");
+    await page.keyboard.press("End");
+    assert.equal(await page.evaluate(() => [guideProvider, document.activeElement.id].join()), "agy,guide-tab-agy");
+    await page.keyboard.press("ArrowRight");
+    assert.equal(await page.evaluate(() => guideProvider), "codex");
+    await page.locator("#guide-os-linux").click();
+    await page.keyboard.press("Home");
+    assert.equal(await page.evaluate(() => [guideOS, document.activeElement.id].join()), "windows,guide-os-windows");
+    // A state refresh keeps the user's choice.
+    await page.locator("#guide-tab-claude").click();
+    await page.locator("#guide-os-macos").click();
+    await page.evaluate((value) => renderState(value), initialState);
+    assert.equal(await page.locator("#guide-tab-claude").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#guide-os-macos").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#guide-claude-install-unix-code").isVisible(), true);
     assert.deepEqual(await page.evaluate(() => [localStorage.length, sessionStorage.length]), [0, 0]);
+
     // Let the copy button's transient feedback settle before documenting the UI.
+    await page.evaluate(() => document.activeElement?.blur());
     await page.waitForTimeout(1600);
     fs.mkdirSync(screenshots, {recursive: true});
     // Capture the guide panel without sticky navigation overlapping a tall crop.
-    const screenshotStyle = ".app > aside, .skip-link { visibility: hidden !important; }";
+    const screenshotStyle = ".app > aside, .workspace-header, .skip-link { visibility: hidden !important; }";
+    const select = async (provider, platform) => {
+      await page.locator(`#guide-tab-${provider}`).click();
+      await page.locator(`#guide-os-${platform}`).click();
+      await page.evaluate(() => document.activeElement?.blur());
+    };
+    await select("codex", "windows");
     await guide.screenshot({path: path.join(screenshots, "usage-guide-desktop.png"), style: screenshotStyle});
-    await agyGuide.screenshot({path: path.join(screenshots, "agy-guide-desktop.png"), style: screenshotStyle});
+    await select("claude", "linux");
+    await guide.screenshot({path: path.join(screenshots, "claude-guide-desktop.png"), style: screenshotStyle});
+    await select("agy", "windows");
+    await page.locator("#guide-agy").screenshot({path: path.join(screenshots, "agy-guide-desktop.png"), style: screenshotStyle});
     await page.setViewportSize({width: 390, height: 844});
-    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile guide must not overflow horizontally");
+    for (const provider of Object.keys(cards)) {
+      await select(provider, "windows");
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile ${provider} guide must not overflow horizontally`);
+    }
+    await select("codex", "windows");
     await guide.screenshot({path: path.join(screenshots, "usage-guide-mobile.png"), style: screenshotStyle});
-    await agyGuide.screenshot({path: path.join(screenshots, "agy-guide-mobile.png"), style: screenshotStyle});
+    await select("agy", "linux");
+    await page.locator("#guide-agy").screenshot({path: path.join(screenshots, "agy-guide-mobile.png"), style: screenshotStyle});
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({browser: await browser.version(), errors, desktop: "1440x1080", mobile: "390x844", screenshots}));
   } finally {

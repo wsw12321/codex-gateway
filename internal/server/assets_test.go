@@ -123,6 +123,18 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 		`id="guide-agy-configure-code"`, `id="guide-agy-start-code"`,
 		`id="guide-claude"`, `id="guide-claude-configure-code"`, `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
 		`npm install -g @openai/codex`, `gemini-3.8-flash-high`, `Gateway 不再改写旧模型别名`, `Win+R`, `cmd`,
+		// Provider and OS tabs.
+		`aria-label="当前 Gateway 地址"`, `role="tablist" aria-labelledby="guide-provider-label"`, `role="tablist" aria-labelledby="guide-os-label"`,
+		`id="guide-tab-codex"`, `id="guide-tab-claude"`, `id="guide-tab-agy"`,
+		`id="guide-os-windows"`, `id="guide-os-macos"`, `id="guide-os-linux"`,
+		`id="guide-panel-codex"`, `id="guide-panel-claude"`, `id="guide-panel-agy"`, `id="guide-help"`,
+		// Desktop and IDE clients.
+		`id="guide-codex-desktop"`, `id="guide-codex-ide"`, `id="guide-claude-desktop"`, `id="guide-claude-ide"`,
+		`id="guide-codex-desktop-install-windows-code"`, `winget install --id 9PLM9XGG6VKS -s msstore`, `Windows 已验证`,
+		`id="guide-claude-install-windows-code"`, `id="guide-claude-install-unix-code"`, `id="guide-claude-start-code"`,
+		`https://claude.ai/install.cmd`, `https://claude.ai/install.sh`,
+		`href="https://ccswitch.io"`, `farion1231/cc-switch`, `claudeCode.disableLoginPrompt`, `anthropic.claude-code`,
+		`data-guide-os="windows"`, `data-guide-os="macos linux"`,
 	} {
 		if !strings.Contains(html, required) {
 			t.Fatalf("client guide HTML is missing %s", required)
@@ -131,6 +143,7 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 	for _, required := range []string{
 		`guide: "使用指导"`, `function renderGuide()`, `location.origin`,
 		`/setup/configure-client.cjs`, `all("[data-copy-target]")`,
+		`function detectGuideOS(`, `function showGuideProvider(`, `function showGuideOS(`, `function moveGuideTab(`,
 	} {
 		if !strings.Contains(javascript, required) {
 			t.Fatalf("client guide JavaScript is missing %s", required)
@@ -139,9 +152,49 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 	for _, forbidden := range []string{
 		`guide-windows-download`, `/setup/configure-codex.`, `本机 AGY`,
 		`CODEX_GATEWAY_API_KEY`, `CODEX_GATEWAY_PROJECT`,
+		// The owner chose not to document Antigravity desktop or IDE setup.
+		`guide-agy-desktop`, `guide-agy-ide`,
 	} {
 		if strings.Contains(html, forbidden) || strings.Contains(javascript, forbidden) {
 			t.Fatalf("client guide still contains obsolete configuration %s", forbidden)
+		}
+	}
+}
+
+func TestGuideTabsAndCopyTargetsAreConsistent(t *testing.T) {
+	t.Parallel()
+	html := string(indexHTML)
+	start := strings.Index(html, `data-section="guide"`)
+	end := strings.Index(html[start:], "</section>")
+	if start < 0 || end < 0 {
+		t.Fatal("guide section not found")
+	}
+	guide := html[start : start+end]
+	for _, match := range regexp.MustCompile(`data-copy-target="([^"]+)"`).FindAllStringSubmatch(guide, -1) {
+		if !strings.Contains(guide, `id="`+match[1]+`"`) {
+			t.Fatalf("guide copy button targets missing element %q", match[1])
+		}
+	}
+	for _, match := range regexp.MustCompile(`data-guide-os="([^"]+)"`).FindAllStringSubmatch(guide, -1) {
+		for _, name := range strings.Fields(match[1]) {
+			if name != "windows" && name != "macos" && name != "linux" {
+				t.Fatalf("guide OS block names unknown platform %q", name)
+			}
+		}
+	}
+	for _, provider := range []string{"codex", "claude", "agy"} {
+		for _, required := range []string{
+			`aria-controls="guide-panel-` + provider + `"`, `data-guide-provider-tab="` + provider + `"`,
+			`aria-labelledby="guide-tab-` + provider + `" data-guide-provider-panel="` + provider + `"`,
+		} {
+			if strings.Count(guide, required) != 1 {
+				t.Fatalf("guide provider %s must have exactly one %s", provider, required)
+			}
+		}
+	}
+	for _, platform := range []string{"windows", "macos", "linux"} {
+		if strings.Count(guide, `data-guide-os-tab="`+platform+`"`) != 1 {
+			t.Fatalf("guide must have exactly one %s OS tab", platform)
 		}
 	}
 }

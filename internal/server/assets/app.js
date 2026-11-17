@@ -2463,7 +2463,64 @@ function clientSetupCommand(client) {
   return `node -e "${script}"`;
 }
 
+const guideProviders = ["codex", "claude", "agy"];
+const guideOSes = ["windows", "macos", "linux"];
+
+// Choose the initial OS tab from the browser. Match "windows"/"win32"/"win64"
+// rather than "win", which would also match "Darwin".
+function detectGuideOS(nav = typeof navigator === "undefined" ? undefined : navigator) {
+  const value = [nav?.userAgentData?.platform, nav?.platform, nav?.userAgent].filter((item) => typeof item === "string").join(" ");
+  if (/windows|win32|win64/i.test(value)) return "windows";
+  if (/mac|iphone|ipad/i.test(value)) return "macos";
+  if (/linux|x11|cros/i.test(value)) return "linux";
+  return "windows";
+}
+
+// The selection lives in memory only; a state refresh re-applies it.
+let guideProvider = "codex";
+let guideOS = detectGuideOS();
+
+function selectGuideTab(tabs, key, value) {
+  for (const tab of tabs) {
+    const selected = tab.dataset[key] === value;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", selected ? "true" : "false");
+    tab.tabIndex = selected ? 0 : -1;
+  }
+}
+
+function showGuideProvider(name) {
+  if (!guideProviders.includes(name)) return;
+  guideProvider = name;
+  selectGuideTab(all("[data-guide-provider-tab]"), "guideProviderTab", name);
+  all("[data-guide-provider-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.guideProviderPanel !== name));
+}
+
+function showGuideOS(name) {
+  if (!guideOSes.includes(name)) return;
+  guideOS = name;
+  selectGuideTab(all("[data-guide-os-tab]"), "guideOsTab", name);
+  all("[data-guide-os]").forEach((block) => block.classList.toggle("hidden", !block.dataset.guideOs.split(" ").includes(name)));
+}
+
+function moveGuideTab(event, selector, key, select) {
+  const tabs = all(selector);
+  const index = tabs.indexOf(event.currentTarget);
+  if (index < 0) return;
+  let next;
+  if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+  else if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = tabs.length - 1;
+  else return;
+  event.preventDefault();
+  select(tabs[next].dataset[key]);
+  tabs[next].focus();
+}
+
 function renderGuide() {
+  showGuideProvider(guideProvider);
+  showGuideOS(guideOS);
   byId("guide-base-url").textContent = location.origin;
   byId("guide-codex-configure-code").textContent = clientSetupCommand("codex");
   byId("guide-agy-configure-code").textContent = clientSetupCommand("agy");
@@ -11169,6 +11226,15 @@ function bindUI() {
       event.preventDefault();
       showUsageTab(target === byId("global-tab") ? "global" : "personal");
       target.focus();
+    });
+  }
+  for (const [selector, key, select] of [
+    ["[data-guide-provider-tab]", "guideProviderTab", showGuideProvider],
+    ["[data-guide-os-tab]", "guideOsTab", showGuideOS],
+  ]) {
+    all(selector).forEach((tab) => {
+      tab.addEventListener("click", () => select(tab.dataset[key]));
+      tab.addEventListener("keydown", (event) => moveGuideTab(event, selector, key, select));
     });
   }
   all("[data-usage-tab]").forEach((button) => button.addEventListener("click", () => {

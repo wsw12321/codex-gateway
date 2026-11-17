@@ -75,10 +75,12 @@ async function main() {
     await page.evaluate(() => {document.activeElement?.blur(); window.scrollTo(0, 0);});
     await page.screenshot({path: path.join(screenshots, 'anthropic-accounts-mobile.png'), fullPage: true});
     await page.evaluate(() => {stopUpstreamConcurrency(); location.hash = '#guide';});
+    await page.locator('#guide-tab-claude').click();
     await page.locator('#guide-claude').waitFor({state: 'visible'});
+    await page.evaluate(() => document.activeElement?.blur());
     assert.match(await page.locator('#guide-claude-configure-code').textContent(), /claude/);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
-    await page.screenshot({path: path.join(screenshots, 'claude-guide-mobile.png'), fullPage: true});
+    await page.locator('[data-section="guide"]').screenshot({path: path.join(screenshots, 'claude-guide-mobile.png'), style: '.app > aside, .workspace-header, .skip-link { visibility: hidden !important; }'});
     assert.deepEqual(errors, []);
     console.log('Claude account controls, quota snapshots, guide and responsive screenshots passed');
   } finally {await browser.close();}

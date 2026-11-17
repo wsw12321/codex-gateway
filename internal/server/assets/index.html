@@ -296,7 +296,7 @@
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
-              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">开始使用 Codex CLI、agy CLI 或 Claude Code</h2><p>先完成公共准备，再按所选客户端的安装、配置、启动步骤操作。复制的配置命令已使用当前站点地址。</p></div>
+              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">接入 Codex、Claude 与 Antigravity 客户端</h2><p>先完成公共准备，再选择模型供应商和操作系统，按 CLI、桌面端或 IDE 扩展的步骤操作。复制的配置命令已使用当前站点地址。</p></div>
               <div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button></div>
             </div>
 
@@ -318,90 +318,232 @@
               </div>
             </article>
 
-            <article id="guide-codex" class="guide-client panel" aria-labelledby="guide-codex-title">
-              <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">OPENAI</p><h3 id="guide-codex-title">Codex CLI</h3></div><a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
-                <ol class="guide-steps guide-client-steps">
-                  <li>
-                    <h4>1. 安装 Codex CLI</h4>
-                    <p>在 Windows CMD 或 macOS / Linux 终端运行：</p>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>安装命令 · 全平台</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-install-code">复制安装命令</button></div>
-                      <pre><code id="guide-codex-install-code">npm install -g @openai/codex</code></pre>
-                    </div>
-                    <p>安装后运行 <code>codex --version</code> 确认命令可用。</p>
-                  </li>
-                  <li>
-                    <h4>2. 保存 Gateway 地址和 API Key</h4>
-                    <p>复制并执行下面的一整行命令，按提示输入 Key。配置器会更新用户级 <code>config.toml</code>，选择内置 <code>openai</code> provider，并通过 Codex 登录保存凭据。</p>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-configure-code">复制配置命令</button></div>
-                      <pre><code id="guide-codex-configure-code">正在生成…</code></pre>
-                    </div>
-                    <p class="guide-note">默认配置目录为 <code>~/.codex</code>；已设置 <code>CODEX_HOME</code> 时使用该目录。网关地址自动加上 <code>/v1</code>，其他设置保留。凭据持久保存，下一次打开终端无需重新输入。<a href="https://developers.openai.com/codex/auth/" target="_blank" rel="noopener noreferrer">了解 Codex 认证</a>。</p>
-                  </li>
-                  <li>
-                    <h4>3. 重新打开终端，启动验证</h4>
-                    <p>关闭当前终端并重新打开，再运行以下命令，发送“请回复 OK”。成功后可在“使用统计”查看请求。</p>
-                    <div class="code-card compact-code">
-                      <div class="code-toolbar"><span>启动 Codex</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-start-code">复制启动命令</button></div>
-                      <pre><code id="guide-codex-start-code">codex</code></pre>
-                    </div>
-                  </li>
-                </ol>
+            <div class="guide-switcher panel">
+              <div class="guide-switcher-group">
+                <span id="guide-provider-label" class="guide-switcher-label">模型供应商</span>
+                <div class="tabs guide-provider-tabs" role="tablist" aria-labelledby="guide-provider-label">
+                  <button id="guide-tab-codex" type="button" role="tab" aria-selected="true" aria-controls="guide-panel-codex" class="active" data-guide-provider-tab="codex">OpenAI Codex</button>
+                  <button id="guide-tab-claude" type="button" role="tab" aria-selected="false" aria-controls="guide-panel-claude" tabindex="-1" data-guide-provider-tab="claude">Claude</button>
+                  <button id="guide-tab-agy" type="button" role="tab" aria-selected="false" aria-controls="guide-panel-agy" tabindex="-1" data-guide-provider-tab="agy">Google Antigravity</button>
+                </div>
               </div>
-            </article>
-
-            <article id="guide-claude" class="guide-client panel" aria-labelledby="guide-claude-title">
-              <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">CLAUDE</p><h3 id="guide-claude-title">Claude Code</h3></div><a href="https://code.claude.com/docs/en/setup" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
-                <ol class="guide-steps guide-client-steps">
-                  <li><h4>1. 安装 Claude Code</h4><p>按官方说明安装，运行 <code>claude --version</code> 确认客户端可用。管理员需先配置 Claude 账号、模型价格与权限。</p></li>
-                  <li><h4>2. 保存 Gateway 地址、Key 和模型</h4><p>执行下面的一整行命令，在终端输入 Gateway Key，再从中转站模型目录选择精确模型 ID。Key 不会出现在命令历史中。</p>
-                    <div class="code-card"><div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-configure-code">复制配置命令</button></div><pre><code id="guide-claude-configure-code">正在生成…</code></pre></div>
-                    <p class="guide-note">配置器备份并原子合并用户级 <code>~/.claude/settings.json</code>，保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p></li>
-                  <li><h4>3. 启动验证</h4><p>退出已有 Claude Code 会话，重新运行 <code>claude</code> 并发送“请回复 OK”。在“使用统计”查看请求及缓存账单。更换模型时从中转站目录选择已授权的精确 ID。</p></li>
-                </ol>
+              <div class="guide-switcher-group">
+                <span id="guide-os-label" class="guide-switcher-label">操作系统</span>
+                <div class="guide-os-tabs" role="tablist" aria-labelledby="guide-os-label">
+                  <button id="guide-os-windows" type="button" role="tab" aria-selected="true" aria-controls="guide-panels" class="active" data-guide-os-tab="windows">Windows</button>
+                  <button id="guide-os-macos" type="button" role="tab" aria-selected="false" aria-controls="guide-panels" tabindex="-1" data-guide-os-tab="macos">macOS</button>
+                  <button id="guide-os-linux" type="button" role="tab" aria-selected="false" aria-controls="guide-panels" tabindex="-1" data-guide-os-tab="linux">Linux</button>
+                </div>
               </div>
-            </article>
+            </div>
 
-            <article id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
+            <div id="guide-panels" class="guide-panels">
+              <div id="guide-panel-codex" class="guide-panel" role="tabpanel" aria-labelledby="guide-tab-codex" data-guide-provider-panel="codex">
+                <article id="guide-codex" class="guide-client panel" aria-labelledby="guide-codex-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">CLI</p><h3 id="guide-codex-title">Codex CLI</h3></div><a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>1. 安装 Codex CLI</h4>
+                        <p data-guide-os="windows">按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车，在 CMD 中运行：</p>
+                        <p class="hidden" data-guide-os="macos linux">打开终端运行：</p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>安装命令 · npm</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-install-code">复制安装命令</button></div>
+                          <pre><code id="guide-codex-install-code">npm install -g @openai/codex</code></pre>
+                        </div>
+                        <p>安装后运行 <code>codex --version</code> 确认命令可用。</p>
+                      </li>
+                      <li>
+                        <h4>2. 保存 Gateway 地址和 API Key</h4>
+                        <p>复制并执行下面的一整行命令，按提示输入 Key。配置器会更新用户级 <code>config.toml</code>，选择内置 <code>openai</code> provider，并通过 Codex 登录保存凭据。</p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-configure-code">复制配置命令</button></div>
+                          <pre><code id="guide-codex-configure-code">正在生成…</code></pre>
+                        </div>
+                        <p class="guide-note" data-guide-os="windows">默认配置目录为 <code>%USERPROFILE%\.codex</code>；已设置 <code>CODEX_HOME</code> 时使用该目录。网关地址自动加上 <code>/v1</code>，其他设置保留。凭据持久保存，下一次打开终端无需重新输入。<a href="https://developers.openai.com/codex/auth/" target="_blank" rel="noopener noreferrer">了解 Codex 认证</a>。</p>
+                        <p class="guide-note hidden" data-guide-os="macos linux">默认配置目录为 <code>~/.codex</code>；已设置 <code>CODEX_HOME</code> 时使用该目录。网关地址自动加上 <code>/v1</code>，其他设置保留。凭据持久保存，下一次打开终端无需重新输入。<a href="https://developers.openai.com/codex/auth/" target="_blank" rel="noopener noreferrer">了解 Codex 认证</a>。</p>
+                      </li>
+                      <li>
+                        <h4>3. 重新打开终端，启动验证</h4>
+                        <p>关闭当前终端并重新打开，再运行以下命令，发送“请回复 OK”。成功后可在“使用统计”查看请求。</p>
+                        <div class="code-card compact-code">
+                          <div class="code-toolbar"><span>启动 Codex</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-start-code">复制启动命令</button></div>
+                          <pre><code id="guide-codex-start-code">codex</code></pre>
+                        </div>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+
+                <article id="guide-codex-desktop" class="guide-client panel" aria-labelledby="guide-codex-desktop-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title">
+                      <div><p class="eyebrow">DESKTOP</p><h3 id="guide-codex-desktop-title">Codex 桌面端</h3></div>
+                      <span class="status-badge" data-status="active" data-guide-os="windows">Windows 已验证</span>
+                      <span class="status-badge hidden" data-status="unknown" data-guide-os="macos linux">与 Windows 共用配置方式</span>
+                    </div>
+                    <p>Codex 桌面端与 Codex CLI 共用同一个用户配置目录。先用上方 Codex CLI 的配置命令保存 Gateway 地址和 Key，桌面端重启后即读取相同配置。</p>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>1. 安装 Codex 桌面端</h4>
+                        <div data-guide-os="windows">
+                          <p>从 Microsoft Store 安装，或在 CMD 中运行：</p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>Windows CMD · winget</span><button type="button" class="secondary copy-button" data-copy-target="guide-codex-desktop-install-windows-code">复制安装命令</button></div>
+                            <pre><code id="guide-codex-desktop-install-windows-code">winget install --id 9PLM9XGG6VKS -s msstore</code></pre>
+                          </div>
+                          <p><a href="https://developers.openai.com/codex/windows/windows-app" target="_blank" rel="noopener noreferrer">Windows 桌面端官方说明 ↗</a></p>
+                        </div>
+                        <p class="hidden" data-guide-os="macos">从 <a href="https://developers.openai.com/codex/app" target="_blank" rel="noopener noreferrer">Codex 桌面端官方页面 ↗</a> 下载 macOS 版本并拖入“应用程序”。</p>
+                        <p class="hidden" data-guide-os="linux">Linux 桌面端目前为预览版，官方提供 Ubuntu / Debian（<code>.deb</code>）、Fedora（<code>.rpm</code>）和 Arch 安装方式。按 <a href="https://developers.openai.com/codex/linux/linux-app" target="_blank" rel="noopener noreferrer">Linux 桌面端官方说明 ↗</a> 选择与系统和架构对应的安装包。</p>
+                      </li>
+                      <li>
+                        <h4>2. 写入 Gateway 配置</h4>
+                        <p>按上方 Codex CLI 第 1、2 步安装 CLI 并执行配置命令。配置器需要调用 Codex CLI 校验配置并保存凭据，因此只使用桌面端时也需先安装 CLI。</p>
+                        <p class="guide-note" data-guide-os="windows">桌面端读取 <code>%USERPROFILE%\.codex\config.toml</code>。若在桌面端设置中把 agent 切换为 WSL，它会改用 WSL 内的 Linux 用户目录，此时需在 WSL 终端中安装 Codex CLI 并执行同一条配置命令。</p>
+                        <p class="guide-note hidden" data-guide-os="macos linux">桌面端读取 <code>~/.codex/config.toml</code>，与 CLI 相同。本站已在 Windows 桌面端验证该接入方式；macOS / Linux 遇到问题请联系管理员。</p>
+                      </li>
+                      <li>
+                        <h4>3. 重启桌面端并验证</h4>
+                        <p>完全退出 Codex 桌面端（包括后台或托盘中的进程）后重新打开，新建任务并发送“请回复 OK”，再到“使用统计”确认请求。</p>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+
+                <article id="guide-codex-ide" class="guide-client panel" aria-labelledby="guide-codex-ide-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">IDE</p><h3 id="guide-codex-ide-title">Codex IDE 扩展</h3></div><a href="https://developers.openai.com/codex/ide" target="_blank" rel="noopener noreferrer">官方 IDE 说明 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li><h4>1. 安装扩展</h4><p>在 VS Code 中按 <kbd data-guide-os="windows linux">Ctrl+Shift+X</kbd><kbd class="hidden" data-guide-os="macos">Cmd+Shift+X</kbd> 打开扩展视图，搜索 OpenAI 发布的 “Codex” 扩展并安装。</p></li>
+                      <li><h4>2. 共用 CLI 配置</h4><p>扩展与 Codex CLI 共用同一个用户配置目录。按上方 Codex CLI 第 1、2 步完成配置后，在命令面板运行 <code>Developer: Reload Window</code> 重新加载窗口。</p>
+                        <p class="guide-note" data-guide-os="windows">若 VS Code 通过 WSL 远程连接打开项目，扩展读取 WSL 内的配置目录，请在 WSL 终端中安装 Codex CLI 并执行配置命令。</p></li>
+                      <li><h4>3. 验证</h4><p>打开 Codex 侧边栏，发送“请回复 OK”，再到“使用统计”确认请求。</p></li>
+                    </ol>
+                  </div>
+                </article>
+              </div>
+
+              <div id="guide-panel-claude" class="guide-panel hidden" role="tabpanel" aria-labelledby="guide-tab-claude" data-guide-provider-panel="claude">
+                <article id="guide-claude" class="guide-client panel" aria-labelledby="guide-claude-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">CLI</p><h3 id="guide-claude-title">Claude Code</h3></div><a href="https://code.claude.com/docs/en/setup" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>1. 安装 Claude Code</h4>
+                        <div data-guide-os="windows">
+                          <p>按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车，在 CMD 中运行官方安装命令：</p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>Windows CMD</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-install-windows-code">复制安装命令</button></div>
+                            <pre><code id="guide-claude-install-windows-code">curl -fsSL https://claude.ai/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</code></pre>
+                          </div>
+                          <p class="guide-note">安装 <a href="https://git-scm.com/downloads/win" target="_blank" rel="noopener noreferrer">Git for Windows</a> 可选；安装后 Claude Code 可使用 Bash 工具，否则使用 PowerShell 执行命令。</p>
+                        </div>
+                        <div class="hidden" data-guide-os="macos linux">
+                          <p>打开终端运行官方安装命令：</p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-install-unix-code">复制安装命令</button></div>
+                            <pre><code id="guide-claude-install-unix-code">curl -fsSL https://claude.ai/install.sh | bash</code></pre>
+                          </div>
+                        </div>
+                        <p>重新打开终端，运行 <code>claude --version</code> 确认客户端可用。管理员需先配置 Claude 账号、模型价格与权限。</p>
+                      </li>
+                      <li><h4>2. 保存 Gateway 地址、Key 和模型</h4><p>执行下面的一整行命令，在终端输入 Gateway Key，再从中转站模型目录选择精确模型 ID。Key 不会出现在命令历史中。</p>
+                        <div class="code-card"><div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-configure-code">复制配置命令</button></div><pre><code id="guide-claude-configure-code">正在生成…</code></pre></div>
+                        <p class="guide-note" data-guide-os="windows">配置器备份并原子合并用户级 <code>%USERPROFILE%\.claude\settings.json</code>（已设置 <code>CLAUDE_CONFIG_DIR</code> 时使用该目录），保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p>
+                        <p class="guide-note hidden" data-guide-os="macos linux">配置器备份并原子合并用户级 <code>~/.claude/settings.json</code>（已设置 <code>CLAUDE_CONFIG_DIR</code> 时使用该目录），保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p></li>
+                      <li><h4>3. 启动验证</h4><p>退出已有 Claude Code 会话，重新运行以下命令并发送“请回复 OK”。在“使用统计”查看请求及缓存账单。更换模型时从中转站目录选择已授权的精确 ID。</p>
+                        <div class="code-card compact-code">
+                          <div class="code-toolbar"><span>启动 Claude Code</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-start-code">复制启动命令</button></div>
+                          <pre><code id="guide-claude-start-code">claude</code></pre>
+                        </div></li>
+                    </ol>
+                  </div>
+                </article>
+
+                <article id="guide-claude-desktop" class="guide-client panel" aria-labelledby="guide-claude-desktop-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">DESKTOP</p><h3 id="guide-claude-desktop-title">Claude 桌面端 · CC Switch</h3></div><span class="status-badge" data-status="unknown">第三方工具</span></div>
+                    <p>推荐使用开源桌面工具 CC Switch 管理 Claude 的接入配置。请前往 <a href="https://ccswitch.io" target="_blank" rel="noopener noreferrer">CC Switch 官网 ↗</a> 下载与当前系统对应的版本，并按官网说明自行完成配置。官方渠道仅为 <code>ccswitch.io</code> 和 GitHub 仓库 <code>farion1231/cc-switch</code>，请勿使用来源不明的同名安装包。</p>
+                    <ol class="guide-steps guide-client-steps">
+                      <li><h4>1. 安装 CC Switch</h4><p>从官网下载并安装，打开后新增一个 Claude 供应商配置。</p></li>
+                      <li><h4>2. 填写本站信息</h4>
+                        <dl class="guide-fields">
+                          <div><dt>请求地址</dt><dd>当前 Gateway 站点（不加 <code>/v1</code>）<button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button></dd></div>
+                          <div><dt>API Key</dt><dd>本站签发的 Gateway Key，可在 <a href="#keys">API Keys</a> 中创建或查看。</dd></div>
+                          <div><dt>模型</dt><dd>中转站模型目录中已授权的 <code>claude-*</code> 精确模型 ID。</dd></div>
+                        </dl></li>
+                      <li><h4>3. 启用并验证</h4><p>在 CC Switch 中启用该配置，重新打开 Claude 客户端并发送“请回复 OK”，再到“使用统计”确认请求。</p></li>
+                    </ol>
+                    <p class="guide-note">CC Switch 不由本站或 Anthropic 提供，API Key 由它保存在本机。CC Switch 与上方 Claude Code 配置命令都会修改 Claude 用户配置，请选择其中一种方式管理，避免互相覆盖。</p>
+                  </div>
+                </article>
+
+                <article id="guide-claude-ide" class="guide-client panel" aria-labelledby="guide-claude-ide-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">IDE</p><h3 id="guide-claude-ide-title">Claude Code IDE 扩展</h3></div><a href="https://code.claude.com/docs/en/vs-code" target="_blank" rel="noopener noreferrer">官方 VS Code 说明 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li><h4>1. 安装扩展</h4><p>在 VS Code 中按 <kbd data-guide-os="windows linux">Ctrl+Shift+X</kbd><kbd class="hidden" data-guide-os="macos">Cmd+Shift+X</kbd> 打开扩展视图，搜索 Anthropic 发布的 “Claude Code” 扩展（<code>anthropic.claude-code</code>）并安装。</p></li>
+                      <li><h4>2. 写入共用配置</h4><p>执行上方 Claude Code 第 2 步的配置命令。扩展与 CLI 共用用户级 <code>settings.json</code>，只使用扩展时无需另装 CLI，但仍需 Node.js 运行配置命令。</p></li>
+                      <li><h4>3. 跳过 Claude 账号登录</h4><p>打开 VS Code 设置，搜索并勾选 “Claude Code: Disable Login Prompt”（<code>claudeCode.disableLoginPrompt</code>），使扩展直接使用上述配置。不要把 Gateway Key 写入 VS Code 设置。</p></li>
+                      <li><h4>4. 验证</h4><p>在命令面板运行 <code>Developer: Reload Window</code>，打开 Claude Code 面板发送“请回复 OK”，再到“使用统计”确认请求。</p></li>
+                    </ol>
+                  </div>
+                </article>
+              </div>
+
+              <div id="guide-panel-agy" class="guide-panel hidden" role="tabpanel" aria-labelledby="guide-tab-agy" data-guide-provider-panel="agy">
+                <article id="guide-agy" class="guide-client panel" aria-labelledby="guide-agy-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><div><p class="eyebrow">CLI</p><h3 id="guide-agy-title">agy CLI</h3></div><a href="https://antigravity.google/docs/cli/install/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
+                    <p>通过 Gateway 使用服务器的 Antigravity 订阅账号。管理员需先启用可用账号，并授予用户和 API Key <code>gemini-3.8-flash-high</code> 或其他当前目录中的精确模型权限。客户端必须原样发送 CPA 原生模型 ID；请先确认当前 agy 版本支持所选模型。</p>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>1. 安装 agy CLI</h4>
+                        <div data-guide-os="windows">
+                          <p>按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车，运行官方安装命令：</p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>Windows CMD</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-windows-code">复制安装命令</button></div>
+                            <pre><code id="guide-agy-install-windows-code">curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</code></pre>
+                          </div>
+                        </div>
+                        <div class="hidden" data-guide-os="macos linux">
+                          <p>打开终端运行官方安装命令：</p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-unix-code">复制安装命令</button></div>
+                            <pre><code id="guide-agy-install-unix-code">curl -fsSL https://antigravity.google/cli/install.sh | bash</code></pre>
+                          </div>
+                        </div>
+                        <p>重新打开终端，运行 <code>agy --version</code> 确认安装成功。</p>
+                      </li>
+                      <li>
+                        <h4>2. 保存 Gateway 地址和 API Key</h4>
+                        <p>执行下面的一整行命令，按提示输入本 Gateway 签发的 Key。配置器合并用户级 <code>~/.gemini/antigravity-cli/settings.json</code>，设置 <code>modelProvider: "gemini"</code>，并持久保存 <code>GOOGLE_GEMINI_BASE_URL</code> 和 <code>GEMINI_API_KEY</code>。</p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-configure-code">复制配置命令</button></div>
+                          <pre><code id="guide-agy-configure-code">正在生成…</code></pre>
+                        </div>
+                        <p class="guide-note" data-guide-os="windows">Windows 将地址和 Key 保存为当前用户的环境变量。地址使用当前站点 origin，不加 <code>/v1</code>。已有无关设置会保留，可重复配置。</p>
+                        <p class="guide-note hidden" data-guide-os="macos linux">macOS / Linux 将凭据保存到权限为 <code>0600</code> 的独立文件，并自动配置 Bash / Zsh 加载。地址使用当前站点 origin，不加 <code>/v1</code>。已有无关设置会保留，可重复配置。</p>
+                      </li>
+                      <li>
+                        <h4>3. 重新打开终端，启动验证</h4>
+                        <p>关闭当前终端并重新打开，运行以下命令，发送“请回复 OK”。<span data-guide-os="windows">若使用 Windows Terminal，请退出整个应用后重开，让新终端读取用户环境变量。</span></p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>启动 agy</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-start-code">复制启动命令</button></div>
+                          <pre><code id="guide-agy-start-code">agy --model gemini-3.8-flash-high</code></pre>
+                        </div>
+                        <p class="guide-note">Gateway 不再改写旧模型别名。模型目录仅显示已定价、已授权且有可用账号的原生 ID；推理档位通过请求参数设置。若客户端仍发送旧 preview / pro-high 名称，请更新客户端或配置其模型 ID，辅助标题请求也需使用已授权模型。旧 CLI 会话缺少可续传签名时必须新建会话，不能继续复用历史工具调用。</p>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+              </div>
+            </div>
+
+            <article id="guide-help" class="guide-client panel" aria-labelledby="guide-help-title">
               <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">ANTIGRAVITY</p><h3 id="guide-agy-title">agy CLI</h3></div><a href="https://antigravity.google/docs/cli/install/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
-                <p>通过 Gateway 使用服务器的 Antigravity 订阅账号。管理员需先启用可用账号，并授予用户和 API Key <code>gemini-3.8-flash-high</code> 或其他当前目录中的精确模型权限。客户端必须原样发送 CPA 原生模型 ID；请先确认当前 agy 版本支持所选模型。</p>
-                <ol class="guide-steps guide-client-steps">
-                  <li>
-                    <h4>1. 安装 agy CLI</h4>
-                    <p>根据系统选择官方安装命令。Windows 按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车：</p>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>Windows CMD</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-windows-code">复制安装命令</button></div>
-                      <pre><code id="guide-agy-install-windows-code">curl -fsSL https://antigravity.google/cli/install.cmd -o install.cmd &amp;&amp; install.cmd &amp;&amp; del install.cmd</code></pre>
-                    </div>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-install-unix-code">复制安装命令</button></div>
-                      <pre><code id="guide-agy-install-unix-code">curl -fsSL https://antigravity.google/cli/install.sh | bash</code></pre>
-                    </div>
-                    <p>重新打开终端，运行 <code>agy --version</code> 确认安装成功。</p>
-                  </li>
-                  <li>
-                    <h4>2. 保存 Gateway 地址和 API Key</h4>
-                    <p>执行下面的一整行命令，按提示输入本 Gateway 签发的 Key。配置器合并用户级 <code>~/.gemini/antigravity-cli/settings.json</code>，设置 <code>modelProvider: "gemini"</code>，并持久保存 <code>GOOGLE_GEMINI_BASE_URL</code> 和 <code>GEMINI_API_KEY</code>。</p>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-configure-code">复制配置命令</button></div>
-                      <pre><code id="guide-agy-configure-code">正在生成…</code></pre>
-                    </div>
-                    <p class="guide-note">Windows 保存为当前用户的环境变量；macOS / Linux 将凭据保存到权限为 <code>0600</code> 的独立文件，并自动配置 Bash / Zsh 加载。地址使用当前站点 origin，不加 <code>/v1</code>。已有无关设置会保留，可重复配置。</p>
-                  </li>
-                  <li>
-                    <h4>3. 重新打开终端，启动验证</h4>
-                    <p>关闭当前终端并重新打开，运行以下命令，发送“请回复 OK”。Windows 若使用 Windows Terminal，请退出整个应用后重开，让新终端读取用户环境变量。</p>
-                    <div class="code-card">
-                      <div class="code-toolbar"><span>启动 agy</span><button type="button" class="secondary copy-button" data-copy-target="guide-agy-start-code">复制启动命令</button></div>
-                      <pre><code id="guide-agy-start-code">agy --model gemini-3.8-flash-high</code></pre>
-                    </div>
-                    <p class="guide-note">Gateway 不再改写旧模型别名。模型目录仅显示已定价、已授权且有可用账号的原生 ID；推理档位通过请求参数设置。若客户端仍发送旧 preview / pro-high 名称，请更新客户端或配置其模型 ID，辅助标题请求也需使用已授权模型。旧 CLI 会话缺少可续传签名时必须新建会话，不能继续复用历史工具调用。</p>
-                  </li>
-                </ol>
+                <div class="guide-step-title"><div><p class="eyebrow">HELP</p><h3 id="guide-help-title">排查与后续操作</h3></div></div>
                 <details class="guide-platform guide-troubleshooting">
                   <summary>排查配置与请求问题</summary>
                   <dl>
@@ -409,6 +551,7 @@
                     <div><dt>配置失败或取消</dt><dd>根据终端错误检查配置文件语法与写入权限；修复后可重新执行同一条配置命令。不要把 Key 直接写入命令。</dd></div>
                     <div><dt><code>401 / 403</code></dt><dd>检查 Key 是否活跃、是否过期，以及账号和 Key 的模型权限。修改 Key 后重新执行配置。</dd></div>
                     <div><dt>模型或额度不可用</dt><dd>请管理员检查模型路由、订阅账号及你的额度。标题请求也会使用模型额度。</dd></div>
+                    <div><dt>桌面端或扩展未生效</dt><dd>完全退出桌面端或重新加载编辑器窗口；桌面应用通常不会读取终端中临时设置的环境变量。</dd></div>
                   </dl>
                 </details>
                 <div class="button-group guide-actions">
