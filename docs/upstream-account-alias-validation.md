@@ -25,6 +25,14 @@ Owner 可为 Codex、Antigravity、Claude 上游账号设置别名，便于区�
 - 以下接口新增 `alias` 字段：`/admin/*-accounts` 列表，账号权限（单用户、批量）
   与群组账号池选项，群组账号统计，以及模型鉴定账号选项。模型鉴定选项的别名
   从 Gateway 数据库读取，读取失败时返回 500，不会误报为上游错误。
+- 使用统计（`/admin/usage`）的 Owner 请求明细和请求监控（`/admin/monitoring`）
+  每条请求新增 `upstream_alias`、`upstream_display_name`，与已有的
+  `upstream_masked_email` 一样可为 `null`。两者都只对 Owner 返回；成员的个人
+  使用统计不含任何账号字段。使用统计在数据库缺少元数据时向 CPA 补全 CPA 名称和
+  脱敏邮箱，别名只来自 Gateway 数据库。请求监控对仍在进行的请求以内存中的最新
+  归属为准；账号变化时，原账号的别名、名称和邮箱一起清空，不会挂到新账号上。
+  CSV 导出列不变。
+- 模型鉴定账号选项新增 `display_name`（CPA 名称，可省略）。
 
 ## 界面
 
@@ -35,8 +43,12 @@ Owner 可为 Codex、Antigravity、Claude 上游账号设置别名，便于区�
   群组账号统计、模型鉴定下拉框和结果标题都显示为“别名（原内容）”，
   并且都可以按别名搜索。卡片操作提示（禁用、系数、并发、额度查询）同样带上别名。
 - 前端在提交前按服务端相同的规则校验，不合法的值不会发出请求。
-
-暂未改动：使用统计和请求监控里每条请求的账号列仍只显示脱敏邮箱。
+- 使用统计请求明细、请求监控的账号列和 CPA 授权管理（`/admin/cpa/`）的账号卡片
+  与上游账号卡片一致：主文字依次取别名、CPA 名称、脱敏邮箱，下方显示其余的
+  脱敏邮箱和账号 ID。CPA 授权管理的删除确认也写明账号名称。
+- 选择列表与提示中“别名（原内容）”的原内容统一为 CPA 名称，没有时才用脱敏邮箱：
+  模型鉴定下拉框和结果标题、专属授权对话框标题，以及额度查询、禁用、系数、
+  并发提示。
 
 ## 验证
 
@@ -99,3 +111,45 @@ unit、race、vet、node-ui）和 `security` 作业（govulncheck、gosec），�
 - [桌面上游账号](screenshots/upstream-account-alias-desktop.png)
 - [移动端账号别名设置](screenshots/upstream-account-alias-mobile.png)
 - [账号权限选择](screenshots/upstream-account-alias-picker-desktop.png)
+
+### 各界面统一显示名称（2026-11-17）
+
+使用锁定的 Go 1.26.11 工具链、Node.js v22、Bun 1.3.14、PostgreSQL 16 一次性实例和
+预装 Playwright（Chromium）完成：
+
+```sh
+gofmt -l .                                   # 无输出
+go vet ./...
+go build ./cmd/gateway
+go test -count=1 ./...
+go test -race -count=1 ./internal/server ./internal/store
+TEST_DATABASE_URL='postgres://…' go test -count=1 -tags=integration ./internal/store ./internal/server
+node --test internal/server/testdata/*_test.cjs
+CPA_PANEL_BUN=/path/to/bun-1.3.14 ./scripts/build-cpa-panel.sh
+./scripts/validate-cpa-panel.sh
+bun install --frozen-lockfile && bun test    # 在 deploy/cpa-panel 的临时副本中运行
+PLAYWRIGHT_MODULE=/path/to/playwright node internal/server/testdata/cpa_admin_browser.cjs
+```
+
+- 改动前先用原始源码重建 CPA 面板，产物与已提交的 `assets.sha256` 完全一致，
+  确认构建可复现；改动后重建并更新摘要。
+- `deploy/cpa-panel/test/api.test.ts`：`accountIdentity` 按别名、CPA 名称、脱敏邮箱、
+  ID 的顺序取标题，其余作为副文字。
+- `cpa_admin_browser.cjs`：Antigravity 账号标题为别名“Gemini 主力”，副行为
+  “Gemini 团队账号 · te***@example.test · 账号 ID”；Claude 账号无别名时标题为
+  CPA 名称；删除确认写明账号名称。截图已更新：
+  [桌面](screenshots/cpa-admin-desktop.png) / [手机](screenshots/cpa-admin-mobile.png)。
+- `usage_dto_test.go`：Owner 明细返回别名、CPA 名称、脱敏邮箱，未归因请求三者为
+  `null`；个人明细不含任何账号字段或别名；CSV 不变；CPA 补全只填 CPA 名称和邮箱，
+  保留数据库中的别名。
+- `monitoring_test.go`：进行中请求换到新账号时，原账号的别名、名称、邮箱被清空；
+  已结束请求原样保留。
+- `TestMonitoringAccountNamesPostgresIntegration`：监控查询从 `upstream_accounts`
+  联出别名和 CPA 名称；无别名的账号只有邮箱，未归因请求全部为 `null`。
+- 模型鉴定选项测试：sidecar 返回的 CPA 名称出现在选项中。
+- `information_ui_test.cjs`：使用统计和请求监控的账号列在有别名、只有 CPA 名称、
+  只有邮箱、只有别名、仅有 ID 时均显示正确，无名称时与之前完全相同。
+
+`configure_client_test.cjs` 有两个用例会读取运行环境中的 `ANTHROPIC_BASE_URL` 和
+`CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`。本次在设置了这两个变量的环境中验证，所以
+运行 Node 与 Go 测试前先去掉了它们；未改动的基线代码在同一环境下同样失败。

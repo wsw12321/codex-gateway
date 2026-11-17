@@ -25,16 +25,23 @@ func (f *fakeMonitoringRepository) Monitoring(context.Context) (store.Monitoring
 func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.T) {
 	sampledAt := time.Date(2026, time.September, 23, 8, 9, 10, 0, time.UTC)
 	completedAt := sampledAt.Add(-time.Minute)
+	text := func(value string) *string { return &value }
+	// The active row still carries a stale durable account; its names must not
+	// follow the fresher in-flight attribution to another account.
 	active := store.MonitoringRequest{
 		RequestID: "request-monitoring-active", RequestedAt: sampledAt.Add(-time.Second),
 		UserID: "user-active", Username: "alice", DisplayName: "张三",
 		Model: "gpt-6-astra", State: "in_progress",
+		UpstreamAccountID: text("fedcba9876543210"), UpstreamAlias: text("旧账号"),
+		UpstreamDisplayName: text("team-old"), UpstreamMaskedEmail: text("o***@example.com"),
 	}
 	requestedModel := "gpt-6-codex"
 	failure := store.MonitoringRequest{
 		RequestID: "request-monitoring-failed", RequestedAt: sampledAt.Add(-2 * time.Minute),
 		CompletedAt: &completedAt, UserID: "user-failed", Username: "bob", DisplayName: "Bob",
 		RequestedModel: &requestedModel, Model: "gpt-6-sol", State: "failed",
+		UpstreamAccountID: text("1111222233334444"), UpstreamAlias: text("主力 Plus"),
+		UpstreamDisplayName: text("team-a"), UpstreamMaskedEmail: text("a***@example.com"),
 	}
 	repository := &fakeMonitoringRepository{snapshot: store.MonitoringSnapshot{
 		SampledAt: sampledAt, InProgress: []store.MonitoringRequest{active},
@@ -70,9 +77,17 @@ func TestMonitoringJSONReturnsIndependentWindowsAndActiveAttribution(t *testing.
 		if row.ConversationHash == nil || *row.ConversationHash != "conv-0123456789abcdef0123456789abcdef" {
 			t.Fatalf("active conversation missing: %#v", row)
 		}
+		if row.UpstreamAlias != nil || row.UpstreamDisplayName != nil || row.UpstreamMaskedEmail != nil {
+			t.Fatalf("stale account names survived reattribution: %#v", row)
+		}
 	}
-	if document.Failures[0].UpstreamAccountID != nil {
-		t.Fatalf("terminal attribution was changed: %#v", document.Failures[0])
+	terminal := document.Failures[0]
+	if terminal.UpstreamAccountID == nil || *terminal.UpstreamAccountID != "1111222233334444" {
+		t.Fatalf("terminal attribution was changed: %#v", terminal)
+	}
+	if terminal.UpstreamAlias == nil || *terminal.UpstreamAlias != "主力 Plus" || terminal.UpstreamDisplayName == nil ||
+		*terminal.UpstreamDisplayName != "team-a" || terminal.UpstreamMaskedEmail == nil || *terminal.UpstreamMaskedEmail != "a***@example.com" {
+		t.Fatalf("terminal account names were not preserved: %#v", terminal)
 	}
 	if document.Failures[0].RequestedModel == nil || *document.Failures[0].RequestedModel != requestedModel {
 		t.Fatalf("requested model was not preserved: %#v", document.Failures[0])

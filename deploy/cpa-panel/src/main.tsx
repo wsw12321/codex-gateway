@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button } from '../upstream/Button';
 import { Card } from '../upstream/Card';
-import { api, callbackFields, importFields, type Account, type EgressServer, type OAuth, type Provider, type QuotaSnapshot } from './api';
+import { accountIdentity, api, callbackFields, importFields, type Account, type EgressServer, type OAuth, type Provider, type QuotaSnapshot } from './api';
 import './panel.css';
 
 function App() {
@@ -95,16 +95,16 @@ function App() {
     </Card>
     <Card title="账号" extra={<Button variant="secondary" size="sm" disabled={busy} onClick={() => run(refresh, '账号列表已更新')}>刷新列表</Button>}>
       {accounts.length === 0 && <p className="empty">暂无已登记账号</p>}
-      <div className="accounts">{accounts.map(account => <article key={account.id}>
-        <div><h2>{account.display_name || account.email_masked || account.id}</h2><p>{account.email_masked} · <code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p><p>出口：{account.egress_server_name || (account.egress_server_id ? '已绑定 SS 节点' : '继承全局出口')}</p></div>
+      <div className="accounts">{accounts.map(account => { const identity = accountIdentity(account); return <article key={account.id}>
+        <div><h2>{identity.title}</h2><p>{identity.details.map(detail => `${detail} · `).join('')}<code>{account.id}</code></p><p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p><p>出口：{account.egress_server_name || (account.egress_server_id ? '已绑定 SS 节点' : '继承全局出口')}</p></div>
         <div className="actions">
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.status(provider, account.id, account.gateway_manual_status !== 'enabled'); await refresh(); })}>{account.gateway_manual_status === 'enabled' ? '停用' : '启用'}</Button>
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.refresh(provider, account.id); await refresh(); })}>刷新凭据</Button>
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => setQuota(await api.quota(provider, account.id)), '额度已更新')}>{provider === 'anthropic' ? '刷新状态' : '查询额度'}</Button>
           <Button variant="danger" size="sm" disabled={busy} onClick={() => setDeleteID(account.id)}>删除凭据</Button>
         </div>
-        {deleteID === account.id && <div className="confirm"><p>将先停用账号并等待请求结束，再删除凭据。历史账单和账号权限记录将保留。</p><Button variant="danger" disabled={busy} onClick={() => run(async () => { await api.remove(provider, account.id); setDeleteID(''); await refresh(); }, '凭据已删除')}>确认删除</Button> <Button variant="secondary" disabled={busy} onClick={() => setDeleteID('')}>取消</Button></div>}
-      </article>)}</div>
+        {deleteID === account.id && <div className="confirm"><p>将先停用 {identity.title} 并等待请求结束，再删除凭据。历史账单和账号权限记录将保留。</p><Button variant="danger" disabled={busy} onClick={() => run(async () => { await api.remove(provider, account.id); setDeleteID(''); await refresh(); }, '凭据已删除')}>确认删除</Button> <Button variant="secondary" disabled={busy} onClick={() => setDeleteID('')}>取消</Button></div>}
+      </article>; })}</div>
     </Card>
     {quota && <Card title={provider === 'anthropic' ? 'Claude 观测额度' : '供应商额度'}>
       {provider === 'anthropic' ? <><p>观测时间：{quota.observed_at || '未知'} · 套餐：未知 · 冷却至：{quota.cooldown_until || '无观测'}</p><ul>{['five_hour', 'seven_day'].map(window => {

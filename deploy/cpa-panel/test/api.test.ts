@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {authorizationURL, callbackFields, importFields} from '../src/api';
+import {accountIdentity, authorizationURL, callbackFields, importFields} from '../src/api';
 
 describe('Anthropic account credential boundary', () => {
   test('accepts only the exact HTTPS authorization host', () => {
@@ -24,5 +24,15 @@ describe('Anthropic account credential boundary', () => {
   test('local callbacks reject duplicate and ambiguous authorization parameters', () => {
     expect(callbackFields('http://localhost:54545/callback?code=synthetic-code&state=synthetic-state')).toEqual({code: 'synthetic-code', state: 'synthetic-state'});
     for (const url of ['https://claude.ai/callback?code=a&state=b', 'http://localhost/callback?code=a&code=b&state=c', 'http://localhost/callback?code=a&state=b&state=c', 'http://localhost/callback?code=a&state=b&error=']) expect(() => callbackFields(url)).toThrow();
+  });
+});
+
+describe('account identity', () => {
+  test('names an account by alias, then CPA name, then masked email, then ID', () => {
+    expect(accountIdentity({id: 'acct-1', alias: '主力 Max', display_name: 'Claude 团队账号', email_masked: 'te***@example.test'})).toEqual({title: '主力 Max', details: ['Claude 团队账号', 'te***@example.test']});
+    expect(accountIdentity({id: 'acct-1', alias: '', display_name: 'Claude 团队账号', email_masked: 'te***@example.test'})).toEqual({title: 'Claude 团队账号', details: ['te***@example.test']});
+    expect(accountIdentity({id: 'acct-1', alias: '主力', email_masked: 'te***@example.test'})).toEqual({title: '主力', details: ['te***@example.test']});
+    expect(accountIdentity({id: 'acct-1', email_masked: 'te***@example.test'})).toEqual({title: 'te***@example.test', details: []});
+    expect(accountIdentity({id: 'acct-1', email_masked: ''})).toEqual({title: 'acct-1', details: []});
   });
 });

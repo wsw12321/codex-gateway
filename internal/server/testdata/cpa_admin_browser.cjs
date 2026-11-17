@@ -22,7 +22,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
       if (event.type() === "error" && event.text() !== "Failed to load resource: the server responded with a status of 502 (Bad Gateway)") errors.push(event.text());
     });
     const state = "a".repeat(32);
-    const account = provider => ({ id: "0123456789abcdef", display_name: ({codex: "Codex 团队账号", antigravity: "Gemini 团队账号", anthropic: "Claude 团队账号"})[provider], email_masked: "te***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available" });
+    const account = provider => ({ id: "0123456789abcdef", alias: provider === "antigravity" ? "Gemini 主力" : "", display_name: ({codex: "Codex 团队账号", antigravity: "Gemini 团队账号", anthropic: "Claude 团队账号"})[provider], email_masked: "te***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available" });
     await page.route("**/*", async route => {
       const request = route.request(), url = new URL(request.url());
       assert.equal(url.origin, origin);
@@ -59,7 +59,9 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.locator('[data-theme-choice="light"]').click();
     assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
     await page.getByRole("button", { name: "Antigravity", exact: true }).click();
-    await page.getByRole("heading", { name: "Gemini 团队账号" }).waitFor();
+    // The Gateway alias leads; the CPA name and masked email stay beside it.
+    await page.getByRole("heading", { name: "Gemini 主力" }).waitFor();
+    await page.getByText("Gemini 团队账号 · te***@example.test · 0123456789abcdef").waitFor();
     await page.getByRole("button", { name: "停用", exact: true }).click();
     await page.getByRole("status").filter({ hasText: "操作完成" }).waitFor();
     assert.deepEqual(writes.at(-1).body, { enabled: false });
@@ -102,6 +104,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.setViewportSize({ width: 390, height: 844 });
     await page.getByRole("button", { name: "Claude 账号", exact: true }).click();
     await page.getByRole("heading", { name: "Claude 团队账号" }).waitFor();
+    await page.getByText("te***@example.test · 0123456789abcdef").waitFor();
     importFails = false;
     await page.locator('input[type="file"]').setInputFiles({name: 'claude.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({claudeAiOauth: {refreshToken: 'claude-refresh', accessToken: 'claude-access', subscriptionType: 'forged-max', scopes: ['ignored']}, arbitrary: 'ignored'}))});
     await page.getByRole('status').filter({hasText: '操作完成'}).waitFor();
@@ -121,6 +124,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     await page.setViewportSize({width: 1440, height: 1100});
     await page.screenshot({path: path.join(screenshots, 'cpa-anthropic-desktop.png'), fullPage: true, animations: 'disabled'});
     await page.getByRole("button", { name: "删除凭据", exact: true }).click();
+    await page.getByText("将先停用 Claude 团队账号 并等待请求结束", { exact: false }).waitFor();
     await page.getByRole("button", { name: "确认删除", exact: true }).click();
     await page.getByText("暂无已登记账号").waitFor();
     assert.equal(writes.at(-1).method, "DELETE");

@@ -49,10 +49,21 @@ type usageRequestDTO struct {
 	PricingFallbackReason   *string
 }
 
+// ownerUsageRequestDTO names the serving account for the Owner only. The alias
+// is Gateway-owned and, like the masked email, never reaches a personal view.
 type ownerUsageRequestDTO struct {
 	usageRequestDTO
 	UpstreamAccountID   *string `json:"upstream_account_id"`
+	UpstreamAlias       *string `json:"upstream_alias"`
+	UpstreamDisplayName *string `json:"upstream_display_name"`
 	UpstreamMaskedEmail *string `json:"upstream_masked_email"`
+}
+
+// usageAccountIdentity is the display metadata of one attributed account.
+type usageAccountIdentity struct {
+	Alias       string
+	DisplayName string
+	MaskedEmail string
 }
 
 func personalUsageDTO(row store.UsageRequest) usageRequestDTO {
@@ -94,8 +105,8 @@ func personalUsageDTO(row store.UsageRequest) usageRequestDTO {
 	}
 }
 
-func (s *Server) usageAccountEmails(ctx context.Context, rows []store.UsageRequest, owner bool) (map[string]string, error) {
-	result := make(map[string]string)
+func (s *Server) usageAccountMetadata(ctx context.Context, rows []store.UsageRequest, owner bool) (map[string]usageAccountIdentity, error) {
+	result := make(map[string]usageAccountIdentity)
 	if !owner {
 		return result, nil
 	}
@@ -115,20 +126,21 @@ func (s *Server) usageAccountEmails(ctx context.Context, rows []store.UsageReque
 			return nil, err
 		}
 		for _, account := range accounts {
-			result[account.ID] = account.MaskedEmail
+			result[account.ID] = usageAccountIdentity{Alias: account.Alias, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail}
 		}
 	}
-	s.completeUsageAccountEmails(ctx, rows, result)
+	s.completeUsageAccountMetadata(ctx, rows, result)
 	return result, nil
 }
 
 // Usage can be the first admin page opened after account discovery. Fill only
 // missing display metadata without modifying account settings or inventing an
 // attribution for old requests. A sidecar failure preserves the durable ID.
-func (s *Server) completeUsageAccountEmails(ctx context.Context, rows []store.UsageRequest, emails map[string]string) {
+// The alias is Gateway-owned, so the sidecar never supplies or replaces it.
+func (s *Server) completeUsageAccountMetadata(ctx context.Context, rows []store.UsageRequest, accounts map[string]usageAccountIdentity) {
 	missing := make(map[string]bool)
 	for _, row := range rows {
-		if row.UpstreamAccountID != nil && validUpstreamAccountID(*row.UpstreamAccountID) && emails[*row.UpstreamAccountID] == "" {
+		if row.UpstreamAccountID != nil && validUpstreamAccountID(*row.UpstreamAccountID) && accounts[*row.UpstreamAccountID].MaskedEmail == "" {
 			missing[*row.UpstreamAccountID] = true
 		}
 	}
@@ -141,20 +153,25 @@ func (s *Server) completeUsageAccountEmails(ctx context.Context, rows []store.Us
 		if client == nil || len(missing) == 0 {
 			continue
 		}
-		accounts, err := client.ListUpstreamAccounts(ctx)
+		listed, err := client.ListUpstreamAccounts(ctx)
 		if err != nil {
 			continue
 		}
-		for _, account := range accounts {
+		for _, account := range listed {
 			if missing[account.ID] {
-				emails[account.ID] = account.MaskedEmail
+				identity := accounts[account.ID]
+				identity.MaskedEmail = account.MaskedEmail
+				if identity.DisplayName == "" {
+					identity.DisplayName = account.DisplayName
+				}
+				accounts[account.ID] = identity
 				delete(missing, account.ID)
 			}
 		}
 	}
 }
 
-func usageResponseDTO(rows []store.UsageRequest, owner bool, emails map[string]string) any {
+func usageResponseDTO(rows []store.UsageRequest, owner bool, accounts map[string]usageAccountIdentity) any {
 	if !owner {
 		result := make([]usageRequestDTO, 0, len(rows))
 		for _, row := range rows {
@@ -168,11 +185,20 @@ func usageResponseDTO(rows []store.UsageRequest, owner bool, emails map[string]s
 		if row.UpstreamAccountID != nil && validUpstreamAccountID(*row.UpstreamAccountID) {
 			id := *row.UpstreamAccountID
 			dto.UpstreamAccountID = &id
-			if email := emails[id]; email != "" {
-				dto.UpstreamMaskedEmail = &email
-			}
+			identity := accounts[id]
+			dto.UpstreamAlias = nonEmptyString(identity.Alias)
+			dto.UpstreamDisplayName = nonEmptyString(identity.DisplayName)
+			dto.UpstreamMaskedEmail = nonEmptyString(identity.MaskedEmail)
 		}
 		result = append(result, dto)
 	}
 	return result
+}
+
+// nonEmptyString keeps an unknown value null in JSON instead of "".
+func nonEmptyString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }

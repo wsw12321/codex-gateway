@@ -6423,12 +6423,20 @@ function usageColumnCount() {
   return state?.user?.role === "owner" ? 9 : 8;
 }
 
+// Request rows name an account as its card does: alias, then CPA name, then
+// masked email. The email stays beside a name so equal aliases remain distinct.
+function requestAccountIdentity(alias, displayName, maskedEmail) {
+  const title = alias || displayName || maskedEmail || "";
+  return {title, email: maskedEmail && maskedEmail !== title ? maskedEmail : ""};
+}
+
 function requestUpstreamCell(request) {
   const id = request.upstream_account_id;
   if (!id) return element("td", {text: "未归因"});
+  const identity = requestAccountIdentity(request.upstream_alias, request.upstream_display_name, request.upstream_masked_email);
   return element("td", {className: "usage-upstream"},
-    element("span", {text: request.upstream_masked_email || "邮箱不可用"}),
-    element("small", {}, element("code", {text: id})),
+    element("span", {text: identity.title || "邮箱不可用"}),
+    element("small", {}, identity.email ? element("span", {text: `${identity.email} · `}) : null, element("code", {text: id})),
   );
 }
 
@@ -7986,7 +7994,7 @@ async function openUpstreamAccess(account) {
   const form = byId("upstream-access-form");
   form.reset();
   form.elements.mode.value = account.access_mode || "shared";
-  byId("upstream-access-account").textContent = upstreamAccountLabel(account, account.email_masked || account.id);
+  byId("upstream-access-account").textContent = upstreamAccountLabel(account);
   renderUpstreamAccessUsers();
   openDialog("upstream-access-dialog");
 }
@@ -8285,7 +8293,7 @@ async function loadUpstreamQuota(account, quotaBlock, container) {
     upstreamAccountRowState(account.id, provider).quota = {result, receivedAt};
     renderUpstreamQuota(account, container, result, receivedAt);
     applyUpstreamQuotaReadings(account, provider, result, receivedAt);
-    announce(`已查询 ${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 的官方额度。`);
+    announce(`已查询 ${upstreamAccountLabel(account, account.display_name || account.email_masked || "该上游账号")} 的官方额度。`);
   } catch (error) {
     if (!current()) return;
     container.dataset.state = "error";
@@ -8452,7 +8460,7 @@ async function saveUpstreamConcurrentLimit(account, form) {
     input.value = String(response.concurrent_limit);
     input.dataset.savedValue = input.value;
     delete upstreamAccountRowState(account.id).drafts.limit;
-    const label = upstreamAccountLabel(account, account.email_masked || "该上游账号");
+    const label = upstreamAccountLabel(account, account.display_name || account.email_masked || "该上游账号");
     setUpstreamAccountMessage("upstream-account-action-message", `${label} 并发对话上限已保存为 ${operation.limit}。`, "ok");
     announce(`已保存 ${label} 的并发对话上限。`);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -8564,7 +8572,7 @@ async function changeUpstreamQuotaGuard(account) {
     confirmed = true;
     account.quota_guard = response.quota_guard;
     syncUpstreamAccountControls();
-    const label = upstreamAccountLabel(account, account.email_masked || "该上游账号");
+    const label = upstreamAccountLabel(account, account.display_name || account.email_masked || "该上游账号");
     const message = operation.limited ?
       `${label} 已设为达到限额，后续请求不再分配到此账号${response.quota_guard.restore_at ? `，${formatDateTime(response.quota_guard.restore_at)} 自动恢复` : "，需手动恢复"}。` :
       `${label} 已恢复为有剩余额度；下次自动查询仍按实际额度判断。`;
@@ -8648,7 +8656,7 @@ async function changeUpstreamAccountStatus(account) {
     account.gateway_quota_status = response.gateway_quota_status;
     syncUpstreamAccountControls();
     const enabledMessage = account.allocation_weight === 0 ? upstreamAccountLanguage("系数仍为 0，停止接收新对话；已有有效绑定继续使用。", "系数仍为 0，停止接收新请求；已开始的请求继续执行。") : upstreamAccountLanguage("已恢复参与分流；若额度仍不足，将再次锁定。", "手动开关已启用；账号就绪且限流冷却结束后参与请求分配。");
-    const message = `${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
+    const message = `${upstreamAccountLabel(account, account.display_name || account.email_masked || "该上游账号")} 已${operation.enabled ? "重新启用" : "禁用"}。${operation.enabled ? enabledMessage : "后续请求将不再分配到此账号，已开始的请求继续执行。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -8708,7 +8716,7 @@ async function saveUpstreamAllocationWeight(account, form) {
     input.dataset.savedValue = input.value;
     delete upstreamAccountRowState(account.id).drafts.weight;
     syncUpstreamAccountControls();
-    const message = `${upstreamAccountLabel(account, account.email_masked || "该上游账号")} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? upstreamAccountLanguage("停止接收新对话，已有有效绑定继续使用。", "停止接收新请求，已开始的请求继续执行。") : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
+    const message = `${upstreamAccountLabel(account, account.display_name || account.email_masked || "该上游账号")} 分配系数已保存为 ${operation.weight}。${operation.weight === 0 ? upstreamAccountLanguage("停止接收新对话，已有有效绑定继续使用。", "停止接收新请求，已开始的请求继续执行。") : "后续新分配将按近 24 小时费用逐步调整占比。"}`;
     setUpstreamAccountMessage("upstream-account-action-message", message, "ok");
     announce(message);
     await loadUpstreamAccounts(upstreamAccountQueryFromForm(), {afterOperation: true});
@@ -8818,9 +8826,12 @@ function monitoringUpstreamCell(request, active = false) {
   const id = monitoringField(request, "upstream_account_id", "UpstreamAccountID");
   const masked = monitoringField(request, "upstream_masked_email", "UpstreamMaskedEmail", "email_masked");
   if (!id && !masked) return element("span", {className: active ? "monitoring-unassigned" : "monitoring-unattributed", text: active ? "分配中" : "未归因"});
+  const identity = requestAccountIdentity(monitoringField(request, "upstream_alias", "UpstreamAlias"),
+    monitoringField(request, "upstream_display_name", "UpstreamDisplayName"), masked);
+  const details = [identity.email, id ? String(id) : ""].filter(Boolean).join(" · ");
   const host = element("span", {className: "monitoring-upstream"});
-  if (masked) host.append(element("strong", {text: masked}));
-  if (id) host.append(element("small", {text: String(id)}));
+  if (identity.title) host.append(element("strong", {text: identity.title}));
+  if (details) host.append(element("small", {text: details}));
   return host;
 }
 
@@ -10261,7 +10272,7 @@ async function loadModelIdentificationOptions() {
   const select = byId("model-identification-account");
   select.replaceChildren(element("option", {text: "请选择上游账号", attributes: {value: ""}}),
     ...accounts.map((account) => {
-      const label = upstreamAccountLabel(account, account.masked_email || account.id);
+      const label = upstreamAccountLabel(account, account.display_name || account.masked_email || account.id);
       const option = element("option", {
         text: `${label} · 日常分流：${upstreamFinalStatusLabels[account.status] || "状态未知"}`,
         dataset: {label}, attributes: {value: account.id},

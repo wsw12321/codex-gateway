@@ -14,9 +14,10 @@ import (
 // information to identify a request and its current outcome.
 //
 // UpstreamAccountID is nullable for requests that have not received an
-// upstream account attribution yet.  UpstreamMaskedEmail is joined from the
-// durable upstream_accounts table and is likewise nullable when an account is
-// unknown or its metadata has not been synchronized.
+// upstream account attribution yet.  UpstreamAlias, UpstreamDisplayName and
+// UpstreamMaskedEmail are joined from the durable upstream_accounts table and
+// are likewise nullable when an account is unknown, has no such value, or its
+// metadata has not been synchronized.
 type MonitoringRequest struct {
 	RequestID           string
 	ConversationHash    *string
@@ -31,6 +32,8 @@ type MonitoringRequest struct {
 	HTTPStatus          *int
 	ErrorCode           *string
 	UpstreamAccountID   *string
+	UpstreamAlias       *string
+	UpstreamDisplayName *string
 	UpstreamMaskedEmail *string
 }
 
@@ -90,6 +93,8 @@ WITH bounds AS (
 			u.http_status,
 			u.error_code,
 			u.upstream_account_id,
+			a.alias AS upstream_alias,
+			a.display_name AS upstream_display_name,
 			a.masked_email,
 			b.sampled_at,
 			u.requested_at AS sort_at,
@@ -119,6 +124,8 @@ WITH bounds AS (
 			u.http_status,
 			u.error_code,
 			u.upstream_account_id,
+			a.alias AS upstream_alias,
+			a.display_name AS upstream_display_name,
 			a.masked_email,
 			b.sampled_at,
 			u.requested_at AS sort_at,
@@ -149,6 +156,8 @@ WITH bounds AS (
 			u.http_status,
 			u.error_code,
 			u.upstream_account_id,
+			a.alias AS upstream_alias,
+			a.display_name AS upstream_display_name,
 			a.masked_email,
 			b.sampled_at,
 			u.completed_at AS sort_at,
@@ -185,6 +194,8 @@ WITH bounds AS (
 			NULL::smallint AS http_status,
 			NULL::text AS error_code,
 			NULL::text AS upstream_account_id,
+			NULL::text AS upstream_alias,
+			NULL::text AS upstream_display_name,
 			NULL::text AS masked_email,
 			b.sampled_at,
 			NULL::timestamptz AS sort_at,
@@ -193,7 +204,8 @@ WITH bounds AS (
 	)
 	SELECT bucket_order, bucket, request_id, conversation_hash, requested_at, completed_at,
 	       user_id, username, display_name, requested_model, model, state, http_status,
-	       error_code, upstream_account_id, masked_email, sampled_at, sort_at,
+	       error_code, upstream_account_id, upstream_alias, upstream_display_name,
+	       masked_email, sampled_at, sort_at,
 	       request_sort_id
 FROM (
 	SELECT * FROM marker
@@ -230,6 +242,8 @@ FROM (
 			httpStatus        sql.NullInt64
 			errorCode         sql.NullString
 			upstreamAccountID sql.NullString
+			upstreamAlias     sql.NullString
+			upstreamName      sql.NullString
 			maskedEmail       sql.NullString
 			sampledAt         time.Time
 			sortAt            sql.NullTime
@@ -238,7 +252,8 @@ FROM (
 		if err := rows.Scan(
 			&bucketOrder, &bucket, &requestID, &conversationHash, &requestedAt, &completedAt,
 			&userID, &username, &displayName, &requestedModel, &model, &state, &httpStatus,
-			&errorCode, &upstreamAccountID, &maskedEmail, &sampledAt, &sortAt, &requestSortID,
+			&errorCode, &upstreamAccountID, &upstreamAlias, &upstreamName, &maskedEmail,
+			&sampledAt, &sortAt, &requestSortID,
 		); err != nil {
 			return MonitoringSnapshot{}, fmt.Errorf("scan monitoring request: %w", err)
 		}
@@ -276,9 +291,14 @@ FROM (
 			value := upstreamAccountID.String
 			request.UpstreamAccountID = &value
 		}
-		if maskedEmail.Valid && strings.TrimSpace(maskedEmail.String) != "" {
-			value := maskedEmail.String
-			request.UpstreamMaskedEmail = &value
+		for _, field := range []struct {
+			source sql.NullString
+			target **string
+		}{{upstreamAlias, &request.UpstreamAlias}, {upstreamName, &request.UpstreamDisplayName}, {maskedEmail, &request.UpstreamMaskedEmail}} {
+			if field.source.Valid && strings.TrimSpace(field.source.String) != "" {
+				value := field.source.String
+				*field.target = &value
+			}
 		}
 		switch bucket {
 		case "in_progress":

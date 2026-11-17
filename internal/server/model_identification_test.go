@@ -199,7 +199,7 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 					if test.failure == "disabled" {
 						status, manual = "unavailable", "manual_disabled"
 					}
-					return identificationResponse(200, `{"accounts":[{"id":"`+identificationTestAccount+`","masked_email":"u***@example.com","plan":"plus","status":"`+status+`","cliproxy_status":"active","gateway_manual_status":"`+manual+`","gateway_quota_status":"available","last_synced_at":"2026-09-25T00:00:00Z"}]}`), nil
+					return identificationResponse(200, `{"accounts":[{"id":"`+identificationTestAccount+`","display_name":"team-a","masked_email":"u***@example.com","plan":"plus","status":"`+status+`","cliproxy_status":"active","gateway_manual_status":"`+manual+`","gateway_quota_status":"available","last_synced_at":"2026-09-25T00:00:00Z"}]}`), nil
 				case pluginPath("model-identification/accounts/models"):
 					if request.URL.RawQuery != "id="+identificationTestAccount {
 						t.Errorf("model list for %q", request.URL.RawQuery)
@@ -272,7 +272,7 @@ func TestModelIdentificationWorkerPinsAccountAndPreservesOldResultOnFailure(t *t
 			useLedger(s, s.upstream)
 			if test.failure != "protocol" {
 				options, err := s.resolveModelIdentificationOptions(context.Background(), identificationTestAccount)
-				if err != nil || len(options.Models) != 2 {
+				if err != nil || len(options.Models) != 2 || len(options.Accounts) != 1 || options.Accounts[0].DisplayName != "team-a" {
 					t.Fatalf("options=%+v err=%v", options, err)
 				}
 			}

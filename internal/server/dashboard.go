@@ -46,7 +46,7 @@ func (s *Server) usageJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := userFrom(r.Context()).Role == store.UserRoleOwner
-	emails, err := s.usageAccountEmails(r.Context(), requests, owner)
+	accounts, err := s.usageAccountMetadata(r.Context(), requests, owner)
 	if err != nil {
 		internalError(s, w, r, "list usage account metadata", err)
 		return
@@ -56,7 +56,7 @@ func (s *Server) usageJSON(w http.ResponseWriter, r *http.Request) {
 		internalError(s, w, r, "get usage cleanup boundary", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"summary": summaryFromStore(exact), "requests": usageResponseDTO(requests, owner, emails), "cleaned_before": cleanedBefore})
+	writeJSON(w, http.StatusOK, map[string]any{"summary": summaryFromStore(exact), "requests": usageResponseDTO(requests, owner, accounts), "cleaned_before": cleanedBefore})
 }
 
 func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
@@ -72,15 +72,15 @@ func (s *Server) usageCSV(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	owner := userFrom(r.Context()).Role == store.UserRoleOwner
-	emails, err := s.usageAccountEmails(r.Context(), requests, owner)
+	accounts, err := s.usageAccountMetadata(r.Context(), requests, owner)
 	if err != nil {
 		internalError(s, w, r, "export usage account metadata", err)
 		return
 	}
-	writeUsageCSV(w, requests, owner, emails)
+	writeUsageCSV(w, requests, owner, accounts)
 }
 
-func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner bool, emails map[string]string) {
+func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner bool, accounts map[string]usageAccountIdentity) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="codex-gateway-usage.csv"`)
 	w.Header().Set("Cache-Control", "no-store")
@@ -119,7 +119,7 @@ func writeUsageCSV(w http.ResponseWriter, requests []store.UsageRequest, owner b
 			if !validUpstreamAccountID(id) {
 				id = ""
 			}
-			row = append(row, id, emails[id])
+			row = append(row, id, accounts[id].MaskedEmail)
 		}
 		_ = writer.Write(row)
 	}
