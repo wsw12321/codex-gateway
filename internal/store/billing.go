@@ -996,9 +996,9 @@ func (s *Store) GetBillingSettings(ctx context.Context) (BillingSettings, error)
 }
 
 // InitializeBillingModelScopes must run after SyncModelAccessCatalog and before
-// serving requests. Existing cash and group scopes are initialized exactly once
-// to the complete current catalog; later catalog additions require an explicit
-// Owner choice and therefore do not silently expand a saved scope.
+// serving requests. Uninitialized cash and group scopes are initialized exactly
+// once to every family present in the current catalog, so they keep covering
+// the families' later models; exact scopes that an Owner saved never expand.
 func (s *Store) InitializeBillingModelScopes(ctx context.Context, catalog []string) error {
 	var requestedModels []byte
 	if catalog != nil {
@@ -1046,6 +1046,10 @@ func (s *Store) InitializeBillingModelScopes(ctx context.Context, catalog []stri
 		}
 		if err := validateBillingModelsTx(ctx, tx, values); err != nil {
 			return fmt.Errorf("initialize billing model scopes: %w", err)
+		}
+		models, err := json.Marshal(config.ModelFamilyScope(values))
+		if err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE billing_settings
 			SET model_ids=$1::jsonb, models_initialized=true WHERE singleton AND NOT models_initialized`, models); err != nil {

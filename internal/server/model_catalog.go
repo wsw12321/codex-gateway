@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
-	"strings"
 
 	"github.com/wsw/codex-gateway/internal/config"
 	"github.com/wsw/codex-gateway/internal/httpx"
@@ -23,6 +22,7 @@ type sessionModelOption struct {
 
 // Group names are emitted by the catalog boundary, so every selector uses the
 // same provider families, including retained historical and account models.
+// They are the families that billing scopes name with config.ModelFamilies.
 func modelCatalogOptions(models []string) []sessionModelOption {
 	seen := make(map[string]bool, len(models))
 	options := make([]sessionModelOption, 0, len(models))
@@ -31,12 +31,9 @@ func modelCatalogOptions(models []string) []sessionModelOption {
 			continue
 		}
 		seen[model] = true
-		group := "GPT"
-		switch {
-		case config.IsAntigravityModel(model), strings.HasPrefix(model, "gemini-"):
-			group = "Gemini"
-		case strings.HasPrefix(model, "claude-"):
-			group = "Claude"
+		group := config.ModelFamilyGroup(model)
+		if group == "" {
+			group = "其他"
 		}
 		options = append(options, sessionModelOption{ID: model, Group: group})
 	}

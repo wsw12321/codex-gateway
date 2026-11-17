@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 type GroupUpstreamAccountPolicy struct {
@@ -361,7 +363,7 @@ func (s *Store) ListUserUpstreamAllocationGroups(ctx context.Context, userID, pr
 	if len(models) > 0 {
 		model = models[0]
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT gm.group_id FROM group_memberships gm JOIN user_groups g ON g.id=gm.group_id WHERE gm.user_id=$1 AND g.archived_at IS NULL AND ($2='' OR g.model_ids ? $2) ORDER BY gm.priority,gm.group_id`, uid, model)
+	rows, err := s.db.QueryContext(ctx, `SELECT gm.group_id FROM group_memberships gm JOIN user_groups g ON g.id=gm.group_id WHERE gm.user_id=$1 AND g.archived_at IS NULL AND ($2='' OR g.model_ids ?| $3::text[]) ORDER BY gm.priority,gm.group_id`, uid, model, config.ModelScopeKeys(model))
 	ids := []string{}
 	legacyFallback := false
 	if err != nil {

@@ -159,6 +159,9 @@ func ParseUsagePricing(raw string) (UsagePricing, error) {
 		if !usagePricingModelPattern.MatchString(model) {
 			return pricing, fmt.Errorf("pricing model names must match [A-Za-z0-9._:-]{1,128}")
 		}
+		if strings.HasPrefix(model, ModelFamilyTokenPrefix) {
+			return pricing, fmt.Errorf("pricing model names must not start with %q; it marks a model family", ModelFamilyTokenPrefix)
+		}
 		if err := validateModelPricingFieldPresence(pricing.SchemaVersion, model, modelFields[model]); err != nil {
 			return pricing, err
 		}

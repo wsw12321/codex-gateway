@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"time"
+
+	"github.com/wsw/codex-gateway/internal/config"
 )
 
 // BillingSubscriptionEntitlement is a purchased immutable configuration. A
@@ -56,8 +59,22 @@ func normalizeBillingModels(models []string) ([]string, error) {
 	}
 	return values, nil
 }
+
+// validateBillingModelsTx accepts known family tokens and exact models that are
+// active in the synchronized catalog. A family token covers models priced
+// later, so it is never checked against the current catalog.
 func validateBillingModelsTx(ctx context.Context, tx *sql.Tx, models []string) error {
-	encoded, err := json.Marshal(models)
+	exact := make([]string, 0, len(models))
+	for _, model := range models {
+		if config.IsModelFamilyToken(model) {
+			continue
+		}
+		if strings.HasPrefix(model, config.ModelFamilyTokenPrefix) {
+			return fmt.Errorf("%w: unknown model family", ErrInvalid)
+		}
+		exact = append(exact, model)
+	}
+	encoded, err := json.Marshal(exact)
 	if err != nil {
 		return err
 	}
@@ -85,8 +102,9 @@ func billingExpiryDays(start time.Time, days, count int) (time.Time, error) {
 }
 
 // InitializeBillingSubscriptionModels must run after the authoritative model
-// catalog is synchronized and before admission. The marker is set atomically,
-// so future catalog additions never expand a saved subscription scope.
+// catalog is synchronized and before admission. Legacy subscriptions without a
+// scope covered every model, so they receive every family present in the
+// catalog. The marker is set atomically; scopes saved later are never touched.
 func (s *Store) InitializeBillingSubscriptionModels(ctx context.Context) error {
 	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `LOCK TABLE model_access_defaults IN SHARE MODE`); err != nil {
@@ -110,10 +128,14 @@ func (s *Store) InitializeBillingSubscriptionModels(ctx context.Context) error {
 		if len(values) == 0 {
 			return fmt.Errorf("%w: cannot initialize subscriptions from an empty model catalog", ErrInvalid)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscription_entitlements e SET model_ids=$1::jsonb FROM billing_subscriptions s WHERE e.subscription_id=s.id AND NOT s.models_initialized`, models); err != nil {
+		models, err := json.Marshal(config.ModelFamilyScope(values))
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE billing_subscription_entitlements e SET model_ids=$1::jsonb FROM billing_subscriptions s WHERE e.subscription_id=s.id AND NOT s.models_initialized`, models); err != nil {
 			return mapDBError("initialize legacy entitlement models", err)
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET model_ids=$1::jsonb,models_initialized=true WHERE NOT models_initialized`, models)
+		_, err = tx.ExecContext(ctx, `UPDATE billing_subscriptions SET model_ids=$1::jsonb,models_initialized=true WHERE NOT models_initialized`, models)
 		return mapDBError("initialize legacy subscription models", err)
 	})
 }

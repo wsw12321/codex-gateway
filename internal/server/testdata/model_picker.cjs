@@ -48,6 +48,55 @@ test("brand groups come from catalog metadata; full and partial states use expli
   assert.deepEqual(ui.values(), []); assert.throws(() => ui.run('selectedPickerModels("picker")'), /至少选择一个/);
 });
 
+test("family scopes cover a brand including later models and never shrink silently", () => {
+  const ui = dashboard(); ui.context.candidates = candidates;
+  ui.run('renderModelPicker(byId("picker"), candidates, {families: true, selected: ["family:gpt", "opaque-one", "final-id", "family:unknown"]})');
+  const host = ui.node("picker");
+  const gptFamily = find(host, "GPT 全系"), claudeFamily = find(host, "Claude 全系"), gpt = find(host, "全选 GPT 模型");
+  // Explicit IDs covered by a family are not submitted twice; unknown tokens are dropped.
+  assert.deepEqual(ui.values(), ["family:gpt", "final-id"]);
+  assert.equal(gptFamily.checked, true); assert.equal(claudeFamily.checked, false);
+  const opaqueTwo = descendants(host).find((node) => node.value === "opaque-two");
+  assert.equal(opaqueTwo.checked, true); assert.equal(opaqueTwo.disabled, true); assert.equal(gpt.disabled, true);
+  assert.match(descendants(host).find((node) => node.className === "model-picker-count").textContent, /已选 3 \/ 4 · GPT 全系/);
+  change(claudeFamily, true);
+  assert.deepEqual(ui.values(), ["family:gpt", "family:claude"]);
+  change(gptFamily, false);
+  assert.deepEqual(ui.values(), ["family:claude", "opaque-one", "opaque-two"], "leaving a family keeps today's models");
+  assert.equal(opaqueTwo.disabled, false);
+  descendants(host).find((child) => child.textContent === "清空").listeners.click();
+  assert.deepEqual(ui.values(), []);
+  ui.run('byId("picker").modelPicker.set(["family:gemini", "opaque-one"])');
+  assert.deepEqual(ui.values(), ["family:gemini", "opaque-one"]);
+  assert.deepEqual(JSON.parse(ui.run('JSON.stringify(selectedPickerModels("picker"))')), ["family:gemini", "opaque-one"]);
+});
+
+test("family scopes are offered only to billing pickers", () => {
+  const ui = dashboard(); ui.context.candidates = candidates;
+  ui.run('renderModelPicker(byId("picker"), candidates, {selected: ["family:gpt", "opaque-one"]})');
+  assert.equal(find(ui.node("picker"), "GPT 全系"), undefined);
+  assert.deepEqual(ui.values(), ["opaque-one"]);
+  ui.run('renderModelPicker(byId("single"), candidates, {single: true, families: true})');
+  assert.equal(find(ui.node("single"), "GPT 全系"), undefined);
+});
+
+test("scope text names families first and hides the models they cover", () => {
+  const ui = dashboard();
+  assert.equal(ui.run('billingModelText(["claude-a", "family:claude", "family:gpt", "gpt-a", "gemini-x"])'), "GPT 全系、Claude 全系、gemini-x");
+  assert.equal(ui.run('billingModelText(["gpt-a", "claude-b"])'), "gpt-a、claude-b");
+  assert.equal(ui.run('billingModelText([])'), "");
+  assert.equal(ui.run('modelFamilyGroup("gemini-4-argon-high") + modelFamilyGroup("o9") + modelFamilyGroup("codex-auto-review")'), "GeminiGPT");
+});
+
+test("new group scopes default to every family; other defaults stay explicit", async () => {
+  const ui = dashboard();
+  ui.context.request = async () => ({models: candidates}); ui.run('api = request');
+  await ui.run('loadFormModelPicker("group", "manageable", undefined, {defaultAll: true, families: true})');
+  assert.deepEqual(ui.values("group"), ["family:gpt", "family:gemini", "family:claude"]);
+  await ui.run('loadFormModelPicker("plain", "manageable", undefined, {defaultAll: true})');
+  assert.deepEqual(ui.values("plain"), candidates.map((item) => item.id));
+});
+
 test("search preserves selections and single mode cannot accumulate selections", () => {
   const ui = dashboard(); ui.context.candidates = candidates;
   ui.run('renderModelPicker(byId("picker"), candidates, {single: true, selected: ["opaque-one", "opaque-two"]})');

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -114,7 +115,7 @@ func TestBillingPlanMigrationPreservesLegacyPostgresIntegration(t *testing.T) {
 		t.Fatalf("subscriptions=%+v", state.Subscriptions)
 	}
 	sub := state.Subscriptions[0]
-	if sub.ID != subscriptionID || sub.PeriodID == nil || *sub.PeriodID != periodID || sub.Plan != nil || sub.CanRenew || sub.ChargeEnabled || sub.Priority != 1 || state.CashPreferences.Priority != 100 || len(sub.ModelIDs) != 2 || len(sub.Entitlements) != 1 || !equalAllocationDecimal(sub.RemainingUSD, "6") || !sub.PeriodStartsAt.Equal(start) || !sub.ExpiresAt.Equal(start.Add(5*24*time.Hour)) {
+	if sub.ID != subscriptionID || sub.PeriodID == nil || *sub.PeriodID != periodID || sub.Plan != nil || sub.CanRenew || sub.ChargeEnabled || sub.Priority != 1 || state.CashPreferences.Priority != 100 || !reflect.DeepEqual(sub.ModelIDs, []string{"family:gemini", "family:gpt"}) || len(sub.Entitlements) != 1 || !equalAllocationDecimal(sub.RemainingUSD, "6") || !sub.PeriodStartsAt.Equal(start) || !sub.ExpiresAt.Equal(start.Add(5*24*time.Hour)) {
 		t.Fatalf("migration changed rights: %+v", sub)
 	}
 	plans, err := s.ListBillingPlans(ctx, true)
@@ -131,8 +132,8 @@ func TestBillingPlanMigrationPreservesLegacyPostgresIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(again.Subscriptions[0].ModelIDs) != 2 {
-		t.Fatal("new catalog model expanded migrated scope")
+	if !reflect.DeepEqual(again.Subscriptions[0].ModelIDs, []string{"family:gemini", "family:gpt"}) {
+		t.Fatal("a later catalog family expanded the migrated scope")
 	}
 	if got := readHistory(); got != originalHistory {
 		t.Fatalf("migration rewrote history: %s", got)

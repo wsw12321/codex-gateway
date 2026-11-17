@@ -3949,6 +3949,8 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 .model-picker-brand { border-top: 1px solid var(--line); padding: 10px 0; }
 .model-picker-brand summary { cursor: pointer; font-weight: 600; }
 .model-picker-brand > .model-picker-select-all { padding-top: 10px; }
+.model-picker-brand > .model-picker-family { font-weight: 600; }
+.model-picker-choice:has(input:disabled) { cursor: default; opacity: .72; }
 .model-picker-options { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 8px; padding-top: 10px; }
 .model-picker-choice { min-height: 36px; padding: 6px; border-radius: 6px; overflow-wrap: anywhere; }
 .model-picker-choice:focus-within { outline: 2px solid var(--accent); outline-offset: 1px; }
