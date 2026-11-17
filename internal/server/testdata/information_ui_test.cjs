@@ -166,4 +166,32 @@ test("request attribution never fabricates a missing ID and renders provided tex
   const ui = dashboard();
   assert.equal(ui.run('requestUpstreamCell({upstream_masked_email: "unknown@example.test"}).textContent'), "未归因");
   assert.equal(ui.run('requestUpstreamCell({upstream_account_id: "stable-id", upstream_masked_email: "<script>"}).textContent'), "<script>stable-id");
+  assert.equal(ui.run('requestUpstreamCell({upstream_account_id: "stable-id"}).textContent'), "邮箱不可用stable-id");
+});
+
+test("request rows name the account by alias, then CPA name, keeping the masked email beside it", () => {
+  const ui = dashboard();
+  const usage = (fields) => ui.run(`requestUpstreamCell(${JSON.stringify({upstream_account_id: "stable-id", ...fields})})`);
+  let cell = usage({upstream_alias: "主力 Plus", upstream_display_name: "team-a", upstream_masked_email: "a***@example.test"});
+  assert.equal(cell.children[0].textContent, "主力 Plus");
+  assert.equal(cell.children[1].textContent, "a***@example.test · stable-id");
+  cell = usage({upstream_alias: null, upstream_display_name: "team-a", upstream_masked_email: "a***@example.test"});
+  assert.equal(cell.children[0].textContent, "team-a");
+  assert.equal(cell.children[1].textContent, "a***@example.test · stable-id");
+  cell = usage({upstream_alias: "备用"});
+  assert.equal(cell.textContent, "备用stable-id");
+
+  const monitor = (fields, active = false) => ui.run(`monitoringUpstreamCell(${JSON.stringify(fields)}, ${active})`);
+  cell = monitor({upstream_account_id: "stable-id", upstream_alias: "主力 Plus", upstream_display_name: "team-a", upstream_masked_email: "a***@example.test"});
+  assert.equal(cell.querySelector("strong").textContent, "主力 Plus");
+  assert.equal(cell.querySelector("small").textContent, "a***@example.test · stable-id");
+  cell = monitor({upstream_account_id: "stable-id", upstream_display_name: "team-a", upstream_masked_email: "a***@example.test"});
+  assert.equal(cell.querySelector("strong").textContent, "team-a");
+  cell = monitor({upstream_account_id: "stable-id", upstream_masked_email: "a***@example.test"});
+  assert.equal(cell.querySelector("strong").textContent, "a***@example.test");
+  assert.equal(cell.querySelector("small").textContent, "stable-id");
+  cell = monitor({upstream_account_id: "stable-id"}, true);
+  assert.equal(cell.querySelector("strong"), null);
+  assert.equal(cell.querySelector("small").textContent, "stable-id");
+  assert.equal(monitor({}, true).textContent, "分配中");
 });

@@ -187,6 +187,8 @@ type monitoringRequestDTO struct {
 	HTTPStatus          *int       `json:"http_status"`
 	ErrorCode           *string    `json:"error_code"`
 	UpstreamAccountID   *string    `json:"upstream_account_id"`
+	UpstreamAlias       *string    `json:"upstream_alias"`
+	UpstreamDisplayName *string    `json:"upstream_display_name"`
 	UpstreamMaskedEmail *string    `json:"upstream_masked_email"`
 }
 
@@ -203,6 +205,7 @@ func monitoringRequestDTOFromStore(row store.MonitoringRequest) monitoringReques
 		UserID: row.UserID, Username: row.Username, DisplayName: row.DisplayName,
 		RequestedModel: row.RequestedModel, Model: row.Model, State: row.State, HTTPStatus: row.HTTPStatus,
 		ErrorCode: row.ErrorCode, UpstreamAccountID: row.UpstreamAccountID,
+		UpstreamAlias: row.UpstreamAlias, UpstreamDisplayName: row.UpstreamDisplayName,
 		UpstreamMaskedEmail: row.UpstreamMaskedEmail,
 	}
 }
@@ -227,8 +230,9 @@ func overlayActiveAttribution(rows []store.MonitoringRequest, active map[string]
 		}
 		// Do not mutate terminal records.  For active rows, however, a fresh
 		// response-header observation supersedes a stale/null durable value.
+		// The joined names belong to the durable account, so they go with it.
 		if row.UpstreamAccountID == nil || *row.UpstreamAccountID != accountID {
-			row.UpstreamMaskedEmail = nil
+			row.UpstreamAlias, row.UpstreamDisplayName, row.UpstreamMaskedEmail = nil, nil, nil
 		}
 		value := accountID
 		row.UpstreamAccountID = &value

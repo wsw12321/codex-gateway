@@ -38,6 +38,7 @@ func (s *Server) modelIdentificationStorage() modelIdentificationRepository {
 type modelIdentificationAccountOption struct {
 	ID          string `json:"id"`
 	Alias       string `json:"alias"`
+	DisplayName string `json:"display_name,omitempty"`
 	MaskedEmail string `json:"masked_email"`
 	Status      string `json:"status"`
 }
@@ -124,7 +125,7 @@ func (s *Server) resolveModelIdentificationOptions(ctx context.Context, accountI
 	}
 	found := false
 	for _, account := range accounts {
-		result.Accounts = append(result.Accounts, modelIdentificationAccountOption{ID: account.ID, MaskedEmail: account.MaskedEmail, Status: account.Status})
+		result.Accounts = append(result.Accounts, modelIdentificationAccountOption{ID: account.ID, DisplayName: account.DisplayName, MaskedEmail: account.MaskedEmail, Status: account.Status})
 		found = found || account.ID == accountID
 	}
 	if accountID == "" {

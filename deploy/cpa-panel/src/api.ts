@@ -1,6 +1,7 @@
 export type Provider = 'codex' | 'antigravity' | 'anthropic';
 export type Account = {
   id: string;
+  alias?: string;
   display_name?: string;
   email_masked: string;
   gateway_manual_status: string;
@@ -48,6 +49,13 @@ export const api = {
     return result.servers;
   },
 };
+
+// The Gateway alias names the account first, as on the dashboard cards; the
+// CPA name and masked email stay beside it so equal aliases remain distinct.
+export function accountIdentity(account: Pick<Account, 'id' | 'alias' | 'display_name' | 'email_masked'>): { title: string; details: string[] } {
+  const names = [account.alias, account.display_name, account.email_masked].filter((value): value is string => Boolean(value));
+  return { title: names[0] || account.id, details: names.slice(1) };
+}
 
 export function callbackFields(raw: string): { code: string; state: string } {
   const url = new URL(raw);

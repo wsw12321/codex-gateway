@@ -13,6 +13,8 @@ Owner 登录 Gateway 后，从“CPA 授权管理”进入 `/admin/cpa/`。该�
 
 Codex / Antigravity JSON 导入仅接受 `refresh_token` 及可选的 `access_token`、`id_token`；Claude 导入仅提取刷新令牌和访问令牌，也支持 Claude Code 的 `claudeAiOauth` 格式。页面只向后端发送这些必要字段，文件内容不写入浏览器存储，提交后清空文件输入，成功或失败都会清除持有的凭据对象。CPA 对提供刷新令牌的新凭据实际执行刷新；Claude 也支持仅访问令牌导入并实时验证身份，但到期后不能自动刷新，需重新授权或导入有效凭据。Antigravity 还核对真实 Google 身份、项目和 Gemini 额度。不能仅因 access token 尚未过期就视为迁移成功。
 
+账号列表的标题与 Gateway 账号卡片一致：依次显示 Gateway 别名、CPA 名称、脱敏邮箱，其余信息和账号 ID 显示在标题下方。别名在 Gateway 账号页面的“账号详情与设置”中修改。
+
 账号启停使用与 Gateway 原有账号页面相同的业务状态。删除会先持久停用，等账号活动请求结束后移除凭据，保留稳定身份映射、控制状态和历史账单。如果排空超时或并发状态无法确认，删除失败，账号继续停用；稍后重试即可。
 
 Claude 五小时/七天额度以 CPA 的被动观测快照展示，刷新状态不会主动消耗生成额度；无观测数据或未验证套餐显示未知。客户端配置与验收见 [Claude Code 接入](claude-code.md)。

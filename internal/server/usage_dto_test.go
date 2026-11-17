@@ -19,8 +19,8 @@ func TestUsageDTOExplicitOwnerAttributionAndPersonalIsolation(t *testing.T) {
 	id := "0123456789abcdef"
 	for _, state := range []string{"completed", "degraded", "failed", "cancelled"} {
 		rows := []store.UsageRequest{{RequestID: "request-1", State: state, UpstreamAccountID: &id}, {RequestID: "historical", State: "completed"}}
-		emails := map[string]string{id: "a***@example.com"}
-		owner, err := json.Marshal(usageResponseDTO(rows, true, emails))
+		accounts := map[string]usageAccountIdentity{id: {Alias: "主力 Plus", DisplayName: "Team", MaskedEmail: "a***@example.com"}}
+		owner, err := json.Marshal(usageResponseDTO(rows, true, accounts))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,15 +28,23 @@ func TestUsageDTOExplicitOwnerAttributionAndPersonalIsolation(t *testing.T) {
 		if err = json.Unmarshal(owner, &decoded); err != nil {
 			t.Fatal(err)
 		}
-		if decoded[0]["upstream_account_id"] != id || decoded[0]["upstream_masked_email"] != emails[id] || decoded[0]["State"] != state || decoded[1]["upstream_account_id"] != nil || decoded[1]["upstream_masked_email"] != nil {
+		if decoded[0]["upstream_account_id"] != id || decoded[0]["upstream_alias"] != "主力 Plus" || decoded[0]["upstream_display_name"] != "Team" ||
+			decoded[0]["upstream_masked_email"] != "a***@example.com" || decoded[0]["State"] != state {
 			t.Fatalf("owner DTO: %s", owner)
 		}
-		personal, err := json.Marshal(usageResponseDTO(rows, false, emails))
+		for _, field := range []string{"upstream_account_id", "upstream_alias", "upstream_display_name", "upstream_masked_email"} {
+			if value, ok := decoded[1][field]; !ok || value != nil {
+				t.Fatalf("unattributed %s: %s", field, owner)
+			}
+		}
+		personal, err := json.Marshal(usageResponseDTO(rows, false, accounts))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(string(personal), "upstream_account") || strings.Contains(string(personal), "upstream_masked") || strings.Contains(string(personal), id) || strings.Contains(string(personal), "example.com") {
-			t.Fatalf("personal leak: %s", personal)
+		for _, leaked := range []string{"upstream_", id, "example.com", "主力 Plus", "Team"} {
+			if strings.Contains(string(personal), leaked) {
+				t.Fatalf("personal leak %q: %s", leaked, personal)
+			}
 		}
 	}
 }
@@ -45,8 +53,14 @@ func TestUsageDTOUnknownMetadataPreservesOnlyStableID(t *testing.T) {
 	id := "0123456789abcdef"
 	rows := []store.UsageRequest{{UpstreamAccountID: &id}}
 	result := usageResponseDTO(rows, true, nil).([]ownerUsageRequestDTO)
-	if result[0].UpstreamAccountID == nil || *result[0].UpstreamAccountID != id || result[0].UpstreamMaskedEmail != nil {
+	if result[0].UpstreamAccountID == nil || *result[0].UpstreamAccountID != id || result[0].UpstreamMaskedEmail != nil ||
+		result[0].UpstreamAlias != nil || result[0].UpstreamDisplayName != nil {
 		t.Fatalf("unavailable metadata: %+v", result)
+	}
+	// An alias without synchronized CPA metadata still names the account.
+	result = usageResponseDTO(rows, true, map[string]usageAccountIdentity{id: {Alias: "备用"}}).([]ownerUsageRequestDTO)
+	if result[0].UpstreamAlias == nil || *result[0].UpstreamAlias != "备用" || result[0].UpstreamDisplayName != nil || result[0].UpstreamMaskedEmail != nil {
+		t.Fatalf("alias only: %+v", result)
 	}
 }
 
@@ -54,9 +68,10 @@ func TestUsageCSVIncludesAttributionOnlyForOwner(t *testing.T) {
 	id := "0123456789abcdef"
 	rows := []store.UsageRequest{{RequestID: "failure", State: "failed", UpstreamAccountID: &id}, {RequestID: "historic"}}
 	emails := map[string]string{id: "a***@example.com"}
+	accounts := map[string]usageAccountIdentity{id: {Alias: "主力 Plus", DisplayName: "Team", MaskedEmail: emails[id]}}
 	for _, owner := range []bool{false, true} {
 		response := httptest.NewRecorder()
-		writeUsageCSV(response, rows, owner, emails)
+		writeUsageCSV(response, rows, owner, accounts)
 		records, err := csv.NewReader(response.Body).ReadAll()
 		if err != nil {
 			t.Fatal(err)
@@ -84,22 +99,24 @@ func TestUsageMetadataInitialReadFillsOnlyKnownAttribution(t *testing.T) {
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{ID: id, MaskedEmail: "a***@example.com", Plan: "pro", Status: "active", LastSyncedAt: time.Now().UTC()}}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []gatewayproxy.UpstreamAccount{{ID: id, DisplayName: "team-a", MaskedEmail: "a***@example.com", Plan: "pro", Status: "active", LastSyncedAt: time.Now().UTC()}}})
 	}))
 	defer remote.Close()
 	base, _ := url.Parse(remote.URL)
 	server := &Server{upstream: withManagement(gatewayproxy.NewWithHTTPClient(base, "secret", remote.Client()))}
-	emails := make(map[string]string)
+	// A stored alias without synchronized metadata is kept; the sidecar only
+	// fills the CPA name and masked email.
+	accounts := map[string]usageAccountIdentity{id: {Alias: "主力 Plus"}}
 	rows := []store.UsageRequest{{UpstreamAccountID: &id}, {RequestID: "unattributed"}}
-	server.completeUsageAccountEmails(context.Background(), rows, emails)
-	if calls != 1 || emails[id] != "a***@example.com" || rows[1].UpstreamAccountID != nil {
-		t.Fatalf("calls=%d emails=%v rows=%v", calls, emails, rows)
+	server.completeUsageAccountMetadata(context.Background(), rows, accounts)
+	if calls != 1 || accounts[id] != (usageAccountIdentity{Alias: "主力 Plus", DisplayName: "team-a", MaskedEmail: "a***@example.com"}) || rows[1].UpstreamAccountID != nil {
+		t.Fatalf("calls=%d accounts=%v rows=%v", calls, accounts, rows)
 	}
-	server.completeUsageAccountEmails(context.Background(), rows, emails)
+	server.completeUsageAccountMetadata(context.Background(), rows, accounts)
 	if calls != 1 {
 		t.Fatal("available durable metadata unnecessarily queried")
 	}
-	server.completeUsageAccountEmails(context.Background(), []store.UsageRequest{{RequestID: "unattributed"}}, map[string]string{})
+	server.completeUsageAccountMetadata(context.Background(), []store.UsageRequest{{RequestID: "unattributed"}}, map[string]usageAccountIdentity{})
 	if calls != 1 {
 		t.Fatal("unattributed request triggered account lookup")
 	}
