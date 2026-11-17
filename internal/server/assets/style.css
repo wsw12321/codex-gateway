@@ -1253,6 +1253,117 @@ code {
   color: var(--muted);
 }
 
+.guide-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem 1.5rem;
+  margin-top: 1.5rem;
+}
+
+.guide-switcher-group {
+  display: grid;
+  min-width: 0;
+  gap: .45rem;
+}
+
+.guide-switcher-label {
+  color: var(--muted);
+  font-size: .78rem;
+  font-weight: 700;
+}
+
+.tabs.guide-provider-tabs {
+  margin-bottom: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.tabs.guide-provider-tabs button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.guide-os-tabs {
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  gap: .25rem;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: .25rem;
+  background: var(--surface-soft);
+}
+
+.guide-os-tabs button {
+  flex: 0 0 auto;
+  min-height: 2.2rem;
+  border: 0;
+  border-radius: 999px;
+  padding: .3rem .95rem;
+  color: var(--muted);
+  background: transparent;
+  white-space: nowrap;
+}
+
+.guide-os-tabs button:hover {
+  color: var(--text);
+}
+
+.guide-os-tabs button.active {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / 45%);
+}
+
+.guide-fields {
+  display: grid;
+  gap: .55rem;
+  margin: 0;
+}
+
+.guide-fields > div {
+  display: grid;
+  grid-template-columns: minmax(6rem, .25fr) minmax(0, 1fr);
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: .5rem 0;
+}
+
+.guide-fields > div:last-child {
+  border-bottom: 0;
+}
+
+.guide-fields dt {
+  font-weight: 700;
+}
+
+.guide-fields dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .5rem;
+  margin: 0;
+  color: var(--muted);
+}
+
+.guide-client kbd {
+  border: 1px solid var(--line-strong);
+  border-radius: .35rem;
+  padding: .05rem .35rem;
+  background: var(--surface-soft);
+  font-family: inherit;
+  font-size: .85em;
+}
+
+#guide-help .guide-troubleshooting {
+  margin-top: .25rem;
+  border-top: 0;
+  padding-top: 0;
+}
+
 .scope-banner {
   display: flex;
   align-items: center;
@@ -2897,9 +3008,33 @@ dialog form {
     grid-template-columns: 1fr;
   }
 
-  .guide-troubleshooting dl > div {
+  .guide-troubleshooting dl > div,
+  .guide-fields > div {
     grid-template-columns: 1fr;
     gap: .2rem;
+  }
+
+  .guide-switcher {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .tabs.guide-provider-tabs {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .tabs.guide-provider-tabs button {
+    padding-inline: .35rem;
+    white-space: normal;
+  }
+
+  .guide-os-tabs {
+    width: 100%;
+  }
+
+  .guide-os-tabs button {
+    flex: 1 1 0;
   }
 
   #billing-owner-scope {

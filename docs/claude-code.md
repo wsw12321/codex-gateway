@@ -20,7 +20,7 @@ Claude 账号在“CPA 授权管理”页面新增或重新授权：Owner 先选
 
 ## 用户配置
 
-按 [Claude Code 官方安装说明](https://code.claude.com/docs/en/setup) 安装客户端和 Node.js。在 Gateway 的“开始使用 → Claude Code”复制配置命令，按终端提示输入 Gateway API Key，再从 `/v1/models` 返回的目录中选择精确模型 ID。目录只应返回当前 Key 已授权、已定价且有可用账号的模型。
+按 [Claude Code 官方安装说明](https://code.claude.com/docs/en/setup) 安装客户端和 Node.js。在 Gateway 的“使用指导 → Claude”标签页选择操作系统，复制 Claude Code 卡片的安装与配置命令，按终端提示输入 Gateway API Key，再从 `/v1/models` 返回的目录中选择精确模型 ID。目录只应返回当前 Key 已授权、已定价且有可用账号的模型。
 
 配置器原子合并用户级 `~/.claude/settings.json`（Windows 为 `%USERPROFILE%\.claude\settings.json`，设置 `CLAUDE_CONFIG_DIR` 时使用该目录）：
 
@@ -39,6 +39,11 @@ node configure-client.cjs claude https://gateway.example
 若终端输入被管道接管且目录有多个模型，第三个参数必须指定目录中的精确模型 ID；Key 仍仅从标准输入读取。
 
 退出旧 Claude Code 会话并重新运行 `claude`，发送一次简短请求后在“使用统计”核对模型、账号归因与缓存账单。网关协议参考 [LLM gateway protocol](https://code.claude.com/docs/en/llm-gateway-protocol)，缓存用量参考 [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)。
+
+“Claude”标签页另有两张卡片，说明见 [客户端配置](client-config.md#claude-桌面端cc-switch)：
+
+- **桌面端**：推荐第三方开源工具 [CC Switch](https://ccswitch.io)，用户按其官网说明自行填写 Gateway 站点（不加 `/v1`）、Gateway Key 和已授权的 `claude-*` 精确模型 ID。CC Switch 与配置器都会修改 Claude 用户配置，应二选一。
+- **IDE 扩展**：VS Code 的 Claude Code 扩展（`anthropic.claude-code`）与 CLI 共用用户级 `settings.json`。运行同一条配置命令后勾选 `claudeCode.disableLoginPrompt`，不要把 Key 写入 VS Code 设置。
 
 ## 界面与配置验证
 
@@ -59,7 +64,7 @@ PLAYWRIGHT_MODULE=/path/to/playwright PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/ch
 
 SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和终端验证授权、重新授权、URL 校验、超时、异常响应、互斥、终端恢复与凭据保护，并检查实际 Shell／`nc` 传输的 HTTP 分帧及响应限制。自动化测试不执行真实账号登录。真实 SSH 授权验收需要已部署 Anthropic 支持的服务器、可用订阅账号和用户浏览器配合；本次脚本交付未执行此项验收，不能以模拟测试结果替代。
 
-截图：[Claude 账号桌面](screenshots/anthropic-accounts-desktop.png)、[Claude 账号手机](screenshots/anthropic-accounts-mobile.png)、[配置指导手机](screenshots/claude-guide-mobile.png)、[CPA 桌面](screenshots/cpa-anthropic-desktop.png)、[CPA 手机](screenshots/cpa-anthropic-mobile.png)。
+截图：[Claude 账号桌面](screenshots/anthropic-accounts-desktop.png)、[Claude 账号手机](screenshots/anthropic-accounts-mobile.png)、[配置指导桌面](screenshots/claude-guide-desktop.png)、[配置指导手机](screenshots/claude-guide-mobile.png)、[CPA 桌面](screenshots/cpa-anthropic-desktop.png)、[CPA 手机](screenshots/cpa-anthropic-mobile.png)。
 
 ## 标准 API 定价与目录升级
 

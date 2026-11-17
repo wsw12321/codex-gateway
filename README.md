@@ -578,10 +578,13 @@ Gateway；登录后的生成冒烟会等待 Gateway 就绪。回调或数据库�
 
 ## Codex CLI 与 agy CLI 配置
 
-管理界面“使用指导”提供公共准备，以及 Codex CLI、agy CLI 各自的安装、配置和启动
-步骤。先安装 [Node.js LTS](https://nodejs.org/en/download)；Windows 按 Win+R，输入
-`cmd` 打开命令提示符。Codex 使用 `npm install -g @openai/codex`，agy 使用页面列出的
-官方 Windows CMD 或 macOS / Linux 安装命令。
+管理界面“使用指导”先列出公共准备，再按模型供应商（OpenAI Codex / Claude / Google
+Antigravity）和操作系统（Windows / macOS / Linux）分标签页展示各客户端的安装、配置和
+启动步骤：Codex 有 CLI、桌面端和 IDE 扩展，Claude 有 Claude Code、桌面端（推荐第三方
+工具 CC Switch）和 IDE 扩展，Antigravity 只有 agy CLI。系统标签按浏览器平台自动选择，
+只保存在页面内存中。先安装 [Node.js LTS](https://nodejs.org/en/download)；Windows 按
+Win+R，输入 `cmd` 打开命令提示符。Codex 使用 `npm install -g @openai/codex`，Claude
+Code 和 agy 使用页面列出的官方 Windows CMD 或 macOS / Linux 安装命令。
 
 每台设备创建独立 API Key，需要区分项目时设置 Key 的默认项目。复制所选客户端的
 一键配置命令，在终端提示后输入 Key。命令使用当前部署地址，通过 Node.js 处理中文

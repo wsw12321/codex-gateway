@@ -1,8 +1,21 @@
-# Codex CLI 与 agy CLI 客户端配置
+# 客户端配置
 
-管理界面“使用指导”分为公共准备、Codex CLI、agy CLI 三部分，每个客户端都有安装、
-配置和启动步骤。复制的一键配置命令会使用当前站点地址，并在终端提示输入 Gateway
-API Key；Key 不进入复制命令、命令历史或网页存储。
+管理界面“使用指导”先列出公共准备，再用两组标签页切换内容：
+
+| 模型供应商 | CLI | 桌面端 | IDE 扩展 |
+| --- | --- | --- | --- |
+| OpenAI Codex | Codex CLI | Codex 桌面端（Windows 已验证） | VS Code Codex 扩展 |
+| Claude | Claude Code | 第三方工具 CC Switch | VS Code Claude Code 扩展 |
+| Google Antigravity | agy CLI | 不提供 | 不提供 |
+
+操作系统标签为 Windows、macOS 和 Linux，只切换与系统相关的安装命令和路径说明；
+配置命令对三种系统相同。页面按浏览器平台（`navigator.userAgentData.platform`、
+`navigator.platform`、`userAgent`）选择初始系统，无法识别时使用 Windows。所选标签只
+保存在页面内存中，刷新数据不会重置，也不写入浏览器存储。两组标签都支持方向键、
+Home 和 End。
+
+复制的一键配置命令会使用当前站点地址，并在终端提示输入 Gateway API Key；Key 不进入
+复制命令、命令历史或网页存储。
 
 ## 公共准备
 
@@ -74,7 +87,62 @@ WebSocket；Gateway 会返回一次 `426 responses_websocket_unsupported`，客�
 Gateway 不实现真正的 WebSocket、Chat Completions 或任意 URL 代理。Codex 的
 文件读取、命令执行和代码修改仍发生在本地设备。
 
+## Codex 桌面端
+
+Codex 桌面端与 Codex CLI 共用用户配置目录（Windows 为 `%USERPROFILE%\.codex`，
+macOS / Linux 为 `~/.codex`，设置 `CODEX_HOME` 时使用该目录）。先安装 Codex CLI 并
+执行上节的配置命令，再完全退出并重新打开桌面端。配置器需要调用 Codex CLI 校验配置并
+保存凭据，因此只用桌面端也要先安装 CLI。
+
+- Windows：从 Microsoft Store 安装，或在 CMD 运行
+  `winget install --id 9PLM9XGG6VKS -s msstore`。管理员已在 Windows 桌面端验证改写
+  `config.toml` 的接入方式。若在桌面端设置中把 agent 切换为 WSL，它读取 WSL 内的
+  Linux 用户目录，需要在 WSL 中安装 CLI 并执行配置命令。
+- macOS：从 [官方页面](https://developers.openai.com/codex/app) 下载。
+- Linux：官方桌面端为预览版，支持 Ubuntu / Debian、Fedora 和 Arch，安装方式见
+  [官方说明](https://developers.openai.com/codex/linux/linux-app)。
+
+macOS 和 Linux 桌面端读取同一配置文件，但本站尚未在这两个平台验证。
+
+## Codex IDE 扩展
+
+在 VS Code 扩展视图搜索 OpenAI 发布的 “Codex” 扩展并安装，参见
+[官方 IDE 说明](https://developers.openai.com/codex/ide)。扩展与 CLI 共用配置目录：
+执行 Codex CLI 配置命令后运行 `Developer: Reload Window`。VS Code 通过 WSL 远程连接
+时，扩展读取 WSL 内的配置目录，需在 WSL 中执行配置命令。
+
+## Claude Code
+
+安装命令按系统区分：Windows CMD 使用
+`curl -fsSL https://claude.ai/install.cmd -o install.cmd && install.cmd && del install.cmd`，
+macOS / Linux 使用 `curl -fsSL https://claude.ai/install.sh | bash`。配置器写入的内容、
+冲突检查和模型选择见 [Claude Code 接入与账号管理](claude-code.md#用户配置)。
+
+## Claude 桌面端（CC Switch）
+
+页面推荐开源桌面工具 CC Switch，只链接其官网 <https://ccswitch.io>，并提示官方渠道
+仅为该网站和 GitHub 仓库 `farion1231/cc-switch`。用户按官网说明自行配置，需要填写：
+
+- 请求地址：当前 Gateway 站点 origin，不加 `/v1`；
+- API Key：本站签发的 Gateway Key；
+- 模型：中转站目录中已授权的 `claude-*` 精确模型 ID。
+
+CC Switch 不由本站或 Anthropic 提供，Key 由它保存在本机。它和配置命令都会修改 Claude
+用户配置，应选择其中一种方式管理，避免互相覆盖。本站没有验证 CC Switch。
+
+## Claude Code IDE 扩展
+
+在 VS Code 安装 Anthropic 发布的 “Claude Code” 扩展（`anthropic.claude-code`），参见
+[官方 VS Code 说明](https://code.claude.com/docs/en/vs-code)。扩展与 CLI 共用用户级
+`settings.json`，执行 Claude Code 配置命令即可写入 Gateway 地址、Key 和模型；只用
+扩展时无需安装 CLI，但仍需 Node.js 运行配置命令。随后在 VS Code 设置中勾选
+“Claude Code: Disable Login Prompt”（`claudeCode.disableLoginPrompt`），让扩展跳过
+Claude 账号登录。不要把 Gateway Key 写入 VS Code 设置。
+
 ## agy CLI
+
+Google Antigravity 标签页只提供 agy CLI。按管理员决定，页面不提供 Antigravity 桌面端
+或 IDE 的配置方式。
 
 按 [agy 官方安装说明](https://antigravity.google/docs/cli/install/) 选择系统对应命令。
 Windows 使用 CMD：
