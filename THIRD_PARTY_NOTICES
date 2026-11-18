@@ -1,11 +1,11 @@
 CLIProxyAPI
 ===========
 
-This distribution builds and runs CLIProxyAPI v8.0.76 from the immutable
+This distribution builds and runs CLIProxyAPI v8.0.77 from the immutable
 upstream commit:
 
   https://github.com/router-for-me/CLIProxyAPI
-  7df56074b252384d878ec4fca840552c6fb5236e
+  a5e8f69e56309e1ef6d6872e667da81fdfbce2ce
 
 CLIProxyAPI is licensed under the MIT License. Its copyright remains with the
 upstream authors and contributors. The license text supplied by the upstream

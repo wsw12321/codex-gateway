@@ -50,7 +50,7 @@ RUN printf "%s  /tmp/cliproxy-residual.patch\n" "$CLIPROXY_RESIDUAL_PATCH_SHA256
     && test "$(git status --porcelain | wc -l)" = 4
 # The model catalog is the reviewed one embedded in the pinned source.
 RUN printf '%s  internal/registry/models/models.json\n' \
-    'fbca148e7e6ce79425441b637566073754dd8a6c18783fe1246a8337ba59d319' | sha256sum -c -
+    '2ce8eb0150460f44433f849f812dbb76bfde88cd1e19ef1ee77968b1c646a655' | sha256sum -c -
 
 # Security dependency floors, as ordinary module upgrades. A module upstream
 # already requires at or above its floor is left alone: go get with an older

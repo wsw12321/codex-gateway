@@ -232,3 +232,8 @@ Codex 与 Claude 两行经过实测（真实 CPA 进程，同一个上游账号�
   不配置）；`claudeMatcherCache` 缓存按配置编译的敏感词匹配器，键是配置项本身。第 2、3 项
   重放缓存与 `sdk/cliproxy/session` 只把 JSON／正则库换成 `moego`，键不变。缺口 1、2 涉及的
   两个文件没有变化，三份报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。
+- **v8.0.76 → v8.0.77（2026-11-18）。** `git grep` 从 191 处增加到 192 处，新增的一处是
+  `helps/payload_replace.go` 中函数内的局部 map（路径替换去重），不是进程级状态。`helps` 下的
+  其余改动是 payload 替换规则（默认关闭，入口脚本不配置）、请求日志与用量字段，没有新的缓存；
+  `internal/cache`、`sdk/cliproxy/session` 与 `gemini/openai/responses` 翻译器未变。缺口 1、2 涉及的
+  两个文件没有变化，三份报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。
