@@ -1,8 +1,8 @@
 # GPT-6 与 GPT-5.6 服务端配置
 
 本指南使用 [`deploy/env.gpt-5.6.example`](../deploy/env.gpt-5.6.example) 生成
-生产 `.env`。完整可读目录是
-[`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，模型单价和
+生产 `.env`。价格目录内置在 Gateway 镜像中，可读原文是
+[`internal/config/data/pricing.json`](../internal/config/data/pricing.json)，模型单价和
 缓存语义于 2026-10-17 对照以下官方文档核对：
 
 - [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)
@@ -182,18 +182,22 @@ Cloudflare Tunnel token 不得写入 `.env`。把它保存为
 ## 已运行服务器只更新价格目录
 
 本节只适用于已经确认应用 `0005` 和 `0006`、且二进制已经支持 v2 的服务器。首次从 v1
-升级必须使用上述停写迁移。后续只调整官方价格或固定汇率时，先备份现有配置，
-然后只把模板中的 `GATEWAY_USAGE_PRICING_JSON` 合并到服务器 `.env`；不要覆盖
-服务器自己的域名、revision、GID、网段或并发参数。
+升级必须使用上述停写迁移。价格目录随镜像发布：官方价格调整在仓库的
+`internal/config/data/pricing.json` 中完成，服务器按正常流程部署新 revision 即可，`.env` 不变。
+只需偏离默认价格或固定汇率时，在服务器写本地覆盖文件，不需要重新构建镜像：
 
 ```sh
-cp .env ".env.backup.$(date -u +%Y%m%dT%H%M%SZ)"
+./scripts/pricing.sh show -builtin -model gpt-6-sol > deploy/pricing/override.candidate.json
+chmod 0644 deploy/pricing/override.candidate.json
+# 编辑价格；如需改汇率，同时加入 usd_cny_rate 和 fx_as_of
+./scripts/pricing.sh check override.candidate.json
+mv deploy/pricing/override.candidate.json deploy/pricing/override.json
 ./scripts/validate-compose.sh
 ./scripts/compose.sh up -d --no-deps --force-recreate gateway
 ./scripts/compose.sh ps
 ```
 
-仅修改环境变量不需要重新构建镜像，但必须重建 Gateway 容器，因为目录只在进程
+覆盖规则见[本地价格覆盖](operations.md#本地价格覆盖)。修改覆盖文件后必须重建 Gateway 容器，因为目录只在进程
 启动时读取。新目录只影响之后创建的 reservation；正在执行的请求继续使用原准入
 快照，已经结算的 ledger USD 不变。变更后应抽查新 ledger 的目录日期、最终四价
 和兜底统计。
@@ -241,5 +245,5 @@ Owner 还可在管理台“模型权限”中独立控制用户权限：新用�
   升级，而不是伪造另一个价格名称。
 
 以后 Codex 模型目录出现新模型时，应先从官方价格页核对该模型所有允许服务层、
-上下文档位和缓存写入语义，在价格 JSON 加入完整规则并同步 API Key 白名单，经过
+上下文档位和缓存写入语义，在仓库的 `internal/config/data/pricing.json` 加入完整规则并同步 API Key 白名单，经过
 边界与结算测试后再允许客户端切换。

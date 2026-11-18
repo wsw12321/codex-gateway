@@ -116,7 +116,7 @@ Gemini 4 Hydrogen。它们在评审并定价之前不注册；排除写成精确
 503。Gateway 不为这些模型定价，本来就不会发出这类请求；排除规则让 CPA 一侧也不依赖这一点。
 
 目录新增模型导致构建失败时，二选一：把它加入排除规则；或者评审后为它定价
-（`deploy/pricing-v2.example.json` 及其各份副本），并加入 `AntigravityModels()` 与测试中的
+（内置目录 `internal/config/data/pricing.json`，部署无需改配置），并加入 `AntigravityModels()` 与测试中的
 已审列表，目录的范围见 [CPA 原生模型与定价迁移](cpa-native-models.md)。
 
 ### Provider 缓存与会话标识
@@ -274,7 +274,8 @@ Gateway 用与 Owner 查询相同的非自动读数写入额度守卫，并要�
 2. 运行 `python3 -m unittest scripts.tests.test_cpa_plugin_deploy` 和
    `./scripts/validate-compose.sh`，确认锁文件、残余补丁、Dockerfile、入口脚本和 Compose 一致。
    比较新旧两版的模型目录：Gateway 已定价的模型若被上游删除，按
-   [CPA 原生模型与定价迁移](cpa-native-models.md) 处理。
+   [CPA 原生模型与定价迁移](cpa-native-models.md) 处理。要公开新增模型，在同一提交中为它在
+   `internal/config/data/pricing.json` 加入审核过的完整价格并更新价格测试；服务器部署新镜像即可，无需改 `.env`。
 3. 构建镜像。构建会依次检查：残余补丁无 fuzz 应用、残余补丁的测试、CPA 自己的插件
    宿主与账号管理器测试、插件单测与竞态检测、针对所产出二进制的端到端测试。任何一步
    失败都不产生镜像。

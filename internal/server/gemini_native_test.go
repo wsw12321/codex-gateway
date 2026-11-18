@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 
@@ -17,11 +16,7 @@ const nativeGeminiText = `{"contents":[{"role":"user","parts":[{"text":"hello"}]
 
 func nativeGeminiPricing(t *testing.T) config.UsagePricing {
 	t.Helper()
-	data, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(data))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

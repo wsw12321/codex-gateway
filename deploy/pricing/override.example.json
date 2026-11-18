@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "usd_cny_rate": "7.10",
+  "fx_as_of": "2026-11-18",
+  "models": {
+    "gpt-5.4-mini": {
+      "cache_write_mode": "included_in_input",
+      "max_input_tokens": 272000,
+      "long_context_threshold_tokens": 272000,
+      "service_tiers": {
+        "fast": {
+          "short": {
+            "input_usd_per_million": "1.5",
+            "cached_input_usd_per_million": "0.15",
+            "output_usd_per_million": "9"
+          }
+        },
+        "flex": {
+          "short": {
+            "input_usd_per_million": "0.375",
+            "cached_input_usd_per_million": "0.0375",
+            "output_usd_per_million": "2.25"
+          }
+        },
+        "standard": {
+          "short": {
+            "input_usd_per_million": "0.6",
+            "cached_input_usd_per_million": "0.075",
+            "output_usd_per_million": "3.6"
+          }
+        }
+      }
+    }
+  }
+}

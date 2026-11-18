@@ -42,12 +42,13 @@ git fetch --tags --prune
 git checkout --detach <与本地相同的完整Git-SHA>
 ./scripts/bootstrap-secrets.sh
 ./scripts/validate-compose.sh
+./scripts/pricing.sh check
 ./scripts/compose.sh up -d --no-build \
   postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps
 ```
 
-服务器 `.env` 中的三个版本字段必须与已导入镜像一致。域名、价格、并发限制和模型路由等运行配置以服务器 `.env` 为准；数据库口令、加密密钥和 Tunnel Token 以服务器 `deploy/secrets/` 为准。本地 `.env` 不会进入镜像，只用于本地构建的标签和版本参数。
+服务器 `.env` 中的三个版本字段必须与已导入镜像一致。域名、并发限制和模型路由等运行配置以服务器 `.env` 为准；价格目录随镜像内置，服务器只在需要偏离默认价时使用 `deploy/pricing/override.json`（见[本地价格覆盖](operations.md#本地价格覆盖)）；数据库口令、加密密钥和 Tunnel Token 以服务器 `deploy/secrets/` 为准。本地 `.env` 不会进入镜像，只用于本地构建的标签和版本参数。
 
 近 24 小时费用分配功能必须同时导入并升级本次 Gateway 和兼容层，应用
 `0009_upstream_allocation.sql`。兼容层启动不等待 Gateway；等 Gateway

@@ -87,11 +87,12 @@ sed -i \
 ## 5. 手动更新服务
 
 沿用 [部署与运维手册](operations.md) 和 [CPA v8 升级流程](cpa-v8-cutover.md)
-完成备份、排空和版本对应的迁移准备，然后执行。已有 v8.0.30 升至 v8.0.48（以及 v8.0.20 升至 v8.0.30）需要执行模型目录与价格迁移，此后升至 v8.0.58 和 v8.0.59 没有新增迁移；凭据迁移范围和回滚步骤见该文档的补丁升级步骤。
+完成备份、排空和版本对应的迁移准备，然后执行。价格目录随镜像发布；`pricing.sh check` 用新镜像核对本地覆盖文件（没有覆盖文件时只报告使用内置目录），仍在 `.env` 中保留旧 `GATEWAY_USAGE_PRICING_JSON` 时先按[迁移到内置价格目录](operations.md#迁移到内置价格目录)处理。已有 v8.0.30 升至 v8.0.48（以及 v8.0.20 升至 v8.0.30）需要执行模型目录与价格迁移，此后升至 v8.0.58 和 v8.0.59 没有新增迁移；凭据迁移范围和回滚步骤见该文档的补丁升级步骤。
 
 ```sh
 ./scripts/bootstrap-secrets.sh
 ./scripts/validate-compose.sh
+./scripts/pricing.sh check
 ./scripts/compose.sh up -d --no-build --pull never \
   postgres account-egress egress-allowlist codex-compat gateway caddy cloudflared
 ./scripts/compose.sh ps

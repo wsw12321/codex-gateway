@@ -68,6 +68,21 @@ func TestParseRateAndPriceFitNumericSnapshot(t *testing.T) {
 	}
 }
 
+func TestParsePositivePriceRejectsZero(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{"0.000000000001", "0.10", "999999999999999999.999999999999"} {
+		want, _ := ParsePrice(value)
+		if got, err := ParsePositivePrice(value); err != nil || got != want {
+			t.Errorf("ParsePositivePrice(%q) = %q, %v; want %q", value, got, err, want)
+		}
+	}
+	for _, value := range []string{"0", "0.0", "0.000000000000", "-1", "", "1e3", "0.0000000000001"} {
+		if _, err := ParsePositivePrice(value); !errors.Is(err, ErrInvalidDecimal) {
+			t.Errorf("ParsePositivePrice(%q) error = %v", value, err)
+		}
+	}
+}
+
 func TestCalculateCostAndRounding(t *testing.T) {
 	t.Parallel()
 	cost, err := CalculateCost(1_000_000, 250_000, 100_000, "2", "0.5", "10")

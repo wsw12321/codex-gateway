@@ -29,11 +29,7 @@ func TestGeminiBillingPostgresIntegration(t *testing.T) {
 	if err := repository.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(raw))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

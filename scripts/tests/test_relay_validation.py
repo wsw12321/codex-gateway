@@ -329,64 +329,54 @@ else:
         finally:
             caddyfile.write_text(original)
 
-    def test_pricing_requires_all_reviewed_native_models_and_preserves_codex(self):
-        environment = self.gateway["services"]["gateway"]["environment"]
-        pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
-        native = {
-            "gemini-3-flash", "gemini-3.8-flash-high", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite",
-            "gemini-4-argon-high", "gpt-6.1-sol",
-            "claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5",
-            "claude-haiku-4-5-20251001", "claude-haiku-5-5",
+    def test_pricing_comes_only_from_the_image_and_a_read_only_override(self):
+        self.assertNotIn("GATEWAY_USAGE_PRICING_JSON", self.gateway["services"]["gateway"]["environment"])
+
+        def gateway(model):
+            return model["services"]["gateway"]
+
+        mutations = {
+            "retired catalog": lambda m: gateway(m)["environment"].update(GATEWAY_USAGE_PRICING_JSON="{}"),
+            "override path": lambda m: gateway(m)["environment"].update(
+                GATEWAY_USAGE_PRICING_OVERRIDE_FILE="/tmp/override.json"),
+            "writable mount": lambda m: gateway(m)["volumes"][0].update(read_only=False),
+            "other source": lambda m: gateway(m)["volumes"][0].update(source=str(self.root / "deploy")),
+            "extra mount": lambda m: gateway(m)["volumes"].append(
+                dict(gateway(m)["volumes"][0], target="/etc/codex-gateway/other")),
+            "no mount": lambda m: gateway(m).pop("volumes"),
+            "shared with CPA": lambda m: m["services"]["codex-compat"].setdefault("volumes", []).append(
+                dict(gateway(m)["volumes"][0])),
         }
-        codex = {
-            "gpt-5.4", "gpt-5.4-mini", "gpt-5.6-luna",
-            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol",
-        }
-        self.assertEqual(set(pricing["models"]), native | codex | {"codex-auto-review"})
-        for model in sorted(native):
-            with self.subTest(missing=model):
-                changed = copy.deepcopy(pricing)
-                del changed["models"][model]
-                environment["GATEWAY_USAGE_PRICING_JSON"] = json.dumps(changed)
+        for name, mutate in mutations.items():
+            with self.subTest(mutation=name):
+                self.gateway = copy.deepcopy(self.gateway_baseline)
+                mutate(self.gateway)
                 result = self.validate()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("strict reviewed schema v2 pricing catalog", result.stderr)
+                self.assertIn("read-only deploy/pricing override directory", result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
-    def test_pricing_rejects_retired_names_and_invalid_native_billing_shapes(self):
-        environment = self.gateway["services"]["gateway"]["environment"]
-        pricing = json.loads(environment["GATEWAY_USAGE_PRICING_JSON"])
-
-        def add_retired(model):
-            return lambda p: p["models"].update({model: p["models"]["gemini-3.8-flash-high"]})
-
-        mutations = [
-            (model, add_retired(model)) for model in (
-                "gemini-pro-agent", "gemini-3.1-pro-low", "gemini-3.6-flash-high",
-                "gemini-3.7-flash-high", "gemini-3.7-flash", "gemini-3.1-pro-high", "gemini-3.6-flash-medium",
-                "gemini-3.7-flash-medium", "gemini-3.8-flash-medium",
-                "gemini-3.1-pro-preview", "gemini-3.1-flash-lite-preview", "gpt-5.5",
-            )
-        ] + [
-            ("Gemini Flex", lambda p: p["models"]["gemini-4-argon-high"]["service_tiers"].update(
-                flex=p["models"]["gemini-4-argon-high"]["service_tiers"]["standard"])),
-            ("Gemini cache write", lambda p: p["models"]["gemini-3.1-flash-lite"]["service_tiers"]["standard"]["short"].update(
-                cache_write_usd_per_million="0.25")),
-            ("Argon threshold", lambda p: p["models"]["gemini-4-argon-high"].update(
-                long_context_threshold_tokens=272000)),
-            ("Sol threshold", lambda p: p["models"]["gpt-6.1-sol"].update(
-                long_context_threshold_tokens=200000)),
-            ("Sol cache write", lambda p: p["models"]["gpt-6.1-sol"]["service_tiers"]["standard"]["short"].pop(
-                "cache_write_usd_per_million")),
-        ]
-        for name, mutate in mutations:
-            with self.subTest(mutation=name):
-                changed = copy.deepcopy(pricing)
-                mutate(changed)
-                environment["GATEWAY_USAGE_PRICING_JSON"] = json.dumps(changed)
+    def test_local_pricing_override_must_be_a_readable_json_object(self):
+        override = self.root / "deploy/pricing/override.json"
+        self.addCleanup(override.unlink, missing_ok=True)
+        override.write_text(json.dumps({"schema_version": 2, "usd_cny_rate": "7.10", "fx_as_of": "2026-11-18"}))
+        override.chmod(0o644)
+        result = self.validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for content, mode, message in (
+            ("[]", 0o644, "JSON object with schema_version 2"),
+            ('{"schema_version":1}', 0o644, "JSON object with schema_version 2"),
+            ("{", 0o644, "JSON object with schema_version 2"),
+            ('{"schema_version":2}', 0o600, "cannot read deploy/pricing/override.json"),
+            ('{"schema_version":2}', 0o646, "must not be writable by other users"),
+        ):
+            with self.subTest(content=content, mode=oct(mode)):
+                self.run_log.write_text("")
+                override.write_text(content)
+                override.chmod(mode)
                 result = self.validate()
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("strict reviewed schema v2 pricing catalog", result.stderr)
+                self.assertIn(message, result.stderr)
                 self.assertEqual(self.run_log.read_text(), "")
 
     def test_b_descriptor_limit_cannot_be_removed_or_increased(self):

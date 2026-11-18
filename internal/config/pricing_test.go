@@ -1,10 +1,8 @@
 package config
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -42,11 +40,7 @@ func TestParseUsagePricing(t *testing.T) {
 }
 
 func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +145,7 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 }
 
 func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,11 +221,7 @@ func TestGeminiPricingV2StandardBoundaries(t *testing.T) {
 }
 
 func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,11 +280,7 @@ func TestGeminiFlashPricingV2StandardBoundaries(t *testing.T) {
 }
 
 func TestGeminiArgonPricingV2(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,38 +311,6 @@ func TestGeminiArgonPricingV2(t *testing.T) {
 		if err != nil || decision.FallbackReason != "" || decision.ContextClass != ContextClassShort {
 			t.Fatalf("%s boundary = %+v, %v", tc.model, decision, err)
 		}
-	}
-}
-
-func TestOfficialPricingV2EnvironmentCopies(t *testing.T) {
-	templateRaw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var compact bytes.Buffer
-	if err := json.Compact(&compact, templateRaw); err != nil {
-		t.Fatal(err)
-	}
-	want := "GATEWAY_USAGE_PRICING_JSON=" + compact.String()
-	for _, path := range []string{"../../deploy/env.example", "../../deploy/env.gpt-5.6.example"} {
-		t.Run(path, func(t *testing.T) {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var matches []string
-			for _, line := range strings.Split(string(raw), "\n") {
-				if strings.HasPrefix(line, "GATEWAY_USAGE_PRICING_JSON=") {
-					matches = append(matches, line)
-				}
-			}
-			if len(matches) != 1 {
-				t.Fatalf("found %d pricing environment lines", len(matches))
-			}
-			if matches[0] != want {
-				t.Fatal("pricing environment copy differs from deploy/pricing-v2.example.json")
-			}
-		})
 	}
 }
 

@@ -7,8 +7,7 @@ egress_fail() {
     exit 1
 }
 
-egress_prepare() {
-    egress_auto_oidc=false
+egress_clear_environment() {
     egress_root=$1
     egress_env_file=$egress_root/.env
     egress_lock=$egress_root/deploy/images.lock.env
@@ -27,11 +26,15 @@ egress_prepare() {
     unset EGRESS_MODE CODEX_RELAY_IP CODEX_RELAY_PORT \
         SHADOWSOCKS_SERVER SHADOWSOCKS_PORT SHADOWSOCKS_CIPHER \
         SHADOWSOCKS_PASSWORD SHADOWSOCKS_PASSWORD_FILE MIHOMO_IMAGE \
-        GATEWAY_SECRET_GID OIDC_ENABLED OIDC_ISSUER OIDC_CLIENT_ID OIDC_AUTH_HOST CPA_INTEGRATION \
+        GATEWAY_SECRET_GID OIDC_ENABLED OIDC_ISSUER OIDC_CLIENT_ID OIDC_AUTH_HOST CPA_INTEGRATION GATEWAY_USAGE_PRICING_JSON \
         COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES \
         COMPOSE_DISABLE_ENV_FILE COMPOSE_REMOVE_ORPHANS
     unset egress_name
+}
 
+egress_prepare() {
+    egress_auto_oidc=false
+    egress_clear_environment "$1"
     egress_raw_settings=$(docker compose \
         --project-name codex-gateway --project-directory "$egress_root" \
         --env-file "$egress_env_file" --env-file "$egress_lock" \

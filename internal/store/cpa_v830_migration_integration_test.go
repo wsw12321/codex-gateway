@@ -162,7 +162,11 @@ func TestCPAV830ModelMigrationPostgresIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	requestID := "cpa-v830-settled-before-cutover"
-	rule := config.CPAV8PricingModels()["gemini-3.8-flash-high"]
+	builtIn, err := config.DefaultUsagePricing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := builtIn.Models["gemini-3.8-flash-high"]
 	billingIntegrationFundingLayerSchema(t, ctx, s)
 	params := billingIntegrationAdmission(user, device, key, requestID, now)
 	params.Usage.Model = removed[0]

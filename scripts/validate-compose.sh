@@ -18,7 +18,7 @@ env_file=$root/.env
 compose=$root/scripts/compose.sh
 caddyfile=$root/deploy/Caddyfile
 secret_dir=$root/deploy/secrets
-pricing_template=$root/deploy/pricing-v2.example.json
+pricing_dir=$root/deploy/pricing
 egress_config=$root/deploy/egress/squid.conf
 egress_entrypoint=$root/deploy/egress/entrypoint.sh
 relay_config=$root/deploy/relay/squid.conf
@@ -281,329 +281,56 @@ case "$gateway_domain" in
         ;;
 esac
 
-pricing_json=$(jq -er '
-  .services.gateway.environment.GATEWAY_USAGE_PRICING_JSON |
-  select(type == "string" and length > 0)
-' "$tmp") || fail 'GATEWAY_USAGE_PRICING_JSON must be set in .env'
-pricing_validator='
-  def exact_keys($expected):
-    type == "object" and ((keys | sort) == ($expected | sort));
-  def decimal:
-    type == "string" and
-    length > 0 and length <= 40 and
-    test("^(0|[1-9][0-9]*)(\\.[0-9]+)?$");
-  def bounded_decimal:
-    decimal and
-    test("^(?:[0-9]{1,9}(?:\\.[0-9]+)?|1000000000(?:\\.0+)?)$");
-  def snapshot_date:
-    type == "string" and
-    test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$") and
-    ((try strptime("%Y-%m-%d") catch null) != null);
-  def positive_price:
-    bounded_decimal and (tonumber > 0);
-  def separate_price:
-    exact_keys([
-      "cache_write_usd_per_million",
-      "cached_input_usd_per_million",
-      "input_usd_per_million",
-      "output_usd_per_million"
-    ]) and
-    (.input_usd_per_million | positive_price) and
-    (.cached_input_usd_per_million | positive_price) and
-    (.cache_write_usd_per_million | positive_price) and
-    (.output_usd_per_million | positive_price);
-  def included_price:
-    exact_keys([
-      "cached_input_usd_per_million",
-      "input_usd_per_million",
-      "output_usd_per_million"
-    ]) and
-    (.input_usd_per_million | positive_price) and
-    (.cached_input_usd_per_million | positive_price) and
-    (.output_usd_per_million | positive_price);
-  def ttl_price:
-    exact_keys([
-      "cache_write_5m_usd_per_million",
-      "cache_write_1h_usd_per_million",
-      "cached_input_usd_per_million",
-      "input_usd_per_million",
-      "output_usd_per_million"
-    ]) and
-    all(.[]; positive_price);
-  def zero_included_price:
-    exact_keys([
-      "cached_input_usd_per_million",
-      "input_usd_per_million",
-      "output_usd_per_million"
-    ]) and
-    all(.[]; bounded_decimal and (tonumber == 0));
-  def separate_long_tier:
-    exact_keys(["long", "short"]) and
-    (.short | separate_price) and
-    (.long | separate_price);
-  def included_long_tier:
-    exact_keys(["long", "short"]) and
-    (.short | included_price) and
-    (.long | included_price);
-  def included_short_tier:
-    exact_keys(["short"]) and (.short | included_price);
-  def separate_long_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "separate" and
-    .max_input_tokens == 1050000 and
-    .long_context_threshold_tokens == 272000 and
-    .long_context_threshold_tokens < .max_input_tokens and
-    (.service_tiers |
-      exact_keys(["fast", "flex", "standard"]) and
-      all(.[]; separate_long_tier));
-  def long_included_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "included_in_input" and
-    .max_input_tokens == 1050000 and
-    .long_context_threshold_tokens == 272000 and
-    .long_context_threshold_tokens < .max_input_tokens and
-    (.service_tiers |
-      exact_keys(["fast", "flex", "standard"]) and
-      (.standard | included_long_tier) and
-      (.flex | included_long_tier) and
-      (.fast | included_short_tier));
-  def mini_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "included_in_input" and
-    .max_input_tokens == 272000 and
-    .long_context_threshold_tokens == 272000 and
-    (.service_tiers |
-      exact_keys(["fast", "flex", "standard"]) and
-      all(.[]; included_short_tier));
-  def gemini_flash_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "included_in_input" and
-    .max_input_tokens == 1048576 and
-    .long_context_threshold_tokens == 1048576 and
-    (.service_tiers |
-      exact_keys(["standard"]) and
-      (.standard | included_short_tier));
-  def gemini_pro_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "included_in_input" and
-    .max_input_tokens == 1048576 and
-    .long_context_threshold_tokens == 200000 and
-    (.service_tiers |
-      exact_keys(["standard"]) and
-      (.standard | included_long_tier));
-  def internal_zero_model:
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "included_in_input" and
-    .max_input_tokens == 272000 and
-    .long_context_threshold_tokens == 272000 and
-    (.service_tiers |
-      exact_keys(["standard"]) and
-      (.standard | exact_keys(["short"]) and (.short | zero_included_price)));
-  def claude_model($context_limit; $threshold):
-    exact_keys([
-      "cache_write_mode",
-      "long_context_threshold_tokens",
-      "max_input_tokens",
-      "service_tiers"
-    ]) and
-    .cache_write_mode == "separate_by_ttl" and
-    .max_input_tokens == $context_limit and
-    .long_context_threshold_tokens == $threshold and
-    (.service_tiers |
-      exact_keys(["standard"]) and
-      (.standard |
-        if $threshold < $context_limit then
-          exact_keys(["short", "long"]) and (.short | ttl_price) and (.long | ttl_price)
-        else
-          exact_keys(["short"]) and (.short | ttl_price)
-        end));
-  exact_keys([
-    "catalog_as_of",
-    "fallback_policy",
-    "fx_as_of",
-    "models",
-    "schema_version",
-    "usd_cny_rate"
-  ]) and
-  .schema_version == 2 and
-  (.catalog_as_of | snapshot_date) and
-  (.fx_as_of | snapshot_date) and
-  (.usd_cny_rate | bounded_decimal and (test("^0(?:\\.0+)?$") | not)) and
-  (.fallback_policy |
-    exact_keys([
-      "missing_cache_write_tokens",
-      "missing_price_combination",
-      "unknown_service_tier"
-    ]) and
-    .unknown_service_tier == "max_published" and
-    .missing_price_combination == "max_published" and
-    .missing_cache_write_tokens == "all_uncached_as_write") and
-  (.models |
-    exact_keys([
-      "claude-fable-5-1",
-      "claude-opus-5-5",
-      "claude-sonnet-5-5",
-      "claude-haiku-4-5-20251001",
-      "claude-haiku-5-5",
-      "codex-auto-review",
-      "gemini-3-flash",
-      "gemini-3.1-flash-lite",
-      "gemini-3.5-flash-lite",
-      "gemini-3.8-flash-high",
-      "gemini-4-argon-high",
-      "gpt-5.4",
-      "gpt-5.4-mini",
-      "gpt-5.6-luna",
-      "gpt-5.6-sol",
-      "gpt-5.6-terra",
-      "gpt-6-astra",
-      "gpt-6-luna",
-      "gpt-6-sol",
-      "gpt-6.1-sol"
-    ]) and
-    (.["claude-fable-5-1"] | claude_model(1000000; 1000000)) and
-    (.["claude-opus-5-5"] | claude_model(1000000; 1000000)) and
-    (.["claude-sonnet-5-5"] | claude_model(1000000; 1000000)) and
-    (.["claude-haiku-4-5-20251001"] | claude_model(200000; 200000)) and
-    (.["claude-haiku-5-5"] | claude_model(1000000; 100000)) and
-    (.["gpt-6-astra"] | separate_long_model) and
-    (.["gpt-6-sol"] | separate_long_model) and
-    (.["gpt-6.1-sol"] | separate_long_model) and
-    (.["gpt-6-luna"] | separate_long_model) and
-    (.["gpt-5.6-sol"] | separate_long_model) and
-    (.["gpt-5.6-terra"] | separate_long_model) and
-    (.["gpt-5.6-luna"] | separate_long_model) and
-    (.["gpt-5.4"] | long_included_model) and
-    (.["gpt-5.4-mini"] | mini_model) and
-    (.["gemini-3-flash"] | gemini_flash_model) and
-    (.["gemini-3.1-flash-lite"] | gemini_flash_model) and
-    (.["gemini-3.5-flash-lite"] | gemini_flash_model) and
-    (.["gemini-3.8-flash-high"] | gemini_flash_model) and
-    (.["gemini-4-argon-high"] | gemini_flash_model) and
-    (.["codex-auto-review"] | internal_zero_model))
-'
-printf '%s\n' "$pricing_json" | jq -e "$pricing_validator" >/dev/null 2>&1 || \
-    fail 'GATEWAY_USAGE_PRICING_JSON must be the strict reviewed schema v2 pricing catalog'
-
-# Keep the readable canonical template and the validator in lockstep. These
-# negative checks guard the v2 tagged union against accidentally accepting a
-# v1 price field, an incomplete fallback policy, a mismatched cache-write mode,
-# or an unpublished service tier.
-test -r "$pricing_template" || fail "pricing template is missing: $pricing_template"
-jq -e "$pricing_validator" "$pricing_template" >/dev/null 2>&1 || \
-    fail 'deploy/pricing-v2.example.json does not pass the production pricing validator'
-reject_pricing_mutation() {
-    pricing_mutation=$1
-    pricing_rejection=$2
-    if jq "$pricing_mutation" "$pricing_template" |
-        jq -e "$pricing_validator" >/dev/null 2>&1
-    then
-        fail "pricing validator accepted $pricing_rejection"
+# Prices are built into the Gateway image. The retired single-line catalog
+# must not reach the container; the only pricing input is the optional local
+# override in the read-only deploy/pricing directory.
+jq -e --arg pricing_dir "$pricing_dir" '
+  .services.gateway.environment.GATEWAY_USAGE_PRICING_JSON == null and
+  .services.gateway.environment.GATEWAY_USAGE_PRICING_OVERRIDE_FILE ==
+    "/etc/codex-gateway/pricing/override.json" and
+  (.services.gateway.volumes | length == 1) and
+  (.services.gateway.volumes[0] |
+    .type == "bind" and .source == $pricing_dir and
+    .target == "/etc/codex-gateway/pricing" and .read_only == true) and
+  ([.services | to_entries[] |
+    select(any(.value.volumes[]?; .source == $pricing_dir)) | .key]) == ["gateway"]
+' "$tmp" >/dev/null || \
+    fail 'Gateway pricing must come from the image plus the read-only deploy/pricing override directory'
+pricing_gid=$(jq -r '.services.gateway.user | split(":")[1]' "$tmp")
+# Linux checks only the owner, group or other class that matches the
+# Gateway's uid 10001 and primary group.
+gateway_can() {
+    gateway_mode=$((0$(stat -c '%a' "$1")))
+    if test "$(stat -c '%u' "$1")" = 10001; then
+        test $((gateway_mode & ($2 * 64))) -ne 0
+    elif test "$(stat -c '%g' "$1")" = "$pricing_gid"; then
+        test $((gateway_mode & ($2 * 8))) -ne 0
+    else
+        test $((gateway_mode & $2)) -ne 0
     fi
 }
-reject_pricing_mutation \
-    '.models["gpt-5.6-sol"].input_usd_per_million = "5"' \
-    'a mixed-in v1 price field'
-reject_pricing_mutation \
-    'del(.fallback_policy)' \
-    'a missing fallback policy'
-reject_pricing_mutation \
-    '.models["gpt-5.6-sol"].cache_write_mode = "included_in_input"' \
-    'an invalid cache-write mode'
-reject_pricing_mutation \
-    '.models["gpt-5.4-mini"].service_tiers.ultrafast = .models["gpt-5.4-mini"].service_tiers.fast' \
-    'an unpublished service tier'
-reject_pricing_mutation \
-    'del(.models["gemini-4-argon-high"])' \
-    'a missing Argon model'
-reject_pricing_mutation \
-    '.models["gemini-4-argon-high"].service_tiers.flex = .models["gemini-4-argon-high"].service_tiers.standard' \
-    'an unconfigured Argon service tier'
-reject_pricing_mutation \
-    '.models["gemini-4-argon-high"].long_context_threshold_tokens = 200000' \
-    'an incorrect Argon long-context boundary'
-reject_pricing_mutation \
-    '.models["gemini-4-argon-high"].max_input_tokens = 1050000' \
-    'an incorrect Argon input limit'
-reject_pricing_mutation \
-    '.models["gemini-4-argon-high"].service_tiers.standard.short.cache_write_usd_per_million = "2"' \
-    'a separate Argon cache-write price'
-reject_pricing_mutation \
-    '.models["gemini-3.8-flash-high"].service_tiers.standard.long = .models["gemini-3.8-flash-high"].service_tiers.standard.short' \
-    'an unpublished Flash long-context price'
-reject_pricing_mutation \
-    '.models["gemini-3.8-flash-high"].long_context_threshold_tokens = 200000' \
-    'an incorrect Flash context boundary'
-reject_pricing_mutation \
-    '.models["gemini-3.1-pro-preview"] = .models["gemini-4-argon-high"]' \
-    'a retired Gemini alias'
-reject_pricing_mutation \
-    'del(.models["gpt-6.1-sol"])' \
-    'a missing GPT-6.1 Sol model'
-reject_pricing_mutation \
-    '.models["gpt-6.1-sol"].long_context_threshold_tokens = 200000' \
-    'an incorrect GPT-6.1 Sol long-context boundary'
-reject_pricing_mutation \
-    'del(.models["gpt-6.1-sol"].service_tiers.standard.short.cache_write_usd_per_million)' \
-    'a missing GPT-6.1 Sol cache-write price'
-reject_pricing_mutation \
-    '.models["gemini-3.1-pro-high"] = .models["gemini-4-argon-high"]' \
-    'a retired Gemini Pro-high model'
-reject_pricing_mutation \
-    '.models["gemini-3.8-flash-medium"] = .models["gemini-3.8-flash-high"]' \
-    'a retired Gemini Medium model'
-reject_pricing_mutation \
-    'del(.models["claude-fable-5-1"])' \
-    'a missing Claude model'
-reject_pricing_mutation \
-    'del(.models["claude-opus-5-5"].service_tiers.standard.short.cache_write_5m_usd_per_million)' \
-    'a missing Claude 5-minute cache-write price'
-reject_pricing_mutation \
-    'del(.models["claude-sonnet-5-5"].service_tiers.standard.short.cache_write_1h_usd_per_million)' \
-    'a missing Claude 1-hour cache-write price'
-reject_pricing_mutation \
-    '.models["claude-opus-5-5"].service_tiers.standard.short.cache_write_usd_per_million = "5"' \
-    'a legacy cache-write price mixed into Claude TTL prices'
-reject_pricing_mutation \
-    '.models["claude-haiku-4-5-20251001"].service_tiers.standard.short.cache_write_1h_usd_per_million = "-2"' \
-    'an invalid Claude TTL price'
-reject_pricing_mutation \
-    '.models["claude-fable-5-1"].service_tiers.fast = .models["claude-fable-5-1"].service_tiers.standard' \
-    'an unconfigured Claude Fast tier'
-reject_pricing_mutation \
-    '.models["claude-haiku-4-5-20251001"].max_input_tokens = 1000000' \
-    'an incorrect Claude Haiku input limit'
-unset pricing_json pricing_mutation pricing_rejection
+# Prices are not secret, but only the deployment owner may change them.
+other_writable() {
+    other_mode=$((0$(stat -c '%a' "$1")))
+    test $((other_mode & 2)) -ne 0
+}
+test -d "$pricing_dir" && ! test -L "$pricing_dir" || \
+    fail "pricing override directory is missing: $pricing_dir"
+gateway_can "$pricing_dir" 1 || \
+    fail 'the Gateway (uid 10001) cannot enter deploy/pricing; chmod 0755 it'
+! other_writable "$pricing_dir" || fail 'deploy/pricing must not be writable by other users'
+pricing_override=$pricing_dir/override.json
+if test -e "$pricing_override" || test -L "$pricing_override"; then
+    test -f "$pricing_override" && ! test -L "$pricing_override" || \
+        fail 'deploy/pricing/override.json must be a regular file'
+    gateway_can "$pricing_override" 4 || \
+        fail 'the Gateway (uid 10001) cannot read deploy/pricing/override.json; it is not secret, chmod 0644 it'
+    ! other_writable "$pricing_override" || \
+        fail 'deploy/pricing/override.json must not be writable by other users; chmod 0644 it'
+    jq -e 'type == "object" and .schema_version == 2' "$pricing_override" >/dev/null 2>&1 || \
+        fail 'deploy/pricing/override.json must be a JSON object with schema_version 2; run `gateway pricing check`'
+fi
+unset gateway_mode other_mode pricing_gid pricing_override
 
 # Cloudflare Tunnel is the only public ingress, so no service may publish a
 # host port. Only cloudflared, Squid and the optional SS transport may reach

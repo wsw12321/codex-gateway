@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
-"""Verify the reviewed official API catalog and production price validation."""
+"""Verify the built-in reviewed API catalog and its local override contract."""
 
-import copy
 from decimal import Decimal
 import json
 from pathlib import Path
-import shutil
-import subprocess
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+CATALOG = ROOT / "internal/config/data/pricing.json"
 PRICE_FIELDS = (
     "input_usd_per_million", "output_usd_per_million", "cached_input_usd_per_million",
     "cache_write_5m_usd_per_million", "cache_write_1h_usd_per_million",
@@ -30,7 +28,7 @@ CLAUDE_MODELS = {
 class PricingCatalogTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.catalog = json.loads((ROOT / "deploy/pricing-v2.example.json").read_text())
+        cls.catalog = json.loads(CATALOG.read_text())
 
     def test_claude_standard_prices_and_context_limits(self):
         self.assertEqual(self.catalog["catalog_as_of"], "2026-10-17")
@@ -83,101 +81,51 @@ class PricingCatalogTests(unittest.TestCase):
             "output_usd_per_million": "10",
         }}})
 
-    def test_embedded_migration_prices_match_canonical_catalog(self):
-        models = json.loads((ROOT / "internal/config/data/cpa-v8-model-prices.json").read_text())
-        for model, rule in models.items():
-            with self.subTest(model=model):
-                self.assertEqual(rule, self.catalog["models"][model])
-
-    def test_environment_examples_match_canonical_catalog(self):
+    def test_deployment_carries_no_pricing_copy(self):
+        # The catalog is compiled into the Gateway; .env templates and Compose
+        # must not carry a second copy that could drift from it.
+        self.assertFalse((ROOT / "deploy/pricing-v2.example.json").exists())
         for name in ("env.example", "env.gpt-5.6.example"):
             with self.subTest(example=name):
-                values = [line.split("=", 1)[1]
-                          for line in (ROOT / "deploy" / name).read_text().splitlines()
-                          if line.startswith("GATEWAY_USAGE_PRICING_JSON=")]
-                self.assertEqual(len(values), 1)
-                self.assertEqual(json.loads(values[0]), self.catalog)
+                lines = (ROOT / "deploy" / name).read_text().splitlines()
+                self.assertFalse([line for line in lines if line.startswith("GATEWAY_USAGE_PRICING_JSON=")])
+        compose = (ROOT / "docker-compose.yml").read_text()
+        self.assertNotIn("GATEWAY_USAGE_PRICING_JSON", compose)
+        self.assertIn("      GATEWAY_USAGE_PRICING_OVERRIDE_FILE: /etc/codex-gateway/pricing/override.json\n", compose)
+        self.assertIn("        source: ./deploy/pricing\n        target: /etc/codex-gateway/pricing\n"
+                      "        read_only: true\n", compose)
 
+    def test_override_example_changes_prices_of_built_in_models_only(self):
+        override = json.loads((ROOT / "deploy/pricing/override.example.json").read_text())
+        self.assertEqual(override["schema_version"], self.catalog["schema_version"])
+        self.assertLessEqual(set(override), {"schema_version", "usd_cny_rate", "fx_as_of", "models"})
+        for model, rule in override["models"].items():
+            with self.subTest(model=model):
+                built_in = self.catalog["models"][model]
+                for field in ("cache_write_mode", "max_input_tokens", "long_context_threshold_tokens"):
+                    self.assertEqual(rule[field], built_in[field])
+                self.assertEqual({tier: {context: set(prices) for context, prices in contexts.items()}
+                                  for tier, contexts in rule["service_tiers"].items()},
+                                 {tier: {context: set(prices) for context, prices in contexts.items()}
+                                  for tier, contexts in built_in["service_tiers"].items()})
 
-@unittest.skipUnless(shutil.which("jq"), "jq is required for the production pricing validator")
-class PricingValidatorTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.catalog = json.loads((ROOT / "deploy/pricing-v2.example.json").read_text())
+    def test_retired_pricing_setting_stops_every_compose_call(self):
+        settings = (ROOT / "scripts/egress-settings.compose.yml").read_text()
+        self.assertIn("      GATEWAY_USAGE_PRICING_JSON: ${GATEWAY_USAGE_PRICING_JSON:-}\n", settings)
+        validator = (ROOT / "scripts/validate-egress.py").read_text()
+        self.assertIn('if env.get("GATEWAY_USAGE_PRICING_JSON", "").strip():', validator)
+        self.assertIn(" GATEWAY_USAGE_PRICING_JSON ", (ROOT / "scripts/egress-common.sh").read_text())
         script = (ROOT / "scripts/validate-compose.sh").read_text()
-        cls.validator = script.split("pricing_validator='\n", 1)[1].split("\n'\n", 1)[0]
+        self.assertIn(".services.gateway.environment.GATEWAY_USAGE_PRICING_JSON == null", script)
+        self.assertNotIn("pricing_validator", script)
 
-    def validate(self, catalog):
-        result = subprocess.run(
-            ["jq", "-e", self.validator], input=json.dumps(catalog),
-            capture_output=True, text=True, timeout=5,
-        )
-        self.assertNotIn("compile error", result.stderr)
-        return result.returncode == 0
-
-    def test_valid_catalog_and_custom_positive_claude_price(self):
-        self.assertTrue(self.validate(self.catalog))
-        changed = copy.deepcopy(self.catalog)
-        changed["models"]["claude-fable-5-1"]["service_tiers"]["standard"]["short"].update(
-            cache_write_1h_usd_per_million="21.50")
-        self.assertTrue(self.validate(changed))
-
-    def test_claude_requires_all_five_positive_decimal_prices(self):
-        for field in PRICE_FIELDS:
-            for value in (None, True, 1, -1, "", "0", "-1", "1e2", "NaN", "Infinity",
-                          "0.1.2", "1000000000.1", "1000000001", "1" * 41):
-                with self.subTest(field=field, value=value):
-                    changed = copy.deepcopy(self.catalog)
-                    price = changed["models"]["claude-opus-5-5"]["service_tiers"]["standard"]["short"]
-                    price[field] = value
-                    self.assertFalse(self.validate(changed))
-            with self.subTest(missing=field):
-                changed = copy.deepcopy(self.catalog)
-                del changed["models"]["claude-opus-5-5"]["service_tiers"]["standard"]["short"][field]
-                self.assertFalse(self.validate(changed))
-
-    def test_claude_model_shapes_and_ids_are_strict(self):
-        for model in CLAUDE_MODELS:
-            mutations = {
-                "missing model": lambda p: p["models"].pop(model),
-                "legacy write price": lambda p: p["models"][model]["service_tiers"]["standard"]["short"].update(
-                    cache_write_usd_per_million="2"),
-                "legacy write mode": lambda p: p["models"][model].update(cache_write_mode="separate"),
-                "wrong input limit": lambda p: p["models"][model].update(max_input_tokens=272000),
-                "wrong boundary": lambda p: p["models"][model].update(long_context_threshold_tokens=272000),
-                "Fast tier": lambda p: p["models"][model]["service_tiers"].update(
-                    fast=p["models"][model]["service_tiers"]["standard"]),
-                "extra context price": lambda p: p["models"][model]["service_tiers"]["standard"].update(
-                    extra=p["models"][model]["service_tiers"]["standard"]["short"]),
-            }
-            if model == "claude-haiku-5-5":
-                mutations["missing long context price"] = lambda p: p["models"][model]["service_tiers"]["standard"].pop("long")
-            else:
-                mutations["unexpected long context price"] = lambda p: p["models"][model]["service_tiers"]["standard"].update(
-                    long=p["models"][model]["service_tiers"]["standard"]["short"])
-            for name, mutate in mutations.items():
-                with self.subTest(model=model, mutation=name):
-                    changed = copy.deepcopy(self.catalog)
-                    mutate(changed)
-                    self.assertFalse(self.validate(changed))
-        for model in ("claude-haiku-4-5",):
-            with self.subTest(unreviewed_model=model):
-                changed = copy.deepcopy(self.catalog)
-                changed["models"][model] = changed["models"]["claude-haiku-4-5-20251001"]
-                self.assertFalse(self.validate(changed))
-
-    def test_haiku_long_context_requires_all_five_positive_prices(self):
-        for field in PRICE_FIELDS:
-            for value in (None, "0", "-1", "NaN"):
-                with self.subTest(field=field, value=value):
-                    changed = copy.deepcopy(self.catalog)
-                    price = changed["models"]["claude-haiku-5-5"]["service_tiers"]["standard"]["long"]
-                    price[field] = value
-                    self.assertFalse(self.validate(changed))
-            with self.subTest(missing=field):
-                changed = copy.deepcopy(self.catalog)
-                del changed["models"]["claude-haiku-5-5"]["service_tiers"]["standard"]["long"][field]
-                self.assertFalse(self.validate(changed))
+    def test_local_override_is_never_committed_or_built_into_images(self):
+        gitignore = (ROOT / ".gitignore").read_text().splitlines()
+        self.assertIn("deploy/pricing/*", gitignore)
+        self.assertIn("!deploy/pricing/README.md", gitignore)
+        self.assertIn("!deploy/pricing/override.example.json", gitignore)
+        self.assertNotIn("!deploy/pricing/override.json", gitignore)
+        self.assertIn("deploy/pricing", (ROOT / ".dockerignore").read_text().splitlines())
 
 
 if __name__ == "__main__":

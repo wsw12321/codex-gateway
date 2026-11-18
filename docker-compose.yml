@@ -84,7 +84,10 @@ services:
       GATEWAY_BROWSER_CLIENT_URL: ${GATEWAY_BROWSER_CLIENT_URL:-}
       # The optional deploy/oidc.override.yml mounts its dedicated client secret.
       OIDC_ENABLED: "false"
-      GATEWAY_USAGE_PRICING_JSON: ${GATEWAY_USAGE_PRICING_JSON:?Set GATEWAY_USAGE_PRICING_JSON in .env}
+      # Prices are built into the image. deploy/pricing/override.json is an
+      # optional local price override; a missing file selects the built-in
+      # catalog. The directory is mounted so the file may be absent.
+      GATEWAY_USAGE_PRICING_OVERRIDE_FILE: /etc/codex-gateway/pricing/override.json
       TRUSTED_PROXY_CIDRS: ${GATEWAY_TRUSTED_PROXY_CIDRS:-172.28.10.2/32}
       DATABASE_URL_FILE: /run/secrets/database_url
       KEY_HMAC_PEPPER_FILE: /run/secrets/gateway_api_key_pepper
@@ -110,6 +113,13 @@ services:
       - sidecar_api_key
       - cpa_management_key
       - egress_control_key
+    volumes:
+      - type: bind
+        source: ./deploy/pricing
+        target: /etc/codex-gateway/pricing
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       # Four concurrent 64 MiB request spools plus one body-sized margin for
       # filesystem/accounting overhead and cleanup overlap.

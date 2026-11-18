@@ -27,7 +27,8 @@ class EgressModeTests(unittest.TestCase):
         scripts = cls.root / "scripts"
         scripts.mkdir()
         for name in ("compose.sh", "apply-egress.sh", "egress-common.sh",
-                     "egress-settings.compose.yml", "validate-egress.py"):
+                     "egress-settings.compose.yml", "validate-egress.py",
+                     "pricing.sh", "pricing-tool.compose.yml"):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
         cls.secret = cls.root / "deploy/secrets/shadowsocks_password"
         cls.secret.parent.mkdir()
@@ -36,7 +37,7 @@ class EgressModeTests(unittest.TestCase):
         cls.baseline = {
             "GATEWAY_DOMAIN": "egress.ci.invalid", "GATEWAY_IMAGE_TAG": "a" * 40,
             "GATEWAY_VERSION": "a" * 40, "GATEWAY_REVISION": "a" * 40,
-            "GATEWAY_USAGE_PRICING_JSON": "{}", "GATEWAY_SECRET_GID": str(cls.gid),
+            "GATEWAY_SECRET_GID": str(cls.gid),
             "CODEX_RELAY_PORT": "3128",
         }
         cls.ss_settings = {
@@ -82,6 +83,8 @@ if args[0] == "compose" and "config" in args:
         print(json.dumps(model))
         sys.exit(0)
     sys.exit(subprocess.run([os.environ["EGRESS_TEST_REAL_DOCKER"], *args]).returncode)
+if args[0] == "compose" and "run" in args:
+    sys.exit(0)
 if args[0] == "compose" and "build" in args:
     sys.exit(42 if os.environ.get("EGRESS_TEST_FAIL_BUILD") else 0)
 if args[0] == "compose" and "up" in args:
@@ -127,6 +130,18 @@ sys.exit("unexpected daemon operation in egress test")
             ["sh", str(self.root / "scripts" / script), *args],
             env={**self.env, **env}, capture_output=True, text=True, timeout=30,
         )
+
+    def run_pricing(self, *args, settings=None, **env):
+        self.settings.update(settings or {})
+        (self.root / ".env").write_text("\n".join(
+            f"{name}={value}" for name, value in self.settings.items()) + "\n")
+        return subprocess.run(
+            ["sh", str(self.root / "scripts/pricing.sh"), *args],
+            env={**self.env, **env}, capture_output=True, text=True, timeout=30,
+        )
+
+    def tool_runs(self):
+        return [entry["args"] for entry in self.records() if "run" in entry["args"]]
 
     def records(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
@@ -341,6 +356,77 @@ sys.exit("unexpected daemon operation in egress test")
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("OIDC", result.stderr)
             self.assertEqual(self.mutations(), [])
+
+
+    def test_retired_pricing_line_stops_compose_but_can_still_be_exported(self):
+        legacy = '{"schema_version":2,"models":{"gpt-5.4":{"cache_write_mode":"included_in_input"}}}'
+        settings = {"GATEWAY_USAGE_PRICING_JSON": "'" + legacy + "'"}
+        result = self.run_script(settings)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GATEWAY_USAGE_PRICING_JSON is no longer used", result.stderr)
+        result = self.run_pricing("migrate-env")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GATEWAY_USAGE_PRICING_JSON is no longer used", result.stderr)
+        self.assertEqual(self.tool_runs(), [])
+        # Compose, not a shell, parses the saved value, quotes included.
+        result = self.run_pricing("export-legacy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, legacy + "\n")
+        self.assertEqual(self.tool_runs(), [])
+
+    def test_export_legacy_without_the_line_fails(self):
+        result = self.run_pricing("export-legacy")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing to export", result.stderr)
+
+    def test_inherited_shell_pricing_variable_is_ignored(self):
+        self.assert_valid(self.run_script(GATEWAY_USAGE_PRICING_JSON="{}"))
+
+    def test_pricing_tools_run_in_the_isolated_project_with_the_selected_file(self):
+        for args, file in ((("check",), "override.json"),
+                           (("check", "override.candidate.json"), "override.candidate.json"),
+                           (("show", "-builtin", "-model", "gpt-6-sol"), "override.json"),
+                           (("migrate-env",), "override.json")):
+            with self.subTest(args=args):
+                self.log.write_text("")
+                result = self.run_pricing(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                runs = self.tool_runs()
+                self.assertEqual(len(runs), 1)
+                run = runs[0]
+                self.assertEqual(run[run.index("--project-name") + 1], "codex-gateway-pricing")
+                self.assertEqual(run[run.index("-f") + 1], str(self.root / "scripts/pricing-tool.compose.yml"))
+                self.assertNotIn(str(self.root / "docker-compose.yml"), run)
+                tail = run[run.index("run"):]
+                self.assertEqual(tail[:5], ["run", "--rm", "--no-deps", "-T", "-e"])
+                self.assertEqual(tail[5], "GATEWAY_USAGE_PRICING_OVERRIDE_FILE=/etc/codex-gateway/pricing/" + file)
+                # check consumes its file name; other commands pass arguments through.
+                passed = [] if args[0] == "check" else list(args[1:])
+                self.assertEqual(tail[6:], ["pricing-tool", args[0], *passed])
+
+    def test_pricing_check_only_takes_a_file_name_in_the_pricing_directory(self):
+        for name in ("../override.json", "a/b.json", ".hidden.json", "override.txt", "x.json/", ""):
+            with self.subTest(name=name):
+                self.log.write_text("")
+                result = self.run_pricing("check", name)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.tool_runs(), [])
+        for args in (("unknown",), ("migrate-env", "extra"), ("export-legacy", "extra"), ("check", "a.json", "b.json")):
+            with self.subTest(args=args):
+                result = self.run_pricing(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("usage:", result.stderr)
+
+    def test_pricing_tool_has_no_network_secrets_or_writable_mount(self):
+        compose = (self.root / "scripts/pricing-tool.compose.yml").read_text()
+        for line in ("    network_mode: none\n", "    read_only: true\n", "    pull_policy: never\n",
+                     '    user: "10001:${GATEWAY_SECRET_GID:-1000}"\n',
+                     '    cap_drop: ["ALL"]\n', '    security_opt: ["no-new-privileges:true"]\n',
+                     "        source: ./deploy/pricing\n        target: /etc/codex-gateway/pricing\n"
+                     "        read_only: true\n"):
+            self.assertIn(line, compose)
+        for forbidden in ("secrets:", "networks:", "ports:", "DATABASE_URL"):
+            self.assertNotIn(forbidden, compose)
 
 
 if __name__ == "__main__":

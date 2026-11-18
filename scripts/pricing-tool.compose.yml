@@ -1,0 +1,23 @@
+# Offline pricing tools, run only by scripts/pricing.sh as a separate Compose
+# project. It uses the Gateway image, user and read-only deploy/pricing mount,
+# so `check` proves the real service can read the file, but it has no network,
+# no secrets and no database, and never conflicts with the running Gateway.
+services:
+  pricing-tool:
+    image: codex-gateway-gateway:${GATEWAY_IMAGE_TAG:?Set GATEWAY_IMAGE_TAG in .env}
+    pull_policy: never
+    entrypoint: ["/usr/local/bin/gateway", "pricing"]
+    network_mode: none
+    read_only: true
+    user: "10001:${GATEWAY_SECRET_GID:-1000}"
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      GATEWAY_USAGE_PRICING_OVERRIDE_FILE: /etc/codex-gateway/pricing/override.json
+    volumes:
+      - type: bind
+        source: ./deploy/pricing
+        target: /etc/codex-gateway/pricing
+        read_only: true
+        bind:
+          create_host_path: false

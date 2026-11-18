@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -20,11 +19,7 @@ import (
 
 func TestCPAV830CatalogIntersectsPricingPermissionsKeyAndUpstream(t *testing.T) {
 	const haiku, argon = "claude-haiku-5-5", "gemini-4-argon-high"
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(raw))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -22,7 +22,7 @@ Kimi 与 xAI 模型。Gateway 只退役 `gpt-5.5`，不新增公开模型：`gpt
 Kimi 与 xAI 没有 Gateway 路由和计费策略，均保持不可用。完整差异见
 [目录审计](cpa-v8.0.48-model-catalog-audit.md)。
 
-- 价格：离线工具 `cpa-pricing-migrate` 同时移除 `gpt-5.5`。Gateway 启动时若价格目录仍包含
+- 价格：当时由离线工具 `cpa-pricing-migrate` 移除 `gpt-5.5`；现在价格内置，内置目录不含 `gpt-5.5`。Gateway 启动时若价格目录仍包含
   `gpt-5.5` 会拒绝启动，避免旧配置在下次目录同步时把退役模型重新标记为活动。
 - 数据库：`0038_cpa_v8_0_48_model_catalog.sql` 只执行一次，将 `gpt-5.5` 标为非活动目录，并保存默认
   权限、用户权限和倍率的 before/applied 快照；历史 usage、账单、余额、API Key allowlist 和订阅
@@ -67,7 +67,10 @@ v8.0.30 从活动目录移除以下上游删除的 ID：
 API Key allowlist 中，因此历史记录仍可读取；新请求会被拒绝。受限 Key 不会被清空，也不会因目录同步而
 获得新模型。旧桥接时期的其它 ID 只保留为退役名称，不能通过 CPA 原生路由重新启用。
 
-完整示例在 [pricing-v2.example.json](../deploy/pricing-v2.example.json)。现有部署不要直接以示例覆盖整个
+> 价格已改为内置目录（[用量价格目录](operations.md#用量价格目录)），`cpa-pricing-migrate` 与
+> `GATEWAY_USAGE_PRICING_JSON` 已移除。以下为当时的历史步骤；回滚这次切换需检出包含该工具的旧 revision。
+
+完整示例当时在 `deploy/pricing-v2.example.json`。现有部署不要直接以示例覆盖整个
 `GATEWAY_USAGE_PRICING_JSON`，应先保存当前纯 JSON，再使用离线工具合并：
 
 ```sh

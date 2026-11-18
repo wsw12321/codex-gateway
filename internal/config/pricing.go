@@ -42,7 +42,8 @@ const (
 
 var usagePricingModelPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 
-// UsagePricing is an operator-supplied pricing snapshot. An omitted
+// UsagePricing is a reviewed pricing snapshot: the built-in catalog, optionally
+// with a server-local price override applied. An omitted
 // schema_version is the legacy v1 three-price format. Version 2 snapshots a
 // complete model/service-tier/context matrix and its conservative fallback
 // policy so admission and settlement never depend on mutable process state.
@@ -113,15 +114,15 @@ type PricingDecision struct {
 func ParseUsagePricing(raw string) (UsagePricing, error) {
 	var pricing UsagePricing
 	if strings.TrimSpace(raw) == "" {
-		return pricing, fmt.Errorf("GATEWAY_USAGE_PRICING_JSON is required")
+		return pricing, fmt.Errorf("pricing catalog is required")
 	}
 	decoder := json.NewDecoder(strings.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&pricing); err != nil {
-		return pricing, fmt.Errorf("parse GATEWAY_USAGE_PRICING_JSON: %w", err)
+		return pricing, fmt.Errorf("parse pricing catalog: %w", err)
 	}
 	if err := requireJSONEOF(decoder); err != nil {
-		return pricing, fmt.Errorf("parse GATEWAY_USAGE_PRICING_JSON: %w", err)
+		return pricing, fmt.Errorf("parse pricing catalog: %w", err)
 	}
 	if pricing.SchemaVersion == 0 {
 		pricing.SchemaVersion = PricingSchemaV1
@@ -131,7 +132,7 @@ func ParseUsagePricing(raw string) (UsagePricing, error) {
 	}
 	modelFields, fallbackPolicyPresent, err := usagePricingRawFields([]byte(raw))
 	if err != nil {
-		return pricing, fmt.Errorf("inspect GATEWAY_USAGE_PRICING_JSON: %w", err)
+		return pricing, fmt.Errorf("inspect pricing catalog: %w", err)
 	}
 	if _, err := time.Parse("2006-01-02", pricing.CatalogAsOf); err != nil {
 		return pricing, fmt.Errorf("pricing catalog_as_of must be YYYY-MM-DD")

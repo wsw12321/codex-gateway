@@ -4,6 +4,8 @@ import (
 	"encoding/base64"
 	"net/url"
 	"os"
+	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -20,7 +22,8 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("TOKEN_HMAC_PEPPER", secret)
 	t.Setenv("API_KEY_ENCRYPTION_KEY", secret)
 	t.Setenv("API_KEY_ENCRYPTION_KEY_FILE", "")
-	t.Setenv("GATEWAY_USAGE_PRICING_JSON", `{"catalog_as_of":"2026-08-01","fx_as_of":"2026-08-01","usd_cny_rate":"7.20","models":{"gpt-test":{"input_usd_per_million":"1.25","cached_input_usd_per_million":"0.125","output_usd_per_million":"10"}}}`)
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", "")
+	t.Setenv("GATEWAY_USAGE_PRICING_OVERRIDE_FILE", "")
 	// Retired token/day variables must have no runtime effect, including no
 	// startup validation. Monetary billing now governs token consumption.
 	t.Setenv("LIMIT_KEY_TOKENS_DAY", "not-an-integer")
@@ -55,17 +58,74 @@ func TestRejectsHTTPAndShortSecrets(t *testing.T) {
 	t.Setenv("TOKEN_HMAC_PEPPER", base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("API_KEY_ENCRYPTION_KEY", base64.RawURLEncoding.EncodeToString(make([]byte, 32)))
 	t.Setenv("API_KEY_ENCRYPTION_KEY_FILE", "")
-	t.Setenv("GATEWAY_USAGE_PRICING_JSON", validUsagePricingJSON)
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", "")
+	t.Setenv("GATEWAY_USAGE_PRICING_OVERRIDE_FILE", "")
 
 	if _, err := Load(); err == nil {
 		t.Fatal("expected invalid configuration")
 	}
 }
 
-func TestLoadRequiresUsagePricing(t *testing.T) {
-	t.Setenv("GATEWAY_USAGE_PRICING_JSON", "")
+func TestLoadUsesBuiltInPricing(t *testing.T) {
+	setValidLoadEnvironment(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	builtIn, err := DefaultUsagePricing()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(cfg.UsagePricing, builtIn) {
+		t.Fatal("Load did not use the built-in pricing catalog")
+	}
+	if cfg.UsagePricingSource.Overridden() || cfg.UsagePricingSource.CatalogAsOf != builtIn.CatalogAsOf ||
+		cfg.UsagePricingSource.ModelCount != len(builtIn.Models) || len(cfg.UsagePricingSource.Digest) != 64 {
+		t.Fatalf("unexpected pricing source: %+v", cfg.UsagePricingSource)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("built-in pricing fails deployment validation: %v", err)
+	}
+}
+
+func TestLoadRejectsRetiredUsagePricingJSON(t *testing.T) {
+	setValidLoadEnvironment(t)
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", validUsagePricingJSON)
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "GATEWAY_USAGE_PRICING_JSON is no longer supported") ||
+		!strings.Contains(err.Error(), "scripts/pricing.sh") {
+		t.Fatalf("retired pricing setting was not refused: %v", err)
+	}
+	if strings.Contains(err.Error(), "gpt-exact") {
+		t.Fatal("refusal must not echo the retired value")
+	}
+}
+
+func TestLoadAppliesPricingOverrideFile(t *testing.T) {
+	setValidLoadEnvironment(t)
+	directory := t.TempDir()
+	path := filepath.Join(directory, "override.json")
+	if err := os.WriteFile(path, []byte(`{"schema_version":2,"usd_cny_rate":"7.05","fx_as_of":"2026-11-18"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GATEWAY_USAGE_PRICING_OVERRIDE_FILE", path)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.UsagePricing.USDCNYRate != "7.05" || cfg.UsagePricing.FXAsOf != "2026-11-18" ||
+		!cfg.UsagePricingSource.OverrideFX || cfg.UsagePricingSource.OverridePath != path {
+		t.Fatalf("override not applied: %+v", cfg.UsagePricingSource)
+	}
+	if err := os.WriteFile(path, []byte(`{"schema_version":2,"models":{"gpt-unknown":{}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Load(); err == nil {
-		t.Fatal("expected missing usage pricing to be rejected")
+		t.Fatal("invalid override was accepted")
+	}
+	t.Setenv("GATEWAY_USAGE_PRICING_OVERRIDE_FILE", filepath.Join(directory, "missing", "override.json"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "is deploy/pricing mounted?") {
+		t.Fatalf("missing override directory was accepted: %v", err)
 	}
 }
 
@@ -149,7 +209,8 @@ func setValidLoadEnvironment(t *testing.T) {
 	t.Setenv("TOKEN_HMAC_PEPPER_FILE", "")
 	t.Setenv("API_KEY_ENCRYPTION_KEY", secret)
 	t.Setenv("API_KEY_ENCRYPTION_KEY_FILE", "")
-	t.Setenv("GATEWAY_USAGE_PRICING_JSON", validUsagePricingJSON)
+	t.Setenv("GATEWAY_USAGE_PRICING_JSON", "")
+	t.Setenv("GATEWAY_USAGE_PRICING_OVERRIDE_FILE", "")
 	t.Setenv("CPA_MANAGEMENT_KEY", "management-only-"+strings.Repeat("m", 27))
 	t.Setenv("CPA_MANAGEMENT_KEY_FILE", "")
 	// Retired settings refuse startup; keep the ambient environment out.

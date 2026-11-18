@@ -56,7 +56,7 @@ python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
 `scripts/compose.sh` clears inherited env, then loads `.env` plus `deploy/images.lock.env`, so the image digest locks cannot be bypassed. CI also runs `govulncheck`, `gosec`, `go-licenses` (allowed: Apache-2.0, BSD-2/3, ISC, MIT, MPL-2.0), Trivy, and the `scripts/test-*-image.sh` container checks.
 
-Gateway subcommands: `serve` (default; runs migrations first), `migrate`, `bootstrap-owner`, `maintenance`, `version`.
+Gateway subcommands: `serve` (default; runs migrations first), `migrate`, `bootstrap-owner`, `maintenance`, `pricing`, `version`. `pricing` (`show`, `check`, `migrate-env`) is dispatched in `main()` before configuration loading and never opens the database; operators run it through `scripts/pricing.sh`, which uses `scripts/pricing-tool.compose.yml` (no network, no secrets, same image, user and read-only mount).
 
 ## Architecture
 
@@ -101,12 +101,11 @@ Settlement always runs, even on failure or client disconnect. Usage is settled e
   Handlers depend on narrow `*Repository` interfaces (fields on `Server`), so unit tests substitute fakes.
 - `internal/store`: all SQL (pgx through `database/sql`), quota, billing, usage aggregation, and migrations.
 - `internal/proxy`: upstream HTTP clients, SSE usage/TTFT parsing, account attribution, and Gemini/Anthropic adapters.
-- `internal/config`: env loading. Every secret also accepts `NAME_FILE`. This package also holds the pricing schema/validator and `IsAntigravityModel`.
+- `internal/config`: env loading. Every secret also accepts `NAME_FILE`. This package also holds the pricing schema/validator, the built-in pricing catalog (`data/pricing.json`, `go:embed`) with its local override loader (`pricing_override.go`), and `IsAntigravityModel`.
 - `internal/httpx`: OpenAI-style error JSON (`WriteError`: stable `type`/`code`, Chinese message, `request_id`), security headers/CSP, and trusted-proxy request context.
 - `internal/security`: API key format `cgk_v1_<id>_<secret>`, peppered HMAC, AES-GCM key cipher, and `RedactText`.
 - `internal/identity`: WebAuthn, passwords (Argon2id), sessions, and OIDC.
 - `internal/modelid`: upstream model fingerprinting against embedded, SHA-256-pinned reference data. It fails closed if an asset changes.
-- `cmd/cpa-pricing-migrate`: offline stdin/stdout pricing conversion tool. It never touches a live deployment.
 
 ### Startup (`cmd/gateway/main.go`)
 
@@ -127,11 +126,13 @@ The Node tests load `app.js` by slicing it at the last `\nstart().catch(` and ev
 - Migrations are forward-only and checksum-verified. Never edit an applied migration. A database with an unknown migration refuses older binaries.
 - `.gitignore` ignores `*.sql` except this directory and `scripts/rollback-cpa-model-config.sql`.
 
-**Model prices.** Edit `deploy/pricing-v2.example.json`. Two other places must match it:
-- the single-line `GATEWAY_USAGE_PRICING_JSON` copy in **both** `deploy/env.example` and `deploy/env.gpt-5.6.example` (enforced by `internal/config/pricing_test.go`);
-- `internal/config/data/cpa-v8-model-prices.json`.
+**Model prices.** The catalog is built into the Gateway binary from `internal/config/data/pricing.json`. That file is the only copy: deployments carry no pricing configuration, and a new model or price ships with the next image.
+- Update the tests that assert exact prices, model sets and `catalog_as_of`: `internal/config/pricing_test.go`, `internal/config/anthropic_pricing_test.go`, `internal/config/pricing_default_test.go` and `scripts/tests/test_pricing_catalog.py`.
+- A new `gemini-*` model must also be added to `AntigravityModels()`. Built-in paid prices must be positive.
+- `deploy/pricing/override.example.json` must keep applying cleanly (`TestPricingOverrideExampleApplies`). If you change the structure of `gpt-5.4-mini`, update the example too.
+- A server deviates only through `deploy/pricing/override.json`, which may change prices of existing models and the USD/CNY rate, never the model set or a rule's structure. Never reintroduce `GATEWAY_USAGE_PRICING_JSON`: Compose (`validate-egress.py`), `validate-compose.sh` and the Gateway refuse it.
 
-`scripts/tests/test_pricing_catalog.py` asserts exact prices and `catalog_as_of`, so update it as well. Price changes never rewrite historical ledger rows.
+Price changes never rewrite historical ledger rows.
 
 **Go or base-image version bump.** These must agree, and the CI step "Verify Go toolchain sources agree" checks them:
 - `go.mod` `toolchain`

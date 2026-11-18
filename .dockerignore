@@ -8,6 +8,7 @@
 !.env.example
 backups
 deploy/secrets
+deploy/pricing
 deploy/images.lock.env
 *.age
 *.dump

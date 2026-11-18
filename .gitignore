@@ -3,6 +3,9 @@
 !.env.example
 deploy/secrets/*
 !deploy/secrets/.gitkeep
+deploy/pricing/*
+!deploy/pricing/README.md
+!deploy/pricing/override.example.json
 backups/
 *.age
 *.dump

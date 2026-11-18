@@ -304,7 +304,7 @@ Owner 在“站点设置”页编辑两张卡片，均默认关闭。交流群�
 [站点设置验证](docs/site-settings-validation.md)。
 
 Owner 的全员统计展示“API Token 等价成本”，按对应供应商 API 价格计算。USD 金额汇总长期保留且
-不可变的 `usage_charge` ledger，不再用当前 `.env` 价格重算历史；Token 数量仍
+不可变的 `usage_charge` ledger，不再用当前价格目录重算历史；Token 数量仍
 来自 usage 明细或日/月聚合。接口保留 `estimated_usd` 作为兼容别名，并同时返回
 `actual_cost_usd`、`charged_usd` 和 `uncovered_usd`；用量流水另提供
 `group_charged_usd` 和 `personal_charged_usd`，实际费用等于群组支付、个人支付及
@@ -315,7 +315,7 @@ Owner 的全员统计展示“API Token 等价成本”，按对应供应商 API
 这些数值不代表供应商实际账单：上游使用 ChatGPT Plus/Pro OAuth 或 Antigravity
 订阅，内部零价和保守兜底属于本地策略；报表不包含订阅费、工具、区域、Batch、
 Ultrafast、税费或基础设施成本。Gemini 使用对应 API 家族的 Standard 等价价格，
-账单模式为 `gemini_api_token_equivalent`。修改价格 JSON 不会改变历史 ledger 金额。
+账单模式为 `gemini_api_token_equivalent`。修改价格目录不会改变历史 ledger 金额。
 
 只保存以下调用元数据：身份与项目引用、Key 前缀、请求/实际模型、请求/实际及
 最终计价服务层、上下文档位、计价规则版本和兜底原因、端点、状态/错误码、
@@ -415,23 +415,28 @@ revision 的本地镜像以供无数据库迁移时快速回退。
 ```sh
 cp deploy/env.example .env
 chmod 0600 .env
-# 编辑 .env：设置真实域名、当前 revision 和 GATEWAY_USAGE_PRICING_JSON
+# 编辑 .env：设置真实域名和当前 revision（价格已内置，无需配置）
 # 把 GATEWAY_SECRET_GID 设置为专用部署用户的主组：id -g
 ```
 
-`deploy/env.example` 已包含
-[deploy/pricing-v2.example.json](deploy/pricing-v2.example.json) 的单行完整副本，
-覆盖 GPT-6.1 Sol、GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.4、GPT-5.4-mini、
-Gemini、Claude Fable 5.1／Opus 5.5／Sonnet 5.5／Haiku 4.5／Haiku 5.5 和内部零价
-`codex-auto-review`。模板已于 2026-10-17 同步官方 API 现价，Haiku 5.5 按总输入 100,000 Token 分档。
-Claude 标准五价与仅合并五款价格的升级命令见
-[Claude 定价说明](docs/claude-code.md#标准-api-定价与目录升级)。部署前仍必须对照
-[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 及对应供应商官方定价复核每百万
-Token 价格和 `catalog_as_of`，并更新固定 USD/CNY 汇率及 `fx_as_of`；不要把 v1
-三价字段混入 v2。完整口径和升级要求见
-[部署与运维手册](docs/operations.md#用量价格快照)。
-已有部署同步现价时按[官方价格同步流程](docs/operations.md#同步当前官方-api-价格)合并现有模型，
-保留既有汇率，并核对数据库覆盖价及倍率；修改示例文件不会改变线上配置或历史账单。
+价格目录维护在 [internal/config/data/pricing.json](internal/config/data/pricing.json)，
+构建时编译进 Gateway 镜像，部署即用，`.env` 中不需要任何价格配置。目录覆盖以下模型：
+- GPT-6.1 Sol、GPT-6 Astra/Sol/Luna、GPT-5.6 Sol/Terra/Luna、GPT-5.4、GPT-5.4-mini；
+- Gemini；
+- Claude Fable 5.1／Opus 5.5／Sonnet 5.5／Haiku 4.5／Haiku 5.5；
+- 内部零价 `codex-auto-review`。
+
+目录已于 2026-10-17 同步官方 API 现价，Haiku 5.5 按总输入 100,000 Token 分档，Claude 标准五价见
+[Claude 定价说明](docs/claude-code.md#标准-api-定价与目录升级)。新模型或调价只需修改这个文件和对应测试，
+服务器随新版本镜像自动生效。
+
+服务器需要偏离默认价格或固定 USD/CNY 汇率时，才在 `deploy/pricing/override.json` 写本地覆盖。
+覆盖只能改价格，不能增删模型或改结构；用 `./scripts/pricing.sh check` 检查，见
+[deploy/pricing](deploy/pricing/README.md)。完整口径见[部署与运维手册](docs/operations.md#用量价格目录)。
+
+旧的 `.env` 变量 `GATEWAY_USAGE_PRICING_JSON` 已停用，仍设置时 Compose 和 Gateway 拒绝运行。已有部署按
+[迁移到内置价格目录](docs/operations.md#迁移到内置价格目录)执行一次。官方价同步后，仍需核对数据库覆盖价及倍率；
+历史账单不受影响。
 
 如 Compose 子网与主机已有网段冲突，必须在首次启动前同步调整内部子网、静态
 地址、Caddy 信任的 cloudflared `/32`、`GATEWAY_TRUSTED_PROXY_CIDRS` 及部署
@@ -553,7 +558,7 @@ Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `
 旧模型仍可读取历史 usage 和账单，但新请求会被拒绝。`0035` 与 `0038` 迁移各只执行一次，更新目录并保存
 配置快照；缺失倍率继续按 1 计费，重启不会覆盖管理员选择。
 
-升级须在维护窗口完成价格合并、数据库迁移及账号验收，不能仅替换镜像标签。已有 CPA v8 凭据继续复用。
+升级须在维护窗口完成数据库迁移及账号验收，不能仅替换镜像标签；价格随镜像内置目录更新。已有 CPA v8 凭据继续复用。
 参见[切换与回滚](docs/cpa-v8-cutover.md)、[模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
 [v8.0.77 验证记录](docs/cpa-v8.0.77-validation.md)（[v8.0.76](docs/cpa-v8.0.76-validation.md)、[v8.0.69](docs/cpa-v8.0.69-validation.md)、[v8.0.59](docs/cpa-v8.0.59-validation.md)、[v8.0.58](docs/cpa-v8.0.58-validation.md)、[v8.0.30](docs/cpa-v8.0.30-validation.md) 保留为历史）。首次 v8 切换的
 [历史验证记录](docs/cpa-v8-validation.md)仍保留。
@@ -689,7 +694,16 @@ gateway serve             启动 HTTP 服务并自动迁移
 gateway migrate           只执行嵌入式数据库迁移
 gateway bootstrap-owner   生成首次 Owner 初始化链接
 gateway maintenance       立即运行一次聚合与清理
+gateway pricing           价格目录工具：show、check、migrate-env（不连接数据库）
 gateway version           显示版本与 revision
+```
+
+价格工具在无网络、无密钥的独立容器中运行：
+
+```sh
+./scripts/pricing.sh check                       # 校验 deploy/pricing/override.json
+./scripts/pricing.sh show -builtin -model gpt-6-sol
+./scripts/pricing.sh export-legacy               # 仅迁移旧 GATEWAY_USAGE_PRICING_JSON 时使用
 ```
 
 备份和恢复：

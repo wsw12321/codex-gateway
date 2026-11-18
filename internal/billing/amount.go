@@ -40,6 +40,13 @@ func ParseMultiplier(value string) (string, error) {
 	return parseBounded(value, AmountScale, false, false)
 }
 
+// ParsePositivePrice validates a per-million-token price like ParsePrice but
+// rejects zero, for deployment inputs where a free model must be a deliberate
+// built-in rule rather than an edit.
+func ParsePositivePrice(value string) (string, error) {
+	return parseBounded(value, AmountScale, false, false)
+}
+
 // ParsePrice validates a non-negative per-million-token price that can be
 // stored exactly in a NUMERIC(30,12) snapshot column.
 func ParsePrice(value string) (string, error) {

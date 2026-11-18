@@ -107,11 +107,7 @@ func TestCPAV848ModelMigrationPostgresIntegration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	pricingRaw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(pricingRaw))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

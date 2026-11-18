@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 	"testing"
 
@@ -10,11 +9,7 @@ import (
 )
 
 func TestClaudePricingV2StandardBoundariesAndTTL(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +106,7 @@ func TestClaudePricingV2StandardBoundariesAndTTL(t *testing.T) {
 }
 
 func TestHaiku55PricingV2LongContextAndTTL(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := ParseUsagePricing(string(raw))
+	pricing, err := DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

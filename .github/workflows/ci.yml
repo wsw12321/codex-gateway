@@ -300,6 +300,14 @@ jobs:
             printf '%s\n' 'the removed source-patched CPA image was accepted' >&2
             exit 1
           fi
+          # Prices are built into the image. A leftover single-line catalog
+          # must stop every Compose call instead of being silently ignored.
+          cp "$ci_env_backup" .env
+          printf '%s\n' 'GATEWAY_USAGE_PRICING_JSON={"schema_version":2}' >> .env
+          if ./scripts/compose.sh config --quiet; then
+            printf '%s\n' 'the retired GATEWAY_USAGE_PRICING_JSON was accepted' >&2
+            exit 1
+          fi
       - name: Deployment and login regressions
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
       - name: Verify relay routing, fail-closed behavior and streaming

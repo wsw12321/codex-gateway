@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"fmt"
-	"os"
 	"testing"
 
 	"github.com/wsw/codex-gateway/internal/billing"
@@ -10,11 +9,7 @@ import (
 )
 
 func TestHaiku55UsageCountsEveryInputCategoryForLongContext(t *testing.T) {
-	raw, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(raw))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

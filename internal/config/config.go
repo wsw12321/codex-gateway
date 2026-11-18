@@ -58,6 +58,7 @@ type Config struct {
 	ReauthMaxAge           time.Duration
 	Limits                 Limits
 	UsagePricing           UsagePricing
+	UsagePricingSource     UsagePricingSource
 	DevInsecure            bool
 	OIDCEnabled            bool
 	OIDCIssuer             string
@@ -99,7 +100,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	usagePricing, err := ParseUsagePricing(os.Getenv("GATEWAY_USAGE_PRICING_JSON"))
+	if err := rejectLegacyUsagePricing(); err != nil {
+		return Config{}, err
+	}
+	usagePricing, usagePricingSource, err := LoadUsagePricing(os.Getenv(UsagePricingOverrideEnv))
 	if err != nil {
 		return Config{}, err
 	}
@@ -114,6 +118,7 @@ func Load() (Config, error) {
 		SessionMax:             7 * 24 * time.Hour,
 		ReauthMaxAge:           5 * time.Minute,
 		UsagePricing:           usagePricing,
+		UsagePricingSource:     usagePricingSource,
 		DevInsecure:            envBool("GATEWAY_DEV_INSECURE_HTTP", false),
 		Limits: Limits{
 			KeyRPM:             30,

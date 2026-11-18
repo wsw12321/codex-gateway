@@ -104,11 +104,7 @@ func TestFundingLayersGatewayPostgresIntegration(t *testing.T) {
 	emptyPool := group("Empty pool")
 	reauthPool := group("Reauth pool", reauth)
 
-	data, err := os.ReadFile("../../deploy/pricing-v2.example.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	pricing, err := config.ParseUsagePricing(string(data))
+	pricing, err := config.DefaultUsagePricing()
 	if err != nil {
 		t.Fatal(err)
 	}

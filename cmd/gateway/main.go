@@ -27,6 +27,16 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "pricing" {
+		// Pricing tools read only the built-in catalog and the override file;
+		// they need no database, secrets or other configuration. Their stdout
+		// carries a document, so errors go to stderr instead of the JSON log.
+		if err := runPricing(os.Args[2:], os.Stdin, os.Stdout, os.Stderr, os.Getenv); err != nil {
+			fmt.Fprintln(os.Stderr, "gateway pricing:", security.RedactText(err.Error()))
+			os.Exit(1)
+		}
+		return
+	}
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if err := run(os.Args[1:], logger); err != nil {
 		logger.Error("gateway stopped", "error", security.RedactText(err.Error()))
@@ -75,11 +85,18 @@ func run(arguments []string, logger *slog.Logger) error {
 		maintenance.Runner{Store: repository, Logger: logger, Timezone: "UTC"}.RunOnce(ctx)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q (expected serve, migrate, bootstrap-owner, maintenance, or version)", command)
+		return fmt.Errorf("unknown command %q (expected serve, migrate, bootstrap-owner, maintenance, pricing, or version)", command)
 	}
 }
 
 func serve(ctx context.Context, cfg config.Config, repository *store.Store, logger *slog.Logger) error {
+	pricingSource := cfg.UsagePricingSource
+	logger.Info("pricing catalog loaded", "catalog_as_of", pricingSource.CatalogAsOf, "models", pricingSource.ModelCount,
+		"override_file", pricingSource.OverridePath, "override_models", pricingSource.OverrideModels,
+		"override_fx", pricingSource.OverrideFX, "sha256", pricingSource.Digest)
+	for _, warning := range pricingSource.Warnings {
+		logger.Warn("pricing override", "warning", warning)
+	}
 	migrationContext, cancelMigration := context.WithTimeout(ctx, 2*time.Minute)
 	if err := repository.Migrate(migrationContext); err != nil {
 		cancelMigration()

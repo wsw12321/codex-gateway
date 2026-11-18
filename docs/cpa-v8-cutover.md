@@ -26,7 +26,8 @@ Gateway 管身份、模型和账号权限、权重、并发、限额、价格、
 1. 等本次提交的 CI 测试、race/CGO、镜像构建及运行冒烟通过后，按
    [CI 镜像部署流程](ci-image-deployment.md)拉取镜像，并同步 `.env` 的 `GATEWAY_IMAGE_TAG`、
    `GATEWAY_VERSION`、`GATEWAY_REVISION`。
-2. 用 `cpa-pricing-migrate` 处理当前价格目录（见 [价格合并](cpa-native-models.md)），保存
+2. （历史步骤，价格现已内置，见[用量价格目录](operations.md#用量价格目录)）用 `cpa-pricing-migrate`
+   处理当前价格目录（见 [价格合并](cpa-native-models.md)），保存
    `pricing.before.json` 与 `pricing.applied.json`，确认 `gpt-5.5` 已移除后写回完整配置。新 Gateway
    在价格目录仍含 `gpt-5.5` 时拒绝启动，因此必须先完成这一步。
 3. 暂停新推理及账号变更，排空活动请求和待结算预约，保留旧镜像 digest 和备份。停止旧 CPA 后用新镜像

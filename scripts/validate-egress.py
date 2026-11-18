@@ -128,6 +128,13 @@ def validate(settings, root):
     # it must stop here rather than start the plugin image it did not choose.
     if env.get("CPA_INTEGRATION", "plugin") != "plugin":
         fail("CPA_INTEGRATION=patch selected the removed source-patched CPA image; delete the setting from .env")
+    # Prices are built into the Gateway image. A leftover single-line catalog
+    # must stop every Compose call: ignoring it would silently replace any
+    # operator-specific prices with the built-in ones.
+    if env.get("GATEWAY_USAGE_PRICING_JSON", "").strip():
+        fail("GATEWAY_USAGE_PRICING_JSON is no longer used: prices are built into the Gateway image. "
+             "Save the value with ./scripts/pricing.sh export-legacy, delete the line from .env and convert it "
+             "with ./scripts/pricing.sh migrate-env (docs/operations.md, 迁移到内置价格目录)")
     return {"mode": mode, "oidc_enabled": oidc_enabled}
 
 

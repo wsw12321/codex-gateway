@@ -61,23 +61,43 @@ chmod 0600 .env
 以及 `validate-compose.sh` 中验证这些地址的对应不变量。网关只应信任 Caddy 的
 单一 `/32` 地址，Squid 也不得按整个内部子网授权出站。
 
-### 用量价格快照
+### 用量价格目录
 
-`GATEWAY_USAGE_PRICING_JSON` 是必填的非 secret 部署配置。Gateway 不在运行时
-联网抓取价格或汇率；操作者必须在启动前从
-[OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/) 和对应供应商的官方定价人工核对所有
-允许模型、服务层和上下文档位的价格，并选择、记录固定的 USD/CNY 汇率。可读的
-完整目录是 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json)，
-`deploy/env.example` 和 `deploy/env.gpt-5.6.example` 已包含其单行副本。生产
-`.env` 中的 JSON 必须保持一行。模板于 2026-10-17 核对当前官方 API 价格，GPT-6 Sol/Luna
-采用各自报价，GPT-5.6 Sol 使用当前促销价，见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
-Claude 标准价格同日核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)，
-覆盖 `claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5` 和
-`claude-haiku-4-5-20251001`、`claude-haiku-5-5`；五价、上下文分档和仅合并这五条价格的命令见
-[Claude 定价与目录升级](claude-code.md#标准-api-定价与目录升级)。
-数据库中的模型覆盖价优先于此配置；未覆盖或已恢复的模型使用部署配置。Owner 可在
-“模型定价”修改完整基础价格矩阵，操作和升级要求见[模型定价迁移与升级](#模型定价迁移与升级)。
-v2 的结构如下（片段不能单独部署）：
+价格目录维护在仓库的 [`internal/config/data/pricing.json`](../internal/config/data/pricing.json)，
+构建时编译进 Gateway 镜像，部署不需要任何价格配置。Gateway 不在运行时联网抓取价格或汇率。
+新增模型、同步官方价或调整默认汇率，都通过修改仓库中的这一个文件和对应测试完成，
+随新版本镜像生效。服务器只有在需要偏离仓库默认价格时，才写本地覆盖文件
+`deploy/pricing/override.json`，见[本地价格覆盖](#本地价格覆盖)。
+
+旧的 `.env` 单行变量 `GATEWAY_USAGE_PRICING_JSON` 已停用。`.env` 中仍有这一行时，
+`scripts/compose.sh`、`scripts/validate-compose.sh` 和 Gateway 都会拒绝运行，避免旧值被
+静默忽略。迁移步骤见[迁移到内置价格目录](#迁移到内置价格目录)。
+
+内置目录于 2026-10-17 核对 [OpenAI API Pricing](https://developers.openai.com/api/docs/pricing/)
+及对应供应商的官方定价：
+
+- GPT-6 Sol/Luna 采用各自报价。
+- GPT-5.6 Sol 使用至少持续至 2026-11-21 的促销价，见 [GPT-6 与 GPT-5.6 服务端配置](gpt-5.6-server-configuration.md)。
+- AGY 使用五个精确 Gemini ID，在 1,048,576 输入 Token 内按统一 Standard 价计费，输出包含 thinking。
+  这些本地费用不是 AGY 订阅账单。
+- Argon-high 采用 Gemini 4 Argon API 价格（适用至 2026-11-30）。基础 Argon 与 Muse 未启用。
+- Claude 标准价格同日核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)。
+  覆盖的模型是 `claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-4-5-20251001`
+  和 `claude-haiku-5-5`，五价与上下文分档见 [Claude 定价说明](claude-code.md#标准-api-定价与目录升级)。
+  Claude Fast、Batch 与地区附加费不在范围内。
+- 固定 USD/CNY 汇率由运营方选定，不是供应商公布值。默认 `7.20`（`fx_as_of` 2026-08-20），
+  可用本地覆盖文件改为自己核对的汇率。
+
+价格优先级从高到低：
+1. 内部 `codex-auto-review` 固定零价；
+2. Owner 在“模型定价”保存的数据库覆盖价；
+3. 本地覆盖文件；
+4. 内置目录。
+
+Owner 可在“模型定价”修改完整基础价格矩阵，操作和升级要求见[模型定价迁移与升级](#模型定价迁移与升级)。
+本地覆盖文件只能改价格、不能改结构，所以不会使已有的数据库覆盖价产生结构冲突。
+
+内置目录使用 v2 结构，片段如下：
 
 ```json
 {
@@ -116,7 +136,7 @@ v2 的结构如下（片段不能单独部署）：
 }
 ```
 
-完整模板还覆盖 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
+内置目录还覆盖 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
 `gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
 `codex-auto-review`，以及 [Gemini 价格目录](gemini-pro.md)。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
@@ -129,7 +149,8 @@ Standard/Flex/Fast 长短档报价，缓存写入均为独立计费的 `cache_wr
 v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
 `schema_version` 的配置仍按 v1 解析，只用于过渡和升级时结算已经执行中的 v1
 reservation。日期使用 `YYYY-MM-DD`；汇率和价格必须是带引号的非负十进制字符串，
-汇率必须大于零。每次变更都应保存审阅来源、完整 JSON、目录日期和汇率日期。
+汇率必须大于零。每次修改内置目录都应在提交中注明审阅来源、目录日期和汇率日期，
+并同步更新断言精确价格的测试。
 
 服务层和上下文选择规则如下：
 
@@ -199,44 +220,95 @@ Ultrafast、税费和基础设施成本均不在范围内。Codex 价格及缓�
 
 ### 同步当前官方 API 价格
 
-仓库模板仅是部署输入，不会自动修改服务器 `.env` 或数据库覆盖价。已有 v2 部署应先保存当前
-`GATEWAY_USAGE_PRICING_JSON` 的纯 JSON 为 `pricing.before.json`，再生成待审阅文件：
+官方价格变化或出现新模型时，在仓库中修改 `internal/config/data/pricing.json`，并更新断言精确价格的测试
+（`internal/config/pricing_test.go`、`scripts/tests/test_pricing_catalog.py` 等），经 CI 后合并。
+服务器按正常升级流程拉取新 revision、构建或导入镜像并重建 Gateway，无需修改 `.env`。
 
-```sh
-umask 077
-jq -ce --slurpfile catalog deploy/pricing-v2.example.json '
-  if .schema_version != 2 or (.models | type) != "object" then
-    error("current pricing must use schema_version 2 with a models object")
-  else
-    .models |= with_entries(
-      .key as $id |
-      if ($catalog[0].models | has($id)) then
-        .value = $catalog[0].models[$id]
-      else . end
-    ) |
-    .catalog_as_of = $catalog[0].catalog_as_of
-  end
-' pricing.before.json > pricing.official.json
-```
-
-该命令只替换现有配置与官方模板共有的模型，不增加模型、权限或路由，保留其他自定义模型、
-固定 USD/CNY 汇率、`fx_as_of` 和 fallback policy。自定义模型仍须单独核对官方来源；
-汇率不是 API 单价，本次同步不改变它。命令不代替 CPA 目录升级和退役模型清理。
-
-1. 备份部署配置与数据库，并记录“模型定价”中的覆盖价格、版本和“模型倍率”当前值。
-   审阅 `pricing.before.json` 与 `pricing.official.json` 的差异，确认需要同步的全部在用模型都有官方规则。
-2. 在维护窗口暂停新请求并排空在途请求，将单行 `pricing.official.json` 写回
-   `GATEWAY_USAGE_PRICING_JSON`，运行 `./scripts/validate-compose.sh` 并按部署流程重新创建所有 Gateway 实例。
-3. Owner 在“模型定价”逐模型执行“恢复配置价格”，填写此次官方同步原因，使数据库覆盖不再遮蔽新价；
-   在“模型倍率”将需按官方单价计费的公开模型设为 `1`。核对所有实例的有效矩阵、来源和倍率。
-   Haiku 5.5 从统一价格改为 100,000 输入分档后，旧覆盖价会产生结构冲突并拒绝新请求，
-   须在恢复业务前完成该模型的恢复；不要直接改数据库绕过检查。
-4. 使用实际可用模型提交最小请求，检查新 reservation 的完整价格、档位和倍率快照及结算结果后恢复流量。
-   保存 before/applied 文件与管理审计记录。历史 ledger、已准入请求的价格和倍率快照继续保持原值。
+- 新模型在 Gateway 启动时进入模型权限目录，默认对所有用户启用；受限 API Key 白名单不会自动扩展。
+  不希望立即开放的模型，应在升级前确认“模型权限”的默认设置，或暂不加入内置目录。
+- CPA 已提供但仓库尚未定价的模型，仍在转发前以 `model_pricing_not_found` 拒绝，也不会出现在 `/v1/models` 中。
+- 历史 ledger、已准入请求的价格和倍率快照保持原值。
+- 修改某模型的结构（服务层、上下文档位、阈值、最大输入、缓存写入方式）后，该模型已有的数据库覆盖价会产生
+  结构冲突，新请求被拒绝。升级前应在“模型定价”记录覆盖价，升级后逐模型“恢复配置价格”或按新结构重新保存。
+- 本地覆盖文件中的条目会继续压过新的内置价格。每次目录更新后运行 `./scripts/pricing.sh check`
+  复核覆盖条目是否仍需要；结构已变化的条目会使检查和启动失败。
+- 在“模型倍率”将需按官方单价计费的公开模型设为 `1`，并用实际可用模型提交最小请求，
+  核对新 reservation 的价格、档位和倍率快照。
 
 官方定价还需定期复核：GPT-5.6 Sol 促销至少持续至 2026-11-21；Google 已公布 Argon 于
-2026-12-01、Gemini 3.8 Flash 于 2027-01-01 调价。当前模板不会预先应用未来价格，也不会定时自动更新。
+2026-12-01、Gemini 3.8 Flash 于 2027-01-01 调价。内置目录不会预先应用未来价格，也不会定时自动更新。
 即使基础价与倍率已对齐，缺少服务层或缓存明细时的保守兜底仍按既有规则执行，并记录原因。
+
+### 本地价格覆盖
+
+需要偏离内置价格或汇率时，在服务器创建 `deploy/pricing/override.json`。Compose 把 `deploy/pricing`
+只读挂载进 Gateway；文件不存在时只使用内置目录。覆盖文件规则：
+
+- 可以修改固定汇率 `usd_cny_rate` 与 `fx_as_of`（两者同时给出）。
+- 可以修改内置目录已有模型的价格。每个模型给出完整规则，结构必须与内置规则一致，且所有价格大于 0。
+- 不能新增或删除模型，不能修改 `catalog_as_of`、兜底规则或内部零价模型。
+- 格式见 [`deploy/pricing/override.example.json`](../deploy/pricing/override.example.json)。
+
+工具通过 `scripts/pricing.sh` 在无网络、无密钥的独立容器中运行，使用 `.env` 选定的 Gateway 镜像：
+
+```sh
+./scripts/pricing.sh show -builtin -model gpt-6-sol > deploy/pricing/override.candidate.json
+chmod 0644 deploy/pricing/override.candidate.json
+# 编辑价格；如需改汇率，同时加入 usd_cny_rate 和 fx_as_of
+./scripts/pricing.sh check override.candidate.json
+mv deploy/pricing/override.candidate.json deploy/pricing/override.json
+./scripts/validate-compose.sh
+./scripts/compose.sh up -d --no-deps --force-recreate gateway
+```
+
+- 不要把输出直接重定向到 `override.json`：shell 会先清空文件，自动重启的 Gateway 会因空文件拒绝启动。
+- 覆盖文件不是 secret，但只应由部署用户修改。目录需 `0755`，文件需 `0644`，或 `0640` 且属组为
+  `GATEWAY_SECRET_GID`。`validate-compose.sh` 会检查 Gateway（uid 10001）能否读取，以及其他用户不可写。
+- 价格只在进程启动时读取：修改覆盖文件后重建 Gateway 容器即可，不需要重新构建镜像。
+- 启动日志 `pricing catalog loaded` 记录覆盖文件、被覆盖的模型、是否覆盖汇率和有效目录 sha256；
+  `pricing.sh check` 打印同一 sha256。多个 Gateway 实例必须使用相同的覆盖文件，sha256 应一致。
+
+全集群共享、带审计记录的调价，仍以 Owner 在“模型定价”保存的数据库覆盖价为准。
+
+### 迁移到内置价格目录
+
+从仍使用 `GATEWAY_USAGE_PRICING_JSON` 的版本升级时执行一次。此变更没有数据库迁移。
+
+1. 在新 revision 的 checkout 中先导出旧值并备份 `.env`。`export-legacy` 由 Compose 解析 `.env`，
+   是唯一在旧行仍存在时可以运行的命令：
+
+   ```sh
+   umask 077
+   mkdir -p backups
+   cp .env "backups/env.before-builtin-pricing.$(date -u +%Y%m%dT%H%M%SZ)"
+   ./scripts/pricing.sh export-legacy > backups/pricing-legacy.json
+   ```
+
+2. 从 `.env` 删除 `GATEWAY_USAGE_PRICING_JSON` 这一行，然后按正常流程构建或导入新镜像。
+3. 生成候选覆盖文件，并阅读标准错误输出中的报告：
+
+   ```sh
+   ./scripts/pricing.sh migrate-env < backups/pricing-legacy.json > deploy/pricing/override.candidate.json
+   ```
+
+   报告列出以下内容：
+   - 保留到覆盖文件的价格和汇率；
+   - 结构不同或含零价而改用内置规则的模型；
+   - 内置目录不再定价的模型；
+   - 升级后新开放的模型。
+
+   旧目录早于内置目录时，价格差异可能只是过时的官方价，应删去不需要保留的条目。
+   报告“无需覆盖文件”时，标准输出为空，删除这个空的候选文件即可。
+4. 需要覆盖时，审阅候选文件，执行 `chmod 0644`、`./scripts/pricing.sh check override.candidate.json`，
+   通过后改名为 `deploy/pricing/override.json`。
+5. 运行 `./scripts/validate-compose.sh`，再按部署流程重建 Gateway。确认以下几点：
+   - 启动日志 `pricing catalog loaded` 的 sha256 与 `pricing.sh check` 一致；
+   - “模型定价”没有结构冲突；
+   - “模型权限”中新开放模型的默认设置符合预期。
+
+回滚到旧 revision 时，旧 Compose 文件要求 `GATEWAY_USAGE_PRICING_JSON`。把
+`backups/pricing-legacy.json` 的单行内容写回 `.env` 的这一行，再部署旧镜像；再次前进时重新删除。
+覆盖文件对旧版本无效，可以保留。
 
 ## 2. 供应链锁定
 
@@ -1036,13 +1108,14 @@ HTTPS/SSE 继续。这是预期的传输协商，不是 Cloudflare 缓冲、上�
 
 ## 10. 升级和回滚
 
-升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。升级到
-首次要求价格配置的 revision 前，必须先在 `.env` 填妥
-`GATEWAY_USAGE_PRICING_JSON`，否则新 Gateway 会拒绝启动。以后每次升级也应核对
-精确模型集合、官方价格目录日期、固定汇率及其日期，并在“模型定价”检查覆盖价和
+升级 Gateway 前先按第 8 节生成新的数据库密文备份并成功完成恢复演练。价格目录
+随镜像发布；从仍使用 `GATEWAY_USAGE_PRICING_JSON` 的版本升级时，先按
+[迁移到内置价格目录](#迁移到内置价格目录)处理旧值，否则 Compose 与新 Gateway 都会拒绝运行。
+每次升级都应核对新 revision 的模型集合、官方价格目录日期和固定汇率，运行
+`./scripts/pricing.sh check` 检查本地覆盖文件，并在“模型定价”检查覆盖价和
 配置结构冲突。基础价格覆盖优先于配置，结构冲突模型须重新保存或恢复后才能准入。
 v2 价格变更只影响变更后
-创建的 reservation；已经结算的 USD 成本来自不可变 ledger，不会按新 JSON
+创建的 reservation；已经结算的 USD 成本来自不可变 ledger，不会按新价格
 重算。当前固定汇率仅影响 CNY 展示。升级到 `0006` 的 revision 还必须在任何新
 Gateway 命令（包括 `gateway migrate`）运行前执行新版 `bootstrap-secrets.sh`，生成
 并保管必填的 `gateway_api_key_encryption_key`；配置加载发生在迁移前，缺少该文件时
@@ -1151,9 +1224,9 @@ forward-only 迁移。它只增加列、约束和索引，不更新历史 ledger
    WHERE entry_type = 'usage_charge';
    ```
 
-3. 检出已审阅 revision，确认工作树为空；将 `.env` 的
-   `GATEWAY_USAGE_PRICING_JSON` 一次性替换为
-   `deploy/pricing-v2.example.json` 的完整单行矩阵，并复核目录/汇率日期。同步
+3. 检出已审阅 revision，确认工作树为空；当时的版本需要在 `.env` 的
+   `GATEWAY_USAGE_PRICING_JSON` 中一次性写入完整单行矩阵（现在价格已内置，
+   见[用量价格目录](#用量价格目录)），并复核目录/汇率日期。同步
    更新三个版本字段，运行 `./scripts/validate-compose.sh`，再执行
    `./scripts/compose.sh build gateway`。不要分批部署只有部分模型或部分服务层的
    目录。
@@ -1245,7 +1318,7 @@ OAuth 文件，也不会反推迁移前请求；旧明细、聚合和 ledger 的
 ### 升级到 `0008_model_access.sql`
 
 `0008` 新增模型权限默认值、用户快照和注册触发器。迁移本身不知道运行时价格目录；
-新 Gateway 在监听端口前会用 `GATEWAY_USAGE_PRICING_JSON` 同步可管理模型，为新模型
+新 Gateway 在监听端口前会用当时的有效价格目录同步可管理模型，为新模型
 创建启用默认值并给全部已有用户补齐启用记录。按以下顺序验收：
 
 1. 停止公网入口和旧 Gateway，生成加密备份并记录用户、usage、配额、账务与审计行数。
@@ -1417,8 +1490,9 @@ Owner 在“模型倍率”旁的“模型定价”页面搜索模型，按服�
 立即读取新价；已准入、正在结算、重启后恢复的请求继续使用原价格和倍率快照。
 
 价格优先级为：内部模型固定零价；其他模型使用有效数据库覆盖；无覆盖时使用
-`GATEWAY_USAGE_PRICING_JSON`。调整配置中的价格和日期不会覆盖已有数据库覆盖价。
-如果部署改变服务层、上下文档位、阈值、最大输入长度、缓存结构或兜底规则，原覆盖价
+部署配置价，即内置价格目录叠加本地覆盖文件 `deploy/pricing/override.json`。
+升级内置目录或修改覆盖文件中的价格和日期，都不会覆盖已有数据库覆盖价。
+如果新版本内置目录改变服务层、上下文档位、阈值、最大输入长度、缓存结构或兜底规则，原覆盖价
 标记为结构冲突，列表不再提供有效价格，该模型的新请求被拒绝。Owner 刷新页面后，
 可按新配置结构重新填写完整矩阵并保存，或逐模型恢复配置价格解除冲突。不得直接修改
 数据库以绕过版本或结构检查；所有活跃实例应使用相同配置结构。

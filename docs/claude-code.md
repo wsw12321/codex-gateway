@@ -68,7 +68,7 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 
 ## 标准 API 定价与目录升级
 
-默认目录 [`deploy/pricing-v2.example.json`](../deploy/pricing-v2.example.json) 和两份环境变量示例已包含以下五款精确模型 ID，价格于 **2026-10-17** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。单位为美元／百万 tokens：
+内置价格目录 [`internal/config/data/pricing.json`](../internal/config/data/pricing.json) 已包含以下五款精确模型 ID，价格于 **2026-10-17** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。单位为美元／百万 tokens：
 
 | 精确模型 ID | 输入 | 输出 | 缓存读取 | 5 分钟缓存写入 | 1 小时缓存写入 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -91,24 +91,7 @@ v8.0.20 升至 v8.0.30 必须按 [完整模型升级流程](cpa-native-models.md
 移除五个退役 Gemini ID，并由新 Gateway 执行一次 `0035_cpa_v8_0_30_model_catalog.sql`。
 基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 本次均未接入，不初始化价格、权限或路由。
 
-仅维护 Claude 价格时，可先将当前 `GATEWAY_USAGE_PRICING_JSON` 的 JSON 值保存为 `pricing-current.json`，
-再运行以下命令，生成待审阅的单行配置。它仅合并这五条 Claude 价格，不代替上述完整版本升级；
-其他模型、固定汇率、汇率日期和兜底策略保持原值：
-
-```sh
-jq -ce --slurpfile catalog deploy/pricing-v2.example.json '
-  ["claude-fable-5-1", "claude-opus-5-5", "claude-sonnet-5-5",
-   "claude-haiku-4-5-20251001", "claude-haiku-5-5"] as $ids |
-  if .schema_version != 2 or (.models | type) != "object" then
-    error("current pricing must use schema_version 2 with a models object")
-  else
-    .models += ($catalog[0].models | with_entries(select(.key as $id | $ids | index($id)))) |
-    .catalog_as_of = $catalog[0].catalog_as_of
-  end
-' pricing-current.json > pricing-claude.json
-```
-
-核对 `pricing-claude.json` 后，用其单行内容替换 `.env` 的 `GATEWAY_USAGE_PRICING_JSON`，再按现有部署流程校验并重新加载 Gateway。示例文件更新不会自动改变实际部署价格。数据库覆盖价仍优先于部署目录，“模型倍率”继续作用于最终费用；需按[官方价格同步流程](operations.md#同步当前官方-api-价格)核对有效价格与倍率。Haiku 5.5 的分档结构改变后，旧覆盖价会产生结构冲突，Owner 必须恢复配置价格或按新结构重新保存完整矩阵后才可恢复请求。`0035` 只初始化新模型权限和配置快照，历史请求和账单继续使用原价格快照，受限 API Key 白名单不会自动扩展。
+Claude 价格随内置目录发布：官方价调整在仓库的 `internal/config/data/pricing.json` 中完成，部署新 revision 即生效，服务器 `.env` 不再包含价格。只需在某台服务器偏离默认价时，按[本地价格覆盖](operations.md#本地价格覆盖)写 `deploy/pricing/override.json`，例如以 `./scripts/pricing.sh show -builtin -model claude-sonnet-5-5` 的输出为起点。数据库覆盖价仍优先于部署目录，“模型倍率”继续作用于最终费用；需按[官方价格同步流程](operations.md#同步当前官方-api-价格)核对有效价格与倍率。Haiku 5.5 的分档结构改变后，旧覆盖价会产生结构冲突，Owner 必须恢复配置价格或按新结构重新保存完整矩阵后才可恢复请求。`0035` 只初始化新模型权限和配置快照，历史请求和账单继续使用原价格快照，受限 API Key 白名单不会自动扩展。
 
 ## 上线与回退
 
