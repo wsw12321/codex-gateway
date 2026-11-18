@@ -15,6 +15,7 @@ PRICE_FIELDS = (
 )
 CLAUDE_MODELS = {
     "claude-fable-5-1": (1000000, 1000000, {"short": ("10", "50", "0.25", "12.50", "20")}),
+    "claude-fable-5-2": (1000000, 1000000, {"short": ("8", "40", "0.2", "10", "16")}),
     "claude-opus-5-5": (1000000, 1000000, {"short": ("4", "20", "0.20", "5", "8")}),
     "claude-sonnet-5-5": (1000000, 1000000, {"short": ("2", "10", "0.10", "2.50", "4")}),
     "claude-haiku-4-5-20251001": (200000, 200000, {"short": ("1", "5", "0.10", "1.25", "2")}),
@@ -57,6 +58,12 @@ class PricingCatalogTests(unittest.TestCase):
         fields = ("input_usd_per_million", "cached_input_usd_per_million",
                   "cache_write_usd_per_million", "output_usd_per_million")
         standard_prices = {
+            "gpt-6.2-astra": {"short": ("8", "0.4", "10", "40"),
+                              "long": ("16", "0.8", "20", "60")},
+            "gpt-6.2-sol": {"short": ("2", "0.1", "2.5", "10"),
+                            "long": ("4", "0.2", "5", "15")},
+            "gpt-6.1-terra": {"short": ("1", "0.05", "1.25", "5"),
+                              "long": ("2", "0.1", "2.5", "7.5")},
             "gpt-6-sol": {"short": ("2", "0.2", "2.5", "10"),
                           "long": ("4", "0.4", "5", "15")},
             "gpt-6-luna": {"short": ("0.1", "0.01", "0.125", "0.5"),

@@ -51,10 +51,10 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 		t.Fatalf("unexpected catalog metadata: %+v", pricing)
 	}
 	wantModels := []string{
-		"claude-fable-5-1", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5",
+		"claude-fable-5-1", "claude-fable-5-2", "claude-haiku-4-5-20251001", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5",
 		"codex-auto-review", "gemini-3-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-3.8-flash-high",
 		"gemini-4-argon-high", "gpt-5.4", "gpt-5.4-mini",
-		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol",
+		"gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6.2-astra", "gpt-6.2-sol",
 	}
 	gotModels := make([]string, 0, len(pricing.Models))
 	for model := range pricing.Models {
@@ -69,6 +69,9 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	short := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"10", "1", "12.5", "50"}, "flex": {"5", "0.5", "6.25", "25"}, "priority": {"20", "2", "25", "100"}},
 		"gpt-6-sol":     {"default": {"2", "0.2", "2.5", "10"}, "flex": {"1", "0.1", "1.25", "5"}, "priority": {"4", "0.4", "5", "20"}},
+		"gpt-6.2-astra": {"default": {"8", "0.4", "10", "40"}, "flex": {"4", "0.2", "5", "20"}, "priority": {"16", "0.8", "20", "80"}},
+		"gpt-6.2-sol":   {"default": {"2", "0.1", "2.5", "10"}, "flex": {"1", "0.05", "1.25", "5"}, "priority": {"4", "0.2", "5", "20"}},
+		"gpt-6.1-terra": {"default": {"1", "0.05", "1.25", "5"}, "flex": {"0.5", "0.025", "0.625", "2.5"}, "priority": {"2", "0.1", "2.5", "10"}},
 		"gpt-6-luna":    {"default": {"0.1", "0.01", "0.125", "0.5"}, "flex": {"0.05", "0.005", "0.0625", "0.25"}, "priority": {"0.2", "0.02", "0.25", "1"}},
 		"gpt-5.6-sol":   {"default": {"4", "0.4", "5", "20"}, "flex": {"2", "0.2", "2.5", "10"}, "priority": {"8", "0.8", "10", "40"}},
 		"gpt-5.6-terra": {"default": {"2", "0.2", "2.5", "12"}, "flex": {"1", "0.1", "1.25", "6"}, "priority": {"4", "0.4", "5", "24"}},
@@ -99,6 +102,9 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	long := map[string]map[string]expected{
 		"gpt-6-astra":   {"default": {"20", "2", "25", "75"}, "flex": {"10", "1", "12.5", "37.5"}, "priority": {"40", "4", "50", "150"}},
 		"gpt-6-sol":     {"default": {"4", "0.4", "5", "15"}, "flex": {"2", "0.2", "2.5", "7.5"}, "priority": {"8", "0.8", "10", "30"}},
+		"gpt-6.2-astra": {"default": {"16", "0.8", "20", "60"}, "flex": {"8", "0.4", "10", "30"}, "priority": {"32", "1.6", "40", "120"}},
+		"gpt-6.2-sol":   {"default": {"4", "0.2", "5", "15"}, "flex": {"2", "0.1", "2.5", "7.5"}, "priority": {"8", "0.4", "10", "30"}},
+		"gpt-6.1-terra": {"default": {"2", "0.1", "2.5", "7.5"}, "flex": {"1", "0.05", "1.25", "3.75"}, "priority": {"4", "0.2", "5", "15"}},
 		"gpt-6-luna":    {"default": {"0.2", "0.02", "0.25", "0.75"}, "flex": {"0.1", "0.01", "0.125", "0.375"}, "priority": {"0.4", "0.04", "0.5", "1.5"}},
 		"gpt-5.6-sol":   {"default": {"8", "0.8", "10", "30"}, "flex": {"4", "0.4", "5", "15"}, "priority": {"16", "1.6", "20", "60"}},
 		"gpt-5.6-terra": {"default": {"4", "0.4", "5", "18"}, "flex": {"2", "0.2", "2.5", "9"}, "priority": {"8", "0.8", "10", "36"}},
@@ -141,6 +147,9 @@ func TestOfficialPricingV2TemplateMatrix(t *testing.T) {
 	}
 	if got := pricing.Models["gpt-5.4-mini"].MaxInputTokens; got != 272000 {
 		t.Fatalf("gpt-5.4-mini max input = %d", got)
+	}
+	if got := pricing.Models["gpt-6.1-terra"].MaxInputTokens; got != 500000 {
+		t.Fatalf("gpt-6.1-terra max input = %d", got)
 	}
 }
 

@@ -68,11 +68,12 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 
 ## 标准 API 定价与目录升级
 
-内置价格目录 [`internal/config/data/pricing.json`](../internal/config/data/pricing.json) 已包含以下五款精确模型 ID，价格于 **2026-10-17** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。单位为美元／百万 tokens：
+内置价格目录 [`internal/config/data/pricing.json`](../internal/config/data/pricing.json) 已包含以下六款精确模型 ID，价格于 **2026-10-17** 核对 [Anthropic 官方 API 定价](https://platform.claude.com/docs/en/about-claude/pricing)。单位为美元／百万 tokens：
 
 | 精确模型 ID | 输入 | 输出 | 缓存读取 | 5 分钟缓存写入 | 1 小时缓存写入 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | `claude-fable-5-1` | 10 | 50 | 0.25 | 12.50 | 20 |
+| `claude-fable-5-2` | 8 | 40 | 0.20 | 10 | 16 |
 | `claude-opus-5-5` | 4 | 20 | 0.20 | 5 | 8 |
 | `claude-sonnet-5-5` | 2 | 10 | 0.10 | 2.50 | 4 |
 | `claude-haiku-4-5-20251001` | 1 | 5 | 0.10 | 1.25 | 2 |
@@ -81,7 +82,7 @@ SSH 脚本回归沿用 CI 的 Python 测试发现入口，使用模拟 CPA 和�
 
 模型 ID 和上下文限制对应当前 [CPA 来源锁](../deploy/codex-compat/source.lock.json) 中的 `v8.0.59` 目录。Haiku 4.5 的输入上下文上限为 `200000`；Fable、Opus、Sonnet 和 Haiku 5.5 为 `1000000`。Haiku 5.5 的最大完成为 `128000`，使用精确 ID `claude-haiku-5-5`。
 
-五款均使用 `cache_write_mode=separate_by_ttl`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。Fable、Opus、Sonnet 的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 4.5 为 `200000`；这四款只配置 `service_tiers.standard.short`。
+六款均使用 `cache_write_mode=separate_by_ttl`，同时配置输入、输出、缓存读取、5 分钟写入和 1 小时写入五价，不设置旧的 `cache_write_usd_per_million`。Fable、Opus、Sonnet 的 `max_input_tokens` 和 `long_context_threshold_tokens` 均为 `1000000`，Haiku 4.5 为 `200000`；这五款只配置 `service_tiers.standard.short`。
 
 Haiku 5.5 的最大输入仍为 `1000000`，`long_context_threshold_tokens` 为 `100000`，同时配置 `standard.short` 和 `standard.long`。判档的总输入包含普通输入、缓存读取和两种缓存写入；恰好 100,000 使用短档，超过后整个请求的五类 Token 都使用长档单价，并非仅超出部分加价。缓存 TTL 缺失时继续按所选档位中较高的写入价结算，分项数量保持未知；`/v1/messages/count_tokens` 仍不收取 Token 费用。
 

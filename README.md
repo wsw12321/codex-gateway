@@ -545,11 +545,11 @@ OAuth 授权、导入、重新授权、刷新、删除和额度查询，复用 G
 使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。CPA 不接受
 命令行登录；任何时刻都不得让两个 sidecar 共享同一组 refresh token。
 
-公开模型按 CPA v8.0.77 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。v8.0.77 的 Codex 目录
-（team/plus/pro）新增 `gpt-6.2-astra` 与 `gpt-6.2-sol`，完成价格与权限审核前不公开；Claude、Antigravity 目录
+公开模型按 CPA v8.0.77 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。当前已加入价格目录的新增模型包括
+`gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra` 和 `claude-fable-5-2`；Claude、Antigravity 目录
 与 v8.0.69 相同。v8.0.76 只有未接入的 aistudio provider 新增模型。v8.0.69 没有删除任何模型；新增的
-`claude-fable-5-2` 与 Antigravity 的 `gemini-3.8-flash-tiered`、`gemini-4-carbon-high`、`gemini-4-hydrogen-xhigh`
-在完成 Gateway 价格与权限审核前不公开（Antigravity 的三个在 CPA 一侧也不注册），v8.0.58 新增的
+Antigravity 的 `gemini-3.8-flash-tiered`、`gemini-4-carbon-high`、`gemini-4-hydrogen-xhigh`
+仍在完成 Gateway 价格与权限审核前不公开（这三个在 CPA 一侧也不注册），v8.0.58 新增的
 `gpt-6-chat-thinking` 同样仍待审核。既有目录已退役上游
 Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `claude-haiku-5-5` 和
 `gemini-4-argon-high` 保持不变。Antigravity 当前共五个

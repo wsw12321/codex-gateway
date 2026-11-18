@@ -18,8 +18,8 @@ v8.0.58 在既有目录基础上新增 `gpt-6-chat-thinking`。模型只有在 G
 ## v8.0.48 基线目录变更
 
 上游 v8.0.48 从全部四个 Codex 目录（free/team/plus/pro）移除 `gpt-5.5`，并新增 `gpt-6.1-terra`、
-Kimi 与 xAI 模型。Gateway 只退役 `gpt-5.5`，不新增公开模型：`gpt-6.1-terra` 尚无审核过的价格，
-Kimi 与 xAI 没有 Gateway 路由和计费策略，均保持不可用。完整差异见
+Kimi 与 xAI 模型。Gateway 只退役 `gpt-5.5`；`gpt-6.1-terra` 已在后续价格目录中加入，
+Kimi 与 xAI 没有 Gateway 路由和计费策略，仍保持不可用。完整差异见
 [目录审计](cpa-v8.0.48-model-catalog-audit.md)。
 
 - 价格：当时由离线工具 `cpa-pricing-migrate` 移除 `gpt-5.5`；现在价格内置，内置目录不含 `gpt-5.5`。Gateway 启动时若价格目录仍包含

@@ -90,6 +90,12 @@ func TestCPAV8ReviewedPricingBoundaries(t *testing.T) {
 		{"gpt-6.1-sol", "flex", 272_001, [4]string{"2", "0.10", "2.5", "7.5"}},
 		{"gpt-6.1-sol", "priority", 272_000, [4]string{"4", "0.20", "5", "20"}},
 		{"gpt-6.1-sol", "priority", 272_001, [4]string{"8", "0.40", "10", "30"}},
+		{"gpt-6.2-astra", "standard", 272_000, [4]string{"8", "0.4", "10", "40"}},
+		{"gpt-6.2-astra", "standard", 272_001, [4]string{"16", "0.8", "20", "60"}},
+		{"gpt-6.2-sol", "standard", 272_000, [4]string{"2", "0.1", "2.5", "10"}},
+		{"gpt-6.2-sol", "standard", 272_001, [4]string{"4", "0.2", "5", "15"}},
+		{"gpt-6.1-terra", "standard", 272_000, [4]string{"1", "0.05", "1.25", "5"}},
+		{"gpt-6.1-terra", "standard", 272_001, [4]string{"2", "0.1", "2.5", "7.5"}},
 	}
 	for _, tc := range tests {
 		snapshotRaw, _, _, _ := pricing.ModelSnapshot(tc.model)

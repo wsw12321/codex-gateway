@@ -82,7 +82,7 @@ chmod 0600 .env
   这些本地费用不是 AGY 订阅账单。
 - Argon-high 采用 Gemini 4 Argon API 价格（适用至 2026-11-30）。基础 Argon 与 Muse 未启用。
 - Claude 标准价格同日核对 [Anthropic API Pricing](https://platform.claude.com/docs/en/about-claude/pricing)。
-  覆盖的模型是 `claude-fable-5-1`、`claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-4-5-20251001`
+  覆盖的模型是 `claude-fable-5-1`、`claude-fable-5-2`、`claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-4-5-20251001`
   和 `claude-haiku-5-5`，五价与上下文分档见 [Claude 定价说明](claude-code.md#标准-api-定价与目录升级)。
   Claude Fast、Batch 与地区附加费不在范围内。
 - 固定 USD/CNY 汇率由运营方选定，不是供应商公布值。默认 `7.20`（`fx_as_of` 2026-08-20），
@@ -136,14 +136,14 @@ Owner 可在“模型定价”修改完整基础价格矩阵，操作和升级�
 }
 ```
 
-内置目录还覆盖 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
+内置目录还覆盖 `gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra`、`gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol`、
 `gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4`、`gpt-5.4-mini` 和内部零价
 `codex-auto-review`，以及 [Gemini 价格目录](gemini-pro.md)。GPT-5.2 等不在目录
 中的模型必须在转发前拒绝，直到加入完整的官方模型、服务层和上下文规则；不得
 用别名、通配符或相近模型价格代替。设备码登录后应把 `/v1/models` 与该集合和
 用户模型权限、API Key 白名单逐一核对。
 
-`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol` 和 `gpt-5.6-luna` 分别使用官方对应模型的
+`gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra`、`gpt-6-sol`、`gpt-6-luna`、`gpt-5.6-sol` 和 `gpt-5.6-luna` 分别使用官方对应模型的
 Standard/Flex/Fast 长短档报价，缓存写入均为独立计费的 `cache_write_mode=separate`。
 
 v2 是严格的 tagged union：不得在同一配置中混入旧的模型级三价字段；未写
@@ -332,7 +332,8 @@ commit 正是锁定的 commit，并校验残余补丁和模型目录的 SHA-256�
 [CPA v8 操作流程](cpa-v8-cutover.md)。v8.0.30 加入的 `claude-haiku-5-5` 与 `gemini-4-argon-high`
 保持不变；基础 Argon 的 `gemini` provider 和 Muse 的 `meta` provider 均未接入，因此没有相应价格、权限或路由。
 当前固定的 v8.0.77 与 v8.0.69、v8.0.76 一样没有删除任何模型，CPA 升级本身也不需要数据库迁移；
-Codex 目录新增 `gpt-6.2-astra`、`gpt-6.2-sol`，Claude、Antigravity 目录与 v8.0.69 相同，新增的模型在审核定价前不公开。
+Gateway 已为 `gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra` 和 `claude-fable-5-2` 配置价格，
+Claude、Antigravity 目录与 v8.0.69 相同，Antigravity 新增模型仍在审核定价前不公开。
 既有 v8.0.48 目录迁移仍按原流程保留：价格合并须先移除 `gpt-5.5`，数据库迁移
 `0038_cpa_v8_0_48_model_catalog.sql` 必须在镜像切换前完成。
 Codex refresh 结果不确定时不再重试，需重新授权，详见 [CPA v8 操作流程](cpa-v8-cutover.md)。

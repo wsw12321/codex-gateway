@@ -25,7 +25,8 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 
 ## 计价口径
 
-模板包含当前 Codex API 模型目录中的 `gpt-6.1-sol`、`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
+模板包含当前 Codex API 模型目录中的 `gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra`、`gpt-6.1-sol`、
+`gpt-6-astra`、`gpt-6-sol`、`gpt-6-luna`、
 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`、`gpt-5.4`、
 `gpt-5.4-mini`，以及隐藏的 `codex-auto-review`。GPT-5.2 等未加入完整规则的模型
 会在转发前拒绝，不能用别名或相近模型价格代替。
@@ -38,6 +39,15 @@ ChatGPT Plus/Pro OAuth，而且内部零价和保守兜底都属于本地策略�
 | GPT-6.1 Sol Standard | `2 / 0.1 / 2.5 / 10` | `4 / 0.2 / 5 / 15` |
 | GPT-6.1 Sol Flex | `1 / 0.05 / 1.25 / 5` | `2 / 0.1 / 2.5 / 7.5` |
 | GPT-6.1 Sol Fast | `4 / 0.2 / 5 / 20` | `8 / 0.4 / 10 / 30` |
+| GPT-6.2 Astra Standard | `8 / 0.4 / 10 / 40` | `16 / 0.8 / 20 / 60` |
+| GPT-6.2 Astra Flex | `4 / 0.2 / 5 / 20` | `8 / 0.4 / 10 / 30` |
+| GPT-6.2 Astra Fast | `16 / 0.8 / 20 / 80` | `32 / 1.6 / 40 / 120` |
+| GPT-6.2 Sol Standard | `2 / 0.1 / 2.5 / 10` | `4 / 0.2 / 5 / 15` |
+| GPT-6.2 Sol Flex | `1 / 0.05 / 1.25 / 5` | `2 / 0.1 / 2.5 / 7.5` |
+| GPT-6.2 Sol Fast | `4 / 0.2 / 5 / 20` | `8 / 0.4 / 10 / 30` |
+| GPT-6.1 Terra Standard | `1 / 0.05 / 1.25 / 5` | `2 / 0.1 / 2.5 / 7.5` |
+| GPT-6.1 Terra Flex | `0.5 / 0.025 / 0.625 / 2.5` | `1 / 0.05 / 1.25 / 3.75` |
+| GPT-6.1 Terra Fast | `2 / 0.1 / 2.5 / 10` | `4 / 0.2 / 5 / 15` |
 | GPT-6 Astra Standard | `10 / 1 / 12.5 / 50` | `20 / 2 / 25 / 75` |
 | GPT-6 Astra Flex | `5 / 0.5 / 6.25 / 25` | `10 / 1 / 12.5 / 37.5` |
 | GPT-6 Astra Fast | `20 / 2 / 25 / 100` | `40 / 4 / 50 / 150` |
