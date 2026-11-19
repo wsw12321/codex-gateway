@@ -44,6 +44,17 @@ func codexSignals() map[string]string {
 	}
 }
 
+func proLiteCodexSignals() map[string]string {
+	return map[string]string{
+		"X-Codex-Primary-Used-Percent":           "25",
+		"X-Codex-Primary-Window-Minutes":         "10080",
+		"X-Codex-Primary-Reset-After-Seconds":    "3600",
+		"X-Codex-Secondary-Used-Percent":         "0",
+		"X-Codex-Secondary-Window-Minutes":       "0",
+		"X-Codex-Secondary-Reset-After-Seconds":  "0",
+	}
+}
+
 // quotaFixture builds a plugin with one Codex account whose credential holds
 // an access token, and a scripted CPA observation of that credential.
 func quotaFixture(t *testing.T) (*fixture, *credentialObservation) {
@@ -179,6 +190,8 @@ func TestNormalizeCodexSignalsShapes(t *testing.T) {
 		"percent as text":        {window(map[string]string{"Used-Percent": "most"}), "quota_field_type_invalid"},
 		"window as text":         {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "5h"}), "quota_field_type_invalid"},
 		"window zero":            {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "0"}), "quota_window_invalid"},
+		"secondary zero":         {map[string]string{"X-Codex-Secondary-Used-Percent": "1", "X-Codex-Secondary-Window-Minutes": "0"}, "quota_window_invalid"},
+		"pro-lite sentinel":      {proLiteCodexSignals(), ""},
 		"window too long":        {window(map[string]string{"Used-Percent": "1", "Window-Minutes": "44641"}), "quota_window_invalid"},
 		"reset too early":        {window(map[string]string{"Used-Percent": "1", "Reset-At": "946684799"}), "quota_reset_invalid"},
 		"reset too late":         {window(map[string]string{"Used-Percent": "1", "Reset-At": "4102444801"}), "quota_reset_invalid"},
@@ -194,6 +207,16 @@ func TestNormalizeCodexSignalsShapes(t *testing.T) {
 			t.Errorf("%s: got %v, want not observed", name, err)
 		case test.code != "" && test.code != "not observed" && quotaSchemaCode(err) != test.code:
 			t.Errorf("%s: got %v, want %q", name, err, test.code)
+		}
+		if name == "pro-lite sentinel" {
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			result, err := normalizeCodexSignals(test.signals, observed)
+			if err != nil || result.RateLimits.Secondary != nil || result.RateLimits.Primary == nil ||
+				result.RateLimits.Primary.WindowDurationMins == nil || *result.RateLimits.Primary.WindowDurationMins != 10080 {
+				t.Fatalf("%s: result=%+v err=%v", name, result.RateLimits, err)
+			}
 		}
 	}
 
@@ -237,6 +260,43 @@ func TestNormalizeCodexSignalsShapes(t *testing.T) {
 	}
 	if result, err = normalizeCodexSignals(many, observed); err != nil || len(result.RateLimitsByLimitID) > maxQuotaExtraLimits+2 {
 		t.Fatalf("%d limits, %v", len(result.RateLimitsByLimitID), err)
+	}
+}
+
+func TestProLiteZeroSecondaryWindowAcrossQuotaPaths(t *testing.T) {
+	observed := time.Unix(testObservedUnix, 0).UTC()
+	signals := proLiteCodexSignals()
+	result, err := normalizeCodexSignals(signals, observed)
+	if err != nil || result.RateLimits.Primary == nil || result.RateLimits.Secondary != nil ||
+		result.RateLimits.Primary.WindowDurationMins == nil || *result.RateLimits.Primary.WindowDurationMins != 10080 {
+		t.Fatalf("normalized Pro-lite quota = %+v, err=%v", result, err)
+	}
+
+	report, _, ok := buildQuotaReport(ProviderCodex, "0123456789abcdef", signals, observed)
+	if !ok || report.Codex == nil || report.Codex.Result.RateLimits.Secondary != nil ||
+		report.Codex.Result.RateLimits.Primary == nil || report.Codex.Result.RateLimits.Primary.WindowDurationMins == nil ||
+		*report.Codex.Result.RateLimits.Primary.WindowDurationMins != 10080 {
+		t.Fatalf("pushed Pro-lite quota = %+v, ok=%v", report.Codex, ok)
+	}
+
+	f, observation := quotaFixture(t)
+	observation.Quota = signalSnapshot{ObservedAt: observed, Signals: signals}
+	query := url.Values{"id": {f.ids["a"]}}
+	status, fields, body := f.manage(http.MethodPost, managementPrefix+"upstream-accounts/quota", query, rpcBody)
+	if status != http.StatusOK || string(fields["id"]) != "6" {
+		t.Fatalf("Pro-lite quota query: %d %s", status, body)
+	}
+	var response quotaRPCResponse
+	if err := json.Unmarshal([]byte(body), &response); err != nil || response.Result.RateLimits.Primary == nil ||
+		response.Result.RateLimits.Secondary != nil || response.Result.RateLimits.Primary.WindowDurationMins == nil ||
+		*response.Result.RateLimits.Primary.WindowDurationMins != 10080 {
+		t.Fatalf("queried Pro-lite quota = %s, err=%v", body, err)
+	}
+
+	path := managementPrefix + facadeNamespace + "/codex/accounts/quota"
+	status, fields, body = f.manage(http.MethodPost, path, query, "{}")
+	if status != http.StatusOK || string(fields["status"]) != `"ok"` || string(fields["quota"]) != `[{"model":"codex","remaining_fraction":0.75}]` {
+		t.Fatalf("Pro-lite facade quota: %d %s", status, body)
 	}
 }
 

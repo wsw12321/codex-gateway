@@ -377,11 +377,21 @@ func normalizeCodexSignalLimit(limitID string, fields map[string]string, observe
 }
 
 // normalizeCodexSignalWindow reads one window. A window without a used
-// percentage is absent. A fractional percentage is rounded up, so the
-// snapshot never reports less use than CPA observed.
+// percentage is absent. Pro-lite accounts represent their missing five-hour
+// secondary window with zero used percent, zero duration, and zero reset-after
+// seconds, which is normalized to an absent window. A fractional percentage
+// is rounded up, so the snapshot never reports less use than CPA observed.
 func normalizeCodexSignalWindow(fields map[string]string, prefix string, observedAt time.Time) (*quotaWindow, error) {
 	rawUsed, ok := fields[prefix+"Used-Percent"]
 	if !ok {
+		return nil, nil
+	}
+	_, hasResetAt := fields[prefix+"Reset-At"]
+	if prefix == "Secondary-" &&
+		!hasResetAt &&
+		strings.TrimSpace(rawUsed) == "0" &&
+		strings.TrimSpace(fields[prefix+"Window-Minutes"]) == "0" &&
+		strings.TrimSpace(fields[prefix+"Reset-After-Seconds"]) == "0" {
 		return nil, nil
 	}
 	used, err := strconv.ParseFloat(strings.TrimSpace(rawUsed), 64)
