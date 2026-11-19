@@ -39,6 +39,9 @@ func (s *Server) pushPluginEgress(ctx context.Context, bindings []store.EgressBi
 	ctx, cancel := context.WithTimeout(ctx, pluginEgressPushTimeout)
 	defer cancel()
 	for _, binding := range bindings {
+		if binding.CredentialKind == "supplier" {
+			continue
+		}
 		client := s.providerAccountClient(binding.Provider)
 		if client == nil {
 			continue

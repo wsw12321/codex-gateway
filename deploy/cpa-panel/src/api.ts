@@ -1,6 +1,9 @@
 export type Provider = 'codex' | 'antigravity' | 'anthropic';
 export type Account = {
   id: string;
+  credential_kind?: 'oauth' | 'supplier';
+  supplier_models?: string[];
+  can_manage?: boolean;
   alias?: string;
   display_name?: string;
   email_masked: string;
@@ -32,7 +35,9 @@ async function request<T>(path: string, method = 'GET', data?: unknown): Promise
 }
 
 export const api = {
-  accounts: (provider: Provider) => request<{ accounts: Account[]; sync_warning?: string }>(`${provider}/accounts?all=true`),
+  accounts: (provider: Provider) => request<{ accounts: Account[]; sync_warning?: string; suppliers_enabled?: boolean }>(`${provider}/accounts?all=true`),
+  saveSupplier: (provider: Provider, id: string, payload: { url?: string; api_key: string; models?: string[]; egress_server_id?: string }) =>
+    request<{status: 'ok' | 'models_required'; models: string[]}>(`${provider}/suppliers${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', payload),
   status: (provider: Provider, id: string, enabled: boolean) => request(`${provider}/accounts/${id}/status`, 'PUT', { enabled }),
   begin: async (provider: Provider, egressID?: string) => { const oauth = await request<OAuth>(`${provider}/oauth`, 'POST', egressID === undefined ? {} : {egress_server_id: egressID}); authorizationURL(oauth.url, provider); return oauth; },
   poll: (id: string) => request<{ status: 'ok' | 'wait' | 'error' }>(`oauth/${id}/status`),

@@ -1,5 +1,10 @@
 # Loaded automatically by scripts/compose.sh only in shadowsocks mode.
 services:
+  account-egress:
+    networks:
+      ss_internal:
+        ipv4_address: 172.28.50.4
+
   egress-allowlist:
     networks:
       ss_internal:

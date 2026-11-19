@@ -103,6 +103,9 @@ code { font-size: 12px; }
 form { border-top: 1px solid var(--border); margin-top: 20px; padding-top: 20px; }
 form input { display: block; width: 100%; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin: 8px 0 14px; background: var(--soft); color: var(--ink); }
 form p { font-size: 14px; color: var(--muted); }
+.supplier-models { border: 1px solid var(--border); border-radius: 8px; margin: 0 0 14px; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.supplier-models label { display: inline-flex; align-items: center; gap: 6px; overflow-wrap: anywhere; }
+.supplier-models input { width: auto; margin: 0; }
 .authorize { font-weight: 600; }
 .confirm { margin-top: 16px; padding: 16px; background: var(--danger-soft); border: 1px solid var(--danger-border); border-radius: 12px; }
 .confirm p { color: var(--danger); }

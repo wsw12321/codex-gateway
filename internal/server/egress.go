@@ -304,6 +304,11 @@ func (s *Server) setAccountEgress(w http.ResponseWriter, r *http.Request) {
 		egressError(w, r, store.ErrInvalid)
 		return
 	}
+	_, supplier, err := s.supplierAccount(r, r.PathValue("id"))
+	if err != nil {
+		egressError(w, r, err)
+		return
+	}
 	nodeID := ""
 	if selected != nil {
 		nodeID = *selected
@@ -317,7 +322,9 @@ func (s *Server) setAccountEgress(w http.ResponseWriter, r *http.Request) {
 	if binding.Provider == "" {
 		binding.Provider = attemptProvider(r)
 	}
-	s.pushPluginEgress(r.Context(), []store.EgressBinding{binding})
+	if !supplier {
+		s.pushPluginEgress(r.Context(), []store.EgressBinding{binding})
+	}
 	writeJSON(w, 200, map[string]any{"id": binding.AccountID, "egress_server_id": binding.NodeID, "egress_revision": binding.Revision, "runtime": publicEgressStatus(status), "saved": true})
 }
 

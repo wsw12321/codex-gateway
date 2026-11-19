@@ -99,6 +99,8 @@ type upstreamAccountUsageDTO struct {
 }
 
 type upstreamAccountDTO struct {
+	CredentialKind      string     `json:"credential_kind,omitempty"`
+	SupplierModels      []string   `json:"supplier_models,omitempty"`
 	ID                  string     `json:"id"`
 	DisplayName         string     `json:"display_name,omitempty"`
 	Alias               string     `json:"alias"`
@@ -136,14 +138,15 @@ type upstreamAccountDTO struct {
 }
 
 type upstreamAccountsResponse struct {
-	AllocationFrom  time.Time                `json:"allocation_from"`
-	AllocationUntil time.Time                `json:"allocation_until"`
-	From            *time.Time               `json:"from"`
-	Until           time.Time                `json:"until"`
-	All             bool                     `json:"all"`
-	SyncWarning     string                   `json:"sync_warning,omitempty"`
-	Accounts        []upstreamAccountDTO     `json:"accounts"`
-	Unattributed    *upstreamAccountUsageDTO `json:"unattributed,omitempty"`
+	SuppliersEnabled bool                     `json:"suppliers_enabled,omitempty"`
+	AllocationFrom   time.Time                `json:"allocation_from"`
+	AllocationUntil  time.Time                `json:"allocation_until"`
+	From             *time.Time               `json:"from"`
+	Until            time.Time                `json:"until"`
+	All              bool                     `json:"all"`
+	SyncWarning      string                   `json:"sync_warning,omitempty"`
+	Accounts         []upstreamAccountDTO     `json:"accounts"`
+	Unattributed     *upstreamAccountUsageDTO `json:"unattributed,omitempty"`
 	// QuotaGuardSafetyPercent is the global threshold, present for providers
 	// the quota guard covers.
 	QuotaGuardSafetyPercent *int `json:"quota_guard_safety_percent,omitempty"`
@@ -166,7 +169,12 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
 	syncCtx, cancelSync := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
-	remoteAccounts, err := s.accountClient(r).ListUpstreamAccounts(syncCtx)
+	var remoteAccounts []gatewayproxy.UpstreamAccount
+	if client := s.accountClient(r); client != nil {
+		remoteAccounts, err = client.ListUpstreamAccounts(syncCtx)
+	} else {
+		err = errors.New("upstream account client is unavailable")
+	}
 	cancelSync()
 	syncWarning := ""
 	manageable := make(map[string]bool, len(remoteAccounts))
@@ -253,8 +261,20 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			egressNames[node.ID] = node.Name
 		}
 	}
+	suppliers := map[string]store.ModelSupplier{}
+	if s.config.SuppliersEnabled {
+		values, err := s.accountStore(r).ModelSuppliers(r.Context())
+		if err != nil {
+			internalError(s, w, r, "list model suppliers", err)
+			return
+		}
+		for _, value := range values {
+			suppliers[value.ID] = value
+		}
+	}
 	response := upstreamAccountsResponse{
-		AllocationFrom: allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
+		SuppliersEnabled: s.config.SuppliersEnabled,
+		AllocationFrom:   allocationUntil.Add(-24 * time.Hour), AllocationUntil: allocationUntil,
 		Until: query.Until, All: query.All, SyncWarning: syncWarning, QuotaGuardSafetyPercent: quotaGuardPercent,
 		Accounts: make([]upstreamAccountDTO, 0, len(rows)),
 	}
@@ -281,11 +301,23 @@ func (s *Server) upstreamAccountsJSON(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		var quotaGuard *upstreamQuotaGuardDTO
-		if quotaGuards != nil {
+		supplier, liveSupplier := suppliers[*row.AccountID]
+		if row.CredentialKind == "supplier" {
+			manageable[*row.AccountID] = liveSupplier
+			if liveSupplier {
+				finalStatus = row.Status
+				gatewayManualStatus = supplierManualStatus(supplier.Enabled)
+				cliproxyStatus, gatewayQuotaStatus = "disabled", "available"
+				if supplier.Enabled {
+					cliproxyStatus = "active"
+				}
+			}
+		} else if quotaGuards != nil {
 			state, present := quotaGuards[*row.AccountID]
 			quotaGuard = upstreamQuotaGuardView(state, present)
 		}
 		response.Accounts = append(response.Accounts, upstreamAccountDTO{
+			CredentialKind: row.CredentialKind, SupplierModels: supplier.Models,
 			QuotaGuard:       quotaGuard,
 			EgressServerID:   egressBindings[*row.AccountID].NodeID,
 			EgressServerName: egressNames[egressBindings[*row.AccountID].NodeID],
@@ -423,6 +455,35 @@ func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request
 	// older list must finish before an administrator's confirmed state change.
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
+	if supplier, isSupplier, err := s.supplierAccount(r, accountID); err != nil {
+		s.storeWriteError(w, r, "locate supplier", err)
+		return
+	} else if isSupplier {
+		runtime := &s.supplierRuntime
+		runtime.mu.Lock()
+		err := s.accountStore(r).SetModelSupplierEnabled(r.Context(), supplier.ID, enabled)
+		if !enabled {
+			runtime.dropIdleLocked(accountID)
+		} else {
+			delete(runtime.cooldown, accountID)
+		}
+		runtime.mu.Unlock()
+		if err != nil {
+			s.storeWriteError(w, r, "set supplier status", err)
+			return
+		}
+		resultCode, resultStatus, success = "ok", http.StatusOK, true
+		status, host := "unavailable", "disabled"
+		if enabled {
+			status, host = "available", "active"
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"id": accountID, "status": status, "cliproxy_status": host, "gateway_manual_status": supplierManualStatus(enabled), "gateway_quota_status": "available"})
+		return
+	}
+	if s.accountClient(r) == nil {
+		cpaError(w, r)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), upstreamAccountSyncTimeout)
 	result, err := s.accountClient(r).SetUpstreamAccountStatus(ctx, accountID, enabled)
 	cancel()
@@ -496,6 +557,13 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	if input.Method == nil || *input.Method != gatewayproxy.AccountRateLimitsMethod ||
 		input.ID == nil || *input.ID != gatewayproxy.AccountRateLimitsRequestID {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_quota_request", "额度查询协议无效")
+		return
+	}
+	if _, supplier, err := s.supplierAccount(r, accountID); err != nil {
+		s.storeWriteError(w, r, "locate supplier", err)
+		return
+	} else if supplier {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "unsupported_supplier_operation", "API Key 供应商没有订阅额度")
 		return
 	}
 	now := time.Now().UTC()

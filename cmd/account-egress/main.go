@@ -30,6 +30,13 @@ const (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "supplier-relay" {
+		if err := runSupplierRelay(); err != nil {
+			fmt.Fprintln(os.Stderr, "supplier relay unavailable")
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) == 2 && os.Args[1] == "healthcheck" {
 		client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 2 * time.Second}
 		resp, err := client.Get("http://" + controlAddress + "/healthz")
@@ -133,6 +140,7 @@ ready:
 		}
 	}
 	runtime := newRuntime(key, controller)
+	runtime.suppliers = loadSupplierRouting()
 	dataListener, err := net.Listen("tcp", dataAddress)
 	if err != nil {
 		return errors.New("cannot listen on private data interface")

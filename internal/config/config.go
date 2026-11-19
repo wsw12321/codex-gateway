@@ -45,6 +45,7 @@ type Config struct {
 	CPAManagementToken string
 	EgressControlKey   string
 	EgressControlURL   *url.URL
+	SuppliersEnabled   bool
 	// AntigravityModelRoutes names the reviewed CPA Antigravity models this
 	// deployment serves, each mapped to itself. Unset means all of them.
 	AntigravityModelRoutes map[string]string

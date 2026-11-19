@@ -35,9 +35,11 @@ type requestRouting struct {
 }
 
 type countingBody struct {
-	reader io.Reader
-	closer io.Closer
-	bytes  int64
+	reader      io.Reader
+	closer      io.Closer
+	replay      func() io.Reader
+	replayBytes int64
+	bytes       int64
 }
 
 type temporaryRequestFile struct {
@@ -132,6 +134,8 @@ func (s *Server) prepareModelBody(w http.ResponseWriter, r *http.Request, limit 
 	temporary := &temporaryRequestFile{file: file, size: size, path: path, release: release}
 	body := &countingBody{
 		reader: temporary, closer: temporary,
+		replay:      func() io.Reader { return io.NewSectionReader(file, 0, size) },
+		replayBytes: size,
 	}
 	r.Body = body
 	releaseOnReturn = false
@@ -291,12 +295,12 @@ func rewriteTopLevelModel(body *countingBody, routing requestRouting, target str
 		end-start != int64(len(routing.Model)) {
 		return 0, errors.New("request body cannot be rewritten")
 	}
-	body.reader = io.MultiReader(
-		io.NewSectionReader(file.file, 0, start),
-		strings.NewReader(target),
-		io.NewSectionReader(file.file, end, file.size-end),
-	)
-	return file.size - (end - start) + int64(len(target)), nil
+	body.replay = func() io.Reader {
+		return io.MultiReader(io.NewSectionReader(file.file, 0, start), strings.NewReader(target), io.NewSectionReader(file.file, end, file.size-end))
+	}
+	body.reader = body.replay()
+	body.replayBytes = file.size - (end - start) + int64(len(target))
+	return body.replayBytes, nil
 }
 
 func nextNonSpaceByte(reader *bufio.Reader) (byte, error) {

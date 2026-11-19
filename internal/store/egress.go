@@ -30,10 +30,11 @@ type EgressServer struct {
 }
 
 type EgressBinding struct {
-	AccountID string
-	Provider  string
-	NodeID    string
-	Revision  int64
+	AccountID      string
+	Provider       string
+	NodeID         string
+	Revision       int64
+	CredentialKind string
 }
 
 type EgressRegistration struct {
@@ -463,13 +464,13 @@ func (s *Store) EgressSnapshot(ctx context.Context) (EgressState, error) {
 		if err != nil {
 			return err
 		}
-		rows, err = tx.QueryContext(ctx, `SELECT b.account_id,a.provider,COALESCE(b.node_id::text,''),b.revision FROM upstream_account_egress b JOIN upstream_accounts a ON a.id=b.account_id ORDER BY b.account_id`)
+		rows, err = tx.QueryContext(ctx, `SELECT b.account_id,a.provider,COALESCE(b.node_id::text,''),b.revision,a.credential_kind FROM upstream_account_egress b JOIN upstream_accounts a ON a.id=b.account_id ORDER BY b.account_id`)
 		if err != nil {
 			return mapDBError("list egress bindings", err)
 		}
 		for rows.Next() {
 			var b EgressBinding
-			if err = rows.Scan(&b.AccountID, &b.Provider, &b.NodeID, &b.Revision); err != nil {
+			if err = rows.Scan(&b.AccountID, &b.Provider, &b.NodeID, &b.Revision, &b.CredentialKind); err != nil {
 				_ = rows.Close()
 				return err
 			}

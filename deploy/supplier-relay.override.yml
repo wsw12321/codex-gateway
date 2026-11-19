@@ -1,0 +1,8 @@
+services:
+  account-egress:
+    secrets:
+      - supplier_relay_key
+
+secrets:
+  supplier_relay_key:
+    file: ${SUPPLIER_RELAY_KEY_FILE:?Set SUPPLIER_RELAY_KEY_FILE in .env}

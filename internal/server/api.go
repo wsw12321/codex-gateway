@@ -402,7 +402,22 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	forwardingStarted = true
 	var result gatewayproxy.Result
 	var failure *gatewayproxy.Failure
-	if prepared.claude {
+	options := gatewayproxy.ForwardOptions{
+		AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID, Groups: allocationGroups,
+		OnUpstreamAccount: func(id string) { s.rememberActiveAttribution(requestID, id); s.noteUpstreamQuotaUse(id) },
+		OnConversation:    onConversation,
+	}
+	official := func(w http.ResponseWriter, request *http.Request, options gatewayproxy.ForwardOptions) (gatewayproxy.Result, *gatewayproxy.Failure) {
+		if prepared.anthropic {
+			return s.anthropic.ForwardMessages(request.Context(), w, request, model, upstreamPath, options)
+		}
+		if prepared.gemini {
+			return upstreams.ForwardGemini(request.Context(), w, request, model, upstreamPath, options)
+		}
+		return s.upstream.ForwardWithOptions(request.Context(), w, request, upstreamPath, options)
+	}
+	result, failure, mixed := s.forwardMixed(w, r, prepared, provider, options, official)
+	if !mixed && prepared.claude {
 		if err := s.syncAnthropicAccounts(r.Context()); err != nil {
 			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "api_error", Code: "upstream_unavailable", Message: "Claude 账号暂不可用"}
 		} else {
@@ -417,14 +432,15 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			}
 		}
 	}
-	if upstreams.IsAntigravityModel(model) && s.antigravity != nil {
+	if !mixed && upstreams.IsAntigravityModel(model) && s.antigravity != nil {
 		if err := s.syncAntigravityAccounts(r.Context()); err != nil {
 			failure = &gatewayproxy.Failure{Status: http.StatusServiceUnavailable, Type: "upstream_error", Code: "upstream_unavailable", Message: "Antigravity 账号暂不可用"}
 		}
 	}
-	if failure != nil {
+	if mixed || failure != nil {
 		// Settle the reserved request below using the same failure path as forwarding.
 	} else if r.Method == http.MethodGet && upstreamPath == "/v1/models" {
+		supplierModels := s.responseSupplierCatalog(r.Context(), key.UserID, allowedModels)
 		// Claude discovery uses the same CPA catalog and per-user eligibility.
 		// A failed metadata sync hides Claude until its scope can be verified.
 		if s.anthropic != nil {
@@ -458,13 +474,17 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 				upstreams = gatewayproxy.NewRouter(s.upstream, nil, s.config.AntigravityModelRoutes)
 			}
 		}
-		registry := providerAdapterRegistry(upstreams)
-		result, failure = registry.ForwardModels(r.Context(), w, r, allowedModels, gatewayproxy.TrustedRequestMetadata{
-			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
-			UserID:        key.UserID, Groups: allocationGroups,
-			OnUpstreamAccount: onUpstreamAccount,
-			OnConversation:    onConversation,
-		})
+		if len(supplierModels) != 0 {
+			result, failure = s.upstream.ForwardModelsWithSuppliers(r.Context(), w, r, allowedModels, options, supplierModels)
+		} else {
+			registry := providerAdapterRegistry(upstreams)
+			result, failure = registry.ForwardModels(r.Context(), w, r, allowedModels, gatewayproxy.TrustedRequestMetadata{
+				AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID),
+				UserID:        key.UserID, Groups: allocationGroups,
+				OnUpstreamAccount: onUpstreamAccount,
+				OnConversation:    onConversation,
+			})
+		}
 	} else if prepared.anthropic {
 		result, failure = s.anthropic.ForwardMessages(r.Context(), w, r, model, upstreamPath, gatewayproxy.ForwardOptions{
 			AffinityScope: upstreamAffinityScope(s.config.KeyPepper, key.ID), UserID: key.UserID, Groups: allocationGroups,
@@ -524,7 +544,9 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		effectiveStatus = http.StatusBadGateway
 	}
 	actualRequestBytes := requestBytes
-	if body != nil {
+	if mixed {
+		actualRequestBytes = body.replayBytes
+	} else if body != nil {
 		actualRequestBytes = body.bytes
 	}
 

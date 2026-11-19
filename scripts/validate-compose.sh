@@ -396,8 +396,10 @@ squid_image=$(lock_value SQUID_IMAGE)
 # Dynamic account exits have separate control and data subnets. Only Squid can
 # send CONNECTs; only Gateway receives the control credential. No Docker socket,
 # OAuth volume, database secret or externally published listener is permitted.
-jq -e --arg golang "$golang_image" \
+jq -e --arg golang "$golang_image" --arg mode "$egress_mode" \
     --arg runtime "$runtime_image" --arg root "$root" --arg secret "$secret_dir/egress_control_key" '
+  .services["egress-allowlist"].environment as $global |
+  (.services.gateway.environment.SUPPLIERS_ENABLED == "true" and $mode == "relay") as $supplier_relay |
   .networks.account_egress_data.internal == true and
   .networks.account_egress_data.ipam.config == [{"subnet":"172.28.60.0/24"}] and
   .networks.account_egress_control.internal == true and
@@ -424,11 +426,11 @@ jq -e --arg golang "$golang_image" \
     ((.ports // []) | length == 0) and ((.volumes // []) | length == 0) and
     ((.devices // []) | length == 0) and ((.cap_add // []) | length == 0) and .cap_drop == ["ALL"] and
     .security_opt == ["no-new-privileges:true"] and
-    (.networks | keys | sort) == ["account_egress_control", "account_egress_data", "egress_external"] and
+    (.networks | keys | sort) == (if $mode == "shadowsocks" then ["account_egress_control", "account_egress_data", "egress_external", "ss_internal"] else ["account_egress_control", "account_egress_data", "egress_external"] end) and
     .networks.account_egress_control.ipv4_address == "172.28.70.3" and
     .networks.account_egress_data.ipv4_address == "172.28.60.3" and
-    ([.secrets[].source]) == ["egress_control_key"] and
-    ((.environment // {}) | length == 0) and
+    ([.secrets[].source] | sort) == (if $supplier_relay then ["egress_control_key", "supplier_relay_key"] else ["egress_control_key"] end) and
+    .environment == {"EGRESS_MODE":$global.EGRESS_MODE,"CODEX_RELAY_IP":$global.CODEX_RELAY_IP} and
     (.tmpfs | sort) == [
       "/run/account-egress:rw,noexec,nosuid,nodev,size=32m,mode=0700,uid=10004,gid=10004",
       "/tmp:rw,noexec,nosuid,nodev,size=8m,mode=0700,uid=10004,gid=10004"
@@ -437,7 +439,7 @@ jq -e --arg golang "$golang_image" \
 ' "$tmp" >/dev/null || fail 'account egress requires isolated control/data networks, pinned Mihomo and a dedicated file credential'
 
 # The optional transport must not give an application container an alternate
-# proxy or credential path. Its sole client is Squid on a private subnet.
+# proxy or credential path. Squid and account-egress share its private subnet.
 jq -e --arg mode "$egress_mode" \
     --arg golang "$golang_image" --arg runtime "$runtime_image" --arg root "$root" '
   if $mode == "shadowsocks" then
@@ -445,7 +447,8 @@ jq -e --arg mode "$egress_mode" \
     .networks.ss_internal.driver == "bridge" and
     .networks.ss_internal.ipam.config == [{"subnet":"172.28.50.0/24"}] and
     ([.services | to_entries[] | select(.value.networks.ss_internal != null) | .key] | sort) ==
-      ["egress-allowlist", "ss-egress"] and
+      ["account-egress", "egress-allowlist", "ss-egress"] and
+    .services["account-egress"].networks.ss_internal.ipv4_address == "172.28.50.4" and
     .services["egress-allowlist"].networks.ss_internal.ipv4_address == "172.28.50.2" and
     (.services["egress-allowlist"].depends_on | keys) == ["ss-egress"] and
     .services["egress-allowlist"].depends_on["ss-egress"].condition == "service_healthy" and
@@ -592,7 +595,7 @@ jq -e --arg version "$cpa_version" --arg commit "$cpa_commit" \
   ([.services["codex-compat"].tmpfs[] | select(startswith("/run/cliproxy-plugin:rw,exec,nosuid,nodev,"))] | length == 1)
 ' "$tmp" >/dev/null || fail 'codex-compat must use the locked plugin image with no proxy of its own'
 jq -e '.services["codex-compat"].depends_on.gateway == null and
-    .services.gateway.depends_on["codex-compat"].condition == "service_healthy" and
+    .services.gateway.depends_on["codex-compat"] == null and
     .services.gateway.environment.GATEWAY_LISTEN == ":8080"' "$tmp" >/dev/null || \
     fail 'sidecar startup must not wait for its Gateway allocation callback'
 

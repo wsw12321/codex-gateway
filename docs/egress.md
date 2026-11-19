@@ -2,6 +2,7 @@
 
 本页配置全局默认出口。按账号绑定不同 SS 或 SOCKS5 节点及管理员网页配置见
 [上游账号独立出口](account-egress.md)；未绑定账号继续遵循本页规则。
+Owner 添加的 API Key 模型供应商见 [API Key 模型供应商](model-suppliers.md)。
 
 Codex 和 Gemini 共用所选出口。A Squid 始终保留现有来源和精确域名白名单；
 OIDC 认证仍由 A Squid 独立直连配置的 Auth 域名。

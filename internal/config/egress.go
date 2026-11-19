@@ -3,10 +3,19 @@ package config
 import (
 	"errors"
 	"net/url"
+	"os"
+	"strconv"
 	"strings"
 )
 
 func (c *Config) loadEgress() error {
+	if raw := os.Getenv("SUPPLIERS_ENABLED"); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			return errors.New("SUPPLIERS_ENABLED must be a boolean")
+		}
+		c.SuppliersEnabled = value
+	}
 	key, err := envOrFile("EGRESS_CONTROL_KEY")
 	if err != nil {
 		return err
@@ -16,6 +25,9 @@ func (c *Config) loadEgress() error {
 	return err
 }
 func (c Config) validateEgress() error {
+	if c.SuppliersEnabled && (c.EgressControlKey == "" || len(c.APIKeyEncryptionKey) != 32) {
+		return errors.New("SUPPLIERS_ENABLED requires account egress and the API key encryption secret")
+	}
 	if c.EgressControlKey == "" {
 		return nil
 	}

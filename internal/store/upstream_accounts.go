@@ -184,7 +184,7 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 					status = EXCLUDED.status,
 					last_synced_at = EXCLUDED.last_synced_at,
 					updated_at = EXCLUDED.updated_at
-				WHERE upstream_accounts.provider = EXCLUDED.provider
+				WHERE upstream_accounts.provider = EXCLUDED.provider AND upstream_accounts.credential_kind = 'oauth'
 				  AND upstream_accounts.updated_at <= EXCLUDED.updated_at`,
 				account.ID, account.MaskedEmail, account.Plan, account.Status,
 				account.LastSyncedAt, at, s.upstreamProviderName(), account.DisplayName,
@@ -196,7 +196,7 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 			UPDATE upstream_accounts
 			SET status = 'unavailable',
 				updated_at = $1
-			WHERE updated_at <= $1 AND provider = $2`
+			WHERE updated_at <= $1 AND provider = $2 AND credential_kind = 'oauth'`
 		missingArgs := []any{at, s.upstreamProviderName()}
 		if len(normalized) > 0 {
 			placeholders := make([]string, len(normalized))
@@ -352,7 +352,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		UNION SELECT upstream_account_id FROM ledger_totals
 	)
 	SELECT d.upstream_account_id, COALESCE(a.display_name, ''), COALESCE(a.alias, ''), COALESCE(a.masked_email, ''),
-		COALESCE(a.plan, 'unknown'), COALESCE(a.status, 'unattributed'),
+		COALESCE(a.plan, 'unknown'), COALESCE(a.status, 'unattributed'), COALESCE(a.credential_kind, ''),
 		COALESCE(a.concurrent_limit, 1), a.last_synced_at, COALESCE(u.request_count, 0), COALESCE(u.error_count, 0),
 		COALESCE(u.input_tokens, 0), COALESCE(u.cached_input_tokens, 0),
 		COALESCE(u.cache_write_tokens, 0), COALESCE(u.cache_write_5m_tokens, 0), COALESCE(u.cache_write_1h_tokens, 0), COALESCE(u.output_tokens, 0),
@@ -375,7 +375,7 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		var value UpstreamAccountSummary
 		var accountID sql.NullString
 		var lastSynced sql.NullTime
-		if err := rows.Scan(&accountID, &value.DisplayName, &value.Alias, &value.MaskedEmail, &value.Plan, &value.Status,
+		if err := rows.Scan(&accountID, &value.DisplayName, &value.Alias, &value.MaskedEmail, &value.Plan, &value.Status, &value.CredentialKind,
 			&value.ConcurrentLimit, &lastSynced, &value.RequestCount, &value.ErrorCount, &value.InputTokens,
 			&value.CachedInputTokens, &value.CacheWriteTokens, &value.CacheWrite5mTokens, &value.CacheWrite1hTokens, &value.OutputTokens,
 			&value.ReasoningTokens, &value.EquivalentCostUSD); err != nil {

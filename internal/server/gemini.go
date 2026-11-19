@@ -120,7 +120,7 @@ func (s *Server) proxyGemini(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	replay := io.NopCloser(bytes.NewReader(data))
-	body := &countingBody{reader: replay, closer: replay}
+	body := &countingBody{reader: replay, closer: replay, replay: func() io.Reader { return bytes.NewReader(data) }, replayBytes: int64(len(data))}
 	r.Body, r.ContentLength = body, int64(len(data))
 	s.executeAPIRequest(w, r, preparedAPIRequest{
 		upstreamPath: prefix + model + ":" + action,

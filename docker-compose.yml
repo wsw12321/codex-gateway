@@ -94,6 +94,7 @@ services:
       API_KEY_ENCRYPTION_KEY_FILE: /run/secrets/gateway_api_key_encryption_key
       EGRESS_CONTROL_URL: http://account-egress:17892
       EGRESS_CONTROL_KEY_FILE: /run/secrets/egress_control_key
+      SUPPLIERS_ENABLED: ${SUPPLIERS_ENABLED:-false}
       TOKEN_HMAC_PEPPER_FILE: /run/secrets/gateway_session_secret
       SIDECAR_URL: http://codex-compat:8317
       SIDECAR_API_KEY_FILE: /run/secrets/sidecar_api_key
@@ -135,8 +136,6 @@ services:
         ipv4_address: 172.28.70.2
     depends_on:
       postgres:
-        condition: service_healthy
-      codex-compat:
         condition: service_healthy
     cap_drop:
       - ALL
@@ -255,6 +254,9 @@ services:
     pids_limit: 128
     cap_drop:
       - ALL
+    environment:
+      EGRESS_MODE: ${EGRESS_MODE:-}
+      CODEX_RELAY_IP: ${CODEX_RELAY_IP:-}
     secrets:
       - egress_control_key
     tmpfs:

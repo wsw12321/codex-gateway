@@ -88,6 +88,14 @@ def validate(settings, root):
         ipv4(env["CODEX_RELAY_IP"], "CODEX_RELAY_IP")
     if mode == "relay" and not env["CODEX_RELAY_IP"]:
         fail("EGRESS_MODE=relay requires CODEX_RELAY_IP")
+    suppliers = env.get("SUPPLIERS_ENABLED", "false")
+    if suppliers not in ("true", "false"):
+        fail("SUPPLIERS_ENABLED must be true or false")
+    supplier_relay = mode == "relay" and suppliers == "true"
+    if supplier_relay and not env.get("SUPPLIER_RELAY_KEY_FILE"):
+        fail("SUPPLIERS_ENABLED in relay mode requires SUPPLIER_RELAY_KEY_FILE")
+    if supplier_relay and env["CODEX_RELAY_IP"] != "10.77.0.2":
+        fail("SUPPLIERS_ENABLED in relay mode requires the documented WireGuard peer 10.77.0.2")
     if env["OIDC_ENABLED"] not in ("true", "false"):
         fail("OIDC_ENABLED must be true or false")
     oidc_enabled = env["OIDC_ENABLED"] == "true"
@@ -135,7 +143,7 @@ def validate(settings, root):
         fail("GATEWAY_USAGE_PRICING_JSON is no longer used: prices are built into the Gateway image. "
              "Save the value with ./scripts/pricing.sh export-legacy, delete the line from .env and convert it "
              "with ./scripts/pricing.sh migrate-env (docs/operations.md, 迁移到内置价格目录)")
-    return {"mode": mode, "oidc_enabled": oidc_enabled}
+    return {"mode": mode, "oidc_enabled": oidc_enabled, "suppliers_enabled": suppliers == "true", "supplier_relay": supplier_relay}
 
 
 def deployment_settings(model):
@@ -153,6 +161,8 @@ def deployment_settings(model):
         "EGRESS_MODE": squid.get("EGRESS_MODE", ""),
         "CODEX_RELAY_IP": squid.get("CODEX_RELAY_IP", ""),
         "CODEX_RELAY_PORT": squid.get("CODEX_RELAY_PORT", "3128"),
+        "SUPPLIERS_ENABLED": gateway.get("SUPPLIERS_ENABLED", "false"),
+        "SUPPLIER_RELAY_KEY_FILE": model.get("secrets", {}).get("supplier_relay_key", {}).get("file", ""),
         "OIDC_ENABLED": oidc,
         "OIDC_AUTH_HOST": squid.get("OIDC_AUTH_HOST", ""),
         "OIDC_ISSUER": gateway.get("OIDC_ISSUER", ""),

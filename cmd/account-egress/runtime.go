@@ -55,6 +55,7 @@ type runtime struct {
 	desired     map[string]bool
 	routes      map[string]routeRuntime
 	squidIP     string
+	suppliers   supplierRouting
 	// Connectivity probes are owner-initiated; a small fixed pool keeps a
 	// burst of tests from competing with model traffic for local resources.
 	probeSlots   chan struct{}
@@ -316,6 +317,10 @@ func marshalMihomo(nodes map[string]*nodeRuntime, secret string) ([]byte, error)
 func (r *runtime) controlHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
+		if request.Method == http.MethodConnect {
+			r.serveSupplier(w, request, false)
+			return
+		}
 		if request.Method == http.MethodGet && request.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusOK)
 			return

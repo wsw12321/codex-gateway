@@ -54,7 +54,7 @@ func (s *Server) antigravityAccountRoutes() {
 
 func (s *Server) requireAntigravityAccounts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.antigravity == nil {
+		if s.antigravity == nil && !s.config.SuppliersEnabled {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "upstream_error", "antigravity_not_configured", "尚未配置 Antigravity 上游")
 			return
 		}

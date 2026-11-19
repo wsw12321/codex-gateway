@@ -386,7 +386,7 @@ func (s *Store) ClaimUpstreamQuotaCheck(ctx context.Context, accountID string, a
 	// The data-modifying CTE runs once; the outer read sees the row as it was
 	// before this statement, which is what an unclaimed caller needs.
 	err := s.db.QueryRowContext(ctx, `WITH account AS (
-			SELECT id, provider FROM upstream_accounts WHERE id = $1 AND provider IN ('codex', 'anthropic')
+			SELECT id, provider FROM upstream_accounts WHERE id = $1 AND provider IN ('codex', 'anthropic') AND credential_kind = 'oauth'
 		), claimed AS (
 			INSERT INTO upstream_quota_guard_states AS g (account_id, auto_checked_at)
 			SELECT id, $2 FROM account
@@ -414,7 +414,7 @@ func (s *Store) ClaimUpstreamQuotaCheck(ctx context.Context, accountID string, a
 // locks it. ErrNotFound means the account does not exist for provider.
 func lockUpstreamQuotaGuardRowTx(ctx context.Context, tx *sql.Tx, accountID, provider string) (upstreamQuotaGuardRow, error) {
 	if _, err := tx.ExecContext(ctx, `INSERT INTO upstream_quota_guard_states (account_id)
-		SELECT id FROM upstream_accounts WHERE id = $1 AND provider = $2
+		SELECT id FROM upstream_accounts WHERE id = $1 AND provider = $2 AND credential_kind = 'oauth'
 		ON CONFLICT (account_id) DO NOTHING`, accountID, provider); err != nil {
 		return upstreamQuotaGuardRow{}, mapDBError("create upstream quota guard", err)
 	}

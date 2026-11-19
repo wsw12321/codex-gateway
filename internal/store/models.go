@@ -377,6 +377,7 @@ type UpstreamAccountSnapshot struct {
 // read from immutable usage-charge ledger entries rather than recalculated.
 type UpstreamAccountSummary struct {
 	AccountID          *string
+	CredentialKind     string
 	DisplayName        string
 	Alias              string
 	MaskedEmail        string

@@ -23,7 +23,7 @@ egress_clear_environment() {
     for egress_name in $(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=.*/\2/p' "$egress_env_file" "$egress_lock"); do
         unset "$egress_name"
     done
-    unset EGRESS_MODE CODEX_RELAY_IP CODEX_RELAY_PORT \
+    unset EGRESS_MODE CODEX_RELAY_IP CODEX_RELAY_PORT SUPPLIERS_ENABLED SUPPLIER_RELAY_KEY_FILE \
         SHADOWSOCKS_SERVER SHADOWSOCKS_PORT SHADOWSOCKS_CIPHER \
         SHADOWSOCKS_PASSWORD SHADOWSOCKS_PASSWORD_FILE MIHOMO_IMAGE \
         GATEWAY_SECRET_GID OIDC_ENABLED OIDC_ISSUER OIDC_CLIENT_ID OIDC_AUTH_HOST CPA_INTEGRATION GATEWAY_USAGE_PRICING_JSON \
@@ -44,6 +44,7 @@ egress_prepare() {
     unset egress_raw_settings
     egress_mode=$(printf '%s' "$egress_settings" | jq -r '.mode')
     egress_oidc_enabled=$(printf '%s' "$egress_settings" | jq -r '.oidc_enabled')
+    egress_supplier_relay=$(printf '%s' "$egress_settings" | jq -r '.supplier_relay')
 }
 
 egress_compose() {
@@ -54,6 +55,9 @@ egress_compose() {
     fi
     if test "$egress_mode" = shadowsocks; then
         set -- -f "$egress_root/deploy/shadowsocks.override.yml" "$@"
+    fi
+    if test "$egress_supplier_relay" = true; then
+        set -- -f "$egress_root/deploy/supplier-relay.override.yml" "$@"
     fi
     docker compose \
         --project-name codex-gateway --project-directory "$egress_root" \

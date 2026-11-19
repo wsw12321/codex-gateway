@@ -155,7 +155,7 @@ func marshalConfig(server string, port int, cipher, password string) ([]byte, er
 		"port":                17890,
 		"bind-address":        "172.28.50.3",
 		"allow-lan":           true,
-		"lan-allowed-ips":     []string{"172.28.50.2/32"},
+		"lan-allowed-ips":     []string{"172.28.50.2/32", "172.28.50.4/32"},
 		"mode":                "rule",
 		"log-level":           "warning",
 		"ipv6":                false,

@@ -51,6 +51,9 @@ if test "$egress_mode" = shadowsocks; then
 fi
 printf 'Recreating Squid with %s egress and waiting for local readiness...\n' "$egress_mode"
 apply_compose up -d --no-deps --force-recreate --wait --wait-timeout 90 egress-allowlist
+if test "$(printf '%s' "$egress_settings" | jq -r '.suppliers_enabled')" = true; then
+    apply_compose up -d --no-deps --wait --wait-timeout 90 account-egress
+fi
 
 if test "$egress_mode" != shadowsocks; then
     # Only remove the old service after Squid is healthy on its new route.

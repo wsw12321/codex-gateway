@@ -47,6 +47,7 @@ type Server struct {
 	quotaGuards           *upstreamQuotaGuardScheduler
 	quotaGuardOnce        sync.Once
 	upstreamAccountSyncMu sync.Mutex
+	supplierRuntime       supplierRuntime
 	// activeAttributions contains short-lived account observations received
 	// from upstream response headers while a request is still streaming.  The
 	// durable usage row is updated only after completion; keeping this separate

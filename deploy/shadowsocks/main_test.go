@@ -46,7 +46,7 @@ func TestPasswordRemainsLiteralInPrivateJSONConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			if decoded.Port != 17890 || decoded.BindAddress != "172.28.50.3" ||
-				len(decoded.Allowed) != 1 || decoded.Allowed[0] != "172.28.50.2/32" ||
+				len(decoded.Allowed) != 2 || decoded.Allowed[0] != "172.28.50.2/32" || decoded.Allowed[1] != "172.28.50.4/32" ||
 				decoded.Controller != "" || decoded.Tun["enable"] {
 				t.Fatal("configuration permits an unexpected inbound interface")
 			}

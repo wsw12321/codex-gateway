@@ -60,3 +60,11 @@ func DecryptEgressPassword(key []byte, nodeID string, envelope []byte) (string, 
 	defer clear(plaintext)
 	return string(plaintext), nil
 }
+
+func EncryptSupplierKey(key []byte, accountID, token string) ([]byte, error) {
+	return EncryptEgressPassword(key, "supplier:"+accountID, token)
+}
+
+func DecryptSupplierKey(key []byte, accountID string, envelope []byte) (string, error) {
+	return DecryptEgressPassword(key, "supplier:"+accountID, envelope)
+}

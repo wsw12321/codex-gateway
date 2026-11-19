@@ -271,6 +271,40 @@ func (c *Client) ForwardModelsWithOptions(ctx context.Context, w http.ResponseWr
 	return writeModelCatalog(w, filtered, result)
 }
 
+func (c *Client) ForwardModelsWithSuppliers(ctx context.Context, w http.ResponseWriter, incoming *http.Request, allowedModels map[string]struct{}, options ForwardOptions, suppliers []string) (Result, *Failure) {
+	catalogCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	body, result, failure := c.fetchModelCatalog(catalogCtx, incoming, options)
+	var filtered []byte
+	if failure == nil {
+		filtered, _ = filterModelCatalog(body, allowedModels)
+	}
+	var envelope map[string]json.RawMessage
+	if len(filtered) == 0 || json.Unmarshal(filtered, &envelope) != nil {
+		envelope = map[string]json.RawMessage{"object": json.RawMessage(`"list"`)}
+		result = Result{StatusCode: http.StatusOK, ContentType: "application/json"}
+	}
+	entries := make([]json.RawMessage, 0, len(suppliers))
+	_ = json.Unmarshal(envelope["data"], &entries)
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		var model struct{ ID string }
+		_ = json.Unmarshal(entry, &model)
+		seen[model.ID] = true
+	}
+	for _, model := range suppliers {
+		if _, allowed := allowedModels[model]; !allowed || !validCatalogModelID(model) || seen[model] {
+			continue
+		}
+		entry, _ := json.Marshal(map[string]string{"id": model, "object": "model", "owned_by": "supplier"})
+		entries = append(entries, entry)
+		seen[model] = true
+	}
+	envelope["data"], _ = json.Marshal(entries)
+	encoded, _ := json.Marshal(envelope)
+	return writeModelCatalog(w, append(encoded, '\n'), result)
+}
+
 func (c *Client) fetchModelCatalog(ctx context.Context, incoming *http.Request, options ForwardOptions) ([]byte, Result, *Failure) {
 	target := *c.baseURL
 	target.Path = strings.TrimRight(c.baseURL.Path, "/") + "/v1/models"

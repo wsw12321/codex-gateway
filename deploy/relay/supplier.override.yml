@@ -1,0 +1,18 @@
+services:
+  supplier-relay:
+    image: ${SUPPLIER_RELAY_IMAGE:?Set the reviewed account-egress image}
+    command: ["supplier-relay"]
+    network_mode: host
+    read_only: true
+    restart: unless-stopped
+    user: "10004:${SUPPLIER_RELAY_SECRET_GID:-1000}"
+    init: true
+    pids_limit: 64
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    secrets:
+      - supplier_relay_key
+
+secrets:
+  supplier_relay_key:
+    file: ${SUPPLIER_RELAY_KEY_FILE:?Set the relay-only control key file}

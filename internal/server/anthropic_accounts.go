@@ -35,7 +35,7 @@ func (s *Server) anthropicAccountRoutes() {
 
 func (s *Server) requireAnthropicAccounts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.anthropic == nil {
+		if s.anthropic == nil && !s.config.SuppliersEnabled {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "upstream_error", "anthropic_not_configured", "Claude 账号服务尚未就绪")
 			return
 		}

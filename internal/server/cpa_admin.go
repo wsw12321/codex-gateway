@@ -62,6 +62,8 @@ func (s *Server) cpaAdminRoutes() {
 	s.mux.Handle("GET /admin/cpa/api/oauth/{id}/status", read(s.cpaOAuthStatus))
 	s.mux.Handle("POST /admin/cpa/api/oauth/{id}/callback", write(s.cpaOAuthCallback))
 	s.mux.Handle("POST /admin/cpa/api/{provider}/credentials", write(s.cpaImport))
+	s.mux.Handle("POST /admin/cpa/api/{provider}/suppliers", write(s.saveModelSupplier))
+	s.mux.Handle("PUT /admin/cpa/api/{provider}/suppliers/{id}", write(s.saveModelSupplier))
 	s.mux.Handle("POST /admin/cpa/api/{provider}/accounts/{id}/refresh", write(s.cpaRefresh))
 	s.mux.Handle("POST /admin/cpa/api/{provider}/accounts/{id}/quota", write(s.cpaQuota))
 	s.mux.Handle("DELETE /admin/cpa/api/{provider}/accounts/{id}", write(s.cpaDelete))
@@ -137,7 +139,7 @@ func cpaProvider(provider string) bool {
 
 func (s *Server) cpaAccountRequest(w http.ResponseWriter, r *http.Request) (*http.Request, bool) {
 	provider := r.PathValue("provider")
-	if !cpaProvider(provider) || (provider == "antigravity" && s.antigravity == nil) || (provider == "anthropic" && s.anthropic == nil) {
+	if !cpaProvider(provider) || !s.config.SuppliersEnabled && ((provider == "antigravity" && s.antigravity == nil) || (provider == "anthropic" && s.anthropic == nil)) {
 		http.NotFound(w, r)
 		return nil, false
 	}
@@ -548,6 +550,13 @@ func (s *Server) cpaAccountOperation(w http.ResponseWriter, r *http.Request, ope
 	if !cpaJSON(w, r, &input, 128) {
 		return
 	}
+	if s.config.SuppliersEnabled && s.store != nil {
+		_, err := s.findModelSupplier(r.Context(), provider, id)
+		if !errors.Is(err, store.ErrNotFound) {
+			httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "unsupported_supplier_operation", "API Key 供应商没有订阅额度或 OAuth 凭据")
+			return
+		}
+	}
 	// The facade returns only a fixed normalized schema, never raw provider
 	// responses or the auth record returned by CPA's stock refresh handler.
 	var result struct {
@@ -600,10 +609,17 @@ func (s *Server) cpaDelete(w http.ResponseWriter, r *http.Request) {
 	if !cpaJSON(w, r, &input, 128) {
 		return
 	}
+	if s.deleteSupplierCredential(w, rr) {
+		return
+	}
 	// Persist the same business control state used by the main dashboard. The
 	// CPA facade rechecks disabled + zero active requests immediately before
 	// deletion; an unavailable concurrency snapshot always prevents removal.
 	client := s.accountClient(rr)
+	if client == nil {
+		cpaError(w, r)
+		return
+	}
 	id := r.PathValue("id")
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()

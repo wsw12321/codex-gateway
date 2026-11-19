@@ -8095,7 +8095,7 @@ function upstreamAccessBlock(account) {
 }
 
 async function openUpstreamAccess(account) {
-  if (loggingOut || state?.user?.role !== "owner" || upstreamAccountOperation || !upstreamAccountSyncHealthy || !upstreamAccounts.includes(account)) return;
+  if (loggingOut || state?.user?.role !== "owner" || upstreamAccountOperation || (!upstreamAccountSyncHealthy && account.credential_kind !== "supplier") || !upstreamAccounts.includes(account)) return;
   const sequence = ++upstreamAccessSequence;
   const generation = identityGeneration;
   const identityCurrent = groupIdentityCurrent();
@@ -8432,7 +8432,7 @@ function syncUpstreamAccountControls() {
   for (const card of all(".upstream-account-card[data-account-id]")) {
     const account = upstreamAccounts.find((item) => item.id === card.dataset.accountId);
     const accessButton = card.querySelector(".upstream-access-button");
-    if (accessButton) accessButton.disabled = !account?.id || !upstreamAccountSyncHealthy || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
+    if (accessButton) accessButton.disabled = !account?.id || (!upstreamAccountSyncHealthy && account.credential_kind !== "supplier") || upstreamAccountListLoading || Boolean(upstreamAccountOperation) || loggingOut || state?.user?.role !== "owner";
     const button = card.querySelector(".upstream-account-status-button");
     const badge = card.querySelector(".upstream-account-status");
     const cliproxyBadge = card.querySelector(".upstream-account-cliproxy-status");
@@ -8458,7 +8458,7 @@ function syncUpstreamAccountControls() {
       guardButton.setAttribute("aria-busy", String(switchingGuard));
     }
     const knownStatus = upstreamStatusKnown(account) && ["available", "unavailable"].includes(account.status);
-    const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && upstreamAccountSyncHealthy;
+    const canManage = Boolean(account.id) && account.can_manage === true && knownStatus && (upstreamAccountSyncHealthy || account.credential_kind === "supplier");
     button.disabled = !canManage || upstreamAccountListLoading || Boolean(upstreamAccountOperation) ||
       loggingOut || state?.user?.role !== "owner";
     // Gateway bindings remain editable when CPA no longer lists an account.
@@ -8542,7 +8542,7 @@ function syncUpstreamAccountControls() {
 
 async function saveUpstreamConcurrentLimit(account, form) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
-      !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id || !upstreamAccounts.includes(account) ||
+      (!upstreamAccountSyncHealthy && account.credential_kind !== "supplier") || account.can_manage !== true || !account.id || !upstreamAccounts.includes(account) ||
       !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
   const input = form.querySelector(".upstream-concurrency-limit-input");
   const raw = String(input.value || "").trim();
@@ -8743,7 +8743,7 @@ async function saveUpstreamQuotaGuardSettings(event) {
 
 async function changeUpstreamAccountStatus(account) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
-      !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
+      (!upstreamAccountSyncHealthy && account.credential_kind !== "supplier") || account.can_manage !== true || !account.id ||
       !upstreamAccounts.includes(account) || !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
   const operation = {id: account.id, kind: "status", enabled: upstreamAccountManuallyBlocked(account)};
   upstreamAccountOperation = operation;
@@ -8795,7 +8795,7 @@ async function changeUpstreamAccountStatus(account) {
 
 async function saveUpstreamAllocationWeight(account, form) {
   if (upstreamAccountOperation || upstreamAccountListLoading || loggingOut || state?.user?.role !== "owner" ||
-      !upstreamAccountSyncHealthy || account.can_manage !== true || !account.id ||
+      (!upstreamAccountSyncHealthy && account.credential_kind !== "supplier") || account.can_manage !== true || !account.id ||
       !upstreamAccounts.includes(account) || !upstreamStatusKnown(account) || !["available", "unavailable"].includes(account.status)) return;
   const input = form.querySelector(".upstream-allocation-input");
   const raw = String(input.value || "").trim();
@@ -9816,7 +9816,8 @@ function upstreamAccountCard(account) {
     guardRow = element("div", {className: "upstream-quota-guard"},
       element("span", {className: "upstream-quota-guard-detail"}), guardButton);
   }
-  const quotaBars = upstreamQuotaBarProviders.includes(upstreamAccountProvider) && account.id
+  const supplier = account.credential_kind === "supplier";
+  const quotaBars = !supplier && upstreamQuotaBarProviders.includes(upstreamAccountProvider) && account.id
     ? element("div", {className: "upstream-quota-bars", attributes: {"aria-label": "5 小时与周额度"}}) : null;
   if (quotaBars) {
     quotaBars.queryQuota = () => loadUpstreamQuota(account, quotaBlock, quotaResult);
@@ -9824,9 +9825,9 @@ function upstreamAccountCard(account) {
   }
   const details = element("details", {className: "upstream-account-details"},
     element("summary", {text: "账号详情与设置"}),
-    element("div", {className: "upstream-account-full-status"}, ...(guarded ? [upstreamQuotaGuardBadge(account)] : []), ...badges.slice(0, 3)),
+    element("div", {className: "upstream-account-full-status"}, ...(guarded ? [upstreamQuotaGuardBadge(account)] : []), ...(supplier ? [badges[1]] : badges.slice(0, 3))),
     ...(account.display_name ? [element("p", {className: "upstream-account-name", text: `账号名称：${account.display_name}`})] : []),
-    element("p", {className: "muted", text: `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
+    element("p", {className: "muted", text: supplier ? `API Key 供应商${account.supplier_models?.length ? ` · ${account.supplier_models.join("、")}` : ""}` : `${String(account.plan || "套餐未知")} · 最后同步 ${formatDateTime(account.last_synced_at, "从未同步")}`}),
     upstreamAliasBlock(account),
     element("div", {className: "upstream-concurrency", attributes: {"aria-live": "polite"}},
       element("span", {text: upstreamAccountLanguage("活跃 root 对话数", "活跃对话名额")}),
@@ -9838,7 +9839,7 @@ function upstreamAccountCard(account) {
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
-    ...(upstreamAccountProvider === "antigravity" ? [] : [quotaBlock]),
+    ...(supplier || upstreamAccountProvider === "antigravity" ? [] : [quotaBlock]),
   );
   const provider = upstreamAccountProvider;
   const generation = identityGeneration;
