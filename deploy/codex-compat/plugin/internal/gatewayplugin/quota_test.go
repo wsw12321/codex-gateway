@@ -46,12 +46,12 @@ func codexSignals() map[string]string {
 
 func proLiteCodexSignals() map[string]string {
 	return map[string]string{
-		"X-Codex-Primary-Used-Percent":           "25",
-		"X-Codex-Primary-Window-Minutes":         "10080",
-		"X-Codex-Primary-Reset-After-Seconds":    "3600",
-		"X-Codex-Secondary-Used-Percent":         "0",
-		"X-Codex-Secondary-Window-Minutes":       "0",
-		"X-Codex-Secondary-Reset-After-Seconds":  "0",
+		"X-Codex-Primary-Used-Percent":          "25",
+		"X-Codex-Primary-Window-Minutes":        "10080",
+		"X-Codex-Primary-Reset-After-Seconds":   "3600",
+		"X-Codex-Secondary-Used-Percent":        "0",
+		"X-Codex-Secondary-Window-Minutes":      "0",
+		"X-Codex-Secondary-Reset-After-Seconds": "0",
 	}
 }
 
