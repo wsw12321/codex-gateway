@@ -28,7 +28,7 @@
 - 插件 `deploy/codex-compat/plugin/` 承担选号、身份隔离、会话绑定、并发名额、账号控制
   （启用/禁用、额度锁）、账号独立出口、归因上报。
 - 残余补丁 139 行，只新增 `routing.strategy: "plugin-only"`，同一份补丁可无 fuzz 应用到
-  v8.0.59、v8.0.67、v8.0.69、v8.0.76 和当前固定的 v8.0.77（v8.0.76 起一处上下文偏移 13 行）。
+  v8.0.59、v8.0.67、v8.0.69、v8.0.76、v8.0.77 和当前固定的 v8.1.1。
 - Gateway：请求账本归因、`/v0/management/gateway/*` 账号路由、出口推送。
 - 插件模式是唯一的部署形态（第 8 步）：源码补丁镜像、旧 Antigravity 桥接、v7 回退镜像、
   凭证迁移工具、命令行登录脚本以及 `CPA_INTEGRATION`/`ANTIGRAVITY_TRANSPORT` 开关已删除，

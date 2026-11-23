@@ -172,7 +172,7 @@ class CPAPluginDeploymentTests(unittest.TestCase):
         self.assertEqual(config.count("oauth-excluded-models:"), 1)
         rules = re.findall(r'^    - "([^"]+)"$', block.group(1), flags=re.M)
         self.assertEqual(rules, ["claude-*", "gpt-*", "gemini-3.1-flash-image", "gemini-3.8-flash-tiered",
-                                 "gemini-4-carbon-high", "gemini-4-hydrogen-xhigh"])
+                                 "gemini-4-carbon-high", "gemini-4-hydrogen-xhigh", "gemini-4-neon-xhigh"])
 
         def excluded(model):
             # CPA matches case-insensitively and knows no wildcard but "*".
@@ -190,7 +190,8 @@ class CPAPluginDeploymentTests(unittest.TestCase):
             self.assertFalse(excluded(model), model)
         for model in ("claude-opus-4-6-thinking", "claude-sonnet-4-6", "claude-opus-5-5-high",
                       "claude-sonnet-5-5-high", "gemini-3.1-flash-image", "gpt-oss-120b-medium",
-                      "gemini-3.8-flash-tiered", "gemini-4-carbon-high", "gemini-4-hydrogen-xhigh"):
+                      "gemini-3.8-flash-tiered", "gemini-4-carbon-high", "gemini-4-hydrogen-xhigh",
+                      "gemini-4-neon-xhigh"):
             self.assertTrue(excluded(model), model)
 
         # The catalog itself lives in the CPA binary, so the proof is the

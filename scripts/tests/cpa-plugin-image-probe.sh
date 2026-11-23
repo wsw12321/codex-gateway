@@ -148,7 +148,7 @@ expect_status 401 "native management API with the data-plane key"
 # the one this binary parsed, not merely text in the generated file.
 request GET /v0/management/oauth-excluded-models "$management"
 expect_status 200 "model exclusion rules"
-grep -Fq '"antigravity":["claude-*","gpt-*","gemini-3.1-flash-image","gemini-3.8-flash-tiered","gemini-4-carbon-high","gemini-4-hydrogen-xhigh"]' "$run/response" || fail "Antigravity models are not confined to the reviewed catalog"
+grep -Fq '"antigravity":["claude-*","gpt-*","gemini-3.1-flash-image","gemini-3.8-flash-tiered","gemini-4-carbon-high","gemini-4-hydrogen-xhigh","gemini-4-neon-xhigh"]' "$run/response" || fail "Antigravity models are not confined to the reviewed catalog"
 if grep -Fq '"codex":' "$run/response" || grep -Fq '"claude":' "$run/response"; then
     fail "an exclusion rule exists for a provider other than Antigravity"
 fi

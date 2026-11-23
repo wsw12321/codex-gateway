@@ -850,6 +850,7 @@ oauth-excluded-models:
     - "gemini-3.8-flash-tiered"
     - "gemini-4-carbon-high"
     - "gemini-4-hydrogen-xhigh"
+    - "gemini-4-neon-xhigh"
 response-compression:
   enabled: false
 plugins:

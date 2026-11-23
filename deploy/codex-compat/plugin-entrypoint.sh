@@ -126,6 +126,7 @@ oauth-excluded-models:
     - "gemini-3.8-flash-tiered"
     - "gemini-4-carbon-high"
     - "gemini-4-hydrogen-xhigh"
+    - "gemini-4-neon-xhigh"
 # The Gateway is the only client. Keep its internal SSE uncompressed so usage
 # and first-token timing are parsed from the stream as it is produced.
 response-compression:

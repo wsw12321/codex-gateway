@@ -42,7 +42,7 @@ Cloudflare Edge
       │                     身份、配额、审计和 usage 元数据
       │ 内部固定凭证
       ▼
-  CLIProxyAPI v8.0.77 + Gateway 插件
+  CLIProxyAPI v8.1.1 + Gateway 插件
       │ 每个凭证显式出口；无直接互联网路由
       ▼
   Squid 域名白名单出口
@@ -339,8 +339,7 @@ Ultrafast、税费或基础设施成本。Gemini 使用对应 API 家族的 Stan
 
 ### 已验证
 
-以下为既有部署的历史验证；本次 CPA v8.0.77 升级的构建验证与待完成的真实账号验收
-单独记录在 [升级验证记录](docs/cpa-v8.0.77-validation.md)。
+以下为既有部署的历史验证。CPA v8.1.1 的验证范围见 [升级验证记录](docs/cpa-v8.1.1-validation.md)。
 
 - `go test ./...`、`go test -race ./...`、`go vet ./...` 和格式检查通过。
 - PostgreSQL 17 真实集成测试已覆盖迁移、配额、usage、日/月聚合、审计和告警，
@@ -467,11 +466,11 @@ CI 检查通过后发布三个应用镜像，服务器按提交和 digest 拉取
 
 基础镜像由 [deploy/images.lock.env](deploy/images.lock.env) 中的 manifest digest
 锁定；CLIProxyAPI 的版本、commit、残余补丁和模型目录的 SHA-256 记录在
-[deploy/codex-compat/plugin.lock.json](deploy/codex-compat/plugin.lock.json)（当前为 `v8.0.77` / commit
-`a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`）。镜像构建必须通过残余补丁的无 fuzz 应用、插件单测
+[deploy/codex-compat/plugin.lock.json](deploy/codex-compat/plugin.lock.json)（当前为 `v8.1.1` / commit
+`6eb8554f0ede597b2aa3e508ffb3f111d3c2b9e6`）。镜像构建必须通过残余补丁的无 fuzz 应用、插件单测
 与针对所产出二进制的端到端测试，部署使用 CI 产出的不可变镜像 digest。
 兼容层使用独立的 `CLIPROXY_RUNTIME_IMAGE` 锁定 Debian slim；Gateway 使用 `RUNTIME_IMAGE` 锁定 Alpine。
-此次版本升级的验证状态见 [v8.0.77 验证记录](docs/cpa-v8.0.77-validation.md)。生产切换及真实 OAuth 账号验收
+此次版本升级的验证状态见 [v8.1.1 验证记录](docs/cpa-v8.1.1-validation.md)。生产切换及真实 OAuth 账号验收
 按[运维手册](docs/operations.md#cpa-插件镜像的升级与回退)执行。
 
 部署运行**插件模式**：未修改的 CLIProxyAPI，Gateway 需要的账号分配、身份隔离、
@@ -545,11 +544,10 @@ OAuth 授权、导入、重新授权、刷新、删除和额度查询，复用 G
 使用 v1.25.0 固定源码的受限构建，不暴露 CPA 管理密钥、配置编辑或任意上游请求。CPA 不接受
 命令行登录；任何时刻都不得让两个 sidecar 共享同一组 refresh token。
 
-公开模型按 CPA v8.0.77 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。当前已加入价格目录的新增模型包括
-`gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra` 和 `claude-fable-5-2`；Claude、Antigravity 目录
-与 v8.0.69 相同。v8.0.76 只有未接入的 aistudio provider 新增模型。v8.0.69 没有删除任何模型；新增的
-Antigravity 的 `gemini-3.8-flash-tiered`、`gemini-4-carbon-high`、`gemini-4-hydrogen-xhigh`
-仍在完成 Gateway 价格与权限审核前不公开（这三个在 CPA 一侧也不注册），v8.0.58 新增的
+公开模型按 CPA v8.1.1 的已接入 provider 目录审核，并由 Gateway 定价和权限控制。价格目录已收录
+`gpt-6.2-astra`、`gpt-6.2-sol`、`gpt-6.1-terra` 和 `claude-fable-5-2`。CPA 排除 Antigravity 的
+`gemini-3.8-flash-tiered`、`gemini-4-carbon-high`、`gemini-4-hydrogen-xhigh` 和 v8.1.1 新增的
+`gemini-4-neon-xhigh`，这些模型仍待 Gateway 价格与权限审核。v8.0.58 新增的
 `gpt-6-chat-thinking` 同样仍待审核。既有目录已退役上游
 Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `claude-haiku-5-5` 和
 `gemini-4-argon-high` 保持不变。Antigravity 当前共五个
@@ -560,7 +558,7 @@ Codex 目录已删除的 `gpt-5.5`，不新增公开模型；v8.0.30 加入的 `
 
 升级须在维护窗口完成数据库迁移及账号验收，不能仅替换镜像标签；价格随镜像内置目录更新。已有 CPA v8 凭据继续复用。
 参见[切换与回滚](docs/cpa-v8-cutover.md)、[模型与价格](docs/cpa-native-models.md)、[受限管理面板](docs/cpa-management.md)和
-[v8.0.77 验证记录](docs/cpa-v8.0.77-validation.md)（[v8.0.76](docs/cpa-v8.0.76-validation.md)、[v8.0.69](docs/cpa-v8.0.69-validation.md)、[v8.0.59](docs/cpa-v8.0.59-validation.md)、[v8.0.58](docs/cpa-v8.0.58-validation.md)、[v8.0.30](docs/cpa-v8.0.30-validation.md) 保留为历史）。首次 v8 切换的
+[v8.1.1 验证记录](docs/cpa-v8.1.1-validation.md)（[v8.0.77](docs/cpa-v8.0.77-validation.md)、[v8.0.76](docs/cpa-v8.0.76-validation.md)、[v8.0.69](docs/cpa-v8.0.69-validation.md)、[v8.0.59](docs/cpa-v8.0.59-validation.md)、[v8.0.58](docs/cpa-v8.0.58-validation.md)、[v8.0.30](docs/cpa-v8.0.30-validation.md) 保留为历史）。首次 v8 切换的
 [历史验证记录](docs/cpa-v8-validation.md)仍保留。
 
 ### 5. 初始化 Owner

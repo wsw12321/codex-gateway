@@ -94,11 +94,11 @@ oauth-excluded-models:
     - "gemini-3.8-flash-tiered"
     - "gemini-4-carbon-high"
     - "gemini-4-hydrogen-xhigh"
+    - "gemini-4-neon-xhigh"
 ```
 
-后三条在升级到 v8.0.69 时加入：这一版目录新增了 Gemini 3.8 Flash Tiered、Gemini 4 Carbon 与
-Gemini 4 Hydrogen。它们在评审并定价之前不注册；排除写成精确 ID，因为 `gemini-4-*` 会同时
-遮住已审的 `gemini-4-argon-high`。
+Gemini 3.8 Flash Tiered、Gemini 4 Carbon 与 Gemini 4 Hydrogen 在 v8.0.69 加入排除列表。
+Gemini 4 Neon XHigh 在 v8.1.1 加入。精确匹配这些 ID 可保留已审的 `gemini-4-argon-high`。
 
 规则是排除列表，不是允许列表，所以由三处检查保证它与目录保持一致：
 
@@ -310,6 +310,9 @@ Gateway 用与 Owner 查询相同的非自动读数写入额度守卫，并要�
 插件依赖只换了 CPA 版本。Codex 目录新增 `gpt-6.2-astra`、`gpt-6.2-sol`，在审核定价前不公开；
 Claude 与 Antigravity 目录不变。插件接口新增的执行器用量归因与缓存写入 TTL 明细，插件都不使用。
 全部 17 组端到端测试通过。过程见 [v8.0.77 验证记录](cpa-v8.0.77-validation.md)。
+
+2026-11-23 升级到 v8.1.1（上游 127 个提交、474 个文件）。同一份残余补丁可以无 fuzz 应用。
+Antigravity 新增的 `gemini-4-neon-xhigh` 加入排除列表。过程见 [v8.1.1 验证记录](cpa-v8.1.1-validation.md)。
 
 ### 回退
 

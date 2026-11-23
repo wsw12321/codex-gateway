@@ -237,3 +237,9 @@ Codex 与 Claude 两行经过实测（真实 CPA 进程，同一个上游账号�
   其余改动是 payload 替换规则（默认关闭，入口脚本不配置）、请求日志与用量字段，没有新的缓存；
   `internal/cache`、`sdk/cliproxy/session` 与 `gemini/openai/responses` 翻译器未变。缺口 1、2 涉及的
   两个文件没有变化，三份报告仍未提交。`TestProviderSessionsAreCallerScoped` 在新版本上通过。
+- **v8.0.77 → v8.1.1（2026-11-23）。** 同一范围的 `git grep` 从 192 处增加到 228 处。
+  Antigravity 推理重放仍从可信元数据或认证上下文取得调用方作用域，新增的显式会话和子代理键在该作用域内使用。
+  Antigravity 额度和短冷却状态按凭证分区。Codex 新增的会话指令缓存以调用方作用域与显式会话 ID 的摘要为键。
+  Claude 新增的 Advisor 块归属表以 provider 与工具调用 ID 为键，保存凭证归属，用于判断是否应移除跨凭证的块。
+  Copilot 与 xAI 的新状态对应 Gateway 未接入的 provider。原有的 Gemini 文本签名及 Claude 工具别名
+  两处已记录缺口对应的文件无变化。`TestProviderSessionsAreCallerScoped` 通过。
