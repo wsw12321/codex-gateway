@@ -72,6 +72,9 @@ async function main() {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
     const errors = [];
+    let catalogFails = true;
+    let catalogEmpty = false;
+    let downloadFails = true;
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/*", async (route) => {
       const url = new URL(route.request().url());
@@ -81,6 +84,23 @@ async function main() {
       if (url.pathname === "/static/theme.js") return route.fulfill({contentType: "application/javascript", body: fs.readFileSync(path.join(assets, "theme.js"), "utf8")});
       if (url.pathname === "/static/favicon.svg") return route.fulfill({contentType: "image/svg+xml", body: fs.readFileSync(path.join(assets, "favicon.svg"), "utf8")});
       if (url.pathname === "/static/app.js") return route.fulfill({contentType: "application/javascript", body: app});
+      if (url.pathname === "/admin/model-catalog") {
+        assert.equal(url.searchParams.get("scope"), "api_key");
+        if (catalogFails) return route.fulfill({status: 503, json: {error: {message: "模型目录暂不可用"}}});
+        return route.fulfill({json: {models: catalogEmpty ? [] : [
+          {id: "claude-sonnet-5-5", group: "Claude"},
+          {id: "gpt-6.2-astra", group: "GPT"},
+          {id: "gpt-6.2-sol", group: "GPT"},
+          {id: "gpt-6-astra", group: "GPT"},
+          {id: "gemini-3.8-flash-high", group: "Gemini"},
+          {id: "unsupported-model", group: "其他"},
+        ]}});
+      }
+      if (url.pathname === "/setup/configure-opencode.ps1") {
+        assert.equal(url.search, "");
+        if (downloadFails) return route.fulfill({status: 503});
+        return route.fulfill({contentType: "text/plain; charset=utf-8", body: fs.readFileSync(path.join(assets, "configure-opencode.ps1"), "utf8")});
+      }
       if (url.pathname === "/favicon.ico") return route.fulfill({status: 204});
       throw new Error(`Unexpected synthetic request: ${url.pathname}`);
     });
@@ -93,7 +113,50 @@ async function main() {
     // The initial OS tab follows the browser platform.
     const detected = await page.evaluate(() => detectGuideOS(navigator));
     assert.equal(await page.locator(`#guide-os-${detected}`).getAttribute("aria-selected"), "true");
-    assert.equal(await page.locator("#guide-tab-codex").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#guide-tab-opencode").getAttribute("aria-selected"), "true");
+    assert.equal(await page.locator("#guide-prepare").isVisible(), false);
+    assert.equal(await page.locator("#guide-os-switcher").isVisible(), false);
+    assert.equal(await page.locator("#guide-opencode-base-url").textContent(), origin + "/v1");
+    const openSetup = page.locator("#guide-opencode-download");
+    const setupDialog = page.locator("#opencode-download-dialog");
+    const confirmSetup = page.locator("#opencode-download-confirm");
+    const retrySetup = page.locator("#opencode-download-retry");
+    const planModel = page.locator("#opencode-plan-model");
+    const buildModel = page.locator("#opencode-build-model");
+    await openSetup.click();
+    await retrySetup.waitFor({state: "visible"});
+    assert.equal(await confirmSetup.isDisabled(), true);
+    catalogFails = false;
+    catalogEmpty = true;
+    await retrySetup.click();
+    await setupDialog.getByText("当前账号没有可配置的模型。").waitFor();
+    assert.equal(await confirmSetup.isDisabled(), true);
+    await page.keyboard.press("Escape");
+    await setupDialog.waitFor({state: "hidden"});
+    catalogEmpty = false;
+    await openSetup.click();
+    await confirmSetup.waitFor({state: "visible"});
+    await planModel.locator('option[value="gpt-6.2-astra"]').waitFor({state: "attached"});
+    assert.equal(await planModel.inputValue(), "gpt-6.2-astra");
+    assert.equal(await buildModel.inputValue(), "gpt-6-astra");
+    assert.equal(await planModel.locator('option[value="unsupported-model"]').count(), 0);
+    await planModel.selectOption("claude-sonnet-5-5");
+    await buildModel.selectOption("gemini-3.8-flash-high");
+    await confirmSetup.click();
+    await setupDialog.getByText("下载配置脚本失败，请重试。").waitFor();
+    assert.equal(await planModel.inputValue(), "claude-sonnet-5-5");
+    downloadFails = false;
+    const [download] = await Promise.all([page.waitForEvent("download"), confirmSetup.click()]);
+    assert.equal(download.suggestedFilename(), "configure-opencode.ps1");
+    const script = fs.readFileSync(await download.path(), "utf8");
+    assert.equal(script.charCodeAt(0), 0xFEFF, "PowerShell 5.1 needs a UTF-8 BOM");
+    assert.ok(!script.includes("__OPENCODE_SETUP_PAYLOAD__"));
+    assert.ok(!script.includes(initialState.api_keys[0].key_prefix));
+    const payload = {
+      origin, plan: {id: "claude-sonnet-5-5", group: "Claude"}, build: {id: "gemini-3.8-flash-high", group: "Gemini"},
+    };
+    assert.ok(script.includes(Buffer.from(JSON.stringify(payload), "utf8").toString("base64")));
+    await setupDialog.waitFor({state: "hidden"});
     assert.equal(await page.locator("#guide-base-url").textContent(), origin);
     assert.equal(await page.locator("#guide-codex-install-code").textContent(), "npm install -g @openai/codex");
     assert.equal(await page.locator("#guide-codex-desktop-install-windows-code").textContent(), "winget install --id 9PLM9XGG6VKS -s msstore");
@@ -151,7 +214,8 @@ async function main() {
     await page.keyboard.press("End");
     assert.equal(await page.evaluate(() => [guideProvider, document.activeElement.id].join()), "agy,guide-tab-agy");
     await page.keyboard.press("ArrowRight");
-    assert.equal(await page.evaluate(() => guideProvider), "codex");
+    assert.equal(await page.evaluate(() => guideProvider), "opencode");
+    await page.locator("#guide-tab-codex").click();
     await page.locator("#guide-os-linux").click();
     await page.keyboard.press("Home");
     assert.equal(await page.evaluate(() => [guideOS, document.activeElement.id].join()), "windows,guide-os-windows");
@@ -175,6 +239,8 @@ async function main() {
       await page.locator(`#guide-os-${platform}`).click();
       await page.evaluate(() => document.activeElement?.blur());
     };
+    await page.locator("#guide-tab-opencode").click();
+    await guide.screenshot({path: path.join(screenshots, "opencode-guide-desktop.png"), style: screenshotStyle});
     await select("codex", "windows");
     await guide.screenshot({path: path.join(screenshots, "usage-guide-desktop.png"), style: screenshotStyle});
     await select("claude", "linux");
@@ -186,6 +252,15 @@ async function main() {
       await select(provider, "windows");
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `mobile ${provider} guide must not overflow horizontally`);
     }
+    await page.locator("#guide-tab-opencode").click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "mobile OpenCode guide must not overflow horizontally");
+    await guide.screenshot({path: path.join(screenshots, "opencode-guide-mobile.png"), style: screenshotStyle});
+    await openSetup.click();
+    await planModel.locator('option[value="gpt-6.2-astra"]').waitFor({state: "attached"});
+    assert.equal(await setupDialog.evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth), true, "mobile setup dialog must not overflow horizontally");
+    await setupDialog.screenshot({path: path.join(screenshots, "opencode-dialog-mobile.png")});
+    await page.locator("#opencode-download-cancel").click();
+    await setupDialog.waitFor({state: "hidden"});
     await select("codex", "windows");
     await guide.screenshot({path: path.join(screenshots, "usage-guide-mobile.png"), style: screenshotStyle});
     await select("agy", "linux");

@@ -195,6 +195,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /static/theme.js", s.themeJavascript)
 	s.mux.HandleFunc("GET /static/favicon.svg", s.favicon)
 	s.mux.HandleFunc("GET /setup/configure-client.cjs", s.clientSetup)
+	s.mux.HandleFunc("GET /setup/configure-opencode.ps1", s.openCodeSetup)
 	s.mux.HandleFunc("GET /setup/configure-codex.sh", s.retiredClientSetup)
 	s.mux.HandleFunc("GET /setup/configure-codex.bat", s.retiredClientSetup)
 

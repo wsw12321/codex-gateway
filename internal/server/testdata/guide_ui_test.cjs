@@ -53,7 +53,7 @@ function dashboard(navigator) {
   for (const list of Object.values(elements)) for (const element of list) if (element.attributes.id) nodes.set(element.attributes.id, element);
   const node = (id) => { if (!nodes.has(id)) nodes.set(id, new Element({id})); return nodes.get(id); };
   const context = vm.createContext({
-    URL, URLSearchParams, btoa,
+    URL, URLSearchParams, TextEncoder, btoa,
     document: {
       getElementById: node, createElement: () => new Element(), addEventListener() {},
       querySelectorAll: (selector) => elements[selector.replace(/^\[|\]$/g, "")] || [],
@@ -85,26 +85,30 @@ test("detects the initial OS tab without confusing Darwin with Windows", () => {
   assert.equal(dashboard({userAgent: "Mozilla/5.0 (X11; Linux x86_64)", platform: "Linux x86_64"}).run("guideOS"), "linux");
 });
 
-test("initial markup already shows the default Codex and Windows content", () => {
+test("initial markup already shows the default OpenCode panel", () => {
   const ui = dashboard();
   const before = {
     providers: providerState(ui), panels: visiblePanels(ui),
     osTabs: ui.elements["data-guide-os-tab"].map((tab) => [tab.dataset.guideOsTab, tab.getAttribute("aria-selected"), tab.tabIndex]),
     blocks: ui.elements["data-guide-os"].map((block) => block.hidden),
   };
-  ui.run('showGuideProvider("codex"); showGuideOS("windows");');
+  ui.run('showGuideProvider("opencode"); showGuideOS("windows");');
   assert.deepEqual(providerState(ui), before.providers);
   assert.deepEqual(visiblePanels(ui), before.panels);
   assert.deepEqual(ui.elements["data-guide-os-tab"].map((tab) => [tab.dataset.guideOsTab, tab.getAttribute("aria-selected"), tab.tabIndex]), before.osTabs);
   assert.deepEqual(ui.elements["data-guide-os"].map((block) => block.hidden), before.blocks);
-  assert.deepEqual(visiblePanels(ui), ["codex"]);
+  assert.deepEqual(visiblePanels(ui), ["opencode"]);
+  assert.equal(ui.node("guide-prepare").hidden, true);
+  assert.equal(ui.node("guide-os-switcher").hidden, true);
 });
 
 test("provider tabs switch panels and ignore unknown names", () => {
   const ui = dashboard();
   ui.run('showGuideProvider("claude")');
-  assert.deepEqual(providerState(ui), [["codex", "false", -1, false], ["claude", "true", 0, true], ["agy", "false", -1, false]]);
+  assert.deepEqual(providerState(ui), [["opencode", "false", -1, false], ["codex", "false", -1, false], ["claude", "true", 0, true], ["agy", "false", -1, false]]);
   assert.deepEqual(visiblePanels(ui), ["claude"]);
+  assert.equal(ui.node("guide-prepare").hidden, false);
+  assert.equal(ui.node("guide-os-switcher").hidden, false);
   ui.run('showGuideProvider("antigravity-desktop")');
   assert.equal(ui.run("guideProvider"), "claude");
   assert.deepEqual(visiblePanels(ui), ["claude"]);
@@ -134,16 +138,16 @@ test("arrow, Home and End keys move and activate guide tabs", () => {
   };
   assert.equal(press(tabs[0], "ArrowLeft").prevented, true);
   assert.equal(ui.run("guideProvider"), "agy");
-  assert.equal(tabs[2].focused, 1);
-  press(tabs[2], "ArrowRight");
-  assert.equal(ui.run("guideProvider"), "codex");
+  assert.equal(tabs[3].focused, 1);
+  press(tabs[3], "ArrowRight");
+  assert.equal(ui.run("guideProvider"), "opencode");
   press(tabs[0], "End");
   assert.equal(ui.run("guideProvider"), "agy");
-  press(tabs[2], "Home");
-  assert.equal(ui.run("guideProvider"), "codex");
+  press(tabs[3], "Home");
+  assert.equal(ui.run("guideProvider"), "opencode");
   const ignored = press(tabs[0], "Enter");
   assert.equal(ignored.prevented, false);
-  assert.equal(ui.run("guideProvider"), "codex");
+  assert.equal(ui.run("guideProvider"), "opencode");
 });
 
 test("renderGuide keeps the selection and fills every configure command", () => {
@@ -153,9 +157,38 @@ test("renderGuide keeps the selection and fills every configure command", () => 
   assert.equal(ui.run("guideOS"), "linux");
   assert.deepEqual(visiblePanels(ui), ["agy"]);
   assert.equal(ui.node("guide-base-url").textContent, "https://gateway.example.test");
+  assert.equal(ui.node("guide-opencode-base-url").textContent, "https://gateway.example.test/v1");
   for (const client of ["codex", "claude", "agy"]) {
     const command = ui.node(`guide-${client}-configure-code`).textContent;
     assert.ok(command.startsWith('node -e "'), client);
     assert.ok(command.includes(`'${client}'`), client);
   }
+});
+
+test("OpenCode preselects preferred models or falls back to an available model", () => {
+  const {run} = dashboard();
+  const defaults = (models) => Array.from(run(`openCodeSetupDefaults(${JSON.stringify(models)})`));
+  const claude = {id: "claude-sonnet-5-5", group: "Claude"};
+  const ordinary = {id: "gpt-6.1-sol", group: "GPT"};
+  const plan = {id: "gpt-6.2-astra", group: "GPT"};
+  const build = {id: "gpt-6-astra", group: "GPT"};
+  assert.deepEqual(defaults([claude, ordinary, build, plan]), [plan.id, build.id]);
+  assert.deepEqual(defaults([claude, ordinary, build]), [ordinary.id, build.id]);
+  assert.deepEqual(defaults([claude]), [claude.id, claude.id]);
+});
+
+test("OpenCode download replaces the marker with a BOM-prefixed UTF-8 setup script", () => {
+  const {run} = dashboard();
+  const template = "$payload = '__OPENCODE_SETUP_PAYLOAD__'\n# 配置";
+  const plan = {id: "gpt-plan", group: "GPT"};
+  const build = {id: "claude-写代码'&", group: "Claude"};
+  const origin = "https://gateway.example.test";
+  const script = run(`openCodeSetupScript(...${JSON.stringify([template, origin, plan, build])})`);
+  assert.equal(script.charCodeAt(0), 0xfeff);
+  assert.equal(script.slice(script.indexOf("\n")), "\n# 配置");
+  assert.equal(script.includes(build.id), false);
+  const match = script.match(/'([A-Za-z0-9+/=]+)'/);
+  assert.ok(match);
+  assert.deepEqual(JSON.parse(Buffer.from(match[1], "base64").toString("utf8")), {origin, plan, build});
+  assert.throws(() => run('openCodeSetupScript("missing marker", "", {}, {})'));
 });

@@ -296,11 +296,11 @@
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
             <div class="section-head guide-heading">
-              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">接入 Codex、Claude 与 Antigravity 客户端</h2><p>先完成公共准备，再选择模型供应商和操作系统，按 CLI、桌面端或 IDE 扩展的步骤操作。复制的配置命令已使用当前站点地址。</p></div>
+              <div><p class="eyebrow">CLIENT SETUP</p><h2 id="guide-title">客户端接入</h2><p>选择要接入 Gateway 的客户端。</p></div>
               <div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button></div>
             </div>
 
-            <article id="guide-prepare" class="guide-client panel" aria-labelledby="guide-prepare-title">
+            <article id="guide-prepare" class="guide-client panel hidden" aria-labelledby="guide-prepare-title">
               <div class="guide-step-body">
                 <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3 id="guide-prepare-title">公共准备</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
                 <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
@@ -320,14 +320,15 @@
 
             <div class="guide-switcher panel">
               <div class="guide-switcher-group">
-                <span id="guide-provider-label" class="guide-switcher-label">模型供应商</span>
+                <span id="guide-provider-label" class="guide-switcher-label">客户端</span>
                 <div class="tabs guide-provider-tabs" role="tablist" aria-labelledby="guide-provider-label">
-                  <button id="guide-tab-codex" type="button" role="tab" aria-selected="true" aria-controls="guide-panel-codex" class="active" data-guide-provider-tab="codex">OpenAI Codex</button>
+                  <button id="guide-tab-opencode" type="button" role="tab" aria-selected="true" aria-controls="guide-panel-opencode" class="active" data-guide-provider-tab="opencode">OpenCode</button>
+                  <button id="guide-tab-codex" type="button" role="tab" aria-selected="false" aria-controls="guide-panel-codex" tabindex="-1" data-guide-provider-tab="codex">OpenAI Codex</button>
                   <button id="guide-tab-claude" type="button" role="tab" aria-selected="false" aria-controls="guide-panel-claude" tabindex="-1" data-guide-provider-tab="claude">Claude</button>
                   <button id="guide-tab-agy" type="button" role="tab" aria-selected="false" aria-controls="guide-panel-agy" tabindex="-1" data-guide-provider-tab="agy">Google Antigravity</button>
                 </div>
               </div>
-              <div class="guide-switcher-group">
+              <div id="guide-os-switcher" class="guide-switcher-group hidden">
                 <span id="guide-os-label" class="guide-switcher-label">操作系统</span>
                 <div class="guide-os-tabs" role="tablist" aria-labelledby="guide-os-label">
                   <button id="guide-os-windows" type="button" role="tab" aria-selected="true" aria-controls="guide-panels" class="active" data-guide-os-tab="windows">Windows</button>
@@ -338,7 +339,92 @@
             </div>
 
             <div id="guide-panels" class="guide-panels">
-              <div id="guide-panel-codex" class="guide-panel" role="tabpanel" aria-labelledby="guide-tab-codex" data-guide-provider-panel="codex">
+              <div id="guide-panel-opencode" class="guide-panel" role="tabpanel" aria-labelledby="guide-tab-opencode" data-guide-provider-panel="opencode">
+                <article id="guide-opencode-desktop" class="guide-client panel" aria-labelledby="guide-opencode-desktop-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><h3 id="guide-opencode-desktop-title">OpenCode 桌面端 · Windows 快速开始</h3><a href="https://opencode.ai/download" target="_blank" rel="noopener noreferrer">官方下载页 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>1. 安装 OpenCode</h4>
+                        <p>大多数 Intel 和 AMD 电脑选 x64，Windows on Arm 电脑选 ARM64。</p>
+                        <div class="button-group guide-actions">
+                          <a class="button secondary" href="https://opencode.ai/update/api/latest/desktop/opencode/opencode-desktop-win-x64.exe">下载 Windows x64</a>
+                          <a class="button secondary" href="https://opencode.ai/update/api/latest/desktop/opencode/opencode-desktop-win-arm64.exe">下载 Windows ARM64</a>
+                        </div>
+                      </li>
+                      <li>
+                        <h4>2. 下载 Gateway 配置脚本</h4>
+                        <p>选择 Plan 规划和 Build 写代码使用的模型，再下载脚本。在 <a href="#keys">API Keys</a> 页面创建或查看已有 Gateway Key。</p>
+                        <div class="button-group guide-actions"><button id="guide-opencode-download" type="button" aria-haspopup="dialog">下载 Windows 配置脚本</button></div>
+                      </li>
+                      <li>
+                        <h4>3. 运行脚本并打开 OpenCode</h4>
+                        <p>打开脚本所在文件夹，在文件资源管理器地址栏输入 <code>powershell</code> 并回车。运行下面的命令，按提示输入 Key。</p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>Windows PowerShell</span><button type="button" class="secondary copy-button" data-copy-target="guide-opencode-run-code">复制命令</button></div>
+                          <pre><code id="guide-opencode-run-code">Unblock-File -LiteralPath .\configure-opencode.ps1
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-opencode.ps1</code></pre>
+                        </div>
+                        <p>重新打开 OpenCode，选择工作目录并新建会话。在模型选择器确认当前模型后，发送“请回复 OK”，再到 <a href="#usage">使用统计</a> 核对。OpenCode V2 会记住每个会话选中的模型。</p>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+
+                <article id="guide-opencode-cli" class="guide-client panel" aria-labelledby="guide-opencode-cli-title">
+                  <div class="guide-step-body">
+                    <div class="guide-step-title"><h3 id="guide-opencode-cli-title">OpenCode CLI 与 VS Code</h3><a href="https://opencode.ai/docs/" target="_blank" rel="noopener noreferrer">官方文档 ↗</a></div>
+                    <ol class="guide-steps guide-client-steps">
+                      <li>
+                        <h4>Windows CLI</h4>
+                        <p>安装 <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">Node.js LTS</a>，在新终端执行 <code>npm install -g @opencode/cli</code>。运行上方配置脚本后，在项目目录执行 <code>opencode</code>。</p>
+                      </li>
+                      <li>
+                        <h4>VS Code</h4>
+                        <p>安装 OpenCode CLI 并完成对应系统的配置。在 VS Code 中打开项目目录，在集成终端运行 <code>opencode</code>。</p>
+                        <p>也可以按 <kbd>Ctrl+Shift+X</kbd> 打开扩展，搜索 <code>sst-dev.opencode</code> 并安装。安装后可从编辑器启动 OpenCode 会话。<a href="https://marketplace.visualstudio.com/items?itemName=sst-dev.opencode" target="_blank" rel="noopener noreferrer">OpenCode 扩展 ↗</a></p>
+                      </li>
+                      <li>
+                        <h4>Linux CLI</h4>
+                        <p>运行官方安装命令，在 <code>~/.config/opencode/opencode.jsonc</code> 中按下方示例配置，再运行 <code>opencode</code>。</p>
+                        <div class="code-card">
+                          <div class="code-toolbar"><span>Linux 终端</span><button type="button" class="secondary copy-button" data-copy-target="guide-opencode-linux-install-code">复制安装命令</button></div>
+                          <pre><code id="guide-opencode-linux-install-code">curl -fsSL https://opencode.ai/v2/install | bash</code></pre>
+                        </div>
+                        <details class="guide-platform">
+                          <summary>查看 Linux 配置示例</summary>
+                          <p>在启动 OpenCode 的环境中设置 <code>GATEWAY_API_KEY</code>，并把示例模型 ID 换成当前 Key 可以使用的 GPT 模型。已有配置时，合并相应字段。<a href="https://opencode.ai/docs/providers/#custom" target="_blank" rel="noopener noreferrer">官方自定义提供商说明 ↗</a></p>
+                          <div class="code-card">
+                            <div class="code-toolbar"><span>opencode.jsonc</span></div>
+                            <pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "providers": {
+    "gateway": {
+      "package": "@opencode/ai/providers/openai-compatible/responses",
+      "settings": {
+        "baseURL": "<span id="guide-opencode-base-url">正在生成…</span>",
+        "apiKey": "{env:GATEWAY_API_KEY}"
+      },
+      "models": {
+        "gpt-6.2-astra": { "name": "gpt-6.2-astra" },
+        "gpt-6-astra": { "name": "gpt-6-astra" }
+      }
+    }
+  },
+  "agents": {
+    "plan": { "model": "gateway/gpt-6.2-astra" },
+    "build": { "model": "gateway/gpt-6-astra" }
+  }
+}</code></pre>
+                          </div>
+                        </details>
+                      </li>
+                    </ol>
+                  </div>
+                </article>
+              </div>
+
+              <div id="guide-panel-codex" class="guide-panel hidden" role="tabpanel" aria-labelledby="guide-tab-codex" data-guide-provider-panel="codex">
                 <article id="guide-codex" class="guide-client panel" aria-labelledby="guide-codex-title">
                   <div class="guide-step-body">
                     <div class="guide-step-title"><div><p class="eyebrow">CLI</p><h3 id="guide-codex-title">Codex CLI</h3></div><a href="https://developers.openai.com/codex/cli/" target="_blank" rel="noopener noreferrer">官方安装说明 ↗</a></div>
@@ -1515,6 +1601,20 @@
       <p id="browser-handoff-resource-status" class="muted" role="status"></p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button id="browser-handoff-refresh" type="button" class="secondary">刷新资源</button><button id="browser-handoff-submit" type="submit">进入工作台</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="opencode-download-dialog" aria-labelledby="opencode-download-title">
+    <form id="opencode-download-form">
+      <div class="dialog-heading"><h2 id="opencode-download-title">下载 OpenCode 配置脚本</h2><p>为两个模式选择模型。运行脚本时在本机输入 API Key。</p></div>
+      <label>Plan 规划<select id="opencode-plan-model" name="plan" required disabled></select></label>
+      <label>Build 写代码<select id="opencode-build-model" name="build" required disabled></select></label>
+      <p id="opencode-download-status" class="muted" role="status"></p>
+      <div class="actions">
+        <button id="opencode-download-cancel" type="button" class="secondary" data-close>取消</button>
+        <button id="opencode-download-retry" type="button" class="secondary hidden">重新加载模型</button>
+        <button id="opencode-download-confirm" type="submit" disabled>确认下载</button>
+      </div>
     </form>
   </dialog>
 

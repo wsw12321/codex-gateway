@@ -1216,6 +1216,7 @@ function clearSensitiveDOM() {
   all(".model-picker").forEach((host) => { host.modelPickerRequest = null; host.modelPicker = null; host.replaceChildren(); });
   resetProfile();
   resetBrowserHandoff();
+  resetOpenCodeSetup();
   const dialog = byId("secret-dialog");
   secretAfterClose = null;
   secretDismissible = false;
@@ -2523,7 +2524,7 @@ function clientSetupCommand(client) {
   return `node -e "${script}"`;
 }
 
-const guideProviders = ["codex", "claude", "agy"];
+const guideProviders = ["opencode", "codex", "claude", "agy"];
 const guideOSes = ["windows", "macos", "linux"];
 
 // Choose the initial OS tab from the browser. Match "windows"/"win32"/"win64"
@@ -2537,7 +2538,7 @@ function detectGuideOS(nav = typeof navigator === "undefined" ? undefined : navi
 }
 
 // The selection lives in memory only; a state refresh re-applies it.
-let guideProvider = "codex";
+let guideProvider = "opencode";
 let guideOS = detectGuideOS();
 
 function selectGuideTab(tabs, key, value) {
@@ -2554,6 +2555,8 @@ function showGuideProvider(name) {
   guideProvider = name;
   selectGuideTab(all("[data-guide-provider-tab]"), "guideProviderTab", name);
   all("[data-guide-provider-panel]").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.guideProviderPanel !== name));
+  byId("guide-prepare").classList.toggle("hidden", name === "opencode");
+  byId("guide-os-switcher").classList.toggle("hidden", name === "opencode");
 }
 
 function showGuideOS(name) {
@@ -2582,6 +2585,7 @@ function renderGuide() {
   showGuideProvider(guideProvider);
   showGuideOS(guideOS);
   byId("guide-base-url").textContent = location.origin;
+  byId("guide-opencode-base-url").textContent = `${location.origin}/v1`;
   byId("guide-codex-configure-code").textContent = clientSetupCommand("codex");
   byId("guide-agy-configure-code").textContent = clientSetupCommand("agy");
   byId("guide-claude-configure-code").textContent = clientSetupCommand("claude");
@@ -2599,6 +2603,132 @@ function renderGuide() {
     summaryItem("活跃项目（可选）", formatInteger(activeProjects)),
     summaryItem("活跃 API Keys", formatInteger(activeKeys)),
   );
+}
+
+const openCodeSetupGroups = new Set(["GPT", "Gemini", "Claude"]);
+let openCodeSetup = null;
+
+function openCodeSetupDefaults(models) {
+  const fallback = models.find((item) => item.group === "GPT")?.id ?? models[0]?.id ?? "";
+  return ["gpt-6.2-astra", "gpt-6-astra"].map((preferred) =>
+    models.some((item) => item.id === preferred) ? preferred : fallback);
+}
+
+function openCodeSetupScript(template, origin, plan, build) {
+  const marker = "__OPENCODE_SETUP_PAYLOAD__";
+  const parts = template.split(marker);
+  if (parts.length !== 2) throw new Error("配置脚本格式无效，请刷新页面后重试。");
+  const bytes = new TextEncoder().encode(JSON.stringify({origin, plan, build}));
+  const payload = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
+  // Windows PowerShell 5.1 needs the BOM to read the script's Chinese text.
+  return "\uFEFF" + parts[0].replace(/^\uFEFF/, "") + payload + parts[1];
+}
+
+function currentOpenCodeSetup(draft) {
+  return openCodeSetup === draft && byId("opencode-download-dialog").open &&
+    !loggingOut && draft.generation === identityGeneration && draft.actor === state?.user?.id;
+}
+
+function renderOpenCodeSetup(status, retry = false) {
+  const busy = openCodeSetup.loading || openCodeSetup.downloading;
+  const hasModels = openCodeSetup.models.size > 0;
+  byId("opencode-download-status").textContent = status;
+  byId("opencode-download-retry").classList.toggle("hidden", !retry);
+  byId("opencode-download-confirm").disabled = busy || !hasModels;
+  byId("opencode-plan-model").disabled = busy || !hasModels;
+  byId("opencode-build-model").disabled = busy || !hasModels;
+}
+
+async function loadOpenCodeSetupModels(draft) {
+  if (!currentOpenCodeSetup(draft) || draft.loading) return;
+  draft.loading = true;
+  draft.models.clear();
+  const selects = [byId("opencode-plan-model"), byId("opencode-build-model")];
+  selects.forEach((select) => select.replaceChildren());
+  renderOpenCodeSetup("正在加载可用模型…");
+  try {
+    const catalog = await modelCatalog("api_key");
+    if (!currentOpenCodeSetup(draft)) return;
+    for (const {id, group} of catalog) {
+      if (typeof id === "string" && id && openCodeSetupGroups.has(group)) {
+        draft.models.set(id, {id, group});
+      }
+    }
+    const models = Array.from(draft.models.values());
+    const defaults = openCodeSetupDefaults(models);
+    selects.forEach((select, index) => {
+      select.replaceChildren(...models.map((model) => option(model.id, model.id)));
+      select.value = defaults[index];
+    });
+    draft.loading = false;
+    renderOpenCodeSetup(models.length ? "" : "当前账号没有可配置的模型。");
+  } catch (error) {
+    if (!currentOpenCodeSetup(draft)) return;
+    draft.loading = false;
+    renderOpenCodeSetup(friendlyError(error), true);
+  }
+}
+
+function resetOpenCodeSetup() {
+  openCodeSetup = null;
+  const dialog = byId("opencode-download-dialog");
+  if (dialog.open) dialog.close();
+  byId("opencode-plan-model").replaceChildren();
+  byId("opencode-build-model").replaceChildren();
+  byId("opencode-download-status").textContent = "";
+}
+
+async function downloadOpenCodeSetup(event) {
+  event.preventDefault();
+  const draft = openCodeSetup;
+  if (!draft || !currentOpenCodeSetup(draft) || draft.loading || draft.downloading) return;
+  const plan = draft.models.get(byId("opencode-plan-model").value);
+  const build = draft.models.get(byId("opencode-build-model").value);
+  if (!plan || !build) {
+    renderOpenCodeSetup("请选择 Plan 和 Build 的模型。");
+    return;
+  }
+  draft.downloading = true;
+  renderOpenCodeSetup("正在生成配置脚本…");
+  try {
+    const response = await fetch("/setup/configure-opencode.ps1", {cache: "no-store", redirect: "error"});
+    if (!response.ok) throw new Error("下载配置脚本失败，请重试。");
+    const script = openCodeSetupScript(await response.text(), location.origin, plan, build);
+    if (!currentOpenCodeSetup(draft)) return;
+    const url = URL.createObjectURL(new Blob([script], {type: "application/octet-stream"}));
+    const link = element("a", {attributes: {href: url, download: "configure-opencode.ps1"}});
+    document.body.append(link);
+    try {
+      link.click();
+    } finally {
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+    resetOpenCodeSetup();
+  } catch (error) {
+    if (!currentOpenCodeSetup(draft)) return;
+    draft.downloading = false;
+    renderOpenCodeSetup(friendlyError(error));
+  }
+}
+
+function bindOpenCodeSetup() {
+  const dialog = byId("opencode-download-dialog");
+  byId("guide-opencode-download").addEventListener("click", () => {
+    if (!state || dialog.open) return;
+    const draft = {generation: identityGeneration, actor: state.user.id, models: new Map()};
+    openCodeSetup = draft;
+    dialog.showModal();
+    loadOpenCodeSetupModels(draft);
+  });
+  byId("opencode-download-form").addEventListener("submit", downloadOpenCodeSetup);
+  byId("opencode-download-retry").addEventListener("click", () => {
+    if (openCodeSetup) loadOpenCodeSetupModels(openCodeSetup);
+  });
+  byId("opencode-download-cancel").addEventListener("click", resetOpenCodeSetup);
+  dialog.addEventListener("close", () => {
+    if (!dialog.open && openCodeSetup) resetOpenCodeSetup();
+  });
 }
 
 function resetProfile() {
@@ -11298,6 +11428,7 @@ function bindUI() {
       tab.addEventListener("keydown", (event) => moveGuideTab(event, selector, key, select));
     });
   }
+  bindOpenCodeSetup();
   all("[data-usage-tab]").forEach((button) => button.addEventListener("click", () => {
     location.hash = "usage";
     showUsageTab(button.dataset.usageTab);

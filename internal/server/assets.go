@@ -23,6 +23,9 @@ var faviconSVG []byte
 //go:embed assets/configure-client.cjs
 var clientSetupScript []byte
 
+//go:embed assets/configure-opencode.ps1
+var openCodeSetupTemplate []byte
+
 func (s *Server) page(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")

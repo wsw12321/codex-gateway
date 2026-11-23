@@ -590,11 +590,14 @@ CLIProxyAPI 多账号补丁、两账号尝试上限和账号归因追踪契约�
 `0009` 需要 Gateway 与兼容层配套升级。兼容层先启动并通过健康检查，再启动
 Gateway；登录后的生成冒烟会等待 Gateway 就绪。回调或数据库失败返回 503。
 
-## Codex CLI 与 agy CLI 配置
+## 客户端配置
 
-管理界面“使用指导”先列出公共准备，再按模型供应商（OpenAI Codex / Claude / Google
-Antigravity）和操作系统（Windows / macOS / Linux）分标签页展示各客户端的安装、配置和
-启动步骤：Codex 有 CLI、桌面端和 IDE 扩展，Claude 有 Claude Code、桌面端（推荐第三方
+管理界面「使用指导」默认展示 OpenCode 的 Windows 桌面端官方下载与配置脚本。
+选择 Plan 规划和 Build 写代码的模型后下载脚本，在 Windows PowerShell 运行并输入
+Gateway Key。页面也提供 OpenCode 的 VS Code 扩展、Windows CLI 和 Linux 指导。
+
+OpenAI Codex、Claude 和 Google Antigravity 各有标签页，展示公共准备及 Windows、
+macOS、Linux 的安装、配置和启动步骤。Codex 有 CLI、桌面端和 IDE 扩展，Claude 有 Claude Code、桌面端（推荐第三方
 工具 CC Switch）和 IDE 扩展，Antigravity 只有 agy CLI。系统标签按浏览器平台自动选择，
 只保存在页面内存中。先安装 [Node.js LTS](https://nodejs.org/en/download)；Windows 按
 Win+R，输入 `cmd` 打开命令提示符。Codex 使用 `npm install -g @openai/codex`，Claude

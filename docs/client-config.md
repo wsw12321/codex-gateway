@@ -1,14 +1,15 @@
 # 客户端配置
 
-管理界面“使用指导”先列出公共准备，再用两组标签页切换内容：
+管理界面「使用指导」默认打开 OpenCode 指南。其他客户端的标签先列出公共准备，再按操作系统展示安装步骤。
 
-| 模型供应商 | CLI | 桌面端 | IDE 扩展 |
+| 客户端 | CLI | 桌面端 | IDE 扩展 |
 | --- | --- | --- | --- |
+| OpenCode | OpenCode CLI | OpenCode Desktop | VS Code OpenCode 扩展 |
 | OpenAI Codex | Codex CLI | Codex 桌面端（Windows 已验证） | VS Code Codex 扩展 |
 | Claude | Claude Code | 第三方工具 CC Switch | VS Code Claude Code 扩展 |
 | Google Antigravity | agy CLI | 不提供 | 不提供 |
 
-操作系统标签为 Windows、macOS 和 Linux，只切换与系统相关的安装命令和路径说明；
+Codex、Claude 和 Google Antigravity 的操作系统标签为 Windows、macOS 和 Linux，只切换与系统相关的安装命令和路径说明；
 配置命令对三种系统相同。页面按浏览器平台（`navigator.userAgentData.platform`、
 `navigator.platform`、`userAgent`）选择初始系统，无法识别时使用 Windows。所选标签只
 保存在页面内存中，刷新数据不会重置，也不写入浏览器存储。两组标签都支持方向键、
@@ -16,6 +17,19 @@ Home 和 End。
 
 复制的一键配置命令会使用当前站点地址，并在终端提示输入 Gateway API Key；Key 不进入
 复制命令、命令历史或网页存储。
+
+## OpenCode
+
+1. 在「使用指导 → OpenCode」下载 [OpenCode 最新版 Windows 桌面端](https://opencode.ai/download)，按 Windows 的系统类型选择 x64 或 ARM64。
+2. 在「API Keys」创建或查看当前设备的 Gateway Key。点击「下载配置脚本」，可分别选择 Plan 规划和 Build 写代码的模型。Plan 优先预选 `gpt-6.2-astra`，Build 优先预选 `gpt-6-astra`。账号目录没有首选模型时会预选其他可配置模型，两种模式也可以使用同一个模型。
+3. 用 Windows PowerShell 运行下载的 `configure-opencode.ps1`，按提示输入 Gateway Key。脚本使用当前 Key 查询 `/v1/models`，确认所选模型可用后备份并合并用户配置。Key 由本机单独保存，下载文件只包含站点地址与所选模型。
+4. 完全退出并重新打开 OpenCode，创建会话，在模型选择器核对本次请求的模型。OpenCode V2 的会话会单独记住选中的模型，使用已有会话时也可在模型选择器手动切换。到「使用统计」可以核对实际请求所用模型。
+
+脚本使用 OpenCode V2 的 `agents.plan.model` 和 `agents.build.model`。GPT 和 Gemini
+走 OpenAI Responses，Claude 走 Anthropic Messages，两种供给方的 Base URL 都是
+`<站点 origin>/v1`。VS Code 的 [OpenCode 扩展](https://marketplace.visualstudio.com/items?itemName=sst-dev.opencode)
+在集成终端运行 CLI。Windows 可在 PowerShell 或 CMD 执行 `npm install -g @opencode/cli`。
+Linux 的安装和用户级配置示例见 [OpenCode 安装](https://opencode.ai/download)和[供应商配置](https://opencode.ai/docs/providers/#custom)。
 
 ## 公共准备
 

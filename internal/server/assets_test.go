@@ -118,6 +118,12 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 	for _, required := range []string{
 		`data-section="guide"`, `id="guide-prepare"`, `id="guide-codex"`, `id="guide-agy"`,
 		`id="guide-base-url"`,
+		`id="guide-tab-opencode"`, `id="guide-panel-opencode"`, `id="guide-opencode-download"`,
+		`id="opencode-download-dialog"`, `id="opencode-plan-model"`, `id="opencode-build-model"`, `id="opencode-download-confirm"`,
+		`https://opencode.ai/update/api/latest/desktop/opencode/opencode-desktop-win-x64.exe`,
+		`https://opencode.ai/update/api/latest/desktop/opencode/opencode-desktop-win-arm64.exe`,
+		`https://marketplace.visualstudio.com/items?itemName=sst-dev.opencode`,
+		`npm install -g @opencode/cli`, `https://opencode.ai/v2/install`,
 		`id="guide-codex-install-code"`, `id="guide-codex-configure-code"`, `id="guide-codex-start-code"`,
 		`id="guide-agy-install-windows-code"`, `id="guide-agy-install-unix-code"`,
 		`id="guide-agy-configure-code"`, `id="guide-agy-start-code"`,
@@ -143,6 +149,7 @@ func TestGuideIncludesPersistentClientConfiguration(t *testing.T) {
 	for _, required := range []string{
 		`guide: "使用指导"`, `function renderGuide()`, `location.origin`,
 		`/setup/configure-client.cjs`, `all("[data-copy-target]")`,
+		`/setup/configure-opencode.ps1`,
 		`function detectGuideOS(`, `function showGuideProvider(`, `function showGuideOS(`, `function moveGuideTab(`,
 	} {
 		if !strings.Contains(javascript, required) {
@@ -182,7 +189,7 @@ func TestGuideTabsAndCopyTargetsAreConsistent(t *testing.T) {
 			}
 		}
 	}
-	for _, provider := range []string{"codex", "claude", "agy"} {
+	for _, provider := range []string{"opencode", "codex", "claude", "agy"} {
 		for _, required := range []string{
 			`aria-controls="guide-panel-` + provider + `"`, `data-guide-provider-tab="` + provider + `"`,
 			`aria-labelledby="guide-tab-` + provider + `" data-guide-provider-panel="` + provider + `"`,
@@ -203,29 +210,42 @@ func TestClientSetupRoutes(t *testing.T) {
 	t.Parallel()
 	server := &Server{mux: http.NewServeMux()}
 	server.routes()
-	for _, target := range []string{"/setup/configure-client.cjs", "/setup/configure-codex.sh", "/setup/configure-codex.bat"} {
-		t.Run(target, func(t *testing.T) {
+	for _, test := range []struct {
+		target      string
+		status      int
+		contentType string
+		script      []byte
+	}{
+		{"/setup/configure-client.cjs", http.StatusOK, "application/javascript; charset=utf-8", clientSetupScript},
+		{"/setup/configure-opencode.ps1", http.StatusOK, "text/plain; charset=utf-8", openCodeSetupTemplate},
+		{"/setup/configure-codex.sh", http.StatusGone, "", nil},
+		{"/setup/configure-codex.bat", http.StatusGone, "", nil},
+	} {
+		t.Run(test.target, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			server.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+			server.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, test.target, nil))
 			if got := recorder.Header().Get("Cache-Control"); got != "no-store" {
 				t.Fatalf("Cache-Control = %q, want no-store", got)
 			}
-			if target != "/setup/configure-client.cjs" {
-				if recorder.Code != http.StatusGone {
-					t.Fatalf("retired setup returned %d, want 410", recorder.Code)
-				}
+			if recorder.Code != test.status {
+				t.Fatalf("setup returned %d, want %d", recorder.Code, test.status)
+			}
+			if test.status == http.StatusGone {
 				return
 			}
-			if recorder.Code != http.StatusOK || recorder.Body.String() != string(clientSetupScript) {
-				t.Fatalf("client setup did not serve the embedded configurator: status %d", recorder.Code)
+			if recorder.Body.String() != string(test.script) {
+				t.Fatal("setup did not serve the embedded script")
 			}
-			if got := recorder.Header().Get("Content-Type"); got != "application/javascript; charset=utf-8" {
-				t.Fatalf("Content-Type = %q", got)
+			if got := recorder.Header().Get("Content-Type"); got != test.contentType {
+				t.Fatalf("Content-Type = %q, want %q", got, test.contentType)
 			}
 			if recorder.Header().Get("X-Content-Type-Options") != "nosniff" {
 				t.Fatal("client setup must disable MIME sniffing")
 			}
 		})
+	}
+	if strings.Count(string(openCodeSetupTemplate), "__OPENCODE_SETUP_PAYLOAD__") != 1 {
+		t.Fatal("OpenCode template must contain exactly one setup payload marker")
 	}
 }
 

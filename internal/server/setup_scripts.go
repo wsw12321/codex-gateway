@@ -11,6 +11,13 @@ func (s *Server) clientSetup(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write(clientSetupScript)
 }
 
+func (s *Server) openCodeSetup(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write(openCodeSetupTemplate)
+}
+
 func (s *Server) retiredClientSetup(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	http.Error(w, "This setup script has been retired. Open the gateway usage guide for the current client configuration command.", http.StatusGone)
