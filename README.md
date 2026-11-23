@@ -592,7 +592,8 @@ Gateway；登录后的生成冒烟会等待 Gateway 就绪。回调或数据库�
 
 管理界面「使用指导」默认展示 OpenCode 的 Windows 桌面端官方下载与配置脚本。
 选择 Plan 规划和 Build 写代码的模型后下载脚本，在 Windows PowerShell 运行并输入
-Gateway Key。页面也提供 OpenCode 的 VS Code 扩展、Windows CLI 和 Linux 指导。
+Gateway Key。脚本会写入下载时的本站模型目录和两个默认模型，实际调用权限由 Gateway 检查。
+页面也提供 OpenCode 的 VS Code 扩展、Windows CLI 和 Linux 指导。
 
 OpenAI Codex、Claude 和 Google Antigravity 各有标签页，展示公共准备及 Windows、
 macOS、Linux 的安装、配置和启动步骤。Codex 有 CLI、桌面端和 IDE 扩展，Claude 有 Claude Code、桌面端（推荐第三方

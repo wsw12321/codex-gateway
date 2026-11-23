@@ -88,6 +88,42 @@ func TestModelCatalogRequiresSessionAndFailsClosed(t *testing.T) {
 	}
 }
 
+func TestClientSetupModelCatalogUsesGatewayConfiguration(t *testing.T) {
+	s, _ := newBillingSourceTestServer(t, store.UserRoleMember, nil)
+	s.config.UsagePricing = config.UsagePricing{Models: map[string]config.ModelPricing{
+		"claude-test": {}, "gemini-3.1-flash-lite": {}, "gemini-4-argon-high": {},
+		"gemini-pro-agent": {}, "gpt-test": {}, config.InternalGovernanceModel: {},
+	}}
+	s.config.AntigravityModelRoutes = map[string]string{"gemini-4-argon-high": "gemini-4-argon-high"}
+	s.modelAccessRepo = &fakeModelAccessRepository{listModelsErr: errors.New("model access unavailable")}
+	history := &catalogTestRepository{models: []string{"gpt-retired"}}
+	s.modelCatalogRepo = history
+
+	r := billingPlanTestRequest(http.MethodGet, "/admin/model-catalog?scope=client_setup", "")
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, r)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous setup catalog: %d %s", w.Code, w.Body)
+	}
+
+	addBillingSourceTestSession(t, r)
+	w = httptest.NewRecorder()
+	s.mux.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("member setup catalog: %d %s", w.Code, w.Body)
+	}
+	var result struct {
+		Models []sessionModelOption `json:"models"`
+	}
+	want := []sessionModelOption{{"claude-test", "Claude"}, {"gemini-4-argon-high", "Gemini"}, {"gpt-test", "GPT"}}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || !reflect.DeepEqual(result.Models, want) {
+		t.Fatalf("setup catalog: %s", w.Body)
+	}
+	if len(history.users) != 0 {
+		t.Fatalf("unexpected usage catalog lookups: %v", history.users)
+	}
+}
+
 func TestAPIKeyModelScopeRejectsEmptyRestrictedSelection(t *testing.T) {
 	for _, tc := range []struct {
 		scope  string

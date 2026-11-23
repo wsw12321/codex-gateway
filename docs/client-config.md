@@ -21,13 +21,17 @@ Home 和 End。
 ## OpenCode
 
 1. 在「使用指导 → OpenCode」下载 [OpenCode 最新版 Windows 桌面端](https://opencode.ai/download)，按 Windows 的系统类型选择 x64 或 ARM64。
-2. 在「API Keys」创建或查看当前设备的 Gateway Key。点击「下载配置脚本」，可分别选择 Plan 规划和 Build 写代码的模型。Plan 优先预选 `gpt-6.2-astra`，Build 优先预选 `gpt-6-astra`。账号目录没有首选模型时会预选其他可配置模型，两种模式也可以使用同一个模型。
-3. 用 Windows PowerShell 运行下载的 `configure-opencode.ps1`，按提示输入 Gateway Key。脚本使用当前 Key 查询 `/v1/models`，确认所选模型可用后备份并合并用户配置。Key 由本机单独保存，下载文件只包含站点地址与所选模型。
+2. 在「API Keys」创建或查看当前设备的 Gateway Key。点击「下载配置脚本」，从本站当前支持的模型目录中选择 Plan 规划和 Build 写代码的模型。Plan 优先预选 `gpt-6.2-astra`，Build 优先预选 `gpt-6-astra`。目录缺少首选模型时会预选其他模型，两种模式也可以使用同一个模型。
+3. 用 Windows PowerShell 运行下载的 `configure-opencode.ps1`，按提示输入 Gateway Key。下载文件带有站点地址、当时的本站模型目录和两项默认模型。脚本备份并合并用户配置，将 Key 单独保存在本机。本站在实际模型请求时校验 Key、账号权限和额度。
 4. 完全退出并重新打开 OpenCode，创建会话，在模型选择器核对本次请求的模型。OpenCode V2 的会话会单独记住选中的模型，使用已有会话时也可在模型选择器手动切换。到「使用统计」可以核对实际请求所用模型。
 
 脚本使用 OpenCode V2 的 `agents.plan.model` 和 `agents.build.model`。GPT 和 Gemini
 走 OpenAI Responses，Claude 走 Anthropic Messages，两种供给方的 Base URL 都是
-`<站点 origin>/v1`。VS Code 的 [OpenCode 扩展](https://marketplace.visualstudio.com/items?itemName=sst-dev.opencode)
+`<站点 origin>/v1`。目录反映下载时的站点支持范围，各账号和 Key 的实际调用权限
+以请求结果为准。要更新客户端中的模型列表，请下载并运行新脚本，它会用新目录替换本站
+供应商的模型条目，保留其他供应商和无关设置。
+
+VS Code 的 [OpenCode 扩展](https://marketplace.visualstudio.com/items?itemName=sst-dev.opencode)
 在集成终端运行 CLI。Windows 可在 PowerShell 或 CMD 执行 `npm install -g @opencode/cli`。
 Linux 的安装和用户级配置示例见 [OpenCode 安装](https://opencode.ai/download)和[供应商配置](https://opencode.ai/docs/providers/#custom)。
 

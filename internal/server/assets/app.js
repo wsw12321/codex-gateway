@@ -2614,11 +2614,11 @@ function openCodeSetupDefaults(models) {
     models.some((item) => item.id === preferred) ? preferred : fallback);
 }
 
-function openCodeSetupScript(template, origin, plan, build) {
+function openCodeSetupScript(template, origin, plan, build, models) {
   const marker = "__OPENCODE_SETUP_PAYLOAD__";
   const parts = template.split(marker);
   if (parts.length !== 2) throw new Error("配置脚本格式无效，请刷新页面后重试。");
-  const bytes = new TextEncoder().encode(JSON.stringify({origin, plan, build}));
+  const bytes = new TextEncoder().encode(JSON.stringify({origin, plan, build, models}));
   const payload = btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
   // Windows PowerShell 5.1 needs the BOM to read the script's Chinese text.
   return "\uFEFF" + parts[0].replace(/^\uFEFF/, "") + payload + parts[1];
@@ -2645,9 +2645,9 @@ async function loadOpenCodeSetupModels(draft) {
   draft.models.clear();
   const selects = [byId("opencode-plan-model"), byId("opencode-build-model")];
   selects.forEach((select) => select.replaceChildren());
-  renderOpenCodeSetup("正在加载可用模型…");
+  renderOpenCodeSetup("正在加载网关模型目录…");
   try {
-    const catalog = await modelCatalog("api_key");
+    const catalog = await modelCatalog("client_setup");
     if (!currentOpenCodeSetup(draft)) return;
     for (const {id, group} of catalog) {
       if (typeof id === "string" && id && openCodeSetupGroups.has(group)) {
@@ -2661,7 +2661,7 @@ async function loadOpenCodeSetupModels(draft) {
       select.value = defaults[index];
     });
     draft.loading = false;
-    renderOpenCodeSetup(models.length ? "" : "当前账号没有可配置的模型。");
+    renderOpenCodeSetup(models.length ? "" : "网关目录没有可配置的模型。");
   } catch (error) {
     if (!currentOpenCodeSetup(draft)) return;
     draft.loading = false;
@@ -2693,7 +2693,7 @@ async function downloadOpenCodeSetup(event) {
   try {
     const response = await fetch("/setup/configure-opencode.ps1", {cache: "no-store", redirect: "error"});
     if (!response.ok) throw new Error("下载配置脚本失败，请重试。");
-    const script = openCodeSetupScript(await response.text(), location.origin, plan, build);
+    const script = openCodeSetupScript(await response.text(), location.origin, plan, build, Array.from(draft.models.values()));
     if (!currentOpenCodeSetup(draft)) return;
     const url = URL.createObjectURL(new Blob([script], {type: "application/octet-stream"}));
     const link = element("a", {attributes: {href: url, download: "configure-opencode.ps1"}});

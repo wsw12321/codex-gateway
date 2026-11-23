@@ -72,6 +72,13 @@ async function main() {
     const context = await browser.newContext({viewport: {width: 1440, height: 1080}, deviceScaleFactor: 1, locale: "zh-CN"});
     const page = await context.newPage();
     const errors = [];
+    const setupModels = [
+      {id: "claude-sonnet-5-5", group: "Claude"},
+      {id: "gpt-6.2-astra", group: "GPT"},
+      {id: "gpt-6.2-sol", group: "GPT"},
+      {id: "gpt-6-astra", group: "GPT"},
+      {id: "gemini-3.8-flash-high", group: "Gemini"},
+    ];
     let catalogFails = true;
     let catalogEmpty = false;
     let downloadFails = true;
@@ -85,15 +92,10 @@ async function main() {
       if (url.pathname === "/static/favicon.svg") return route.fulfill({contentType: "image/svg+xml", body: fs.readFileSync(path.join(assets, "favicon.svg"), "utf8")});
       if (url.pathname === "/static/app.js") return route.fulfill({contentType: "application/javascript", body: app});
       if (url.pathname === "/admin/model-catalog") {
-        assert.equal(url.searchParams.get("scope"), "api_key");
+        assert.equal(url.searchParams.get("scope"), "client_setup");
         if (catalogFails) return route.fulfill({status: 503, json: {error: {message: "模型目录暂不可用"}}});
         return route.fulfill({json: {models: catalogEmpty ? [] : [
-          {id: "claude-sonnet-5-5", group: "Claude"},
-          {id: "gpt-6.2-astra", group: "GPT"},
-          {id: "gpt-6.2-sol", group: "GPT"},
-          {id: "gpt-6-astra", group: "GPT"},
-          {id: "gemini-3.8-flash-high", group: "Gemini"},
-          {id: "unsupported-model", group: "其他"},
+          ...setupModels, {id: "unsupported-model", group: "其他"},
         ]}});
       }
       if (url.pathname === "/setup/configure-opencode.ps1") {
@@ -129,7 +131,7 @@ async function main() {
     catalogFails = false;
     catalogEmpty = true;
     await retrySetup.click();
-    await setupDialog.getByText("当前账号没有可配置的模型。").waitFor();
+    await setupDialog.getByText("网关目录没有可配置的模型。").waitFor();
     assert.equal(await confirmSetup.isDisabled(), true);
     await page.keyboard.press("Escape");
     await setupDialog.waitFor({state: "hidden"});
@@ -139,6 +141,8 @@ async function main() {
     await planModel.locator('option[value="gpt-6.2-astra"]').waitFor({state: "attached"});
     assert.equal(await planModel.inputValue(), "gpt-6.2-astra");
     assert.equal(await buildModel.inputValue(), "gpt-6-astra");
+    assert.equal(await planModel.locator("option").count(), setupModels.length);
+    assert.equal(await buildModel.locator('option[value="gpt-6.2-sol"]').count(), 1);
     assert.equal(await planModel.locator('option[value="unsupported-model"]').count(), 0);
     await planModel.selectOption("claude-sonnet-5-5");
     await buildModel.selectOption("gemini-3.8-flash-high");
@@ -154,6 +158,7 @@ async function main() {
     assert.ok(!script.includes(initialState.api_keys[0].key_prefix));
     const payload = {
       origin, plan: {id: "claude-sonnet-5-5", group: "Claude"}, build: {id: "gemini-3.8-flash-high", group: "Gemini"},
+      models: setupModels,
     };
     assert.ok(script.includes(Buffer.from(JSON.stringify(payload), "utf8").toString("base64")));
     await setupDialog.waitFor({state: "hidden"});

@@ -182,13 +182,14 @@ test("OpenCode download replaces the marker with a BOM-prefixed UTF-8 setup scri
   const template = "$payload = '__OPENCODE_SETUP_PAYLOAD__'\n# 配置";
   const plan = {id: "gpt-plan", group: "GPT"};
   const build = {id: "claude-写代码'&", group: "Claude"};
+  const models = [plan, build, {id: "gemini-extra", group: "Gemini"}];
   const origin = "https://gateway.example.test";
-  const script = run(`openCodeSetupScript(...${JSON.stringify([template, origin, plan, build])})`);
+  const script = run(`openCodeSetupScript(...${JSON.stringify([template, origin, plan, build, models])})`);
   assert.equal(script.charCodeAt(0), 0xfeff);
   assert.equal(script.slice(script.indexOf("\n")), "\n# 配置");
   assert.equal(script.includes(build.id), false);
   const match = script.match(/'([A-Za-z0-9+/=]+)'/);
   assert.ok(match);
-  assert.deepEqual(JSON.parse(Buffer.from(match[1], "base64").toString("utf8")), {origin, plan, build});
+  assert.deepEqual(JSON.parse(Buffer.from(match[1], "base64").toString("utf8")), {origin, plan, build, models});
   assert.throws(() => run('openCodeSetupScript("missing marker", "", {}, {})'));
 });

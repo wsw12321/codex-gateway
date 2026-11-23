@@ -21,62 +21,17 @@ function Get-EncodingHash([string] $Text) {
     }
 }
 
-function Get-ProviderPackage([object] $Model, [string] $Mode) {
-    if ($null -eq $Model -or $Model.id -isnot [string] -or $Model.id -notmatch '^[^#\s\x00-\x1f\x7f]+$') {
-        throw "安装脚本缺少有效的 $Mode 模型。请从使用指南重新下载脚本。"
+function Get-ModelProtocol([object] $Model) {
+    if ($Model -isnot [pscustomobject] -or $Model.id -isnot [string] -or
+        $Model.id -notmatch '^[^#{}\s\x00-\x1f\x7f]+$' -or $Model.group -isnot [string]) {
+        throw '安装脚本包含无效的模型条目。请从使用指南重新下载脚本。'
     }
     switch -CaseSensitive ($Model.group) {
-        'GPT'    { return '@opencode/ai/providers/openai-compatible/responses' }
-        'Gemini' { return '@opencode/ai/providers/openai-compatible/responses' }
-        'Claude' { return '@opencode/ai/providers/anthropic' }
-        default  { throw "安装脚本的 $Mode 模型组无效。请从使用指南重新下载脚本。" }
+        'GPT'    { return 'responses' }
+        'Gemini' { return 'responses' }
+        'Claude' { return 'anthropic' }
+        default  { throw '安装脚本包含无效的模型组。请从使用指南重新下载脚本。' }
     }
-}
-
-function Get-GatewayModels([string] $Origin, [string] $Key) {
-    $tls = [Net.ServicePointManager]::SecurityProtocol
-    try {
-        [Net.ServicePointManager]::SecurityProtocol = $tls -bor [Net.SecurityProtocolType]::Tls12
-        $request = [Net.WebRequest]::Create("$Origin/v1/models")
-        $request.AllowAutoRedirect = $false
-        $request.Timeout = 15000
-        $request.ReadWriteTimeout = 15000
-        $request.Headers['Authorization'] = "Bearer $Key"
-        $response = $request.GetResponse()
-        try {
-            if ([int] $response.StatusCode -ne 200) {
-                throw '网关模型列表请求未成功，请检查当前网关地址。'
-            }
-            $reader = New-Object IO.StreamReader($response.GetResponseStream(), $utf8)
-            try {
-                try {
-                    $result = ConvertFrom-Json -InputObject $reader.ReadToEnd()
-                } catch {
-                    throw '网关返回的模型列表格式无效。'
-                }
-            } finally {
-                $reader.Dispose()
-            }
-        } finally {
-            $response.Dispose()
-        }
-    } catch [Net.WebException] {
-        $status = $_.Exception.Response
-        if ($null -ne $status) {
-            try {
-                throw "网关模型列表请求失败（HTTP $([int] $status.StatusCode)）。请检查 API Key 及网关地址。"
-            } finally {
-                $status.Dispose()
-            }
-        }
-        throw '无法连接网关的模型列表。请检查网络后重试。'
-    } finally {
-        [Net.ServicePointManager]::SecurityProtocol = $tls
-    }
-    if ($result.data -isnot [Array]) {
-        throw '网关返回的模型列表格式无效。'
-    }
-    return $result.data
 }
 
 function Get-ConfigPath {
@@ -182,9 +137,41 @@ try {
     } catch {
         throw '安装脚本缺少有效的配置信息。请从使用指南重新下载脚本。'
     }
+    if ($setup -isnot [pscustomobject] -or $setup.origin -isnot [string] -or
+        $setup.models -isnot [Array] -or $setup.models.Length -eq 0) {
+        throw '安装脚本缺少有效的模型目录。请从使用指南重新下载脚本。'
+    }
     $origin = Get-SetupOrigin $setup.origin
-    $planPackage = Get-ProviderPackage $setup.plan 'Plan'
-    $buildPackage = Get-ProviderPackage $setup.build 'Build'
+    $packages = [ordered] @{
+        responses = '@opencode/ai/providers/openai-compatible/responses'
+        anthropic = '@opencode/ai/providers/anthropic'
+    }
+    $catalog = New-Object 'Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $modelsByProtocol = @{}
+    foreach ($protocol in $packages.Keys) {
+        $modelsByProtocol[$protocol] = New-Object Collections.Specialized.OrderedDictionary([StringComparer]::OrdinalIgnoreCase)
+    }
+    foreach ($model in $setup.models) {
+        $protocol = Get-ModelProtocol $model
+        if ($catalog.ContainsKey($model.id)) {
+            throw '安装脚本包含重复的模型 ID。请从使用指南重新下载脚本。'
+        }
+        # Windows PowerShell 5.1 cannot read JSON object keys that differ only in case.
+        if ($modelsByProtocol[$protocol].Contains($model.id)) {
+            throw '同一接口的模型 ID 不能仅靠大小写区分。请联系站点管理员核对模型目录。'
+        }
+        $catalog.Add($model.id, $model.group)
+        $modelsByProtocol[$protocol].Add($model.id, @{ name = $model.id })
+    }
+    $modes = [ordered] @{ plan = $setup.plan; build = $setup.build }
+    $modeProtocols = @{}
+    foreach ($mode in $modes.Keys) {
+        $model = $modes[$mode]
+        $modeProtocols[$mode] = Get-ModelProtocol $model
+        if (-not $catalog.ContainsKey($model.id) -or $catalog[$model.id] -cne $model.group) {
+            throw "安装脚本的 $mode 模型不在所附目录中，或模型组不匹配。请从使用指南重新下载脚本。"
+        }
+    }
     $configPath = Get-ConfigPath
     $originHash = (Get-EncodingHash $origin).Substring(0, 16)
     $configHash = (Get-EncodingHash $configPath.ToUpperInvariant()).Substring(0, 16)
@@ -222,31 +209,33 @@ try {
             throw 'API Key 不能为空，也不能包含空格或换行。'
         }
 
-        $modelIds = @(Get-GatewayModels $origin $key | ForEach-Object { $_.id })
-        $modes = @(
-            @{ name = 'plan'; id = $setup.plan.id; package = $planPackage }
-            @{ name = 'build'; id = $setup.build.id; package = $buildPackage }
-        )
-        foreach ($mode in $modes) {
-            if ($modelIds -cnotcontains $mode.id) {
-                throw "当前 API Key 的模型列表中没有 $($mode.name) 所选模型 $($mode.id)。"
-            }
-            $protocol = 'responses'
-            if ($mode.package -eq '@opencode/ai/providers/anthropic') {
-                $protocol = 'anthropic'
-            }
+        foreach ($protocol in $packages.Keys) {
             $providerID = "codex-gateway-$originHash-$protocol"
+            $models = $modelsByProtocol[$protocol]
+            if ($models.Count -eq 0 -and $null -eq $providers.PSObject.Properties[$providerID]) {
+                continue
+            }
             $provider = Get-ConfigObject $providers $providerID
             Set-ConfigProperty $provider 'name' "Codex Gateway ($protocol)"
-            Set-ConfigProperty $provider 'package' $mode.package
+            Set-ConfigProperty $provider 'package' $packages[$protocol]
             $settings = Get-ConfigObject $provider 'settings'
             Set-ConfigProperty $settings 'baseURL' "$origin/v1"
             Set-ConfigProperty $settings 'apiKey' "{file:$secretPath}"
-            $models = Get-ConfigObject $provider 'models'
-            $model = Get-ConfigObject $models $mode.id
-            Set-ConfigProperty $model 'name' $mode.id
-            $agent = Get-ConfigObject $agents $mode.name
-            Set-ConfigProperty $agent 'model' ([ordered] @{ providerID = $providerID; model = $mode.id })
+            $existingModels = $provider.PSObject.Properties['models']
+            if ($null -ne $existingModels -and $existingModels.Value -is [pscustomobject]) {
+                foreach ($id in @($models.Keys)) {
+                    $existing = $existingModels.Value.PSObject.Properties[$id]
+                    if ($null -ne $existing -and $existing.Name -ceq $id -and $existing.Value -is [pscustomobject]) {
+                        $models[[string] $id] = $existing.Value
+                    }
+                }
+            }
+            Set-ConfigProperty $provider 'models' $models
+        }
+        foreach ($mode in $modes.Keys) {
+            $providerID = "codex-gateway-$originHash-$($modeProtocols[$mode])"
+            $agent = Get-ConfigObject $agents $mode
+            Set-ConfigProperty $agent 'model' ([ordered] @{ providerID = $providerID; model = $modes[$mode].id })
         }
 
         $updated = (ConvertTo-Json -InputObject $config -Depth 100 -WarningAction Stop) + [Environment]::NewLine

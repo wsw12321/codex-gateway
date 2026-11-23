@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 
 	"github.com/wsw/codex-gateway/internal/config"
@@ -62,12 +63,17 @@ func (s *Server) sessionModelCatalog(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "owner_required", "仅 Owner 可查询此模型目录")
 			return
 		}
-	case "api_key", "usage":
+	case "api_key", "usage", "client_setup":
 	default:
 		s.modelCatalogInputError(w, r)
 		return
 	}
 	models := s.config.UsagePricing.ManageableModelNames()
+	if scope == "client_setup" {
+		models = slices.DeleteFunc(models, func(model string) bool {
+			return config.ModelFamilyOf(model) == config.ModelFamilyGemini && !s.configuredGeminiModel(model)
+		})
+	}
 	if scope == "api_key" {
 		allowed, err := s.allowedModelsForAPIKey(r.Context(), store.APIKey{UserID: userFrom(r.Context()).ID})
 		if err != nil {
