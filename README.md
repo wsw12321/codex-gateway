@@ -291,7 +291,8 @@ Owner 可充值、调整余额、批量新增订阅以及按 ID 重开／停用�
 聚合网关（用户自带供应商、卖家套餐、套餐商城）正按[改造计划](docs/aggregation-gateway-plan.md)
 分阶段实现。阶段 1 已加入上游账号归属：现有账号全部是平台账号，群组、个人订阅和现金只由
 平台账号服务；Owner 可在 `/admin/market/settings` 设置商城开关（默认关闭）、抽成比例和
-每人上限，但尚无界面，开关打开前行为不变。见[阶段 1 验证](docs/aggregation-gateway-stage1-validation.md)。
+每人上限，但尚无界面，开关打开前行为不变。见[阶段 1 验证](docs/aggregation-gateway-stage1-validation.md)；
+开发分支 `aggregation-gateway` 上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
 
 ### 交流群与充值说明
 

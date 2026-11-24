@@ -1,6 +1,6 @@
 # 聚合网关改造计划：用户供应商 + 卖家套餐 + 商城
 
-> 2026-11-24 确定的分阶段计划。各阶段完成情况见文末“进度”。阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
+> 2026-11-24 确定的分阶段计划。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
 
 ## Context
 
@@ -334,10 +334,12 @@ node --test internal/server/testdata/<新增>_test.cjs
 
 ## 进度
 
-| 阶段 | 状态 |
-|---|---|
-| 1 归属底座 | 已完成：迁移 `0051`、平台账号过滤、`/admin/market/settings` |
-| 2 我的供应商 | 未开始 |
-| 3 套餐供应商范围、规则 5、自用 | 未开始 |
-| 4 卖家套餐、审核、商城、分账 | 未开始 |
-| 5 加固与文档 | 未开始 |
+| 阶段 | 状态 | 分支 / 提交 |
+|---|---|---|
+| 1 归属底座 | 已完成：迁移 `0051`、平台账号过滤、`/admin/market/settings` | `aggregation-gateway` / `2a800c5` |
+| 2 我的供应商 | 未开始 | `aggregation-gateway` |
+| 3 套餐供应商范围、规则 5、自用 | 未开始 | `aggregation-gateway` |
+| 4 卖家套餐、审核、商城、分账 | 未开始 | `aggregation-gateway` |
+| 5 加固与文档 | 未开始 | `aggregation-gateway` |
+
+逐项待办见[开发进度与待办](aggregation-gateway-progress.md#剩余待完成项)。
