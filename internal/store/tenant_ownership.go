@@ -13,8 +13,10 @@ const marketplaceEnabledSQL = `COALESCE((SELECT ms.enabled FROM marketplace_sett
 // alias is an upstream_accounts alias, possibly from a LEFT JOIN. A candidate
 // the Gateway has no row for stays eligible only while the marketplace is
 // disabled: once tenants can log in, an unregistered account may be a tenant
-// account whose ownership has not been committed yet.
+// account whose ownership has not been committed yet. A released account
+// (credential removed) serves nobody until a login claims it again.
 func platformAccountSQL(alias string) string {
 	return `(CASE WHEN ` + alias + `.id IS NULL THEN NOT ` + marketplaceEnabledSQL +
-		` ELSE ` + alias + `.owner_user_id IS NULL AND NOT ` + alias + `.admin_suspended END)`
+		` ELSE ` + alias + `.owner_user_id IS NULL AND NOT ` + alias + `.admin_suspended AND ` +
+		alias + `.credential_removed_at IS NULL END)`
 }

@@ -113,6 +113,18 @@ Current migrations:
   singleton, disabled by default. Platform selection paths ignore tenant
   accounts; while the marketplace is enabled, accounts unknown to the Gateway
   are not eligible.
+- `internal/store/migrations/0052_tenant_provider_lifecycle.sql` — tenant
+  providers (aggregation gateway stage 2). `credential_removed_at` marks an
+  account whose credential was deleted: it is released, no funding path uses
+  it, and the next login of it claims it (suppliers deleted earlier are
+  backfilled). Ownership is no longer write-once: the replaced
+  `guard_upstream_account_owner` trigger accepts a change only when the
+  transaction names it a `claim` or an Owner `transfer`, still keeps tenant
+  accounts out of platform-only structures, and refuses an owner whose egress
+  node differs. `egress_servers.owner_user_id` lets tenants run their own
+  nodes (immutable); triggers bind accounts and registrations only to nodes of
+  the same owner. Adds `marketplace_settings.max_egress_servers_per_user`
+  (default 5).
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

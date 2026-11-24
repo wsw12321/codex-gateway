@@ -27,6 +27,8 @@ type EgressServer struct {
 	Revision           int64
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	// OwnerUserID is empty for a platform node.
+	OwnerUserID string
 }
 
 type EgressBinding struct {
@@ -49,6 +51,9 @@ type EgressRegistration struct {
 	ActorSessionID          string
 	CreatedAt               time.Time
 	BaselineBindingRevision int64
+	// TenantUserID is the tenant that started the login or import; empty for
+	// the Owner. The account is claimed for it when the registration commits.
+	TenantUserID string
 }
 
 type EgressState struct {
@@ -115,12 +120,26 @@ func egressNeedsPassword(n EgressServer) bool {
 	return n.Protocol == egress.ProtocolSS || n.Username != ""
 }
 
-const egressServerColumns = `id::text,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at`
+const egressServerColumns = `id::text,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at,COALESCE(owner_user_id::text,'')`
 
 func scanEgressServer(row rowScanner) (EgressServer, error) {
 	var n EgressServer
-	err := row.Scan(&n.ID, &n.Name, &n.Protocol, &n.Server, &n.Port, &n.Cipher, &n.Username, &n.PasswordCiphertext, &n.UDP, &n.Revision, &n.CreatedAt, &n.UpdatedAt)
+	err := row.Scan(&n.ID, &n.Name, &n.Protocol, &n.Server, &n.Port, &n.Cipher, &n.Username, &n.PasswordCiphertext, &n.UDP, &n.Revision, &n.CreatedAt, &n.UpdatedAt, &n.OwnerUserID)
 	return n, err
+}
+
+// ValidateTenantEgressServer adds the rule for a node a tenant runs: the
+// address must be a public IPv4 literal. A name could resolve, now or later,
+// to an address inside the deployment's or the host's networks.
+func ValidateTenantEgressServer(n EgressServer) error {
+	if err := ValidateEgressServer(n); err != nil {
+		return err
+	}
+	addr, err := netip.ParseAddr(n.Server)
+	if err != nil || !addr.Is4() || !egress.PublicSupplierIP(addr) {
+		return fmt.Errorf("%w: tenant egress host must be a public IPv4 address", ErrInvalid)
+	}
+	return nil
 }
 
 // Every write locks this singleton before any other rows. Read snapshots use
@@ -146,12 +165,19 @@ func egressAudit(ctx context.Context, tx *sql.Tx, a EgressActor, event, subject 
 // validated. The database CHECK rejects a retained password that does not fit
 // the new protocol (for example an SS node switched to SOCKS5 with a username
 // but no stored password).
+//
+// The store's owner scope decides whose node this is: a tenant creates and
+// edits only its own nodes, within max_egress_servers_per_user.
 func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create bool, a EgressActor) (EgressServer, error) {
 	if a.UserID == "" {
 		return EgressServer{}, ErrInvalid
 	}
 	n.Protocol = egress.NormalizeProtocol(n.Protocol)
-	if err := ValidateEgressServer(n); err != nil {
+	validate := ValidateEgressServer
+	if s.upstreamOwner != "" {
+		validate = ValidateTenantEgressServer
+	}
+	if err := validate(n); err != nil {
 		return EgressServer{}, err
 	}
 	if parsed, err := uuid.Parse(n.ID); err != nil || parsed.String() != n.ID {
@@ -175,16 +201,21 @@ func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create boo
 			return err
 		}
 		if create {
-			result, err = scanEgressServer(tx.QueryRowContext(ctx, `INSERT INTO egress_servers(id,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8::bytea,$9,$10,now(),now()) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, ciphertext, n.UDP, v))
+			if s.upstreamOwner != "" {
+				if err := checkTenantEgressLimitTx(ctx, tx, s.upstreamOwner); err != nil {
+					return err
+				}
+			}
+			result, err = scanEgressServer(tx.QueryRowContext(ctx, `INSERT INTO egress_servers(id,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at,owner_user_id) VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8::bytea,$9,$10,now(),now(),$11::uuid) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, ciphertext, n.UDP, v, s.upstreamOwnerArg()))
 		} else {
 			expected := int64(0)
 			if len(n.PasswordCiphertext) == 0 && needsPassword {
 				expected = n.Revision
 			}
-			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,protocol=$3,server=$4,port=$5,cipher=$6,username=$7,password_ciphertext=CASE WHEN NOT $11::boolean THEN NULL WHEN octet_length($8::bytea)=0 THEN password_ciphertext ELSE $8 END,udp=$9,revision=$10,updated_at=now() WHERE id=$1::uuid AND ($12::bigint=0 OR revision=$12) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, nonNilBytes(n.PasswordCiphertext), n.UDP, v, needsPassword, expected))
+			result, err = scanEgressServer(tx.QueryRowContext(ctx, `UPDATE egress_servers SET name=$2,protocol=$3,server=$4,port=$5,cipher=$6,username=$7,password_ciphertext=CASE WHEN NOT $11::boolean THEN NULL WHEN octet_length($8::bytea)=0 THEN password_ciphertext ELSE $8 END,udp=$9,revision=$10,updated_at=now() WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $13::uuid AND ($12::bigint=0 OR revision=$12) RETURNING `+egressServerColumns, n.ID, n.Name, n.Protocol, n.Server, n.Port, n.Cipher, n.Username, nonNilBytes(n.PasswordCiphertext), n.UDP, v, needsPassword, expected, s.upstreamOwnerArg()))
 			if errors.Is(err, sql.ErrNoRows) && expected > 0 {
 				var exists bool
-				if existsErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid)`, n.ID).Scan(&exists); existsErr != nil {
+				if existsErr := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $2::uuid)`, n.ID, s.upstreamOwnerArg()).Scan(&exists); existsErr != nil {
 					return mapDBError("check egress node", existsErr)
 				}
 				if exists {
@@ -206,12 +237,13 @@ func nonNilBytes(b []byte) []byte {
 	return b
 }
 
-// EgressServer returns one node, including its encrypted credential.
+// EgressServer returns one node of the store's owner scope, including its
+// encrypted credential.
 func (s *Store) EgressServer(ctx context.Context, id string) (EgressServer, error) {
 	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
 		return EgressServer{}, fmt.Errorf("%w: invalid node id", ErrInvalid)
 	}
-	n, err := scanEgressServer(s.db.QueryRowContext(ctx, `SELECT `+egressServerColumns+` FROM egress_servers WHERE id=$1::uuid`, id))
+	n, err := scanEgressServer(s.db.QueryRowContext(ctx, `SELECT `+egressServerColumns+` FROM egress_servers WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $2::uuid`, id, s.upstreamOwnerArg()))
 	return n, mapDBError("find egress node", err)
 }
 
@@ -225,6 +257,13 @@ func (s *Store) DeleteEgressServer(ctx context.Context, id string, a EgressActor
 	return s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		if _, err := nextEgressVersion(ctx, tx); err != nil {
 			return err
+		}
+		var owned bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $2::uuid)`, id, s.upstreamOwnerArg()).Scan(&owned); err != nil {
+			return mapDBError("find egress node", err)
+		}
+		if !owned {
+			return ErrNotFound
 		}
 		var referenced bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_account_egress WHERE node_id=$1::uuid UNION ALL SELECT 1 FROM egress_registrations WHERE node_id=$1::uuid AND state IN ('pending','prepared') AND created_at>now()-interval '24 hours')`, id).Scan(&referenced); err != nil {
@@ -289,6 +328,23 @@ func (s *Store) SetEgressBinding(ctx context.Context, accountID, nodeID string, 
 		if err != nil {
 			return err
 		}
+		// Only the scope's own accounts, and only nodes of the same owner.
+		var inScope bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1 AND `+accountScopeSQL("", "$2")+`)`, accountID, s.upstreamOwnerArg()).Scan(&inScope); err != nil {
+			return mapDBError("find egress account owner", err)
+		}
+		if !inScope {
+			return ErrNotFound
+		}
+		if nodeID != "" {
+			var sameOwner bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $2::uuid)`, nodeID, s.upstreamOwnerArg()).Scan(&sameOwner); err != nil {
+				return mapDBError("find egress node owner", err)
+			}
+			if !sameOwner {
+				return ErrNotFound
+			}
+		}
 		if err = setEgressBinding(ctx, tx, s.upstreamProviderName(), accountID, nodeID, v); err != nil {
 			return err
 		}
@@ -298,14 +354,17 @@ func (s *Store) SetEgressBinding(ctx context.Context, accountID, nodeID string, 
 	return result, err
 }
 
-const egressRegistrationColumns = `id::text,provider,COALESCE(node_id::text,''),preserve_binding,COALESCE(account_id,''),state,revision,COALESCE(actor_user_id::text,''),COALESCE(actor_session_id::text,''),created_at,baseline_binding_revision`
+const egressRegistrationColumns = `id::text,provider,COALESCE(node_id::text,''),preserve_binding,COALESCE(account_id,''),state,revision,COALESCE(actor_user_id::text,''),COALESCE(actor_session_id::text,''),created_at,baseline_binding_revision,COALESCE(tenant_user_id::text,'')`
 
 func scanEgressRegistration(row rowScanner) (EgressRegistration, error) {
 	var v EgressRegistration
-	err := row.Scan(&v.ID, &v.Provider, &v.NodeID, &v.Preserve, &v.AccountID, &v.State, &v.Revision, &v.ActorUserID, &v.ActorSessionID, &v.CreatedAt, &v.BaselineBindingRevision)
+	err := row.Scan(&v.ID, &v.Provider, &v.NodeID, &v.Preserve, &v.AccountID, &v.State, &v.Revision, &v.ActorUserID, &v.ActorSessionID, &v.CreatedAt, &v.BaselineBindingRevision, &v.TenantUserID)
 	return v, err
 }
 
+// CreateEgressRegistration starts a login, import or supplier creation for the
+// store's owner scope: the account it reaches is claimed for that tenant (or
+// the platform), and a chosen node must belong to the same owner.
 func (s *Store) CreateEgressRegistration(ctx context.Context, provider string, nodeID *string, a EgressActor) (EgressRegistration, error) {
 	if !s.WithUpstreamProvider(provider).validUpstreamProvider() || a.UserID == "" {
 		return EgressRegistration{}, ErrInvalid
@@ -327,14 +386,14 @@ func (s *Store) CreateEgressRegistration(ctx context.Context, provider string, n
 		}
 		if selected != "" {
 			var exists bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid)`, selected).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_servers WHERE id=$1::uuid AND owner_user_id IS NOT DISTINCT FROM $2::uuid)`, selected, s.upstreamOwnerArg()).Scan(&exists); err != nil {
 				return mapDBError("find registration node", err)
 			}
 			if !exists {
 				return ErrNotFound
 			}
 		}
-		result, err = scanEgressRegistration(tx.QueryRowContext(ctx, `INSERT INTO egress_registrations(id,provider,node_id,preserve_binding,revision,actor_user_id,actor_session_id,created_at) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6::uuid,$7::uuid,now()) RETURNING `+egressRegistrationColumns, uuid.NewString(), provider, valueOrNil(selected), nodeID == nil, v, a.UserID, valueOrNil(a.SessionID)))
+		result, err = scanEgressRegistration(tx.QueryRowContext(ctx, `INSERT INTO egress_registrations(id,provider,node_id,preserve_binding,revision,actor_user_id,actor_session_id,created_at,tenant_user_id) VALUES($1::uuid,$2,$3::uuid,$4,$5,$6::uuid,$7::uuid,now(),$8::uuid) RETURNING `+egressRegistrationColumns, uuid.NewString(), provider, valueOrNil(selected), nodeID == nil, v, a.UserID, valueOrNil(a.SessionID), s.upstreamOwnerArg()))
 		return mapDBError("create egress registration", err)
 	})
 	return result, err
@@ -393,10 +452,11 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 		if _, err = tx.ExecContext(ctx, `LOCK TABLE upstream_accounts IN ROW EXCLUSIVE MODE`); err != nil {
 			return mapDBError("lock registration account", err)
 		}
-		var insertedID string
-		err = tx.QueryRowContext(ctx, `INSERT INTO upstream_accounts(id,masked_email,plan,status,provider,created_at,updated_at) VALUES($1,'','unknown','unavailable',$2,now(),now()) ON CONFLICT(id) DO UPDATE SET id=upstream_accounts.id WHERE upstream_accounts.provider=EXCLUDED.provider RETURNING id`, accountID, provider).Scan(&insertedID)
-		if err != nil {
-			return mapDBError("ensure registration account", err)
+		// The account row is created or claimed for the registration's owner
+		// before any binding: from here on it is never a platform account by
+		// accident.
+		if err = claimRegistrationAccountTx(ctx, tx, registration, accountID); err != nil {
+			return err
 		}
 		var currentBindingRevision int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT revision FROM upstream_account_egress WHERE account_id=$1),0)`, accountID).Scan(&currentBindingRevision); err != nil {

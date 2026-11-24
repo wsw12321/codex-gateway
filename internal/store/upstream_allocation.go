@@ -60,7 +60,7 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 		}
 		var previousWeight int
 		if err := tx.QueryRowContext(ctx, `SELECT allocation_weight FROM upstream_accounts
-			WHERE id = $1 AND provider = $2 AND owner_user_id IS NULL FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousWeight); err != nil {
+			WHERE id = $1 AND provider = $2 AND `+accountScopeSQL("", "$3")+` FOR UPDATE`, params.AccountID, s.upstreamProviderName(), s.upstreamOwnerArg()).Scan(&previousWeight); err != nil {
 			return mapDBError("lock upstream account allocation weight", err)
 		}
 		var err error

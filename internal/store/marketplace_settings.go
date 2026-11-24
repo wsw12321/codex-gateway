@@ -15,18 +15,21 @@ import (
 // gateway: tenant upstream accounts, seller plans and the plan marketplace.
 // CommissionRate is an exact decimal string in [0, 1] taken from each sale.
 type MarketplaceSettings struct {
-	Enabled              bool      `json:"enabled"`
-	CommissionRate       string    `json:"commission_rate"`
-	MaxAccountsPerUser   int       `json:"max_accounts_per_user"`
-	MaxPlansPerUser      int       `json:"max_plans_per_user"`
-	AllowMemberSuppliers bool      `json:"allow_member_suppliers"`
-	Revision             int64     `json:"revision"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	Enabled              bool   `json:"enabled"`
+	CommissionRate       string `json:"commission_rate"`
+	MaxAccountsPerUser   int    `json:"max_accounts_per_user"`
+	MaxPlansPerUser      int    `json:"max_plans_per_user"`
+	AllowMemberSuppliers bool   `json:"allow_member_suppliers"`
+	// MaxEgressServersPerUser caps the egress nodes one tenant may run.
+	MaxEgressServersPerUser int       `json:"max_egress_servers_per_user"`
+	Revision                int64     `json:"revision"`
+	UpdatedAt               time.Time `json:"updated_at"`
 }
 
 const (
-	MaxMarketplaceAccountsPerUser = 256
-	MaxMarketplacePlansPerUser    = 100
+	MaxMarketplaceAccountsPerUser      = 256
+	MaxMarketplacePlansPerUser         = 100
+	MaxMarketplaceEgressServersPerUser = 32
 )
 
 type SetMarketplaceSettingsParams struct {
@@ -35,6 +38,8 @@ type SetMarketplaceSettingsParams struct {
 	MaxAccountsPerUser   int
 	MaxPlansPerUser      int
 	AllowMemberSuppliers bool
+	// MaxEgressServersPerUser is 0–32.
+	MaxEgressServersPerUser int
 	// ExpectedRevision must match the stored revision so a stale page cannot
 	// silently undo a newer change.
 	ExpectedRevision int64
@@ -60,12 +65,13 @@ func NormalizeCommissionRate(value string) (string, error) {
 }
 
 const marketplaceSettingsColumns = `enabled, trim_scale(commission_rate)::text, max_accounts_per_user,
-	max_plans_per_user, allow_member_suppliers, revision, updated_at`
+	max_plans_per_user, allow_member_suppliers, max_egress_servers_per_user, revision, updated_at`
 
 func scanMarketplaceSettings(row rowScanner) (MarketplaceSettings, error) {
 	var settings MarketplaceSettings
 	err := row.Scan(&settings.Enabled, &settings.CommissionRate, &settings.MaxAccountsPerUser,
-		&settings.MaxPlansPerUser, &settings.AllowMemberSuppliers, &settings.Revision, &settings.UpdatedAt)
+		&settings.MaxPlansPerUser, &settings.AllowMemberSuppliers, &settings.MaxEgressServersPerUser,
+		&settings.Revision, &settings.UpdatedAt)
 	return settings, err
 }
 
@@ -84,7 +90,8 @@ func (s *Store) SetMarketplaceSettings(ctx context.Context, params SetMarketplac
 	}
 	if params.ExpectedRevision < 1 || strings.TrimSpace(params.ActorUserID) == "" ||
 		params.MaxAccountsPerUser < 0 || params.MaxAccountsPerUser > MaxMarketplaceAccountsPerUser ||
-		params.MaxPlansPerUser < 0 || params.MaxPlansPerUser > MaxMarketplacePlansPerUser {
+		params.MaxPlansPerUser < 0 || params.MaxPlansPerUser > MaxMarketplacePlansPerUser ||
+		params.MaxEgressServersPerUser < 0 || params.MaxEgressServersPerUser > MaxMarketplaceEgressServersPerUser {
 		return MarketplaceSettings{}, fmt.Errorf("%w: invalid marketplace settings", ErrInvalid)
 	}
 	if params.At.IsZero() {
@@ -104,10 +111,11 @@ func (s *Store) SetMarketplaceSettings(ctx context.Context, params SetMarketplac
 		}
 		settings, err = scanMarketplaceSettings(tx.QueryRowContext(ctx, `UPDATE marketplace_settings
 			SET enabled=$1, commission_rate=$2::numeric, max_accounts_per_user=$3, max_plans_per_user=$4,
-				allow_member_suppliers=$5, revision=revision+1, updated_by_user_id=$6::uuid, updated_at=$7
+				allow_member_suppliers=$5, max_egress_servers_per_user=$8, revision=revision+1,
+				updated_by_user_id=$6::uuid, updated_at=$7
 			WHERE singleton RETURNING `+marketplaceSettingsColumns,
 			params.Enabled, rate, params.MaxAccountsPerUser, params.MaxPlansPerUser,
-			params.AllowMemberSuppliers, params.ActorUserID, params.At))
+			params.AllowMemberSuppliers, params.ActorUserID, params.At, params.MaxEgressServersPerUser))
 		if err != nil {
 			return mapDBError("update marketplace settings", err)
 		}
@@ -119,6 +127,7 @@ func (s *Store) SetMarketplaceSettings(ctx context.Context, params SetMarketplac
 			"max_accounts_per_user":    settings.MaxAccountsPerUser,
 			"max_plans_per_user":       settings.MaxPlansPerUser,
 			"allow_member_suppliers":   settings.AllowMemberSuppliers,
+			"max_egress_servers":       settings.MaxEgressServersPerUser,
 			"revision":                 settings.Revision,
 		})
 		if err != nil {

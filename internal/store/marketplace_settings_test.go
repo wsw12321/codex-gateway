@@ -25,7 +25,7 @@ func TestNormalizeCommissionRate(t *testing.T) {
 func TestPlatformAccountPredicate(t *testing.T) {
 	t.Parallel()
 	got := platformAccountSQL("a")
-	for _, want := range []string{"a.id IS NULL", "a.owner_user_id IS NULL", "NOT a.admin_suspended", "marketplace_settings"} {
+	for _, want := range []string{"a.id IS NULL", "a.owner_user_id IS NULL", "NOT a.admin_suspended", "a.credential_removed_at IS NULL", "marketplace_settings"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("platform predicate %q lacks %q", got, want)
 		}

@@ -75,7 +75,8 @@ func TestTenantOwnershipPostgresIntegration(t *testing.T) {
 		if _, err := s.SetMarketplaceSettings(context.Background(), SetMarketplaceSettingsParams{
 			Enabled: settings.Enabled, CommissionRate: settings.CommissionRate,
 			MaxAccountsPerUser: settings.MaxAccountsPerUser, MaxPlansPerUser: settings.MaxPlansPerUser,
-			AllowMemberSuppliers: settings.AllowMemberSuppliers, ExpectedRevision: current.Revision, ActorUserID: actor.ID,
+			AllowMemberSuppliers: settings.AllowMemberSuppliers, MaxEgressServersPerUser: settings.MaxEgressServersPerUser,
+			ExpectedRevision: current.Revision, ActorUserID: actor.ID,
 		}); err != nil {
 			t.Errorf("restore settings: %v", err)
 		}
@@ -197,7 +198,7 @@ func TestTenantOwnershipPostgresIntegration(t *testing.T) {
 			t.Fatalf("trigger accepted %q: %v", statement, err)
 		}
 	}
-	// Ownership is set once and never moves.
+	// Ownership moves only through a named claim or an Owner transfer.
 	other := usageSummaryUser(t, ctx, s, "tenant-other-"+suffix)
 	if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=$2 WHERE id=$1`, tenantAccount, other.ID); !errors.Is(mapDBError("owner", err), ErrInvalid) {
 		t.Fatalf("owner change err=%v", err)
@@ -211,12 +212,24 @@ func TestTenantOwnershipPostgresIntegration(t *testing.T) {
 		Provider: UpstreamProviderCodex, Strategy: "selected", AccountIDs: []string{pooled}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=$2 WHERE id=$1`, pooled, tenant.ID); !errors.Is(mapDBError("owner", err), ErrInvalid) {
+	namedChange := func(reason, id, owner string) error {
+		return s.withTx(ctx, nil, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.upstream_owner_change', $1, true)`, reason); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=NULLIF($2,'')::uuid WHERE id=$1`, id, owner)
+			return mapDBError("owner", err)
+		})
+	}
+	if err := namedChange("claim", pooled, tenant.ID); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("pooled platform account claimed: %v", err)
 	}
-	// An unconfigured platform row may still be claimed once.
+	if err := namedChange("release", tenantAccount, other.ID); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown reason moved an account: %v", err)
+	}
+	// An unconfigured platform row may be claimed with a named reason.
 	claimable := account("")
-	if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=$2 WHERE id=$1`, claimable, tenant.ID); err != nil {
+	if err := namedChange("claim", claimable, tenant.ID); err != nil {
 		t.Fatalf("claim unconfigured account: %v", err)
 	}
 
