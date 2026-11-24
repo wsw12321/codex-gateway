@@ -455,6 +455,17 @@ func (s *Server) setUpstreamAccountStatus(w http.ResponseWriter, r *http.Request
 	// older list must finish before an administrator's confirmed state change.
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
+	ownership, inScope := s.accountInScope(w, r, accountID)
+	if !inScope {
+		resultCode, resultStatus = "upstream_account_not_found", http.StatusNotFound
+		return
+	}
+	// The Owner's moderation hold outranks the member's switch.
+	if enabled && ownership.AdminSuspended && requestTenant(r) != "" {
+		resultCode, resultStatus = "provider_suspended", http.StatusConflict
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "provider_suspended", "账号已被管理员停用，不能自行启用")
+		return
+	}
 	if supplier, isSupplier, err := s.supplierAccount(r, accountID); err != nil {
 		s.storeWriteError(w, r, "locate supplier", err)
 		return
@@ -557,6 +568,9 @@ func (s *Server) upstreamAccountQuota(w http.ResponseWriter, r *http.Request) {
 	if input.Method == nil || *input.Method != gatewayproxy.AccountRateLimitsMethod ||
 		input.ID == nil || *input.ID != gatewayproxy.AccountRateLimitsRequestID {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_quota_request", "额度查询协议无效")
+		return
+	}
+	if _, ok := s.accountInScope(w, r, accountID); !ok {
 		return
 	}
 	if _, supplier, err := s.supplierAccount(r, accountID); err != nil {

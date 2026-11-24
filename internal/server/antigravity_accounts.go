@@ -12,16 +12,33 @@ import (
 )
 
 func isAntigravityAccountRequest(r *http.Request) bool {
+	if scope, ok := requestAccountScope(r); ok {
+		return scope.provider == store.UpstreamProviderAntigravity
+	}
 	return strings.HasPrefix(r.URL.Path, "/admin/antigravity-accounts") ||
 		strings.HasPrefix(r.URL.Path, "/internal/antigravity-accounts/")
 }
 
+// accountStore is the store for this request's provider, scoped to the
+// tenant of a /admin/me/ route; Owner routes manage platform accounts.
 func (s *Server) accountStore(r *http.Request) *store.Store {
+	repository := s.store
 	if isAnthropicAccountRequest(r) {
-		return s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
+		repository = s.store.WithUpstreamProvider(store.UpstreamProviderAnthropic)
+	} else if isAntigravityAccountRequest(r) {
+		repository = s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
 	}
-	if isAntigravityAccountRequest(r) {
-		return s.store.WithUpstreamProvider(store.UpstreamProviderAntigravity)
+	if scope, ok := requestAccountScope(r); ok && scope.tenant != "" {
+		repository = repository.WithUpstreamOwner(scope.tenant)
+	}
+	return repository
+}
+
+// egressStore manages egress nodes and registrations of this request's
+// owner: a tenant on /admin/me/ routes, the platform otherwise.
+func (s *Server) egressStore(r *http.Request) *store.Store {
+	if scope, ok := requestAccountScope(r); ok && scope.tenant != "" {
+		return s.store.WithUpstreamOwner(scope.tenant)
 	}
 	return s.store
 }

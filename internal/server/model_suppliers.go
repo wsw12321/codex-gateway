@@ -194,10 +194,13 @@ func (s *Server) saveModelSupplier(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
 	defer cancel()
-	repo := s.store.WithUpstreamProvider(provider)
+	repo := s.store.WithUpstreamProvider(provider).WithUpstreamOwner(requestTenant(r))
 	value := store.ModelSupplier{Provider: provider}
 	var err error
 	if id == "" {
+		if !s.tenantAccountSlotAvailable(w, r) {
+			return
+		}
 		var entropy [8]byte
 		if _, err = rand.Read(entropy[:]); err != nil {
 			cpaError(w, r)
@@ -206,7 +209,7 @@ func (s *Server) saveModelSupplier(w http.ResponseWriter, r *http.Request) {
 		value.ID = hex.EncodeToString(entropy[:])
 		value.BaseURL = input.URL
 	} else {
-		value, err = s.findModelSupplier(ctx, provider, id)
+		value, err = s.findScopedModelSupplier(r.WithContext(ctx), provider, id)
 		if err != nil {
 			s.storeWriteError(w, r, "locate API Key supplier", err)
 			return
@@ -275,6 +278,10 @@ func (s *Server) saveModelSupplier(w http.ResponseWriter, r *http.Request) {
 	} else {
 		err = repo.ReplaceModelSupplierKey(ctx, value)
 	}
+	if code := tenantRefusalCode(err); code != "" {
+		writeTenantRefusal(w, r, code)
+		return
+	}
 	if err != nil {
 		s.storeWriteError(w, r, "save API Key supplier", err)
 		return
@@ -285,6 +292,21 @@ func (s *Server) saveModelSupplier(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) findModelSupplier(ctx context.Context, provider, id string) (store.ModelSupplier, error) {
 	values, err := s.store.WithUpstreamProvider(provider).ModelSuppliers(ctx)
+	if err != nil {
+		return store.ModelSupplier{}, err
+	}
+	for _, value := range values {
+		if value.ID == id {
+			return value, nil
+		}
+	}
+	return store.ModelSupplier{}, store.ErrNotFound
+}
+
+// findScopedModelSupplier finds a supplier of this request's owner: the
+// member's own on /admin/me/ routes, a platform supplier otherwise.
+func (s *Server) findScopedModelSupplier(r *http.Request, provider, id string) (store.ModelSupplier, error) {
+	values, err := s.store.WithUpstreamProvider(provider).WithUpstreamOwner(requestTenant(r)).ModelSuppliers(r.Context())
 	if err != nil {
 		return store.ModelSupplier{}, err
 	}
@@ -307,7 +329,7 @@ func (s *Server) supplierAccount(r *http.Request, id string) (store.ModelSupplie
 	if !s.config.SuppliersEnabled || s.store == nil {
 		return store.ModelSupplier{}, false, nil
 	}
-	value, err := s.findModelSupplier(r.Context(), attemptProvider(r), id)
+	value, err := s.findScopedModelSupplier(r, attemptProvider(r), id)
 	if errors.Is(err, store.ErrNotFound) {
 		return store.ModelSupplier{}, false, nil
 	}
@@ -319,14 +341,14 @@ func (s *Server) deleteSupplierCredential(w http.ResponseWriter, r *http.Request
 		return false
 	}
 	provider, id := attemptProvider(r), r.PathValue("id")
-	if _, err := s.findModelSupplier(r.Context(), provider, id); err != nil {
+	if _, err := s.findScopedModelSupplier(r, provider, id); err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			s.storeWriteError(w, r, "locate supplier for deletion", err)
 			return true
 		}
 		return false
 	}
-	repo := s.store.WithUpstreamProvider(provider)
+	repo := s.store.WithUpstreamProvider(provider).WithUpstreamOwner(requestTenant(r))
 	s.supplierRuntime.mu.Lock()
 	err := repo.SetModelSupplierEnabled(r.Context(), id, false)
 	s.supplierRuntime.dropIdleLocked(id)

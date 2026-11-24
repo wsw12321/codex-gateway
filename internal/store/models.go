@@ -359,6 +359,8 @@ type UpstreamAccount struct {
 	UpdatedAt        time.Time
 	AllocationWeight int
 	ConcurrentLimit  int
+	// AdminSuspended is the Owner's moderation hold on a tenant account.
+	AdminSuspended bool
 }
 
 // UpstreamAccountSnapshot is one entry in an authoritative sidecar metadata

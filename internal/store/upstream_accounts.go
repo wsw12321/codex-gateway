@@ -70,7 +70,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	var lastSynced sql.NullTime
 	err := row.Scan(&value.ID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 		&lastSynced, &value.CreatedAt, &value.UpdatedAt, &value.AllocationWeight,
-		&value.ConcurrentLimit, &value.Alias)
+		&value.ConcurrentLimit, &value.Alias, &value.AdminSuspended)
 	if lastSynced.Valid {
 		value.LastSyncedAt = &lastSynced.Time
 	}
@@ -78,7 +78,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 }
 
 const upstreamAccountColumns = `id, display_name, masked_email, plan, status,
-	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit, alias`
+	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit, alias, admin_suspended`
 
 // EnsureUpstreamAccount creates a metadata-free placeholder for a recognized,
 // opaque tracing ID. Synchronization later replaces its display metadata. It
@@ -225,11 +225,12 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 	})
 }
 
+// ListUpstreamAccounts lists the accounts of the store's owner scope.
 func (s *Store) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+upstreamAccountColumns+`
-		FROM upstream_accounts WHERE provider = $1 AND owner_user_id IS NULL
+		FROM upstream_accounts WHERE provider = $1 AND `+accountScopeSQL("", "$2")+`
 		ORDER BY CASE status WHEN 'available' THEN 0 ELSE 1 END,
-			lower(masked_email), id`, s.upstreamProviderName())
+			lower(masked_email), id`, s.upstreamProviderName(), s.upstreamOwnerArg())
 	if err != nil {
 		return nil, mapDBError("list upstream accounts", err)
 	}

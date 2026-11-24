@@ -65,6 +65,14 @@ func (s *Store) UpstreamAccountOwnership(ctx context.Context, id string) (Upstre
 	return value, nil
 }
 
+// CountTenantAccounts counts the accounts owner holds a credential for, every
+// provider and kind together.
+func (s *Store) CountTenantAccounts(ctx context.Context, owner string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM upstream_accounts WHERE owner_user_id=$1::uuid AND credential_removed_at IS NULL`, owner).Scan(&count)
+	return count, mapDBError("count tenant accounts", err)
+}
+
 // lockTenantProvidersTx serializes one tenant's account and node creation so
 // two concurrent logins cannot both pass the limit.
 func lockTenantProvidersTx(ctx context.Context, tx *sql.Tx, owner string) error {

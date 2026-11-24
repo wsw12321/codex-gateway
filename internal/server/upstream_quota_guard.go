@@ -332,6 +332,9 @@ func (s *Server) setUpstreamAccountQuotaGuard(w http.ResponseWriter, r *http.Req
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_upstream_quota_guard_status", "额度状态 limited 必须为布尔值")
 		return
 	}
+	if _, ok := s.accountInScope(w, r, id); !ok {
+		return
+	}
 	state, err := s.accountStore(r).SetUpstreamQuotaGuardStatus(r.Context(), store.SetUpstreamQuotaGuardStatusParams{
 		AccountID: id, Limited: *limited, At: time.Now().UTC(),
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,

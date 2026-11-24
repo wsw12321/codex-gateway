@@ -76,14 +76,33 @@ func TestCPAManagementOAuthURLAllowlist(t *testing.T) {
 	}
 }
 
+// oauthAttemptRequest is a request of one session and user, on a member route
+// when tenant is set.
+func oauthAttemptRequest(session, user string, tenant bool) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	ctx := context.WithValue(r.Context(), sessionContextKey, store.Session{ID: session})
+	ctx = context.WithValue(ctx, userContextKey, store.User{ID: user})
+	r = r.WithContext(ctx)
+	if tenant {
+		r = withAccountScope(r, accountScope{tenant: user})
+	}
+	return r
+}
+
 func TestCPAManagementOAuthBoundExpiringAndSingleUse(t *testing.T) {
 	now := time.Now()
-	s := &cpaAdminState{attempts: map[string]cpaOAuthAttempt{"flow": {SessionID: "owner-session", State: "state", ExpiresAt: now.Add(time.Minute)}}}
-	if _, ok := s.oauthAttempt("flow", "other-owner-session", true, now); ok {
+	s := &cpaAdminState{attempts: map[string]cpaOAuthAttempt{"flow": {SessionID: "owner-session", UserID: "owner", State: "state", ExpiresAt: now.Add(time.Minute)}}}
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("other-owner-session", "owner", false), "flow", true, now); ok {
 		t.Fatal("cross-session state consumed")
 	}
-	if _, ok := s.oauthAttempt("flow", "owner-session", false, now.Add(time.Hour)); ok {
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("owner-session", "owner", false), "flow", false, now.Add(time.Hour)); ok {
 		t.Fatal("expired state accepted")
+	}
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("owner-session", "other", false), "flow", false, now); ok {
+		t.Fatal("another user's login accepted")
+	}
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("owner-session", "owner", true), "flow", false, now); ok {
+		t.Fatal("an Owner login was visible on a member route")
 	}
 	var accepted atomic.Int32
 	var wg sync.WaitGroup
@@ -91,7 +110,7 @@ func TestCPAManagementOAuthBoundExpiringAndSingleUse(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, ok := s.oauthAttempt("flow", "owner-session", true, now); ok {
+			if _, ok := s.oauthAttempt(oauthAttemptRequest("owner-session", "owner", false), "flow", true, now); ok {
 				accepted.Add(1)
 			}
 		}()
@@ -100,8 +119,23 @@ func TestCPAManagementOAuthBoundExpiringAndSingleUse(t *testing.T) {
 	if accepted.Load() != 1 {
 		t.Fatalf("callback accepted %d times", accepted.Load())
 	}
-	if _, ok := s.oauthAttempt("flow", "owner-session", false, now); !ok {
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("owner-session", "owner", false), "flow", false, now); !ok {
 		t.Fatal("submitted flow cannot poll")
+	}
+	// A member's login is bound to the member and visible only on member routes.
+	s.attempts["member-flow"] = cpaOAuthAttempt{SessionID: "member-session", UserID: "member", Tenant: true, State: "state", ExpiresAt: now.Add(time.Minute)}
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("member-session", "member", false), "member-flow", false, now); ok {
+		t.Fatal("a member login was visible on an Owner route")
+	}
+	if _, ok := s.oauthAttempt(oauthAttemptRequest("member-session", "member", true), "member-flow", false, now); !ok {
+		t.Fatal("the member cannot poll their own login")
+	}
+	if got := s.pendingTenantAttempts("member", now); got != 1 {
+		t.Fatalf("pending member logins=%d", got)
+	}
+	s.finish("member-flow")
+	if got := s.pendingTenantAttempts("member", now); got != 0 {
+		t.Fatalf("finished login still pending: %d", got)
 	}
 }
 

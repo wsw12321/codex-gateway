@@ -538,12 +538,14 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 	response.ExternalIdentity = externalIdentityView(s.config.OIDCEnabled, link)
 	response.LoginMethods.OIDC = s.config.OIDCEnabled && link.ID != ""
 	response.BrowserClientEnabled = s.config.BrowserClientURL != nil
+	response.Marketplace = s.marketplaceState(r.Context())
 	writeJSON(w, http.StatusOK, response)
 }
 
 type adminStateResponse struct {
 	ExternalIdentity            adminExternalIdentity `json:"external_identity"`
 	BrowserClientEnabled        bool                  `json:"browser_client_enabled"`
+	Marketplace                 adminMarketplaceState `json:"marketplace"`
 	User                        adminUser             `json:"user"`
 	Devices                     []adminDevice         `json:"devices"`
 	Projects                    []adminProject        `json:"projects"`

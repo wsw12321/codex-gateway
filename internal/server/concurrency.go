@@ -46,5 +46,24 @@ func (s *Server) upstreamAccountConcurrency(w http.ResponseWriter, r *http.Reque
 		writeUpstreamManagementError(w, r, err, "上游账号实时并发暂不可用")
 		return
 	}
+	if requestTenant(r) != "" {
+		// A member sees only their own accounts.
+		accounts, err := s.accountStore(r).ListUpstreamAccounts(r.Context())
+		if err != nil {
+			internalError(s, w, r, "list tenant accounts", err)
+			return
+		}
+		owned := make(map[string]bool, len(accounts))
+		for _, account := range accounts {
+			owned[account.ID] = true
+		}
+		visible := make([]gatewayproxy.UpstreamAccountConcurrency, 0, len(snapshot.Accounts))
+		for _, account := range snapshot.Accounts {
+			if owned[account.ID] {
+				visible = append(visible, account)
+			}
+		}
+		snapshot.Accounts = visible
+	}
 	writeJSON(w, http.StatusOK, snapshot)
 }

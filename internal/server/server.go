@@ -188,6 +188,7 @@ func (s *Server) routes() {
 	s.antigravityAccountRoutes()
 	s.anthropicAccountRoutes()
 	s.cpaAdminRoutes()
+	s.tenantProviderRoutes()
 	s.mux.HandleFunc("GET /", s.page)
 	s.mux.HandleFunc("GET /join", s.page)
 	s.mux.HandleFunc("GET /recover", s.page)

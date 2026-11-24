@@ -53,17 +53,18 @@ func (s *Server) setMarketplaceSettings(w http.ResponseWriter, r *http.Request) 
 	}
 	var enabled, allowSuppliers *bool
 	var rate *string
-	var maxAccounts, maxPlans *int
+	var maxAccounts, maxPlans, maxEgress *int
 	var revision *int64
 	if err := decodeExactJSONFields(r, marketplaceSettingsRequestBytes, map[string]any{
 		"enabled": &enabled, "commission_rate": &rate, "max_accounts_per_user": &maxAccounts,
-		"max_plans_per_user": &maxPlans, "allow_member_suppliers": &allowSuppliers, "revision": &revision,
+		"max_plans_per_user": &maxPlans, "allow_member_suppliers": &allowSuppliers,
+		"max_egress_servers_per_user": &maxEgress, "revision": &revision,
 	}); err != nil {
 		badJSON(w, r, err)
 		return
 	}
 	if enabled == nil || allowSuppliers == nil || rate == nil || maxAccounts == nil || maxPlans == nil ||
-		revision == nil || *revision < 1 {
+		maxEgress == nil || revision == nil || *revision < 1 {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_marketplace_settings", "请提供完整的商城设置和当前设置版本")
 		return
 	}
@@ -72,13 +73,20 @@ func (s *Server) setMarketplaceSettings(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if *maxAccounts < 0 || *maxAccounts > store.MaxMarketplaceAccountsPerUser ||
-		*maxPlans < 0 || *maxPlans > store.MaxMarketplacePlansPerUser {
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_marketplace_limits", "每人供应商上限须为 0–256，每人套餐上限须为 0–100")
+		*maxPlans < 0 || *maxPlans > store.MaxMarketplacePlansPerUser ||
+		*maxEgress < 0 || *maxEgress > store.MaxMarketplaceEgressServersPerUser {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_marketplace_limits", "每人供应商上限须为 0–256，每人套餐上限须为 0–100，每人出口服务器上限须为 0–32")
+		return
+	}
+	// A member's login commits its ownership through an egress registration;
+	// without account egress members could not add accounts safely.
+	if *enabled && s.config.EgressControlKey == "" {
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "marketplace_requires_account_egress", "开启商城前须先配置账号出口服务")
 		return
 	}
 	settings, err := repository.SetMarketplaceSettings(r.Context(), store.SetMarketplaceSettingsParams{
 		Enabled: *enabled, CommissionRate: *rate, MaxAccountsPerUser: *maxAccounts, MaxPlansPerUser: *maxPlans,
-		AllowMemberSuppliers: *allowSuppliers, ExpectedRevision: *revision, At: time.Now().UTC(),
+		AllowMemberSuppliers: *allowSuppliers, MaxEgressServersPerUser: *maxEgress, ExpectedRevision: *revision, At: time.Now().UTC(),
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
 		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()),
 	})

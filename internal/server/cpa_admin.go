@@ -35,6 +35,13 @@ type cpaOAuthAttempt struct {
 	ExpiresAt      time.Time
 	Submitted      bool
 	RegistrationID string
+	// UserID and Tenant bind the login to the person who started it: a
+	// member's login is visible only on the member routes, the Owner's only
+	// on the Owner's.
+	UserID string
+	Tenant bool
+	// Finished is set once the status poll reported the login's outcome.
+	Finished bool
 }
 
 type cpaAdminState struct {
@@ -51,7 +58,7 @@ func (s *Server) cpaAdminRoutes() {
 	}}
 	read := func(h http.HandlerFunc) http.Handler { return s.requireSession(s.ownerOnly(httpx.NoStore(h))) }
 	write := func(h http.HandlerFunc) http.Handler {
-		return s.browserOrigin(s.requireRecentVerification(s.ownerOnly(s.cpaAudit(h))))
+		return s.browserOrigin(s.requireRecentVerification(s.ownerOnly(s.operationAudit("cpa.credentials.operation", h))))
 	}
 	s.mux.Handle("GET /admin/cpa/{$}", read(s.cpaPage))
 	s.mux.Handle("GET /admin/cpa/assets/{file}", read(s.cpaAsset))
@@ -74,7 +81,8 @@ func (s *Server) cpaAdminRoutes() {
 	}
 }
 
-func (s *Server) cpaAudit(next http.Handler) http.Handler {
+// operationAudit records one credential operation under eventType.
+func (s *Server) operationAudit(eventType string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := &statusRecorder{ResponseWriter: w}
 		next.ServeHTTP(recorder, r)
@@ -91,7 +99,7 @@ func (s *Server) cpaAudit(next http.Handler) http.Handler {
 		}
 		_, err := s.store.AppendAuditEvent(ctx, store.AppendAuditEventParams{
 			ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
-			OccurredAt: time.Now().UTC(), EventType: "cpa.credentials.operation", Severity: "info",
+			OccurredAt: time.Now().UTC(), EventType: eventType, Severity: "info",
 			Success: recorder.status >= 200 && recorder.status < 300, SourceIP: safeIP(r.Context()),
 			SubjectType: "upstream_account", SubjectID: subject, RequestID: httpx.RequestID(r.Context()),
 			Metadata: map[string]any{"provider": r.PathValue("provider"), "method": r.Method, "route": r.Pattern, "http_status": recorder.status},
@@ -211,7 +219,7 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return errors.New("cpa request rejected")
+		return newCPARejection(resp)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil || len(data) > 1<<20 {
@@ -221,6 +229,53 @@ func (s *Server) cpaCall(ctx context.Context, method, path string, input, output
 		return nil
 	}
 	return json.Unmarshal(data, output)
+}
+
+// cpaRejection is a non-2xx answer of the plugin's credential page. Code is
+// the plugin's fixed error code, when it is one of the shapes it answers
+// with; nothing else from the body is kept.
+type cpaRejection struct {
+	Status int
+	Code   string
+}
+
+func (e *cpaRejection) Error() string { return "cpa request rejected" }
+
+func newCPARejection(resp *http.Response) error {
+	rejection := &cpaRejection{Status: resp.StatusCode}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+	if err != nil {
+		return rejection
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(data, &body) == nil && validCPAErrorCode(body.Error) {
+		rejection.Code = body.Error
+	}
+	return rejection
+}
+
+func validCPAErrorCode(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for _, c := range code {
+		if (c < 'a' || c > 'z') && c != '_' {
+			return false
+		}
+	}
+	return true
+}
+
+// cpaRefusal reports the refusal code a login or import ended with, if the
+// plugin refused it because the account is not the caller's.
+func cpaRefusal(err error) string {
+	var rejection *cpaRejection
+	if errors.As(err, &rejection) && rejection.Status == http.StatusConflict && knownTenantRefusal(rejection.Code) {
+		return rejection.Code
+	}
+	return ""
 }
 
 func cpaError(w http.ResponseWriter, r *http.Request) {
@@ -275,7 +330,21 @@ func (s *Server) cpaOAuthBegin(w http.ResponseWriter, r *http.Request) {
 	if !cpaJSON(w, r, &input, 256, "egress_server_id") {
 		return
 	}
+	tenant := requestTenant(r)
+	if tenant != "" {
+		if s.cpaAdmin.pendingTenantAttempts(tenant, time.Now()) >= maxTenantOAuthAttempts {
+			httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "provider_oauth_busy", "最多同时进行两个授权流程，请先完成或等待过期")
+			return
+		}
+		if !s.requireTenantCredentialOwnership(w, r, provider) || !s.tenantAccountSlotAvailable(w, r) {
+			return
+		}
+	}
 	registrationID, proxyURL, err := s.prepareCPAEgress(r, provider, input.EgressServerID)
+	if errors.Is(err, store.ErrNotFound) && tenant != "" {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "egress_not_found", "出口服务器不存在")
+		return
+	}
 	if err != nil {
 		cpaError(w, r)
 		return
@@ -317,7 +386,8 @@ func (s *Server) cpaOAuthBegin(w http.ResponseWriter, r *http.Request) {
 		cpaError(w, r)
 		return
 	}
-	s.cpaAdmin.attempts[id] = cpaOAuthAttempt{SessionID: sessionFrom(r.Context()).ID, Provider: provider, State: result.State, ExpiresAt: now.Add(cpaOAuthTTL), RegistrationID: registrationID}
+	s.cpaAdmin.attempts[id] = cpaOAuthAttempt{SessionID: sessionFrom(r.Context()).ID, Provider: provider, State: result.State, ExpiresAt: now.Add(cpaOAuthTTL), RegistrationID: registrationID,
+		UserID: userFrom(r.Context()).ID, Tenant: tenant != ""}
 	s.cpaAdmin.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "url": result.URL, "expires_in": int(cpaOAuthTTL.Seconds())})
 }
@@ -333,11 +403,14 @@ func validCPAOAuthURL(provider, raw, state string) bool {
 	return (provider == "codex" && u.Host == "auth.openai.com") || (provider == "antigravity" && u.Host == "accounts.google.com") || (provider == "anthropic" && u.Host == "claude.ai")
 }
 
-func (s *cpaAdminState) oauthAttempt(id, sessionID string, consume bool, now time.Time) (cpaOAuthAttempt, bool) {
+// oauthAttempt returns a login of this request's session and user, started
+// on the same kind of route (member or Owner).
+func (s *cpaAdminState) oauthAttempt(r *http.Request, id string, consume bool, now time.Time) (cpaOAuthAttempt, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.attempts[id]
-	if !ok || !a.ExpiresAt.After(now) || a.SessionID != sessionID || (consume && a.Submitted) {
+	if !ok || !a.ExpiresAt.After(now) || a.SessionID != sessionFrom(r.Context()).ID || a.UserID != userFrom(r.Context()).ID ||
+		a.Tenant != (requestTenant(r) != "") || (consume && a.Submitted) {
 		return cpaOAuthAttempt{}, false
 	}
 	if consume {
@@ -345,6 +418,30 @@ func (s *cpaAdminState) oauthAttempt(id, sessionID string, consume bool, now tim
 		s.attempts[id] = a
 	}
 	return a, true
+}
+
+// pendingTenantAttempts counts a member's logins that have not expired or
+// finished.
+func (s *cpaAdminState) pendingTenantAttempts(userID string, now time.Time) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, attempt := range s.attempts {
+		if attempt.Tenant && attempt.UserID == userID && attempt.ExpiresAt.After(now) && !attempt.Finished {
+			count++
+		}
+	}
+	return count
+}
+
+// finish marks a login complete, so it no longer counts as pending.
+func (s *cpaAdminState) finish(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if attempt, ok := s.attempts[id]; ok {
+		attempt.Finished = true
+		s.attempts[id] = attempt
+	}
 }
 
 func (s *Server) cpaOAuthCallback(w http.ResponseWriter, r *http.Request) {
@@ -355,13 +452,13 @@ func (s *Server) cpaOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !cpaJSON(w, r, &input, 16384, "code", "state") {
 		return
 	}
-	a, ok := s.cpaAdmin.oauthAttempt(r.PathValue("id"), sessionFrom(r.Context()).ID, false, time.Now())
+	a, ok := s.cpaAdmin.oauthAttempt(r, r.PathValue("id"), false, time.Now())
 	if !ok || len(input.Code) == 0 || len(input.Code) > 8192 || subtle.ConstantTimeCompare([]byte(input.State), []byte(a.State)) != 1 {
 		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "cpa_oauth_invalid", "授权流程已过期、已提交或不属于当前会话，请重新授权")
 		return
 	}
 	// Consume before sending: a timeout may happen after CPA accepted the code.
-	if _, ok := s.cpaAdmin.oauthAttempt(r.PathValue("id"), sessionFrom(r.Context()).ID, true, time.Now()); !ok {
+	if _, ok := s.cpaAdmin.oauthAttempt(r, r.PathValue("id"), true, time.Now()); !ok {
 		http.Error(w, "authorization already submitted", http.StatusConflict)
 		return
 	}
@@ -373,7 +470,7 @@ func (s *Server) cpaOAuthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
-	a, ok := s.cpaAdmin.oauthAttempt(r.PathValue("id"), sessionFrom(r.Context()).ID, false, time.Now())
+	a, ok := s.cpaAdmin.oauthAttempt(r, r.PathValue("id"), false, time.Now())
 	if !ok || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
 		return
@@ -381,6 +478,8 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	var result struct {
 		Status    string `json:"status"`
 		AccountID string `json:"account_id,omitempty"`
+		// Error is a refusal code: the account is not the caller's.
+		Error string `json:"error,omitempty"`
 	}
 	if err := s.cpaCall(r.Context(), http.MethodPost, a.Provider+"/oauth/status", map[string]string{"state": a.State}, &result); err != nil {
 		cpaError(w, r)
@@ -393,6 +492,12 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	if result.AccountID != "" && !validUpstreamAccountID(result.AccountID) {
 		cpaError(w, r)
 		return
+	}
+	if result.Status != "error" || !knownTenantRefusal(result.Error) {
+		result.Error = ""
+	}
+	if result.Status != "wait" {
+		s.cpaAdmin.finish(r.PathValue("id"))
 	}
 	writeJSON(w, http.StatusOK, result)
 }
@@ -411,6 +516,10 @@ type cpaCredentialImport struct {
 // select a node ID, but cannot supply an internal proxy URL or route credential.
 func (s *Server) prepareCPAEgress(r *http.Request, provider string, nodeID *string) (string, string, error) {
 	if s.config.EgressControlKey == "" {
+		// A member's login commits its ownership through the registration.
+		if requestTenant(r) != "" {
+			return "", "", errEgressUnavailable
+		}
 		if nodeID != nil && *nodeID != "" {
 			return "", "", errors.New("egress unavailable")
 		}
@@ -463,7 +572,14 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_cpa_credential", "必须提供可刷新的 OAuth 凭据")
 		return
 	}
+	if !s.requireTenantCredentialOwnership(w, r, provider) || !s.tenantAccountSlotAvailable(w, r) {
+		return
+	}
 	registrationID, proxyURL, err := s.prepareCPAEgress(r, provider, input.EgressServerID)
+	if errors.Is(err, store.ErrNotFound) && requestTenant(r) != "" {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "egress_not_found", "出口服务器不存在")
+		return
+	}
 	if err != nil {
 		cpaError(w, r)
 		return
@@ -489,6 +605,10 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		AccountID string `json:"account_id,omitempty"`
 	}
 	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/credentials", wire, &result); err != nil {
+		if code := cpaRefusal(err); code != "" {
+			writeTenantRefusal(w, r, code)
+			return
+		}
 		cpaError(w, r)
 		return
 	}
@@ -550,8 +670,16 @@ func (s *Server) cpaAccountOperation(w http.ResponseWriter, r *http.Request, ope
 	if !cpaJSON(w, r, &input, 128) {
 		return
 	}
+	ownership, ok := s.accountInScope(w, r, id)
+	if !ok {
+		return
+	}
+	if ownership.CredentialKind == "supplier" {
+		httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "unsupported_supplier_operation", "API Key 供应商没有订阅额度或 OAuth 凭据")
+		return
+	}
 	if s.config.SuppliersEnabled && s.store != nil {
-		_, err := s.findModelSupplier(r.Context(), provider, id)
+		_, err := s.findScopedModelSupplier(r, provider, id)
 		if !errors.Is(err, store.ErrNotFound) {
 			httpx.WriteError(w, r, http.StatusNotFound, "invalid_request_error", "unsupported_supplier_operation", "API Key 供应商没有订阅额度或 OAuth 凭据")
 			return
@@ -609,6 +737,10 @@ func (s *Server) cpaDelete(w http.ResponseWriter, r *http.Request) {
 	if !cpaJSON(w, r, &input, 128) {
 		return
 	}
+	ownership, ok := s.accountInScope(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
 	if s.deleteSupplierCredential(w, rr) {
 		return
 	}
@@ -624,6 +756,13 @@ func (s *Server) cpaDelete(w http.ResponseWriter, r *http.Request) {
 	s.upstreamAccountSyncMu.Lock()
 	defer s.upstreamAccountSyncMu.Unlock()
 	if _, err := client.SetUpstreamAccountStatus(r.Context(), id, false); err != nil {
+		// The credential is already gone from CPA, e.g. a retry after the
+		// release below failed: only the release is left to do.
+		var notFound *gatewayproxy.InternalAPIError
+		if ownership.Exists && !ownership.CredentialRemoved && errors.As(err, &notFound) && notFound.StatusCode == http.StatusNotFound {
+			s.releaseDeletedAccount(w, r, id)
+			return
+		}
 		writeUpstreamManagementError(w, r, err, "无法停用账号")
 		return
 	}
@@ -660,5 +799,20 @@ func (s *Server) cpaDelete(w http.ResponseWriter, r *http.Request) {
 		cpaError(w, r)
 		return
 	}
+	if !ownership.Exists {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		return
+	}
+	s.releaseDeletedAccount(w, r, id)
+}
+
+// releaseDeletedAccount records that the account's credential is gone: it
+// leaves every funding path and the next login of it may claim it.
+func (s *Server) releaseDeletedAccount(w http.ResponseWriter, r *http.Request, id string) {
+	if err := s.accountStore(r).ReleaseUpstreamAccount(r.Context(), id, egressActor(r)); err != nil {
+		internalError(s, w, r, "release deleted account", err)
+		return
+	}
+	_, _, _ = s.syncAccountEgress(r.Context())
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
