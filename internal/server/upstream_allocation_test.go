@@ -544,6 +544,11 @@ func groupAllocationTestPath(provider, action string) string {
 func groupAllocationTestServer(t *testing.T, provider, denied, zeroWeight string, queries *[]string) *Server {
 	t.Helper()
 	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if strings.Contains(query, "FROM billing_subscriptions s") {
+			// Which layer IDs name the user's subscriptions: none here, so
+			// every layer is judged as platform accounts.
+			return &responsesWebSocketTestRows{columns: []string{"id", "active", "plan", "seller", "mode"}}, nil
+		}
 		if args[len(args)-1].Value != provider {
 			t.Fatalf("provider=%v; want %s", args[len(args)-1].Value, provider)
 		}

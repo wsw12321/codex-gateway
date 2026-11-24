@@ -69,7 +69,9 @@ func (s *Server) writeBillingState(w http.ResponseWriter, r *http.Request, userI
 		s.billingStoreError(w, r, "get billing state", err)
 		return
 	}
-	writeJSON(w, http.StatusOK, billingStateResponse(state, limit, offset))
+	response := billingStateResponse(state, limit, offset)
+	s.addMarketplaceBillingState(r.Context(), userID, response)
+	writeJSON(w, http.StatusOK, response)
 }
 
 func billingStateResponse(state store.BillingState, limit, offset int) map[string]any {

@@ -363,3 +363,28 @@ func (s *Store) SetSelfUse(ctx context.Context, params SetSelfUseParams) (bool, 
 	})
 	return params.Enabled, err
 }
+
+// PlanScopeCandidates lists the accounts a seller may put in a plan scope:
+// every account the seller owns that still holds a credential, on every
+// provider. sellerUserID empty means platform accounts. Usable is false while
+// the Owner suspends the account.
+func (s *Store) PlanScopeCandidates(ctx context.Context, sellerUserID string) ([]PlanProviderScopeAccount, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider,
+			COALESCE(NULLIF(a.alias,''), NULLIF(a.display_name,''), NULLIF(a.masked_email,''), a.id), NOT a.admin_suspended
+		FROM upstream_accounts a
+		WHERE a.owner_user_id IS NOT DISTINCT FROM $1::uuid AND a.credential_removed_at IS NULL
+		ORDER BY a.provider, a.id`, valueOrNil(sellerUserID))
+	if err != nil {
+		return nil, mapDBError("list plan scope candidates", err)
+	}
+	defer rows.Close()
+	result := make([]PlanProviderScopeAccount, 0)
+	for rows.Next() {
+		var account PlanProviderScopeAccount
+		if err := rows.Scan(&account.ID, &account.Provider, &account.Label, &account.Usable); err != nil {
+			return nil, fmt.Errorf("scan plan scope candidate: %w", err)
+		}
+		result = append(result, account)
+	}
+	return result, rows.Err()
+}

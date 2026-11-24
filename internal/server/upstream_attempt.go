@@ -10,6 +10,7 @@ import (
 
 	"github.com/wsw/codex-gateway/internal/httpx"
 	gatewayproxy "github.com/wsw/codex-gateway/internal/proxy"
+	"github.com/wsw/codex-gateway/internal/store"
 )
 
 const upstreamAttemptRequestBytes = 1 << 10
@@ -73,12 +74,35 @@ func (s *Server) recordUpstreamAttempt(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if report.AccountID != "" {
-		allowed, errEligible := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), report.UserID, []string{report.AccountID})
+		// The account must be eligible now in a layer of this dispatch that
+		// lists it, or as a platform account under its personal layer. A
+		// member's account is therefore accepted only in the layer that pays
+		// for it.
+		layers, open := s.allocations.DispatchLayers(attemptProvider(r), report.Token, report.UserID, report.AccountID)
+		if !open {
+			httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "unknown_upstream_dispatch", "没有与该上报对应的进行中请求")
+			return
+		}
+		if len(layers) == 0 {
+			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "upstream_account_not_permitted", "该上游账号不在本次请求的账号池内")
+			return
+		}
+		candidates := make([]store.UpstreamAllocationGroup, 0, len(layers))
+		for _, layer := range layers {
+			candidates = append(candidates, store.UpstreamAllocationGroup{GroupID: layer.GroupID, AccountIDs: layer.AccountIDs})
+		}
+		eligible, errEligible := s.accountStore(r).LayerEligibleAccounts(r.Context(), report.UserID, candidates)
 		if errEligible != nil {
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
 			return
 		}
-		if len(allowed) != 1 || allowed[0].ID != report.AccountID {
+		permitted := false
+		for _, layer := range eligible {
+			for _, account := range layer.Accounts {
+				permitted = permitted || account.ID == report.AccountID
+			}
+		}
+		if !permitted {
 			httpx.WriteError(w, r, http.StatusForbidden, "permission_error", "upstream_account_not_permitted", "用户无权使用该上游账号")
 			return
 		}

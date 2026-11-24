@@ -62,9 +62,13 @@ func (r AllocationReport) Valid() bool {
 type ledgerEntry struct {
 	provider string
 	userID   string
-	// scope is the union of the admitted group pools, or nil when a personal
-	// layer leaves the pool to the user's own entitlement.
-	scope            map[string]bool
+	// scope is the union of the admitted non-personal layers' pools.
+	scope map[string]bool
+	// personal: a personal layer leaves the rest to the user's own
+	// entitlement, which covers platform accounts only.
+	personal bool
+	// layers are the funding layers this dispatch was sent with.
+	layers           []AllocationGroup
 	accountID        string
 	conversationHash string
 	rejected         string
@@ -126,20 +130,19 @@ func (l *AllocationLedger) open(provider, userID string, groups []AllocationGrou
 	if _, err := rand.Read(raw); err != nil {
 		return nil, err
 	}
-	entry := &ledgerEntry{provider: provider, userID: userID}
-	restricted := len(groups) > 0
+	entry := &ledgerEntry{provider: provider, userID: userID, personal: len(groups) == 0, scope: make(map[string]bool)}
 	for _, group := range groups {
 		if group.AllAccounts {
-			restricted = false
+			entry.personal = true
+			continue
+		}
+		for _, id := range group.AccountIDs {
+			entry.scope[id] = true
 		}
 	}
-	if restricted {
-		entry.scope = make(map[string]bool)
-		for _, group := range groups {
-			for _, id := range group.AccountIDs {
-				entry.scope[id] = true
-			}
-		}
+	entry.layers = cloneAllocationGroups(groups)
+	if len(groups) == 0 {
+		entry.layers = []AllocationGroup{{GroupID: PersonalLayerID, AccountIDs: []string{}, AllAccounts: true}}
 	}
 	token := base64.RawURLEncoding.EncodeToString(raw)
 	l.mu.Lock()
@@ -160,7 +163,7 @@ func (l *AllocationLedger) Record(provider string, report AllocationReport) erro
 	if entry == nil || entry.provider != provider || entry.userID != report.UserID {
 		return ErrUnknownDispatch
 	}
-	if report.AccountID != "" && entry.scope != nil && !entry.scope[report.AccountID] {
+	if report.AccountID != "" && !entry.personal && !entry.scope[report.AccountID] {
 		return ErrAccountOutsideScope
 	}
 	entry.accountID, entry.rejected = report.AccountID, report.Rejected
@@ -168,6 +171,36 @@ func (l *AllocationLedger) Record(provider string, report AllocationReport) erro
 		entry.conversationHash = report.ConversationHash
 	}
 	return nil
+}
+
+// DispatchLayers returns the funding layers of an open dispatch that may pay
+// for accountID: every non-personal layer whose pool lists it, then the
+// personal layer if the dispatch has one. ok is false when no dispatch of
+// that provider and user is open under token.
+func (l *AllocationLedger) DispatchLayers(provider, token, userID, accountID string) ([]AllocationGroup, bool) {
+	if l == nil {
+		return nil, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[token]
+	if entry == nil || entry.provider != provider || entry.userID != userID {
+		return nil, false
+	}
+	layers := make([]AllocationGroup, 0, len(entry.layers))
+	for _, layer := range entry.layers {
+		if layer.AllAccounts {
+			layers = append(layers, AllocationGroup{GroupID: layer.GroupID, AccountIDs: []string{accountID}})
+			continue
+		}
+		for _, id := range layer.AccountIDs {
+			if id == accountID {
+				layers = append(layers, AllocationGroup{GroupID: layer.GroupID, AccountIDs: []string{accountID}, Tenant: layer.Tenant})
+				break
+			}
+		}
+	}
+	return layers, true
 }
 
 func (d *dispatch) close() {

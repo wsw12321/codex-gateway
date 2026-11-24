@@ -19,6 +19,11 @@ const GroupUpstreamAccountLayersV1 = "group_upstream_account_layers_v1"
 
 const AccountEgressProtocolV1 = "account_egress_v1"
 
+// LayerSelectV1 marks a sidecar that asks eligibility and selection per
+// funding layer, so a member's account is admitted only in the layer that pays
+// for it. Like the layer protocol it is served on its own route.
+const LayerSelectV1 = "layer_select_v1"
+
 // Check each dispatch, so replacing CPA with an image that lacks the plugin
 // cannot retain a cached authorization capability. The plugin serves the route
 // behind CPA's management key.
@@ -55,6 +60,10 @@ func (c *Client) requireAccountAccessCapability(ctx context.Context, groupScoped
 // which is exactly the pre-layer contract, so either side can be upgraded
 // first. Any other capability failure fails closed.
 func (c *Client) resolveFundingLayers(ctx context.Context, groups []AllocationGroup) ([]AllocationGroup, error) {
+	groups, err := c.requireLayerSelect(ctx, groups)
+	if err != nil {
+		return nil, err
+	}
 	if len(groups) == 1 && groups[0].AllAccounts {
 		return nil, nil
 	}
@@ -66,7 +75,7 @@ func (c *Client) resolveFundingLayers(ctx context.Context, groups []AllocationGr
 	var response struct {
 		Protocol string `json:"protocol"`
 	}
-	err := c.accountJSON(ctx, http.MethodGet, "funding-layers", &response)
+	err = c.accountJSON(ctx, http.MethodGet, "funding-layers", &response)
 	var apiErr *InternalAPIError
 	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
 		if groups[0].AllAccounts {
@@ -81,6 +90,47 @@ func (c *Client) resolveFundingLayers(ctx context.Context, groups []AllocationGr
 		return nil, errors.New("sidecar funding layer protocol unavailable")
 	}
 	return groups, nil
+}
+
+// requireLayerSelect keeps layers of member accounts only for a sidecar that
+// checks eligibility layer by layer. An older sidecar would ask about the
+// union of every layer, where the Gateway admits platform accounts only, so
+// such a layer could never serve; it is dropped instead, and a request left
+// with no layer fails closed. Only a 404 means the route is missing.
+func (c *Client) requireLayerSelect(ctx context.Context, groups []AllocationGroup) ([]AllocationGroup, error) {
+	tenant := false
+	for _, group := range groups {
+		tenant = tenant || group.Tenant
+	}
+	if !tenant {
+		return groups, nil
+	}
+	probe, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	var response struct {
+		Protocol string `json:"protocol"`
+	}
+	err := c.accountJSON(probe, http.MethodGet, "layer-select", &response)
+	if err == nil && response.Protocol == LayerSelectV1 {
+		return groups, nil
+	}
+	var apiErr *InternalAPIError
+	if err != nil && !(errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound) {
+		return nil, err
+	}
+	if err == nil {
+		return nil, errors.New("sidecar layer selection protocol unavailable")
+	}
+	kept := make([]AllocationGroup, 0, len(groups))
+	for _, group := range groups {
+		if !group.Tenant {
+			kept = append(kept, group)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, errors.New("sidecar cannot serve member accounts")
+	}
+	return kept, nil
 }
 
 // prepareAccountScope negotiates the funding layers and the account-access

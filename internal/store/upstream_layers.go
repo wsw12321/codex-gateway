@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
@@ -111,6 +113,13 @@ func (s *Store) layerSubscriptions(ctx context.Context, userID string, layers []
 	if len(ids) == 0 {
 		return result, nil
 	}
+	args := []any{userID}
+	placeholders := make([]string, len(ids))
+	for i, id := range ids {
+		args = append(args, id)
+		placeholders[i] = fmt.Sprintf("$%d::uuid", i+2)
+	}
+	// #nosec G202 -- the placeholder list is generated; every value is a bound parameter.
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id::text,
 			s.enabled AND s.charge_enabled AND (s.expires_at IS NULL OR s.expires_at > now())
 				AND (bp.seller_user_id IS NULL OR `+marketplaceTenantSQL+`),
@@ -119,7 +128,7 @@ func (s *Store) layerSubscriptions(ctx context.Context, userID string, layers []
 		FROM billing_subscriptions s
 		LEFT JOIN billing_plans bp ON bp.id=s.source_plan_id
 		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=bp.id
-		WHERE s.user_id=$1::uuid AND s.id = ANY($2::uuid[])`, userID, ids)
+		WHERE s.user_id=$1::uuid AND s.id IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
 		return nil, mapDBError("read layer subscriptions", err)
 	}
@@ -321,4 +330,94 @@ func validUUIDText(value string) bool {
 		}
 	}
 	return true
+}
+
+// TenantReachableAccounts lists the member accounts of this store's provider
+// that could serve userID right now through a member layer: the user's own
+// accounts while self-use is on, and the accounts of each restricted
+// subscription's plan. Funds are not considered; suspended and released
+// accounts never appear.
+func (s *Store) TenantReachableAccounts(ctx context.Context, userID string) ([]string, error) {
+	if !s.validUpstreamProvider() || !validUUIDText(userID) {
+		return nil, fmt.Errorf("%w: invalid tenant account lookup", ErrInvalid)
+	}
+	var result []string
+	err := s.withTx(ctx, &sql.TxOptions{ReadOnly: true}, func(tx *sql.Tx) error {
+		enabled, err := marketplaceEnabledTx(ctx, tx)
+		if err != nil || !enabled {
+			return err
+		}
+		seen := map[string]bool{}
+		add := func(ids []string) {
+			for _, id := range ids {
+				if !seen[id] {
+					seen[id] = true
+					result = append(result, id)
+				}
+			}
+		}
+		own, err := selfUsePoolTx(ctx, tx, userID, s.upstreamProviderName())
+		if err != nil {
+			return err
+		}
+		add(own)
+		plans, err := queryAccountIDsTx(ctx, tx, "read seller plans of subscriptions", `SELECT DISTINCT p.id::text
+			FROM billing_subscriptions s JOIN billing_plans p ON p.id=s.source_plan_id
+			WHERE s.user_id=$1::uuid AND s.enabled AND s.charge_enabled AND (s.expires_at IS NULL OR s.expires_at > now())
+			  AND p.seller_user_id IS NOT NULL`, userID)
+		if err != nil {
+			return err
+		}
+		for _, plan := range plans {
+			pool, err := resolvePlanPoolTx(ctx, tx, plan, s.upstreamProviderName())
+			if err != nil {
+				return err
+			}
+			add(pool)
+		}
+		return nil
+	})
+	return result, err
+}
+
+// RoutableModelSuppliers lists the platform's API key suppliers of this
+// store's provider and, among memberIDs, the members' suppliers that still
+// hold a credential. Callers check each supplier's eligibility per layer.
+func (s *Store) RoutableModelSuppliers(ctx context.Context, memberIDs []string) ([]ModelSupplier, error) {
+	args := []any{s.upstreamProviderName()}
+	member := "false"
+	if len(memberIDs) > 0 {
+		placeholders := make([]string, 0, len(memberIDs))
+		for _, id := range memberIDs {
+			if !upstreamAccountIDPattern.MatchString(id) {
+				return nil, fmt.Errorf("%w: invalid supplier id", ErrInvalid)
+			}
+			args = append(args, id)
+			placeholders = append(placeholders, fmt.Sprintf("$%d", len(args)))
+		}
+		member = "a.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+	// #nosec G202 -- the placeholder list is generated; every value is a bound parameter.
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider, m.base_url, m.key_ciphertext, m.models, a.status='available', m.revision
+		FROM model_suppliers m JOIN upstream_accounts a ON a.id=m.account_id
+		WHERE a.provider=$1 AND a.credential_removed_at IS NULL
+		  AND (a.owner_user_id IS NULL OR (`+member+`))
+		ORDER BY a.id`, args...)
+	if err != nil {
+		return nil, mapDBError("list routable model suppliers", err)
+	}
+	defer rows.Close()
+	var values []ModelSupplier
+	for rows.Next() {
+		var value ModelSupplier
+		var models []byte
+		if err := rows.Scan(&value.ID, &value.Provider, &value.BaseURL, &value.Ciphertext, &models, &value.Enabled, &value.Revision); err != nil {
+			return nil, mapDBError("read routable model supplier", err)
+		}
+		if json.Unmarshal(models, &value.Models) != nil {
+			return nil, fmt.Errorf("invalid stored supplier catalog")
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
 }

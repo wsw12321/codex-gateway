@@ -363,7 +363,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		for _, group := range admission.Billing.AllocationGroups {
 			allocationGroups = append(allocationGroups, gatewayproxy.AllocationGroup{
 				GroupID: group.GroupID, AccountIDs: append([]string(nil), group.AccountIDs...),
-				AllAccounts: group.AllAccounts,
+				AllAccounts: group.AllAccounts, Tenant: group.Tenant,
 			})
 		}
 	}
