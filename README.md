@@ -296,10 +296,15 @@ Owner 可充值、调整余额、批量新增订阅以及按 ID 重开／停用�
 阶段 2 加入了“我的供应商”：开关打开后，成员可以授权登录或导入自己的上游账号、添加 API Key
 供应商（需 Owner 允许），并运行自己的出口服务器（只接受公网 IPv4）；账号归成员所有，其他人
 和平台都不能使用。登录到已归他人或平台的账号会被拒绝，原账号不受影响；删除凭据会释放归属；
-只有 Owner 能转移归属，也可以停用成员账号。打开开关需要已配置账号出口和新版 CPA 插件。成员
-账号在阶段 3（自用与套餐）之前还不服务请求。见[我的供应商](docs/tenant-providers.md)和
-[阶段 2 验证](docs/aggregation-gateway-stage2-validation.md)；开发分支 `aggregation-gateway`
-上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
+只有 Owner 能转移归属，也可以停用成员账号。打开开关需要已配置账号出口和新版 CPA 插件。见
+[我的供应商](docs/tenant-providers.md)和[阶段 2 验证](docs/aggregation-gateway-stage2-validation.md)。
+
+阶段 3 让成员账号开始服务请求，扣费改为规则 5：成员自己的账号最先使用（自用，不扣费，可在
+“额度与订阅”页关闭）；Owner 可在套餐卡片上把平台套餐的供应商范围设为“指定账号”，这类订阅
+只为所选账号付费，修改从下一次请求起生效；卖家套餐的订阅只为卖家的账号付费，额度不足的部分
+由卖家承担，绝不扣买家现金。插件按层询问账号资格，Gateway 逐层实时判断；需先升级插件、再升级
+Gateway。见[阶段 3 验证](docs/aggregation-gateway-stage3-validation.md)；开发分支
+`aggregation-gateway` 上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
 
 ### 交流群与充值说明
 

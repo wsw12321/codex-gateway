@@ -4,7 +4,7 @@
 
 ## 开发分支
 
-- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。阶段 2 已完成，下一步是阶段 3。
+- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。阶段 3 已完成，下一步是阶段 4。
 - 从 `main` 的 `8386b12`（Import the full gateway model catalog in OpenCode setup）分出，第一个提交 `2a800c5` 是阶段 1。
 - 每个阶段完成后都可以单独合并。合并前先 rebase 到最新 `main`，检查迁移编号是否和 `main` 上的新迁移冲突；冲突时顺延编号，并同步修改 `TestEmbeddedMigrationsCoverRequiredSchema` 和 `migrations/README.md`。
 - 功能由 `marketplace_settings.enabled` 控制，默认关闭。关闭时，各阶段合并后的线上行为应与 `main` 一致（例外见下方阶段 1 的“行为变化”）。
@@ -64,66 +64,22 @@
 - **服务端**（`0f40a62`）：`/admin/me/providers`、`/admin/me/egress-servers`、Owner 的 `/admin/tenant-providers`、停用与转移路由，归属检查、OAuth 绑定、限流、审计，商城设置新字段，`/admin/state` 商城状态。
 - **前端**（`00e666b`）：成员“我的供应商”“我的出口”，Owner“租户供应商”和“转给成员…”，Node 测试与截图。
 
+### 阶段 3：套餐供应商范围、规则 5、自用（已完成，提交 `612c9b2`、`c09e61d`、`14934bc`、`5db6866`）
+
+说明见[我的供应商](tenant-providers.md)的“自用”与“套餐供应商范围”，验证记录见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。
+
+- **迁移 `0053_plan_provider_scopes.sql`**：`billing_plans.seller_user_id`（不可修改）、`billing_plan_provider_scopes`/`billing_plan_provider_accounts`（触发器只接受卖家仍有凭据的账号）、`billing_subscriptions.source_plan_id`（回填、不可修改）、`billing_accounts.self_use_enabled`、规则 5 的预留约束（自用结算 = 规则 5 且扣费与未覆盖均为 0，未新增 `self_use` 列）、`billing_reservation_layers.kind` 与订阅层列。
+- **Store**（`612c9b2`）：规则 5 准入（自用 → 群组 → 受限订阅 → 个人；无新层时仍记规则 4）、`resolvePlanPoolTx`、`LayerEligibleAccounts`/`SelectLayerUpstreamAccount`（按层 ID 判断）、规则 5 结算（成员账号不扣个人资金，缺少归因不按自用）、`SetPlanProviderScope`/`PlanProviderScopes`/`PlanScopeCandidates`/`SubscriptionProviderScopes`、`SetSelfUse`，全站用量核对自用成本。
+- **插件**（`c09e61d`）：分层的 `/eligible`、`/select`，绑定复用要求在某层仍有资格，`layer-select` 路由声明 `layer_select_v1`；e2e `TestLayerSelect`。
+- **服务端**（`14934bc`）：逐层 `/eligible`、`/select`、`/attempt`，转发前探测 `layer-select`（旧插件收不到成员层），`forwardMixed` 与 `/v1/models` 接入成员供应商，范围与自用路由，账务页的自用和订阅范围。
+- **前端**（`5db6866`）：套餐卡片的范围与编辑器、自用开关、订阅范围、自用流水，Node 测试与截图。
+- **阶段 2 留下的衔接**：释放或转出的账号在解析时按“仍归卖家所有”过滤，编辑器标出并在保存时移除；`/v1/models` 只算未释放、未停用的成员供应商；额度保护覆盖开始服务的成员 OAuth 账号（集成测试验证）；成员出口节点只被账号绑定引用，套餐范围引用账号而非节点，节点删除沿用已有的绑定检查。
+
 ## 剩余待完成项
 
-### 阶段 3：套餐供应商范围、扣费层规则 5、自用（需求 2）
-
-- [ ] **迁移 `0053_plan_provider_scopes.sql`**（阶段 2 已占用 0052）：
-  - `billing_plans.seller_user_id`（NULL 表示平台）。
-  - `billing_plan_provider_scopes(plan_id, mode all|selected, revision)` 和 `billing_plan_provider_accounts(plan_id, account_id ON DELETE CASCADE)`。现有套餐初始化为 `all`。
-  - `billing_subscriptions.source_plan_id`：不可变，从 `plan_id` 回填。
-  - `billing_accounts.self_use_enabled`，默认 true。
-  - `funding_rule_version` 放宽为 1–5。
-  - `billing_reservation_layers` 新增 `kind`（group/subscription/self/personal）和 `subscription_id`，并放宽 `all_accounts = (group_id IS NULL)` 约束。
-  - 扣费记录新增 `self_use` 标记。
-- [ ] **准入规则 5**：改写 `fundingLayersTx` 和 `snapshotBillingFundingTx`。
-  - 层的顺序：自用 → 群组 → 受限订阅（按订阅优先级）→ 个人层。个人层必须保持最后，这是插件 `decodeScope` 的契约。
-  - 受限订阅：来源是卖家套餐，或“指定供应商”的平台套餐。它们从个人来源中移出，单独成层，层 ID 用订阅 UUID。
-  - 只有自用层时也允许准入。
-  - 层数上限 65，每层账号上限 256，并受 `maxGroupsHeader` 约束。
-- [ ] **`resolvePlanPoolTx`**：每次准入按套餐当前范围实时解析账号池，保证“下一次请求即生效”：
-  - 不限制：卖家当前全部账号；
-  - 指定：名单 ∩ 仍归卖家所有 ∩ 未被强制停用 ∩ 未释放（`credential_removed_at IS NULL`）∩ 协议匹配。
-- [ ] **阶段 2 留下的衔接**：
-  - 账号释放或被 Owner 转移后，从原卖家套餐的指定范围中移除（或在解析时按“仍归卖家所有”过滤，并在套餐编辑器中提示失效账号）。
-  - 成员的出口节点被删除前，确认没有套餐依赖它（节点绑定已有引用检查）。
-  - `/v1/models` 追加成员供应商的模型时，只算未释放、未停用的账号。
-  - 额度保护对成员 OAuth 账号的自动检查在账号开始服务请求后生效，验证一次。
-- [ ] **按层判断资格** `LayerEligibleAccounts`：
-  - 个人层：只允许平台账号。
-  - 群组层：平台账号，且在该群组内。
-  - 订阅层：订阅属于本人、仍有效，且来源套餐的当前范围包含该账号。
-  - 自用层：账号归本人，且自用已开启。
-- [ ] **插件**（选路契约改动，两边要一起落地）：
-  - [ ] `gatewayclient.go` 的 `Eligible` / `Select` 带上本请求的层 `groups:[{group_id, account_ids}]`。网关的 `upstreamAccountSelection` 已能解析 `groups` 字段。
-  - [ ] `scheduler.go` 的 `allocate`：复用对话绑定前，确认被绑定的账号在逐层资格的并集内。
-  - [ ] 能力响应中声明 `layer-select`。网关检测到旧插件时，不生成含租户账号的层（fail closed）。
-  - [ ] 部署顺序：先部署插件，再部署网关。
-- [ ] **网关**：
-  - `upstream_allocation.go` 的 `/eligible` 和 `/select` 按层判断。
-  - `upstream_attempt.go` 和 `internal/proxy/ledger.go`：分开保存“非个人层并集”和“含个人层”，拒绝层外的租户账号。
-  - `supplier_routing.go` 的 `forwardMixed` 改用同一套按层函数。
-  - `/v1/models` 追加该用户能用到的租户供应商模型。
-- [ ] **结算规则 5**：改写 `settlementLayerCandidates` / `bindSettlementLayerTx` 和 `settleBillingTx`。
-  - 自用层扣 0。
-  - 订阅层扣该订阅当前周期的剩余额度，不足部分只流向后续同样包含该账号的层，再不足记为 `uncovered_usd`。
-  - 卖家账号的用量永远不扣买家现金。
-  - 规则 1–4 的在途请求按原规则结算。
-- [ ] **接口与前端**：
-  - `PUT /admin/billing/plans/{id}/provider-scope`（Owner）；
-  - `PUT /admin/billing/me/self-use`；
-  - 套餐编辑器增加“供应商：不限制 / 指定”选择器；
-  - 订阅卡片显示供应商范围；
-  - 自用开关。
-- [ ] **验证（PostgreSQL 集成测试）**：
-  - 第 1 个请求准入后修改范围，第 2 个请求只用新范围；
-  - 撤销账号后，下一次 `/select` 重试被拒绝，对话绑定被解除；
-  - “不限制”范围下，卖家新增的账号在下一次请求自动加入；
-  - 个人层永远不会选中租户账号；
-  - 规则 4 的在途请求兼容；
-  - 插件新旧版本组合都 fail closed。
-
 ### 阶段 4：卖家套餐、审核、商城、分账（需求 3）
+
+阶段 3 已就绪、阶段 4 直接使用的部分：`billing_plans.seller_user_id`（只能在插入时设置，触发器禁止修改）、卖家订阅层的准入与结算（只为卖家账号付费，额度不足记未覆盖）、`SetPlanProviderScope` 的 `SellerUserID` 参数和 `PlanScopeCandidates(seller)`、卖家停用时（`users.status` 非 active）其套餐池为空、开关关闭时卖家订阅暂停扣费。
 
 - [ ] **迁移 `0054_marketplace.sql`**：
   - `billing_plans` 新增 `review_status`（现有套餐为 approved）、`review_note`、`reviewed_by_user_id`、`reviewed_at`、`submitted_at`、`description`。
@@ -143,7 +99,7 @@
   - 续费同样分账。
 - [ ] **卖家被停用时**：其套餐下架，其账号不可选；已购订阅的层被跳过。
 - [ ] **路由**：
-  - 卖家：`/admin/me/plans`（含 provider-scope、submit、listing）、`/admin/me/sales`（买家匿名）、`/admin/me/plans/{id}/usage`。
+  - 卖家：`/admin/me/plans`（含 provider-scope：复用 `SetPlanProviderScope`，`SellerUserID` 取本人；范围编辑器复用阶段 3 的对话框）、submit、listing、`/admin/me/sales`（买家匿名）、`/admin/me/plans/{id}/usage`。
   - 商城：`GET /admin/market/plans`。购买沿用 `POST /admin/billing/me/purchases`；含第三方 API 的套餐需要 `acknowledge_third_party=true`。
   - Owner：`/admin/market/reviews`、`/admin/market/plans/{id}/suspend`、`/admin/market/sales`。
 - [ ] **前端**：
@@ -185,19 +141,20 @@
 
 以下是计划里的默认做法，用户尚未逐条最终确认，实施对应阶段前需要再确认：
 
-1. 自用层永远排第一，用户可以关闭。（阶段 3）
-2. 卖家套餐额度用完时不从买家现金补扣，差额由卖家承担（`uncovered_usd`）。（阶段 3）
-3. 个人层（平台不限制订阅 + 现金）保持在最后一层，所以受限套餐层总排在现金前面。（阶段 3）
-4. 卖家看不到买家身份：销售记录匿名，用量只按套餐和账号聚合。（阶段 4）
-5. Owner 的模型权限对所有请求生效，包括自用。（阶段 3）
-6. 修改供应商范围无需审核，也不影响续费绑定；修改其他实质内容需要重新审核。（阶段 4）
-7. 整个功能由 `marketplace_settings.enabled` 控制，默认关闭；设置读取失败时，租户功能 fail closed。（阶段 1–2 已按此实现）
+1. 卖家看不到买家身份：销售记录匿名，用量只按套餐和账号聚合。（阶段 4）
+2. 修改供应商范围无需审核，也不影响续费绑定；修改其他实质内容需要重新审核。（阶段 4；阶段 3 已按“范围修改不提升版本、不影响续费”实现）
+3. 整个功能由 `marketplace_settings.enabled` 控制，默认关闭；设置读取失败时，租户功能 fail closed。（阶段 1–3 已按此实现）
 
 已经确认的决策：
 - 购买款项按抽成比例扣除后，净额记入卖家余额，不做提现；
 - 纯余额按量付费只走平台供应商；
 - 自用免费；
 - 所有用户都可以发布套餐，上架前须经审核；
+- 2026-11-24 确认（阶段 3 已实现）：
+  - 自用层永远排第一，成员可以关闭；
+  - 卖家套餐额度用完时不从买家现金补扣，差额记 `uncovered_usd`，由卖家承担；
+  - 个人层（平台不限制订阅 + 现金）保持在最后一层，受限套餐层总排在现金前面；
+  - Owner 的模型权限对所有请求生效，包括自用。
 - 2026-11-24 确认（阶段 2 已实现）：
   - **出口**：成员可以新增自己的出口服务器并选择，逻辑与 Owner 的出口一致；不新增或不选择时走全局出口。（取代原“卖家不能选择出口节点”）
   - **归属**：上游账号归属可以更改，但只能由 Owner 更改；账号删除后释放归属。（取代阶段 1 的“归属只能设置一次”）
@@ -228,4 +185,6 @@
 - **共享单行表**：`marketplace_settings` 是单行表，集成测试修改后要在 `t.Cleanup` 里恢复，否则会影响同一数据库里的其他用例。
 - **回放旧迁移的测试**：当前选路会读取 `owner_user_id`、`credential_removed_at` 和 `marketplace_settings`。回放旧迁移前缀的升级测试，需要先调用 `billingIntegrationTenantOwnershipSchema`。
 - **插件 e2e**：没有 Docker 时，可按 `plugin.Dockerfile` 的构建阶段手工构建 CPA 与插件 `.so` 后运行 `go test -tags e2e ./e2e`，步骤见[阶段 2 验证](aggregation-gateway-stage2-validation.md#已运行检查)。
-- **截图脚本**：`internal/server/testdata/tenant_providers_browser.cjs` 只拦截成员与租户供应商接口，其他面板的请求返回 404，不影响截图。
+- **截图脚本**：`internal/server/testdata/tenant_providers_browser.cjs` 只拦截成员与租户供应商接口，其他面板的请求返回 404，不影响截图。`plan_scopes_browser.cjs` 同理；它的成员页需要显式调用 `loadBillingDashboard()`（夹具不运行 `loadDashboard`）。
+- **升级测试与新列**：回放旧迁移前缀后再调用 `Migrate` 的测试会比较整行快照（如 `cpa_v848_migration_integration_test.go`），新迁移给这些表加列时，要在快照里排除新列。准入、购买、结算对 0053 之前的结构用 `planScopeSchemaTx` 判断。
+- **插件 e2e 构建脚本**：阶段 3 的手工构建步骤与阶段 2 相同（见[阶段 2 验证](aggregation-gateway-stage2-validation.md#已运行检查)），构建约需 5 分钟。

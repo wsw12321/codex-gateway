@@ -1,6 +1,6 @@
 # 聚合网关改造计划：用户供应商 + 卖家套餐 + 商城
 
-> 2026-11-24 确定的分阶段计划。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
+> 2026-11-24 确定的分阶段计划。阶段 3 开发前确认了四条默认取舍（自用层第一且可关闭、卖家套餐额度不足由卖家承担、个人层保持最后、模型权限对自用生效），实现见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
 
 ## Context
 
@@ -159,6 +159,8 @@
   - 新增 Node 测试 `testdata/tenant_providers_ui_test.cjs`。
 
 ### 阶段 3：套餐供应商范围 + 规则 5 + 自用（需求 2）
+
+> 已完成。与原计划的差异：未新增 `self_use` 列（规则 5 中扣费与未覆盖都为 0 即自用，由约束保证）；`layer_select_v1` 在单独的 `layer-select` 路由上声明；群组层、个人层的逐层判断沿用平台资格；开关关闭时平台套餐的指定范围不生效、卖家套餐订阅暂停扣费。详见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。
 - **迁移** `0053_plan_provider_scopes.sql`（阶段 2 已占用 0052）：
   - `billing_plans.seller_user_id`（NULL 表示平台）。
   - `billing_plan_provider_scopes(plan_id, mode all|selected, revision)` 和 `billing_plan_provider_accounts(plan_id, account_id ON DELETE CASCADE)`。现有套餐初始化为 `all`。
@@ -342,7 +344,7 @@ node --test internal/server/testdata/<新增>_test.cjs
 |---|---|---|
 | 1 归属底座 | 已完成：迁移 `0051`、平台账号过滤、`/admin/market/settings` | `aggregation-gateway` / `2a800c5` |
 | 2 我的供应商 | 已完成：迁移 `0052`、认领/释放/转移、成员出口、`/admin/me/providers`、`/admin/tenant-providers`、插件冲突处理、界面 | `aggregation-gateway` / `daec9c6`–`00e666b` |
-| 3 套餐供应商范围、规则 5、自用 | 未开始 | `aggregation-gateway` |
+| 3 套餐供应商范围、规则 5、自用 | 已完成：迁移 `0053`、规则 5 准入与结算、逐层资格（插件 `layer_select_v1`）、平台套餐范围、自用、界面 | `aggregation-gateway` / `612c9b2`–`5db6866` |
 | 4 卖家套餐、审核、商城、分账 | 未开始 | `aggregation-gateway` |
 | 5 加固与文档 | 未开始 | `aggregation-gateway` |
 

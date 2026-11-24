@@ -777,6 +777,37 @@ ORDER BY occurred_at DESC LIMIT 50;
 
 只回退二进制不可行：旧二进制遇到未知迁移会拒绝启动，需要恢复升级前的备份。
 
+### 套餐供应商范围、规则 5 与自用（0053）
+
+阶段 3 的行为同样只在商城开关打开后出现；开关关闭时，新请求仍按规则 4 准入和结算。说明见
+[阶段 3 验证](aggregation-gateway-stage3-validation.md)。
+
+升级顺序：
+
+1. 按常规做加密备份。
+2. 先升级 CPA 插件镜像。新插件在请求带有扣费层时按层询问资格（`layer_select_v1`，
+   单独的 `layer-select` 路由），现有网关本来就能解析这种请求，所以新插件配旧网关行为不变。
+3. 再升级 Gateway，启动时执行 `0053`。现有套餐的范围全部是“不限制”；已有订阅从
+   `plan_id` 回填来源套餐。
+4. 网关检测到插件不支持 `layer_select_v1` 时，不把自用层和卖家套餐层发给插件；只剩这些层的
+   请求返回 503 `upstream_access_protocol_unavailable`，不会改用其他账号。
+
+开关打开后需要注意：
+
+- 成员自己的账号最先为成员服务，不扣费（账务流水显示“自用”）。成员可在“额度与订阅”页关闭；
+  Owner 停用成员账号后，该账号也不再自用。
+- 平台套餐的供应商范围在套餐卡片的“供应商范围”中设置，从下一次请求起生效，不提升套餐版本，
+  也不影响续费。范围里的账号被转出或删除后自动失效，编辑器会标出并在保存时移除。
+- 关闭商城开关后，平台套餐的指定范围暂不生效（订阅改为个人来源），卖家套餐的订阅暂停扣费。
+
+审计事件：`billing.plan_provider_scope_changed`、`billing.self_use_changed`：
+
+```sql
+SELECT occurred_at, event_type, subject_id, metadata FROM audit_events
+WHERE event_type IN ('billing.plan_provider_scope_changed', 'billing.self_use_changed')
+ORDER BY occurred_at DESC LIMIT 50;
+```
+
 ### 升级到多订阅（0034）
 
 1. 备份完整数据库，并记录订阅 ID、当前周期 ID、周期起止、额度与剩余额度、到期时间、

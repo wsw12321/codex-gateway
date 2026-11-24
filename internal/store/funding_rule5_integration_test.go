@@ -227,6 +227,23 @@ func TestFundingRule5PostgresIntegration(t *testing.T) {
 			t.Fatalf("ledger listing does not mark self-use: %v", err)
 		}
 
+		// An own OAuth account that serves requests is checked by the quota
+		// guard like a platform account, and a held one leaves the self layer.
+		claim, err := s.ClaimUpstreamQuotaCheck(ctx, own, now)
+		if err != nil || claim.Provider != UpstreamProviderCodex || !claim.Claimed {
+			t.Fatalf("quota guard claim for an own account = %+v, %v", claim, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO upstream_quota_guard_states(account_id,status,source)
+			VALUES($1,'limited','manual') ON CONFLICT (account_id) DO UPDATE SET status='limited', source='manual'`, own); err != nil {
+			t.Fatal(err)
+		}
+		if held, err := codex.LayerEligibleAccounts(ctx, u.ID, []UpstreamAllocationGroup{layer(SelfFundingLayerID, own)}); err != nil || len(held[0].Accounts) != 0 {
+			t.Fatalf("held own account eligible: %+v, %v", held, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_quota_guard_states SET status='available' WHERE account_id=$1`, own); err != nil {
+			t.Fatal(err)
+		}
+
 		// Missing attribution never counts as self-use: the cost is left
 		// uncovered instead.
 		unattributed := "rule5-self-unattributed-" + suffix
