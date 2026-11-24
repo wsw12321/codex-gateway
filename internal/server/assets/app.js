@@ -96,6 +96,11 @@ let billingPlansLoading = false;
 let billingPlansSequence = 0;
 let billingPurchaseDraft = null;
 let billingPlanEdit = null;
+// Stage 3 of the aggregation gateway: the Owner's plan provider scopes (null
+// until loaded or while the marketplace is off) and the scope being edited.
+let billingPlanScopes = null;
+let billingPlanScopeCandidates = [];
+let billingPlanScopeEdit = null;
 // Keep the exact body until the server confirms the result; a retry must never
 // acquire a fresh operation ID, even if the catalog or selected user changes.
 let billingPlanOperation = null;
@@ -3889,6 +3894,7 @@ function renderBillingSubscriptions(detail) {
       element("small", {text: `${billingPeriodEndLabel(subscription)}：${display.ends}`}),
       element("small", {text: `最终到期：${display.expires}`}),
       element("small", {className: "subscription-models", text: `适用模型：${billingModelText(billingModels(subscription)) || "无"}`}),
+      subscription.provider_scope ? element("small", {className: "subscription-scope", text: billingSubscriptionScopeText(subscription.provider_scope)}) : null,
       billingPlanBinding(subscription), billingSourceControl(subscription.id),
       element("details", {className: "subscription-period-details"}, element("summary", {text: "已购权益详情"}),
         element("small", {text: `${billingPeriodProgress(subscription)} · 额度不结转`}),
@@ -3935,6 +3941,7 @@ function renderBillingLedger(detail) {
       if (uncovered != null && String(uncovered) !== "0" && String(uncovered) !== "0.000000000000") {
         addAmountDetail(`未覆盖：${formatUSD(uncovered)}`);
       }
+      if (entry?.self_use === true) addAmountDetail("自用：使用自己的供应商，不扣费");
 
       const description = element("td", {className: "money-cell"},
         element("span", {text: field(entry, "reason", "description") || "—"}),
@@ -4061,6 +4068,7 @@ function renderBillingDetail(detail, receivedAt = new Date()) {
       ? `${user.display_name || user.username || "当前用户"} · 当前登录用户`
       : `${user.display_name || user.username || user.id} · ${user.username || user.id}`;
   }
+  renderBillingSelfUse(detail);
   renderBillingSubscriptions(detail);
   renderBillingLedger(detail);
   renderBillingAdminValues(detail);
@@ -5539,7 +5547,10 @@ function resetBillingPlans() {
   billingPurchaseDraft = null;
   billingPlanEdit = null;
   billingPlanOperation = null;
-  for (const id of ["billing-purchase-dialog", "billing-plan-dialog"]) {
+  billingPlanScopes = null;
+  billingPlanScopeCandidates = [];
+  billingPlanScopeEdit = null;
+  for (const id of ["billing-purchase-dialog", "billing-plan-dialog", "billing-plan-scope-dialog"]) {
     if (byId(id)?.open) byId(id).close();
   }
   byId("billing-plans")?.replaceChildren(element("p", {className: "muted", text: "登录后加载套餐。"}));
@@ -5606,6 +5617,7 @@ function renderBillingPlans() {
       element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
       element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModelText(billingModels(plan))}`}),
       element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
+      billingPlanScopes ? element("p", {className: "billing-plan-scope", text: billingPlanScopeText(billingPlanScopes[plan.id])}) : null,
       element("small", {text: "每次购买或续费最多 99 期，续费累计不限 99 期。"}));
     const actions = element("div", {className: "actions"});
     if (plan.active && selectedBillingUserID() === state?.user?.id) {
@@ -5620,6 +5632,11 @@ function renderBillingPlans() {
       const remove = element("button", {type: "button", className: "danger", text: "删除", dataset: {billingPlanEdit: plan.id}});
       remove.addEventListener("click", () => deleteBillingPlan(plan));
       actions.append(remove);
+      if (billingPlanScopes) {
+        const scope = element("button", {type: "button", className: "secondary", text: "供应商范围", dataset: {billingPlanEdit: plan.id}});
+        scope.addEventListener("click", () => openBillingPlanScope(plan));
+        actions.append(scope);
+      }
     }
     card.append(actions);
     return card;
@@ -5638,6 +5655,8 @@ async function loadBillingPlans() {
     if (!current()) return;
     if (!Array.isArray(result?.plans)) throw new Error("套餐目录格式无效，请刷新后重试。");
     billingPlans = result.plans;
+    await loadBillingPlanScopes(current);
+    if (!current()) return;
     renderBillingPlans();
   } catch (error) {
     if (!current()) return;
@@ -5646,6 +5665,149 @@ async function loadBillingPlans() {
     throw error;
   } finally {
     if (current()) { billingPlansLoading = false; syncBillingPlanControls(); }
+  }
+}
+
+// Plan provider scopes are the Owner's while the marketplace is enabled.
+function billingPlanScopesAllowed() {
+  return !loggingOut && state?.user?.role === "owner" && state?.marketplace?.enabled === true;
+}
+
+async function loadBillingPlanScopes(current) {
+  billingPlanScopes = null;
+  billingPlanScopeCandidates = [];
+  if (!billingPlanScopesAllowed()) return;
+  try {
+    const result = await api("/admin/billing/plan-provider-scopes", undefined, current);
+    if (!current() || !result || typeof result.scopes !== "object" || !Array.isArray(result.candidates)) return;
+    billingPlanScopes = result.scopes;
+    billingPlanScopeCandidates = result.candidates;
+  } catch (error) {
+    if (current()) billingPlanMessage(`供应商范围加载失败：${friendlyError(error)}`);
+  }
+}
+
+const billingProviderNames = {codex: "Codex", anthropic: "Claude", antigravity: "Antigravity"};
+
+function billingPlanScopeText(scope) {
+  if (!scope || scope.mode !== "selected") return "供应商：不限制（全部平台账号）";
+  const accounts = Array.isArray(scope.accounts) ? scope.accounts : [];
+  const usable = accounts.filter((account) => account.usable === true).length;
+  const stale = accounts.length - usable;
+  return `供应商：指定 ${usable} 个账号${stale ? `，${stale} 个已失效` : ""}`;
+}
+
+function billingSubscriptionScopeText(scope) {
+  if (!scope?.restricted) return "供应商范围：不限制";
+  const counts = Object.entries(scope.account_counts || {}).filter(([, count]) => count > 0)
+    .map(([provider, count]) => `${billingProviderNames[provider] || provider} ${count} 个`);
+  const prefix = scope.seller ? "供应商范围：卖家的账号" : "供应商范围：指定账号";
+  return counts.length ? `${prefix}（当前可用 ${counts.join("、")}）` : `${prefix}（当前没有可用账号）`;
+}
+
+function openBillingPlanScope(plan) {
+  if (!billingPlanScopesAllowed() || !billingPlanScopes || billingPlanOperation) return;
+  const scope = billingPlanScopes[plan.id] || {mode: "all", accounts: [], revision: 0};
+  billingPlanScopeEdit = {plan: {...plan}, revision: scope.revision ?? 0, userID: state.user.id, generation: identityGeneration};
+  const form = byId("billing-plan-scope-form");
+  form.reset();
+  form.elements.mode.value = scope.mode === "selected" ? "selected" : "all";
+  byId("billing-plan-scope-plan").textContent = plan.name;
+  const listed = new Set((scope.accounts || []).map((account) => account.id));
+  const candidates = new Set(billingPlanScopeCandidates.map((account) => account.id));
+  const groups = new Map();
+  for (const account of billingPlanScopeCandidates) {
+    if (!groups.has(account.provider)) groups.set(account.provider, []);
+    groups.get(account.provider).push(account);
+  }
+  const fieldsets = [...groups.entries()].map(([provider, accounts]) => element("fieldset", {className: "plan-scope-provider"},
+    element("legend", {text: billingProviderNames[provider] || provider}),
+    ...accounts.map((account) => {
+      const input = element("input", {type: "checkbox", className: "plan-scope-account", dataset: {scopeAccount: account.id}});
+      input.name = "account_ids";
+      input.value = account.id;
+      input.checked = listed.has(account.id);
+      return element("label", {className: "check-label"}, input, `${account.label}${account.usable ? "" : "（已停用）"}`);
+    })));
+  byId("billing-plan-scope-accounts").replaceChildren(...(fieldsets.length ? fieldsets : [element("p", {className: "muted", text: "还没有平台账号。"})]));
+  const stale = (scope.accounts || []).filter((account) => !candidates.has(account.id));
+  byId("billing-plan-scope-stale").textContent = stale.length
+    ? `以下账号已不属于平台或已删除，保存时将移出范围：${stale.map((account) => account.label).join("、")}` : "";
+  byId("billing-plan-scope-stale").classList.toggle("hidden", !stale.length);
+  setLocalMessage(form);
+  syncBillingPlanScopeForm();
+  byId("billing-plan-scope-dialog").showModal();
+}
+
+function syncBillingPlanScopeForm() {
+  const form = byId("billing-plan-scope-form");
+  const selected = form?.elements.mode.value === "selected";
+  all(".plan-scope-account", byId("billing-plan-scope-accounts")).forEach((input) => { input.disabled = !selected; });
+  byId("billing-plan-scope-accounts")?.classList.toggle("muted", !selected);
+}
+
+// billingPlanScopePayload reads the editor: an unrestricted scope lists no
+// accounts; a selected one lists the checked, still-available accounts.
+function billingPlanScopePayload(form, edit) {
+  const mode = form.elements.mode.value === "selected" ? "selected" : "all";
+  const accounts = mode === "selected"
+    ? all(".plan-scope-account", byId("billing-plan-scope-accounts")).filter((input) => input.checked).map((input) => input.value) : [];
+  if (mode === "selected" && !accounts.length) throw new Error("请至少选择一个账号，或改为不限制。");
+  return {mode, account_ids: accounts, revision: edit.revision};
+}
+
+async function submitBillingPlanScope() {
+  const edit = billingPlanScopeEdit;
+  if (!edit || !billingPlanScopesAllowed() || edit.userID !== state.user.id || edit.generation !== identityGeneration) throw new Error("登录身份已变化，请刷新后重试。");
+  const form = byId("billing-plan-scope-form");
+  const payload = billingPlanScopePayload(form, edit);
+  const current = () => billingPlanScopeEdit === edit && billingPlanScopesAllowed();
+  const saved = await sensitiveAction(() => api(`/admin/billing/plans/${encodeURIComponent(edit.plan.id)}/provider-scope`,
+    {method: "PUT", body: JSON.stringify(payload)}, current), current);
+  if (!current()) return;
+  billingPlanScopes = {...billingPlanScopes, [edit.plan.id]: saved};
+  billingPlanScopeEdit = null;
+  byId("billing-plan-scope-dialog").close();
+  billingPlanMessage(`已保存「${edit.plan.name}」的供应商范围，从下一次请求起生效。`, false);
+  renderBillingPlans();
+}
+
+// Self-use is the member's own switch, shown only for the signed-in member
+// while the marketplace is enabled (the server sends it only then).
+function renderBillingSelfUse(detail) {
+  const host = byId("billing-self-use");
+  const toggle = byId("billing-self-use-toggle");
+  if (!host || !toggle) return;
+  const visible = !loggingOut && state?.user?.role === "member" && typeof detail?.self_use_enabled === "boolean" &&
+    billingUserForDetail(detail).id === state.user.id;
+  host.classList.toggle("hidden", !visible);
+  toggle.checked = visible && detail.self_use_enabled;
+  toggle.disabled = !visible;
+}
+
+async function setBillingSelfUse(enabled) {
+  const toggle = byId("billing-self-use-toggle");
+  const message = byId("billing-self-use-message");
+  if (loggingOut || state?.user?.role !== "member" || typeof billingDetail?.self_use_enabled !== "boolean" ||
+    billingUserForDetail(billingDetail).id !== state.user.id) return;
+  const actor = state.user.id, generation = identityGeneration;
+  const current = () => !loggingOut && state?.user?.id === actor && generation === identityGeneration;
+  toggle.disabled = true;
+  try {
+    const result = await sensitiveAction(() => api("/admin/billing/me/self-use", {method: "PUT", body: JSON.stringify({enabled})}, current), current);
+    if (!current()) return;
+    billingDetail.self_use_enabled = result.self_use_enabled === true;
+    message.textContent = billingDetail.self_use_enabled ? "已开启自用：新请求优先使用你自己的供应商。" : "已关闭自用：新请求不再使用你自己的供应商。";
+    message.dataset.kind = "ok";
+  } catch (error) {
+    if (!current()) return;
+    message.textContent = `自用设置保存失败：${friendlyError(error)}`;
+    message.dataset.kind = "error";
+  } finally {
+    if (current()) {
+      message.classList.toggle("hidden", !message.textContent);
+      renderBillingSelfUse(billingDetail);
+    }
   }
 }
 
@@ -5863,7 +6025,9 @@ function bindBillingPlanUI() {
     byId("billing-purchase-form").elements.confirmed.checked = false;
     updateBillingPurchaseSummary();
   });
-  for (const [id, handler] of [["billing-purchase-form", submitBillingPurchase], ["billing-plan-form", submitBillingPlan]]) {
+  byId("billing-plan-scope-form")?.elements.mode.addEventListener("change", syncBillingPlanScopeForm);
+  byId("billing-self-use-toggle")?.addEventListener("change", () => setBillingSelfUse(byId("billing-self-use-toggle").checked));
+  for (const [id, handler] of [["billing-purchase-form", submitBillingPurchase], ["billing-plan-form", submitBillingPlan], ["billing-plan-scope-form", submitBillingPlanScope]]) {
     byId(id)?.addEventListener("submit", async (event) => {
       event.preventDefault();
       try { await handler(); } catch (error) { setLocalMessage(byId(id), friendlyError(error)); }

@@ -4463,3 +4463,13 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 @media (prefers-reduced-motion: reduce) {
   .notice, dialog[open] { animation: none; }
 }
+
+/* Aggregation gateway stage 3: plan provider scope editor and self-use. */
+.plan-scope-accounts { display: grid; gap: .75rem; max-height: 22rem; overflow-y: auto; }
+.plan-scope-accounts.muted { opacity: .6; }
+.plan-scope-provider { display: grid; gap: .35rem; margin: 0; padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.plan-scope-provider legend { padding: 0 .3rem; font-weight: 600; }
+.plan-scope-provider .check-label { overflow-wrap: anywhere; }
+.billing-plan-scope { color: var(--muted); }
+.subscription-scope { overflow-wrap: anywhere; }
+.billing-self-use .check-label { margin-top: .25rem; }

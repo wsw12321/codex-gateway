@@ -698,6 +698,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
               <div id="billing-recharge-methods" class="site-recharge-methods"></div>
             </article>
 
+            <article id="billing-self-use" class="panel billing-self-use hidden" aria-labelledby="billing-self-use-title">
+              <div class="panel-heading"><div><h3 id="billing-self-use-title">自用</h3><p>请求优先使用你在“我的供应商”中添加的账号：只记录用量，不扣费。关闭后，你的账号不再为你自己服务，请求改用其他额度。</p></div></div>
+              <label class="check-label"><input id="billing-self-use-toggle" type="checkbox" disabled>使用自己的供应商（免费，最先使用）</label>
+              <p id="billing-self-use-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            </article>
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
             <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；优先级数字越小越先扣费；同优先级订阅优先于余额，再按周期天数、剩余额度降序排列。剩余周期额度不结转。</p>
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
@@ -1757,6 +1762,18 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-submit" type="submit">创建套餐</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="billing-plan-scope-dialog" aria-labelledby="billing-plan-scope-title">
+    <form id="billing-plan-scope-form">
+      <div class="dialog-heading"><p class="eyebrow">PROVIDERS</p><h2 id="billing-plan-scope-title">供应商范围</h2><p id="billing-plan-scope-plan"></p></div>
+      <label>范围<select name="mode"><option value="all">不限制：使用全部平台账号</option><option value="selected">指定：只使用下列账号</option></select></label>
+      <p class="billing-purchase-warning">修改从下一次请求起生效，已购订阅随之改变；不影响套餐版本、价格和续费。</p>
+      <div id="billing-plan-scope-accounts" class="plan-scope-accounts" aria-label="可选账号"></div>
+      <p id="billing-plan-scope-stale" class="billing-purchase-warning hidden"></p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-scope-submit" type="submit">保存范围</button></div>
     </form>
   </dialog>
 
