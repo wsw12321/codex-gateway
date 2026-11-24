@@ -139,6 +139,18 @@ Current migrations:
   a request served by the user's own account (self-use). `billing_reservation_layers` gains `kind`
   (`group`, `subscription`, `self`, `personal`; existing rows backfilled) and
   the bound subscription period of a restricted subscription layer.
+- `internal/store/migrations/0054_marketplace.sql` — seller plans, review and
+  the plan marketplace (aggregation gateway stage 4). `billing_plans` gains
+  `review_status` (`draft`/`pending`/`approved`/`rejected`; every existing
+  plan is approved, and a check keeps platform plans approved and never
+  suspended), `review_note`, `reviewed_by_user_id`, `reviewed_at`,
+  `submitted_at`, `description` and `admin_suspended` (Owner takedown).
+  `marketplace_sales` records every seller plan sale or renewal once per
+  operation: gross, the commission rate in force, commission (rounded down to
+  12 decimals), the seller's net, the per-seller `buyer_number` the seller sees
+  instead of the buyer, and both ledger entries (cleared, not blocking, when
+  information cleanup removes them). The ledger accepts `plan_sale_income`,
+  the seller's credit, which also opens a cash lot.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

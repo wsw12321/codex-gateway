@@ -29,6 +29,9 @@ type DeleteBillingPlanParams struct {
 	BillingWriteParams
 	PlanID  string
 	Version int64
+	// SellerUserID deletes one of the seller's own plans; empty deletes a
+	// platform plan.
+	SellerUserID string
 }
 
 type billingPreferencesSnapshot struct {
@@ -141,7 +144,14 @@ func (s *Store) DeleteBillingPlan(ctx context.Context, p DeleteBillingPlanParams
 	}
 	p.At = normalizedBillingTime(p.At, s.now)
 	p.Reason = strings.TrimSpace(p.Reason)
-	fingerprint := billingOperationFingerprint("plan_delete", p.ActorUserID, p.PlanID, strconv.FormatInt(p.Version, 10), p.Reason)
+	parts := []string{"plan_delete", p.ActorUserID, p.PlanID, strconv.FormatInt(p.Version, 10), p.Reason}
+	if p.SellerUserID != "" {
+		if p.SellerUserID != p.ActorUserID {
+			return result, fmt.Errorf("%w: invalid seller plan", ErrInvalid)
+		}
+		parts = append(parts, "seller", p.SellerUserID)
+	}
+	fingerprint := billingOperationFingerprint(parts...)
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
 		created, replayID, err := claimBillingOperationTx(ctx, tx, p.BillingWriteParams, "plan_delete", "", fingerprint)
 		if err != nil {
@@ -168,6 +178,14 @@ func (s *Store) DeleteBillingPlan(ctx context.Context, p DeleteBillingPlanParams
 		}
 		if current.DeletedAt != nil || current.Version != p.Version {
 			return ErrBillingPlanChanged
+		}
+		if p.SellerUserID == "" {
+			err = requirePlatformPlanTx(ctx, tx, p.PlanID)
+		} else {
+			err = requireSellerPlanTx(ctx, tx, p.PlanID, p.SellerUserID)
+		}
+		if err != nil {
+			return err
 		}
 		result, err = scanBillingPlan(tx.QueryRowContext(ctx, `UPDATE billing_plans SET active=false,deleted_at=$2,updated_at=$2,version=version+1,updated_by_user_id=$3 WHERE id=$1 RETURNING `+billingPlanColumns, p.PlanID, p.At, p.ActorUserID))
 		if err != nil {
