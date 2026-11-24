@@ -215,7 +215,7 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 
 func (s *Store) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+upstreamAccountColumns+`
-		FROM upstream_accounts WHERE provider = $1
+		FROM upstream_accounts WHERE provider = $1 AND owner_user_id IS NULL
 		ORDER BY CASE status WHEN 'available' THEN 0 ELSE 1 END,
 			lower(masked_email), id`, s.upstreamProviderName())
 	if err != nil {

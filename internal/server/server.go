@@ -61,6 +61,7 @@ type Server struct {
 	modelAccessRepo         modelAccessRepository
 	modelRouteRepo          modelRouteRepository
 	protocolConversionRepo  protocolConversionRepository
+	marketplaceRepo         marketplaceRepository
 	modelMultiplierRepo     modelMultiplierRepository
 	modelPriceRepo          modelPriceRepository
 	billingPlanRepo         billingPlanRepository
@@ -264,6 +265,8 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/model-routes", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.replaceMyModelRoutes))))
 	s.mux.Handle("GET /admin/protocol-conversion", s.requireSession(s.ownerOnly(http.HandlerFunc(s.protocolConversionSettings))))
 	s.mux.Handle("PUT /admin/protocol-conversion", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setProtocolConversionSettings)))))
+	s.mux.Handle("GET /admin/market/settings", s.requireSession(s.ownerOnly(http.HandlerFunc(s.marketplaceSettings))))
+	s.mux.Handle("PUT /admin/market/settings", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.setMarketplaceSettings)))))
 	s.mux.Handle("GET /admin/billing/me", s.requireSession(http.HandlerFunc(s.billingMe)))
 	s.mux.Handle("GET /admin/billing/plans", s.requireSession(http.HandlerFunc(s.billingPlans)))
 	s.mux.Handle("POST /admin/billing/plans", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.createBillingPlan)))))

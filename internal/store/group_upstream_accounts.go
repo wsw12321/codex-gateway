@@ -101,7 +101,7 @@ func (s *Store) SetGroupUpstreamAccounts(ctx context.Context, p SetGroupUpstream
 			encoded := marshalStringSliceJSON(p.AccountIDs)
 			var count int
 			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM upstream_accounts
-				WHERE provider=$1 AND id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))`, p.Provider, encoded).Scan(&count); err != nil {
+				WHERE provider=$1 AND owner_user_id IS NULL AND id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))`, p.Provider, encoded).Scan(&count); err != nil {
 				return mapDBError("validate group upstream accounts", err)
 			}
 			if count != len(p.AccountIDs) {
@@ -295,9 +295,9 @@ func snapshotGroupUpstreamAllocationGroupTx(ctx context.Context, tx *sql.Tx, gro
 		rows, err = tx.QueryContext(ctx, `SELECT ga.upstream_account_id
 			FROM group_upstream_accounts ga
 			JOIN upstream_accounts a ON a.id=ga.upstream_account_id AND a.provider=ga.provider
-			WHERE ga.group_id=$1 AND ga.provider=$2 ORDER BY ga.upstream_account_id`, gid, provider)
+			WHERE ga.group_id=$1 AND ga.provider=$2 AND a.owner_user_id IS NULL ORDER BY ga.upstream_account_id`, gid, provider)
 	} else {
-		rows, err = tx.QueryContext(ctx, `SELECT id FROM upstream_accounts WHERE provider=$1 ORDER BY id`, provider)
+		rows, err = tx.QueryContext(ctx, `SELECT id FROM upstream_accounts WHERE provider=$1 AND owner_user_id IS NULL ORDER BY id`, provider)
 	}
 	if err != nil {
 		return UpstreamAllocationGroup{}, mapDBError("read group upstream account pool snapshot", err)

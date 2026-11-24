@@ -85,6 +85,7 @@ func userPermittedAccountsTx(ctx context.Context, tx *sql.Tx, userID, provider s
 		WHERE a.id = ANY($1::text[]) AND a.provider=$2
 		  AND (a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))
 		  AND `+userUpstreamAccessPredicate("$3", "$2", "a.id")+`
+		  AND `+platformAccountSQL("a")+`
 		ORDER BY a.id`, ids, provider, userID)
 	if err != nil {
 		return nil, mapDBError("read funding layer accounts", err)

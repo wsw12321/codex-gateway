@@ -103,7 +103,7 @@ func (s *Store) SetUserUpstreamAccess(ctx context.Context, params SetUserUpstrea
 			return mapDBError("lock user upstream access edit", err)
 		}
 		rows, err := tx.QueryContext(ctx, `SELECT id FROM upstream_accounts
-			WHERE provider=$1 AND id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))
+			WHERE provider=$1 AND owner_user_id IS NULL AND id IN (SELECT value FROM jsonb_array_elements_text($2::jsonb))
 			ORDER BY id FOR UPDATE`, result.Provider, string(encoded))
 		if err != nil {
 			return mapDBError("validate user upstream accounts", err)

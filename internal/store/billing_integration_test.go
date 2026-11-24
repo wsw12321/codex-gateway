@@ -2030,6 +2030,22 @@ func billingIntegrationFundingLayerSchema(t *testing.T, ctx context.Context, rep
 	t.Fatal("funding-layer migration missing")
 }
 
+// billingIntegrationTenantOwnershipSchema adds the 0051 ownership columns and
+// marketplace switch that current account predicates read, for tests that
+// replay an older migration prefix without platform-only structures.
+func billingIntegrationTenantOwnershipSchema(t *testing.T, ctx context.Context, repository *Store) {
+	t.Helper()
+	if _, err := repository.db.ExecContext(ctx, `ALTER TABLE upstream_accounts
+			ADD COLUMN IF NOT EXISTS owner_user_id UUID,
+			ADD COLUMN IF NOT EXISTS admin_suspended BOOLEAN NOT NULL DEFAULT false;
+		CREATE TABLE IF NOT EXISTS marketplace_settings (
+			singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
+			enabled BOOLEAN NOT NULL DEFAULT false);
+		INSERT INTO marketplace_settings(singleton) VALUES (true) ON CONFLICT DO NOTHING`); err != nil {
+		t.Fatalf("apply tenant ownership helper schema: %v", err)
+	}
+}
+
 func billingIntegrationModelScopes(t *testing.T, ctx context.Context, repository *Store, models ...string) {
 	t.Helper()
 	if err := repository.SyncModelAccessCatalog(ctx, models); err != nil {

@@ -19,7 +19,7 @@ type ModelSupplier struct {
 
 func (s *Store) ModelSuppliers(ctx context.Context) ([]ModelSupplier, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider, m.base_url, m.key_ciphertext, m.models, a.status='available', m.revision
-		FROM model_suppliers m JOIN upstream_accounts a ON a.id=m.account_id WHERE a.provider=$1 ORDER BY a.id`, s.upstreamProviderName())
+		FROM model_suppliers m JOIN upstream_accounts a ON a.id=m.account_id WHERE a.provider=$1 AND a.owner_user_id IS NULL ORDER BY a.id`, s.upstreamProviderName())
 	if err != nil {
 		return nil, mapDBError("list model suppliers", err)
 	}
@@ -76,7 +76,7 @@ func (s *Store) ReplaceModelSupplierKey(ctx context.Context, value ModelSupplier
 		return err
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE model_suppliers m SET key_ciphertext=$1, models=$2::jsonb, revision=revision+1
-		FROM upstream_accounts a WHERE m.account_id=a.id AND a.id=$3 AND a.provider=$4 AND m.revision=$5`, value.Ciphertext, string(models), value.ID, s.upstreamProviderName(), value.Revision)
+		FROM upstream_accounts a WHERE m.account_id=a.id AND a.id=$3 AND a.provider=$4 AND a.owner_user_id IS NULL AND m.revision=$5`, value.Ciphertext, string(models), value.ID, s.upstreamProviderName(), value.Revision)
 	return supplierWriteResult(result, err)
 }
 
@@ -86,7 +86,7 @@ func (s *Store) SetModelSupplierEnabled(ctx context.Context, id string, enabled 
 		status = UpstreamAccountStatusAvailable
 	}
 	result, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET status=$1, updated_at=now()
-		WHERE id=$2 AND provider=$3 AND credential_kind='supplier' AND EXISTS(SELECT 1 FROM model_suppliers WHERE account_id=$2)`, status, id, s.upstreamProviderName())
+		WHERE id=$2 AND provider=$3 AND credential_kind='supplier' AND owner_user_id IS NULL AND EXISTS(SELECT 1 FROM model_suppliers WHERE account_id=$2)`, status, id, s.upstreamProviderName())
 	return supplierWriteResult(result, err)
 }
 
@@ -96,7 +96,7 @@ func (s *Store) DeleteModelSupplier(ctx context.Context, id string) error {
 			return err
 		}
 		result, err := tx.ExecContext(ctx, `DELETE FROM model_suppliers m USING upstream_accounts a
-			WHERE m.account_id=a.id AND a.id=$1 AND a.provider=$2 AND a.status='unavailable'`, id, s.upstreamProviderName())
+			WHERE m.account_id=a.id AND a.id=$1 AND a.provider=$2 AND a.owner_user_id IS NULL AND a.status='unavailable'`, id, s.upstreamProviderName())
 		if err := supplierWriteResult(result, err); err != nil {
 			return err
 		}

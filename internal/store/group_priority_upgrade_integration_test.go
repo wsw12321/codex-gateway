@@ -189,6 +189,7 @@ func TestGroupPriorityMigrationPreservesLegacyPostgresIntegration(t *testing.T) 
 		}
 	}
 	billingIntegrationFundingLayerSchema(t, ctx, s)
+	billingIntegrationTenantOwnershipSchema(t, ctx, s)
 	billingIntegrationFundingAccount(t, ctx, s)
 	newID := "priority-upgrade-new-" + id
 	newReservation := billingIntegrationReserveAndComplete(t, ctx, s, u, d, k, newID, now, 5000000, "1", "billing-priced-model")

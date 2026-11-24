@@ -100,6 +100,20 @@ Current migrations:
   plan snapshots and ledger rows are unchanged. One
   `billing.model_families_converted` audit event records the counts.
 
+- `internal/store/migrations/0050_model_suppliers.sql` — API Key model
+  suppliers. `upstream_accounts.credential_kind` distinguishes OAuth accounts
+  from suppliers; `model_suppliers` stores the encrypted key, Base URL and
+  accepted models. Existing accounts stay `oauth`.
+- `internal/store/migrations/0051_tenant_upstream_ownership.sql` — upstream
+  account ownership for the aggregation gateway. `owner_user_id` NULL is a
+  platform account (every existing account); a tenant account can never join a
+  group pool, an exclusive grant or a per-user account scope (enforced by
+  triggers), and its owner is set once. Adds `admin_suspended`,
+  `egress_registrations.tenant_user_id` and the `marketplace_settings`
+  singleton, disabled by default. Platform selection paths ignore tenant
+  accounts; while the marketplace is enabled, accounts unknown to the Gateway
+  are not eligible.
+
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already
 been applied.

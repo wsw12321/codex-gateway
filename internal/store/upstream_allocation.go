@@ -60,7 +60,7 @@ func (s *Store) SetUpstreamAccountAllocationWeight(ctx context.Context, params S
 		}
 		var previousWeight int
 		if err := tx.QueryRowContext(ctx, `SELECT allocation_weight FROM upstream_accounts
-			WHERE id = $1 AND provider = $2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousWeight); err != nil {
+			WHERE id = $1 AND provider = $2 AND owner_user_id IS NULL FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousWeight); err != nil {
 			return mapDBError("lock upstream account allocation weight", err)
 		}
 		var err error
@@ -144,6 +144,7 @@ func (s *Store) SelectUpstreamAccount(ctx context.Context, userID string, candid
 		  AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		  AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$3::uuid))
 		  AND `+userUpstreamAccessPredicate("$3", providerArg, "a.id")+`
+		  AND `+platformAccountSQL("a")+`
 		  AND NOT `+upstreamQuotaGuardHeld("c.id", "$2"), args...)
 	if err != nil {
 		return "", mapDBError("read upstream allocation snapshot", err)
@@ -265,7 +266,7 @@ func (s *Store) ListUpstreamAccountAllocations(ctx context.Context, at time.Time
 			AND l.entry_type = 'usage_charge'
 			AND COALESCE(l.usage_requested_at, l.created_at) >= $1
 			AND COALESCE(l.usage_requested_at, l.created_at) < $2
-		WHERE a.provider = $3
+		WHERE a.provider = $3 AND a.owner_user_id IS NULL
 		GROUP BY a.id
 	), totals AS (
 		SELECT COALESCE(sum(cost), 0::numeric) cost,

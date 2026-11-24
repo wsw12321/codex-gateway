@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 50 {
-		t.Fatalf("migration count = %d, want 50", len(migrations))
+	if len(migrations) != 51 {
+		t.Fatalf("migration count = %d, want 51", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {
@@ -49,6 +49,7 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 		"group_memberships", "group_upstream_account_policies", "group_upstream_accounts",
 		"egress_state", "egress_servers", "upstream_account_egress", "egress_registrations",
 		"site_settings", "site_images", "user_model_routes", "protocol_conversion_settings",
+		"marketplace_settings",
 	} {
 		needle := "CREATE TABLE " + table
 		if !strings.Contains(sql, needle) {

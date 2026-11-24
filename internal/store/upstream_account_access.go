@@ -65,7 +65,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 			return mapDBError("lock upstream account access edit", err)
 		}
 		var previousMode string
-		if err := tx.QueryRowContext(ctx, `SELECT access_mode FROM upstream_accounts WHERE id=$1 AND provider=$2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousMode); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT access_mode FROM upstream_accounts WHERE id=$1 AND provider=$2 AND owner_user_id IS NULL FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousMode); err != nil {
 			return mapDBError("lock upstream account access", err)
 		}
 		var previousUsers string
@@ -122,7 +122,7 @@ func (s *Store) SetUpstreamAccountAccess(ctx context.Context, params SetUpstream
 }
 
 func (s *Store) ListUpstreamAccountAccess(ctx context.Context) ([]UpstreamAccountAccess, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.access_mode,COALESCE(jsonb_agg(u.user_id::text ORDER BY u.user_id) FILTER (WHERE u.user_id IS NOT NULL),'[]'::jsonb)::text FROM upstream_accounts a LEFT JOIN upstream_account_users u ON u.upstream_account_id=a.id WHERE a.provider=$1 GROUP BY a.id ORDER BY a.id`, s.upstreamProviderName())
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id,a.access_mode,COALESCE(jsonb_agg(u.user_id::text ORDER BY u.user_id) FILTER (WHERE u.user_id IS NOT NULL),'[]'::jsonb)::text FROM upstream_accounts a LEFT JOIN upstream_account_users u ON u.upstream_account_id=a.id WHERE a.provider=$1 AND a.owner_user_id IS NULL GROUP BY a.id ORDER BY a.id`, s.upstreamProviderName())
 	if err != nil {
 		return nil, mapDBError("list upstream account access", err)
 	}
@@ -178,7 +178,8 @@ func (s *Store) EligibleUpstreamAccounts(ctx context.Context, userID string, ids
 		WHERE EXISTS(SELECT 1 FROM users WHERE id=$1::uuid AND status='active')
 		AND (a.id IS NULL OR a.provider=`+providerArg+`)
 		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
-		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+` ORDER BY c.id`, args...)
+		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+`
+		AND `+platformAccountSQL("a")+` ORDER BY c.id`, args...)
 	if err != nil {
 		return nil, mapDBError("read upstream account eligibility", err)
 	}
