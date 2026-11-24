@@ -3973,6 +3973,22 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 /* Per-account Shadowsocks exits share the dashboard's responsive card layout. */
 .egress-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
 .egress-card { min-width: 0; }
+.provider-add, #provider-oauth { margin-top: 1rem; }
+.provider-add-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: .75rem; }
+.provider-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1rem; margin-top: 1rem; }
+.provider-card { min-width: 0; display: grid; gap: .5rem; align-content: start; }
+.provider-card .panel-heading h3 { overflow-wrap: anywhere; }
+.provider-card > p { margin: 0; }
+.tenant-providers-table + h3, [data-section="tenant-providers"] h3 { margin-top: 1.5rem; }
+.provider-card .actions { flex-wrap: wrap; }
+.provider-settings summary { cursor: pointer; color: var(--accent-text); }
+.provider-inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; margin-top: .75rem; }
+.provider-inline-form label { flex: 1 1 12rem; min-width: 0; }
+.provider-quota:empty { display: none; }
+#provider-oauth-status[data-kind="error"] { color: var(--danger); }
+#provider-oauth-link { overflow-wrap: anywhere; }
+.tenant-providers-table td .actions { flex-wrap: wrap; }
+.upstream-owner-transfer button { justify-self: start; }
 .egress-address { overflow-wrap: anywhere; }
 .egress-probe-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .65rem 1rem; margin: 0 0 1rem; }
 .egress-probe-bar label { display: grid; gap: .35rem; flex: 0 1 22rem; min-width: min(100%, 16rem); }

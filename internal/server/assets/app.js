@@ -25,6 +25,8 @@ const sectionTitles = {
   "antigravity-accounts": "上游账号",
   "anthropic-accounts": "Claude 账号",
   information: "数据维护",
+  providers: "我的供应商",
+  "tenant-providers": "租户供应商",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("egress-servers");
@@ -40,6 +42,10 @@ ownerOnlySections.add("groups");
 ownerOnlySections.add("invitations");
 ownerOnlySections.add("information");
 ownerOnlySections.add("monitoring");
+ownerOnlySections.add("tenant-providers");
+// Members reach these while the marketplace is enabled; egress-servers then
+// lists their own nodes.
+const memberMarketSections = new Set(["providers", "egress-servers"]);
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -2830,10 +2836,15 @@ function renderState(value) {
     resetBillingUserSearch();
     resetModelMultipliers();
     resetModelPrices();
+    resetMyProviders();
+    resetTenantProviders();
+    resetEgressServers();
     globalUserSearch?.reset();
     recoveryUserSearch?.reset();
   }
   all(".owner-only").forEach((node) => node.classList.toggle("hidden", !owner));
+  all(".member-market").forEach((node) => node.classList.toggle("hidden", !marketplaceMember()));
+  if (!marketplaceMember()) stopProviderOAuth();
   if (!owner && byId("global-tab").getAttribute("aria-selected") === "true") showUsageTab("personal");
   renderCurrentIdentity();
   hide("auth");
@@ -9278,7 +9289,8 @@ function startUpstreamConcurrency() {
 
 function egressIdentityCurrent() {
   const generation = identityGeneration;
-  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+  const role = state?.user?.role;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === role && egressAllowed();
 }
 
 function egressMessage(message = "", kind = "error") {
@@ -9291,7 +9303,7 @@ function egressMessage(message = "", kind = "error") {
 
 function resetEgressServers() {
   egressSequence++;
-  globalThis.window?.clearTimeout(egressPollTimer);
+  globalThis.window?.clearTimeout?.(egressPollTimer);
   egressServers = [];
   egressLoaded = false;
   egressOperation = null;
@@ -9316,11 +9328,11 @@ function populateEgressSelect(select, selected = "") {
 }
 
 async function loadEgressServers() {
-  if (loggingOut || state?.user?.role !== "owner") return;
+  if (loggingOut || !egressAllowed()) return;
   const currentIdentity = egressIdentityCurrent();
   const sequence = ++egressSequence;
   const current = () => currentIdentity() && sequence === egressSequence;
-  const result = await api("/admin/egress-servers", undefined, current);
+  const result = await api(egressBase(), undefined, current);
   if (!current()) return;
   if (!Array.isArray(result?.servers)) throw new Error("出口服务器响应格式异常。");
   egressServers = result.servers;
@@ -9328,7 +9340,7 @@ async function loadEgressServers() {
   egressListing = result;
   for (const id of egressProbes.keys()) if (!egressServers.some((node) => node.id === id)) egressProbes.delete(id);
   renderEgressServers(result);
-  for (const select of all(".upstream-egress-select")) populateEgressSelect(select, select.value);
+  for (const select of all(".upstream-egress-select, .provider-egress-select")) populateEgressSelect(select, select.value);
   syncUpstreamAccountControls();
   window.clearTimeout(egressPollTimer);
   if (location.hash === "#egress-servers") {
@@ -9363,14 +9375,14 @@ function egressProbeStatus(node) {
 }
 
 async function testEgressServer(node, target = egressProbeTarget()) {
-  if (loggingOut || state?.user?.role !== "owner" || egressProbes.get(node.id)?.state === "testing") return;
+  if (loggingOut || !egressAllowed() || egressProbes.get(node.id)?.state === "testing") return;
   const currentIdentity = egressIdentityCurrent();
   const probe = {state: "testing", revision: node.revision, target};
   const current = () => currentIdentity() && egressProbes.get(node.id) === probe;
   egressProbes.set(node.id, probe);
   if (egressListing) renderEgressServers(egressListing);
   try {
-    const result = await api(`/admin/egress-servers/${encodeURIComponent(node.id)}/test`, {method: "POST", body: JSON.stringify({target})}, current);
+    const result = await api(`${egressBase()}/${encodeURIComponent(node.id)}/test`, {method: "POST", body: JSON.stringify({target})}, current);
     if (!current()) return;
     Object.assign(probe, {state: "done", ok: result?.ok === true, code: String(result?.code || ""), latency: Number(result?.latency_ms), testedAt: result?.tested_at || new Date().toISOString()});
   } catch (error) {
@@ -9381,7 +9393,7 @@ async function testEgressServer(node, target = egressProbeTarget()) {
 }
 
 async function testAllEgressServers() {
-  if (loggingOut || state?.user?.role !== "owner") return;
+  if (loggingOut || !egressAllowed()) return;
   const target = egressProbeTarget();
   const queue = egressServers.filter((node) => egressNodeApplied(node));
   if (!queue.length) {
@@ -9426,7 +9438,7 @@ function renderEgressServers(result) {
       probe && element("p", {className: "egress-probe", dataset: {kind: probe.kind}, text: probe.text}),
       element("div", {className: "actions"}, test, edit, remove));
   }));
-  if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。"));
+  if (!egressServers.length) host.append(emptyState(state?.user?.role === "owner" ? "尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。" : "还没有出口服务器。新增节点后，可在“我的供应商”中为账号选择。"));
 }
 
 function egressProtocolSummary(node) {
@@ -9435,7 +9447,7 @@ function egressProtocolSummary(node) {
 }
 
 function openEgressEditor(node = null) {
-  if (loggingOut || state?.user?.role !== "owner" || egressOperation) return;
+  if (loggingOut || !egressAllowed() || egressOperation) return;
   const form = byId("egress-form");
   form.reset();
   egressDraftID = node?.id || "";
@@ -9544,7 +9556,7 @@ async function saveEgressServer(event) {
   if (form.elements.password.value && (protocol === "ss" || username)) payload.password = form.elements.password.value;
   egressOperation = operation;
   try {
-    await sensitiveAction(() => api(`/admin/egress-servers${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
+    await sensitiveAction(() => api(`${egressBase()}${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
       method: operation.id ? "PUT" : "POST", body: JSON.stringify(payload),
     }, current), current);
     if (!current()) return;
@@ -9559,17 +9571,547 @@ async function saveEgressServer(event) {
 }
 
 async function deleteEgressServer(node) {
-  if (egressOperation || loggingOut || state?.user?.role !== "owner") return;
+  if (egressOperation || loggingOut || !egressAllowed()) return;
   const operation = {id: node.id};
   egressOperation = operation;
   const identity = egressIdentityCurrent();
   const current = () => identity() && egressOperation === operation;
   try {
-    await sensitiveAction(() => api(`/admin/egress-servers/${encodeURIComponent(node.id)}`, {method: "DELETE"}, current), current);
+    await sensitiveAction(() => api(`${egressBase()}/${encodeURIComponent(node.id)}`, {method: "DELETE", body: "{}"}, current), current);
     if (!current()) return;
     egressMessage("节点已删除。", "ok");
     await loadEgressServers();
   } finally { if (egressOperation === operation) egressOperation = null; }
+}
+
+// ---- Tenant providers (aggregation gateway stage 2) ---------------------------
+// Members add and manage their own upstream accounts and egress nodes while
+// the marketplace is enabled; the Owner moderates and transfers them.
+
+const providerNames = {codex: "Codex", anthropic: "Claude", antigravity: "Antigravity"};
+const providerRefusalMessages = {
+  account_owned_elsewhere: "该上游账号已归平台或其他用户所有，不能重复添加。",
+  provider_limit_reached: "已达到可添加的数量上限。",
+  account_in_platform_use: "该上游账号仍被平台配置使用，暂不能添加。",
+};
+const providerAuthorizationHosts = {codex: "auth.openai.com", anthropic: "claude.ai", antigravity: "accounts.google.com"};
+const ownerTransferPaths = {codex: "upstream-accounts", antigravity: "antigravity-accounts", anthropic: "anthropic-accounts"};
+let myProviders = null;
+let myProvidersSequence = 0;
+let providerOAuth = null;
+let providerSupplierModels = null;
+let tenantProviders = null;
+let tenantProvidersSequence = 0;
+let ownerTransferTarget = null;
+let ownerTransferUserSearch = null;
+
+function marketplaceMember() {
+  return state?.user?.role === "member" && state?.marketplace?.enabled === true;
+}
+
+function egressAllowed() {
+  return state?.user?.role === "owner" || marketplaceMember();
+}
+
+// Members manage their own nodes; the Owner the platform's.
+function egressBase() {
+  return state?.user?.role === "owner" ? "/admin/egress-servers" : "/admin/me/egress-servers";
+}
+
+function providersIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && marketplaceMember();
+}
+
+function resetMyProviders() {
+  myProvidersSequence++;
+  stopProviderOAuth();
+  myProviders = null;
+  providerSupplierModels = null;
+  byId("providers-list")?.replaceChildren();
+  const summary = byId("providers-summary");
+  if (summary) summary.textContent = "正在加载…";
+}
+
+async function loadMyProviders() {
+  if (!marketplaceMember()) return;
+  const identity = providersIdentityCurrent();
+  const sequence = ++myProvidersSequence;
+  const current = () => identity() && sequence === myProvidersSequence;
+  const result = await api("/admin/me/providers", undefined, current);
+  if (!current()) return;
+  if (!Array.isArray(result?.accounts) || !Array.isArray(result?.providers)) throw new Error("供应商响应格式异常。");
+  myProviders = result;
+  renderMyProviders();
+}
+
+function providerAccountStatus(account) {
+  if (account.admin_suspended) return {status: "unavailable", text: "已被管理员停用"};
+  if (account.gateway_manual_status === "manual_disabled") return {status: "degraded", text: "已停用"};
+  return {status: account.status === "available" ? "available" : "degraded", text: upstreamFinalStatusLabels[account.status] || "状态未知"};
+}
+
+function renderMyProviders() {
+  const result = myProviders;
+  if (!result) return;
+  const summary = byId("providers-summary");
+  const parts = [`已添加 ${formatInteger(result.account_count)} / ${formatInteger(result.max_accounts_per_user)} 个账号`];
+  if (result.sync_warning) parts.push("账号状态暂时无法同步，显示的是上次记录");
+  summary.textContent = parts.join(" · ");
+  const select = byId("provider-add-provider");
+  const selected = select.value;
+  select.replaceChildren(...result.providers.map((provider) => element("option", {text: providerNames[provider] || provider, attributes: {value: provider}})));
+  if (result.providers.includes(selected)) select.value = selected;
+  populateEgressSelect(byId("provider-add-egress"), byId("provider-add-egress").value);
+  const full = result.account_count >= result.max_accounts_per_user;
+  for (const id of ["provider-oauth-start", "provider-import-open", "provider-supplier-open"]) {
+    const button = byId(id);
+    button.disabled = full || !result.providers.length;
+    button.title = full ? "已达到可添加的数量上限" : "";
+  }
+  byId("provider-supplier-open").classList.toggle("hidden", !result.member_suppliers);
+  syncProviderImportAvailability();
+  const host = byId("providers-list");
+  host.replaceChildren(...result.accounts.map((account) => providerAccountCard(account)));
+  if (!result.accounts.length) host.append(emptyState("还没有添加账号。选择协议后可以授权登录或导入凭据。"));
+}
+
+function syncProviderImportAvailability() {
+  const provider = byId("provider-add-provider")?.value;
+  const button = byId("provider-import-open");
+  if (!button) return;
+  // CPA learns an Antigravity account's address only during a login.
+  if (provider === "antigravity") button.disabled = true;
+}
+
+function providerAccountCard(account) {
+  const status = providerAccountStatus(account);
+  const supplier = account.credential_kind === "supplier";
+  const enabled = account.gateway_manual_status !== "manual_disabled";
+  const card = element("article", {className: "panel provider-card", dataset: {accountId: account.id, provider: account.provider}},
+    element("div", {className: "panel-heading"},
+      element("h3", {text: upstreamAccountLabel(account)}),
+      element("span", {className: "status-badge", dataset: {status: status.status}, text: status.text})),
+    element("p", {className: "muted", text: [providerNames[account.provider] || account.provider, supplier ? "API Key 供应商" : "OAuth 账号",
+      account.email_masked, supplier ? (account.supplier_models || []).join("、") : account.plan !== "unknown" && account.plan].filter(Boolean).join(" · ")}),
+    element("p", {className: "muted", text: `本月请求 ${formatInteger(account.request_count)} 次 · 折合费用 ${formatUSD(account.equivalent_cost_usd, "US$0.00")} · 出口：${account.egress_server_name || (account.egress_server_id ? "已绑定节点" : "全局出口")}`}));
+  if (account.admin_suspended) card.append(element("p", {className: "callout", text: "管理员已停用这个账号，你不能自行启用。"}));
+
+  const toggle = element("button", {type: "button", className: "secondary", text: enabled ? "停用" : "启用"});
+  toggle.disabled = !account.can_manage || (!enabled && account.admin_suspended);
+  toggle.addEventListener("click", () => runButton(toggle, () => providerAccountWrite(account, "status", {enabled: !enabled}, enabled ? "账号已停用。" : "账号已启用。"), "保存中…"));
+  const actions = element("div", {className: "actions"}, toggle);
+  if (!supplier) {
+    const refresh = element("button", {type: "button", className: "secondary", text: "刷新凭据"});
+    refresh.addEventListener("click", () => runButton(refresh, () => providerAccountWrite(account, "refresh", {}, "凭据已刷新。", "POST"), "刷新中…"));
+    const quota = element("button", {type: "button", className: "secondary", text: "查看额度"});
+    quota.addEventListener("click", () => runButton(quota, () => providerAccountQuota(account, card), "查询中…"));
+    actions.append(refresh, quota);
+  }
+  const remove = element("button", {type: "button", className: "secondary danger", text: "删除"});
+  remove.addEventListener("click", () => {
+    if (remove.dataset.confirm !== "true") { remove.dataset.confirm = "true"; remove.textContent = "确认删除"; return; }
+    runButton(remove, () => deleteProviderAccount(account), "删除中…");
+  });
+  actions.append(remove);
+
+  const alias = element("input", {attributes: {name: "alias", maxlength: "40", "aria-label": "账号别名"}});
+  alias.value = account.alias || "";
+  const aliasForm = element("form", {className: "provider-inline-form"}, element("label", {text: "别名"}, alias),
+    element("button", {type: "submit", className: "secondary", text: "保存别名"}));
+  aliasForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(aliasForm.querySelector("button"), () => providerAccountWrite(account, "alias", {alias: alias.value.trim()}, "别名已保存。"), "保存中…");
+  });
+  const limit = element("input", {type: "number", attributes: {name: "concurrent_limit", min: "1", step: "1", "aria-label": "并发上限"}});
+  limit.value = String(account.concurrent_limit || 1);
+  const limitForm = element("form", {className: "provider-inline-form"}, element("label", {text: "并发上限"}, limit),
+    element("button", {type: "submit", className: "secondary", text: "保存上限"}));
+  limitForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(limitForm.querySelector("button"), () => providerAccountWrite(account, "concurrent-limit", {concurrent_limit: Number(limit.value)}, "并发上限已保存。"), "保存中…");
+  });
+  const egress = element("select", {className: "provider-egress-select", attributes: {"aria-label": "出口服务器"}});
+  populateEgressSelect(egress, account.egress_server_id || "");
+  const egressForm = element("form", {className: "provider-inline-form"}, element("label", {text: "出口"}, egress),
+    element("button", {type: "submit", className: "secondary", text: "保存出口"}));
+  egressForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(egressForm.querySelector("button"), () => providerAccountWrite(account, "egress", {egress_server_id: egress.value || null}, "出口已保存。"), "保存中…");
+  });
+  card.append(actions,
+    element("details", {className: "provider-settings"}, element("summary", {text: "账号设置"}), aliasForm, limitForm, egressForm),
+    element("div", {className: "provider-quota", attributes: {"aria-live": "polite"}}),
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}));
+  return card;
+}
+
+function providerAccountPath(account, action = "") {
+  return `/admin/me/providers/${encodeURIComponent(account.provider)}/accounts/${encodeURIComponent(account.id)}${action ? `/${action}` : ""}`;
+}
+
+async function providerAccountWrite(account, action, payload, message, method = "PUT") {
+  const current = providersIdentityCurrent();
+  await sensitiveAction(() => api(providerAccountPath(account, action), {method, body: JSON.stringify(payload)}, current), current);
+  if (!current()) return;
+  notice(message, "ok");
+  await loadMyProviders();
+}
+
+async function providerAccountQuota(account, card) {
+  const current = providersIdentityCurrent();
+  const result = await sensitiveAction(() => api(providerAccountPath(account, "quota"), {method: "POST", body: "{}"}, current), current);
+  if (!current()) return;
+  const host = card.querySelector(".provider-quota");
+  const windows = Array.isArray(result?.windows) ? result.windows : [];
+  const models = Array.isArray(result?.quota) ? result.quota : [];
+  const lines = [
+    ...windows.map((window) => `${upstreamQuotaWindowNames[window.window] || window.window}：${Number.isFinite(window.used_percent) ? `已用 ${window.used_percent}%` : "用量未知"}${window.reset_at ? ` · ${formatDateTime(window.reset_at, "")} 重置` : ""}`),
+    ...models.map((model) => `${model.model}：剩余 ${formatPercent(model.remaining_fraction)}`),
+  ];
+  host.replaceChildren(...(lines.length ? lines : ["暂无额度数据。"]).map((line) => element("p", {className: "muted", text: line})));
+}
+
+async function deleteProviderAccount(account) {
+  const current = providersIdentityCurrent();
+  await sensitiveAction(() => api(providerAccountPath(account), {method: "DELETE", body: "{}"}, current), current);
+  if (!current()) return;
+  notice("账号已删除，归属已释放。", "ok");
+  await loadMyProviders();
+}
+
+function providerAddChoice() {
+  const form = byId("provider-add-form");
+  const provider = form.elements.provider.value;
+  if (!Object.hasOwn(providerNames, provider)) throw new Error("请选择协议。");
+  const egress = form.elements.egress_server_id.value;
+  return {provider, egress};
+}
+
+function validProviderAuthorizationURL(raw, provider) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && !url.port && !url.username && !url.password && url.hostname === providerAuthorizationHosts[provider];
+  } catch (_) {
+    return false;
+  }
+}
+
+// The authorization ends on a local address the browser cannot open; its
+// query carries the code and state.
+function providerCallbackFields(raw) {
+  let url;
+  try { url = new URL(String(raw || "").trim()); } catch (_) { throw new Error("请粘贴授权完成后的本地回调地址。"); }
+  if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.hash) {
+    throw new Error("请粘贴授权完成后的本地回调地址。");
+  }
+  const code = url.searchParams.get("code");
+  const callbackState = url.searchParams.get("state");
+  if (!code || !callbackState || url.searchParams.getAll("code").length !== 1 || url.searchParams.getAll("state").length !== 1 || url.searchParams.has("error")) {
+    throw new Error("回调缺少授权码，或授权没有成功。");
+  }
+  return {code, state: callbackState};
+}
+
+function stopProviderOAuth() {
+  if (providerOAuth) globalThis.window?.clearTimeout?.(providerOAuth.timer);
+  providerOAuth = null;
+  const host = byId("provider-oauth");
+  if (host) hide(host);
+  const form = byId("provider-oauth-callback-form");
+  if (form) form.reset();
+}
+
+function providerOAuthStatus(message, kind = "muted") {
+  const target = byId("provider-oauth-status");
+  if (!target) return;
+  target.textContent = message;
+  target.dataset.kind = kind;
+}
+
+async function startProviderOAuth() {
+  const {provider, egress} = providerAddChoice();
+  const current = providersIdentityCurrent();
+  const body = egress ? {egress_server_id: egress} : {};
+  const oauth = await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/oauth`, {method: "POST", body: JSON.stringify(body)}, current), current);
+  if (!current()) return;
+  if (!oauth?.id || !validProviderAuthorizationURL(oauth.url, provider)) throw new Error("供应商授权地址无效。");
+  stopProviderOAuth();
+  const session = {id: oauth.id, provider, expiresAt: Date.now() + Number(oauth.expires_in || 300) * 1000, timer: 0};
+  providerOAuth = session;
+  byId("provider-oauth-link").href = oauth.url;
+  byId("provider-oauth-title").textContent = `授权登录 ${providerNames[provider]}`;
+  providerOAuthStatus("请在新窗口完成授权，然后把回调地址粘贴到下方。授权有效期 5 分钟。");
+  show("provider-oauth");
+  globalThis.window?.open?.(oauth.url, "_blank", "noopener,noreferrer");
+  scheduleProviderOAuthPoll(session);
+}
+
+function scheduleProviderOAuthPoll(session) {
+  session.timer = globalThis.window?.setTimeout?.(() => pollProviderOAuth(session).catch((error) => {
+    if (providerOAuth === session) providerOAuthStatus(friendlyError(error), "error");
+  }), 2000) || 0;
+}
+
+async function pollProviderOAuth(session) {
+  if (providerOAuth !== session || !marketplaceMember()) return;
+  if (Date.now() > session.expiresAt) {
+    providerOAuthStatus("授权已过期，请重新开始。", "error");
+    return;
+  }
+  const current = () => providersIdentityCurrent()() && providerOAuth === session;
+  const result = await api(`/admin/me/providers/oauth/${encodeURIComponent(session.id)}/status`, undefined, current);
+  if (!current()) return;
+  if (result?.status === "wait") {
+    scheduleProviderOAuthPoll(session);
+    return;
+  }
+  if (result?.status === "ok") {
+    stopProviderOAuth();
+    notice("账号已添加。", "ok");
+    await loadMyProviders();
+    return;
+  }
+  providerOAuthStatus(providerRefusalMessages[result?.error] || "授权没有完成，请重新开始。", "error");
+  session.done = true;
+}
+
+async function submitProviderCallback(event) {
+  const session = providerOAuth;
+  if (!session || session.done) throw new Error("请先开始授权登录。");
+  const fields = providerCallbackFields(event.currentTarget.elements.callback.value);
+  const current = () => providersIdentityCurrent()() && providerOAuth === session;
+  await sensitiveAction(() => api(`/admin/me/providers/oauth/${encodeURIComponent(session.id)}/callback`, {method: "POST", body: JSON.stringify(fields)}, current), current);
+  if (!current()) return;
+  event.currentTarget.reset();
+  providerOAuthStatus("已提交，正在确认账号…");
+}
+
+// Only the tokens leave the browser; a Claude credential file may nest them
+// under claudeAiOauth.
+function providerImportFields(raw, provider) {
+  let value;
+  try { value = JSON.parse(raw); } catch (_) { throw new Error("凭据必须是 JSON 对象。"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("凭据必须是 JSON 对象。");
+  let input = value;
+  if (provider === "anthropic" && Object.hasOwn(value, "claudeAiOauth")) {
+    const oauth = value.claudeAiOauth;
+    if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) throw new Error("claudeAiOauth 必须是 JSON 对象。");
+    input = {refresh_token: oauth.refreshToken, access_token: oauth.accessToken};
+  } else if (provider === "codex" && value.tokens && typeof value.tokens === "object" && !Array.isArray(value.tokens)) {
+    input = value.tokens;
+  }
+  const result = {};
+  for (const key of provider === "anthropic" ? ["refresh_token", "access_token"] : ["refresh_token", "access_token", "id_token"]) {
+    const token = input[key];
+    if (token === undefined || token === null) continue;
+    if (typeof token !== "string" || new TextEncoder().encode(token).length > 32768) throw new Error("令牌必须是最多 32768 字节的字符串。");
+    if (token.trim()) result[key] = token.trim();
+  }
+  if (provider === "anthropic" ? !result.refresh_token && !result.access_token : !result.refresh_token) {
+    throw new Error(provider === "anthropic" ? "Claude 凭据至少需要 access_token 或 refresh_token。" : "凭据缺少 refresh_token。");
+  }
+  return result;
+}
+
+function openProviderImport() {
+  const {provider} = providerAddChoice();
+  if (provider === "antigravity") throw new Error("Antigravity 账号只能授权登录。");
+  const form = byId("provider-import-form");
+  form.reset();
+  form.dataset.provider = provider;
+  byId("provider-import-title").textContent = `导入 ${providerNames[provider]} 凭据`;
+  openDialog("provider-import-dialog");
+}
+
+async function submitProviderImport(event) {
+  const form = event.currentTarget;
+  const provider = form.dataset.provider;
+  const {egress} = providerAddChoice();
+  const payload = providerImportFields(form.elements.credentials.value, provider);
+  if (egress) payload.egress_server_id = egress;
+  const current = providersIdentityCurrent();
+  try {
+    await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/credentials`, {method: "POST", body: JSON.stringify(payload)}, current), current);
+  } finally {
+    for (const key of Object.keys(payload)) delete payload[key];
+  }
+  if (!current()) return;
+  form.reset();
+  byId("provider-import-dialog").close();
+  notice("凭据已导入，账号已添加。", "ok");
+  await loadMyProviders();
+}
+
+function openProviderSupplier() {
+  const {provider} = providerAddChoice();
+  const form = byId("provider-supplier-form");
+  form.reset();
+  form.dataset.provider = provider;
+  providerSupplierModels = null;
+  hide("provider-supplier-models");
+  byId("provider-supplier-model-list").replaceChildren();
+  byId("provider-supplier-title").textContent = `添加 ${providerNames[provider]} API Key 供应商`;
+  openDialog("provider-supplier-dialog");
+}
+
+async function submitProviderSupplier(event) {
+  const form = event.currentTarget;
+  const provider = form.dataset.provider;
+  const {egress} = providerAddChoice();
+  const payload = {url: form.elements.url.value.trim(), api_key: form.elements.api_key.value};
+  if (egress) payload.egress_server_id = egress;
+  if (providerSupplierModels) {
+    payload.models = all("input:checked", byId("provider-supplier-model-list")).map((input) => input.value);
+    if (!payload.models.length) throw new Error("请至少选择一个模型。");
+  }
+  const current = providersIdentityCurrent();
+  let result;
+  try {
+    result = await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/suppliers`, {method: "POST", body: JSON.stringify(payload)}, current), current);
+  } finally {
+    delete payload.api_key;
+  }
+  if (!current()) return;
+  if (result?.status === "models_required" && Array.isArray(result.models)) {
+    providerSupplierModels = result.models;
+    byId("provider-supplier-model-list").replaceChildren(...result.models.map((model) => element("label", {className: "user-check-row"},
+      element("input", {type: "checkbox", attributes: {value: model}}), element("span", {text: model}))));
+    show("provider-supplier-models");
+    setLocalMessage(form, "供应商没有提供模型列表，请勾选它支持的模型后再保存。", "ok");
+    return;
+  }
+  form.reset();
+  byId("provider-supplier-dialog").close();
+  notice("API Key 供应商已添加。", "ok");
+  await loadMyProviders();
+}
+
+// ---- Owner: tenant providers ---------------------------------------------------
+
+function tenantProvidersIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function resetTenantProviders() {
+  tenantProvidersSequence++;
+  tenantProviders = null;
+  ownerTransferTarget = null;
+  byId("tenant-providers-body")?.replaceChildren();
+  byId("tenant-egress-body")?.replaceChildren();
+  ownerTransferUserSearch?.reset();
+  const dialog = byId("owner-transfer-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+function tenantProvidersMessage(message = "", kind = "error") {
+  const host = byId("tenant-providers-message");
+  if (!host) return;
+  host.textContent = message;
+  host.dataset.kind = kind;
+  host.classList.toggle("hidden", !message);
+}
+
+async function loadTenantProviders() {
+  if (state?.user?.role !== "owner") return;
+  const identity = tenantProvidersIdentityCurrent();
+  const sequence = ++tenantProvidersSequence;
+  const current = () => identity() && sequence === tenantProvidersSequence;
+  const result = await api("/admin/tenant-providers", undefined, current);
+  if (!current()) return;
+  if (!Array.isArray(result?.accounts) || !Array.isArray(result?.egress_servers)) throw new Error("租户供应商响应格式异常。");
+  tenantProviders = result;
+  renderTenantProviders();
+}
+
+function renderTenantProviders() {
+  const result = tenantProviders;
+  if (!result) return;
+  const body = byId("tenant-providers-body");
+  body.replaceChildren(...result.accounts.map((account) => {
+    const suspend = element("button", {type: "button", className: "secondary", text: account.admin_suspended ? "恢复" : "停用"});
+    suspend.addEventListener("click", () => runButton(suspend, () => setTenantProviderSuspension(account, !account.admin_suspended), "保存中…"));
+    const transfer = element("button", {type: "button", className: "secondary", text: "转移归属"});
+    transfer.addEventListener("click", () => openOwnerTransfer({provider: account.provider, id: account.id, owner: account.owner_user_id,
+      label: `${upstreamAccountLabel(account)}（当前归 ${account.owner_display_name || account.owner_username}）`}));
+    return element("tr", {dataset: {accountId: account.id}},
+      element("td", {}, element("strong", {text: account.owner_display_name || account.owner_username}), element("small", {className: "muted", text: ` ${account.owner_username}`})),
+      element("td", {text: providerNames[account.provider] || account.provider}),
+      element("td", {text: `${upstreamAccountLabel(account)}${account.credential_kind === "supplier" ? " · API Key" : ""}`}),
+      element("td", {}, element("span", {className: "status-badge", dataset: {status: account.admin_suspended ? "unavailable" : account.status === "available" ? "available" : "degraded"},
+        text: account.admin_suspended ? "已停用（管理员）" : upstreamFinalStatusLabels[account.status] || "状态未知"})),
+      element("td", {text: account.egress_server_name || "全局出口"}),
+      element("td", {}, element("div", {className: "actions"}, suspend, transfer)));
+  }));
+  if (!result.accounts.length) body.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加账号。"})));
+  const nodes = byId("tenant-egress-body");
+  nodes.replaceChildren(...result.egress_servers.map((node) => element("tr", {},
+    element("td", {text: node.owner_username}), element("td", {text: node.name}), element("td", {text: `${node.server}:${node.port}`}),
+    element("td", {text: node.protocol === "socks5" ? "SOCKS5" : "SS"}), element("td", {text: formatInteger(node.bound_accounts)}))));
+  if (!result.egress_servers.length) nodes.append(element("tr", {}, element("td", {attributes: {colspan: "5"}, className: "empty", text: "成员还没有添加出口服务器。"})));
+}
+
+async function setTenantProviderSuspension(account, suspended) {
+  const current = tenantProvidersIdentityCurrent();
+  await sensitiveAction(() => api(`/admin/tenant-providers/${encodeURIComponent(account.id)}/suspension`, {method: "PUT", body: JSON.stringify({suspended})}, current), current);
+  if (!current()) return;
+  tenantProvidersMessage(suspended ? "账号已停用。" : "账号已恢复。", "ok");
+  await loadTenantProviders();
+}
+
+async function openOwnerTransfer(target) {
+  if (state?.user?.role !== "owner") return;
+  ownerTransferTarget = target;
+  const form = byId("owner-transfer-form");
+  form.reset();
+  byId("owner-transfer-subject").textContent = target.label;
+  syncOwnerTransferTarget();
+  openDialog("owner-transfer-dialog");
+  ownerTransferUserSearch ||= createUserSearch("owner-transfer-user-search", null, (user) => user.id === target.owner ? "当前主人" : "");
+  ownerTransferUserSearch.reset();
+  const current = tenantProvidersIdentityCurrent();
+  let users = billingUsers;
+  if (!users.length) {
+    const result = await api("/admin/billing/users", undefined, current);
+    users = (Array.isArray(result) ? result : result?.users || result?.items || []).map(normalizeBillingUser);
+  }
+  if (!current() || ownerTransferTarget !== target) return;
+  ownerTransferUserSearch.setUsers(users.filter((user) => user.role === "member" && user.status === "active" && user.id !== target.owner));
+}
+
+function syncOwnerTransferTarget() {
+  const form = byId("owner-transfer-form");
+  const member = form.elements.target.value !== "platform";
+  byId("owner-transfer-user").classList.toggle("hidden", !member);
+}
+
+async function submitOwnerTransfer(event) {
+  const target = ownerTransferTarget;
+  if (!target) return;
+  const form = event.currentTarget;
+  const member = form.elements.target.value !== "platform";
+  const owner = member ? ownerTransferUserSearch?.selectedID() : null;
+  if (member && !owner) throw new Error("请选择新主人。");
+  if (!member && !target.owner) throw new Error("这已经是平台账号。");
+  const current = () => tenantProvidersIdentityCurrent()() && ownerTransferTarget === target;
+  const result = await sensitiveAction(() => api(`/admin/${ownerTransferPaths[target.provider]}/${encodeURIComponent(target.id)}/owner`, {
+    method: "PUT", body: JSON.stringify({owner_user_id: owner || null, expected_owner_user_id: target.owner || null}),
+  }, current), current);
+  if (!current()) return;
+  byId("owner-transfer-dialog").close();
+  ownerTransferTarget = null;
+  notice(result?.egress_reset ? "归属已转移，账号改用全局出口。" : "归属已转移。", "ok");
+  if (location.hash === "#tenant-providers") await loadTenantProviders();
+  else if (["#upstream-accounts", "#antigravity-accounts", "#anthropic-accounts"].includes(location.hash)) await loadUpstreamAccounts(upstreamAccountQueryFromForm());
+}
+
+function upstreamOwnerTransferBlock(account) {
+  const button = element("button", {type: "button", className: "secondary", text: "转给成员…"});
+  button.disabled = !account.id || state?.user?.role !== "owner";
+  button.addEventListener("click", () => openOwnerTransfer({provider: upstreamAccountProvider, id: account.id, owner: "", label: `${upstreamAccountLabel(account)}（平台账号）`}));
+  return element("section", {className: "tool-block upstream-owner-transfer"}, element("h4", {text: "账号归属"}),
+    element("p", {className: "muted", text: "平台账号。转给成员后，它只归该成员所有，不再服务平台请求。"}), button);
 }
 
 const siteImageSlots = ["community_qr", "recharge_wechat", "recharge_alipay"];
@@ -9966,6 +10508,7 @@ function upstreamAccountCard(account) {
     ),
     upstreamEgressBlock(account),
     upstreamAccessBlock(account),
+    ...(account.id ? [upstreamOwnerTransferBlock(account)] : []),
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
@@ -11022,14 +11565,22 @@ function bindNavigation() {
   });
 }
 
+// The Owner's accounts are the platform's: "providers" is for members, who
+// reach it and their own egress nodes only while the marketplace is enabled.
+function sectionAllowed(section) {
+  if (state?.user?.role === "owner") return section !== "providers";
+  if (memberMarketSections.has(section)) return marketplaceMember();
+  return !ownerOnlySections.has(section);
+}
+
 function routeFromHash(focusContent = true) {
   if (!state) return;
   billingUserSearch?.close();
   globalUserSearch?.close();
   const requested = location.hash.slice(1);
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
-  const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
-  const section = known && ownerAllowed ? requested : "overview";
+  const owner = state.user.role === "owner";
+  const section = known && sectionAllowed(requested) ? requested : "overview";
   if (requested !== section) history.replaceState(null, "", `#${section}`);
   all(".view").forEach((view) => view.classList.toggle("hidden", view.dataset.section !== section));
   all("#sidebar [data-view]").forEach((link) => {
@@ -11037,7 +11588,7 @@ function routeFromHash(focusContent = true) {
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  byId("page-title").textContent = sectionTitles[section];
+  byId("page-title").textContent = section === "egress-servers" && !owner ? "我的出口" : sectionTitles[section];
   document.title = `${sectionTitles[section]} · 水源喵中转站`;
   if (focusContent || navigationDrawerOpen) {
     closeNavigationDrawer(false);
@@ -11050,9 +11601,11 @@ function routeFromHash(focusContent = true) {
     });
   }
   syncVisiblePolling();
-  if (section === "egress-servers" || ["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) {
+  if (section === "egress-servers" || section === "providers" || ["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) {
     loadEgressServers().catch((error) => egressMessage(friendlyError(error)));
   } else { window.clearTimeout(egressPollTimer); }
+  if (section === "providers") loadMyProviders().catch((error) => setLocalMessage(byId("provider-add-form"), friendlyError(error)));
+  if (section === "tenant-providers") loadTenantProviders().catch((error) => tenantProvidersMessage(friendlyError(error)));
   if (section === "overview") loadOverview();
   // Errors are shown inside the panel, next to its data time.
   if (section === "usage") loadUsageModels().catch(() => {});
@@ -11225,6 +11778,24 @@ function bindUI() {
   byId("egress-form").elements.protocol.addEventListener("change", () => syncEgressProtocolFields(byId("egress-form")));
   byId("egress-form").elements.username.addEventListener("input", () => syncEgressPasswordHelp(byId("egress-form")));
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
+  bindAsync("providers-refresh", "click", () => loadMyProviders(), "刷新中…", providersIdentityCurrent);
+  byId("provider-add-provider").addEventListener("change", () => { if (myProviders) renderMyProviders(); });
+  bindAsync("provider-oauth-start", "click", startProviderOAuth, "正在开始…", providersIdentityCurrent);
+  byId("provider-oauth-cancel").addEventListener("click", stopProviderOAuth);
+  bindAsync("provider-oauth-callback-form", "submit", submitProviderCallback, "提交中…", providersIdentityCurrent);
+  byId("provider-import-open").addEventListener("click", () => {
+    try { openProviderImport(); } catch (error) { setLocalMessage(byId("provider-add-form"), friendlyError(error)); }
+  });
+  bindAsync("provider-import-form", "submit", submitProviderImport, "导入中…", providersIdentityCurrent);
+  byId("provider-supplier-open").addEventListener("click", () => {
+    try { openProviderSupplier(); } catch (error) { setLocalMessage(byId("provider-add-form"), friendlyError(error)); }
+  });
+  bindAsync("provider-supplier-form", "submit", submitProviderSupplier, "验证中…", providersIdentityCurrent);
+  byId("provider-import-dialog").addEventListener("close", () => { byId("provider-import-form").elements.credentials.value = ""; });
+  byId("provider-supplier-dialog").addEventListener("close", () => { byId("provider-supplier-form").elements.api_key.value = ""; });
+  bindAsync("tenant-providers-refresh", "click", () => loadTenantProviders(), "刷新中…", tenantProvidersIdentityCurrent);
+  for (const radio of byId("owner-transfer-form").elements.target) radio.addEventListener("change", syncOwnerTransferTarget);
+  bindAsync("owner-transfer-form", "submit", submitOwnerTransfer, "转移中…", tenantProvidersIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
     byId("egress-form").elements.password.value = "";
     egressDraftID = null;

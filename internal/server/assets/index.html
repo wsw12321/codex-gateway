@@ -171,6 +171,11 @@
           <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>模型倍率</a>
           <a href="#groups" data-view="groups" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 12 0v4M16 4a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5v2"/></svg>群组额度</a>
           </div>
+          <div class="nav-group member-market hidden" aria-labelledby="nav-providers">
+          <p id="nav-providers" class="nav-group-title">我的供应商</p>
+          <a href="#providers" data-view="providers"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1"/></svg>我的供应商</a>
+          <a href="#egress-servers" data-view="egress-servers"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8m-4 0v4m-2-2 2 2 2-2"/></svg>我的出口</a>
+          </div>
           <div class="nav-group owner-only hidden" aria-labelledby="nav-management">
           <p id="nav-management" class="nav-group-title">管理</p>
           <a href="#egress-servers" data-view="egress-servers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8m-4 0v4m-2-2 2 2 2-2"/></svg>出口服务器</a>
@@ -178,6 +183,7 @@
           <a href="#site-settings" data-view="site-settings" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4zm4 4h8m-8 3h5"/></svg>站点设置</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5"/></svg>请求监控</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1m5-11h5m-5 11h5"/></svg>上游账号</a>
+          <a href="#tenant-providers" data-view="tenant-providers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M2 20v-2a6 6 0 0 1 12 0v2"/><rect x="14" y="10" width="8" height="4" rx="1"/><rect x="14" y="16" width="8" height="4" rx="1"/></svg>租户供应商</a>
           <a href="/admin/cpa/" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 3a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2"/></svg>CPA 授权管理</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6q0 6-8 10-8-4-8-10V6Zm-4 9 3 3 5-6"/></svg>模型权限</a>
           <a href="#user-upstream-access" data-view="user-upstream-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 8a5 5 0 1 1-3-4.6M9 8l10 10m-3-3 3-3m0 6 3-3"/></svg>账号权限</a>
@@ -1400,6 +1406,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
             <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为不同的上游账号绑定 Shadowsocks 或 SOCKS5 出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
+            <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址，不支持域名。</p>
             <div class="egress-probe-bar">
               <label>连通性测试目标<select id="egress-probe-target"><option value="codex">Codex · chatgpt.com</option><option value="antigravity">Antigravity · cloudcode-pa.googleapis.com</option><option value="anthropic">Anthropic · api.anthropic.com</option></select></label>
               <button id="egress-test-all" type="button" class="secondary">全部测试</button>
@@ -1408,6 +1415,41 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
             <p id="egress-message" class="form-message hidden" role="alert"></p>
             <p id="egress-runtime" class="muted" aria-live="polite">正在加载出口配置…</p>
             <div id="egress-list" class="egress-list" aria-live="polite"></div>
+          </section>
+
+          <section class="view hidden" data-section="providers" aria-labelledby="providers-title">
+            <div class="section-head"><div><h2 id="providers-title">我的供应商</h2><p>登录或导入你自己的上游账号，或添加 API Key 供应商。账号归你所有，其他成员看不到，也不能使用。</p></div><button id="providers-refresh" type="button" class="secondary">刷新</button></div>
+            <p class="callout">现阶段只做添加与管理：自用和套餐功能开放后，这些账号才会服务请求。出口默认使用全局出口，也可以在“我的出口”中添加自己的服务器后选择。</p>
+            <p id="providers-summary" class="muted" aria-live="polite">正在加载…</p>
+            <form id="provider-add-form" class="tool-block provider-add" autocomplete="off">
+              <h3>添加账号</h3>
+              <div class="provider-add-fields">
+                <label>协议<select name="provider" id="provider-add-provider"></select></label>
+                <label>出口<select name="egress_server_id" id="provider-add-egress" class="provider-egress-select"></select></label>
+              </div>
+              <div class="actions"><button type="button" id="provider-oauth-start">授权登录</button><button type="button" id="provider-import-open" class="secondary">导入凭据</button><button type="button" id="provider-supplier-open" class="secondary hidden">添加 API Key 供应商</button></div>
+              <p class="form-message hidden" role="alert"></p>
+            </form>
+            <section id="provider-oauth" class="tool-block hidden" aria-labelledby="provider-oauth-title">
+              <h3 id="provider-oauth-title">授权登录</h3>
+              <p id="provider-oauth-status" class="muted" aria-live="polite"></p>
+              <p><a id="provider-oauth-link" href="#" target="_blank" rel="noopener noreferrer">打开授权页面</a></p>
+              <form id="provider-oauth-callback-form" autocomplete="off">
+                <label>回调地址<input name="callback" type="url" spellcheck="false" placeholder="http://localhost:1455/auth/callback?code=…" required><small>授权完成后浏览器会跳到一个打不开的本地地址，把地址栏里的完整地址粘贴到这里。</small></label>
+                <div class="actions"><button type="submit">提交回调</button><button type="button" id="provider-oauth-cancel" class="secondary">取消</button></div>
+                <p class="form-message hidden" role="alert"></p>
+              </form>
+            </section>
+            <div id="providers-list" class="provider-list" aria-live="polite"></div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="tenant-providers" aria-labelledby="tenant-providers-title">
+            <div class="section-head"><div><p class="eyebrow">OWNER · MARKET</p><h2 id="tenant-providers-title">租户供应商</h2><p>成员自己添加的上游账号与出口服务器。可以停用或恢复成员账号，也可以转移账号归属。</p></div><button id="tenant-providers-refresh" type="button" class="secondary">刷新</button></div>
+            <p class="callout">停用后成员不能自行恢复。转移归属后，账号原先绑定的出口节点若不属于新主人，会改回全局出口。</p>
+            <p id="tenant-providers-message" class="form-message hidden" role="alert"></p>
+            <div class="table-wrap"><table class="tenant-providers-table"><thead><tr><th>成员</th><th>协议</th><th>账号</th><th>状态</th><th>出口</th><th>操作</th></tr></thead><tbody id="tenant-providers-body"></tbody></table></div>
+            <h3>成员出口服务器</h3>
+            <div class="table-wrap"><table><thead><tr><th>成员</th><th>名称</th><th>地址</th><th>协议</th><th>绑定账号</th></tr></thead><tbody id="tenant-egress-body"></tbody></table></div>
           </section>
 
           <section class="view owner-only hidden" data-section="site-settings" aria-labelledby="site-settings-title">
@@ -1563,6 +1605,47 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
       <p class="muted">当前模型接口通过 TCP 连接；UDP 选项保存为节点能力。</p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="submit">保存节点</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="provider-import-dialog" aria-labelledby="provider-import-title">
+    <form id="provider-import-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="provider-import-title">导入凭据</h2><p>粘贴 JSON 凭据。只会提交其中的令牌；服务端用它刷新并确认账号身份。</p></div>
+      <label>凭据 JSON<textarea name="credentials" rows="8" spellcheck="false" required placeholder='{"refresh_token":"…"}'></textarea><small id="provider-import-help">Codex 需要 refresh_token；Claude 可直接粘贴含 claudeAiOauth 的凭据文件。</small></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">导入</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="provider-supplier-dialog" aria-labelledby="provider-supplier-title">
+    <form id="provider-supplier-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="provider-supplier-title">添加 API Key 供应商</h2><p>填写兼容所选协议的 HTTPS Base URL 与 API Key。Key 加密保存，不会回显。</p></div>
+      <label>Base URL<input name="url" type="url" required maxlength="2048" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+      <label>API Key<input name="api_key" type="password" required maxlength="4096" autocomplete="new-password"></label>
+      <fieldset id="provider-supplier-models" class="hidden"><legend>供应商未提供模型列表，请选择它支持的模型</legend><div class="user-check-list" id="provider-supplier-model-list"></div></fieldset>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">验证并保存</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="owner-transfer-dialog" aria-labelledby="owner-transfer-title">
+    <form id="owner-transfer-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="owner-transfer-title">转移账号归属</h2><p id="owner-transfer-subject"></p></div>
+      <fieldset><legend>新主人</legend>
+        <label class="check-label"><input type="radio" name="target" value="member" checked>成员</label>
+        <label class="check-label"><input type="radio" name="target" value="platform">平台账号</label>
+      </fieldset>
+      <div class="user-search" id="owner-transfer-user">
+        <label for="owner-transfer-user-search">选择成员</label>
+        <div class="user-search-control">
+          <input id="owner-transfer-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="owner-transfer-user-search-results" aria-describedby="owner-transfer-user-search-status" disabled>
+          <div id="owner-transfer-user-search-results" class="user-search-results hidden" role="listbox" aria-label="成员搜索结果"></div>
+        </div>
+        <small id="owner-transfer-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
+      </div>
+      <p class="muted">平台账号须先移出群组账号池、专属授权和用户账号权限名单，才能转给成员。</p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">确认转移</button><button type="button" class="secondary" data-close>取消</button></div>
     </form>
   </dialog>
 
