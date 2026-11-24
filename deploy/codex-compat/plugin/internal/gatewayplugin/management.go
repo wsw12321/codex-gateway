@@ -23,6 +23,10 @@ const (
 	protocolAccountAccess = "upstream_account_access_v1"
 	protocolGroupScope    = "group_upstream_account_scope_v1"
 	protocolFundingLayers = "group_upstream_account_layers_v1"
+	// protocolLayerSelect: eligibility and selection are asked per funding
+	// layer, so the Gateway can admit a member's account only in the layer
+	// that pays for it.
+	protocolLayerSelect   = "layer_select_v1"
 	protocolAnthropic     = "anthropic_messages_v1"
 	protocolAccountEgress = "account_egress_v1"
 	// protocolCredentialOwnership: logins and imports honor the Gateway's
@@ -60,6 +64,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodGet, base, "List upstream accounts"},
 			managementRoute{http.MethodGet, base + "/capabilities", "Report the account access protocol"},
 			managementRoute{http.MethodGet, base + "/funding-layers", "Report the funding layer protocol"},
+			managementRoute{http.MethodGet, base + "/layer-select", "Report the per-layer selection protocol"},
 			managementRoute{http.MethodGet, base + "/concurrency", "Sample active conversations per account"},
 			managementRoute{http.MethodPut, base + "/status", "Enable or disable one account"},
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
@@ -197,6 +202,10 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return p.capabilities(provider)
 	case method == http.MethodGet && action == "funding-layers":
 		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolFundingLayers})
+	case method == http.MethodGet && action == "layer-select":
+		// Its own route: Gateways decode capability replies strictly, so a
+		// new field on an existing reply would break an older Gateway.
+		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolLayerSelect})
 	case method == http.MethodGet && action == "":
 		return p.listAccounts(provider)
 	case method == http.MethodGet && action == "concurrency":

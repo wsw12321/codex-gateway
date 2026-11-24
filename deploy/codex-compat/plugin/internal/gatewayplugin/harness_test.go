@@ -102,10 +102,18 @@ type fakeAllocator struct {
 	selectErr   error
 	reportErr   error
 
+	// layerPermitted, when it has an entry for a layer, is that layer's own
+	// eligibility; other layers fall back to permitted.
+	layerPermitted map[string]map[string]bool
+
 	eligibleCalls [][]string
 	selectCalls   [][]string
-	reports       []Attempt
-	beforeSelect  func()
+	// layerCalls records each layered eligibility call; selectLayers the
+	// layer of each layered selection.
+	layerCalls   [][]LayerCandidates
+	selectLayers []string
+	reports      []Attempt
+	beforeSelect func()
 	// routes binds an account to an egress; a missing account is global.
 	routes    map[string]Egress
 	egressErr map[string]error
@@ -195,6 +203,56 @@ func (a *fakeAllocator) Eligible(_ context.Context, _, userID string, accounts [
 		result = append(result, Eligibility{ID: id, ConcurrentLimit: limit})
 	}
 	return result, nil
+}
+
+func (a *fakeAllocator) EligibleLayers(_ context.Context, _, userID string, layers []LayerCandidates) ([][]Eligibility, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	union := []string{}
+	seen := map[string]bool{}
+	for _, layer := range layers {
+		for _, id := range layer.AccountIDs {
+			if !seen[id] {
+				seen[id] = true
+				union = append(union, id)
+			}
+		}
+	}
+	a.eligibleCalls = append(a.eligibleCalls, union)
+	copied := make([]LayerCandidates, len(layers))
+	for i, layer := range layers {
+		copied[i] = LayerCandidates{GroupID: layer.GroupID, AccountIDs: append([]string(nil), layer.AccountIDs...)}
+	}
+	a.layerCalls = append(a.layerCalls, copied)
+	if a.eligibleErr != nil {
+		return nil, a.eligibleErr
+	}
+	result := make([][]Eligibility, len(layers))
+	for i, layer := range layers {
+		result[i] = []Eligibility{}
+		for _, id := range layer.AccountIDs {
+			if own, ok := a.layerPermitted[layer.GroupID]; ok {
+				if !own[id] {
+					continue
+				}
+			} else if allowed := a.permitted[userID]; a.permitted != nil && !allowed[id] {
+				continue
+			}
+			limit := a.limits[id]
+			if limit == 0 {
+				limit = 1
+			}
+			result[i] = append(result[i], Eligibility{ID: id, ConcurrentLimit: limit})
+		}
+	}
+	return result, nil
+}
+
+func (a *fakeAllocator) SelectLayer(ctx context.Context, provider, userID string, layer LayerCandidates) (string, error) {
+	a.mu.Lock()
+	a.selectLayers = append(a.selectLayers, layer.GroupID)
+	a.mu.Unlock()
+	return a.Select(ctx, provider, userID, layer.AccountIDs)
 }
 
 func (a *fakeAllocator) Select(_ context.Context, _, _ string, accounts []string) (string, error) {

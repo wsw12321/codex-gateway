@@ -122,6 +122,7 @@ RUN CPA_E2E_BINARY=/out/cli-proxy-api CPA_E2E_PLUGIN_DIR=/out/plugins \
         TestCodexPassiveQuota \
         TestClaudePassiveQuota \
         TestQuotaPush \
+        TestLayerSelect \
         TestAntigravityModelCatalog \
         TestProviderSessionsAreCallerScoped; do \
         grep -Fq -- "--- PASS: $test_name " /tmp/e2e.log; \

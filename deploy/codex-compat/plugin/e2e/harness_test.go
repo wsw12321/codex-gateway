@@ -66,10 +66,13 @@ type fakeGateway struct {
 	// permitted maps a user to the accounts it may use; a missing user may use
 	// every account.
 	permitted map[string]map[string]bool
-	limits    map[string]int64
-	prefer    []string
-	reports   []attemptReport
-	calls     []string
+	// layerPermitted is a funding layer's own eligibility, like the
+	// Gateway's self-use layer; a layer without an entry uses permitted.
+	layerPermitted map[string]map[string]bool
+	limits         map[string]int64
+	prefer         []string
+	reports        []attemptReport
+	calls          []string
 	// namespaces records the account namespace of every callback.
 	namespaces []string
 	unauth     int
@@ -96,7 +99,7 @@ type quotaPush struct {
 }
 
 func newFakeGateway(t *testing.T) *fakeGateway {
-	g := &fakeGateway{permitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}, resolved: map[string]int{}}
+	g := &fakeGateway{permitted: map[string]map[string]bool{}, layerPermitted: map[string]map[string]bool{}, limits: map[string]int64{}, routes: map[string]string{}, resolved: map[string]int{}}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -124,19 +127,23 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 	g.calls = append(g.calls, action)
 	g.namespaces = append(g.namespaces, strings.Trim(strings.TrimPrefix(prefix, "/internal/"), "/"))
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	type layer struct {
+		GroupID    string   `json:"group_id"`
+		AccountIDs []string `json:"account_ids"`
+	}
 	var selection struct {
 		AccountIDs []string `json:"account_ids"`
 		UserID     string   `json:"user_id"`
+		// Groups is the per-layer protocol: each layer is judged on its own.
+		Groups []layer `json:"groups"`
 	}
-	switch action {
-	case "eligible":
-		_ = json.Unmarshal(body, &selection)
-		type row struct {
-			ID              string `json:"id"`
-			ConcurrentLimit int64  `json:"concurrent_limit"`
-		}
+	type row struct {
+		ID              string `json:"id"`
+		ConcurrentLimit int64  `json:"concurrent_limit"`
+	}
+	eligibleRows := func(ids []string) []row {
 		rows := []row{}
-		for _, id := range selection.AccountIDs {
+		for _, id := range ids {
 			if allowed, restricted := g.permitted[selection.UserID]; restricted && !allowed[id] {
 				continue
 			}
@@ -146,9 +153,34 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			rows = append(rows, row{id, limit})
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": rows})
+		return rows
+	}
+	switch action {
+	case "eligible":
+		_ = json.Unmarshal(body, &selection)
+		if selection.Groups != nil {
+			layers := []map[string]any{}
+			for _, group := range selection.Groups {
+				rows := eligibleRows(group.AccountIDs)
+				if own, ok := g.layerPermitted[group.GroupID]; ok {
+					rows = []row{}
+					for _, id := range group.AccountIDs {
+						if own[id] {
+							rows = append(rows, row{id, 8})
+						}
+					}
+				}
+				layers = append(layers, map[string]any{"group_id": group.GroupID, "accounts": rows})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"groups": layers})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"accounts": eligibleRows(selection.AccountIDs)})
 	case "select":
 		_ = json.Unmarshal(body, &selection)
+		for _, group := range selection.Groups {
+			selection.AccountIDs = append(selection.AccountIDs, group.AccountIDs...)
+		}
 		offered := map[string]bool{}
 		for _, id := range selection.AccountIDs {
 			offered[id] = true

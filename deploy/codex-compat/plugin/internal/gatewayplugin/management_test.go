@@ -38,12 +38,12 @@ func TestManagementRoutesAreExactAndAuthenticatedOnly(t *testing.T) {
 		t.Fatalf("a menu or resource route would be served without the management key: %s", raw)
 	}
 	routes := f.plugin.managementRoutes().Routes
-	// Six per account namespace, the Codex quota query, two model
+	// Seven per account namespace, the Codex quota query, two model
 	// identification routes, and eight credential page routes per provider
 	// (ownership protocol, quota, login start/callback/status, import,
 	// refresh, delete).
-	if len(routes) != 45 {
-		t.Fatalf("%d routes declared, want 45", len(routes))
+	if len(routes) != 48 {
+		t.Fatalf("%d routes declared, want 48", len(routes))
 	}
 	seen := map[string]bool{}
 	for _, route := range routes {
@@ -84,6 +84,9 @@ func TestManagementCapabilities(t *testing.T) {
 		}
 		if status, fields, _ = f.manage(http.MethodGet, managementPrefix+namespace+"/funding-layers", nil, ""); status != http.StatusOK || string(fields["protocol"]) != `"group_upstream_account_layers_v1"` || len(fields) != 1 {
 			t.Fatalf("%s funding layers: %d %v", namespace, status, fields)
+		}
+		if status, fields, _ = f.manage(http.MethodGet, managementPrefix+namespace+"/layer-select", nil, ""); status != http.StatusOK || string(fields["protocol"]) != `"layer_select_v1"` || len(fields) != 1 {
+			t.Fatalf("%s layer select: %d %v", namespace, status, fields)
 		}
 	}
 	// Without the management key the plugin cannot write a credential's proxy,
