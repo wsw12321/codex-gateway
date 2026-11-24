@@ -58,8 +58,9 @@ type Allocator interface {
 	Select(ctx context.Context, provider, userID string, accounts []string) (string, error)
 	// Report records the final decision of one attempt for attribution.
 	Report(ctx context.Context, provider string, attempt Attempt) error
-	// RegisterEgress commits the egress the Owner chose before a login or an
-	// import to the account that login produced.
+	// RegisterEgress commits the egress chosen before a login or an import to
+	// the account that login produced, and with it the account's owner. A
+	// *RegistrationRefusedError means the account is not the caller's.
 	RegisterEgress(ctx context.Context, provider, registrationID, accountID string) error
 	// ReportQuota delivers one account's quota as observed on a response.
 	ReportQuota(ctx context.Context, provider string, report QuotaReport) error
@@ -281,6 +282,37 @@ func (c *GatewayClient) ResolveEgress(ctx context.Context, provider, accountID s
 	return Egress{ProxyURL: resolution.ProxyURL, Revision: resolution.Revision}, nil
 }
 
+// RegistrationRefusedError is the Gateway's refusal to commit a login or an
+// import to the account it reached: the account belongs to the platform or to
+// another tenant, or the tenant has no account slot left. The credential just
+// saved must not change the existing account in any way.
+type RegistrationRefusedError struct{ Code string }
+
+func (e *RegistrationRefusedError) Error() string { return "egress registration refused: " + e.Code }
+
+// registrationRefusals are the Gateway's fixed refusal codes. Any other
+// answer, 409 included, stays an unavailable Gateway.
+var registrationRefusals = map[string]bool{
+	"account_owned_elsewhere": true,
+	"provider_limit_reached":  true,
+	"account_in_platform_use": true,
+}
+
+func registrationRefusal(status int, data []byte) error {
+	if status != http.StatusConflict {
+		return nil
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if _, err := decodeObject(data); err != nil || json.Unmarshal(data, &envelope) != nil || !registrationRefusals[envelope.Error.Code] {
+		return nil
+	}
+	return &RegistrationRefusedError{Code: envelope.Error.Code}
+}
+
 // RegisterEgress implements Allocator. The Gateway binds the account to the
 // egress recorded under the registration; the answer must name the same
 // registration and account.
@@ -294,6 +326,11 @@ func (c *GatewayClient) RegisterEgress(ctx context.Context, provider, registrati
 		AccountID      string `json:"account_id"`
 	}{registrationID, gatewayProvider(provider), accountID}
 	status, data, err := c.postPath(ctx, "/internal/upstream-accounts/register-egress", body, 4<<10)
+	if err == nil {
+		if refused := registrationRefusal(status, data); refused != nil {
+			return refused
+		}
+	}
 	if err != nil || status != http.StatusOK {
 		return ErrUnavailable
 	}

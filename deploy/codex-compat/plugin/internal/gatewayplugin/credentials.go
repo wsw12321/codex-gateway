@@ -43,6 +43,13 @@ var (
 	errCredentialEgress   = errors.New("credential egress not committed")
 )
 
+// credentialRefusal is a login or import the Gateway refused to commit to its
+// account (see RegistrationRefusedError). Its code reaches the person who
+// started it.
+type credentialRefusal struct{ code string }
+
+func (e *credentialRefusal) Error() string { return "credential refused: " + e.code }
+
 // cpaOAuthProviders names each provider the way CPA's login dispatcher does,
 // with the only host the authorization URL may point to.
 var cpaOAuthProviders = map[string]struct{ name, host string }{
@@ -59,7 +66,11 @@ type oauthSession struct {
 	// built-in OAuth session complete without returning auth_id. A credential
 	// that predates this login must never be adopted by that login.
 	startedAt time.Time
-	expires   time.Time
+	// existing names the provider's credential files when the login began. A
+	// refused login deletes only a file that is not among them: CPA may have
+	// rewritten an existing account's own file in place.
+	existing map[string]bool
+	expires  time.Time
 	// accountID is set once the login produced an identified account, so a
 	// repeated status poll gets the same answer.
 	accountID string
@@ -254,6 +265,20 @@ func (p *Plugin) oauthBegin(provider string, body []byte) []byte {
 	if err != nil {
 		return credentialError(http.StatusServiceUnavailable, "credential_egress_unavailable")
 	}
+	entries, err := p.host.AuthList()
+	if err != nil {
+		return credentialError(http.StatusServiceUnavailable, "credential_login_unavailable")
+	}
+	existing := map[string]bool{}
+	for _, entry := range entries {
+		if strings.EqualFold(strings.TrimSpace(entry.Provider), provider) {
+			for _, name := range []string{entry.ID, entry.Name} {
+				if name != "" {
+					existing[name] = true
+				}
+			}
+		}
+	}
 	payload, _ := json.Marshal(map[string]string{"provider": cpaOAuthProviders[provider].name, "proxy_url": proxyURL})
 	ctx, cancel := context.WithTimeout(context.Background(), credentialCallTimeout)
 	defer cancel()
@@ -268,7 +293,7 @@ func (p *Plugin) oauthBegin(provider string, body []byte) []byte {
 		return credentialError(http.StatusBadGateway, "credential_login_unavailable")
 	}
 	now := p.now()
-	if !p.oauth.add(answer.State, oauthSession{provider: provider, registrationID: registrationID, startedAt: now, expires: now.Add(oauthSessionTTL)}, now) {
+	if !p.oauth.add(answer.State, oauthSession{provider: provider, registrationID: registrationID, startedAt: now, expires: now.Add(oauthSessionTTL), existing: existing}, now) {
 		_, _, _ = p.cpaManagement(ctx, http.MethodDelete, "/v8/management/oauth/session", url.Values{"state": {answer.State}}, nil)
 		return credentialError(http.StatusServiceUnavailable, "credential_login_busy")
 	}
@@ -342,9 +367,14 @@ func (p *Plugin) oauthStatus(provider string, body []byte) []byte {
 			return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
 		}
 	}
-	accountID, err := p.completeCredential(ctx, provider, authID, session.registrationID)
+	accountID, err := p.completeCredential(ctx, provider, authID, session.registrationID, session.existing)
 	if errors.Is(err, errCredentialPending) {
 		return managementJSON(http.StatusOK, map[string]string{"status": "wait"})
+	}
+	var refusal *credentialRefusal
+	if errors.As(err, &refusal) {
+		p.oauth.drop(state)
+		return managementJSON(http.StatusOK, map[string]string{"status": "error", "error": refusal.code})
 	}
 	if err != nil {
 		logf("login for a %s credential was not completed: %v", provider, err)
@@ -401,10 +431,12 @@ func (p *Plugin) newOAuthCredential(provider string, startedAt time.Time) (strin
 
 // completeCredential turns a credential CPA has just saved into a usable
 // account: identify it from the fields CPA stored, register that identity,
-// commit the Owner's egress choice to the account and write its route. A
+// commit the egress choice (and the account's owner) and write its route. A
 // credential without an identity, or one that collides with another
-// credential of the same verified account, is deleted again.
-func (p *Plugin) completeCredential(ctx context.Context, provider, authID, registrationID string) (string, error) {
+// credential of the same verified account, is deleted again. existing names
+// the credential files that were there before the login began; nil means the
+// credential is a new file (an import).
+func (p *Plugin) completeCredential(ctx context.Context, provider, authID, registrationID string, existing map[string]bool) (string, error) {
 	entries, err := p.host.AuthList()
 	if err != nil {
 		return "", ErrUnavailable
@@ -451,7 +483,12 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 	}
 	if registrationID != "" {
 		if err = p.alloc.RegisterEgress(ctx, provider, registrationID, id); err != nil {
-			// The Owner's egress choice is not bound to the account. Keep the
+			var refused *RegistrationRefusedError
+			if errors.As(err, &refused) {
+				p.refuseCredential(ctx, provider, *entry, id, existing)
+				return "", &credentialRefusal{code: refused.Code}
+			}
+			// The egress choice is not bound to the account. Keep the
 			// account out of service rather than let it run on whatever
 			// binding it had before.
 			if errDisable := p.control.SetEnabled(id, false); errDisable != nil {
@@ -468,6 +505,31 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 		return "", errCredentialEgress
 	}
 	return id, nil
+}
+
+// refuseCredential undoes a login or import the Gateway refused because the
+// account is not the caller's. The account and its control state belong to
+// someone else and stay as they are. A new credential file is deleted. A file
+// that existed before the login was rewritten in place by CPA: it is the
+// account's only credential, so it stays, and its route is put back to the
+// one the account's owner bound. Only if that route cannot be restored is the
+// account taken out of service, rather than run through the refused login's
+// egress.
+func (p *Plugin) refuseCredential(ctx context.Context, provider string, entry AuthEntry, id string, existing map[string]bool) {
+	if !existing[entry.ID] && !existing[entry.Name] {
+		p.removeCredentialFile(ctx, entry.Name)
+		return
+	}
+	account, found, err := p.inventory.Find(provider, id)
+	if err == nil && found {
+		if _, err = p.syncEgress(ctx, provider, account); err == nil {
+			return
+		}
+	}
+	logf("account %s keeps a refused login's credential and its route could not be restored: %T", id, err)
+	if errDisable := p.control.SetEnabled(id, false); errDisable != nil {
+		logf("account %s could not be disabled after a refused login: %T", id, errDisable)
+	}
 }
 
 // removeCredentialFile deletes one credential file through CPA. It is used
@@ -541,9 +603,13 @@ func (p *Plugin) importCredential(provider string, body []byte) []byte {
 	}
 	deadline := p.now().Add(importSettleTimeout)
 	for {
-		accountID, errComplete := p.completeCredential(ctx, provider, name, registrationID)
+		accountID, errComplete := p.completeCredential(ctx, provider, name, registrationID, nil)
 		if errComplete == nil {
 			return managementJSON(http.StatusOK, map[string]string{"status": "ok", "account_id": accountID})
+		}
+		var refusal *credentialRefusal
+		if errors.As(errComplete, &refusal) {
+			return credentialError(http.StatusConflict, refusal.code)
 		}
 		if !errors.Is(errComplete, errCredentialPending) || !p.now().Before(deadline) {
 			logf("an imported %s credential was not completed: %v", provider, errComplete)

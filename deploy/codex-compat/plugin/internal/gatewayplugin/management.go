@@ -25,6 +25,9 @@ const (
 	protocolFundingLayers = "group_upstream_account_layers_v1"
 	protocolAnthropic     = "anthropic_messages_v1"
 	protocolAccountEgress = "account_egress_v1"
+	// protocolCredentialOwnership: logins and imports honor the Gateway's
+	// refusal codes (see RegistrationRefusedError).
+	protocolCredentialOwnership = "credential_ownership_v1"
 
 	maxStatusRequestBytes = 1 << 10
 )
@@ -69,6 +72,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 	for _, provider := range facadeProviders {
 		base := managementPrefix + facadeNamespace + "/" + provider.name
 		routes = append(routes,
+			managementRoute{http.MethodGet, base + "/ownership", "Report the credential ownership protocol"},
 			managementRoute{http.MethodPost, base + "/accounts/quota", "Report one account's quota on the credential page"},
 			managementRoute{http.MethodPost, base + "/oauth", "Start a login through CPA with a fixed egress"},
 			managementRoute{http.MethodPost, base + "/oauth/callback", "Hand an authorization code to CPA"},
@@ -107,6 +111,11 @@ func (p *Plugin) facadeManagement(method, path string, query url.Values, body []
 		return managementError(http.StatusNotFound, "not_found")
 	}
 	switch {
+	case method == http.MethodGet && action == "ownership" && len(query) == 0:
+		// A plugin answering this refuses a conflicting login without
+		// touching the account it reached; the Gateway lets tenants log in
+		// only through such a plugin.
+		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolCredentialOwnership})
 	case method == http.MethodPost && action == "accounts/quota":
 		switch provider {
 		case ProviderCodex:

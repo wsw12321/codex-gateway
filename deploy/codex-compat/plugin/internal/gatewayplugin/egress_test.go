@@ -265,3 +265,52 @@ func TestResolveEgressAcceptsOnlyTheFixedListener(t *testing.T) {
 		t.Fatal("a malformed account id was sent")
 	}
 }
+
+func TestRegisterEgressDecodesOnlyTheFixedRefusals(t *testing.T) {
+	var answer string
+	var status int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/upstream-accounts/register-egress" || r.Header.Get("Authorization") != "Bearer "+testInternalKey {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, answer)
+	}))
+	defer server.Close()
+	client := NewGatewayClient(server.URL, testInternalKey, "egress-allowlist:3129", time.Second)
+	const account = "0123456789abcdef"
+	register := func() error {
+		return client.RegisterEgress(context.Background(), ProviderCodex, testRegistration, account)
+	}
+
+	status, answer = http.StatusOK, `{"registration_id":"`+testRegistration+`","account_id":"`+account+`","status":"committed","revision":"r1"}`
+	if err := register(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	for _, code := range []string{"account_owned_elsewhere", "provider_limit_reached", "account_in_platform_use"} {
+		status, answer = http.StatusConflict, `{"error":{"message":"x","type":"upstream_error","code":"`+code+`","request_id":"r"}}`
+		var refused *RegistrationRefusedError
+		if err := register(); !errors.As(err, &refused) || refused.Code != code {
+			t.Fatalf("%s: %v", code, err)
+		}
+	}
+	for name, response := range map[string]struct {
+		status int
+		body   string
+	}{
+		"other conflict":    {http.StatusConflict, `{"error":{"code":"egress_conflict"}}`},
+		"refusal as 404":    {http.StatusNotFound, `{"error":{"code":"account_owned_elsewhere"}}`},
+		"refusal as 503":    {http.StatusServiceUnavailable, `{"error":{"code":"account_owned_elsewhere"}}`},
+		"duplicate keys":    {http.StatusConflict, `{"error":{"code":"egress_conflict"},"error":{"code":"account_owned_elsewhere"}}`},
+		"not json":          {http.StatusConflict, `account_owned_elsewhere`},
+		"code at top level": {http.StatusConflict, `{"code":"account_owned_elsewhere"}`},
+	} {
+		status, answer = response.status, response.body
+		var refused *RegistrationRefusedError
+		if err := register(); !errors.Is(err, ErrUnavailable) || errors.As(err, &refused) {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+}

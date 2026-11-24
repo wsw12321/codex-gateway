@@ -81,6 +81,9 @@ type fakeGateway struct {
 	// is committed to gets; committed records "registration=account".
 	registrations map[string]string
 	committed     []string
+	// refusals maps an egress registration to the Gateway's refusal code: the
+	// account it reaches belongs to someone else.
+	refusals map[string]string
 	// resolved counts the routes confirmed per account.
 	resolved map[string]int
 	// quotaPushes records each quota report the plugin delivered.
@@ -187,6 +190,11 @@ func (g *fakeGateway) serve(w http.ResponseWriter, r *http.Request) {
 			AccountID      string `json:"account_id"`
 		}
 		_ = json.Unmarshal(body, &input)
+		if code, refused := g.refusals[input.RegistrationID]; refused {
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": "refused", "type": "upstream_error", "code": code}})
+			return
+		}
 		route, ok := g.registrations[input.RegistrationID]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
