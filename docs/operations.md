@@ -741,6 +741,42 @@ WHERE event_type = 'billing.model_families_converted';
 只回退二进制时，旧版本把 `family:*` 当作不存在的模型，不会用这些范围扣费（失败关闭）；
 需要完全回退时按常规恢复迁移前的备份。
 
+### 我的供应商与商城开关（0051、0052）
+
+聚合网关的成员供应商由商城开关控制，默认关闭；关闭时升级前后行为一致。说明见
+[我的供应商](tenant-providers.md)。
+
+升级顺序：
+
+1. 按常规做加密备份。
+2. 先升级 CPA 插件镜像（`./scripts/compose.sh build codex-compat` 后重建容器）。新插件在登录
+   被拒绝时只删除新保存的凭据，不会停用原主人的账号；旧网关不会发出拒绝码，所以新插件配旧网关
+   行为不变。
+3. 再升级 Gateway，启动时执行 `0051`、`0052`。现有账号全部是平台账号，无需回填。
+4. 确认无误后，Owner 再通过 `PUT /admin/market/settings` 打开开关。没有配置账号出口
+   （`EGRESS_CONTROL_KEY`）时会被拒绝；插件版本过旧时，成员登录返回 503
+   `tenant_providers_unavailable`。
+
+开关打开后需要注意：
+
+- Gateway 不再根据 CPA 的账号列表自动创建账号记录。Owner 添加平台账号要通过管理台的授权
+  登录或导入；直接放进 CPA 凭据目录的文件在开关打开期间不会被使用。
+- 删除账号（Owner 或成员）会释放归属：账号不再服务请求，下一次登录同一上游账号的人可以认领。
+- 只有 Owner 能转移归属（租户供应商页或上游账号卡片上的“转给成员…”）。平台账号要先移出群组
+  账号池、专属授权和用户账号权限名单。
+
+审计事件：`tenant_provider.operation`、`upstream_account.owner_changed`、
+`upstream_account.released`、`upstream_account.suspended`、`upstream_account.unsuspended`：
+
+```sql
+SELECT occurred_at, event_type, subject_id, metadata FROM audit_events
+WHERE event_type IN ('upstream_account.owner_changed', 'upstream_account.released',
+  'upstream_account.suspended', 'upstream_account.unsuspended')
+ORDER BY occurred_at DESC LIMIT 50;
+```
+
+只回退二进制不可行：旧二进制遇到未知迁移会拒绝启动，需要恢复升级前的备份。
+
 ### 升级到多订阅（0034）
 
 1. 备份完整数据库，并记录订阅 ID、当前周期 ID、周期起止、额度与剩余额度、到期时间、

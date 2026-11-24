@@ -8,6 +8,8 @@
   - `upstream_accounts.owner_user_id` 为 NULL 表示平台账号。现有账号全部是平台账号。
   - 非 NULL 表示租户账号，由阶段 2 的“我的供应商”创建。
   - 归属只能设置一次。从平台改为租户、从租户改回平台、在租户之间转移，都会被数据库触发器拒绝。
+
+    > 阶段 2 更新：迁移 `0052` 替换了这个触发器。归属变更只接受带标记的认领（登录或导入）和 Owner 转移，删除凭据后释放归属。见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。
   - 已经进入群组账号池、专属授权或用户账号权限名单的平台账号，不能再变成租户账号。
 - **平台专属结构只接受平台账号**：群组账号池（`group_upstream_accounts`）、专属授权（`upstream_account_users`）、用户账号权限名单（`user_upstream_access_accounts`）。应用层先校验，租户账号按“账号不存在”处理；数据库触发器兜底。
 - **平台选路只用平台账号**：

@@ -291,8 +291,15 @@ Owner 可充值、调整余额、批量新增订阅以及按 ID 重开／停用�
 聚合网关（用户自带供应商、卖家套餐、套餐商城）正按[改造计划](docs/aggregation-gateway-plan.md)
 分阶段实现。阶段 1 已加入上游账号归属：现有账号全部是平台账号，群组、个人订阅和现金只由
 平台账号服务；Owner 可在 `/admin/market/settings` 设置商城开关（默认关闭）、抽成比例和
-每人上限，但尚无界面，开关打开前行为不变。见[阶段 1 验证](docs/aggregation-gateway-stage1-validation.md)；
-开发分支 `aggregation-gateway` 上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
+每人上限，但尚无界面，开关打开前行为不变。见[阶段 1 验证](docs/aggregation-gateway-stage1-validation.md)。
+
+阶段 2 加入了“我的供应商”：开关打开后，成员可以授权登录或导入自己的上游账号、添加 API Key
+供应商（需 Owner 允许），并运行自己的出口服务器（只接受公网 IPv4）；账号归成员所有，其他人
+和平台都不能使用。登录到已归他人或平台的账号会被拒绝，原账号不受影响；删除凭据会释放归属；
+只有 Owner 能转移归属，也可以停用成员账号。打开开关需要已配置账号出口和新版 CPA 插件。成员
+账号在阶段 3（自用与套餐）之前还不服务请求。见[我的供应商](docs/tenant-providers.md)和
+[阶段 2 验证](docs/aggregation-gateway-stage2-validation.md)；开发分支 `aggregation-gateway`
+上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
 
 ### 交流群与充值说明
 

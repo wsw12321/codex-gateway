@@ -1,6 +1,6 @@
 # 聚合网关改造计划：用户供应商 + 卖家套餐 + 商城
 
-> 2026-11-24 确定的分阶段计划。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
+> 2026-11-24 确定的分阶段计划。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
 
 ## Context
 
@@ -26,7 +26,7 @@
 - 自用层永远排第一，用户可在“额度与订阅”页关闭。
 - 卖家套餐额度用完时，不从买家现金补扣。超出部分记为 `uncovered_usd`，由卖家承担。原因：买家现金只对应平台供应商；也能防止恶意第三方供应商虚报用量来消耗买家现金。
 - 个人层（平台不限制订阅 + 现金）保持在最后一层，这是插件现有契约（`decodeScope` 要求个人层在末位）。所以受限套餐层总排在现金前面。
-- 卖家不能选择出口节点。租户 OAuth 账号走全局出口，Owner 可以为其单独绑定节点。
+- ~~卖家不能选择出口节点。~~ 2026-11-24 改为：成员可以新增自己的出口服务器并选择，逻辑与 Owner 的出口一致；不新增或不选择时走全局出口。账号只能绑定同一主人的节点（阶段 2 已实现）。
 - 卖家看不到买家身份：销售记录中买家只显示匿名编号，用量只按套餐和账号聚合。
 - Owner 的模型权限（`model_access`）对所有请求生效，包括自用。
 - 修改套餐的供应商范围：无需审核，不提升 `version`，不影响续费绑定。修改价格、额度、周期、模型、名称、描述：重新进入审核，期间下架，并按现有规则提升 `version`。
@@ -39,11 +39,12 @@
 ### 1. 供应商归属
 - 新增 `upstream_accounts.owner_user_id UUID NULL`。`NULL` 表示平台账号，现有账号全部是平台账号。
 - 新增 `admin_suspended bool`：Owner 强制停用，卖家不能解除。
-- OAuth 和导入的账号：登录在发起时就记下租户身份（`egress_registrations.tenant_user_id`）。在现有回调 `/internal/upstream-accounts/register-egress` 的提交事务里（`internal/store/egress.go` 约 360–440 行，那里已经在锁定并确保账号行）写入 `owner_user_id`。
-  - 账号已被其他人或平台拥有时，返回新的冲突码。
-  - 插件 `completeCredential`（`deploy/codex-compat/plugin/internal/gatewayplugin/credentials.go`）在收到冲突码时，删除刚保存的凭据文件，**不再调用 `SetEnabled(id,false)`**。现在的写法会把原主人的账号一起停掉。
+- OAuth 和导入的账号：登录在发起时就记下租户身份（`egress_registrations.tenant_user_id`）。回调 `/internal/upstream-accounts/register-egress` 的 prepare 阶段在确保账号行的同一事务里决定归属（阶段 2 实现，`claimRegistrationAccountTx`）。
+  - 账号已被其他人或平台拥有时，返回冲突码 `account_owned_elsewhere`（还有 `provider_limit_reached`、`account_in_platform_use`）。
+  - 插件收到这些码时，只删除这次登录新保存的凭据文件；被 CPA 原位改写的已有文件保留并恢复原主人的出口，**不再调用 `SetEnabled(id,false)`**。
+- **归属可变更，但只能通过两条路径**（2026-11-24 确认）：登录或导入认领已释放的账号；Owner 转移。删除凭据释放归属（`credential_removed_at`），已释放的账号不服务任何请求。数据库触发器只接受带 `claim`/`transfer` 标记的变更。
 - API Key 供应商：`CreateModelSupplier` 直接写入 `owner_user_id`。
-- `SyncUpstreamAccounts` 永远不修改 `owner_user_id`。
+- `SyncUpstreamAccounts` 永远不修改 `owner_user_id`；商城开关打开期间也不再创建新账号行。
 - 平台专属的结构只接受平台账号，由 DB trigger 兜底：群组账号池、专属授权 `upstream_account_users`、用户账号权限名单、模型鉴别。
 
 ### 2. 扣费层规则 5（funding rule 5）
@@ -128,7 +129,10 @@
 - **未知账号（无 DB 行）**：开关开启时视为不可用，避免登录过程中的竞态。
 - **测试**：store 和 server 回归，验证无租户账号时行为完全不变；更新 `TestEmbeddedMigrationsCoverRequiredSchema` 中的迁移数量和 `migrations/README.md`。
 
-### 阶段 2：“我的供应商”（需求 1）
+### 阶段 2：“我的供应商”（需求 1，已完成）
+
+> 实际实现与下列原计划的差异：新增迁移 `0052_tenant_provider_lifecycle.sql`（释放标记、成员出口服务器、可变更归属的触发器）；成员可以自建出口服务器（只接受公网 IPv4）；Owner 不能把成员账号绑定到平台节点，改为可以停用和转移归属；“从套餐范围中移除”留给阶段 3 按释放标记处理；共享函数的方式改为把成员和协议放进请求上下文，复用现有 handler。详见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。
+
 - **Store**：在账号操作上加 owner scope 谓词。访问他人的账号一律返回 `ErrNotFound`（HTTP 404，不暴露是否存在）。
 - **Server**：新建 `internal/server/tenant_providers.go`。
   - 路由 `/admin/me/providers/{codex|anthropic|antigravity}/...`：
@@ -155,7 +159,7 @@
   - 新增 Node 测试 `testdata/tenant_providers_ui_test.cjs`。
 
 ### 阶段 3：套餐供应商范围 + 规则 5 + 自用（需求 2）
-- **迁移** `0052_plan_provider_scopes.sql`：
+- **迁移** `0053_plan_provider_scopes.sql`（阶段 2 已占用 0052）：
   - `billing_plans.seller_user_id`（NULL 表示平台）。
   - `billing_plan_provider_scopes(plan_id, mode all|selected, revision)` 和 `billing_plan_provider_accounts(plan_id, account_id ON DELETE CASCADE)`。现有套餐初始化为 `all`。
   - `billing_subscriptions.source_plan_id`：不可变；从 `plan_id` 回填；逻辑删除或解绑后仍保留，用来找到范围。
@@ -188,7 +192,7 @@
   - “额度与订阅”页增加自用开关，订阅卡片显示供应商范围。
 
 ### 阶段 4：卖家套餐、审核、商城、分账（需求 3）
-- **迁移** `0053_marketplace.sql`：
+- **迁移** `0054_marketplace.sql`：
   - `billing_plans` 新增 `review_status`（现有套餐为 approved）、`review_note`、`reviewed_by_user_id`、`reviewed_at`、`submitted_at`、`description`。
   - 新建 `marketplace_sales`，字段：`operation_id`、`plan_id/version`、`seller`、`buyer`、`subscription_id`、`kind`、`period_count`、`gross`、`rate`、`commission`、`net`、两条 ledger 引用。
   - 扩展 ledger `entry_type`（`plan_sale_income`）和 operation 类型（卖家套餐增删改、审核、商城设置）。
@@ -270,7 +274,7 @@
 - **Proxy**：`internal/proxy/ledger.go`、`account_access.go`、`client.go`
 - **插件**：`deploy/codex-compat/plugin/internal/gatewayplugin/{scheduler,gatewayclient,credentials,headers}.go`、e2e harness、`plugin.lock.json` 及相关锁文件
 - **前端**：`internal/server/assets/{app.js,index.html,style.css}`、`internal/server/testdata/*.cjs`
-- **迁移**：`internal/store/migrations/0051–0053`、`internal/store/store_test.go`、`migrations/README.md`
+- **迁移**：`internal/store/migrations/0051–0054`、`internal/store/store_test.go`、`migrations/README.md`
 
 ## 可复用的现有实现
 
@@ -337,7 +341,7 @@ node --test internal/server/testdata/<新增>_test.cjs
 | 阶段 | 状态 | 分支 / 提交 |
 |---|---|---|
 | 1 归属底座 | 已完成：迁移 `0051`、平台账号过滤、`/admin/market/settings` | `aggregation-gateway` / `2a800c5` |
-| 2 我的供应商 | 未开始 | `aggregation-gateway` |
+| 2 我的供应商 | 已完成：迁移 `0052`、认领/释放/转移、成员出口、`/admin/me/providers`、`/admin/tenant-providers`、插件冲突处理、界面 | `aggregation-gateway` / `daec9c6`–`00e666b` |
 | 3 套餐供应商范围、规则 5、自用 | 未开始 | `aggregation-gateway` |
 | 4 卖家套餐、审核、商城、分账 | 未开始 | `aggregation-gateway` |
 | 5 加固与文档 | 未开始 | `aggregation-gateway` |
