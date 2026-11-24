@@ -66,6 +66,7 @@ type Server struct {
 	modelPriceRepo          modelPriceRepository
 	billingPlanRepo         billingPlanRepository
 	planScopeRepo           planScopeRepository
+	marketPlanRepo          marketPlanRepository
 	billingSubscriptionRepo billingSubscriptionRepository
 	modelCatalogRepo        modelCatalogRepository
 	modelIdentificationRepo modelIdentificationRepository
@@ -275,6 +276,7 @@ func (s *Server) routes() {
 	s.mux.Handle("PUT /admin/billing/plans/{plan_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.updateBillingPlan)))))
 	s.mux.Handle("DELETE /admin/billing/plans/{plan_id}", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(http.HandlerFunc(s.deleteBillingPlan)))))
 	s.planScopeRoutes()
+	s.marketplacePlanRoutes()
 	s.mux.Handle("POST /admin/billing/me/purchases", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.purchaseBillingPlan))))
 	s.mux.Handle("POST /admin/billing/me/subscriptions/{subscription_id}/renewals", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.renewBillingSubscription))))
 	s.mux.Handle("PUT /admin/billing/me/subscriptions/{subscription_id}/preferences", s.browserOrigin(s.requireRecentVerification(http.HandlerFunc(s.setBillingSubscriptionPreferences))))

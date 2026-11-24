@@ -78,6 +78,13 @@ func (s *Server) platformPlanScopes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) setPlatformPlanScope(w http.ResponseWriter, r *http.Request) {
+	s.setPlanScope(w, r, "")
+}
+
+// setPlanScope writes a plan's provider scope for its seller: "" is the
+// Owner writing a platform plan, otherwise the member writing their own plan.
+// Another seller's plan reads as not found.
+func (s *Server) setPlanScope(w http.ResponseWriter, r *http.Request, seller string) {
 	if !strictJSONRequest(r) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_plan_scope", "供应商范围请求必须为 JSON，且不能包含查询参数")
 		return
@@ -93,7 +100,7 @@ func (s *Server) setPlatformPlanScope(w http.ResponseWriter, r *http.Request) {
 		accounts = []string{}
 	}
 	scope, err := s.planScopeStorage().SetPlanProviderScope(r.Context(), store.SetPlanProviderScopeParams{
-		PlanID: r.PathValue("plan_id"), Mode: mode, AccountIDs: accounts, ExpectedRevision: revision,
+		PlanID: r.PathValue("plan_id"), SellerUserID: seller, Mode: mode, AccountIDs: accounts, ExpectedRevision: revision,
 		ActorUserID: userFrom(r.Context()).ID, ActorSessionID: sessionFrom(r.Context()).ID,
 		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()), At: time.Now().UTC(),
 	})
@@ -105,7 +112,11 @@ func (s *Server) setPlatformPlanScope(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, store.ErrConflict):
 		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "plan_scope_changed", "供应商范围已被修改，请刷新后重试")
 	case errors.Is(err, store.ErrInvalid):
-		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_plan_scope", "供应商范围无效：指定时须选择 1 至 256 个（每个协议）仍可用的平台账号")
+		message := "供应商范围无效：指定时须选择 1 至 256 个（每个协议）仍可用的平台账号"
+		if seller != "" {
+			message = "供应商范围无效：指定时须选择 1 至 256 个（每个协议）仍可用的自有账号"
+		}
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_plan_scope", message)
 	default:
 		internalError(s, w, r, "set plan provider scope", err)
 	}

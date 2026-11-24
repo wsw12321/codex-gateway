@@ -538,6 +538,9 @@ type adminMarketplaceState struct {
 	MemberSuppliers  bool `json:"member_suppliers"`
 	MaxAccounts      int  `json:"max_accounts_per_user"`
 	MaxEgressServers int  `json:"max_egress_servers_per_user"`
+	MaxPlans         int  `json:"max_plans_per_user"`
+	// PendingReviews is the Owner's count of seller plans awaiting review.
+	PendingReviews int `json:"pending_reviews,omitempty"`
 }
 
 func (s *Server) marketplaceState(ctx context.Context) adminMarketplaceState {
@@ -552,6 +555,7 @@ func (s *Server) marketplaceState(ctx context.Context) adminMarketplaceState {
 	return adminMarketplaceState{
 		Enabled: true, MemberSuppliers: s.config.SuppliersEnabled && settings.AllowMemberSuppliers,
 		MaxAccounts: settings.MaxAccountsPerUser, MaxEgressServers: settings.MaxEgressServersPerUser,
+		MaxPlans: settings.MaxPlansPerUser,
 	}
 }
 

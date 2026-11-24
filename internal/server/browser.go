@@ -539,6 +539,12 @@ func (s *Server) adminState(w http.ResponseWriter, r *http.Request) {
 	response.LoginMethods.OIDC = s.config.OIDCEnabled && link.ID != ""
 	response.BrowserClientEnabled = s.config.BrowserClientURL != nil
 	response.Marketplace = s.marketplaceState(r.Context())
+	if response.Marketplace.Enabled && user.Role == store.UserRoleOwner && s.marketPlanStorage() != nil {
+		// The review badge is a convenience: a failed count shows none.
+		if pending, err := s.marketPlanStorage().PendingSellerPlans(r.Context()); err == nil {
+			response.Marketplace.PendingReviews = len(pending)
+		}
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 

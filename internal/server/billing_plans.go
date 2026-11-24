@@ -189,13 +189,16 @@ type billingPlanTransactionInput struct {
 	PlanVersion               *int64
 	SubscriptionConfigVersion *int64
 	PeriodCount               *int
+	// AcknowledgeThirdParty is optional: a seller plan that a member's API
+	// supplier may serve needs it.
+	AcknowledgeThirdParty bool
 }
 
 func (s *Server) decodeBillingPlanTransaction(w http.ResponseWriter, r *http.Request, purchasing bool) (billingPlanTransactionInput, bool) {
 	var input billingPlanTransactionInput
 	fields := map[string]any{
 		"operation_id": &input.OperationID, "plan_version": &input.PlanVersion,
-		"period_count": &input.PeriodCount,
+		"period_count": &input.PeriodCount, "acknowledge_third_party": &input.AcknowledgeThirdParty,
 	}
 	if purchasing {
 		fields["plan_id"] = &input.PlanID
@@ -224,10 +227,10 @@ func (s *Server) purchaseBillingPlan(w http.ResponseWriter, r *http.Request) {
 	result, err := s.billingPlanStorage().PurchaseBillingPlan(r.Context(), store.PurchaseBillingPlanParams{
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, "用户购买套餐并新增订阅"),
 		UserID:             userFrom(r.Context()).ID, PlanID: input.PlanID, PlanVersion: *input.PlanVersion,
-		PeriodCount: *input.PeriodCount,
+		PeriodCount: *input.PeriodCount, AcknowledgeThirdParty: input.AcknowledgeThirdParty,
 	})
 	if err != nil {
-		s.billingStoreError(w, r, "purchase billing plan", err)
+		s.marketplacePlanError(w, r, "purchase billing plan", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -247,9 +250,10 @@ func (s *Server) renewBillingSubscription(w http.ResponseWriter, r *http.Request
 		BillingWriteParams: s.billingWriteParams(r, input.OperationID, "用户续费已绑定套餐"),
 		UserID:             userFrom(r.Context()).ID, SubscriptionID: subscriptionID, PlanVersion: *input.PlanVersion,
 		SubscriptionConfigVersion: *input.SubscriptionConfigVersion, PeriodCount: *input.PeriodCount,
+		AcknowledgeThirdParty: input.AcknowledgeThirdParty,
 	})
 	if err != nil {
-		s.billingStoreError(w, r, "renew billing subscription", err)
+		s.marketplacePlanError(w, r, "renew billing subscription", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
