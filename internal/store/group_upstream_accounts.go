@@ -232,6 +232,10 @@ type UpstreamAllocationGroup struct {
 	// AllAccounts marks the personal funding layer: it is not narrowed to a
 	// pool, so CPA's per-user eligibility callback alone decides its accounts.
 	AllAccounts bool `json:"all_accounts,omitempty"`
+	// Tenant marks a layer of member accounts (self-use or a seller plan),
+	// which only a plugin that checks eligibility layer by layer may receive.
+	// It is not part of the wire format.
+	Tenant bool `json:"-"`
 }
 
 // PersonalFundingLayerID identifies the personal funding layer, which always
@@ -252,6 +256,7 @@ func cloneUpstreamAllocationGroups(groups []UpstreamAllocationGroup) []UpstreamA
 			GroupID:     group.GroupID,
 			AccountIDs:  append([]string(nil), group.AccountIDs...),
 			AllAccounts: group.AllAccounts,
+			Tenant:      group.Tenant,
 		}
 	}
 	return result

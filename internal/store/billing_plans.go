@@ -347,7 +347,24 @@ func reopenBillingSubscriptionTx(ctx context.Context, tx *sql.Tx, params PutSubs
 	}
 	modelJSON, _ := json.Marshal(params.ModelIDs)
 	if params.SubscriptionID == "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,name,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,period_days,model_ids,models_initialized) VALUES($1,$2,$3,$4,true,$5::numeric,$6,1,$7,$8,$8,$9,$10::jsonb,true)`, subscriptionID, params.UserID, params.Name, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At, params.PeriodDays, modelJSON); err != nil {
+		// A purchase records the plan it came from for good (migration 0053):
+		// the plan's provider scope keeps deciding which accounts the
+		// subscription pays for. A replayed older schema (upgrade tests) has
+		// no such column.
+		sourceColumn, sourceValue := "", ""
+		args := []any{subscriptionID, params.UserID, params.Name, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At, params.PeriodDays, modelJSON}
+		if plan != nil {
+			scoped, err := planScopeSchemaTx(ctx, tx)
+			if err != nil {
+				return empty, err
+			}
+			if scoped {
+				sourceColumn, sourceValue = ",source_plan_id", ",$11"
+				args = append(args, plan.ID)
+			}
+		}
+		// #nosec G202 -- the optional column and placeholder are fixed SQL.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,name,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,period_days,model_ids,models_initialized`+sourceColumn+`) VALUES($1,$2,$3,$4,true,$5::numeric,$6,1,$7,$8,$8,$9,$10::jsonb,true`+sourceValue+`)`, args...); err != nil {
 			return empty, mapDBError("create billing subscription", err)
 		}
 	}

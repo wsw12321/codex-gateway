@@ -36,6 +36,8 @@ type pricedUsage struct {
 	ActualCostUSD      string `json:"actual_cost_usd"`
 	ChargedUSD         string `json:"charged_usd"`
 	UncoveredUSD       string `json:"uncovered_usd"`
+	// SelfUseUSD is usage of the users' own accounts, charged nothing.
+	SelfUseUSD string `json:"self_use_usd"`
 }
 
 type globalUserUsage struct {
@@ -111,6 +113,7 @@ type usageAccumulator struct {
 	actualUSD    *big.Rat
 	chargedUSD   *big.Rat
 	uncoveredUSD *big.Rat
+	selfUseUSD   *big.Rat
 }
 
 type userUsageAccumulator struct {
@@ -383,6 +386,12 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 	if err != nil {
 		return globalUsageResponse{}, err
 	}
+	totalUsage.SelfUseUSD, err = sumUserAmounts(users, func(usage pricedUsage) string {
+		return usage.SelfUseUSD
+	})
+	if err != nil {
+		return globalUsageResponse{}, err
+	}
 	return globalUsageResponse{
 		Summary: globalUsageSummary{
 			Usage:           totalUsage,
@@ -403,7 +412,7 @@ func summarizeGlobalUsage(rows []store.GlobalUsageRow, pricing config.UsagePrici
 
 func newUsageAccumulator() usageAccumulator {
 	return usageAccumulator{
-		actualUSD: new(big.Rat), chargedUSD: new(big.Rat), uncoveredUSD: new(big.Rat),
+		actualUSD: new(big.Rat), chargedUSD: new(big.Rat), uncoveredUSD: new(big.Rat), selfUseUSD: new(big.Rat),
 	}
 }
 
@@ -473,12 +482,17 @@ func addUsageRow(
 	if err != nil {
 		return fmt.Errorf("parse ledger uncovered cost for model %q: %w", row.Model, err)
 	}
-	if new(big.Rat).Add(new(big.Rat).Set(charged), uncovered).Cmp(actual) != 0 {
+	selfUse, err := parseLedgerDecimal(row.SelfUseUSD)
+	if err != nil {
+		return fmt.Errorf("parse ledger self-use cost for model %q: %w", row.Model, err)
+	}
+	if new(big.Rat).Add(new(big.Rat).Add(new(big.Rat).Set(charged), uncovered), selfUse).Cmp(actual) != 0 {
 		return fmt.Errorf("ledger cost does not reconcile for model %q", row.Model)
 	}
 	destination.actualUSD.Add(destination.actualUSD, actual)
 	destination.chargedUSD.Add(destination.chargedUSD, charged)
 	destination.uncoveredUSD.Add(destination.uncoveredUSD, uncovered)
+	destination.selfUseUSD.Add(destination.selfUseUSD, selfUse)
 	return nil
 }
 
@@ -528,6 +542,7 @@ func finalizeUsage(accumulator usageAccumulator, rate *big.Rat) pricedUsage {
 	usage.EstimatedUSD = usage.ActualCostUSD
 	usage.ChargedUSD = accumulator.chargedUSD.FloatString(moneyDecimalPlaces)
 	usage.UncoveredUSD = accumulator.uncoveredUSD.FloatString(moneyDecimalPlaces)
+	usage.SelfUseUSD = accumulator.selfUseUSD.FloatString(moneyDecimalPlaces)
 	cny := new(big.Rat).Mul(accumulator.actualUSD, rate)
 	usage.EstimatedCNY = cny.FloatString(moneyDecimalPlaces)
 	return usage

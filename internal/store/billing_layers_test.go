@@ -44,3 +44,54 @@ func TestFundingLayerAllocationGroupsAreIndependent(t *testing.T) {
 		t.Fatalf("personal layer = %+v", personal)
 	}
 }
+
+func TestRule5SettlementCandidates(t *testing.T) {
+	own := fundingLayer{position: 1, kind: FundingLayerSelf, accountIDs: []string{"aaaaaaaaaaaaaaaa"}}
+	group := fundingLayer{position: 2, kind: FundingLayerGroup, groupID: "g1", groupPeriodID: "p1", accountIDs: []string{"bbbbbbbbbbbbbbbb"}}
+	plan := fundingLayer{position: 3, kind: FundingLayerSubscription, subscriptionID: "s1", subscriptionPeriodID: "sp1", accountIDs: []string{"bbbbbbbbbbbbbbbb", "cccccccccccccccc"}}
+	seller := fundingLayer{position: 4, kind: FundingLayerSubscription, subscriptionID: "s2", subscriptionPeriodID: "sp2", accountIDs: []string{"dddddddddddddddd"}}
+	personal := fundingLayer{position: 5, kind: FundingLayerPersonal, allAccounts: true}
+	all := []fundingLayer{own, group, plan, seller, personal}
+	for _, test := range []struct {
+		name    string
+		layers  []fundingLayer
+		account string
+		tenant  bool
+		want    rule5Settlement
+	}{
+		{"own account is self-use", all, "aaaaaaaaaaaaaaaa", true, rule5Settlement{selfUse: true}},
+		{"platform account flows group, plan, personal", all, "bbbbbbbbbbbbbbbb", false,
+			rule5Settlement{groups: []fundingLayer{group}, subscriptions: []fundingLayer{plan}, personal: true}},
+		{"plan-only platform account", all, "cccccccccccccccc", false, rule5Settlement{subscriptions: []fundingLayer{plan}, personal: true}},
+		{"seller account never reaches personal", all, "dddddddddddddddd", true, rule5Settlement{subscriptions: []fundingLayer{seller}}},
+		{"unknown member account pays nothing", all, "eeeeeeeeeeeeeeee", true, rule5Settlement{}},
+		{"missing attribution skips self-use", all, "", false, rule5Settlement{groups: []fundingLayer{group}, personal: true}},
+		{"missing attribution with a plan first", []fundingLayer{own, plan, personal}, "", false, rule5Settlement{subscriptions: []fundingLayer{plan}}},
+		{"missing attribution with self-use only", []fundingLayer{own}, "", false, rule5Settlement{}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := rule5SettlementCandidates(test.layers, test.account, test.tenant); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("got %+v, want %+v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestFundingRuleVersionAndLayerIDs(t *testing.T) {
+	group := fundingLayer{groupID: "g1", accountIDs: []string{"aaaaaaaaaaaaaaaa"}}
+	personal := fundingLayer{allAccounts: true}
+	if fundingRuleVersion([]fundingLayer{group, personal}) != 4 {
+		t.Fatal("groups and personal funds are rule 4")
+	}
+	own := fundingLayer{kind: FundingLayerSelf, tenant: true, accountIDs: []string{"bbbbbbbbbbbbbbbb"}}
+	plan := fundingLayer{kind: FundingLayerSubscription, subscriptionID: "11111111-1111-4111-8111-111111111111", accountIDs: []string{"cccccccccccccccc"}}
+	if fundingRuleVersion([]fundingLayer{own, personal}) != 5 || fundingRuleVersion([]fundingLayer{plan}) != 5 {
+		t.Fatal("self-use and plan layers are rule 5")
+	}
+	if got := own.allocationGroup(); got.GroupID != SelfFundingLayerID || !got.Tenant || got.AllAccounts {
+		t.Fatalf("self layer = %+v", got)
+	}
+	if got := plan.allocationGroup(); got.GroupID != plan.subscriptionID || got.Tenant {
+		t.Fatalf("plan layer = %+v", got)
+	}
+}

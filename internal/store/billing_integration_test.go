@@ -2030,7 +2030,7 @@ func billingIntegrationFundingLayerSchema(t *testing.T, ctx context.Context, rep
 	t.Fatal("funding-layer migration missing")
 }
 
-// billingIntegrationTenantOwnershipSchema adds the 0051/0052 ownership columns
+// billingIntegrationTenantOwnershipSchema adds the 0051–0053 ownership and plan scope columns
 // and marketplace switch that current account predicates read, for tests that
 // replay an older migration prefix without platform-only structures.
 func billingIntegrationTenantOwnershipSchema(t *testing.T, ctx context.Context, repository *Store) {
@@ -2042,8 +2042,25 @@ func billingIntegrationTenantOwnershipSchema(t *testing.T, ctx context.Context, 
 		CREATE TABLE IF NOT EXISTS marketplace_settings (
 			singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
 			enabled BOOLEAN NOT NULL DEFAULT false);
-		INSERT INTO marketplace_settings(singleton) VALUES (true) ON CONFLICT DO NOTHING`); err != nil {
+		INSERT INTO marketplace_settings(singleton) VALUES (true) ON CONFLICT DO NOTHING;
+		ALTER TABLE billing_accounts ADD COLUMN IF NOT EXISTS self_use_enabled BOOLEAN NOT NULL DEFAULT true;
+		ALTER TABLE billing_plans ADD COLUMN IF NOT EXISTS seller_user_id UUID;
+		ALTER TABLE billing_subscriptions ADD COLUMN IF NOT EXISTS source_plan_id UUID;
+		CREATE TABLE IF NOT EXISTS billing_plan_provider_scopes (plan_id UUID PRIMARY KEY, mode TEXT NOT NULL);
+		CREATE TABLE IF NOT EXISTS billing_plan_provider_accounts (plan_id UUID NOT NULL, account_id TEXT NOT NULL)`); err != nil {
 		t.Fatalf("apply tenant ownership helper schema: %v", err)
+	}
+	var layers bool
+	if err := repository.db.QueryRowContext(ctx, `SELECT to_regclass('billing_reservation_layers') IS NOT NULL`).Scan(&layers); err != nil {
+		t.Fatalf("check funding layer schema: %v", err)
+	}
+	if layers {
+		if _, err := repository.db.ExecContext(ctx, `ALTER TABLE billing_reservation_layers
+			ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'group',
+			ADD COLUMN IF NOT EXISTS subscription_id UUID,
+			ADD COLUMN IF NOT EXISTS subscription_period_id UUID`); err != nil {
+			t.Fatalf("apply funding layer helper schema: %v", err)
+		}
 	}
 }
 

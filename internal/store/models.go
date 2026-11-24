@@ -331,7 +331,10 @@ type GlobalUsageRow struct {
 	ActualCostUSD      string
 	ChargedUSD         string
 	UncoveredUSD       string
-	LedgerTokens       int64
+	// SelfUseUSD is the cost of requests served by the user's own accounts:
+	// recorded, charged nothing and not uncovered.
+	SelfUseUSD   string
+	LedgerTokens int64
 }
 
 type GlobalPricingBreakdownRow struct {

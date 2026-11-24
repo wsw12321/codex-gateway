@@ -55,44 +55,84 @@ func sortBillingFundingSources(sources []BillingFundingSource) error {
 	return nil
 }
 
-func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model string, at time.Time, balance string, cashPriority int, cashCutoff *int64) ([]BillingFundingSource, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT s.id,p.id,s.priority,s.period_days,p.remaining_usd::text
-		FROM billing_subscriptions s JOIN billing_subscription_periods p ON p.id=s.current_period_id
+// snapshotBillingFundingTx locks and orders the user's usable funding sources.
+// A subscription whose plan restricts its accounts is returned apart, in the
+// same order, because rule 5 gives it a layer of its own: a seller plan's
+// subscription always (and none while the marketplace is off), a platform
+// plan's only while the marketplace is on and its scope lists accounts.
+// Everything else is a personal source, exactly as under rule 4.
+//
+// planScopes is false only on a schema replayed from before migration 0053
+// (upgrade tests); every subscription is then a personal source.
+func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model string, at time.Time, balance string, cashPriority int, cashCutoff *int64, planScopes, tenantFeatures bool) ([]BillingFundingSource, []restrictedSubscription, error) {
+	scopeColumns := `'','','all'`
+	scopeJoins := ``
+	if planScopes {
+		scopeColumns = `COALESCE(bp.id::text,''),COALESCE(bp.seller_user_id::text,''),COALESCE(sc.mode,'all')`
+		scopeJoins = ` LEFT JOIN billing_plans bp ON bp.id=s.source_plan_id
+		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=bp.id`
+	}
+	// #nosec G202 -- the scope fragments are fixed SQL; every value is a bound parameter.
+	rows, err := tx.QueryContext(ctx, `SELECT s.id,p.id,s.priority,s.period_days,p.remaining_usd::text,`+scopeColumns+`
+		FROM billing_subscriptions s JOIN billing_subscription_periods p ON p.id=s.current_period_id`+scopeJoins+`
 		WHERE s.user_id=$1 AND s.enabled AND s.charge_enabled AND s.models_initialized
 		AND s.model_ids ?| $3::text[] AND p.closed_at IS NULL AND p.starts_at<=$2 AND p.ends_at>$2
 		AND p.remaining_usd>0 ORDER BY s.id FOR UPDATE OF s,p`, userID, at, config.ModelScopeKeys(model))
 	if err != nil {
-		return nil, mapDBError("read ordered billing sources", err)
+		return nil, nil, mapDBError("read ordered billing sources", err)
 	}
 	sources := make([]BillingFundingSource, 0)
+	restrictedSources := make([]BillingFundingSource, 0)
+	plans := make(map[string]restrictedSubscription)
 	for rows.Next() {
 		source := BillingFundingSource{SourceType: "subscription"}
-		if err := rows.Scan(&source.SubscriptionID, &source.PeriodID, &source.Priority, &source.PeriodDays, &source.RemainingUSD); err != nil {
+		var planID, sellerID, mode string
+		if err := rows.Scan(&source.SubscriptionID, &source.PeriodID, &source.Priority, &source.PeriodDays, &source.RemainingUSD,
+			&planID, &sellerID, &mode); err != nil {
 			_ = rows.Close()
-			return nil, mapDBError("scan ordered billing source", err)
+			return nil, nil, mapDBError("scan ordered billing source", err)
 		}
-		sources = append(sources, source)
+		switch {
+		case sellerID != "" && !tenantFeatures:
+			// A seller plan pays only for its seller's accounts, which serve
+			// nobody while the marketplace is off.
+			continue
+		case sellerID != "" || tenantFeatures && planID != "" && mode == "selected":
+			restrictedSources = append(restrictedSources, source)
+			plans[source.SubscriptionID] = restrictedSubscription{planID: planID, sellerUserID: sellerID}
+		default:
+			sources = append(sources, source)
+		}
 	}
 	if err := rows.Close(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if cashCutoff != nil {
 		var cashAllowed bool
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE((SELECT CASE WHEN models_initialized THEN model_ids ?| $1::text[] ELSE false END
 			FROM billing_settings WHERE singleton),false)`, config.ModelScopeKeys(model)).Scan(&cashAllowed); err != nil {
-			return nil, mapDBError("read cash model scope", err)
+			return nil, nil, mapDBError("read cash model scope", err)
 		}
 		if cashAllowed {
 			sources = append(sources, BillingFundingSource{SourceType: "cash", CashLotCutoff: *cashCutoff, Priority: cashPriority, RemainingUSD: balance})
 		}
 	}
 	if err := sortBillingFundingSources(sources); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return sources, nil
+	if err := sortBillingFundingSources(restrictedSources); err != nil {
+		return nil, nil, err
+	}
+	restricted := make([]restrictedSubscription, 0, len(restrictedSources))
+	for _, source := range restrictedSources {
+		subscription := plans[source.SubscriptionID]
+		subscription.source = source
+		restricted = append(restricted, subscription)
+	}
+	return sources, restricted, nil
 }
 
 func billingFundingRetryTx(ctx context.Context, tx *sql.Tx, userID, model string, at time.Time) (time.Duration, error) {
@@ -134,7 +174,7 @@ func recordBillingFundingSourcesTx(ctx context.Context, tx *sql.Tx, reservation 
 }
 
 func billingSettlementSources(reservation BillingReservation) ([]BillingFundingSource, error) {
-	if reservation.FundingRuleVersion == 3 || reservation.FundingRuleVersion == 4 {
+	if reservation.FundingRuleVersion >= 3 && reservation.FundingRuleVersion <= 5 {
 		seen := make(map[string]bool)
 		for _, source := range reservation.OrderedFundingSources {
 			key := source.PeriodID

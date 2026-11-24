@@ -125,6 +125,20 @@ Current migrations:
   nodes (immutable); triggers bind accounts and registrations only to nodes of
   the same owner. Adds `marketplace_settings.max_egress_servers_per_user`
   (default 5).
+- `internal/store/migrations/0053_plan_provider_scopes.sql` — plan provider
+  scopes, funding rule 5 and self-use (aggregation gateway stage 3).
+  `billing_plans.seller_user_id` (immutable; NULL is a platform plan),
+  `billing_plan_provider_scopes` (`all`/`selected`, every existing plan
+  `all`) and `billing_plan_provider_accounts` (a trigger accepts only
+  accounts of the plan's seller that still hold a credential).
+  `billing_subscriptions.source_plan_id` is the plan a subscription was bought
+  from, backfilled from `plan_id` and immutable. `billing_accounts.
+  self_use_enabled` (default true). Reservations accept funding rule 5 and a
+  layered reservation without personal sources; a rule 5 settlement may record
+  a positive cost with nothing charged and nothing uncovered, which is exactly
+  a request served by the user's own account (self-use). `billing_reservation_layers` gains `kind`
+  (`group`, `subscription`, `self`, `personal`; existing rows backfilled) and
+  the bound subscription period of a restricted subscription layer.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already
