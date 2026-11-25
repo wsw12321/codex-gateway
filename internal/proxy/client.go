@@ -184,6 +184,9 @@ type AllocationGroup struct {
 	// Only a sidecar that checks eligibility layer by layer receives one; it
 	// is never sent on the wire.
 	Tenant bool `json:"-"`
+	// Kind is the admission funding layer kind (group, subscription, self or
+	// personal). The Gateway reads it for alerts; it is never sent.
+	Kind string `json:"-"`
 }
 
 // PersonalLayerID identifies the personal funding layer on the wire.

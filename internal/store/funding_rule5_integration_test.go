@@ -463,6 +463,48 @@ func TestFundingRule5PostgresIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("a paid subscription without accounts is reported", func(t *testing.T) {
+		seller := globalUsageIntegrationUser(t, ctx, s, "rule5-empty-seller-"+suffix, UserRoleMember)
+		u, d, k := billingIntegrationPrincipal(t, ctx, s, "rule5-empty-buyer-"+suffix)
+		own := account(&u)
+		sold := account(&seller)
+		plan := sellerPlan(seller, "Empty", "3")
+		subscription := buy(u, plan)
+		credit(u, "5")
+		admission, err := admit(u, d, k, "rule5-empty-full-"+suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(admission.Billing.EmptySubscriptionLayers) != 0 ||
+			!reflect.DeepEqual(admission.Billing.AllocationLayerKinds, []string{FundingLayerSelf, FundingLayerSubscription, FundingLayerPersonal}) {
+			t.Fatalf("served layers: kinds %v empty %+v", admission.Billing.AllocationLayerKinds, admission.Billing.EmptySubscriptionLayers)
+		}
+		// The seller's only account is released: the buyer still has
+		// allowance, but the plan has nothing to serve it.
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=now() WHERE id=$1`, sold); err != nil {
+			t.Fatal(err)
+		}
+		admission, err = admit(u, d, k, "rule5-empty-released-"+suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []EmptySubscriptionLayer{{SubscriptionID: subscription.ID, PlanID: plan.ID, SellerUserID: seller.ID}}
+		if !reflect.DeepEqual(admission.Billing.EmptySubscriptionLayers, want) ||
+			!reflect.DeepEqual(admission.Billing.AllocationLayerKinds, []string{FundingLayerSelf, FundingLayerPersonal}) {
+			t.Fatalf("empty layers %+v kinds %v", admission.Billing.EmptySubscriptionLayers, admission.Billing.AllocationLayerKinds)
+		}
+		// With nothing else to fall back on, the refusal names it too.
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=now() WHERE id=$1`, own); err != nil {
+			t.Fatal(err)
+		}
+		credit(u, "-5")
+		_, err = admit(u, d, k, "rule5-empty-refused-"+suffix)
+		var refused *NoUpstreamAccountError
+		if !errors.As(err, &refused) || !reflect.DeepEqual(refused.EmptySubscriptionLayers, want) {
+			t.Fatalf("refusal = %v (%+v)", err, refused)
+		}
+	})
+
 	t.Run("rule 4 reservations in flight settle unchanged", func(t *testing.T) {
 		marketplace(false)
 		u, d, k := billingIntegrationPrincipal(t, ctx, s, "rule5-inflight-"+suffix)

@@ -90,6 +90,18 @@ func (l fundingLayer) contains(accountID string) bool {
 	return false
 }
 
+// EmptySubscriptionLayer is a restricted subscription that could pay for a
+// request (enabled, covering the model, with allowance left in its period)
+// but whose plan had no account to serve it: the buyer paid and the seller
+// (or, for a platform plan, the Owner) has nothing to offer. The layer is
+// dropped; the Gateway raises a subscription_layer_empty alert.
+type EmptySubscriptionLayer struct {
+	SubscriptionID string
+	PlanID         string
+	// SellerUserID is empty for a platform plan.
+	SellerUserID string
+}
+
 // restrictedSubscription is a subscription whose plan restricts the accounts
 // it pays for. Under rule 5 it is a layer of its own instead of a personal
 // funding source.
@@ -105,50 +117,54 @@ type restrictedSubscription struct {
 // funds exist. A pool is cut to the accounts this user may use, and an empty
 // pool drops its layer, so the request falls through to the next source
 // instead of failing at CPA. Without self-use and restricted subscriptions
-// this is exactly rule 4.
-func fundingLayersTx(ctx context.Context, tx *sql.Tx, params BillingReservationParams, groups []GroupSummary, restricted []restrictedSubscription, selfPool []string, personal bool) ([]fundingLayer, error) {
+// this is exactly rule 4. It also reports the restricted subscriptions it
+// dropped for an empty pool.
+func fundingLayersTx(ctx context.Context, tx *sql.Tx, params BillingReservationParams, groups []GroupSummary, restricted []restrictedSubscription, selfPool []string, personal bool) ([]fundingLayer, []EmptySubscriptionLayer, error) {
 	provider := upstreamProviderOrDefault(params.UpstreamProvider)
 	layers := make([]fundingLayer, 0, len(groups)+len(restricted)+2)
+	var empty []EmptySubscriptionLayer
 	if len(selfPool) > 0 {
 		if len(selfPool) > MaxUpstreamAllocationCandidates {
-			return nil, fmt.Errorf("%w: own account pool exceeds the forwarding limit", ErrInvalid)
+			return nil, nil, fmt.Errorf("%w: own account pool exceeds the forwarding limit", ErrInvalid)
 		}
 		layers = append(layers, fundingLayer{kind: FundingLayerSelf, tenant: true, accountIDs: append([]string(nil), selfPool...)})
 	}
 	for _, group := range groups {
 		pool, err := snapshotGroupUpstreamAllocationGroupTx(ctx, tx, group.ID, provider)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		ids, err := userPermittedAccountsTx(ctx, tx, params.UserID, provider, pool.AccountIDs)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if len(ids) == 0 {
 			continue
 		}
 		if len(ids) > MaxUpstreamAllocationCandidates {
-			return nil, fmt.Errorf("%w: group account pool exceeds the forwarding limit", ErrInvalid)
+			return nil, nil, fmt.Errorf("%w: group account pool exceeds the forwarding limit", ErrInvalid)
 		}
 		layers = append(layers, fundingLayer{kind: FundingLayerGroup, groupID: group.ID, groupPeriodID: group.PeriodID, accountIDs: ids})
 	}
 	for _, subscription := range restricted {
 		ids, err := resolvePlanPoolTx(ctx, tx, subscription.planID, provider)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if subscription.sellerUserID == "" {
 			// A platform plan only narrows the platform accounts this user
 			// may already use.
 			if ids, err = userPermittedAccountsTx(ctx, tx, params.UserID, provider, ids); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		}
 		if len(ids) == 0 {
+			empty = append(empty, EmptySubscriptionLayer{SubscriptionID: subscription.source.SubscriptionID,
+				PlanID: subscription.planID, SellerUserID: subscription.sellerUserID})
 			continue
 		}
 		if len(ids) > MaxUpstreamAllocationCandidates {
-			return nil, fmt.Errorf("%w: plan account pool exceeds the forwarding limit", ErrInvalid)
+			return nil, nil, fmt.Errorf("%w: plan account pool exceeds the forwarding limit", ErrInvalid)
 		}
 		layers = append(layers, fundingLayer{kind: FundingLayerSubscription, subscriptionID: subscription.source.SubscriptionID,
 			subscriptionPeriodID: subscription.source.PeriodID, tenant: subscription.sellerUserID != "", accountIDs: ids})
@@ -159,12 +175,12 @@ func fundingLayersTx(ctx context.Context, tx *sql.Tx, params BillingReservationP
 		layers = append(layers, fundingLayer{kind: FundingLayerPersonal, allAccounts: true})
 	}
 	if fundingRuleVersion(layers) == 5 && len(layers) > MaxFundingLayers {
-		return nil, fmt.Errorf("%w: too many funding layers for one request", ErrInvalid)
+		return nil, nil, fmt.Errorf("%w: too many funding layers for one request", ErrInvalid)
 	}
 	for i := range layers {
 		layers[i].position = i + 1
 	}
-	return layers, nil
+	return layers, empty, nil
 }
 
 // upstreamProviderOrDefault normalizes a reservation's provider; empty is Codex.

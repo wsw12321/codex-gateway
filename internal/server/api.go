@@ -333,6 +333,7 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 		}
 		var noAccount *store.NoUpstreamAccountError
 		if errors.As(err, &noAccount) {
+			s.createEmptySubscriptionLayerAlerts(r.Context(), key.UserID, requestID, provider, model, noAccount.EmptySubscriptionLayers)
 			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_account_unavailable", "可用的扣费来源均没有可用的上游账号，请联系 Owner")
 			return
 		}
@@ -360,12 +361,18 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 			internalError(s, w, r, "read admission account-pool snapshot", errors.New("missing account-pool snapshot"))
 			return
 		}
-		for _, group := range admission.Billing.AllocationGroups {
+		kinds := admission.Billing.AllocationLayerKinds
+		for i, group := range admission.Billing.AllocationGroups {
+			kind := ""
+			if len(kinds) == len(admission.Billing.AllocationGroups) {
+				kind = kinds[i]
+			}
 			allocationGroups = append(allocationGroups, gatewayproxy.AllocationGroup{
 				GroupID: group.GroupID, AccountIDs: append([]string(nil), group.AccountIDs...),
-				AllAccounts: group.AllAccounts, Tenant: group.Tenant,
+				AllAccounts: group.AllAccounts, Tenant: group.Tenant, Kind: kind,
 			})
 		}
+		s.createEmptySubscriptionLayerAlerts(r.Context(), key.UserID, requestID, provider, model, admission.Billing.EmptySubscriptionLayers)
 	}
 	forwardingStarted := false
 	// Upstream account attribution arrives with the response headers, which can
@@ -585,13 +592,8 @@ func (s *Server) executeAPIRequest(w http.ResponseWriter, r *http.Request, prepa
 	if failure != nil {
 		s.createUpstreamAlert(writeCtx, key.UserID, requestID, failure)
 	}
-	if len(allocationGroups) > 1 && result.UpstreamAccountID == "" && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
-		// Settlement fell back to the first funding layer: which source pays
-		// depends on the serving account, so the Owner must see the gap.
-		_, _ = s.store.CreateAlert(writeCtx, store.CreateAlertParams{
-			Type: "billing_attribution_missing", Severity: "warning", UserID: key.UserID, RequestID: requestID,
-			DedupeKey: "billing_attribution_missing", Title: "上游账号归因缺失，已按第一扣费来源结算",
-		})
+	if result.UpstreamAccountID == "" && (result.Usage.InputTokens > 0 || result.Usage.OutputTokens > 0) {
+		s.createAttributionMissingAlert(writeCtx, key.UserID, requestID, allocationGroups)
 	}
 	if result.AbortStream {
 		// Do not send a clean EOF for an incomplete Gemini response: AGY may

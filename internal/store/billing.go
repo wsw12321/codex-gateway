@@ -41,7 +41,12 @@ func (e *InsufficientFundsError) Error() string { return "billing: insufficient 
 
 // NoUpstreamAccountError reports funded admission where no funding source may
 // use any upstream account of the requested provider.
-type NoUpstreamAccountError struct{}
+// NoUpstreamAccountError: no funding layer had an account to serve the
+// request. EmptySubscriptionLayers names the paid subscriptions whose plans
+// had none.
+type NoUpstreamAccountError struct {
+	EmptySubscriptionLayers []EmptySubscriptionLayer
+}
 
 func (e *NoUpstreamAccountError) Error() string {
 	return "billing: no upstream account for funding sources"
@@ -257,6 +262,12 @@ type BillingReservation struct {
 	// in billing order, forwarded to CPA. It is never re-read from mutable
 	// group policy afterward.
 	AllocationGroups []UpstreamAllocationGroup `json:"allocation_groups,omitempty"`
+	// AllocationLayerKinds holds the kind (FundingLayerGroup, ...) of each
+	// entry of AllocationGroups, at the same index. Alerts read it.
+	AllocationLayerKinds []string `json:"-"`
+	// EmptySubscriptionLayers are the paid, restricted subscriptions this
+	// admission dropped because their plans had no account to serve it.
+	EmptySubscriptionLayers []EmptySubscriptionLayer `json:"-"`
 }
 
 type BillingWriteParams struct {
@@ -609,12 +620,12 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		}
 		return BillingReservation{}, &InsufficientFundsError{RetryAfter: retry}
 	}
-	layers, err := fundingLayersTx(ctx, tx, params, groups, restricted, selfPool, len(sources) > 0)
+	layers, emptyLayers, err := fundingLayersTx(ctx, tx, params, groups, restricted, selfPool, len(sources) > 0)
 	if err != nil {
 		return BillingReservation{}, err
 	}
 	if len(layers) == 0 {
-		return BillingReservation{}, &NoUpstreamAccountError{}
+		return BillingReservation{}, &NoUpstreamAccountError{EmptySubscriptionLayers: emptyLayers}
 	}
 	ruleVersion := fundingRuleVersion(layers)
 	// group_id is provisional under rules 4 and 5: the first group layer
@@ -664,9 +675,12 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		return BillingReservation{}, err
 	}
 	reservation.AllocationGroups = make([]UpstreamAllocationGroup, 0, len(layers))
+	reservation.AllocationLayerKinds = make([]string, 0, len(layers))
 	for _, layer := range layers {
 		reservation.AllocationGroups = append(reservation.AllocationGroups, layer.allocationGroup())
+		reservation.AllocationLayerKinds = append(reservation.AllocationLayerKinds, layer.layerKind())
 	}
+	reservation.EmptySubscriptionLayers = emptyLayers
 	return reservation, nil
 }
 
