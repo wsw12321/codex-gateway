@@ -195,3 +195,33 @@ test("request rows name the account by alias, then CPA name, keeping the masked 
   assert.equal(cell.querySelector("small").textContent, "stable-id");
   assert.equal(monitor({}, true).textContent, "分配中");
 });
+
+test("a search explains matching users that cannot be deleted", async () => {
+  const ui = dashboard();
+  ui.node("information-user-search").value = "carol";
+  const requests = [];
+  ui.api(async (requestPath) => {
+    requests.push(requestPath);
+    return {users: [], blocked: [{id: "carol-id", username: "carol", display_name: "卖家丙", status: "disabled",
+      reasons: ["egress_servers", "marketplace_sales", "unexpected_reason"]}]};
+  });
+  await ui.run("loadInformationUsers(0)");
+  assert.match(requests[0], /q=carol/);
+  const host = ui.node("information-blocked");
+  assert.equal(host.classList.contains("hidden"), false);
+  const text = ui.node("information-blocked-users").textContent;
+  assert.match(text, /卖家丙/);
+  assert.match(text, /仍有出口服务器.*由 Owner 在“租户供应商”中删除/);
+  assert.match(text, /仍有商城成交记录.*成交记录随之删除/);
+  // An unknown reason is shown as is, without advice.
+  assert.match(text, /unexpected_reason/);
+  // A search without blocked matches, or a reset, hides the section.
+  ui.api(async () => ({users: []}));
+  await ui.run("loadInformationUsers(0)");
+  assert.equal(host.classList.contains("hidden"), true);
+  ui.api(async () => ({users: [], blocked: [{id: "x", username: "x", reasons: ["balance"]}]}));
+  await ui.run("loadInformationUsers(0)");
+  assert.equal(host.classList.contains("hidden"), false);
+  ui.run("resetInformation()");
+  assert.equal(host.classList.contains("hidden"), true);
+});

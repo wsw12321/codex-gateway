@@ -107,7 +107,11 @@ function memberAPI(writes) {
       const writes = [];
       const {page, errors} = await dashboard(browser, viewport, owner, "tenant-providers", (request, url) => {
         if (request.method() !== "GET") writes.push({path: url.pathname, method: request.method(), body: request.postDataJSON()});
-        if (url.pathname === "/admin/tenant-providers") return {accounts: tenantAccounts, egress_servers: [{...node, owner_user_id: "alice-id", owner_username: "alice", created_at: "2026-11-24T08:00:00Z"}]};
+        if (url.pathname === "/admin/tenant-providers") return {accounts: tenantAccounts, egress_servers: [
+          {...node, owner_user_id: "alice-id", owner_username: "alice", owner_status: "active", created_at: "2026-11-24T08:00:00Z"},
+          {...node, id: "55555555-5555-4555-8555-555555555555", name: "公司出口", server: "203.0.113.31", bound_accounts: 0,
+            owner_user_id: "carol-id", owner_username: "carol", owner_status: "disabled", created_at: "2026-11-24T09:00:00Z"}]};
+        if (url.pathname === "/admin/tenant-providers/egress-servers/55555555-5555-4555-8555-555555555555") return {deleted: true};
         if (url.pathname === "/admin/billing/users") return {users: [{id: "alice-id", username: "alice", display_name: "Alice", role: "member", status: "active"},
           {id: "bob-id", username: "bob", display_name: "Bob", role: "member", status: "active"}, {id: "owner-id", username: "owner", display_name: "管理员", role: "owner", status: "active"}]};
         return undefined;
@@ -117,6 +121,16 @@ function memberAPI(writes) {
       await page.screenshot({path: path.join(output, `tenant-providers-owner-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (name === "desktop") {
+        // A disabled member's node: the first click asks for confirmation.
+        const remove = page.locator("#tenant-egress-body tr", {hasText: "carol"}).getByRole("button", {name: "删除"});
+        assert.match(await page.locator("#tenant-egress-body tr", {hasText: "carol"}).textContent(), /成员已停用/);
+        await remove.click();
+        await page.locator("#tenant-egress-body tr", {hasText: "carol"}).getByRole("button", {name: "确认删除"}).waitFor();
+        await page.locator("#tenant-egress-body").scrollIntoViewIfNeeded();
+        await page.screenshot({path: path.join(output, "tenant-providers-owner-egress-delete.png")});
+        await page.locator("#tenant-egress-body tr", {hasText: "carol"}).getByRole("button", {name: "确认删除"}).click();
+        await page.waitForFunction(() => document.querySelector("#tenant-providers-message")?.textContent.includes("已删除 carol"));
+        assert.ok(writes.some((write) => write.method === "DELETE" && write.path.endsWith("/55555555-5555-4555-8555-555555555555")));
         await page.locator("#tenant-providers-body tr", {hasText: "Alice"}).getByRole("button", {name: "转移归属"}).click();
         await page.locator("#owner-transfer-dialog").waitFor({state: "visible"});
         await page.locator("#owner-transfer-user-search").click();

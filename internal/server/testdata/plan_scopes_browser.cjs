@@ -40,7 +40,14 @@ const memberState = {
     entitlements: [], quota_usd: "60.000000000000", remaining_usd: "41.200000000000", period_count: 1, current_period_number: 1,
     expires_at: "2026-12-25T08:00:00Z", period_id: "pp1", period_started_at: "2026-11-24T08:00:00Z", period_ends_at: "2026-12-25T08:00:00Z",
     updated_at: "2026-11-24T08:00:00Z", plan: plans[0], can_renew: true, config_version: 4,
-    provider_scope: {plan_id: "p1", mode: "selected", seller: false, restricted: true, account_counts: {codex: 2}}}],
+    provider_scope: {plan_id: "p1", mode: "selected", seller: false, restricted: true, account_counts: {codex: 2}}},
+  // A seller plan whose seller added an API key supplier after the purchase.
+  {id: "s2", tier: "day", enabled: true, name: "卖家 Claude 日卡", period_days: 1, model_ids: ["family:claude"], priority: 2, charge_enabled: true,
+    entitlements: [], quota_usd: "5.000000000000", remaining_usd: "4.100000000000", period_count: 7, current_period_number: 2,
+    expires_at: "2026-12-01T08:00:00Z", period_id: "pp2", period_started_at: "2026-11-25T08:00:00Z", period_ends_at: "2026-11-26T08:00:00Z",
+    updated_at: "2026-11-24T08:00:00Z", plan: null, can_renew: false, config_version: 2,
+    provider_scope: {plan_id: "p9", mode: "all", seller: true, restricted: true, account_counts: {anthropic: 1},
+      third_party_api: true, third_party_acknowledged: false}}],
   ledger_entries: [
     {id: 3, entry_type: "usage_charge", amount_usd: "0.420000000000", actual_cost_usd: "0.420000000000", charged_usd: "0.000000000000",
       uncovered_usd: "0.000000000000", self_use: true, model: "gpt-5.4", reason: "request usage charge", created_at: "2026-11-24T09:30:00Z"},
@@ -122,6 +129,7 @@ async function dashboard(browser, viewport, user, hash, handler) {
         if (url.pathname === "/admin/billing/me") return memberState;
         if (url.pathname === "/admin/billing/plans") return {plans};
         if (url.pathname === "/admin/billing/me/self-use") return {self_use_enabled: false};
+        if (url.pathname === "/admin/billing/me/subscriptions/s2/third-party-consent") return {subscription_id: "s2", third_party_acknowledged: true};
         return undefined;
       });
       // The harness renders state without loadDashboard, which loads billing.
@@ -132,6 +140,16 @@ async function dashboard(browser, viewport, user, hash, handler) {
       assert.equal(await page.locator("#billing-self-use-toggle").isChecked(), true);
       await page.screenshot({path: path.join(output, `plan-scope-member-billing-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      // Consent to the seller's API key suppliers belongs to the subscription.
+      const consent = page.locator(".subscription-card[data-subscription-id=s2] .subscription-third-party");
+      await consent.waitFor();
+      assert.match(await consent.textContent(), /你确认之前，它们不为这个订阅服务/);
+      await consent.scrollIntoViewIfNeeded();
+      await page.locator(".subscription-card[data-subscription-id=s2]").screenshot({path: path.join(output, `third-party-consent-${name}.png`)});
+      await consent.getByRole("button", {name: "允许第三方 API 供应商"}).click();
+      await page.waitForFunction(() => document.querySelector("#notice")?.textContent.includes("已允许第三方 API 供应商"));
+      assert.ok(writes.some((write) => write.path === "/admin/billing/me/subscriptions/s2/third-party-consent" && write.body.acknowledged === true));
+      writes.length = 0;
       if (name === "desktop") {
         await page.locator("#billing-self-use-toggle").uncheck();
         await page.locator("#billing-self-use-message", {hasText: "已关闭自用"}).waitFor();

@@ -3904,6 +3904,7 @@ function renderBillingSubscriptions(detail) {
       element("small", {text: `最终到期：${display.expires}`}),
       element("small", {className: "subscription-models", text: `适用模型：${billingModelText(billingModels(subscription)) || "无"}`}),
       subscription.provider_scope ? element("small", {className: "subscription-scope", text: billingSubscriptionScopeText(subscription.provider_scope)}) : null,
+      billingThirdPartyConsentBlock(detail, subscription),
       billingPlanBinding(subscription), billingSourceControl(subscription.id),
       element("details", {className: "subscription-period-details"}, element("summary", {text: "已购权益详情"}),
         element("small", {text: `${billingPeriodProgress(subscription)} · 额度不结转`}),
@@ -5741,6 +5742,37 @@ function billingPlanScopeText(scope) {
   const usable = accounts.filter((account) => account.usable === true).length;
   const stale = accounts.length - usable;
   return `供应商：指定 ${usable} 个账号${stale ? `，${stale} 个已失效` : ""}`;
+}
+
+// A seller's API key suppliers see the requests they serve, so they serve a
+// subscription only with the buyer's consent, even when the seller adds them
+// after the purchase. The buyer gives or withdraws it on the card.
+function billingThirdPartyConsentBlock(detail, subscription) {
+  const scope = subscription?.provider_scope;
+  if (!scope?.seller || !(scope.third_party_api === true || scope.third_party_acknowledged === true)) return null;
+  const acknowledged = scope.third_party_acknowledged === true;
+  const block = element("div", {className: "subscription-third-party", dataset: {thirdParty: acknowledged ? "acknowledged" : "pending"}},
+    element("small", {text: acknowledged
+      ? "已允许卖家的第三方 API 供应商为这个订阅服务，它们能看到经它处理的提示词和回复。"
+      : "卖家的供应商范围含第三方 API 供应商。你确认之前，它们不为这个订阅服务；确认后，它们能看到经它处理的提示词和回复。"}));
+  if (!loggingOut && billingUserForDetail(detail).id === state?.user?.id) {
+    const button = element("button", {type: "button", className: "secondary", text: acknowledged ? "撤回确认" : "允许第三方 API 供应商",
+      dataset: {thirdPartyConsent: subscription.id}});
+    button.addEventListener("click", () => runButton(button, () => setBillingThirdPartyConsent(subscription.id, !acknowledged), "保存中…"));
+    block.append(button);
+  }
+  return block;
+}
+
+async function setBillingThirdPartyConsent(subscriptionID, acknowledged) {
+  if (loggingOut || !billingDetail || billingUserForDetail(billingDetail).id !== state?.user?.id) return;
+  const actor = state.user.id, generation = identityGeneration;
+  const current = () => !loggingOut && state?.user?.id === actor && generation === identityGeneration;
+  await sensitiveAction(() => api(`/admin/billing/me/subscriptions/${encodeURIComponent(subscriptionID)}/third-party-consent`,
+    {method: "PUT", body: JSON.stringify({acknowledged})}, current), current);
+  if (!current()) return;
+  notice(acknowledged ? "已允许第三方 API 供应商，从下一次请求起生效。" : "已撤回确认：从下一次请求起，第三方 API 供应商不再为这个订阅服务。", "ok");
+  await loadBillingDashboard();
 }
 
 function billingSubscriptionScopeText(scope) {
@@ -10280,10 +10312,31 @@ function renderTenantProviders() {
   }));
   if (!result.accounts.length) body.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加账号。"})));
   const nodes = byId("tenant-egress-body");
-  nodes.replaceChildren(...result.egress_servers.map((node) => element("tr", {},
-    element("td", {text: node.owner_username}), element("td", {text: node.name}), element("td", {text: `${node.server}:${node.port}`}),
-    element("td", {text: node.protocol === "socks5" ? "SOCKS5" : "SS"}), element("td", {text: formatInteger(node.bound_accounts)}))));
-  if (!result.egress_servers.length) nodes.append(element("tr", {}, element("td", {attributes: {colspan: "5"}, className: "empty", text: "成员还没有添加出口服务器。"})));
+  nodes.replaceChildren(...result.egress_servers.map((node) => {
+    const remove = element("button", {type: "button", className: "secondary", text: "删除", dataset: {tenantEgressDelete: node.id}});
+    remove.addEventListener("click", () => {
+      if (remove.dataset.confirm !== "true") { remove.dataset.confirm = "true"; remove.textContent = "确认删除"; return; }
+      runButton(remove, () => deleteTenantEgressServer(node), "删除中…");
+    });
+    const disabled = node.owner_status && node.owner_status !== "active";
+    return element("tr", {dataset: {egressId: node.id}},
+      element("td", {}, element("div", {className: "tenant-egress-owner"}, element("span", {text: node.owner_username}),
+        disabled ? element("span", {className: "status-badge", dataset: {status: "unavailable"}, text: "成员已停用"}) : null)),
+      element("td", {text: node.name}), element("td", {text: `${node.server}:${node.port}`}),
+      element("td", {text: node.protocol === "socks5" ? "SOCKS5" : "SS"}), element("td", {text: formatInteger(node.bound_accounts)}),
+      element("td", {}, remove));
+  }));
+  if (!result.egress_servers.length) nodes.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加出口服务器。"})));
+}
+
+// A disabled member cannot sign in to remove a node, and every node of a
+// member blocks the member's permanent deletion; the Owner removes it here.
+async function deleteTenantEgressServer(node) {
+  const current = tenantProvidersIdentityCurrent();
+  await sensitiveAction(() => api(`/admin/tenant-providers/egress-servers/${encodeURIComponent(node.id)}`, {method: "DELETE", body: "{}"}, current), current);
+  if (!current()) return;
+  tenantProvidersMessage(`已删除 ${node.owner_username} 的出口服务器“${node.name}”。`, "ok");
+  await loadTenantProviders();
 }
 
 async function setTenantProviderSuspension(account, suspended) {
@@ -10908,6 +10961,43 @@ const informationReasonLabels = {
   plan_subscriptions: "其套餐仍有订阅记录", marketplace_sales: "仍有商城成交记录",
 };
 
+// What the Owner does about each reason a user cannot be deleted.
+const informationReasonRemedies = {
+  owner: "管理员账号不能删除。",
+  pending_approval: "注册申请尚待审批，先在“邀请管理”中处理。",
+  balance: "先在“额度与订阅”中把余额调整为零。",
+  subscriptions: "订阅停用后，由旧账务清理删除早于截止时间的订阅记录。",
+  subscription_entitlements: "订阅停用后，由旧账务清理删除早于截止时间的订阅记录。",
+  requests: "用上方的旧账务清理删除早于截止时间的历史。",
+  usage_summaries: "用上方的旧账务清理删除早于截止时间的历史。",
+  ledger: "用上方的旧账务清理删除早于截止时间的历史。",
+  billing_operations: "用上方的旧账务清理删除早于截止时间的历史。",
+  cash_lots: "余额为零后，旧账务清理会删除早于截止时间的资金批次。",
+  reservations: "等待请求结算后再试。",
+  running_requests: "等待请求结束后再试。",
+  management_history: "该用户执行过需要长期保留的管理操作，不能删除。",
+  providers: "成员在“我的供应商”中删除；成员已停用时，在“租户供应商”中转给平台后删除。",
+  egress_servers: "成员在“我的出口”中删除，或由 Owner 在“租户供应商”中删除。",
+  seller_plans: "成员在“我的套餐”中删除（成员已停用时需先恢复启用）。",
+  plan_subscriptions: "买家的订阅到期停用后，由旧账务清理删除。",
+  marketplace_sales: "成交的两条流水都被旧账务清理删除后，成交记录随之删除。",
+  not_found: "用户已不存在。",
+};
+let informationBlockedUsers = [];
+
+function renderInformationBlockedUsers() {
+  const host = byId("information-blocked");
+  if (!host) return;
+  const users = Array.isArray(informationBlockedUsers) ? informationBlockedUsers : [];
+  byId("information-blocked-users").replaceChildren(...users.map((user) => element("li", {dataset: {userId: user.id}},
+    element("div", {className: "information-blocked-user"},
+      element("strong", {text: user.display_name || user.username}), element("small", {text: user.username}), statusBadge(user.status || "active")),
+    element("ul", {className: "information-blocked-reasons"}, ...(user.reasons || []).map((reason) => element("li", {},
+      element("span", {text: informationReasonLabels[reason] || reason}),
+      informationReasonRemedies[reason] ? element("small", {text: informationReasonRemedies[reason]}) : null))))));
+  host.classList.toggle("hidden", users.length === 0);
+}
+
 function informationIdentityCurrent() {
   const generation = identityGeneration;
   return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
@@ -10939,6 +11029,8 @@ function resetInformation() {
   informationPreview = null;
   informationJob = null;
   informationUsers = [];
+  informationBlockedUsers = [];
+  renderInformationBlockedUsers();
   informationSelectedUsers.clear();
   informationSelectedDetails.clear();
   informationUsersReady = false;
@@ -11145,6 +11237,8 @@ async function loadInformationUsers(offset = 0) {
     if (!current()) return;
     if (!Array.isArray(result?.users)) throw new Error("候选用户响应格式异常。");
     informationUsers = result.users;
+    informationBlockedUsers = Array.isArray(result.blocked) ? result.blocked : [];
+    renderInformationBlockedUsers();
     for (const user of informationUsers) {
       if (informationSelectedUsers.has(user.id)) informationSelectedDetails.set(user.id, user);
     }

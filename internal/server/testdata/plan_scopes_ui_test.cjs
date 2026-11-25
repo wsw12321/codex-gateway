@@ -162,3 +162,39 @@ test("members switch self-use on their own billing page", async () => {
   owner.run('renderBillingSelfUse({user: {id: "owner-id"}, self_use_enabled: true})');
   assert.equal(owner.node("billing-self-use").classList.contains("hidden"), true);
 });
+
+test("buyers give and withdraw third-party consent on their seller subscriptions", async () => {
+  const ui = dashboard("member");
+  const subscription = (scope) => ({id: "sub-1", provider_scope: {plan_id: "p9", seller: true, restricted: true, account_counts: {codex: 1}, ...scope}});
+  ui.run('billingDetail = {user: {id: "member-id"}};');
+  const text = (node) => node.textContent;
+  const block = (value) => { ui.context.subject = value; return ui.run("billingThirdPartyConsentBlock(billingDetail, subject)"); };
+  // No member API supplier and no consent: nothing to show.
+  assert.equal(block(subscription({third_party_api: false, third_party_acknowledged: false})), null);
+  // A platform plan never asks.
+  assert.equal(block({id: "sub-2", provider_scope: {seller: false, restricted: true, third_party_api: true}}), null);
+  const pending = block(subscription({third_party_api: true, third_party_acknowledged: false}));
+  assert.equal(pending.dataset.thirdParty, "pending");
+  assert.match(text(pending), /你确认之前，它们不为这个订阅服务/);
+  const allow = pending.querySelector("button");
+  assert.equal(allow.textContent, "允许第三方 API 供应商");
+  let reloaded = 0;
+  ui.context.loadBillingDashboard = async () => { reloaded++; };
+  ui.responses.push({subscription_id: "sub-1", third_party_acknowledged: true});
+  await ui.run('setBillingThirdPartyConsent("sub-1", true)');
+  assert.deepEqual(ui.calls[0], {path: "/admin/billing/me/subscriptions/sub-1/third-party-consent", method: "PUT", body: {acknowledged: true}});
+  assert.equal(reloaded, 1);
+  // Consent stays visible, and withdrawable, after the seller removes the supplier.
+  const given = block(subscription({third_party_api: false, third_party_acknowledged: true}));
+  assert.equal(given.dataset.thirdParty, "acknowledged");
+  assert.equal(given.querySelector("button").textContent, "撤回确认");
+  ui.responses.push({subscription_id: "sub-1", third_party_acknowledged: false});
+  await ui.run('setBillingThirdPartyConsent("sub-1", false)');
+  assert.deepEqual(ui.calls[1].body, {acknowledged: false});
+  // Someone else's billing page shows the state without a button and sends nothing.
+  ui.run('billingDetail = {user: {id: "someone-else"}};');
+  const foreign = block(subscription({third_party_api: true}));
+  assert.equal(foreign.querySelector("button"), null);
+  await ui.run('setBillingThirdPartyConsent("sub-1", true)');
+  assert.equal(ui.calls.length, 2);
+});

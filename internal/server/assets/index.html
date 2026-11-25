@@ -1381,6 +1381,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                 </table>
               </div>
               <div class="information-users-actions"><div class="button-group"><button id="information-users-prev" type="button" class="secondary" disabled>上一页</button><span id="information-users-page" class="muted">—</span><button id="information-users-next" type="button" class="secondary" disabled>下一页</button></div><button id="information-delete-users" type="button" class="danger" disabled>永久删除所选用户</button></div>
+              <section id="information-blocked" class="information-blocked hidden" aria-labelledby="information-blocked-title" aria-live="polite">
+                <h4 id="information-blocked-title">不能删除的匹配用户</h4>
+                <p class="muted">这些用户与搜索匹配，但现在不满足删除条件，所以不在上面的列表中。按原因处理后重新搜索。</p>
+                <ul id="information-blocked-users" class="information-blocked-users"></ul>
+              </section>
             </article>
           </section>
 
@@ -1504,7 +1509,8 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
             <p id="tenant-providers-message" class="form-message hidden" role="alert"></p>
             <div class="table-wrap"><table class="tenant-providers-table"><thead><tr><th>成员</th><th>协议</th><th>账号</th><th>状态</th><th>出口</th><th>操作</th></tr></thead><tbody id="tenant-providers-body"></tbody></table></div>
             <h3>成员出口服务器</h3>
-            <div class="table-wrap"><table><thead><tr><th>成员</th><th>名称</th><th>地址</th><th>协议</th><th>绑定账号</th></tr></thead><tbody id="tenant-egress-body"></tbody></table></div>
+            <p class="muted">成员被停用后不能自己删除节点。永久删除成员前，需要在这里删除其节点；仍被账号绑定的节点要先转移或删除这些账号。</p>
+            <div class="table-wrap"><table class="tenant-egress-table"><thead><tr><th>成员</th><th>名称</th><th>地址</th><th>协议</th><th>绑定账号</th><th>操作</th></tr></thead><tbody id="tenant-egress-body"></tbody></table></div>
           </section>
 
           <section class="view owner-only hidden" data-section="site-settings" aria-labelledby="site-settings-title">
@@ -1774,7 +1780,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
       <p id="billing-purchase-minimum" class="muted"></p>
       <div id="billing-purchase-summary" class="billing-purchase-summary" aria-live="polite"></div>
       <p id="billing-purchase-warning" class="billing-purchase-warning"></p>
-      <label id="billing-purchase-third-party" class="billing-purchase-confirm hidden"><input name="acknowledge_third_party" type="checkbox"><span>该套餐可能由卖家添加的第三方 API 供应商服务。我了解对方能看到经它处理的提示词和回复。</span></label>
+      <label id="billing-purchase-third-party" class="billing-purchase-confirm hidden"><input name="acknowledge_third_party" type="checkbox"><span>该套餐可能由卖家添加的第三方 API 供应商服务。我了解对方能看到经它处理的提示词和回复。可以随时在“额度与订阅”的订阅卡片上撤回。</span></label>
       <label class="billing-purchase-confirm"><input name="confirmed" type="checkbox" required><span>我已核对金额、周期及以上权益变化，确认从本人现金余额扣款。</span></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-purchase-submit" type="submit">确认购买订阅</button></div>

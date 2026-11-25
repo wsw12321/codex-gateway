@@ -205,3 +205,23 @@ test("the Owner suspends and transfers tenant accounts", async () => {
   await ui.run("submitOwnerTransfer(event)");
   assert.deepEqual(ui.calls.at(-1), {path: "/admin/upstream-accounts/c000000000000003/owner", method: "PUT", body: {owner_user_id: "bob-id", expected_owner_user_id: null}});
 });
+
+test("the Owner deletes a disabled member's egress node after confirming", async () => {
+  const ui = dashboard("owner");
+  const node = {id: "n2", name: "office", server: "8.8.4.4", port: 8388, protocol: "ss", owner_username: "carol", owner_status: "disabled", bound_accounts: 0};
+  ui.responses.push({accounts: [], egress_servers: [node]});
+  await ui.run("loadTenantProviders()");
+  const body = ui.node("tenant-egress-body");
+  assert.match(body.textContent, /成员已停用/);
+  const remove = body.querySelectorAll("button").find((button) => button.dataset.tenantEgressDelete === "n2");
+  // The first click only asks for confirmation.
+  remove.listeners.click();
+  assert.equal(remove.textContent, "确认删除");
+  assert.equal(ui.calls.length, 1);
+  ui.responses.push({deleted: true}, {accounts: [], egress_servers: []});
+  await ui.run("deleteTenantEgressServer(tenantProviders.egress_servers[0])");
+  assert.deepEqual(ui.calls[1], {path: "/admin/tenant-providers/egress-servers/n2", method: "DELETE", body: {}});
+  assert.equal(ui.calls[2].path, "/admin/tenant-providers");
+  assert.match(ui.node("tenant-providers-message").textContent, /已删除 carol 的出口服务器“office”/);
+  assert.match(ui.node("tenant-egress-body").textContent, /成员还没有添加出口服务器/);
+});
