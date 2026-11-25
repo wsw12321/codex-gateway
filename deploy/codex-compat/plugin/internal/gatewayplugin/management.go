@@ -31,7 +31,7 @@ const (
 	protocolAccountEgress = "account_egress_v1"
 	// protocolCredentialOwnership: logins and imports honor the Gateway's
 	// refusal codes (see RegistrationRefusedError).
-	protocolCredentialOwnership = "credential_ownership_v1"
+	protocolCredentialOwnership = "credential_ownership_v1" // #nosec G101 -- the protocol name, not a credential
 
 	maxStatusRequestBytes = 1 << 10
 )

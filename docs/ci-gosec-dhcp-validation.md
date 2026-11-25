@@ -15,12 +15,19 @@
   `v0.0.0-20260719225207-c76316d4aa82`。网关和 CPA 镜像扫描结果为 0。这一项与本分支的代码无关，是漏洞库更新后新报出的；
   `main` 下次构建同样会失败。
 
+修复推送后，[PR #14 的 CI](https://github.com/wsw12321/codex-gateway/actions/runs/45566126222) 中 Trivy 和根模块 gosec 均已通过。
+`go-security` 任务因此第一次执行到之前被跳过的两步：CPA 插件的 govulncheck 和 gosec。插件 gosec 又报出 1 项：
+`deploy/codex-compat/plugin/internal/gatewayplugin/management.go` 的 `protocolCredentialOwnership` 报 G101，
+与网关侧的协议名常量是同一情况。
+
 ## 修改
 
 - gosec：
   - `credentialOwnershipProtocol` 的值是与插件约定的协议名 `credential_ownership_v1`，不是凭据。
   - `accountScopeSQL` 只拼接固定的列名、别名和占位符名，所有者及其它值都以绑定参数传入。
   - 按仓库约定，在这 6 处语句前加有针对性并写明理由的 `#nosec G101` / `#nosec G202`，SQL 和行为不变。
+  - 插件的 `protocolCredentialOwnership` 同样是协议名，按插件已有写法加行尾 `#nosec G101`。只改注释，插件行为不变，
+    剩余的 selector 补丁也未改动。
   - 同一片段用在 `QueryRowContext` 的语句未被 gosec v2.22.8 报出，没有加注释。
 - mihomo 依赖补丁 `deploy/shadowsocks/upstream/mihomo-v1.19.32-dependencies.patch`：
   - 在原有升级之外，把 `insomniacslk/dhcp` 升到修复版本 `c76316d4aa82`（即 Trivy 给出的最低修复版本）。
@@ -33,10 +40,18 @@
 
 ## 本地验证
 
-gosec 使用 CI 锁定的 `v2.22.8` 和相同参数 `-exclude-dir=deploy/codex-compat/plugin ./...`：
+`go-security` 的四个步骤全部按 CI 的命令（`scripts/ci-go-tool.sh`）和锁定版本在本地执行，不再只看失败的那一步：
 
-- 修改前复现 CI 的 6 项，退出码 1。
-- 修改后 `Issues: 0`，退出码 0（`Nosec` 从 31 增至 37）。
+| 步骤 | 修改前 | 修改后 |
+| --- | --- | --- |
+| govulncheck `v1.1.4`（根模块） | 通过 | 通过 |
+| gosec `v2.22.8 -exclude-dir=deploy/codex-compat/plugin ./...` | 6 项，退出码 1 | `Issues: 0`，退出码 0（`Nosec` 31 → 37） |
+| govulncheck `v1.1.4`（插件，`deploy/codex-compat/plugin`） | 通过 | 通过 |
+| gosec `v2.22.8 -exclude-generated ./...`（插件） | 1 项，退出码 1 | `Issues: 0`，退出码 0（`Nosec` 3 → 4） |
+
+`go install tool@version` 不读取仓库的 `go.mod`，本环境默认的 Go 1.24 会因此构建出无法分析 Go 1.26 代码的 govulncheck；
+CI 的默认 Go 已是 1.26.11，所以本地执行时设置 `GOTOOLCHAIN=go1.26.11`。插件另执行了 `gofmt -l .`、`go vet ./...` 和
+`go test -race -count=1 ./...`，均通过。
 
 mihomo：
 
