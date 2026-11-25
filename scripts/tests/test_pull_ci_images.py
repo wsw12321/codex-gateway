@@ -40,7 +40,7 @@ class PullCIImagesTests(unittest.TestCase):
                     "build": {"args": {"REVISION": REVISION, "VERSION": REVISION}},
                 },
                 "codex-compat": {"image": "codex-gateway-compat:reviewed"},
-                "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v2"},
+                "account-egress": {"image": "codex-gateway-account-egress:1.19.32-v3"},
             }
         }
         self.env = dict(

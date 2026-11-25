@@ -486,7 +486,7 @@ func TestSOCKS5NodesRenderAndValidateBeforeMihomo(t *testing.T) {
 		"long username":    func(n *egress.Node) { n.Username, n.Password = long, "p" },
 		"long password":    func(n *egress.Node) { n.Username, n.Password = "u", long },
 		"newline":          func(n *egress.Node) { n.Username, n.Password = "u", "p\nq" },
-		"unknown protocol": func(n *egress.Node) { n.Protocol = "http" },
+		"unknown protocol": func(n *egress.Node) { n.Protocol = "ftp" },
 		"SS with username": func(n *egress.Node) {
 			n.Protocol, n.Cipher, n.Username, n.Password = egress.ProtocolSS, "aes-256-gcm", "u", "p"
 		},
@@ -513,7 +513,10 @@ func TestLegacySnapshotsWithoutProtocolStayShadowsocks(t *testing.T) {
 	if strings.Contains(string(raw), "protocol") || strings.Contains(string(raw), "username") {
 		t.Fatal("SS node changed the pre-SOCKS5 wire shape")
 	}
-	proxy := mihomoProxy("legacy", fixtureSnapshot(1).Nodes[0])
+	proxy, err := mihomoProxy("legacy", fixtureSnapshot(1).Nodes[0])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if proxy["type"] != "ss" || proxy["cipher"] != "aes-256-gcm" {
 		t.Fatalf("protocol-less node did not render as SS: %v", proxy)
 	}

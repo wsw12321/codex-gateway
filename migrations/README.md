@@ -172,6 +172,8 @@ Current migrations:
   seller adds an API key supplier to the plan's scope. Existing subscriptions
   start without consent (fail closed).
 
+- `internal/store/migrations/0057_mihomo_outbounds.sql` adds HTTP CONNECT, its TLS server name and the remaining remote Mihomo adapters. Advanced nodes keep their protocol-specific parameters in the encrypted credential column. Mesh nodes use peer discovery instead of a host and port. Existing SS and SOCKS5 rows retain their constraints and bindings.
+
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already
 been applied.

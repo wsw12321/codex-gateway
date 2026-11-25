@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"testing"
+
+	"github.com/wsw/codex-gateway/internal/egress"
 )
 
 func TestEgressServerValidation(t *testing.T) {
@@ -38,7 +40,7 @@ func TestSOCKS5EgressServerValidation(t *testing.T) {
 		if err := ValidateEgressServer(n); err != nil {
 			t.Fatalf("username %q: %v", username, err)
 		}
-		if egressNeedsPassword(n) != (username != "") {
+		if egress.NeedsCredential(n.Protocol, n.Username) != (username != "") {
 			t.Fatalf("username %q password requirement changed", username)
 		}
 	}

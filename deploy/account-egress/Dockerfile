@@ -7,9 +7,11 @@ RUN sh /src/mihomo-build/build.sh /out/mihomo
 FROM ${GOLANG_IMAGE} AS build
 WORKDIR /src
 COPY go.mod go.sum ./
+COPY internal/cpaprotocol ./internal/cpaprotocol
 COPY internal/egress ./internal/egress
 COPY cmd/account-egress ./cmd/account-egress
-RUN CGO_ENABLED=0 go test -count=1 ./cmd/account-egress \
+RUN --mount=from=mihomo,source=/out/mihomo,target=/tmp/mihomo,ro \
+    MIHOMO_TEST_BINARY=/tmp/mihomo CGO_ENABLED=0 go test -count=1 ./cmd/account-egress \
     && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /account-egress ./cmd/account-egress
 
 FROM ${RUNTIME_IMAGE}

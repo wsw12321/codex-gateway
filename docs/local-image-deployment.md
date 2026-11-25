@@ -25,7 +25,7 @@ compat_image=$(./scripts/compose.sh config --format json | jq -er '.services["co
 docker save \
   "codex-gateway-gateway:${gateway_tag}" \
   "$compat_image" \
-  "codex-gateway-account-egress:1.19.32-v2" \
+  "codex-gateway-account-egress:1.19.32-v3" \
   | gzip -1 \
   | ssh deploy@server 'gzip -dc | docker load'
 ```

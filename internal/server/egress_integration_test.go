@@ -318,7 +318,7 @@ func TestEgressSS2022AndConnectivityProbePostgres(t *testing.T) {
 	}
 }
 
-func TestEgressSOCKS5HTTPPostgres(t *testing.T) {
+func TestEgressProtocolHTTPPostgres(t *testing.T) {
 	f := newInvitationHTTPFixture(t)
 	f.s.config.EgressControlKey = strings.Repeat("c", 32)
 	f.s.config.APIKeyEncryptionKey = bytes.Repeat([]byte{0x66}, 32)
@@ -330,6 +330,14 @@ func TestEgressSOCKS5HTTPPostgres(t *testing.T) {
 		defer mu.Unlock()
 		if r.Header.Get("Authorization") != "Bearer "+f.s.config.EgressControlKey {
 			w.WriteHeader(401)
+			return
+		}
+		if r.Method == "POST" && r.URL.Path == "/validate" {
+			var n egress.Node
+			if err := json.NewDecoder(r.Body).Decode(&n); err != nil {
+				t.Error(err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]bool{"valid": n.Protocol == "trojan" && strings.Contains(n.Options, "sample-canary")})
 			return
 		}
 		if r.Method == "PUT" {
@@ -398,7 +406,7 @@ func TestEgressSOCKS5HTTPPostgres(t *testing.T) {
 	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("user", "SOCKS-canary\nx"), f.cookie, 400), "invalid_egress_password")
 	wantCode(f.send(t, "POST", "/admin/egress-servers", socks("user", strings.Repeat("p", 256)), f.cookie, 400), "invalid_egress_password")
 	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "protocol": "socks5", "server": "socks.example.com", "port": 1080, "cipher": "aes-256-gcm", "udp": false}, f.cookie, 400), "invalid_egress_request")
-	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "protocol": "http", "server": "socks.example.com", "port": 1080, "udp": false}, f.cookie, 400), "invalid_egress_request")
+	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "protocol": "ftp", "server": "socks.example.com", "port": 1080, "udp": false}, f.cookie, 400), "invalid_egress_request")
 	wantCode(f.send(t, "POST", "/admin/egress-servers", map[string]any{"name": "x", "server": "ss.example.com", "port": 8388, "cipher": "aes-256-gcm", "username": "user", "password": "SS-canary", "udp": false}, f.cookie, 400), "invalid_egress_request")
 
 	// Enabling authentication requires a password; then a blank one keeps it.
@@ -431,6 +439,51 @@ func TestEgressSOCKS5HTTPPostgres(t *testing.T) {
 	if n := runtimeNode(open.ID); n.Password != "" || n.Username != "" {
 		t.Fatalf("cleared SOCKS5 node still carries credentials: %+v", n)
 	}
+	https := map[string]any{"name": "proxy", "protocol": "https", "server": "192.0.2.1", "port": 443, "username": "user", "password": "sample-canary", "tls_server_name": "PROXY.EXAMPLE"}
+	reply := f.send(t, "POST", "/admin/egress-servers", https, f.cookie, 201)
+	node := saved(reply)
+	if node.ServerName != "proxy.example" || !node.HasPassword || runtimeNode(node.ID).Password != "sample-canary" || strings.Contains(reply.Body.String(), "sample-canary") {
+		t.Fatal("HTTPS credentials or SNI round trip failed")
+	}
+	https["protocol"] = "http"
+	f.send(t, "PUT", "/admin/egress-servers/"+node.ID, https, f.cookie, 400)
+	delete(https, "tls_server_name")
+	delete(https, "password")
+	wantCode(f.send(t, "PUT", "/admin/egress-servers/"+node.ID, https, f.cookie, 400), "egress_password_required")
+	delete(https, "username")
+	f.send(t, "PUT", "/admin/egress-servers/"+node.ID, https, f.cookie, 200)
+	if n := runtimeNode(node.ID); n.Protocol != "http" || n.Password != "" || n.ServerName != "" {
+		t.Fatal("unexpected anonymous HTTP snapshot")
+	}
+
+	advanced := map[string]any{"name": "tunnel", "protocol": "trojan", "server": "192.0.2.2", "port": 443, "options": map[string]string{"password": "sample-canary"}}
+	reply = f.send(t, "POST", "/admin/egress-servers", advanced, f.cookie, 201)
+	node = saved(reply)
+	if strings.Contains(reply.Body.String(), "sample-canary") || !node.HasOptions || node.HasPassword {
+		t.Fatal("advanced credential exposed or misclassified")
+	}
+	path := "/admin/egress-servers/" + node.ID
+	delete(advanced, "options")
+	advanced["name"] = "renamed"
+	f.send(t, "PUT", path, advanced, f.cookie, 200)
+	n := runtimeNode(node.ID)
+	if !strings.Contains(n.Options, "sample-canary") || n.Password != "" {
+		t.Fatal("retained options missing")
+	}
+	stored, err := f.s.store.EgressServer(t.Context(), node.ID)
+	if err != nil || len(stored.PasswordCiphertext) == 0 || bytes.Contains(stored.PasswordCiphertext, []byte("sample-canary")) {
+		t.Fatal("options envelope missing")
+	}
+	advanced["options"] = map[string]string{"password": "rejected"}
+	wantCode(f.send(t, "PUT", path, advanced, f.cookie, 400), "invalid_egress_options")
+	advanced["options"] = map[string]string{"dialer-proxy": "DIRECT"}
+	wantCode(f.send(t, "PUT", path, advanced, f.cookie, 400), "invalid_egress_options")
+	if after, err := f.s.store.EgressServer(t.Context(), node.ID); err != nil || after.Revision != n.Revision {
+		t.Fatal("rejected candidate advanced revision")
+	}
+	delete(advanced, "options")
+	advanced["protocol"] = "vless"
+	wantCode(f.send(t, "PUT", path, advanced, f.cookie, 400), "egress_options_required")
 	list := f.send(t, "GET", "/admin/egress-servers", nil, f.cookie, 200)
 	if strings.Contains(list.Body.String(), "canary") || !strings.Contains(list.Body.String(), `"protocol":"socks5"`) {
 		t.Fatalf("list response: %s", list.Body)

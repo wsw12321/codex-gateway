@@ -1416,7 +1416,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           </section>
 
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
-            <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为不同的上游账号绑定 Shadowsocks 或 SOCKS5 出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
+            <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为上游账号选择出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
             <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址，不支持域名。</p>
             <div class="egress-probe-bar">
@@ -1654,16 +1654,18 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
 
   <dialog id="egress-dialog" aria-labelledby="egress-dialog-title">
     <form id="egress-form" autocomplete="off">
-      <div class="dialog-heading"><h2 id="egress-dialog-title">新增出口服务器</h2><p>支持 Shadowsocks 与 SOCKS5。密码不会在保存后回显。</p></div>
+      <div class="dialog-heading"><h2 id="egress-dialog-title">新增出口服务器</h2><p>密码和协议参数加密保存，仅在填写时可见。</p></div>
       <label>节点名称<input name="name" required maxlength="80"></label>
-      <label>协议<select name="protocol"><option value="ss">Shadowsocks</option><option value="socks5">SOCKS5</option></select></label>
-      <label>服务器地址<input name="server" required maxlength="253" placeholder="IPv4 或域名" spellcheck="false"></label>
-      <label>端口<input name="port" type="number" required min="1" max="65535" step="1"></label>
+      <label>协议<select name="protocol"><option value="ss">Shadowsocks</option><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option><option value="https">HTTP CONNECT（TLS）</option><optgroup id="egress-advanced-protocols" label="其他出站协议"></optgroup></select></label>
+      <label id="egress-server-field">服务器地址<input name="server" required maxlength="253" placeholder="IPv4 或域名" spellcheck="false"></label>
+      <label id="egress-port-field">端口<input name="port" type="number" required min="1" max="65535" step="1"></label>
+      <label id="egress-sni-field" class="hidden">TLS 服务器名称（可选）<input name="tls_server_name" maxlength="253" spellcheck="false" placeholder="proxy.example.com"><small>默认使用服务器地址校验证书。使用 IP 连接时，可填写证书对应的域名。</small></label>
+      <label id="egress-options-field" class="hidden">协议参数（JSON 对象）<textarea name="options" rows="5" maxlength="24576" autocomplete="off" spellcheck="false"></textarea><small id="egress-options-help"></small></label>
       <label id="egress-cipher-field">加密方式<select name="cipher"><option value="aes-128-gcm">aes-128-gcm</option><option value="aes-256-gcm">aes-256-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option></select></label>
-      <label id="egress-username-field" class="hidden">用户名<input name="username" maxlength="255" autocomplete="off" spellcheck="false"><small>留空表示无认证；SOCKS5 不加密，用户名和密码在链路上可见。</small></label>
-      <label>密码<input name="password" type="password" maxlength="4096" autocomplete="new-password"><small id="egress-password-help">新增节点需要填写密码。</small></label>
-      <label class="check-label"><input name="udp" type="checkbox">允许 UDP</label>
-      <p class="muted">当前模型接口通过 TCP 连接；UDP 选项保存为节点能力。</p>
+      <label id="egress-username-field" class="hidden">用户名<input name="username" maxlength="255" autocomplete="off" spellcheck="false"><small>留空表示无认证。</small></label>
+      <label id="egress-password-field">密码<input name="password" type="password" maxlength="4096" autocomplete="new-password"><small id="egress-password-help">新增节点需要填写密码。</small></label>
+      <label id="egress-udp-field" class="check-label"><input name="udp" type="checkbox">允许 UDP</label>
+      <p id="egress-udp-help" class="muted">当前模型接口通过 TCP 连接；UDP 选项保存为节点能力。</p>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="submit">保存节点</button><button type="button" class="secondary" data-close>取消</button></div>
     </form>

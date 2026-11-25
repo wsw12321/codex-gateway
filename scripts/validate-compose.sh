@@ -417,7 +417,7 @@ jq -e --arg golang "$golang_image" --arg mode "$egress_mode" \
   ([.services | to_entries[] | select(any(.value.secrets[]?; .source == "egress_control_key")) | .key] | sort) ==
     ["account-egress", "gateway"] and
   (.services["account-egress"] |
-    .image == "codex-gateway-account-egress:1.19.32-v2" and
+    .image == "codex-gateway-account-egress:1.19.32-v3" and
     .build.context == $root and .build.dockerfile == "deploy/account-egress/Dockerfile" and
     .build.args == {"GOLANG_IMAGE":$golang,"RUNTIME_IMAGE":$runtime} and
     .read_only == true and (.user | test("^10004:[1-9][0-9]*$")) and

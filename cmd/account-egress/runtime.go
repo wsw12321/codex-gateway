@@ -16,6 +16,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -58,9 +60,10 @@ type runtime struct {
 	suppliers   supplierRouting
 	// Connectivity probes are owner-initiated; a small fixed pool keeps a
 	// burst of tests from competing with model traffic for local resources.
-	probeSlots   chan struct{}
-	probeTimeout time.Duration
-	probeRoots   *x509.CertPool // nil selects the system trust store
+	validationSlots chan struct{}
+	probeSlots      chan struct{}
+	probeTimeout    time.Duration
+	probeRoots      *x509.CertPool // nil selects the system trust store
 }
 
 const (
@@ -69,7 +72,7 @@ const (
 )
 
 func newRuntime(key string, controller proxyController) *runtime {
-	return &runtime{key: key, controller: controller, status: egress.Status{InstanceID: randomID(), UpdatedAt: time.Now().UTC()}, nodes: map[string]*nodeRuntime{}, desired: map[string]bool{}, routes: map[string]routeRuntime{}, squidIP: "172.28.60.2", probeSlots: make(chan struct{}, maxConcurrentProbes), probeTimeout: defaultProbeTimeout}
+	return &runtime{key: key, controller: controller, status: egress.Status{InstanceID: randomID(), UpdatedAt: time.Now().UTC()}, nodes: map[string]*nodeRuntime{}, desired: map[string]bool{}, routes: map[string]routeRuntime{}, squidIP: "172.28.60.2", validationSlots: make(chan struct{}, 2), probeSlots: make(chan struct{}, maxConcurrentProbes), probeTimeout: defaultProbeTimeout}
 }
 
 func nodeKey(id string, revision int64) string { return id + "/" + strconv.FormatInt(revision, 10) }
@@ -78,24 +81,7 @@ func validServer(server string) bool {
 	if ip, err := netip.ParseAddr(server); err == nil {
 		return ip.IsValid() && ip.Zone() == ""
 	}
-	if len(server) == 0 || len(server) > 253 || strings.ToLower(server) != server {
-		return false
-	}
-	labels := strings.Split(server, ".")
-	if len(labels) < 2 {
-		return false
-	}
-	for _, label := range labels {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
-			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
-				return false
-			}
-		}
-	}
-	return true
+	return egress.ValidServerName(server)
 }
 
 func validateSnapshot(snapshot egress.Snapshot, key string) error {
@@ -104,11 +90,25 @@ func validateSnapshot(snapshot egress.Snapshot, key string) error {
 	}
 	nodes := map[string]bool{}
 	for _, node := range snapshot.Nodes {
-		if !identifierPattern.MatchString(node.ID) || node.Revision < 1 || !validServer(node.Server) || node.Port < 1 || node.Port > 65535 {
+		if !identifierPattern.MatchString(node.ID) || node.Revision < 1 {
 			return errors.New("invalid node")
 		}
-		switch egress.NormalizeProtocol(node.Protocol) {
-		case egress.ProtocolSS:
+		p := egress.NormalizeProtocol(node.Protocol)
+		if egress.MeshProtocol(p) {
+			if !egress.ValidEndpoint(p, node.Server, node.Port) {
+				return errors.New("invalid mesh endpoint")
+			}
+		} else if !validServer(node.Server) || node.Port < 1 || node.Port > 65535 {
+			return errors.New("invalid endpoint")
+		}
+		if node.ServerName != "" && (p != "https" || !egress.ValidServerName(node.ServerName)) {
+			return errors.New("invalid TLS name")
+		}
+		if node.Options != "" && !egress.AdvancedProtocol(p) {
+			return errors.New("unexpected options")
+		}
+		switch {
+		case p == egress.ProtocolSS:
 			if !egress.SupportedCipher(node.Cipher) {
 				return errors.New("invalid cipher")
 			}
@@ -117,9 +117,16 @@ func validateSnapshot(snapshot egress.Snapshot, key string) error {
 			if node.Username != "" || !egress.ValidPassword(node.Cipher, node.Password) {
 				return errors.New("invalid node")
 			}
-		case egress.ProtocolSOCKS5:
-			if node.Cipher != "" || !egress.ValidSOCKS5Credentials(node.Username, node.Password) {
+		case egress.OptionalAuth(p):
+			if node.Cipher != "" || (egress.HTTPProtocol(p) && node.UDP) || !egress.ValidProxyCredentials(p, node.Username, node.Password) {
 				return errors.New("invalid node")
+			}
+		case egress.AdvancedProtocol(p):
+			if node.Cipher != "" || node.Username != "" || node.Password != "" {
+				return errors.New("unexpected credentials")
+			}
+			if _, err := egress.DecodeOptions(p, node.Options); err != nil {
+				return err
 			}
 		default:
 			return errors.New("invalid protocol")
@@ -226,6 +233,7 @@ func (r *runtime) install(ctx context.Context, snapshot egress.Snapshot) error {
 	for _, route := range snapshot.Routes {
 		routes[route.ID] = routeRuntime{token: route.Token, node: candidate[nodeKey(route.NodeID, route.NodeRevision)]}
 	}
+	removeRetiredMeshState(r.nodes, candidate)
 	r.nodes, r.desired, r.routes = candidate, desired, routes
 	r.fingerprint = fingerprint
 	r.status.AppliedVersion = snapshot.Version
@@ -279,21 +287,57 @@ func (r *runtime) prune(ctx context.Context) {
 	applyCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if r.controller.apply(applyCtx, config) == nil {
+		removeRetiredMeshState(r.nodes, keep)
 		r.nodes = keep
 	}
 }
 
-// mihomoProxy renders one validated node as a Mihomo outbound. SOCKS5 has no
-// TLS here and sends credentials only when the node has a username.
-func mihomoProxy(name string, node egress.Node) map[string]any {
-	if egress.NormalizeProtocol(node.Protocol) == egress.ProtocolSOCKS5 {
-		proxy := map[string]any{"name": name, "type": "socks5", "server": node.Server, "port": node.Port, "udp": node.UDP}
-		if node.Username != "" {
-			proxy["username"], proxy["password"] = node.Username, node.Password
+func proxyName(n egress.Node) string { return "node-" + n.ID + "-" + strconv.FormatInt(n.Revision, 10) }
+
+// Revisions with active streams remain in keep. Remove their private mesh
+// identity only after the core has successfully released that revision.
+func removeRetiredMeshState(old, keep map[string]*nodeRuntime) {
+	for id, n := range old {
+		if keep[id] == nil && egress.MeshProtocol(n.node.Protocol) {
+			_ = os.RemoveAll(filepath.Join(workDirectory, "mesh", proxyName(n.node)))
 		}
-		return proxy
 	}
-	return map[string]any{"name": name, "type": "ss", "server": node.Server, "port": node.Port, "cipher": node.Cipher, "password": node.Password, "udp": node.UDP}
+}
+
+func mihomoProxy(name string, node egress.Node) (map[string]any, error) {
+	p := egress.NormalizeProtocol(node.Protocol)
+	proxy := map[string]any{}
+	if egress.AdvancedProtocol(p) {
+		options, err := egress.DecodeOptions(p, node.Options)
+		if err != nil {
+			return nil, err
+		}
+		proxy = options
+	}
+	proxy["name"], proxy["type"] = name, p
+	if egress.MeshProtocol(p) {
+		proxy["state-dir"] = "mesh/" + name
+		if p == "easytier" {
+			proxy["no-listener"] = true
+		}
+	} else {
+		proxy["server"], proxy["port"] = node.Server, node.Port
+	}
+	if egress.HTTPProtocol(p) {
+		proxy["type"], proxy["tls"] = "http", p == "https"
+		if node.ServerName != "" {
+			proxy["sni"] = node.ServerName
+		}
+	} else {
+		proxy["udp"] = node.UDP
+	}
+	if p == egress.ProtocolSS {
+		proxy["cipher"], proxy["password"] = node.Cipher, node.Password
+	}
+	if egress.OptionalAuth(p) && node.Username != "" {
+		proxy["username"], proxy["password"] = node.Username, node.Password
+	}
+	return proxy, nil
 }
 
 func marshalMihomo(nodes map[string]*nodeRuntime, secret string) ([]byte, error) {
@@ -307,8 +351,12 @@ func marshalMihomo(nodes map[string]*nodeRuntime, secret string) ([]byte, error)
 	slices.Sort(ids)
 	for _, id := range ids {
 		node := nodes[id]
-		name := "node-" + node.node.ID + "-" + strconv.FormatInt(node.node.Revision, 10)
-		proxies = append(proxies, mihomoProxy(name, node.node))
+		name := proxyName(node.node)
+		proxy, err := mihomoProxy(name, node.node)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
 		listeners = append(listeners, map[string]any{"name": name, "type": "http", "listen": "127.0.0.1", "port": strconv.Itoa(node.port), "proxy": name, "users": []any{}})
 	}
 	return json.Marshal(map[string]any{"port": 0, "socks-port": 0, "mixed-port": 0, "allow-lan": false, "bind-address": "127.0.0.1", "mode": "rule", "log-level": "silent", "ipv6": true, "find-process-mode": "off", "geo-auto-update": false, "external-controller": controllerAddress, "secret": secret, "tun": map[string]bool{"enable": false}, "dns": map[string]bool{"enable": false}, "ntp": map[string]bool{"enable": false}, "profile": map[string]bool{"store-selected": false, "store-fake-ip": false}, "proxies": proxies, "listeners": listeners, "rules": []string{"MATCH,REJECT"}})
@@ -331,6 +379,9 @@ func (r *runtime) controlHandler() http.Handler {
 			return
 		}
 		switch {
+		case request.Method == http.MethodPost && request.URL.Path == "/validate":
+			r.validateOutbound(w, request)
+			return
 		case request.Method == http.MethodPost && request.URL.Path == "/probe":
 			var probe egress.ProbeRequest
 			decoder := json.NewDecoder(http.MaxBytesReader(w, request.Body, 4<<10))
