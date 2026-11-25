@@ -513,11 +513,14 @@ type TenantEgressServer struct {
 	OwnerUsername string    `json:"owner_username"`
 	BoundAccounts int       `json:"bound_accounts"`
 	CreatedAt     time.Time `json:"created_at"`
+	// OwnerStatus is the member's user status: a disabled member cannot
+	// remove the node, so the Owner does.
+	OwnerStatus string `json:"owner_status"`
 }
 
 func (s *Store) ListTenantEgressServers(ctx context.Context) ([]TenantEgressServer, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT n.id::text, n.name, n.protocol, n.server, n.port, n.owner_user_id::text, u.username,
-		(SELECT count(*) FROM upstream_account_egress b WHERE b.node_id=n.id), n.created_at
+		(SELECT count(*) FROM upstream_account_egress b WHERE b.node_id=n.id), n.created_at, u.status
 		FROM egress_servers n JOIN users u ON u.id=n.owner_user_id ORDER BY u.username, n.name, n.id`)
 	if err != nil {
 		return nil, mapDBError("list tenant egress nodes", err)
@@ -527,10 +530,33 @@ func (s *Store) ListTenantEgressServers(ctx context.Context) ([]TenantEgressServ
 	for rows.Next() {
 		var value TenantEgressServer
 		if err := rows.Scan(&value.ID, &value.Name, &value.Protocol, &value.Server, &value.Port, &value.OwnerUserID,
-			&value.OwnerUsername, &value.BoundAccounts, &value.CreatedAt); err != nil {
+			&value.OwnerUsername, &value.BoundAccounts, &value.CreatedAt, &value.OwnerStatus); err != nil {
 			return nil, mapDBError("read tenant egress node", err)
 		}
 		result = append(result, value)
 	}
 	return result, rows.Err()
+}
+
+// DeleteTenantEgressServer is the Owner's removal of a member's egress node,
+// for example before permanently deleting a disabled member, who can no
+// longer sign in to remove it. The rules are the member's own: a node that an
+// account is bound to, or that a recent login chose, is refused (ErrConflict).
+// A platform node answers ErrNotFound; the Owner manages those on the egress
+// page.
+func (s *Store) DeleteTenantEgressServer(ctx context.Context, id string, actor EgressActor) error {
+	if parsed, err := uuid.Parse(id); err != nil || parsed.String() != id {
+		return fmt.Errorf("%w: invalid node id", ErrInvalid)
+	}
+	// A node's owner never changes (trigger egress_servers_owner_immutable),
+	// so it is read once outside the deletion.
+	var owner sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT owner_user_id::text FROM egress_servers WHERE id=$1::uuid`, id).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) || err == nil && !owner.Valid {
+		return ErrNotFound
+	}
+	if err != nil {
+		return mapDBError("find tenant egress node", err)
+	}
+	return s.WithUpstreamOwner(owner.String).DeleteEgressServer(ctx, id, actor)
 }

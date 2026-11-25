@@ -189,6 +189,7 @@ func (s *Server) tenantProviderRoutes() {
 	}
 	s.mux.Handle("GET /admin/tenant-providers", ownerRead(s.tenantProvidersJSON))
 	s.mux.Handle("PUT /admin/tenant-providers/{id}/suspension", ownerWrite(s.setTenantProviderSuspension))
+	s.mux.Handle("DELETE /admin/tenant-providers/egress-servers/{id}", ownerWrite(s.deleteTenantEgressServer))
 	for _, path := range []string{"upstream-accounts", "antigravity-accounts", "anthropic-accounts"} {
 		s.mux.Handle("PUT /admin/"+path+"/{id}/owner", ownerWrite(s.transferUpstreamAccountOwner))
 	}
@@ -479,6 +480,31 @@ func (s *Server) setTenantProviderSuspension(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, account)
+}
+
+// deleteTenantEgressServer removes a member's egress node for the Owner, for
+// example before permanently deleting a disabled member. A bound node is
+// refused: the Owner first transfers or deletes the accounts that use it.
+func (s *Server) deleteTenantEgressServer(w http.ResponseWriter, r *http.Request) {
+	if !s.egressEnabled(w, r) {
+		return
+	}
+	var input struct{}
+	if !cpaJSON(w, r, &input, 128) {
+		return
+	}
+	err := s.store.DeleteTenantEgressServer(r.Context(), r.PathValue("id"), egressActor(r))
+	if errors.Is(err, store.ErrConflict) {
+		httpx.WriteError(w, r, http.StatusConflict, "invalid_request_error", "tenant_egress_in_use",
+			"节点仍被成员账号绑定，或有进行中的登录选择了它；请先转移或删除这些账号")
+		return
+	}
+	if err != nil {
+		egressError(w, r, err)
+		return
+	}
+	_, status, _ := s.syncAccountEgress(r.Context())
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "runtime": publicEgressStatus(status)})
 }
 
 // transferUpstreamAccountOwner is the only way an account with a credential

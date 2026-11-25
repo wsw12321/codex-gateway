@@ -134,6 +134,34 @@ func TestTenantUserDeletionPostgresIntegration(t *testing.T) {
 				t.Errorf("a seller's own plan counts as management history: %v", got)
 			}
 		}
+		// The blocked listing gives the same reasons, so the Owner sees why
+		// the member is missing from the candidates.
+		found := false
+		for offset := 0; !found; offset += 100 {
+			page, err := s.ListBlockedInformationUsers(ctx, 100, offset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, user := range page {
+				if user.ID == seller.ID {
+					found = true
+					listed := append([]string(nil), user.Reasons...)
+					sort.Strings(listed)
+					if strings.Join(listed, ",") != strings.Join(got, ",") {
+						t.Errorf("blocked listing reasons %v, deletion %v", listed, got)
+					}
+				}
+			}
+			if len(page) < 100 {
+				break
+			}
+		}
+		if !found {
+			t.Error("blocked listing misses the member")
+		}
+		if _, err := s.ListBlockedInformationUsers(ctx, 0, 0); !errors.Is(err, ErrInvalid) {
+			t.Errorf("invalid page = %v", err)
+		}
 		var still string
 		if err := s.db.QueryRowContext(ctx, `SELECT owner_user_id::text FROM upstream_accounts WHERE id=$1`, live).Scan(&still); err != nil || still != seller.ID {
 			t.Fatalf("refused deletion changed the live account: %q %v", still, err)

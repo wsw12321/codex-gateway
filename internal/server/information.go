@@ -20,6 +20,7 @@ type informationRepository interface {
 	LatestInformationCleanupJob(context.Context) (store.InformationCleanupJob, error)
 	InformationCleanedBefore(context.Context) (*time.Time, error)
 	ListDeletableInformationUsers(context.Context, string, int, int) ([]store.DeletableUser, error)
+	ListBlockedInformationUsers(context.Context, int, int) ([]store.BlockedInformationUser, error)
 	DeleteInformationUsers(context.Context, store.DeleteInformationUsersParams) (store.DeleteInformationUsersResult, error)
 }
 
@@ -174,7 +175,56 @@ func (s *Server) deletableInformationUsersJSON(w http.ResponseWriter, r *http.Re
 		addUserSearchFields(item, user.Username, user.DisplayName)
 		items = append(items, item)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": items, "limit": limit, "offset": offset})
+	// A search also explains the matching users the candidate list leaves
+	// out, with the reasons a deletion would give.
+	blocked := make([]map[string]any, 0)
+	if strings.TrimSpace(search) != "" {
+		matches, err := listSearchableBlockedUsers(r.Context(), repository, search, maxBlockedInformationUsers)
+		if err != nil {
+			s.informationStoreError(w, r, err)
+			return
+		}
+		for _, user := range matches {
+			blocked = append(blocked, map[string]any{
+				"id": user.ID, "username": user.Username, "display_name": user.DisplayName,
+				"status": user.Status, "created_at": user.CreatedAt, "reasons": user.Reasons,
+			})
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": items, "limit": limit, "offset": offset, "blocked": blocked})
+}
+
+// maxBlockedInformationUsers bounds the explained users of one search.
+const maxBlockedInformationUsers = 20
+
+// listSearchableBlockedUsers applies the candidate list's search to the users
+// deletion refuses, scanning them in bounded pages.
+func listSearchableBlockedUsers(ctx context.Context, repository informationRepository, search string, limit int) ([]store.BlockedInformationUser, error) {
+	search = strings.TrimSpace(search)
+	const pageSize = 100
+	result := make([]store.BlockedInformationUser, 0)
+	for sourceOffset := 0; ; sourceOffset += pageSize {
+		page, err := repository.ListBlockedInformationUsers(ctx, pageSize, sourceOffset)
+		if err != nil {
+			return nil, err
+		}
+		for _, user := range page {
+			if matchesDerivedUserSearch(user.ID, user.Username, user.DisplayName, search) {
+				result = append(result, user)
+				if len(result) == limit {
+					return result, nil
+				}
+			}
+		}
+		if len(page) < pageSize {
+			return result, nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
 }
 
 func listSearchableDeletableUsers(ctx context.Context, repository informationRepository, search string, limit, offset int) ([]store.DeletableUser, error) {

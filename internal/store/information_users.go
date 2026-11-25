@@ -109,6 +109,42 @@ func (s *Store) ListDeletableInformationUsers(ctx context.Context, search string
 	return users, rows.Err()
 }
 
+// BlockedInformationUser is a user that permanent deletion refuses now, with
+// the reasons the deletion would give.
+type BlockedInformationUser struct {
+	DeletableUser
+	Reasons []string `json:"reasons"`
+}
+
+// ListBlockedInformationUsers pages through the users that permanent
+// deletion refuses now, by the same predicates as the candidate list, so the
+// Owner can see why a user is missing from it.
+func (s *Store) ListBlockedInformationUsers(ctx context.Context, limit, offset int) ([]BlockedInformationUser, error) {
+	if limit < 1 || limit > 100 || offset < 0 {
+		return nil, fmt.Errorf("%w: invalid blocked user page", ErrInvalid)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,username,display_name,status,created_at,to_json(reasons)
+		FROM (SELECT u.id,u.username,u.display_name,u.status,u.created_at,`+informationUserBlockers+` reasons FROM users u) b
+		WHERE cardinality(reasons)>0 ORDER BY username,id LIMIT $1 OFFSET $2`, limit, offset)
+	if err != nil {
+		return nil, mapDBError("list blocked users", err)
+	}
+	defer rows.Close()
+	users := make([]BlockedInformationUser, 0)
+	for rows.Next() {
+		var user BlockedInformationUser
+		var reasons []byte
+		if err := rows.Scan(&user.ID, &user.Username, &user.DisplayName, &user.Status, &user.CreatedAt, &reasons); err != nil {
+			return nil, fmt.Errorf("scan blocked user: %w", err)
+		}
+		if err := json.Unmarshal(reasons, &user.Reasons); err != nil {
+			return nil, fmt.Errorf("decode blocked user reasons: %w", err)
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
 func normalizeInformationUserIDs(ids []string) ([]string, error) {
 	if len(ids) == 0 || len(ids) > 100 {
 		return nil, fmt.Errorf("%w: select 1-100 users", ErrInvalid)

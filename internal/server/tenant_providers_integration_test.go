@@ -213,6 +213,10 @@ func TestTenantProvidersHTTPPostgresIntegration(t *testing.T) {
 		}
 	}
 	f.send(t, "PUT", member+aliceAccount+"/egress", map[string]any{"egress_server_id": nodeID}, aliceCookie, 200)
+	// The Owner removes a member's node only once no account is bound to it;
+	// members never reach the Owner's route.
+	f.send(t, "DELETE", "/admin/tenant-providers/egress-servers/"+nodeID, map[string]any{}, f.cookie, 409)
+	f.send(t, "DELETE", "/admin/tenant-providers/egress-servers/"+nodeID, map[string]any{}, aliceCookie, 403)
 	f.send(t, "PUT", "/admin/upstream-accounts/"+platformAccount+"/egress", map[string]any{"egress_server_id": nodeID}, f.cookie, 404)
 
 	// Logins check the plugin and the limit before they start.
@@ -253,6 +257,21 @@ func TestTenantProvidersHTTPPostgresIntegration(t *testing.T) {
 	}
 	if count := invitationResponse(t, f.send(t, "GET", "/admin/me/providers", nil, aliceCookie, 200))["account_count"]; count != float64(1) {
 		t.Fatalf("account count %v", count)
+	}
+	// Releasing the account unbound the node: the Owner can now delete it,
+	// for example before deleting a disabled member.
+	tenantNodes := invitationResponse(t, f.send(t, "GET", "/admin/tenant-providers", nil, f.cookie, 200))["egress_servers"].([]any)
+	if len(tenantNodes) != 1 || tenantNodes[0].(map[string]any)["owner_status"] != "active" || tenantNodes[0].(map[string]any)["bound_accounts"] != float64(0) {
+		t.Fatalf("tenant nodes before deletion = %v", tenantNodes)
+	}
+	f.send(t, "DELETE", "/admin/tenant-providers/egress-servers/"+nodeID, map[string]any{}, f.cookie, 200)
+	f.send(t, "DELETE", "/admin/tenant-providers/egress-servers/"+nodeID, map[string]any{}, f.cookie, 404)
+	if servers := invitationResponse(t, f.send(t, "GET", "/admin/me/egress-servers", nil, aliceCookie, 200))["servers"].([]any); len(servers) != 0 {
+		t.Fatalf("alice still has nodes %v", servers)
+	}
+	var deletedBy string
+	if err := f.s.store.DB().QueryRowContext(ctx, `SELECT actor_user_id::text FROM audit_events WHERE event_type='egress_server.deleted' AND subject_id=$1`, nodeID).Scan(&deletedBy); err != nil || deletedBy != f.owner.ID {
+		t.Fatalf("node deletion audit actor = %q, %v", deletedBy, err)
 	}
 
 	// Switching the marketplace off closes the member routes again.
