@@ -26,11 +26,8 @@ func NormalizeProtocol(protocol string) string {
 
 // SupportedProtocol reports whether both Gateway and the runtime accept protocol.
 func SupportedProtocol(protocol string) bool {
-	switch NormalizeProtocol(protocol) {
-	case ProtocolSS, ProtocolSOCKS5:
-		return true
-	}
-	return false
+	p := NormalizeProtocol(protocol)
+	return p == ProtocolSS || OptionalAuth(p) || AdvancedProtocol(p)
 }
 
 // ValidSOCKS5Username bounds a SOCKS5 username. Empty means no authentication.

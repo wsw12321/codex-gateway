@@ -1,20 +1,26 @@
 # 上游账号独立出口
 
-Owner 可在管理网站“出口服务器”页面维护 Shadowsocks 或 SOCKS5 节点，并在 Codex、
-Antigravity、Anthropic 的账号表格选择每个账号的出口。多个账号可以共用同一节点；
-“继承全局出口”沿用已有 `EGRESS_MODE=direct/relay/shadowsocks`。
+在“出口服务器”添加节点后，可在 Codex、Antigravity、Anthropic 的账号表格选择出口。多个账号可共用同一节点。“继承全局出口”沿用 `EGRESS_MODE=direct/relay/shadowsocks`。
 
-节点字段为名称、协议（`ss` 或 `socks5`）、server、port、udp，以及按协议区分的认证：
-
-| 协议 | 字段 |
+| 协议 | 节点配置 |
 |---|---|
-| Shadowsocks | cipher、password。支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和 Shadowsocks 2022 的 `2022-blake3-aes-128-gcm` |
-| SOCKS5 | 可选 username、password（RFC 1929）。用户名留空表示无认证，此时不保存密码；填写用户名则必须有密码。用户名和密码均为单行 UTF-8，各不超过 255 字节 |
+| HTTP CONNECT、HTTP CONNECT（TLS） | 服务器、端口，可选用户名和密码。TLS 模式使用系统信任根校验代理证书。使用 IP 连接时，可填写证书域名作为 TLS 服务器名称。两种模式均承载 TCP 隧道。 |
+| Shadowsocks | 服务器、端口、密码及加密方式。支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`、`2022-blake3-aes-128-gcm`。 |
+| SOCKS5 | 服务器、端口，可选 RFC 1929 用户名和密码，各不超过 255 字节。 |
+| SSR、VMess、VLESS、Snell、Trojan、Hysteria、Hysteria2、WireGuard、TUIC、ShadowQUIC、GOST Relay、SSH、Mieru、AnyTLS、Sudoku、MASQUE、TrustTunnel、OpenVPN | 填写服务器和端口，在“协议参数”粘贴该协议的 JSON 对象。编辑器列出可用字段。 |
+| Tailscale、ZeroTier、EasyTier | Owner 在平台节点中配置组网参数。这三种协议通过组网发现对端，成员节点沿用公网 IPv4 单一地址约束。 |
 
-密码加密保存在 PostgreSQL，普通列表和编辑表单不回显密码；编辑时留空保留原值。
-SOCKS5 用户名明文保存，仅 Owner 可在列表和编辑表单看到，不写入审计记录。节点的
-`udp` 传给出口运行时，模型 HTTP(S) 和 SSE 仍使用 TCP，不增加公开 UDP 或 SOCKS 入口：
-SOCKS5 只是出口运行时连接上游代理的方式，CPA 与客户端仍只能经过 Squid 和运行时。
+### HTTP CONNECT 与 TLS
+
+例如，代理监听 `192.0.2.12:443`，证书签给 `proxy.example.com`，选择 **HTTP CONNECT（TLS）**，分别填写 IP、端口、TLS 服务器名称即可。若直接填写证书对应的域名，可省略 TLS 服务器名称。运行时先验证代理证书，再发送 CONNECT 和可选的 Basic 认证。普通 HTTP 模式会在到代理的链路上明文发送这些信息。用户名留空表示匿名访问。设置认证时用户名最长 255 字节，密码最长 4096 字节。
+
+![HTTP CONNECT 的 TLS 节点表单](screenshots/egress-https-dialog.png)
+
+### 协议参数
+
+例如，Trojan 的参数可以是 `{"password":"示例密码","sni":"proxy.example.com"}`。名称、协议、地址和端口由表单单独填写。API 的 `options` 接受一个最多 24 KiB 的 JSON 对象。SSH 私钥使用内联 PEM；WireGuard 的单个对端使用表单的服务器和端口。运行时为组网节点的每个生效版本分配独立的 tmpfs 状态目录。容器重建后应使用可重新入网的凭据。
+
+Gateway 用节点标识和协议绑定加密参数。列表只返回是否设置过参数。编辑同一协议时留空可保留参数，切换协议需重新填写。保存专属参数前，运行时用本机锁定的 Mihomo 单独检查配置，检查通过后才写入数据库。远端凭据和链路可用性由“测试连通性”验证。
 
 ### SOCKS5 节点
 
@@ -88,10 +94,7 @@ CPA 插件模式下，每个凭证都写有显式出口（未绑定的账号写�
 
 ## 部署
 
-SOCKS5 节点（迁移 `0048_socks5_egress.sql`）要求 `account-egress` 与 Gateway 同时升级：
-新运行时兼容旧 Gateway 的快照，但旧运行时会拒绝包含 SOCKS5 节点的快照（仍继续使用
-上一份已应用的配置，不会回退直连）。只有 SS 节点时快照格式不变。按下方命令先启动
-`account-egress` 再启动 Gateway 即可。
+本次数据库迁移为 `0057_mihomo_outbounds.sql`。先升级 `account-egress` 再升级 Gateway，随后启用新协议。原有 SS、SOCKS5 节点及绑定可直接使用。升级前保留数据库备份，旧版 Gateway 会拒绝带有新迁移的数据库。
 
 升级前执行 `./scripts/bootstrap-secrets.sh`。它补充 `egress_control_key`，不会覆盖
 已有密钥。该文件以 `0640` 挂载给 Gateway 和 `account-egress`，属组仍须匹配
@@ -110,14 +113,14 @@ SOCKS5 节点（迁移 `0048_socks5_egress.sql`）要求 `account-egress` 与 Ga
 
 `account-egress` 与可选的 `ss-egress` 使用 Mihomo v1.19.32 的固定源码，
 应用已锁定的依赖安全补丁，并由仓库锁定的 Go 工具链构建。源码来源、补丁和
-构建脚本见 `deploy/shadowsocks/upstream/`。镜像版本升级为 `1.19.32-v2`，
+构建脚本见 `deploy/shadowsocks/upstream/`。镜像版本升级为 `1.19.32-v3`，
 升级时需重新构建或拉取 CI 产物。
 
 ## 网络边界
 
 ```text
 未绑定：CPA → Squid:3128 → 原全局出口
-已绑定：CPA → Squid:3129 → account-egress → 本机 Mihomo listener → 指定 SS 或 SOCKS5 节点
+已绑定：CPA → Squid:3129 → account-egress → 本机 Mihomo listener → 指定的远端出站节点
 ```
 
 Squid 的原精确 provider 域名、443 和 CONNECT 白名单继续生效。3129 是命名的
@@ -132,13 +135,14 @@ Squid 与运行时。CPA 无法直接连接后端代理或 Mihomo controller。
 
 Mihomo 的每个节点版本有独立的 loopback HTTP listener，controller 也只监听
 loopback。运行时先验证完整配置和新增监听，再原子发布路由。旧版本在活跃隧道
-结束前保留；失败时回滚已确认的配置，未变化的可用出口继续服务。明文 SS 配置只在
+结束前保留；失败时回滚已确认的配置，未变化的可用出口继续服务。解密的节点配置只在
 内存与受限 tmpfs 中出现，不进入环境变量、进程参数、日志或普通浏览器响应。
 
 ## 验证
 
 ```sh
 go test -race ./cmd/account-egress ./internal/egress
+MIHOMO_TEST_BINARY=/path/to/mihomo go test -count=1 ./cmd/account-egress
 python3 -m unittest scripts.tests.test_codex_relay scripts.tests.test_relay_validation
 ./scripts/test-account-egress-image.sh
 ```

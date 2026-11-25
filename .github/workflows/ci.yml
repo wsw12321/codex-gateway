@@ -334,7 +334,7 @@ jobs:
           done < "$build_output"
           exit 1
       - name: Verify per-account Shadowsocks routing and hot updates
-        run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v2
+        run: ./scripts/test-account-egress-image.sh codex-gateway-account-egress:1.19.32-v3
       # Unmodified CPA with the Gateway plugin; it was built with the
       # application images, and the build itself ran the plugin's end-to-end
       # suite against the binary it ships.

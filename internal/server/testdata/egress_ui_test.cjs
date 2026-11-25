@@ -314,3 +314,20 @@ test("node cards describe the protocol and authentication", () => {
   assert.equal(ui.run('egressProtocolSummary({protocol: "socks5", cipher: "", has_password: true})'), "SOCKS5 · 用户名/密码认证");
   assert.equal(ui.run('egressProtocolSummary({protocol: "socks5", cipher: "", has_password: false})'), "SOCKS5 · 无认证");
 });
+
+test("HTTPS sends SNI with credentials and advanced protocols send only their option object", async () => {
+  const calls = [];
+  const ui = dashboard(async (_url, request) => { calls.push(JSON.parse(request.body)); return {}; });
+  const {form} = egressForm({name: "node", protocol: "https", server: "192.0.2.1", port: "443",
+    cipher: "stale", username: "user", password: "sample", udp: "", tls_server_name: "proxy.example", options: ""});
+  ui.context.event = {currentTarget: form};
+  ui.nodes.set("egress-dialog", {close() {}});
+  ui.run('egressDraftID = ""; loadEgressServers = async () => {};');
+  await ui.run("saveEgressServer(event)");
+  assert.deepEqual(calls[0], {name: "node", protocol: "https", server: "192.0.2.1", port: 443,
+    udp: false, tls_server_name: "proxy.example", username: "user", password: "sample"});
+  form.elements.protocol.value = "trojan";
+  form.elements.options.value = '{"password":"sample"}';
+  await ui.run("saveEgressServer(event)");
+  assert.deepEqual(calls[1], {name: "node", protocol: "trojan", server: "192.0.2.1", port: 443, udp: false, options: {password:"sample"}});
+});

@@ -9699,17 +9699,27 @@ function renderEgressServers(result) {
     });
     return element("article", {className: "panel egress-card"},
       element("div", {className: "panel-heading"}, element("h3", {text: node.name}), element("span", {className: "status-badge", text: nodeApplied ? "已应用" : "待应用"})),
-      element("p", {className: "egress-address", text: `${node.server}:${node.port}`}),
-      element("p", {className: "muted", text: `${egressProtocolSummary(node)} · UDP ${node.udp ? "开启" : "关闭"}`}),
+      node.server && element("p", {className: "egress-address", text: `${node.server}:${node.port}`}),
+      element("p", {className: "muted", text: egressHTTP(node.protocol) ? egressProtocolSummary(node) : `${egressProtocolSummary(node)} · UDP ${node.udp ? "开启" : "关闭"}`}),
       probe && element("p", {className: "egress-probe", dataset: {kind: probe.kind}, text: probe.text}),
       element("div", {className: "actions"}, test, edit, remove));
   }));
-  if (!egressServers.length) host.append(emptyState(state?.user?.role === "owner" ? "尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。" : "还没有出口服务器。新增节点后，可在“我的供应商”中为账号选择。"));
+  if (!egressServers.length) host.append(emptyState(state?.user?.role === "owner" ? "尚未配置出口服务器。新增节点后，可在上游账号设置中绑定。" : "还没有出口服务器。新增节点后，可在“我的供应商”中为账号选择。"));
+}
+
+function egressHTTP(protocol) { return protocol === "http" || protocol === "https"; }
+
+function egressProtocolLabel(protocol) {
+  if (protocol === "http") return "HTTP CONNECT";
+  if (protocol === "https") return "HTTP CONNECT（TLS）";
+  return (protocol || "ss").toUpperCase();
 }
 
 function egressProtocolSummary(node) {
-  if (node.protocol === "socks5") return `SOCKS5 · ${node.has_password ? "用户名/密码认证" : "无认证"}`;
-  return `SS · ${node.cipher}`;
+  if (!node.protocol || node.protocol === "ss") return `SS · ${node.cipher}`;
+  const label = egressProtocolLabel(node.protocol);
+  if (node.protocol === "socks5" || egressHTTP(node.protocol)) return `${label} · ${node.has_password ? "用户名/密码认证" : "无认证"}`;
+  return label;
 }
 
 function openEgressEditor(node = null) {
@@ -9718,6 +9728,9 @@ function openEgressEditor(node = null) {
   form.reset();
   egressDraftID = node?.id || "";
   for (const name of ["name", "server", "port", "username"]) form.elements[name].value = node?.[name] ?? "";
+  byId("egress-advanced-protocols").replaceChildren(...Object.keys(egressListing?.protocol_fields || {}).sort().map(protocol =>
+    element("option", {text: egressProtocolLabel(protocol), attributes: {value: protocol}})));
+  form.elements.tls_server_name.value = node?.tls_server_name || "";
   form.elements.protocol.value = node?.protocol || "ss";
   form.elements.cipher.value = node?.cipher || "aes-128-gcm";
   form.elements.udp.checked = Boolean(node?.udp);
@@ -9731,29 +9744,45 @@ function openEgressEditor(node = null) {
 }
 
 function egressFormProtocol(form) {
-  return form.elements.protocol?.value === "socks5" ? "socks5" : "ss";
+  return form.elements.protocol?.value || "ss";
 }
 
-// SS shows its cipher; SOCKS5 has no cipher and an optional username.
 function syncEgressProtocolFields(form) {
-  const socks5 = egressFormProtocol(form) === "socks5";
-  byId("egress-cipher-field")?.classList.toggle("hidden", socks5);
-  byId("egress-username-field")?.classList.toggle("hidden", !socks5);
+  const protocol = egressFormProtocol(form);
+  const basic = protocol === "socks5" || egressHTTP(protocol);
+  const advanced = protocol !== "ss" && !basic;
+  const mesh = ["tailscale", "zerotier", "easytier"].includes(protocol);
+  byId("egress-cipher-field")?.classList.toggle("hidden", protocol !== "ss");
+  byId("egress-username-field")?.classList.toggle("hidden", !basic);
+  byId("egress-sni-field")?.classList.toggle("hidden", protocol !== "https");
+  byId("egress-password-field")?.classList.toggle("hidden", advanced);
+  byId("egress-options-field")?.classList.toggle("hidden", !advanced);
+  byId("egress-server-field")?.classList.toggle("hidden", mesh);
+  byId("egress-port-field")?.classList.toggle("hidden", mesh);
+  byId("egress-udp-field")?.classList.toggle("hidden", egressHTTP(protocol));
+  byId("egress-udp-help")?.classList.toggle("hidden", egressHTTP(protocol));
+  form.elements.server.disabled = form.elements.port.disabled = mesh;
+  if (form.elements.options) {
+    const retained = Boolean(egressDraftID) && form.dataset.savedProtocol === protocol;
+    form.elements.options.required = advanced && !retained;
+    if (advanced) byId("egress-options-help").textContent =
+      (retained ? "留空保留已保存的参数。 " : "") + "可用字段：" + (egressListing?.protocol_fields?.[protocol] || []).join("、");
+  }
   syncEgressPasswordHelp(form);
 }
 
 // A retained password must belong to the same protocol, and a SOCKS5 node
 // without a username has no password at all.
-function syncEgressSOCKS5PasswordHelp(form) {
+function syncEgressProxyPasswordHelp(form) {
   const editing = Boolean(egressDraftID);
   const password = form.elements.password;
   const authenticated = Boolean(form.elements.username?.value);
-  const retained = editing && form.dataset.savedProtocol === "socks5" && form.dataset.savedPassword === "true";
+  const retained = editing && form.dataset.savedProtocol === egressFormProtocol(form) && form.dataset.savedPassword === "true";
   password.disabled = !authenticated;
   if (!authenticated) password.value = "";
   password.required = authenticated && !retained;
   password.placeholder = "";
-  let help = "填写用户名后需要填写密码；用户名和密码各不超过 255 字节。";
+  let help = egressHTTP(egressFormProtocol(form)) ? "填写代理密码，最多 4096 字节。" : "填写用户名后需要填写密码；用户名和密码各不超过 255 字节。";
   if (!authenticated) help = "无认证。填写用户名后可设置密码。";
   else if (retained) help = "留空保留现有密码。";
   else if (editing) help = "启用认证或切换协议需重新填写密码。";
@@ -9765,7 +9794,13 @@ function syncEgressSOCKS5PasswordHelp(form) {
 // retained password from another cipher is rarely a valid key, so switching
 // asks for the key again; the server checks the format either way.
 function syncEgressPasswordHelp(form) {
-  if (egressFormProtocol(form) === "socks5") return syncEgressSOCKS5PasswordHelp(form);
+  const protocol = egressFormProtocol(form);
+  if (protocol === "socks5" || egressHTTP(protocol)) return syncEgressProxyPasswordHelp(form);
+  if (protocol !== "ss") {
+    form.elements.password.disabled = true;
+    form.elements.password.required = false;
+    return;
+  }
   form.elements.password.disabled = false;
   const editing = Boolean(egressDraftID);
   const switched = editing && Boolean(form.dataset.savedProtocol) && form.dataset.savedProtocol !== "ss";
@@ -9787,14 +9822,14 @@ function syncEgressPasswordHelp(form) {
 // Mirrors the Gateway: no username means no authentication; otherwise each
 // field is single-line text of at most 255 UTF-8 bytes. A blank password may
 // retain the stored one; the server decides whether that is allowed.
-function validSOCKS5Credential(username, password) {
+function validProxyCredential(username, password, maxPasswordBytes) {
   const bytes = (value) => [...value].reduce((total, c) => {
     const code = c.codePointAt(0);
     return total + (code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4);
   }, 0);
-  const ok = (value) => bytes(value) <= 255 && !/[\0\r\n]/.test(value);
+  const ok = (value, limit) => bytes(value) <= limit && !/[\0\r\n]/.test(value);
   if (!username) return !password;
-  return ok(username) && ok(password);
+  return ok(username, 255) && ok(password, maxPasswordBytes);
 }
 
 function validSS2022Key(value) {
@@ -9805,20 +9840,29 @@ async function saveEgressServer(event) {
   if (egressOperation || egressDraftID === null) return;
   const form = event.currentTarget;
   const protocol = egressFormProtocol(form);
-  const username = protocol === "socks5" ? form.elements.username?.value || "" : "";
+  const basic = protocol === "socks5" || egressHTTP(protocol);
+  const username = basic ? form.elements.username?.value || "" : "";
   if (protocol === "ss" && form.elements.cipher.value === egressSS2022Cipher && form.elements.password.value && !validSS2022Key(form.elements.password.value)) {
     throw new Error(`${egressSS2022Cipher} 的密码须为 Base64 编码的 16 字节密钥，多个密钥用英文冒号分隔。`);
   }
-  if (protocol === "socks5" && !validSOCKS5Credential(username, form.elements.password.value)) {
-    throw new Error("SOCKS5 用户名和密码须为单行文本，各不超过 255 字节；未填写用户名时不能设置密码。");
+  const maxPasswordBytes = egressHTTP(protocol) ? 4096 : 255;
+  if (basic && !validProxyCredential(username, form.elements.password.value, maxPasswordBytes)) {
+    throw new Error(`${egressProtocolLabel(protocol)} 用户名和密码须为单行文本，用户名最多 255 字节，密码最多 ${maxPasswordBytes} 字节；未填写用户名时不能设置密码。`);
   }
   const operation = {id: egressDraftID};
   const currentIdentity = egressIdentityCurrent();
   const current = () => currentIdentity() && egressOperation === operation;
-  const payload = {name: form.elements.name.value.trim(), protocol, server: form.elements.server.value.trim(),
-    port: Number(form.elements.port.value), udp: form.elements.udp.checked};
+  const payload = {name: form.elements.name.value.trim(), protocol, server: form.elements.server.disabled ? "" : form.elements.server.value.trim(),
+    port: form.elements.port.disabled ? 0 : Number(form.elements.port.value), udp: !egressHTTP(protocol) && form.elements.udp.checked};
   if (protocol === "ss") payload.cipher = form.elements.cipher.value;
-  else payload.username = username;
+  else if (basic) payload.username = username;
+  else if (form.elements.options.value.trim()) {
+    try { payload.options = JSON.parse(form.elements.options.value); }
+    catch { throw new Error("协议参数必须是有效的 JSON 对象。"); }
+    if (!payload.options || typeof payload.options !== "object" || Array.isArray(payload.options)) throw new Error("协议参数必须是 JSON 对象。");
+  }
+  if (protocol === "https" && form.elements.tls_server_name.value.trim()) payload.tls_server_name = form.elements.tls_server_name.value.trim();
+  if (egressHTTP(protocol) && username.includes(":")) throw new Error("HTTP 代理用户名不能含冒号。");
   if (form.elements.password.value && (protocol === "ss" || username)) payload.password = form.elements.password.value;
   egressOperation = operation;
   try {
@@ -9832,6 +9876,7 @@ async function saveEgressServer(event) {
     await loadEgressServers();
   } finally {
     delete payload.password;
+    delete payload.options;
     if (egressOperation === operation) egressOperation = null;
   }
 }
@@ -10323,7 +10368,7 @@ function renderTenantProviders() {
       element("td", {}, element("div", {className: "tenant-egress-owner"}, element("span", {text: node.owner_username}),
         disabled ? element("span", {className: "status-badge", dataset: {status: "unavailable"}, text: "成员已停用"}) : null)),
       element("td", {text: node.name}), element("td", {text: `${node.server}:${node.port}`}),
-      element("td", {text: node.protocol === "socks5" ? "SOCKS5" : "SS"}), element("td", {text: formatInteger(node.bound_accounts)}),
+      element("td", {text: egressProtocolLabel(node.protocol)}), element("td", {text: formatInteger(node.bound_accounts)}),
       element("td", {}, remove));
   }));
   if (!result.egress_servers.length) nodes.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加出口服务器。"})));
@@ -12523,7 +12568,11 @@ function bindUI() {
   byId("egress-create").addEventListener("click", () => openEgressEditor());
   bindAsync("egress-test-all", "click", testAllEgressServers, "测试中…", egressIdentityCurrent);
   byId("egress-form").elements.cipher.addEventListener("change", () => syncEgressPasswordHelp(byId("egress-form")));
-  byId("egress-form").elements.protocol.addEventListener("change", () => syncEgressProtocolFields(byId("egress-form")));
+  byId("egress-form").elements.protocol.addEventListener("change", () => {
+    const form = byId("egress-form");
+    form.elements.options.value = form.elements.password.value = "";
+    syncEgressProtocolFields(form);
+  });
   byId("egress-form").elements.username.addEventListener("input", () => syncEgressPasswordHelp(byId("egress-form")));
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
   bindAsync("providers-refresh", "click", () => loadMyProviders(), "刷新中…", providersIdentityCurrent);
@@ -12546,7 +12595,7 @@ function bindUI() {
   for (const radio of byId("owner-transfer-form").elements.target) radio.addEventListener("change", syncOwnerTransferTarget);
   bindAsync("owner-transfer-form", "submit", submitOwnerTransfer, "转移中…", tenantProvidersIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
-    byId("egress-form").elements.password.value = "";
+    byId("egress-form").elements.options.value = byId("egress-form").elements.password.value = "";
     egressDraftID = null;
   });
   bindUserUpstreamAccess();

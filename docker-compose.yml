@@ -241,7 +241,7 @@ services:
 
   account-egress:
     <<: *common-security
-    image: codex-gateway-account-egress:1.19.32-v2
+    image: codex-gateway-account-egress:1.19.32-v3
     build:
       context: .
       dockerfile: deploy/account-egress/Dockerfile

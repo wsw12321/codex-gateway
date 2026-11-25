@@ -42,27 +42,41 @@ func egressRouteID(kind, id string, bindingRevision int64, n store.EgressServer)
 	return hex.EncodeToString(digest[:])
 }
 
+// Keep advanced credential envelopes bound to both the node and protocol.
+func egressCredentialID(n store.EgressServer) string {
+	if egress.AdvancedProtocol(n.Protocol) {
+		return "options:" + n.Protocol + ":" + n.ID
+	}
+	return n.ID
+}
+
+func egressRuntimeNode(n store.EgressServer, credential string) egress.Node {
+	node := egress.Node{ID: n.ID, Revision: n.Revision, Server: n.Server, Port: n.Port, Cipher: n.Cipher, Username: n.Username, ServerName: n.ServerName, UDP: n.UDP}
+	if n.Protocol != egress.ProtocolSS {
+		node.Protocol = n.Protocol
+	}
+	if egress.AdvancedProtocol(n.Protocol) {
+		node.Options = credential
+	} else {
+		node.Password = credential
+	}
+	return node
+}
+
 func (s *Server) runtimeSnapshot(state store.EgressState) (egress.Snapshot, error) {
 	snapshot := egress.Snapshot{Version: state.Version, Nodes: []egress.Node{}, Routes: []egress.Route{}}
 	nodes := make(map[string]store.EgressServer, len(state.Nodes))
 	for _, n := range state.Nodes {
 		password := ""
-		// A SOCKS5 node without authentication stores no password.
-		if n.Protocol != egress.ProtocolSOCKS5 || n.Username != "" {
+		if egress.NeedsCredential(n.Protocol, n.Username) {
 			var err error
-			password, err = security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, n.ID, n.PasswordCiphertext)
+			password, err = security.DecryptEgressPassword(s.config.APIKeyEncryptionKey, egressCredentialID(n), n.PasswordCiphertext)
 			if err != nil {
 				return snapshot, errEgressUnavailable
 			}
 		}
 		nodes[n.ID] = n
-		node := egress.Node{ID: n.ID, Revision: n.Revision, Server: n.Server, Port: n.Port, Cipher: n.Cipher, Password: password, UDP: n.UDP}
-		// SS nodes keep the pre-SOCKS5 wire shape (no protocol field), so a
-		// runtime that predates SOCKS5 still accepts an SS-only snapshot.
-		if n.Protocol == egress.ProtocolSOCKS5 {
-			node.Protocol, node.Username = egress.ProtocolSOCKS5, n.Username
-		}
-		snapshot.Nodes = append(snapshot.Nodes, node)
+		snapshot.Nodes = append(snapshot.Nodes, egressRuntimeNode(n, password))
 	}
 	add := func(kind, id string, revision int64, nodeID string) {
 		if n, ok := nodes[nodeID]; ok {

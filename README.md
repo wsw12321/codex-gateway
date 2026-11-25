@@ -60,7 +60,7 @@ Compose 中的服务职责如下：
 | `postgres` | 持久化身份、配额、usage、审计和告警元数据 | 无 |
 | `codex-compat` | 未修改的 CLIProxyAPI 加 Gateway 插件，在同一进程中维护 Codex/Claude/Antigravity OAuth、刷新和模型执行 | 无 |
 | `egress-allowlist` | 只允许目标域名的 443 CONNECT 出口 | 无 |
-| `account-egress` | 管理网站配置的按账号 SS 出口运行时 | 无 |
+| `account-egress` | 按账号应用 Mihomo 出站节点 | 无 |
 
 所有服务均不发布宿主机端口。`cloudflared` 只通过出站连接接入 Cloudflare，
 Caddy、Gateway、PostgreSQL 和 sidecar 位于 Docker `internal` 网络；只有
@@ -87,11 +87,7 @@ sidecar，不进入数据库或备份。
 
 ### 代理接口
 
-Owner 可在“出口服务器”管理 Shadowsocks 或 SOCKS5 节点，为 Codex、Antigravity、
-Anthropic 账号分别绑定出口；未绑定账号继承全局模式，绑定出口故障时不回退直连。
-SS 节点支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305` 和
-`2022-blake3-aes-128-gcm`；SOCKS5 节点支持无认证或用户名/密码认证。页面可对每个
-节点做 TLS 连通性测试。
+“出口服务器”支持 Mihomo v1.19.32 的 24 种远端协议，包括 HTTP CONNECT（明文或 TLS）、Shadowsocks、SOCKS5、VLESS、Trojan、Hysteria2 和 WireGuard。可为 Codex、Antigravity、Anthropic 账号分别绑定节点，并在页面测试连通性。未绑定账号继承全局出口，已绑定账号经指定节点连接。
 配置、生效状态和升级步骤见[上游账号独立出口](docs/account-egress.md)。
 
 开放 Codex、AGY 所需的数据接口和 WebSocket 协商入口：

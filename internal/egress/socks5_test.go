@@ -11,7 +11,7 @@ func TestProtocolSupport(t *testing.T) {
 			t.Fatalf("protocol %q rejected", p)
 		}
 	}
-	for _, p := range []string{"socks", "SOCKS5", "http", "socks4", " ss"} {
+	for _, p := range []string{"socks", "SOCKS5", "ftp", "socks4", " ss"} {
 		if SupportedProtocol(p) {
 			t.Fatalf("protocol %q accepted", p)
 		}

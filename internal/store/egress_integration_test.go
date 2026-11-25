@@ -263,7 +263,7 @@ func TestSOCKS5EgressPostgresLifecycle(t *testing.T) {
 		{"socks5", "", "", secret},
 		{"ss", "aes-256-gcm", "", nil},
 		{"ss", "aes-256-gcm", "user", secret},
-		{"http", "", "", nil},
+		{"ftp", "", "", nil},
 	} {
 		_, err := repository.db.ExecContext(ctx, `INSERT INTO egress_servers(id,name,protocol,server,port,cipher,username,password_ciphertext,udp,revision,created_at,updated_at) VALUES($1::uuid,'bad',$2,'203.0.113.5',1080,$3,$4,$5::bytea,false,1,now(),now())`, uuid.NewString(), values[0], values[1], values[2], values[3])
 		if err == nil {
