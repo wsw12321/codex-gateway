@@ -48,6 +48,7 @@ func marketplaceFrom(ctx context.Context) store.MarketplaceSettings {
 }
 
 const (
+	// #nosec G101 -- the plugin protocol name, not a credential.
 	credentialOwnershipProtocol = "credential_ownership_v1"
 	// maxTenantOAuthAttempts bounds one member's unfinished logins.
 	maxTenantOAuthAttempts = 2

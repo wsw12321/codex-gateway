@@ -227,6 +227,7 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 
 // ListUpstreamAccounts lists the accounts of the store's owner scope.
 func (s *Store) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, error) {
+	// #nosec G202 -- the column list and accountScopeSQL are fixed SQL over placeholder names; every value is a bound parameter.
 	rows, err := s.db.QueryContext(ctx, `SELECT `+upstreamAccountColumns+`
 		FROM upstream_accounts WHERE provider = $1 AND `+accountScopeSQL("", "$2")+`
 		ORDER BY CASE status WHEN 'available' THEN 0 ELSE 1 END,

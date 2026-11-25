@@ -18,6 +18,7 @@ type ModelSupplier struct {
 }
 
 func (s *Store) ModelSuppliers(ctx context.Context) ([]ModelSupplier, error) {
+	// #nosec G202 -- accountScopeSQL is fixed SQL over a placeholder name; the owner and every other value are bound parameters.
 	rows, err := s.db.QueryContext(ctx, `SELECT a.id, a.provider, m.base_url, m.key_ciphertext, m.models, a.status='available', m.revision
 		FROM model_suppliers m JOIN upstream_accounts a ON a.id=m.account_id WHERE a.provider=$1 AND `+accountScopeSQL("a", "$2")+` ORDER BY a.id`, s.upstreamProviderName(), s.upstreamOwnerArg())
 	if err != nil {
@@ -82,6 +83,7 @@ func (s *Store) ReplaceModelSupplierKey(ctx context.Context, value ModelSupplier
 	if err != nil {
 		return err
 	}
+	// #nosec G202 -- accountScopeSQL is fixed SQL over a placeholder name; the owner and every other value are bound parameters.
 	result, err := s.db.ExecContext(ctx, `UPDATE model_suppliers m SET key_ciphertext=$1, models=$2::jsonb, revision=revision+1
 		FROM upstream_accounts a WHERE m.account_id=a.id AND a.id=$3 AND a.provider=$4 AND `+accountScopeSQL("a", "$6")+` AND m.revision=$5`, value.Ciphertext, string(models), value.ID, s.upstreamProviderName(), value.Revision, s.upstreamOwnerArg())
 	return supplierWriteResult(result, err)
@@ -92,6 +94,7 @@ func (s *Store) SetModelSupplierEnabled(ctx context.Context, id string, enabled 
 	if enabled {
 		status = UpstreamAccountStatusAvailable
 	}
+	// #nosec G202 -- accountScopeSQL is fixed SQL over a placeholder name; the owner and every other value are bound parameters.
 	result, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET status=$1, updated_at=now()
 		WHERE id=$2 AND provider=$3 AND credential_kind='supplier' AND `+accountScopeSQL("", "$4")+` AND EXISTS(SELECT 1 FROM model_suppliers WHERE account_id=$2)`, status, id, s.upstreamProviderName(), s.upstreamOwnerArg())
 	return supplierWriteResult(result, err)
@@ -104,6 +107,7 @@ func (s *Store) DeleteModelSupplier(ctx context.Context, id string) error {
 		if _, err := nextEgressVersion(ctx, tx); err != nil {
 			return err
 		}
+		// #nosec G202 -- accountScopeSQL is fixed SQL over a placeholder name; the owner and every other value are bound parameters.
 		result, err := tx.ExecContext(ctx, `DELETE FROM model_suppliers m USING upstream_accounts a
 			WHERE m.account_id=a.id AND a.id=$1 AND a.provider=$2 AND `+accountScopeSQL("a", "$3")+` AND a.status='unavailable'`, id, s.upstreamProviderName(), s.upstreamOwnerArg())
 		if err := supplierWriteResult(result, err); err != nil {
