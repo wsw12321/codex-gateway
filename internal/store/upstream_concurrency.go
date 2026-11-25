@@ -49,7 +49,7 @@ func (s *Store) SetUpstreamAccountConcurrentLimit(ctx context.Context, params Se
 		}
 		var previousLimit int
 		if err := tx.QueryRowContext(ctx, `SELECT concurrent_limit FROM upstream_accounts
-			WHERE id = $1 AND provider = $2 FOR UPDATE`, params.AccountID, s.upstreamProviderName()).Scan(&previousLimit); err != nil {
+			WHERE id = $1 AND provider = $2 AND `+accountScopeSQL("", "$3")+` FOR UPDATE`, params.AccountID, s.upstreamProviderName(), s.upstreamOwnerArg()).Scan(&previousLimit); err != nil {
 			return mapDBError("lock upstream account concurrent limit", err)
 		}
 		var err error
@@ -102,6 +102,7 @@ func (s *Store) EligibleUpstreamAccountLimits(ctx context.Context, userID string
 		AND (a.id IS NULL OR a.access_mode='shared' OR EXISTS(
 			SELECT 1 FROM upstream_account_users u WHERE u.upstream_account_id=a.id AND u.user_id=$1::uuid))
 		AND `+userUpstreamAccessPredicate("$1", providerArg, "a.id")+`
+		AND `+platformAccountSQL("a")+`
 		AND NOT `+upstreamQuotaGuardHeld("c.id", "now()")+`
 		ORDER BY c.id`, args...)
 	if err != nil {

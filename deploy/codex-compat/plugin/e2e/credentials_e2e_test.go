@@ -221,3 +221,46 @@ func TestCredentialOperations(t *testing.T) {
 		t.Fatalf("the data-plane key reached the import: %d", status)
 	}
 }
+
+// TestCredentialOwnershipConflict imports the tokens of an account someone
+// else already owns. The Gateway refuses to commit the registration: the
+// imported file goes, and the owner's account keeps its own file and serves,
+// enabled, through its own route.
+func TestCredentialOwnershipConflict(t *testing.T) {
+	h := newHarness(t)
+	owned := h.addAccount("a", nil)
+	h.start()
+	const refusedRegistration = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+	route := h.route("reg-refused", "secret-reg-refused")
+	h.gateway.mu.Lock()
+	h.gateway.refusals = map[string]string{refusedRegistration: "account_owned_elsewhere"}
+	h.gateway.mu.Unlock()
+
+	status, body := h.management(http.MethodPost, credentialPage+"/credentials", managementKey,
+		`{"refresh_token":"rt-a","registration_id":"`+refusedRegistration+`","egress_proxy_url":"`+route+`"}`)
+	if status != http.StatusConflict || body != `{"error":"account_owned_elsewhere","status":"error"}` {
+		t.Fatalf("import of an owned account: %d %s", status, body)
+	}
+	h.eventually("the imported credential is removed", func() bool {
+		files, _ := filepath.Glob(filepath.Join(h.authDir, "codex-import-*.json"))
+		return len(files) == 0
+	})
+	if name, _ := h.credentialFor("acct-a"); name != "codex-a.json" {
+		t.Fatalf("the owner's credential is %q", name)
+	}
+	h.gateway.mu.Lock()
+	committed := append([]string(nil), h.gateway.committed...)
+	h.gateway.prefer = []string{owned.id}
+	h.gateway.mu.Unlock()
+	if len(committed) != 0 {
+		t.Fatalf("a refused registration was committed: %v", committed)
+	}
+	_, listing := h.management(http.MethodGet, "/v0/management/gateway/upstream-accounts", managementKey, "")
+	if !strings.Contains(listing, owned.id) || strings.Contains(listing, "manual_disabled") {
+		t.Fatalf("the owner's account changed: %s", listing)
+	}
+	h.resetObservations()
+	if got := h.do(call{}); got.status != http.StatusOK {
+		t.Fatalf("the owner's account stopped serving: %d %s", got.status, got.body)
+	}
+}

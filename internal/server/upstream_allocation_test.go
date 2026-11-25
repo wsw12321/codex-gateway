@@ -246,7 +246,7 @@ func TestUpstreamWeightReturnsConfirmedValueAndDatabaseFailure(t *testing.T) {
 					if !strings.Contains(query, "UPDATE upstream_accounts") || args[1].Value != weight {
 						t.Fatalf("unexpected write query %s %+v", query, args)
 					}
-					return &upstreamAuditRows{columns: make([]string, 11), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, weight, int64(1), ""}}, nil
+					return &upstreamAuditRows{columns: make([]string, 12), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, weight, int64(1), "", false}}, nil
 				}}})
 				defer db.Close()
 				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -334,7 +334,7 @@ func TestUpstreamAliasSavesNormalizedValueAndHidesDatabaseFailure(t *testing.T) 
 						t.Fatalf("unexpected write query %s %+v", query, args)
 					}
 					written = args[1].Value
-					return &upstreamAuditRows{columns: make([]string, 11), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, int64(1), int64(1), written}}, nil
+					return &upstreamAuditRows{columns: make([]string, 12), values: []driver.Value{"0123456789abcdef", "", "u***@example.com", "plus", "available", now, now, now, int64(1), int64(1), written, false}}, nil
 				}}})
 				defer db.Close()
 				server := &Server{store: store.New(db), logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
@@ -544,6 +544,11 @@ func groupAllocationTestPath(provider, action string) string {
 func groupAllocationTestServer(t *testing.T, provider, denied, zeroWeight string, queries *[]string) *Server {
 	t.Helper()
 	db := sql.OpenDB(statusTestConnector{conn: &statusTestConn{query: func(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+		if strings.Contains(query, "FROM billing_subscriptions s") {
+			// Which layer IDs name the user's subscriptions: none here, so
+			// every layer is judged as platform accounts.
+			return &responsesWebSocketTestRows{columns: []string{"id", "active", "plan", "seller", "mode"}}, nil
+		}
 		if args[len(args)-1].Value != provider {
 			t.Fatalf("provider=%v; want %s", args[len(args)-1].Value, provider)
 		}

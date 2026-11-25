@@ -48,18 +48,33 @@ type Egress struct {
 	Revision string
 }
 
+// LayerCandidates is one funding layer of a request with the candidate
+// accounts offered in it.
+type LayerCandidates struct {
+	GroupID    string   `json:"group_id"`
+	AccountIDs []string `json:"account_ids"`
+}
+
 // Allocator is the Gateway's side of account allocation.
 type Allocator interface {
 	// ResolveEgress returns the egress the account is bound to right now.
 	ResolveEgress(ctx context.Context, provider, accountID string) (Egress, error)
 	// Eligible returns the subset of accounts the user may use right now.
 	Eligible(ctx context.Context, provider, userID string, accounts []string) ([]Eligibility, error)
+	// EligibleLayers returns, per funding layer and in the same order, the
+	// layer's accounts the user may use right now. The Gateway judges each
+	// layer by its own rules: a member's account is only ever eligible in
+	// the layer that pays for it.
+	EligibleLayers(ctx context.Context, provider, userID string, layers []LayerCandidates) ([][]Eligibility, error)
 	// Select asks the Gateway to choose one of accounts by weight and spend.
 	Select(ctx context.Context, provider, userID string, accounts []string) (string, error)
+	// SelectLayer asks the Gateway to choose within one funding layer.
+	SelectLayer(ctx context.Context, provider, userID string, layer LayerCandidates) (string, error)
 	// Report records the final decision of one attempt for attribution.
 	Report(ctx context.Context, provider string, attempt Attempt) error
-	// RegisterEgress commits the egress the Owner chose before a login or an
-	// import to the account that login produced.
+	// RegisterEgress commits the egress chosen before a login or an import to
+	// the account that login produced, and with it the account's owner. A
+	// *RegistrationRefusedError means the account is not the caller's.
 	RegisterEgress(ctx context.Context, provider, registrationID, accountID string) error
 	// ReportQuota delivers one account's quota as observed on a response.
 	ReportQuota(ctx context.Context, provider string, report QuotaReport) error
@@ -216,6 +231,99 @@ func (c *GatewayClient) Select(ctx context.Context, provider, userID string, acc
 	return selected, nil
 }
 
+type layerSelectionBody struct {
+	UserID string            `json:"user_id"`
+	Groups []LayerCandidates `json:"groups"`
+}
+
+// layerRequest validates and normalizes the layers of one call. Every layer
+// must name a distinct canonical UUID; its accounts are sorted and unique.
+func layerRequest(layers []LayerCandidates) ([]LayerCandidates, []map[string]bool, bool) {
+	if len(layers) == 0 || len(layers) > maxLayers {
+		return nil, nil, false
+	}
+	normalized := make([]LayerCandidates, 0, len(layers))
+	asked := make([]map[string]bool, 0, len(layers))
+	seen := map[string]bool{}
+	for _, layer := range layers {
+		if !validUUID(layer.GroupID) || seen[layer.GroupID] || len(layer.AccountIDs) > maxCandidates {
+			return nil, nil, false
+		}
+		seen[layer.GroupID] = true
+		ids, offered := []string{}, map[string]bool{}
+		if len(layer.AccountIDs) > 0 {
+			var ok bool
+			if ids, offered, ok = sortedUnique(layer.AccountIDs); !ok {
+				return nil, nil, false
+			}
+		}
+		normalized = append(normalized, LayerCandidates{GroupID: layer.GroupID, AccountIDs: ids})
+		asked = append(asked, offered)
+	}
+	return normalized, asked, true
+}
+
+// EligibleLayers implements Allocator. The answer must list exactly the asked
+// layers in order, each with a subset of its own candidates; anything else
+// fails the whole pick.
+func (c *GatewayClient) EligibleLayers(ctx context.Context, provider, userID string, layers []LayerCandidates) ([][]Eligibility, error) {
+	normalized, asked, ok := layerRequest(layers)
+	if !ok {
+		return nil, ErrUnavailable
+	}
+	status, data, err := c.post(ctx, provider, "eligible", layerSelectionBody{userID, normalized}, 64<<10)
+	if err != nil || status != http.StatusOK {
+		return nil, ErrUnavailable
+	}
+	fields, err := decodeObject(data, "groups")
+	var answer []struct {
+		GroupID  string        `json:"group_id"`
+		Accounts []Eligibility `json:"accounts"`
+	}
+	if err != nil || json.Unmarshal(fields["groups"], &answer) != nil || len(answer) != len(normalized) {
+		return nil, ErrUnavailable
+	}
+	result := make([][]Eligibility, len(answer))
+	for i, layer := range answer {
+		if layer.GroupID != normalized[i].GroupID {
+			return nil, ErrUnavailable
+		}
+		permitted := make(map[string]bool, len(layer.Accounts))
+		for _, item := range layer.Accounts {
+			if !asked[i][item.ID] || permitted[item.ID] || item.ConcurrentLimit < 1 || item.ConcurrentLimit > 1<<31-1 {
+				return nil, ErrUnavailable
+			}
+			permitted[item.ID] = true
+		}
+		result[i] = append([]Eligibility{}, layer.Accounts...)
+	}
+	return result, nil
+}
+
+// SelectLayer implements Allocator. A 429 means the layer is exhausted.
+func (c *GatewayClient) SelectLayer(ctx context.Context, provider, userID string, layer LayerCandidates) (string, error) {
+	normalized, asked, ok := layerRequest([]LayerCandidates{layer})
+	if !ok || len(normalized[0].AccountIDs) == 0 {
+		return "", ErrUnavailable
+	}
+	status, data, err := c.post(ctx, provider, "select", layerSelectionBody{userID, normalized}, 1<<10)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	if status == http.StatusTooManyRequests {
+		return "", ErrConcurrency
+	}
+	if status != http.StatusOK {
+		return "", ErrUnavailable
+	}
+	fields, err := decodeObject(data, "account_id")
+	var selected string
+	if err != nil || json.Unmarshal(fields["account_id"], &selected) != nil || !asked[0][selected] {
+		return "", ErrUnavailable
+	}
+	return selected, nil
+}
+
 // Report implements Allocator.
 func (c *GatewayClient) Report(ctx context.Context, provider string, attempt Attempt) error {
 	body := struct {
@@ -281,6 +389,37 @@ func (c *GatewayClient) ResolveEgress(ctx context.Context, provider, accountID s
 	return Egress{ProxyURL: resolution.ProxyURL, Revision: resolution.Revision}, nil
 }
 
+// RegistrationRefusedError is the Gateway's refusal to commit a login or an
+// import to the account it reached: the account belongs to the platform or to
+// another tenant, or the tenant has no account slot left. The credential just
+// saved must not change the existing account in any way.
+type RegistrationRefusedError struct{ Code string }
+
+func (e *RegistrationRefusedError) Error() string { return "egress registration refused: " + e.Code }
+
+// registrationRefusals are the Gateway's fixed refusal codes. Any other
+// answer, 409 included, stays an unavailable Gateway.
+var registrationRefusals = map[string]bool{
+	"account_owned_elsewhere": true,
+	"provider_limit_reached":  true,
+	"account_in_platform_use": true,
+}
+
+func registrationRefusal(status int, data []byte) error {
+	if status != http.StatusConflict {
+		return nil
+	}
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if _, err := decodeObject(data); err != nil || json.Unmarshal(data, &envelope) != nil || !registrationRefusals[envelope.Error.Code] {
+		return nil
+	}
+	return &RegistrationRefusedError{Code: envelope.Error.Code}
+}
+
 // RegisterEgress implements Allocator. The Gateway binds the account to the
 // egress recorded under the registration; the answer must name the same
 // registration and account.
@@ -294,6 +433,11 @@ func (c *GatewayClient) RegisterEgress(ctx context.Context, provider, registrati
 		AccountID      string `json:"account_id"`
 	}{registrationID, gatewayProvider(provider), accountID}
 	status, data, err := c.postPath(ctx, "/internal/upstream-accounts/register-egress", body, 4<<10)
+	if err == nil {
+		if refused := registrationRefusal(status, data); refused != nil {
+			return refused
+		}
+	}
 	if err != nil || status != http.StatusOK {
 		return ErrUnavailable
 	}

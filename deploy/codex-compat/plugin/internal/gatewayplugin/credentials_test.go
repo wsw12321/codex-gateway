@@ -400,6 +400,70 @@ func TestLoginFailuresFailClosed(t *testing.T) {
 			t.Fatalf("account left in service without its egress: %s", manual)
 		}
 	})
+	refusal := func(f *fixture) map[string]json.RawMessage {
+		_, fields, _ := f.manage(http.MethodPost, facadePath("codex", "oauth/status"), nil, `{"state":"`+testLoginState+`"}`)
+		return fields
+	}
+	t.Run("a login of someone else's account removes only the new credential", func(t *testing.T) {
+		f := newFixture(t, 1)
+		cpa := start(t, f, "codex")
+		// CPA saved a second file for the account "a" already belongs to.
+		f.host.addCodex("codex-dup.json", "acct-a", f.clock)
+		cpa.authStatus = `{"status":"ok","auth_id":"codex-dup.json"}`
+		f.alloc.registerErr = &RegistrationRefusedError{Code: "account_owned_elsewhere"}
+		fields := refusal(f)
+		if string(fields["status"]) != `"error"` || string(fields["error"]) != `"account_owned_elsewhere"` {
+			t.Fatalf("status %v", fields)
+		}
+		if calls := cpa.seen("DELETE /v0/management/auth-files"); len(calls) != 1 || !strings.Contains(calls[0], "name=codex-dup.json") {
+			t.Fatalf("new credential not removed: %v", calls)
+		}
+		if !f.host.has("a") {
+			t.Fatal("the owner's credential was removed")
+		}
+		if manual, _ := f.plugin.control.Statuses(f.ids["a"]); manual == "manual_disabled" {
+			t.Fatal("the owner's account was disabled by someone else's login")
+		}
+		// The session is gone.
+		if status, _, _ := f.manage(http.MethodPost, facadePath("codex", "oauth/status"), nil, `{"state":"`+testLoginState+`"}`); status != http.StatusNotFound {
+			t.Fatalf("a refused login stayed pollable: %d", status)
+		}
+	})
+	t.Run("a login that rewrote the owner's file keeps it on the owner's route", func(t *testing.T) {
+		f := newFixture(t, 1)
+		cpa := start(t, f, "codex")
+		// CPA rewrote the existing file in place, with the login's egress.
+		f.host.setProxy("idx-a", testRouteA, f.clock)
+		cpa.authStatus = `{"status":"ok","auth_id":"a"}`
+		f.alloc.registerErr = &RegistrationRefusedError{Code: "account_owned_elsewhere"}
+		f.alloc.routes = map[string]Egress{f.ids["a"]: {ProxyURL: testRouteA2, Revision: "r2"}}
+		if fields := refusal(f); string(fields["error"]) != `"account_owned_elsewhere"` {
+			t.Fatalf("status %v", fields)
+		}
+		if calls := cpa.seen("DELETE /v0/management/auth-files"); len(calls) != 0 {
+			t.Fatalf("the account's only credential was removed: %v", calls)
+		}
+		if f.host.proxyOf("idx-a") != testRouteA2 {
+			t.Fatalf("the owner's route was not restored: %q", f.host.proxyOf("idx-a"))
+		}
+		if manual, _ := f.plugin.control.Statuses(f.ids["a"]); manual == "manual_disabled" {
+			t.Fatal("the owner's account was disabled")
+		}
+	})
+	t.Run("a rewritten file whose route cannot be restored leaves service", func(t *testing.T) {
+		f := newFixture(t, 1)
+		cpa := start(t, f, "codex")
+		f.host.setProxy("idx-a", testRouteA, f.clock)
+		cpa.authStatus = `{"status":"ok","auth_id":"a"}`
+		f.alloc.registerErr = &RegistrationRefusedError{Code: "provider_limit_reached"}
+		f.alloc.egressErr = map[string]error{f.ids["a"]: ErrUnavailable}
+		if fields := refusal(f); string(fields["error"]) != `"provider_limit_reached"` {
+			t.Fatalf("status %v", fields)
+		}
+		if manual, _ := f.plugin.control.Statuses(f.ids["a"]); manual != "manual_disabled" {
+			t.Fatalf("account kept serving through the refused login's egress: %s", manual)
+		}
+	})
 	t.Run("CPA reports an error", func(t *testing.T) {
 		f := newFixture(t, 1)
 		cpa := start(t, f, "codex")
@@ -559,6 +623,29 @@ func TestImportStoresTokensWithTheirEgressAndLetsCPARefresh(t *testing.T) {
 				t.Fatalf("credential removed = %v, want %v", removed, test.removed)
 			}
 		})
+	}
+}
+
+func TestImportOfSomeoneElsesAccountIsRefused(t *testing.T) {
+	f := newFixture(t, 1)
+	cpa := newFakeCPAManagement(f)
+	cpa.onRefresh = func(_ string, document map[string]any) {
+		document["id_token"] = fakeIDToken("acct-a")
+	}
+	f.alloc.registerErr = &RegistrationRefusedError{Code: "account_owned_elsewhere"}
+	status, fields, body := f.manage(http.MethodPost, facadePath("codex", "credentials"), nil,
+		`{"refresh_token":"rt-secret","registration_id":"`+testRegistration+`"}`)
+	if status != http.StatusConflict || string(fields["error"]) != `"account_owned_elsewhere"` || strings.Contains(body, "secret") {
+		t.Fatalf("import: %d %s", status, body)
+	}
+	if calls := cpa.seen("DELETE /v0/management/auth-files"); len(calls) != 1 || !strings.Contains(calls[0], "name=codex-import-") {
+		t.Fatalf("imported credential not removed: %v", calls)
+	}
+	if !f.host.has("a") {
+		t.Fatal("the owner's credential was removed")
+	}
+	if manual, _ := f.plugin.control.Statuses(f.ids["a"]); manual == "manual_disabled" {
+		t.Fatal("the owner's account was disabled by someone else's import")
 	}
 }
 

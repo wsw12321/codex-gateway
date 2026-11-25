@@ -11,6 +11,9 @@ import (
 )
 
 func isAnthropicAccountRequest(r *http.Request) bool {
+	if scope, ok := requestAccountScope(r); ok {
+		return scope.provider == store.UpstreamProviderAnthropic
+	}
 	return r.URL.Path == "/admin/anthropic-accounts" || strings.HasPrefix(r.URL.Path, "/admin/anthropic-accounts/") || strings.HasPrefix(r.URL.Path, "/internal/anthropic-accounts/")
 }
 

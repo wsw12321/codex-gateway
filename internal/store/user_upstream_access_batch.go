@@ -192,7 +192,7 @@ func (s *Store) SetUserUpstreamAccessBatch(ctx context.Context, params SetUserUp
 		if params.Action != UserUpstreamAccessBatchAll {
 			encodedAccounts, _ := json.Marshal(params.AccountIDs)
 			rows, err := tx.QueryContext(ctx, `SELECT id,provider FROM upstream_accounts
-				WHERE provider IN (SELECT provider FROM upstream_accounts
+				WHERE owner_user_id IS NULL AND provider IN (SELECT provider FROM upstream_accounts
 					WHERE id IN (SELECT value FROM jsonb_array_elements_text($1::jsonb)))
 				ORDER BY id FOR UPDATE`, string(encodedAccounts))
 			if err != nil {

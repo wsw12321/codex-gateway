@@ -70,7 +70,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 	var lastSynced sql.NullTime
 	err := row.Scan(&value.ID, &value.DisplayName, &value.MaskedEmail, &value.Plan, &value.Status,
 		&lastSynced, &value.CreatedAt, &value.UpdatedAt, &value.AllocationWeight,
-		&value.ConcurrentLimit, &value.Alias)
+		&value.ConcurrentLimit, &value.Alias, &value.AdminSuspended)
 	if lastSynced.Valid {
 		value.LastSyncedAt = &lastSynced.Time
 	}
@@ -78,7 +78,7 @@ func scanUpstreamAccount(row rowScanner) (UpstreamAccount, error) {
 }
 
 const upstreamAccountColumns = `id, display_name, masked_email, plan, status,
-	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit, alias`
+	last_synced_at, created_at, updated_at, allocation_weight, concurrent_limit, alias, admin_suspended`
 
 // EnsureUpstreamAccount creates a metadata-free placeholder for a recognized,
 // opaque tracing ID. Synchronization later replaces its display metadata. It
@@ -165,12 +165,24 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 			`LOCK TABLE upstream_accounts IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 			return mapDBError("lock upstream account synchronization", err)
 		}
+		// While tenants can log in, an account CPA lists but the Gateway has no
+		// row for may be a tenant's login that has not registered yet. Only an
+		// egress registration creates its row then; synchronization would
+		// otherwise turn it into a platform account.
+		var marketplaceEnabled bool
+		if err := tx.QueryRowContext(ctx, `SELECT `+marketplaceEnabledSQL).Scan(&marketplaceEnabled); err != nil {
+			return mapDBError("read marketplace switch", err)
+		}
 		for _, account := range normalized {
-			var otherProvider bool
-			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1 AND provider<>$2)`, account.ID, s.upstreamProviderName()).Scan(&otherProvider); err != nil {
+			var provider string
+			err := tx.QueryRowContext(ctx, `SELECT provider FROM upstream_accounts WHERE id=$1`, account.ID).Scan(&provider)
+			if errors.Is(err, sql.ErrNoRows) {
+				if marketplaceEnabled {
+					continue
+				}
+			} else if err != nil {
 				return mapDBError("check upstream account provider", err)
-			}
-			if otherProvider {
+			} else if provider != s.upstreamProviderName() {
 				return fmt.Errorf("%w: upstream account belongs to another provider", ErrConflict)
 			}
 			if _, err := tx.ExecContext(ctx, `
@@ -213,11 +225,13 @@ func (s *Store) SyncUpstreamAccounts(ctx context.Context, accounts []UpstreamAcc
 	})
 }
 
+// ListUpstreamAccounts lists the accounts of the store's owner scope.
 func (s *Store) ListUpstreamAccounts(ctx context.Context) ([]UpstreamAccount, error) {
+	// #nosec G202 -- the column list and accountScopeSQL are fixed SQL over placeholder names; every value is a bound parameter.
 	rows, err := s.db.QueryContext(ctx, `SELECT `+upstreamAccountColumns+`
-		FROM upstream_accounts WHERE provider = $1
+		FROM upstream_accounts WHERE provider = $1 AND `+accountScopeSQL("", "$2")+`
 		ORDER BY CASE status WHEN 'available' THEN 0 ELSE 1 END,
-			lower(masked_email), id`, s.upstreamProviderName())
+			lower(masked_email), id`, s.upstreamProviderName(), s.upstreamOwnerArg())
 	if err != nil {
 		return nil, mapDBError("list upstream accounts", err)
 	}
@@ -284,8 +298,9 @@ func (s *Store) AttributeUsageRequest(ctx context.Context, requestID, accountID 
 	return fmt.Errorf("change settled usage attribution: %w", ErrConflict)
 }
 
-// SummarizeUpstreamAccounts returns every known account, including zero-use
-// accounts, plus a nil-ID row when unattributed usage exists. All-history mode
+// SummarizeUpstreamAccounts returns every known account of the store's owner
+// scope, including zero-use accounts, plus (for the platform) a nil-ID row
+// when unattributed usage exists. All-history mode
 // uses monthly aggregates before LiveFrom so detail retention cannot erase
 // request and token attribution; cost always comes from the immutable ledger.
 func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAccountSummaryFilter) ([]UpstreamAccountSummary, error) {
@@ -325,11 +340,15 @@ func (s *Store) SummarizeUpstreamAccounts(ctx context.Context, filter UpstreamAc
 		ledgerTimeClause = `COALESCE(usage_requested_at, created_at) >= $1
 			AND COALESCE(usage_requested_at, created_at) < $2`
 	}
-	args = append(args, s.upstreamProviderName())
-	providerArg := fmt.Sprintf("$%d", len(args))
+	args = append(args, s.upstreamProviderName(), s.upstreamOwnerArg())
+	providerArg := fmt.Sprintf("$%d", len(args)-1)
+	ownerArg := fmt.Sprintf("$%d", len(args))
 	// Unattributed historical usage has no provider dimension. Preserve its
 	// legacy Codex bucket; do not present those global totals as AGY usage.
-	providerClause := `a.provider = ` + providerArg + ` OR (d.upstream_account_id IS NULL AND ` + providerArg + ` = 'codex')`
+	// Each owner scope sees only its own accounts; the unattributed bucket
+	// belongs to the platform view.
+	providerClause := `(a.provider = ` + providerArg + ` AND ` + accountScopeSQL("a", ownerArg) + `) OR (d.upstream_account_id IS NULL AND ` +
+		providerArg + ` = 'codex' AND ` + ownerArg + `::uuid IS NULL)`
 	// #nosec G202 -- SQL fragments are fixed; interval and provider values are bound parameters.
 	query := `WITH usage_source AS (` + usageSource + `), usage_totals AS (
 		SELECT upstream_account_id, sum(request_count)::bigint request_count,

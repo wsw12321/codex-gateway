@@ -25,6 +25,10 @@ const sectionTitles = {
   "antigravity-accounts": "上游账号",
   "anthropic-accounts": "Claude 账号",
   information: "数据维护",
+  providers: "我的供应商",
+  "tenant-providers": "租户供应商",
+  "my-plans": "我的套餐",
+  market: "商城管理",
 };
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("egress-servers");
@@ -40,6 +44,11 @@ ownerOnlySections.add("groups");
 ownerOnlySections.add("invitations");
 ownerOnlySections.add("information");
 ownerOnlySections.add("monitoring");
+ownerOnlySections.add("tenant-providers");
+ownerOnlySections.add("market");
+// Members reach these while the marketplace is enabled; egress-servers then
+// lists their own nodes.
+const memberMarketSections = new Set(["providers", "egress-servers", "my-plans"]);
 const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
 });
@@ -90,9 +99,17 @@ let billingPlansLoading = false;
 let billingPlansSequence = 0;
 let billingPurchaseDraft = null;
 let billingPlanEdit = null;
+// Stage 3 of the aggregation gateway: the Owner's plan provider scopes (null
+// until loaded or while the marketplace is off) and the scope being edited.
+let billingPlanScopes = null;
+let billingPlanScopeCandidates = [];
+let billingPlanScopeEdit = null;
 // Keep the exact body until the server confirms the result; a retry must never
 // acquire a fresh operation ID, even if the catalog or selected user changes.
 let billingPlanOperation = null;
+// Stage 4: the plans on sale in the marketplace (null while it is off or
+// not loaded). Members buy from it; the Owner sees seller plans in it.
+let marketPlans = null;
 let modelMultiplierModels = [];
 let modelMultiplierDrafts = new Map();
 let modelMultiplierSequence = 0;
@@ -2830,10 +2847,18 @@ function renderState(value) {
     resetBillingUserSearch();
     resetModelMultipliers();
     resetModelPrices();
+    resetMyProviders();
+    resetTenantProviders();
+    resetMySellerPlans();
+    resetMarketAdmin();
+    resetEgressServers();
     globalUserSearch?.reset();
     recoveryUserSearch?.reset();
   }
   all(".owner-only").forEach((node) => node.classList.toggle("hidden", !owner));
+  all(".member-market").forEach((node) => node.classList.toggle("hidden", !marketplaceMember()));
+  renderMarketReviewBadge();
+  if (!marketplaceMember()) stopProviderOAuth();
   if (!owner && byId("global-tab").getAttribute("aria-selected") === "true") showUsageTab("personal");
   renderCurrentIdentity();
   hide("auth");
@@ -3878,6 +3903,8 @@ function renderBillingSubscriptions(detail) {
       element("small", {text: `${billingPeriodEndLabel(subscription)}：${display.ends}`}),
       element("small", {text: `最终到期：${display.expires}`}),
       element("small", {className: "subscription-models", text: `适用模型：${billingModelText(billingModels(subscription)) || "无"}`}),
+      subscription.provider_scope ? element("small", {className: "subscription-scope", text: billingSubscriptionScopeText(subscription.provider_scope)}) : null,
+      billingThirdPartyConsentBlock(detail, subscription),
       billingPlanBinding(subscription), billingSourceControl(subscription.id),
       element("details", {className: "subscription-period-details"}, element("summary", {text: "已购权益详情"}),
         element("small", {text: `${billingPeriodProgress(subscription)} · 额度不结转`}),
@@ -3924,6 +3951,7 @@ function renderBillingLedger(detail) {
       if (uncovered != null && String(uncovered) !== "0" && String(uncovered) !== "0.000000000000") {
         addAmountDetail(`未覆盖：${formatUSD(uncovered)}`);
       }
+      if (entry?.self_use === true) addAmountDetail("自用：使用自己的供应商，不扣费");
 
       const description = element("td", {className: "money-cell"},
         element("span", {text: field(entry, "reason", "description") || "—"}),
@@ -4050,6 +4078,7 @@ function renderBillingDetail(detail, receivedAt = new Date()) {
       ? `${user.display_name || user.username || "当前用户"} · 当前登录用户`
       : `${user.display_name || user.username || user.id} · ${user.username || user.id}`;
   }
+  renderBillingSelfUse(detail);
   renderBillingSubscriptions(detail);
   renderBillingLedger(detail);
   renderBillingAdminValues(detail);
@@ -5528,7 +5557,10 @@ function resetBillingPlans() {
   billingPurchaseDraft = null;
   billingPlanEdit = null;
   billingPlanOperation = null;
-  for (const id of ["billing-purchase-dialog", "billing-plan-dialog"]) {
+  billingPlanScopes = null;
+  billingPlanScopeCandidates = [];
+  billingPlanScopeEdit = null;
+  for (const id of ["billing-purchase-dialog", "billing-plan-dialog", "billing-plan-scope-dialog"]) {
     if (byId(id)?.open) byId(id).close();
   }
   byId("billing-plans")?.replaceChildren(element("p", {className: "muted", text: "登录后加载套餐。"}));
@@ -5580,6 +5612,26 @@ function syncBillingPlanControls() {
   }
 }
 
+// mergeMarketPlans decides the catalog: members buy from the marketplace
+// (platform and approved seller plans); the Owner manages platform plans and
+// sees seller plans on sale after them. Without the marketplace the platform
+// list is the catalog, exactly as before stage 4.
+function mergeMarketPlans(platform, market, role) {
+  const plans = Array.isArray(platform) ? platform : [];
+  if (!Array.isArray(market)) return plans;
+  if (role !== "owner") return market;
+  return [...plans, ...market.filter((plan) => plan?.platform === false)];
+}
+
+function marketPlanProviderText(plan) {
+  const rows = Array.isArray(plan?.providers) ? plan.providers : [];
+  const parts = rows.filter((row) => row.official > 0 || row.third_party > 0).map((row) => {
+    const kinds = [row.official > 0 ? `官方账号 ${row.official}` : "", row.third_party > 0 ? `第三方 API ${row.third_party}` : ""].filter(Boolean);
+    return `${providerNames[row.provider] || row.provider}：${kinds.join("、")}`;
+  });
+  return parts.length ? `供应商：${parts.join("；")}` : "供应商：当前没有可用账号";
+}
+
 function renderBillingPlans() {
   const host = byId("billing-plans");
   if (!host) return;
@@ -5589,26 +5641,39 @@ function renderBillingPlans() {
     return;
   }
   host.replaceChildren(...billingPlans.map((plan) => {
-      const card = element("article", {className: "billing-plan-card", dataset: {planID: plan.id}},
+      const seller = plan.platform === false;
+      const card = element("article", {className: `billing-plan-card${seller ? " seller-plan" : ""}`, dataset: {planID: plan.id}},
       element("header", {}, element("h4", {text: plan.name}),
+        seller ? element("span", {className: "status-badge", text: "成员套餐", dataset: {status: "pending"}}) : null,
         element("span", {className: "status-badge", text: plan.active ? "已上架" : "已下架", dataset: {status: plan.active ? "active" : "disabled"}})),
+      seller ? element("p", {className: "seller-plan-seller", text: `卖家：${plan.seller_name || "成员"}`}) : null,
+      plan.description ? element("p", {className: "seller-plan-description", text: plan.description}) : null,
       element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
       element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModelText(billingModels(plan))}`}),
       element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
+      seller ? element("p", {className: "billing-plan-scope", text: marketPlanProviderText(plan)}) : null,
+      seller && plan.third_party_api ? element("p", {className: "billing-purchase-warning", text: "含第三方 API 供应商：对方能看到经它处理的请求内容。"}) : null,
+      seller && plan.own ? element("p", {className: "muted", text: "这是你发布的套餐，不能自己购买。"}) : null,
+      !seller && billingPlanScopes ? element("p", {className: "billing-plan-scope", text: billingPlanScopeText(billingPlanScopes[plan.id])}) : null,
       element("small", {text: "每次购买或续费最多 99 期，续费累计不限 99 期。"}));
     const actions = element("div", {className: "actions"});
-    if (plan.active && selectedBillingUserID() === state?.user?.id) {
+    if (plan.active && !plan.own && selectedBillingUserID() === state?.user?.id) {
       const buy = element("button", {type: "button", text: "购买订阅", dataset: {billingBuy: plan.id}});
       buy.addEventListener("click", () => openBillingPurchase(plan, "purchase"));
       actions.append(buy);
     }
-    if (state?.user?.role === "owner") {
+    if (state?.user?.role === "owner" && !seller) {
       const edit = element("button", {type: "button", className: "secondary", text: "编辑套餐", dataset: {billingPlanEdit: plan.id}});
       edit.addEventListener("click", () => openBillingPlanEditor(plan));
       actions.append(edit);
       const remove = element("button", {type: "button", className: "danger", text: "删除", dataset: {billingPlanEdit: plan.id}});
       remove.addEventListener("click", () => deleteBillingPlan(plan));
       actions.append(remove);
+      if (billingPlanScopes) {
+        const scope = element("button", {type: "button", className: "secondary", text: "供应商范围", dataset: {billingPlanEdit: plan.id}});
+        scope.addEventListener("click", () => openBillingPlanScope(plan));
+        actions.append(scope);
+      }
     }
     card.append(actions);
     return card;
@@ -5626,7 +5691,19 @@ async function loadBillingPlans() {
     const result = await api(`/admin/billing/plans${state.user.role === "owner" ? "?include_inactive=true" : ""}`, undefined, current);
     if (!current()) return;
     if (!Array.isArray(result?.plans)) throw new Error("套餐目录格式无效，请刷新后重试。");
-    billingPlans = result.plans;
+    marketPlans = null;
+    if (state.marketplace?.enabled === true) {
+      try {
+        const market = await api("/admin/market/plans", undefined, current);
+        if (current() && Array.isArray(market?.plans)) marketPlans = market.plans;
+      } catch (error) {
+        if (current()) billingPlanMessage(`商城套餐加载失败：${friendlyError(error)}`);
+      }
+      if (!current()) return;
+    }
+    billingPlans = mergeMarketPlans(result.plans, marketPlans, state.user.role);
+    await loadBillingPlanScopes(current);
+    if (!current()) return;
     renderBillingPlans();
   } catch (error) {
     if (!current()) return;
@@ -5635,6 +5712,196 @@ async function loadBillingPlans() {
     throw error;
   } finally {
     if (current()) { billingPlansLoading = false; syncBillingPlanControls(); }
+  }
+}
+
+// Plan provider scopes are the Owner's while the marketplace is enabled.
+function billingPlanScopesAllowed() {
+  return !loggingOut && state?.user?.role === "owner" && state?.marketplace?.enabled === true;
+}
+
+async function loadBillingPlanScopes(current) {
+  billingPlanScopes = null;
+  billingPlanScopeCandidates = [];
+  if (!billingPlanScopesAllowed()) return;
+  try {
+    const result = await api("/admin/billing/plan-provider-scopes", undefined, current);
+    if (!current() || !result || typeof result.scopes !== "object" || !Array.isArray(result.candidates)) return;
+    billingPlanScopes = result.scopes;
+    billingPlanScopeCandidates = result.candidates;
+  } catch (error) {
+    if (current()) billingPlanMessage(`供应商范围加载失败：${friendlyError(error)}`);
+  }
+}
+
+const billingProviderNames = {codex: "Codex", anthropic: "Claude", antigravity: "Antigravity"};
+
+function billingPlanScopeText(scope) {
+  if (!scope || scope.mode !== "selected") return "供应商：不限制（全部平台账号）";
+  const accounts = Array.isArray(scope.accounts) ? scope.accounts : [];
+  const usable = accounts.filter((account) => account.usable === true).length;
+  const stale = accounts.length - usable;
+  return `供应商：指定 ${usable} 个账号${stale ? `，${stale} 个已失效` : ""}`;
+}
+
+// A seller's API key suppliers see the requests they serve, so they serve a
+// subscription only with the buyer's consent, even when the seller adds them
+// after the purchase. The buyer gives or withdraws it on the card.
+function billingThirdPartyConsentBlock(detail, subscription) {
+  const scope = subscription?.provider_scope;
+  if (!scope?.seller || !(scope.third_party_api === true || scope.third_party_acknowledged === true)) return null;
+  const acknowledged = scope.third_party_acknowledged === true;
+  const block = element("div", {className: "subscription-third-party", dataset: {thirdParty: acknowledged ? "acknowledged" : "pending"}},
+    element("small", {text: acknowledged
+      ? "已允许卖家的第三方 API 供应商为这个订阅服务，它们能看到经它处理的提示词和回复。"
+      : "卖家的供应商范围含第三方 API 供应商。你确认之前，它们不为这个订阅服务；确认后，它们能看到经它处理的提示词和回复。"}));
+  if (!loggingOut && billingUserForDetail(detail).id === state?.user?.id) {
+    const button = element("button", {type: "button", className: "secondary", text: acknowledged ? "撤回确认" : "允许第三方 API 供应商",
+      dataset: {thirdPartyConsent: subscription.id}});
+    button.addEventListener("click", () => runButton(button, () => setBillingThirdPartyConsent(subscription.id, !acknowledged), "保存中…"));
+    block.append(button);
+  }
+  return block;
+}
+
+async function setBillingThirdPartyConsent(subscriptionID, acknowledged) {
+  if (loggingOut || !billingDetail || billingUserForDetail(billingDetail).id !== state?.user?.id) return;
+  const actor = state.user.id, generation = identityGeneration;
+  const current = () => !loggingOut && state?.user?.id === actor && generation === identityGeneration;
+  await sensitiveAction(() => api(`/admin/billing/me/subscriptions/${encodeURIComponent(subscriptionID)}/third-party-consent`,
+    {method: "PUT", body: JSON.stringify({acknowledged})}, current), current);
+  if (!current()) return;
+  notice(acknowledged ? "已允许第三方 API 供应商，从下一次请求起生效。" : "已撤回确认：从下一次请求起，第三方 API 供应商不再为这个订阅服务。", "ok");
+  await loadBillingDashboard();
+}
+
+function billingSubscriptionScopeText(scope) {
+  if (!scope?.restricted) return "供应商范围：不限制";
+  const counts = Object.entries(scope.account_counts || {}).filter(([, count]) => count > 0)
+    .map(([provider, count]) => `${billingProviderNames[provider] || provider} ${count} 个`);
+  const prefix = scope.seller ? "供应商范围：卖家的账号" : "供应商范围：指定账号";
+  return counts.length ? `${prefix}（当前可用 ${counts.join("、")}）` : `${prefix}（当前没有可用账号）`;
+}
+
+// The scope dialog serves the Owner's platform plans and, with seller set,
+// a member's own plans (stage 4), whose candidates are the member's accounts.
+function openBillingPlanScope(plan, seller = false) {
+  const allowed = seller ? marketplaceMember() && mySellerPlans : billingPlanScopesAllowed() && billingPlanScopes;
+  if (!allowed || billingPlanOperation) return;
+  const scopes = seller ? mySellerPlans.scopes : billingPlanScopes;
+  const pool = seller ? mySellerPlans.candidates : billingPlanScopeCandidates;
+  const scope = scopes[plan.id] || {mode: "all", accounts: [], revision: 0};
+  billingPlanScopeEdit = {plan: {...plan}, revision: scope.revision ?? 0, userID: state.user.id, generation: identityGeneration, seller};
+  const form = byId("billing-plan-scope-form");
+  form.reset();
+  form.elements.mode.value = scope.mode === "selected" ? "selected" : "all";
+  const allOption = Array.from(form.elements.mode.options || []).find((option) => option.value === "all");
+  if (allOption) allOption.textContent = seller ? "不限制：使用你的全部账号" : "不限制：使用全部平台账号";
+  byId("billing-plan-scope-plan").textContent = plan.name;
+  const listed = new Set((scope.accounts || []).map((account) => account.id));
+  const candidates = new Set(pool.map((account) => account.id));
+  const groups = new Map();
+  for (const account of pool) {
+    if (!groups.has(account.provider)) groups.set(account.provider, []);
+    groups.get(account.provider).push(account);
+  }
+  const fieldsets = [...groups.entries()].map(([provider, accounts]) => element("fieldset", {className: "plan-scope-provider"},
+    element("legend", {text: billingProviderNames[provider] || provider}),
+    ...accounts.map((account) => {
+      const input = element("input", {type: "checkbox", className: "plan-scope-account", dataset: {scopeAccount: account.id}});
+      input.name = "account_ids";
+      input.value = account.id;
+      input.checked = listed.has(account.id);
+      return element("label", {className: "check-label"}, input, `${account.label}${account.usable ? "" : "（已停用）"}`);
+    })));
+  byId("billing-plan-scope-accounts").replaceChildren(...(fieldsets.length ? fieldsets : [element("p", {className: "muted", text: seller ? "你还没有可用的供应商账号。" : "还没有平台账号。"})]));
+  const stale = (scope.accounts || []).filter((account) => !candidates.has(account.id));
+  byId("billing-plan-scope-stale").textContent = stale.length
+    ? `以下账号已不属于${seller ? "你" : "平台"}或已删除，保存时将移出范围：${stale.map((account) => account.label).join("、")}` : "";
+  byId("billing-plan-scope-stale").classList.toggle("hidden", !stale.length);
+  setLocalMessage(form);
+  syncBillingPlanScopeForm();
+  byId("billing-plan-scope-dialog").showModal();
+}
+
+function syncBillingPlanScopeForm() {
+  const form = byId("billing-plan-scope-form");
+  const selected = form?.elements.mode.value === "selected";
+  all(".plan-scope-account", byId("billing-plan-scope-accounts")).forEach((input) => { input.disabled = !selected; });
+  byId("billing-plan-scope-accounts")?.classList.toggle("muted", !selected);
+}
+
+// billingPlanScopePayload reads the editor: an unrestricted scope lists no
+// accounts; a selected one lists the checked, still-available accounts.
+function billingPlanScopePayload(form, edit) {
+  const mode = form.elements.mode.value === "selected" ? "selected" : "all";
+  const accounts = mode === "selected"
+    ? all(".plan-scope-account", byId("billing-plan-scope-accounts")).filter((input) => input.checked).map((input) => input.value) : [];
+  if (mode === "selected" && !accounts.length) throw new Error("请至少选择一个账号，或改为不限制。");
+  return {mode, account_ids: accounts, revision: edit.revision};
+}
+
+async function submitBillingPlanScope() {
+  const edit = billingPlanScopeEdit;
+  const allowed = () => edit?.seller ? marketplaceMember() : billingPlanScopesAllowed();
+  if (!edit || !allowed() || edit.userID !== state.user.id || edit.generation !== identityGeneration) throw new Error("登录身份已变化，请刷新后重试。");
+  const form = byId("billing-plan-scope-form");
+  const payload = billingPlanScopePayload(form, edit);
+  const current = () => billingPlanScopeEdit === edit && allowed();
+  const path = edit.seller ? `/admin/me/plans/${encodeURIComponent(edit.plan.id)}/provider-scope`
+    : `/admin/billing/plans/${encodeURIComponent(edit.plan.id)}/provider-scope`;
+  const saved = await sensitiveAction(() => api(path, {method: "PUT", body: JSON.stringify(payload)}, current), current);
+  if (!current()) return;
+  billingPlanScopeEdit = null;
+  byId("billing-plan-scope-dialog").close();
+  const message = `已保存「${edit.plan.name}」的供应商范围，从下一次请求起生效。`;
+  if (edit.seller) {
+    if (mySellerPlans) mySellerPlans.scopes = {...mySellerPlans.scopes, [edit.plan.id]: saved};
+    mySellerPlansMessage(message, false);
+    renderMySellerPlans();
+    return;
+  }
+  billingPlanScopes = {...billingPlanScopes, [edit.plan.id]: saved};
+  billingPlanMessage(message, false);
+  renderBillingPlans();
+}
+
+// Self-use is the member's own switch, shown only for the signed-in member
+// while the marketplace is enabled (the server sends it only then).
+function renderBillingSelfUse(detail) {
+  const host = byId("billing-self-use");
+  const toggle = byId("billing-self-use-toggle");
+  if (!host || !toggle) return;
+  const visible = !loggingOut && state?.user?.role === "member" && typeof detail?.self_use_enabled === "boolean" &&
+    billingUserForDetail(detail).id === state.user.id;
+  host.classList.toggle("hidden", !visible);
+  toggle.checked = visible && detail.self_use_enabled;
+  toggle.disabled = !visible;
+}
+
+async function setBillingSelfUse(enabled) {
+  const toggle = byId("billing-self-use-toggle");
+  const message = byId("billing-self-use-message");
+  if (loggingOut || state?.user?.role !== "member" || typeof billingDetail?.self_use_enabled !== "boolean" ||
+    billingUserForDetail(billingDetail).id !== state.user.id) return;
+  const actor = state.user.id, generation = identityGeneration;
+  const current = () => !loggingOut && state?.user?.id === actor && generation === identityGeneration;
+  toggle.disabled = true;
+  try {
+    const result = await sensitiveAction(() => api("/admin/billing/me/self-use", {method: "PUT", body: JSON.stringify({enabled})}, current), current);
+    if (!current()) return;
+    billingDetail.self_use_enabled = result.self_use_enabled === true;
+    message.textContent = billingDetail.self_use_enabled ? "已开启自用：新请求优先使用你自己的供应商。" : "已关闭自用：新请求不再使用你自己的供应商。";
+    message.dataset.kind = "ok";
+  } catch (error) {
+    if (!current()) return;
+    message.textContent = `自用设置保存失败：${friendlyError(error)}`;
+    message.dataset.kind = "error";
+  } finally {
+    if (current()) {
+      message.classList.toggle("hidden", !message.textContent);
+      renderBillingSelfUse(billingDetail);
+    }
   }
 }
 
@@ -5668,13 +5935,19 @@ function openBillingPurchase(plan, kind = "purchase", subscription = null) {
     billingPlanMessage("订阅或套餐版本不可用，请刷新后重试。");
     return;
   }
+  // A seller plan a member's API supplier may serve needs the buyer's consent;
+  // a renewal looks the plan up in the marketplace.
+  const listed = kind === "purchase" ? plan : (marketPlans || []).find((item) => item.id === plan.id);
+  const thirdParty = listed?.third_party_api === true;
   billingPurchaseDraft = {kind, plan: {...plan}, subscription: subscription ? {...subscription} : null,
-    configVersion: version, userID: state.user.id, generation: identityGeneration};
+    configVersion: version, userID: state.user.id, generation: identityGeneration, thirdParty};
   const form = byId("billing-purchase-form");
   form.reset();
   form.elements.period_count.min = String(plan.min_period_count);
   form.elements.period_count.value = String(plan.min_period_count);
   form.elements.confirmed.checked = false;
+  if (form.elements.acknowledge_third_party) form.elements.acknowledge_third_party.checked = false;
+  byId("billing-purchase-third-party")?.classList.toggle("hidden", !thirdParty);
   byId("billing-purchase-title").textContent = kind === "renewal" ? "续费当前套餐" : "购买订阅";
   byId("billing-purchase-plan").textContent = `${plan.name} · 每期 ${formatUSD(plan.price_usd)}`;
   byId("billing-purchase-minimum").textContent = `本次最低 ${plan.min_period_count} 期，最多 99 期。总价由服务端按单价 × 本次数量计算。`;
@@ -5742,10 +6015,12 @@ async function submitBillingPurchase() {
   if (!draft || !billingSourceReady() || draft.userID !== state.user.id || draft.generation !== identityGeneration) throw new Error("查看的用户或登录身份已变化，请重新确认。");
   const form = byId("billing-purchase-form");
   if (!form.elements.confirmed.checked) throw new Error("请先核对并确认权益变化。");
+  if (draft.thirdParty && !form.elements.acknowledge_third_party?.checked) throw new Error("请先确认第三方 API 供应商的说明。");
   const count = billingPlanPeriodCount(form.elements.period_count.value, draft.plan.min_period_count);
   billingPlanTotal(draft.plan.price_usd, count);
   if (draft.kind === "renewal") billingRenewalExpiry(draft.subscription, draft.plan, count);
   const payload = {plan_version: draft.plan.version, period_count: count};
+  if (draft.thirdParty) payload.acknowledge_third_party = true;
   if (draft.kind === "purchase") payload.plan_id = draft.plan.id;
   else payload.subscription_config_version = draft.configVersion;
   const path = draft.kind === "purchase" ? "/admin/billing/me/purchases" : `/admin/billing/me/subscriptions/${encodeURIComponent(draft.subscription.id)}/renewals`;
@@ -5852,7 +6127,9 @@ function bindBillingPlanUI() {
     byId("billing-purchase-form").elements.confirmed.checked = false;
     updateBillingPurchaseSummary();
   });
-  for (const [id, handler] of [["billing-purchase-form", submitBillingPurchase], ["billing-plan-form", submitBillingPlan]]) {
+  byId("billing-plan-scope-form")?.elements.mode.addEventListener("change", syncBillingPlanScopeForm);
+  byId("billing-self-use-toggle")?.addEventListener("change", () => setBillingSelfUse(byId("billing-self-use-toggle").checked));
+  for (const [id, handler] of [["billing-purchase-form", submitBillingPurchase], ["billing-plan-form", submitBillingPlan], ["billing-plan-scope-form", submitBillingPlanScope]]) {
     byId(id)?.addEventListener("submit", async (event) => {
       event.preventDefault();
       try { await handler(); } catch (error) { setLocalMessage(byId(id), friendlyError(error)); }
@@ -9278,7 +9555,8 @@ function startUpstreamConcurrency() {
 
 function egressIdentityCurrent() {
   const generation = identityGeneration;
-  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+  const role = state?.user?.role;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === role && egressAllowed();
 }
 
 function egressMessage(message = "", kind = "error") {
@@ -9291,7 +9569,7 @@ function egressMessage(message = "", kind = "error") {
 
 function resetEgressServers() {
   egressSequence++;
-  globalThis.window?.clearTimeout(egressPollTimer);
+  globalThis.window?.clearTimeout?.(egressPollTimer);
   egressServers = [];
   egressLoaded = false;
   egressOperation = null;
@@ -9316,11 +9594,11 @@ function populateEgressSelect(select, selected = "") {
 }
 
 async function loadEgressServers() {
-  if (loggingOut || state?.user?.role !== "owner") return;
+  if (loggingOut || !egressAllowed()) return;
   const currentIdentity = egressIdentityCurrent();
   const sequence = ++egressSequence;
   const current = () => currentIdentity() && sequence === egressSequence;
-  const result = await api("/admin/egress-servers", undefined, current);
+  const result = await api(egressBase(), undefined, current);
   if (!current()) return;
   if (!Array.isArray(result?.servers)) throw new Error("出口服务器响应格式异常。");
   egressServers = result.servers;
@@ -9328,7 +9606,7 @@ async function loadEgressServers() {
   egressListing = result;
   for (const id of egressProbes.keys()) if (!egressServers.some((node) => node.id === id)) egressProbes.delete(id);
   renderEgressServers(result);
-  for (const select of all(".upstream-egress-select")) populateEgressSelect(select, select.value);
+  for (const select of all(".upstream-egress-select, .provider-egress-select")) populateEgressSelect(select, select.value);
   syncUpstreamAccountControls();
   window.clearTimeout(egressPollTimer);
   if (location.hash === "#egress-servers") {
@@ -9363,14 +9641,14 @@ function egressProbeStatus(node) {
 }
 
 async function testEgressServer(node, target = egressProbeTarget()) {
-  if (loggingOut || state?.user?.role !== "owner" || egressProbes.get(node.id)?.state === "testing") return;
+  if (loggingOut || !egressAllowed() || egressProbes.get(node.id)?.state === "testing") return;
   const currentIdentity = egressIdentityCurrent();
   const probe = {state: "testing", revision: node.revision, target};
   const current = () => currentIdentity() && egressProbes.get(node.id) === probe;
   egressProbes.set(node.id, probe);
   if (egressListing) renderEgressServers(egressListing);
   try {
-    const result = await api(`/admin/egress-servers/${encodeURIComponent(node.id)}/test`, {method: "POST", body: JSON.stringify({target})}, current);
+    const result = await api(`${egressBase()}/${encodeURIComponent(node.id)}/test`, {method: "POST", body: JSON.stringify({target})}, current);
     if (!current()) return;
     Object.assign(probe, {state: "done", ok: result?.ok === true, code: String(result?.code || ""), latency: Number(result?.latency_ms), testedAt: result?.tested_at || new Date().toISOString()});
   } catch (error) {
@@ -9381,7 +9659,7 @@ async function testEgressServer(node, target = egressProbeTarget()) {
 }
 
 async function testAllEgressServers() {
-  if (loggingOut || state?.user?.role !== "owner") return;
+  if (loggingOut || !egressAllowed()) return;
   const target = egressProbeTarget();
   const queue = egressServers.filter((node) => egressNodeApplied(node));
   if (!queue.length) {
@@ -9426,7 +9704,7 @@ function renderEgressServers(result) {
       probe && element("p", {className: "egress-probe", dataset: {kind: probe.kind}, text: probe.text}),
       element("div", {className: "actions"}, test, edit, remove));
   }));
-  if (!egressServers.length) host.append(emptyState("尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。"));
+  if (!egressServers.length) host.append(emptyState(state?.user?.role === "owner" ? "尚未配置出口服务器。新增 SS 或 SOCKS5 节点后，可在上游账号设置中绑定。" : "还没有出口服务器。新增节点后，可在“我的供应商”中为账号选择。"));
 }
 
 function egressProtocolSummary(node) {
@@ -9435,7 +9713,7 @@ function egressProtocolSummary(node) {
 }
 
 function openEgressEditor(node = null) {
-  if (loggingOut || state?.user?.role !== "owner" || egressOperation) return;
+  if (loggingOut || !egressAllowed() || egressOperation) return;
   const form = byId("egress-form");
   form.reset();
   egressDraftID = node?.id || "";
@@ -9544,7 +9822,7 @@ async function saveEgressServer(event) {
   if (form.elements.password.value && (protocol === "ss" || username)) payload.password = form.elements.password.value;
   egressOperation = operation;
   try {
-    await sensitiveAction(() => api(`/admin/egress-servers${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
+    await sensitiveAction(() => api(`${egressBase()}${operation.id ? `/${encodeURIComponent(operation.id)}` : ""}`, {
       method: operation.id ? "PUT" : "POST", body: JSON.stringify(payload),
     }, current), current);
     if (!current()) return;
@@ -9559,17 +9837,568 @@ async function saveEgressServer(event) {
 }
 
 async function deleteEgressServer(node) {
-  if (egressOperation || loggingOut || state?.user?.role !== "owner") return;
+  if (egressOperation || loggingOut || !egressAllowed()) return;
   const operation = {id: node.id};
   egressOperation = operation;
   const identity = egressIdentityCurrent();
   const current = () => identity() && egressOperation === operation;
   try {
-    await sensitiveAction(() => api(`/admin/egress-servers/${encodeURIComponent(node.id)}`, {method: "DELETE"}, current), current);
+    await sensitiveAction(() => api(`${egressBase()}/${encodeURIComponent(node.id)}`, {method: "DELETE", body: "{}"}, current), current);
     if (!current()) return;
     egressMessage("节点已删除。", "ok");
     await loadEgressServers();
   } finally { if (egressOperation === operation) egressOperation = null; }
+}
+
+// ---- Tenant providers (aggregation gateway stage 2) ---------------------------
+// Members add and manage their own upstream accounts and egress nodes while
+// the marketplace is enabled; the Owner moderates and transfers them.
+
+const providerNames = {codex: "Codex", anthropic: "Claude", antigravity: "Antigravity"};
+const providerRefusalMessages = {
+  account_owned_elsewhere: "该上游账号已归平台或其他用户所有，不能重复添加。",
+  provider_limit_reached: "已达到可添加的数量上限。",
+  account_in_platform_use: "该上游账号仍被平台配置使用，暂不能添加。",
+};
+const providerAuthorizationHosts = {codex: "auth.openai.com", anthropic: "claude.ai", antigravity: "accounts.google.com"};
+const ownerTransferPaths = {codex: "upstream-accounts", antigravity: "antigravity-accounts", anthropic: "anthropic-accounts"};
+let myProviders = null;
+let myProvidersSequence = 0;
+let providerOAuth = null;
+let providerSupplierModels = null;
+let tenantProviders = null;
+let tenantProvidersSequence = 0;
+let ownerTransferTarget = null;
+let ownerTransferUserSearch = null;
+
+function marketplaceMember() {
+  return state?.user?.role === "member" && state?.marketplace?.enabled === true;
+}
+
+function egressAllowed() {
+  return state?.user?.role === "owner" || marketplaceMember();
+}
+
+// Members manage their own nodes; the Owner the platform's.
+function egressBase() {
+  return state?.user?.role === "owner" ? "/admin/egress-servers" : "/admin/me/egress-servers";
+}
+
+function providersIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && marketplaceMember();
+}
+
+function resetMyProviders() {
+  myProvidersSequence++;
+  stopProviderOAuth();
+  myProviders = null;
+  providerSupplierModels = null;
+  byId("providers-list")?.replaceChildren();
+  const summary = byId("providers-summary");
+  if (summary) summary.textContent = "正在加载…";
+}
+
+async function loadMyProviders() {
+  if (!marketplaceMember()) return;
+  const identity = providersIdentityCurrent();
+  const sequence = ++myProvidersSequence;
+  const current = () => identity() && sequence === myProvidersSequence;
+  const result = await api("/admin/me/providers", undefined, current);
+  if (!current()) return;
+  if (!Array.isArray(result?.accounts) || !Array.isArray(result?.providers)) throw new Error("供应商响应格式异常。");
+  myProviders = result;
+  renderMyProviders();
+}
+
+function providerAccountStatus(account) {
+  if (account.admin_suspended) return {status: "unavailable", text: "已被管理员停用"};
+  if (account.gateway_manual_status === "manual_disabled") return {status: "degraded", text: "已停用"};
+  return {status: account.status === "available" ? "available" : "degraded", text: upstreamFinalStatusLabels[account.status] || "状态未知"};
+}
+
+function renderMyProviders() {
+  const result = myProviders;
+  if (!result) return;
+  const summary = byId("providers-summary");
+  const parts = [`已添加 ${formatInteger(result.account_count)} / ${formatInteger(result.max_accounts_per_user)} 个账号`];
+  if (result.sync_warning) parts.push("账号状态暂时无法同步，显示的是上次记录");
+  summary.textContent = parts.join(" · ");
+  const select = byId("provider-add-provider");
+  const selected = select.value;
+  select.replaceChildren(...result.providers.map((provider) => element("option", {text: providerNames[provider] || provider, attributes: {value: provider}})));
+  if (result.providers.includes(selected)) select.value = selected;
+  populateEgressSelect(byId("provider-add-egress"), byId("provider-add-egress").value);
+  const full = result.account_count >= result.max_accounts_per_user;
+  for (const id of ["provider-oauth-start", "provider-import-open", "provider-supplier-open"]) {
+    const button = byId(id);
+    button.disabled = full || !result.providers.length;
+    button.title = full ? "已达到可添加的数量上限" : "";
+  }
+  byId("provider-supplier-open").classList.toggle("hidden", !result.member_suppliers);
+  syncProviderImportAvailability();
+  const host = byId("providers-list");
+  host.replaceChildren(...result.accounts.map((account) => providerAccountCard(account)));
+  if (!result.accounts.length) host.append(emptyState("还没有添加账号。选择协议后可以授权登录或导入凭据。"));
+}
+
+function syncProviderImportAvailability() {
+  const provider = byId("provider-add-provider")?.value;
+  const button = byId("provider-import-open");
+  if (!button) return;
+  // CPA learns an Antigravity account's address only during a login.
+  if (provider === "antigravity") button.disabled = true;
+}
+
+function providerAccountCard(account) {
+  const status = providerAccountStatus(account);
+  const supplier = account.credential_kind === "supplier";
+  const enabled = account.gateway_manual_status !== "manual_disabled";
+  const card = element("article", {className: "panel provider-card", dataset: {accountId: account.id, provider: account.provider}},
+    element("div", {className: "panel-heading"},
+      element("h3", {text: upstreamAccountLabel(account)}),
+      element("span", {className: "status-badge", dataset: {status: status.status}, text: status.text})),
+    element("p", {className: "muted", text: [providerNames[account.provider] || account.provider, supplier ? "API Key 供应商" : "OAuth 账号",
+      account.email_masked, supplier ? (account.supplier_models || []).join("、") : account.plan !== "unknown" && account.plan].filter(Boolean).join(" · ")}),
+    element("p", {className: "muted", text: `本月请求 ${formatInteger(account.request_count)} 次 · 折合费用 ${formatUSD(account.equivalent_cost_usd, "US$0.00")} · 出口：${account.egress_server_name || (account.egress_server_id ? "已绑定节点" : "全局出口")}`}));
+  if (account.admin_suspended) card.append(element("p", {className: "callout", text: "管理员已停用这个账号，你不能自行启用。"}));
+
+  const toggle = element("button", {type: "button", className: "secondary", text: enabled ? "停用" : "启用"});
+  toggle.disabled = !account.can_manage || (!enabled && account.admin_suspended);
+  toggle.addEventListener("click", () => runButton(toggle, () => providerAccountWrite(account, "status", {enabled: !enabled}, enabled ? "账号已停用。" : "账号已启用。"), "保存中…"));
+  const actions = element("div", {className: "actions"}, toggle);
+  if (!supplier) {
+    const refresh = element("button", {type: "button", className: "secondary", text: "刷新凭据"});
+    refresh.addEventListener("click", () => runButton(refresh, () => providerAccountWrite(account, "refresh", {}, "凭据已刷新。", "POST"), "刷新中…"));
+    const quota = element("button", {type: "button", className: "secondary", text: "查看额度"});
+    quota.addEventListener("click", () => runButton(quota, () => providerAccountQuota(account, card), "查询中…"));
+    actions.append(refresh, quota);
+  }
+  const remove = element("button", {type: "button", className: "secondary danger", text: "删除"});
+  remove.addEventListener("click", () => {
+    if (remove.dataset.confirm !== "true") { remove.dataset.confirm = "true"; remove.textContent = "确认删除"; return; }
+    runButton(remove, () => deleteProviderAccount(account), "删除中…");
+  });
+  actions.append(remove);
+
+  const alias = element("input", {attributes: {name: "alias", maxlength: "40", "aria-label": "账号别名"}});
+  alias.value = account.alias || "";
+  const aliasForm = element("form", {className: "provider-inline-form"}, element("label", {text: "别名"}, alias),
+    element("button", {type: "submit", className: "secondary", text: "保存别名"}));
+  aliasForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(aliasForm.querySelector("button"), () => providerAccountWrite(account, "alias", {alias: alias.value.trim()}, "别名已保存。"), "保存中…");
+  });
+  const limit = element("input", {type: "number", attributes: {name: "concurrent_limit", min: "1", step: "1", "aria-label": "并发上限"}});
+  limit.value = String(account.concurrent_limit || 1);
+  const limitForm = element("form", {className: "provider-inline-form"}, element("label", {text: "并发上限"}, limit),
+    element("button", {type: "submit", className: "secondary", text: "保存上限"}));
+  limitForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(limitForm.querySelector("button"), () => providerAccountWrite(account, "concurrent-limit", {concurrent_limit: Number(limit.value)}, "并发上限已保存。"), "保存中…");
+  });
+  const egress = element("select", {className: "provider-egress-select", attributes: {"aria-label": "出口服务器"}});
+  populateEgressSelect(egress, account.egress_server_id || "");
+  const egressForm = element("form", {className: "provider-inline-form"}, element("label", {text: "出口"}, egress),
+    element("button", {type: "submit", className: "secondary", text: "保存出口"}));
+  egressForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runButton(egressForm.querySelector("button"), () => providerAccountWrite(account, "egress", {egress_server_id: egress.value || null}, "出口已保存。"), "保存中…");
+  });
+  card.append(actions,
+    element("details", {className: "provider-settings"}, element("summary", {text: "账号设置"}), aliasForm, limitForm, egressForm),
+    element("div", {className: "provider-quota", attributes: {"aria-live": "polite"}}),
+    element("p", {className: "form-message hidden", attributes: {role: "alert"}}));
+  return card;
+}
+
+function providerAccountPath(account, action = "") {
+  return `/admin/me/providers/${encodeURIComponent(account.provider)}/accounts/${encodeURIComponent(account.id)}${action ? `/${action}` : ""}`;
+}
+
+async function providerAccountWrite(account, action, payload, message, method = "PUT") {
+  const current = providersIdentityCurrent();
+  await sensitiveAction(() => api(providerAccountPath(account, action), {method, body: JSON.stringify(payload)}, current), current);
+  if (!current()) return;
+  notice(message, "ok");
+  await loadMyProviders();
+}
+
+async function providerAccountQuota(account, card) {
+  const current = providersIdentityCurrent();
+  const result = await sensitiveAction(() => api(providerAccountPath(account, "quota"), {method: "POST", body: "{}"}, current), current);
+  if (!current()) return;
+  const host = card.querySelector(".provider-quota");
+  const windows = Array.isArray(result?.windows) ? result.windows : [];
+  const models = Array.isArray(result?.quota) ? result.quota : [];
+  const lines = [
+    ...windows.map((window) => `${upstreamQuotaWindowNames[window.window] || window.window}：${Number.isFinite(window.used_percent) ? `已用 ${window.used_percent}%` : "用量未知"}${window.reset_at ? ` · ${formatDateTime(window.reset_at, "")} 重置` : ""}`),
+    ...models.map((model) => `${model.model}：剩余 ${formatPercent(model.remaining_fraction)}`),
+  ];
+  host.replaceChildren(...(lines.length ? lines : ["暂无额度数据。"]).map((line) => element("p", {className: "muted", text: line})));
+}
+
+async function deleteProviderAccount(account) {
+  const current = providersIdentityCurrent();
+  await sensitiveAction(() => api(providerAccountPath(account), {method: "DELETE", body: "{}"}, current), current);
+  if (!current()) return;
+  notice("账号已删除，归属已释放。", "ok");
+  await loadMyProviders();
+}
+
+function providerAddChoice() {
+  const form = byId("provider-add-form");
+  const provider = form.elements.provider.value;
+  if (!Object.hasOwn(providerNames, provider)) throw new Error("请选择协议。");
+  const egress = form.elements.egress_server_id.value;
+  return {provider, egress};
+}
+
+function validProviderAuthorizationURL(raw, provider) {
+  try {
+    const url = new URL(raw);
+    return url.protocol === "https:" && !url.port && !url.username && !url.password && url.hostname === providerAuthorizationHosts[provider];
+  } catch (_) {
+    return false;
+  }
+}
+
+// The authorization ends on a local address the browser cannot open; its
+// query carries the code and state.
+function providerCallbackFields(raw) {
+  let url;
+  try { url = new URL(String(raw || "").trim()); } catch (_) { throw new Error("请粘贴授权完成后的本地回调地址。"); }
+  if (url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.username || url.password || url.hash) {
+    throw new Error("请粘贴授权完成后的本地回调地址。");
+  }
+  const code = url.searchParams.get("code");
+  const callbackState = url.searchParams.get("state");
+  if (!code || !callbackState || url.searchParams.getAll("code").length !== 1 || url.searchParams.getAll("state").length !== 1 || url.searchParams.has("error")) {
+    throw new Error("回调缺少授权码，或授权没有成功。");
+  }
+  return {code, state: callbackState};
+}
+
+function stopProviderOAuth() {
+  if (providerOAuth) globalThis.window?.clearTimeout?.(providerOAuth.timer);
+  providerOAuth = null;
+  const host = byId("provider-oauth");
+  if (host) hide(host);
+  const form = byId("provider-oauth-callback-form");
+  if (form) form.reset();
+}
+
+function providerOAuthStatus(message, kind = "muted") {
+  const target = byId("provider-oauth-status");
+  if (!target) return;
+  target.textContent = message;
+  target.dataset.kind = kind;
+}
+
+async function startProviderOAuth() {
+  const {provider, egress} = providerAddChoice();
+  const current = providersIdentityCurrent();
+  const body = egress ? {egress_server_id: egress} : {};
+  const oauth = await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/oauth`, {method: "POST", body: JSON.stringify(body)}, current), current);
+  if (!current()) return;
+  if (!oauth?.id || !validProviderAuthorizationURL(oauth.url, provider)) throw new Error("供应商授权地址无效。");
+  stopProviderOAuth();
+  const session = {id: oauth.id, provider, expiresAt: Date.now() + Number(oauth.expires_in || 300) * 1000, timer: 0};
+  providerOAuth = session;
+  byId("provider-oauth-link").href = oauth.url;
+  byId("provider-oauth-title").textContent = `授权登录 ${providerNames[provider]}`;
+  providerOAuthStatus("请在新窗口完成授权，然后把回调地址粘贴到下方。授权有效期 5 分钟。");
+  show("provider-oauth");
+  globalThis.window?.open?.(oauth.url, "_blank", "noopener,noreferrer");
+  scheduleProviderOAuthPoll(session);
+}
+
+function scheduleProviderOAuthPoll(session) {
+  session.timer = globalThis.window?.setTimeout?.(() => pollProviderOAuth(session).catch((error) => {
+    if (providerOAuth === session) providerOAuthStatus(friendlyError(error), "error");
+  }), 2000) || 0;
+}
+
+async function pollProviderOAuth(session) {
+  if (providerOAuth !== session || !marketplaceMember()) return;
+  if (Date.now() > session.expiresAt) {
+    providerOAuthStatus("授权已过期，请重新开始。", "error");
+    return;
+  }
+  const current = () => providersIdentityCurrent()() && providerOAuth === session;
+  const result = await api(`/admin/me/providers/oauth/${encodeURIComponent(session.id)}/status`, undefined, current);
+  if (!current()) return;
+  if (result?.status === "wait") {
+    scheduleProviderOAuthPoll(session);
+    return;
+  }
+  if (result?.status === "ok") {
+    stopProviderOAuth();
+    notice("账号已添加。", "ok");
+    await loadMyProviders();
+    return;
+  }
+  providerOAuthStatus(providerRefusalMessages[result?.error] || "授权没有完成，请重新开始。", "error");
+  session.done = true;
+}
+
+async function submitProviderCallback(event) {
+  const session = providerOAuth;
+  if (!session || session.done) throw new Error("请先开始授权登录。");
+  const fields = providerCallbackFields(event.currentTarget.elements.callback.value);
+  const current = () => providersIdentityCurrent()() && providerOAuth === session;
+  await sensitiveAction(() => api(`/admin/me/providers/oauth/${encodeURIComponent(session.id)}/callback`, {method: "POST", body: JSON.stringify(fields)}, current), current);
+  if (!current()) return;
+  event.currentTarget.reset();
+  providerOAuthStatus("已提交，正在确认账号…");
+}
+
+// Only the tokens leave the browser; a Claude credential file may nest them
+// under claudeAiOauth.
+function providerImportFields(raw, provider) {
+  let value;
+  try { value = JSON.parse(raw); } catch (_) { throw new Error("凭据必须是 JSON 对象。"); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("凭据必须是 JSON 对象。");
+  let input = value;
+  if (provider === "anthropic" && Object.hasOwn(value, "claudeAiOauth")) {
+    const oauth = value.claudeAiOauth;
+    if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) throw new Error("claudeAiOauth 必须是 JSON 对象。");
+    input = {refresh_token: oauth.refreshToken, access_token: oauth.accessToken};
+  } else if (provider === "codex" && value.tokens && typeof value.tokens === "object" && !Array.isArray(value.tokens)) {
+    input = value.tokens;
+  }
+  const result = {};
+  for (const key of provider === "anthropic" ? ["refresh_token", "access_token"] : ["refresh_token", "access_token", "id_token"]) {
+    const token = input[key];
+    if (token === undefined || token === null) continue;
+    if (typeof token !== "string" || new TextEncoder().encode(token).length > 32768) throw new Error("令牌必须是最多 32768 字节的字符串。");
+    if (token.trim()) result[key] = token.trim();
+  }
+  if (provider === "anthropic" ? !result.refresh_token && !result.access_token : !result.refresh_token) {
+    throw new Error(provider === "anthropic" ? "Claude 凭据至少需要 access_token 或 refresh_token。" : "凭据缺少 refresh_token。");
+  }
+  return result;
+}
+
+function openProviderImport() {
+  const {provider} = providerAddChoice();
+  if (provider === "antigravity") throw new Error("Antigravity 账号只能授权登录。");
+  const form = byId("provider-import-form");
+  form.reset();
+  form.dataset.provider = provider;
+  byId("provider-import-title").textContent = `导入 ${providerNames[provider]} 凭据`;
+  openDialog("provider-import-dialog");
+}
+
+async function submitProviderImport(event) {
+  const form = event.currentTarget;
+  const provider = form.dataset.provider;
+  const {egress} = providerAddChoice();
+  const payload = providerImportFields(form.elements.credentials.value, provider);
+  if (egress) payload.egress_server_id = egress;
+  const current = providersIdentityCurrent();
+  try {
+    await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/credentials`, {method: "POST", body: JSON.stringify(payload)}, current), current);
+  } finally {
+    for (const key of Object.keys(payload)) delete payload[key];
+  }
+  if (!current()) return;
+  form.reset();
+  byId("provider-import-dialog").close();
+  notice("凭据已导入，账号已添加。", "ok");
+  await loadMyProviders();
+}
+
+function openProviderSupplier() {
+  const {provider} = providerAddChoice();
+  const form = byId("provider-supplier-form");
+  form.reset();
+  form.dataset.provider = provider;
+  providerSupplierModels = null;
+  hide("provider-supplier-models");
+  byId("provider-supplier-model-list").replaceChildren();
+  byId("provider-supplier-title").textContent = `添加 ${providerNames[provider]} API Key 供应商`;
+  openDialog("provider-supplier-dialog");
+}
+
+async function submitProviderSupplier(event) {
+  const form = event.currentTarget;
+  const provider = form.dataset.provider;
+  const {egress} = providerAddChoice();
+  const payload = {url: form.elements.url.value.trim(), api_key: form.elements.api_key.value};
+  if (egress) payload.egress_server_id = egress;
+  if (providerSupplierModels) {
+    payload.models = all("input:checked", byId("provider-supplier-model-list")).map((input) => input.value);
+    if (!payload.models.length) throw new Error("请至少选择一个模型。");
+  }
+  const current = providersIdentityCurrent();
+  let result;
+  try {
+    result = await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/suppliers`, {method: "POST", body: JSON.stringify(payload)}, current), current);
+  } finally {
+    delete payload.api_key;
+  }
+  if (!current()) return;
+  if (result?.status === "models_required" && Array.isArray(result.models)) {
+    providerSupplierModels = result.models;
+    byId("provider-supplier-model-list").replaceChildren(...result.models.map((model) => element("label", {className: "user-check-row"},
+      element("input", {type: "checkbox", attributes: {value: model}}), element("span", {text: model}))));
+    show("provider-supplier-models");
+    setLocalMessage(form, "供应商没有提供模型列表，请勾选它支持的模型后再保存。", "ok");
+    return;
+  }
+  form.reset();
+  byId("provider-supplier-dialog").close();
+  notice("API Key 供应商已添加。", "ok");
+  await loadMyProviders();
+}
+
+// ---- Owner: tenant providers ---------------------------------------------------
+
+function tenantProvidersIdentityCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function resetTenantProviders() {
+  tenantProvidersSequence++;
+  tenantProviders = null;
+  ownerTransferTarget = null;
+  byId("tenant-providers-body")?.replaceChildren();
+  byId("tenant-egress-body")?.replaceChildren();
+  ownerTransferUserSearch?.reset();
+  const dialog = byId("owner-transfer-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+function tenantProvidersMessage(message = "", kind = "error") {
+  const host = byId("tenant-providers-message");
+  if (!host) return;
+  host.textContent = message;
+  host.dataset.kind = kind;
+  host.classList.toggle("hidden", !message);
+}
+
+async function loadTenantProviders() {
+  if (state?.user?.role !== "owner") return;
+  const identity = tenantProvidersIdentityCurrent();
+  const sequence = ++tenantProvidersSequence;
+  const current = () => identity() && sequence === tenantProvidersSequence;
+  const result = await api("/admin/tenant-providers", undefined, current);
+  if (!current()) return;
+  if (!Array.isArray(result?.accounts) || !Array.isArray(result?.egress_servers)) throw new Error("租户供应商响应格式异常。");
+  tenantProviders = result;
+  renderTenantProviders();
+}
+
+function renderTenantProviders() {
+  const result = tenantProviders;
+  if (!result) return;
+  const body = byId("tenant-providers-body");
+  body.replaceChildren(...result.accounts.map((account) => {
+    const suspend = element("button", {type: "button", className: "secondary", text: account.admin_suspended ? "恢复" : "停用"});
+    suspend.addEventListener("click", () => runButton(suspend, () => setTenantProviderSuspension(account, !account.admin_suspended), "保存中…"));
+    const transfer = element("button", {type: "button", className: "secondary", text: "转移归属"});
+    transfer.addEventListener("click", () => openOwnerTransfer({provider: account.provider, id: account.id, owner: account.owner_user_id,
+      label: `${upstreamAccountLabel(account)}（当前归 ${account.owner_display_name || account.owner_username}）`}));
+    return element("tr", {dataset: {accountId: account.id}},
+      element("td", {}, element("strong", {text: account.owner_display_name || account.owner_username}), element("small", {className: "muted", text: ` ${account.owner_username}`})),
+      element("td", {text: providerNames[account.provider] || account.provider}),
+      element("td", {text: `${upstreamAccountLabel(account)}${account.credential_kind === "supplier" ? " · API Key" : ""}`}),
+      element("td", {}, element("span", {className: "status-badge", dataset: {status: account.admin_suspended ? "unavailable" : account.status === "available" ? "available" : "degraded"},
+        text: account.admin_suspended ? "已停用（管理员）" : upstreamFinalStatusLabels[account.status] || "状态未知"})),
+      element("td", {text: account.egress_server_name || "全局出口"}),
+      element("td", {}, element("div", {className: "actions"}, suspend, transfer)));
+  }));
+  if (!result.accounts.length) body.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加账号。"})));
+  const nodes = byId("tenant-egress-body");
+  nodes.replaceChildren(...result.egress_servers.map((node) => {
+    const remove = element("button", {type: "button", className: "secondary", text: "删除", dataset: {tenantEgressDelete: node.id}});
+    remove.addEventListener("click", () => {
+      if (remove.dataset.confirm !== "true") { remove.dataset.confirm = "true"; remove.textContent = "确认删除"; return; }
+      runButton(remove, () => deleteTenantEgressServer(node), "删除中…");
+    });
+    const disabled = node.owner_status && node.owner_status !== "active";
+    return element("tr", {dataset: {egressId: node.id}},
+      element("td", {}, element("div", {className: "tenant-egress-owner"}, element("span", {text: node.owner_username}),
+        disabled ? element("span", {className: "status-badge", dataset: {status: "unavailable"}, text: "成员已停用"}) : null)),
+      element("td", {text: node.name}), element("td", {text: `${node.server}:${node.port}`}),
+      element("td", {text: node.protocol === "socks5" ? "SOCKS5" : "SS"}), element("td", {text: formatInteger(node.bound_accounts)}),
+      element("td", {}, remove));
+  }));
+  if (!result.egress_servers.length) nodes.append(element("tr", {}, element("td", {attributes: {colspan: "6"}, className: "empty", text: "成员还没有添加出口服务器。"})));
+}
+
+// A disabled member cannot sign in to remove a node, and every node of a
+// member blocks the member's permanent deletion; the Owner removes it here.
+async function deleteTenantEgressServer(node) {
+  const current = tenantProvidersIdentityCurrent();
+  await sensitiveAction(() => api(`/admin/tenant-providers/egress-servers/${encodeURIComponent(node.id)}`, {method: "DELETE", body: "{}"}, current), current);
+  if (!current()) return;
+  tenantProvidersMessage(`已删除 ${node.owner_username} 的出口服务器“${node.name}”。`, "ok");
+  await loadTenantProviders();
+}
+
+async function setTenantProviderSuspension(account, suspended) {
+  const current = tenantProvidersIdentityCurrent();
+  await sensitiveAction(() => api(`/admin/tenant-providers/${encodeURIComponent(account.id)}/suspension`, {method: "PUT", body: JSON.stringify({suspended})}, current), current);
+  if (!current()) return;
+  tenantProvidersMessage(suspended ? "账号已停用。" : "账号已恢复。", "ok");
+  await loadTenantProviders();
+}
+
+async function openOwnerTransfer(target) {
+  if (state?.user?.role !== "owner") return;
+  ownerTransferTarget = target;
+  const form = byId("owner-transfer-form");
+  form.reset();
+  byId("owner-transfer-subject").textContent = target.label;
+  syncOwnerTransferTarget();
+  openDialog("owner-transfer-dialog");
+  ownerTransferUserSearch ||= createUserSearch("owner-transfer-user-search", null, (user) => user.id === target.owner ? "当前主人" : "");
+  ownerTransferUserSearch.reset();
+  const current = tenantProvidersIdentityCurrent();
+  let users = billingUsers;
+  if (!users.length) {
+    const result = await api("/admin/billing/users", undefined, current);
+    users = (Array.isArray(result) ? result : result?.users || result?.items || []).map(normalizeBillingUser);
+  }
+  if (!current() || ownerTransferTarget !== target) return;
+  ownerTransferUserSearch.setUsers(users.filter((user) => user.role === "member" && user.status === "active" && user.id !== target.owner));
+}
+
+function syncOwnerTransferTarget() {
+  const form = byId("owner-transfer-form");
+  const member = form.elements.target.value !== "platform";
+  byId("owner-transfer-user").classList.toggle("hidden", !member);
+}
+
+async function submitOwnerTransfer(event) {
+  const target = ownerTransferTarget;
+  if (!target) return;
+  const form = event.currentTarget;
+  const member = form.elements.target.value !== "platform";
+  const owner = member ? ownerTransferUserSearch?.selectedID() : null;
+  if (member && !owner) throw new Error("请选择新主人。");
+  if (!member && !target.owner) throw new Error("这已经是平台账号。");
+  const current = () => tenantProvidersIdentityCurrent()() && ownerTransferTarget === target;
+  const result = await sensitiveAction(() => api(`/admin/${ownerTransferPaths[target.provider]}/${encodeURIComponent(target.id)}/owner`, {
+    method: "PUT", body: JSON.stringify({owner_user_id: owner || null, expected_owner_user_id: target.owner || null}),
+  }, current), current);
+  if (!current()) return;
+  byId("owner-transfer-dialog").close();
+  ownerTransferTarget = null;
+  notice(result?.egress_reset ? "归属已转移，账号改用全局出口。" : "归属已转移。", "ok");
+  if (location.hash === "#tenant-providers") await loadTenantProviders();
+  else if (["#upstream-accounts", "#antigravity-accounts", "#anthropic-accounts"].includes(location.hash)) await loadUpstreamAccounts(upstreamAccountQueryFromForm());
+}
+
+function upstreamOwnerTransferBlock(account) {
+  const button = element("button", {type: "button", className: "secondary", text: "转给成员…"});
+  button.disabled = !account.id || state?.user?.role !== "owner";
+  button.addEventListener("click", () => openOwnerTransfer({provider: upstreamAccountProvider, id: account.id, owner: "", label: `${upstreamAccountLabel(account)}（平台账号）`}));
+  return element("section", {className: "tool-block upstream-owner-transfer"}, element("h4", {text: "账号归属"}),
+    element("p", {className: "muted", text: "平台账号。转给成员后，它只归该成员所有，不再服务平台请求。"}), button);
 }
 
 const siteImageSlots = ["community_qr", "recharge_wechat", "recharge_alipay"];
@@ -9966,6 +10795,7 @@ function upstreamAccountCard(account) {
     ),
     upstreamEgressBlock(account),
     upstreamAccessBlock(account),
+    ...(account.id ? [upstreamOwnerTransferBlock(account)] : []),
     upstreamAllocationBlock(account),
     element("h4", {className: "upstream-history-heading", text: "历史区间统计"}),
     upstreamAccountStats(account),
@@ -10114,7 +10944,7 @@ const informationCountLabels = {
   billing_charge_allocations: "消费分摊", billing_ledger_entries: "账务流水", billing_operations: "账务操作快照",
   billing_cash_credit_lots: "资金批次", billing_subscription_entitlements: "订阅权益", billing_subscription_periods: "订阅周期", billing_subscriptions: "订阅历史",
   usage_daily: "日汇总", usage_monthly: "月汇总", audit_events: "审计明细", concurrency_leases: "请求并发记录",
-  billing_subscription_operation_snapshots: "订阅操作快照",
+  billing_subscription_operation_snapshots: "订阅操作快照", marketplace_sales: "商城成交",
 };
 const informationReasonLabels = {
   current_balance: "支撑当前余额", active_subscription: "有效订阅", active_subscriptions: "有效订阅",
@@ -10127,7 +10957,46 @@ const informationReasonLabels = {
   balance: "余额不为零", subscriptions: "仍有订阅记录", subscription_entitlements: "仍有订阅权益记录", requests: "仍有请求历史", usage_summaries: "仍有用量汇总",
   ledger: "仍有账务流水", billing_operations: "仍有账务操作记录", cash_lots: "仍有资金批次",
   reservations: "仍有资金或额度预留", management_history: "仍有管理操作关联", not_found: "用户已不存在",
+  providers: "仍有供应商账号", egress_servers: "仍有出口服务器", seller_plans: "仍有未删除的套餐",
+  plan_subscriptions: "其套餐仍有订阅记录", marketplace_sales: "仍有商城成交记录",
 };
+
+// What the Owner does about each reason a user cannot be deleted.
+const informationReasonRemedies = {
+  owner: "管理员账号不能删除。",
+  pending_approval: "注册申请尚待审批，先在“邀请管理”中处理。",
+  balance: "先在“额度与订阅”中把余额调整为零。",
+  subscriptions: "订阅停用后，由旧账务清理删除早于截止时间的订阅记录。",
+  subscription_entitlements: "订阅停用后，由旧账务清理删除早于截止时间的订阅记录。",
+  requests: "用上方的旧账务清理删除早于截止时间的历史。",
+  usage_summaries: "用上方的旧账务清理删除早于截止时间的历史。",
+  ledger: "用上方的旧账务清理删除早于截止时间的历史。",
+  billing_operations: "用上方的旧账务清理删除早于截止时间的历史。",
+  cash_lots: "余额为零后，旧账务清理会删除早于截止时间的资金批次。",
+  reservations: "等待请求结算后再试。",
+  running_requests: "等待请求结束后再试。",
+  management_history: "该用户执行过需要长期保留的管理操作，不能删除。",
+  providers: "成员在“我的供应商”中删除；成员已停用时，在“租户供应商”中转给平台后删除。",
+  egress_servers: "成员在“我的出口”中删除，或由 Owner 在“租户供应商”中删除。",
+  seller_plans: "成员在“我的套餐”中删除（成员已停用时需先恢复启用）。",
+  plan_subscriptions: "买家的订阅到期停用后，由旧账务清理删除。",
+  marketplace_sales: "成交的两条流水都被旧账务清理删除后，成交记录随之删除。",
+  not_found: "用户已不存在。",
+};
+let informationBlockedUsers = [];
+
+function renderInformationBlockedUsers() {
+  const host = byId("information-blocked");
+  if (!host) return;
+  const users = Array.isArray(informationBlockedUsers) ? informationBlockedUsers : [];
+  byId("information-blocked-users").replaceChildren(...users.map((user) => element("li", {dataset: {userId: user.id}},
+    element("div", {className: "information-blocked-user"},
+      element("strong", {text: user.display_name || user.username}), element("small", {text: user.username}), statusBadge(user.status || "active")),
+    element("ul", {className: "information-blocked-reasons"}, ...(user.reasons || []).map((reason) => element("li", {},
+      element("span", {text: informationReasonLabels[reason] || reason}),
+      informationReasonRemedies[reason] ? element("small", {text: informationReasonRemedies[reason]}) : null))))));
+  host.classList.toggle("hidden", users.length === 0);
+}
 
 function informationIdentityCurrent() {
   const generation = identityGeneration;
@@ -10160,6 +11029,8 @@ function resetInformation() {
   informationPreview = null;
   informationJob = null;
   informationUsers = [];
+  informationBlockedUsers = [];
+  renderInformationBlockedUsers();
   informationSelectedUsers.clear();
   informationSelectedDetails.clear();
   informationUsersReady = false;
@@ -10366,6 +11237,8 @@ async function loadInformationUsers(offset = 0) {
     if (!current()) return;
     if (!Array.isArray(result?.users)) throw new Error("候选用户响应格式异常。");
     informationUsers = result.users;
+    informationBlockedUsers = Array.isArray(result.blocked) ? result.blocked : [];
+    renderInformationBlockedUsers();
     for (const user of informationUsers) {
       if (informationSelectedUsers.has(user.id)) informationSelectedDetails.set(user.id, user);
     }
@@ -11022,14 +11895,22 @@ function bindNavigation() {
   });
 }
 
+// The Owner's accounts are the platform's: "providers" is for members, who
+// reach it and their own egress nodes only while the marketplace is enabled.
+function sectionAllowed(section) {
+  if (state?.user?.role === "owner") return section !== "providers" && section !== "my-plans";
+  if (memberMarketSections.has(section)) return marketplaceMember();
+  return !ownerOnlySections.has(section);
+}
+
 function routeFromHash(focusContent = true) {
   if (!state) return;
   billingUserSearch?.close();
   globalUserSearch?.close();
   const requested = location.hash.slice(1);
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
-  const ownerAllowed = !ownerOnlySections.has(requested) || state.user.role === "owner";
-  const section = known && ownerAllowed ? requested : "overview";
+  const owner = state.user.role === "owner";
+  const section = known && sectionAllowed(requested) ? requested : "overview";
   if (requested !== section) history.replaceState(null, "", `#${section}`);
   all(".view").forEach((view) => view.classList.toggle("hidden", view.dataset.section !== section));
   all("#sidebar [data-view]").forEach((link) => {
@@ -11037,7 +11918,7 @@ function routeFromHash(focusContent = true) {
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  byId("page-title").textContent = sectionTitles[section];
+  byId("page-title").textContent = section === "egress-servers" && !owner ? "我的出口" : sectionTitles[section];
   document.title = `${sectionTitles[section]} · 水源喵中转站`;
   if (focusContent || navigationDrawerOpen) {
     closeNavigationDrawer(false);
@@ -11050,9 +11931,13 @@ function routeFromHash(focusContent = true) {
     });
   }
   syncVisiblePolling();
-  if (section === "egress-servers" || ["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) {
+  if (section === "egress-servers" || section === "providers" || ["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section)) {
     loadEgressServers().catch((error) => egressMessage(friendlyError(error)));
   } else { window.clearTimeout(egressPollTimer); }
+  if (section === "providers") loadMyProviders().catch((error) => setLocalMessage(byId("provider-add-form"), friendlyError(error)));
+  if (section === "tenant-providers") loadTenantProviders().catch((error) => tenantProvidersMessage(friendlyError(error)));
+  if (section === "my-plans") loadMySellerPlans().catch((error) => mySellerPlansMessage(friendlyError(error)));
+  if (section === "market") loadMarketAdmin().catch((error) => marketAdminMessage(friendlyError(error)));
   if (section === "overview") loadOverview();
   // Errors are shown inside the panel, next to its data time.
   if (section === "usage") loadUsageModels().catch(() => {});
@@ -11217,6 +12102,422 @@ function applyWebAuthnSupport() {
   });
 }
 
+// ---- Seller plans and the marketplace (aggregation gateway stage 4) ----------
+// Members publish plans served by their own providers; the Owner reviews them,
+// takes them down and sets the marketplace's commission and limits. Sellers
+// see each buyer only as a number.
+
+const sellerPlanStatusNames = {draft: "草稿", pending: "待审核", approved: "已通过", rejected: "已驳回"};
+const marketSaleKinds = {purchase: "购买", renewal: "续费"};
+let mySellerPlans = null;
+let mySales = null;
+let mySellerPlansSequence = 0;
+let sellerPlanEdit = null;
+// Kept until the server answers, so a retry of an unconfirmed write reuses
+// the same operation ID instead of publishing a second plan.
+let sellerPlanOperation = null;
+let marketAdmin = null;
+let marketAdminSequence = 0;
+
+function sellerPlanStatusText(plan) {
+  if (plan?.admin_suspended) return "已被 Owner 下架";
+  if (plan?.review_status === "approved") return plan.on_sale ? "销售中" : plan.active ? "已通过 · 暂停销售" : "已通过 · 未上架";
+  return sellerPlanStatusNames[plan?.review_status] || "未知状态";
+}
+
+function sellerPlanStatusKind(plan) {
+  if (plan?.admin_suspended || plan?.review_status === "rejected") return "error";
+  if (plan?.on_sale) return "active";
+  return plan?.review_status === "pending" ? "pending" : "disabled";
+}
+
+function sellerScopeText(scope) {
+  if (!scope || scope.mode !== "selected") return "供应商：不限制（你的全部账号）";
+  return billingPlanScopeText(scope);
+}
+
+function marketSalesSummaryText(summary) {
+  if (!summary || !Number(summary.count)) return "还没有成交记录。";
+  return `共 ${formatInteger(summary.count)} 笔 · ${formatInteger(summary.buyers)} 位买家 · 成交 ${formatUSD(summary.gross_usd)} · 抽成 ${formatUSD(summary.commission_usd)} · 到账 ${formatUSD(summary.net_usd)}`;
+}
+
+function formatCommissionRate(rate) {
+  const number = Number(rate);
+  return Number.isFinite(number) ? `${+(number * 100).toFixed(4)}%` : String(rate ?? "—");
+}
+
+function mySellerPlansMessage(message = "", error = true) {
+  const host = byId("my-plans-message");
+  if (!host) return;
+  host.textContent = message;
+  host.dataset.kind = error ? "error" : "success";
+  host.setAttribute("role", error ? "alert" : "status");
+  host.classList.toggle("hidden", !message);
+}
+
+function mySellerPlansCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && marketplaceMember();
+}
+
+function resetMySellerPlans() {
+  mySellerPlansSequence++;
+  mySellerPlans = null;
+  mySales = null;
+  sellerPlanEdit = null;
+  sellerPlanOperation = null;
+  byId("my-plans-list")?.replaceChildren();
+  byId("my-sales-body")?.replaceChildren();
+  byId("my-plan-usage")?.classList.add("hidden");
+  mySellerPlansMessage();
+}
+
+async function loadMySellerPlans() {
+  if (!marketplaceMember()) return;
+  const sequence = ++mySellerPlansSequence, identity = mySellerPlansCurrent();
+  const current = () => identity() && sequence === mySellerPlansSequence;
+  const [plans, sales] = await Promise.all([api("/admin/me/plans", undefined, current), api("/admin/me/sales?limit=50", undefined, current)]);
+  if (!current()) return;
+  if (!Array.isArray(plans?.plans) || !plans.scopes || typeof plans.scopes !== "object" || !Array.isArray(plans.candidates) ||
+    !Array.isArray(sales?.sales) || !sales.summary) throw new Error("我的套餐响应格式异常。");
+  mySellerPlans = plans;
+  mySales = sales;
+  renderMySellerPlans();
+  renderMySales();
+}
+
+function sellerPlanAction(text, handler, className = "secondary") {
+  const button = element("button", {type: "button", className, text});
+  button.addEventListener("click", () => runButton(button, handler));
+  return button;
+}
+
+function renderMySellerPlans() {
+  const host = byId("my-plans-list");
+  if (!host || !mySellerPlans) return;
+  const plans = mySellerPlans.plans;
+  const limit = state?.marketplace?.max_plans_per_user ?? 0;
+  const summary = byId("my-plans-summary");
+  if (summary) summary.textContent = `已发布 ${plans.length} / ${limit} 个套餐 · 在售 ${plans.filter((plan) => plan.on_sale).length} 个`;
+  const create = byId("my-plan-create");
+  if (create) create.disabled = plans.length >= limit || Boolean(sellerPlanOperation);
+  if (!plans.length) {
+    host.replaceChildren(element("p", {className: "muted", text: "还没有发布套餐。先在“我的供应商”添加账号，再发布套餐并提交审核。"}));
+    return;
+  }
+  host.replaceChildren(...plans.map((plan) => {
+    const actions = element("div", {className: "actions"},
+      sellerPlanAction("编辑", () => openSellerPlanEditor(plan)),
+      ["draft", "rejected"].includes(plan.review_status) ? sellerPlanAction("提交审核", () => submitMySellerPlan(plan), "") : null,
+      plan.active ? sellerPlanAction("下架", () => setMySellerPlanListing(plan, false))
+        : plan.admin_suspended ? null : sellerPlanAction("上架", () => setMySellerPlanListing(plan, true)),
+      sellerPlanAction("供应商范围", async () => openBillingPlanScope(plan, true)),
+      sellerPlanAction("查看用量", () => showMySellerPlanUsage(plan)),
+      sellerPlanAction("删除", () => deleteMySellerPlan(plan), "danger"));
+    return element("article", {className: "billing-plan-card seller-plan", dataset: {planID: plan.id}},
+      element("header", {}, element("h4", {text: plan.name}),
+        element("span", {className: "status-badge", text: sellerPlanStatusText(plan), dataset: {status: sellerPlanStatusKind(plan)}})),
+      plan.description ? element("p", {className: "seller-plan-description", text: plan.description}) : null,
+      element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
+      element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModelText(billingModels(plan))}`}),
+      element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购 · 有效订阅 ${formatInteger(plan.subscribers)} 个`}),
+      element("p", {className: "billing-plan-scope", text: sellerScopeText(mySellerPlans.scopes[plan.id])}),
+      plan.review_status === "rejected" && plan.review_note ? element("p", {className: "billing-purchase-warning", text: `驳回原因：${plan.review_note}`}) : null,
+      plan.review_status === "pending" ? element("p", {className: "muted", text: "等待 Owner 审核，审核通过前不会出现在商城。"}) : null,
+      plan.admin_suspended ? element("p", {className: "billing-purchase-warning", text: "Owner 已下架此套餐，已售订阅照常服务。"}) : null,
+      actions);
+  }));
+}
+
+function renderMySales() {
+  const body = byId("my-sales-body");
+  if (!body || !mySales) return;
+  byId("my-sales-summary").textContent = marketSalesSummaryText(mySales.summary);
+  body.replaceChildren(...(mySales.sales.length ? mySales.sales.map((sale) => element("tr", {},
+    element("td", {text: formatDateTime(sale.created_at)}), element("td", {text: sale.plan_name}),
+    element("td", {text: `买家 #${sale.buyer_number}`}), element("td", {text: marketSaleKinds[sale.kind] || sale.kind}),
+    element("td", {text: formatInteger(sale.period_count)}), element("td", {text: formatUSD(sale.gross_usd)}),
+    element("td", {text: `${formatUSD(sale.commission_usd)}（${formatCommissionRate(sale.commission_rate)}）`}),
+    element("td", {text: formatUSD(sale.net_usd)}))) : [element("tr", {}, element("td", {text: "还没有成交记录。", attributes: {colspan: 8}}))]));
+}
+
+function openSellerPlanEditor(plan = null) {
+  if (!marketplaceMember() || sellerPlanOperation) return;
+  sellerPlanEdit = plan ? {...plan} : null;
+  const form = byId("seller-plan-form");
+  form.reset();
+  for (const [name, value] of Object.entries({name: plan?.name || "", description: plan?.description || "", price_usd: plan?.price_usd || "",
+    tier: plan?.tier || "day", period_days: plan?.period_days || 1, allowance_usd: plan?.allowance_usd || "",
+    min_period_count: plan?.min_period_count || 1, active: String(plan ? plan.active === true : true)})) form.elements[name].value = String(value);
+  byId("seller-plan-dialog-title").textContent = plan ? "编辑套餐" : "发布套餐";
+  byId("seller-plan-review-warning").classList.toggle("hidden", !plan || plan.review_status === "draft");
+  setLocalMessage(form);
+  byId("seller-plan-dialog").showModal();
+  loadFormModelPicker("seller-plan-models", "api_key", plan ? billingModels(plan) : null);
+}
+
+// sellerPlanPayload reads the editor. The server checks every value again.
+function sellerPlanPayload(form, models) {
+  const value = (name) => String(form.elements[name].value || "").trim();
+  const payload = {name: value("name"), description: value("description"), price_usd: value("price_usd"), tier: value("tier"),
+    period_days: billingFormPeriodDays(form), allowance_usd: value("allowance_usd"),
+    model_ids: models, min_period_count: billingPlanPeriodCount(value("min_period_count")), active: value("active") === "true"};
+  if (!payload.name) throw new Error("请输入套餐名称。");
+  if ([...payload.description].length > 1000) throw new Error("套餐说明最多 1000 个字。");
+  billingPlanTotal(payload.price_usd, 1);
+  billingPlanTotal(payload.allowance_usd, 1);
+  return payload;
+}
+
+function makeSellerPlanOperation(path, method, payload, success) {
+  if (!crypto?.randomUUID) throw new Error("当前浏览器无法生成安全的操作 ID，请升级浏览器后重试。");
+  return {path, method, success, body: JSON.stringify({...payload, operation_id: crypto.randomUUID()}),
+    userID: state.user.id, generation: identityGeneration, uncertain: false};
+}
+
+async function runSellerPlanOperation(operation, form = null) {
+  const current = () => sellerPlanOperation === operation && !loggingOut && marketplaceMember() &&
+    state.user.id === operation.userID && identityGeneration === operation.generation;
+  if (!current()) return;
+  let sent = false;
+  try {
+    await sensitiveAction(() => { sent = true; return api(operation.path, {method: operation.method, body: operation.body}, current); }, current);
+    if (!current()) return;
+    sellerPlanOperation = null;
+    form?.closest("dialog")?.close();
+    mySellerPlansMessage(operation.success, false);
+  } catch (error) {
+    if (!current()) return;
+    if (operation.uncertain || sent && (error.network || !error.status || error.status >= 500 || error.status === 408)) {
+      operation.uncertain = true;
+      throw new Error(`结果尚未确认：${friendlyError(error)} 请再次提交原操作，不会重复执行。`);
+    }
+    sellerPlanOperation = null;
+    throw error;
+  }
+  await loadMySellerPlans();
+}
+
+async function submitSellerPlan() {
+  const form = byId("seller-plan-form");
+  if (sellerPlanOperation) {
+    await runSellerPlanOperation(sellerPlanOperation, form);
+    return;
+  }
+  if (!marketplaceMember()) return;
+  const edit = sellerPlanEdit;
+  const payload = sellerPlanPayload(form, selectedPickerModels("seller-plan-models"));
+  if (edit) payload.version = edit.version;
+  const success = edit ? (edit.review_status === "draft" ? "套餐已保存。" : "套餐已保存；如修改了价格、额度、周期、模型、名称或说明，需重新审核。") : "套餐已创建为草稿，提交审核并通过后上架。";
+  sellerPlanOperation = makeSellerPlanOperation(edit ? `/admin/me/plans/${encodeURIComponent(edit.id)}` : "/admin/me/plans", edit ? "PUT" : "POST", payload, success);
+  await runSellerPlanOperation(sellerPlanOperation, form);
+}
+
+async function submitMySellerPlan(plan) {
+  const identity = mySellerPlansCurrent();
+  await sensitiveAction(() => api(`/admin/me/plans/${encodeURIComponent(plan.id)}/submit`, {method: "POST", body: JSON.stringify({version: plan.version})}, identity), identity);
+  if (!identity()) return;
+  mySellerPlansMessage(`已提交「${plan.name}」，等待 Owner 审核。`, false);
+  await loadMySellerPlans();
+}
+
+async function setMySellerPlanListing(plan, active) {
+  if (sellerPlanOperation) throw new Error("有一项操作结果待确认，请先完成它。");
+  sellerPlanOperation = makeSellerPlanOperation(`/admin/me/plans/${encodeURIComponent(plan.id)}/listing`, "PUT",
+    {version: plan.version, active}, active ? `已上架「${plan.name}」。审核通过后即可在商城购买。` : `已下架「${plan.name}」，已售订阅照常服务。`);
+  await runSellerPlanOperation(sellerPlanOperation);
+}
+
+async function deleteMySellerPlan(plan) {
+  if (sellerPlanOperation) throw new Error("有一项操作结果待确认，请先完成它。");
+  if (!window.confirm?.(`删除套餐「${plan.name}」？已售订阅照常服务到期，但不能再续费。`)) return;
+  sellerPlanOperation = makeSellerPlanOperation(`/admin/me/plans/${encodeURIComponent(plan.id)}`, "DELETE", {version: plan.version}, `已删除「${plan.name}」。`);
+  await runSellerPlanOperation(sellerPlanOperation);
+}
+
+async function showMySellerPlanUsage(plan) {
+  const identity = mySellerPlansCurrent();
+  const usage = await api(`/admin/me/plans/${encodeURIComponent(plan.id)}/usage`, undefined, identity);
+  if (!identity()) return;
+  if (!Array.isArray(usage?.accounts)) throw new Error("套餐用量响应格式异常。");
+  const panel = byId("my-plan-usage");
+  byId("my-plan-usage-title").textContent = `「${plan.name}」的用量`;
+  byId("my-plan-usage-summary").textContent = `有效订阅 ${formatInteger(usage.subscribers)} 个 · 已消耗额度 ${formatUSD(usage.consumed_usd)}（只按账号汇总，不显示买家）`;
+  byId("my-plan-usage-body").replaceChildren(...(usage.accounts.length ? usage.accounts.map((row) => element("tr", {},
+    element("td", {text: row.label || row.account_id}), element("td", {text: providerNames[row.provider] || row.provider || "—"}),
+    element("td", {text: formatInteger(row.requests)}), element("td", {text: formatInteger(row.input_tokens)}),
+    element("td", {text: formatInteger(row.output_tokens)}), element("td", {text: formatUSD(row.charged_usd)})))
+    : [element("tr", {}, element("td", {text: "还没有由此套餐付费的请求。", attributes: {colspan: 6}}))]));
+  panel.classList.remove("hidden");
+}
+
+// ---- Owner: marketplace settings, review and sales ----------------------------
+
+function marketAdminCurrent() {
+  const generation = identityGeneration;
+  return () => generation === identityGeneration && !loggingOut && state?.user?.role === "owner";
+}
+
+function marketAdminMessage(message = "", error = true) {
+  const host = byId("market-message");
+  if (!host) return;
+  host.textContent = message;
+  host.dataset.kind = error ? "error" : "success";
+  host.setAttribute("role", error ? "alert" : "status");
+  host.classList.toggle("hidden", !message);
+}
+
+function resetMarketAdmin() {
+  marketAdminSequence++;
+  marketAdmin = null;
+  byId("market-reviews-list")?.replaceChildren();
+  byId("market-seller-plans-body")?.replaceChildren();
+  byId("market-sales-body")?.replaceChildren();
+  marketAdminMessage();
+}
+
+function renderMarketReviewBadge() {
+  const badge = byId("market-review-badge");
+  if (!badge) return;
+  const count = state?.user?.role === "owner" && state?.marketplace?.enabled ? Number(state.marketplace.pending_reviews || 0) : 0;
+  badge.textContent = count ? String(count) : "";
+  badge.classList.toggle("hidden", !count);
+  if (count) badge.setAttribute("aria-label", `${count} 个套餐待审核`); else badge.removeAttribute("aria-label");
+}
+
+async function loadMarketAdmin() {
+  if (state?.user?.role !== "owner") return;
+  const sequence = ++marketAdminSequence, identity = marketAdminCurrent();
+  const current = () => identity() && sequence === marketAdminSequence;
+  const settings = await api("/admin/market/settings", undefined, current);
+  if (!current()) return;
+  let reviews = null, sales = null;
+  if (settings?.enabled) {
+    [reviews, sales] = await Promise.all([api("/admin/market/reviews", undefined, current), api("/admin/market/sales?limit=50", undefined, current)]);
+    if (!current()) return;
+    if (!Array.isArray(reviews?.pending) || !Array.isArray(reviews?.plans) || !Array.isArray(sales?.sales)) throw new Error("商城管理响应格式异常。");
+  }
+  marketAdmin = {settings, reviews, sales};
+  renderMarketAdmin();
+}
+
+function renderMarketAdmin() {
+  if (!marketAdmin) return;
+  const {settings, reviews, sales} = marketAdmin;
+  const form = byId("market-settings-form");
+  if (form) {
+    form.elements.enabled.checked = settings.enabled === true;
+    form.elements.commission_rate.value = String(settings.commission_rate ?? "0");
+    form.elements.max_accounts_per_user.value = String(settings.max_accounts_per_user ?? 0);
+    form.elements.max_plans_per_user.value = String(settings.max_plans_per_user ?? 0);
+    form.elements.max_egress_servers_per_user.value = String(settings.max_egress_servers_per_user ?? 0);
+    form.elements.allow_member_suppliers.checked = settings.allow_member_suppliers === true;
+  }
+  byId("market-operations")?.classList.toggle("hidden", !settings.enabled);
+  if (!settings.enabled) return;
+  byId("market-reviews-summary").textContent = reviews.pending.length ? `${reviews.pending.length} 个套餐待审核` : "没有待审核的套餐。";
+  byId("market-reviews-list").replaceChildren(...reviews.pending.map(renderMarketReview));
+  byId("market-seller-plans-body").replaceChildren(...(reviews.plans.length ? reviews.plans.map(renderMarketSellerPlanRow)
+    : [element("tr", {}, element("td", {text: "成员还没有发布套餐。", attributes: {colspan: 6}}))]));
+  byId("market-sales-summary").textContent = marketSalesSummaryText(sales.summary);
+  byId("market-sales-body").replaceChildren(...(sales.sales.length ? sales.sales.map((sale) => element("tr", {},
+    element("td", {text: formatDateTime(sale.created_at)}), element("td", {text: sale.plan_name}),
+    element("td", {text: sale.seller_name}), element("td", {text: sale.buyer_name}),
+    element("td", {text: marketSaleKinds[sale.kind] || sale.kind}), element("td", {text: formatUSD(sale.gross_usd)}),
+    element("td", {text: `${formatUSD(sale.commission_usd)}（${formatCommissionRate(sale.commission_rate)}）`}),
+    element("td", {text: formatUSD(sale.net_usd)}))) : [element("tr", {}, element("td", {text: "还没有成交记录。", attributes: {colspan: 8}}))]));
+}
+
+function renderMarketReview(plan) {
+  const note = element("input", {className: "market-review-note", attributes: {maxlength: 500, placeholder: "审核备注（驳回时必填）", "aria-label": `「${plan.name}」的审核备注`}});
+  const approve = element("button", {type: "button", text: "通过"});
+  approve.addEventListener("click", () => runButton(approve, () => reviewMarketPlan(plan, true, note.value)));
+  const reject = element("button", {type: "button", className: "danger", text: "驳回"});
+  reject.addEventListener("click", () => runButton(reject, () => reviewMarketPlan(plan, false, note.value)));
+  const providers = marketPlanProviderText(plan);
+  return element("article", {className: "billing-plan-card market-review", dataset: {planID: plan.id}},
+    element("header", {}, element("h4", {text: plan.name}), element("span", {className: "status-badge", text: "待审核", dataset: {status: "pending"}})),
+    element("p", {className: "seller-plan-seller", text: `卖家：${plan.seller_name} · 提交于 ${formatDateTime(plan.submitted_at, "—")}`}),
+    plan.description ? element("p", {className: "seller-plan-description", text: plan.description}) : null,
+    element("strong", {className: "billing-plan-price", text: `${formatUSD(plan.price_usd)} / 期`}),
+    element("p", {text: `每期 ${billingPeriodDays(plan)} 天 · ${billingModelText(billingModels(plan))}`}),
+    element("p", {text: `每期额度 ${formatUSD(plan.allowance_usd)} · ${plan.min_period_count} 期起购`}),
+    element("p", {className: "billing-plan-scope", text: providers}),
+    note, element("p", {className: "form-message hidden", attributes: {role: "alert"}}),
+    element("div", {className: "actions"}, approve, reject));
+}
+
+function renderMarketSellerPlanRow(plan) {
+  const reason = element("input", {className: "market-suspend-reason", attributes: {maxlength: 500, placeholder: "原因（必填）", "aria-label": `「${plan.name}」的处理原因`}});
+  const toggle = element("button", {type: "button", className: plan.admin_suspended ? "secondary" : "danger", text: plan.admin_suspended ? "恢复" : "强制下架"});
+  toggle.addEventListener("click", () => runButton(toggle, () => suspendMarketPlan(plan, !plan.admin_suspended, reason.value)));
+  return element("tr", {dataset: {planID: plan.id}},
+    element("td", {text: plan.name}), element("td", {text: plan.seller_name}),
+    element("td", {text: sellerPlanStatusText(plan)}), element("td", {text: `${formatUSD(plan.price_usd)} / 期`}),
+    element("td", {text: formatInteger(plan.subscribers)}), element("td", {}, reason, toggle));
+}
+
+async function reviewMarketPlan(plan, approve, note) {
+  note = String(note || "").trim();
+  if (!approve && !note) throw new Error("驳回时请填写原因，卖家会看到它。");
+  const identity = marketAdminCurrent();
+  await sensitiveAction(() => api(`/admin/market/reviews/${encodeURIComponent(plan.id)}`, {method: "POST",
+    body: JSON.stringify({decision: approve ? "approve" : "reject", note, version: plan.version})}, identity), identity);
+  if (!identity()) return;
+  marketAdminMessage(approve ? `已通过「${plan.name}」。卖家上架后即可在商城购买。` : `已驳回「${plan.name}」。`, false);
+  await Promise.allSettled([loadMarketAdmin(), refreshState()]);
+}
+
+async function suspendMarketPlan(plan, suspended, reason) {
+  reason = String(reason || "").trim();
+  if (!reason) throw new Error("请填写原因。");
+  const identity = marketAdminCurrent();
+  await sensitiveAction(() => api(`/admin/market/plans/${encodeURIComponent(plan.id)}/suspend`, {method: "PUT",
+    body: JSON.stringify({suspended, reason})}, identity), identity);
+  if (!identity()) return;
+  marketAdminMessage(suspended ? `已下架「${plan.name}」，已售订阅照常服务。` : `已恢复「${plan.name}」，卖家可以重新上架。`, false);
+  await loadMarketAdmin();
+}
+
+// marketSettingsPayload reads the Owner's settings form.
+function marketSettingsPayload(form, revision) {
+  const integer = (name, max) => {
+    const value = Number(form.elements[name].value);
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) throw new Error("上限须为整数：供应商 0–256，套餐 0–100，出口服务器 0–32。");
+    return value;
+  };
+  const rate = String(form.elements.commission_rate.value || "").trim();
+  if (!/^(0(\.\d{1,6})?|1(\.0{1,6})?)$/.test(rate)) throw new Error("抽成比例须为 0 到 1 之间、最多 6 位小数，例如 0.1 表示 10%。");
+  return {enabled: form.elements.enabled.checked === true, commission_rate: rate,
+    max_accounts_per_user: integer("max_accounts_per_user", 256), max_plans_per_user: integer("max_plans_per_user", 100),
+    max_egress_servers_per_user: integer("max_egress_servers_per_user", 32),
+    allow_member_suppliers: form.elements.allow_member_suppliers.checked === true, revision};
+}
+
+async function saveMarketSettings() {
+  if (!marketAdmin?.settings) throw new Error("商城设置尚未加载，请刷新后重试。");
+  const form = byId("market-settings-form");
+  const payload = marketSettingsPayload(form, marketAdmin.settings.revision);
+  const identity = marketAdminCurrent();
+  await sensitiveAction(() => api("/admin/market/settings", {method: "PUT", body: JSON.stringify(payload)}, identity), identity);
+  if (!identity()) return;
+  setLocalMessage(form, "商城设置已保存。", "success");
+  await Promise.allSettled([loadMarketAdmin(), refreshState()]);
+}
+
+function bindMarketplaceUI() {
+  bindAsync("my-plans-refresh", "click", () => loadMySellerPlans(), "刷新中…", mySellerPlansCurrent);
+  byId("my-plan-create")?.addEventListener("click", () => openSellerPlanEditor());
+  byId("my-plan-usage-close")?.addEventListener("click", () => byId("my-plan-usage").classList.add("hidden"));
+  byId("seller-plan-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try { await submitSellerPlan(); } catch (error) { setLocalMessage(byId("seller-plan-form"), friendlyError(error)); }
+  });
+  byId("seller-plan-dialog")?.addEventListener("close", () => { if (!sellerPlanOperation?.uncertain) sellerPlanEdit = null; });
+  bindAsync("market-refresh", "click", () => loadMarketAdmin(), "刷新中…", marketAdminCurrent);
+  bindAsync("market-settings-form", "submit", saveMarketSettings, "保存中…", marketAdminCurrent);
+}
+
 function bindUI() {
   bindAsync("egress-refresh", "click", () => loadEgressServers(), "刷新中…", egressIdentityCurrent);
   byId("egress-create").addEventListener("click", () => openEgressEditor());
@@ -11225,6 +12526,25 @@ function bindUI() {
   byId("egress-form").elements.protocol.addEventListener("change", () => syncEgressProtocolFields(byId("egress-form")));
   byId("egress-form").elements.username.addEventListener("input", () => syncEgressPasswordHelp(byId("egress-form")));
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
+  bindAsync("providers-refresh", "click", () => loadMyProviders(), "刷新中…", providersIdentityCurrent);
+  byId("provider-add-provider").addEventListener("change", () => { if (myProviders) renderMyProviders(); });
+  bindAsync("provider-oauth-start", "click", startProviderOAuth, "正在开始…", providersIdentityCurrent);
+  byId("provider-oauth-cancel").addEventListener("click", stopProviderOAuth);
+  bindAsync("provider-oauth-callback-form", "submit", submitProviderCallback, "提交中…", providersIdentityCurrent);
+  byId("provider-import-open").addEventListener("click", () => {
+    try { openProviderImport(); } catch (error) { setLocalMessage(byId("provider-add-form"), friendlyError(error)); }
+  });
+  bindAsync("provider-import-form", "submit", submitProviderImport, "导入中…", providersIdentityCurrent);
+  byId("provider-supplier-open").addEventListener("click", () => {
+    try { openProviderSupplier(); } catch (error) { setLocalMessage(byId("provider-add-form"), friendlyError(error)); }
+  });
+  bindAsync("provider-supplier-form", "submit", submitProviderSupplier, "验证中…", providersIdentityCurrent);
+  byId("provider-import-dialog").addEventListener("close", () => { byId("provider-import-form").elements.credentials.value = ""; });
+  byId("provider-supplier-dialog").addEventListener("close", () => { byId("provider-supplier-form").elements.api_key.value = ""; });
+  bindAsync("tenant-providers-refresh", "click", () => loadTenantProviders(), "刷新中…", tenantProvidersIdentityCurrent);
+  bindMarketplaceUI();
+  for (const radio of byId("owner-transfer-form").elements.target) radio.addEventListener("change", syncOwnerTransferTarget);
+  bindAsync("owner-transfer-form", "submit", submitOwnerTransfer, "转移中…", tenantProvidersIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
     byId("egress-form").elements.password.value = "";
     egressDraftID = null;

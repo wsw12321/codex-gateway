@@ -118,10 +118,17 @@ func TestMixedConversationRootIsCallerScoped(t *testing.T) {
 
 func TestMixedOfficialScopeUsesSingleAuthorizedAccount(t *testing.T) {
 	const group, first, second = "e3c35297-dba1-4eef-bf43-e3f55fd385e4", "1234567890abcdef", "abcdef1234567890"
-	layers := []gatewayproxy.AllocationGroup{{GroupID: group, AccountIDs: []string{first}}, {GroupID: gatewayproxy.PersonalLayerID, AllAccounts: true}}
-	for _, test := range []struct{ account, scope string }{{first, group}, {second, mixedDispatchScopeID}} {
-		pinned := mixedOfficialScope(layers, test.account)
-		if len(pinned) != 1 || pinned[0].AllAccounts || pinned[0].GroupID != test.scope || !slices.Equal(pinned[0].AccountIDs, []string{test.account}) {
+	const self = "00000000-0000-4000-8000-000000000002"
+	layers := []gatewayproxy.AllocationGroup{{GroupID: self, AccountIDs: []string{first}, Tenant: true},
+		{GroupID: group, AccountIDs: []string{first}}, {GroupID: gatewayproxy.PersonalLayerID, AllAccounts: true}}
+	for _, test := range []struct {
+		layer          int
+		account, scope string
+		tenant         bool
+	}{{0, first, self, true}, {1, first, group, false}, {2, second, mixedDispatchScopeID, false}, {-1, second, mixedDispatchScopeID, false}} {
+		pinned := mixedOfficialScope(layers, test.layer, test.account)
+		if len(pinned) != 1 || pinned[0].AllAccounts || pinned[0].GroupID != test.scope || pinned[0].Tenant != test.tenant ||
+			!slices.Equal(pinned[0].AccountIDs, []string{test.account}) {
 			t.Fatalf("unexpected dispatch scope: %+v", pinned)
 		}
 	}

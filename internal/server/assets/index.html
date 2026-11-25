@@ -171,6 +171,12 @@
           <a href="#model-multipliers" data-view="model-multipliers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>模型倍率</a>
           <a href="#groups" data-view="groups" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="7" r="3"/><path d="M3 21v-4a6 6 0 0 1 12 0v4M16 4a3 3 0 0 1 0 6m2 4a5 5 0 0 1 3 5v2"/></svg>群组额度</a>
           </div>
+          <div class="nav-group member-market hidden" aria-labelledby="nav-providers">
+          <p id="nav-providers" class="nav-group-title">我的供应商</p>
+          <a href="#providers" data-view="providers"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1"/></svg>我的供应商</a>
+          <a href="#egress-servers" data-view="egress-servers"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8m-4 0v4m-2-2 2 2 2-2"/></svg>我的出口</a>
+          <a href="#my-plans" data-view="my-plans"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4zM8 7V4h8v3M9 13h6"/></svg>我的套餐</a>
+          </div>
           <div class="nav-group owner-only hidden" aria-labelledby="nav-management">
           <p id="nav-management" class="nav-group-title">管理</p>
           <a href="#egress-servers" data-view="egress-servers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10h8m-4 0v4m-2-2 2 2 2-2"/></svg>出口服务器</a>
@@ -178,6 +184,8 @@
           <a href="#site-settings" data-view="site-settings" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4zm4 4h8m-8 3h5"/></svg>站点设置</a>
           <a href="#monitoring" data-view="monitoring" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h5l3-8 4 16 3-8h5"/></svg>请求监控</a>
           <a href="#upstream-accounts" data-view="upstream-accounts" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6h.1M7 17h.1m5-11h5m-5 11h5"/></svg>上游账号</a>
+          <a href="#market" data-view="market" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9 5 4h14l2 5M3 9h18v11H3zM9 20v-6h6v6"/></svg>商城管理<span id="market-review-badge" class="nav-badge hidden"></span></a>
+          <a href="#tenant-providers" data-view="tenant-providers" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M2 20v-2a6 6 0 0 1 12 0v2"/><rect x="14" y="10" width="8" height="4" rx="1"/><rect x="14" y="16" width="8" height="4" rx="1"/></svg>租户供应商</a>
           <a href="/admin/cpa/" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 15a5 5 0 0 0 7 0l4-4a5 5 0 0 0-7-7l-2 2m2 3a5 5 0 0 0-7 0l-4 4a5 5 0 0 0 7 7l2-2"/></svg>CPA 授权管理</a>
           <a href="#model-access" data-view="model-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 3v6q0 6-8 10-8-4-8-10V6Zm-4 9 3 3 5-6"/></svg>模型权限</a>
           <a href="#user-upstream-access" data-view="user-upstream-access" class="owner-only hidden"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M14 8a5 5 0 1 1-3-4.6M9 8l10 10m-3-3 3-3m0 6 3-3"/></svg>账号权限</a>
@@ -692,6 +700,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
               <div id="billing-recharge-methods" class="site-recharge-methods"></div>
             </article>
 
+            <article id="billing-self-use" class="panel billing-self-use hidden" aria-labelledby="billing-self-use-title">
+              <div class="panel-heading"><div><h3 id="billing-self-use-title">自用</h3><p>请求优先使用你在“我的供应商”中添加的账号：只记录用量，不扣费。关闭后，你的账号不再为你自己服务，请求改用其他额度。</p></div></div>
+              <label class="check-label"><input id="billing-self-use-toggle" type="checkbox" disabled>使用自己的供应商（免费，最先使用）</label>
+              <p id="billing-self-use-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            </article>
             <article id="billing-group" class="panel hidden" aria-live="polite"></article>
             <p class="billing-source-help">仅影响新请求；订阅期限照常运行。恢复扣费不会重开周期或补发额度；优先级数字越小越先扣费；同优先级订阅优先于余额，再按周期天数、剩余额度降序排列。剩余周期额度不结转。</p>
             <p id="billing-source-readonly" class="billing-source-help hidden">正在查看其他用户，仅本人可修改扣费来源。</p>
@@ -1354,7 +1367,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
               </article>
             </div>
             <article class="panel information-users-panel">
-              <div class="panel-heading"><div><p class="eyebrow">EMPTY ACCOUNTS</p><h3>删除无账务用户</h3><p>仅列出余额为零，无有效订阅、请求、历史账务或待结算记录的普通用户。每批最多 100 人。</p></div><span id="information-selected-count" class="badge">已选 0 / 100 人</span></div>
+              <div class="panel-heading"><div><p class="eyebrow">EMPTY ACCOUNTS</p><h3>删除无账务用户</h3><p>仅列出余额为零，无有效订阅、请求、历史账务或待结算记录的普通用户。仍有供应商账号、出口服务器、未删除的套餐、被订阅引用的套餐或商城成交记录的成员不会列出。每批最多 100 人。</p></div><span id="information-selected-count" class="badge">已选 0 / 100 人</span></div>
               <form id="information-users-form" class="information-search-form">
                 <label>搜索候选用户<input id="information-user-search" name="q" type="search" autocomplete="off" placeholder="用户名、显示名或拼音"></label>
                 <button type="submit" class="secondary">查询</button>
@@ -1368,6 +1381,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                 </table>
               </div>
               <div class="information-users-actions"><div class="button-group"><button id="information-users-prev" type="button" class="secondary" disabled>上一页</button><span id="information-users-page" class="muted">—</span><button id="information-users-next" type="button" class="secondary" disabled>下一页</button></div><button id="information-delete-users" type="button" class="danger" disabled>永久删除所选用户</button></div>
+              <section id="information-blocked" class="information-blocked hidden" aria-labelledby="information-blocked-title" aria-live="polite">
+                <h4 id="information-blocked-title">不能删除的匹配用户</h4>
+                <p class="muted">这些用户与搜索匹配，但现在不满足删除条件，所以不在上面的列表中。按原因处理后重新搜索。</p>
+                <ul id="information-blocked-users" class="information-blocked-users"></ul>
+              </section>
             </article>
           </section>
 
@@ -1400,6 +1418,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
             <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为不同的上游账号绑定 Shadowsocks 或 SOCKS5 出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
+            <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址，不支持域名。</p>
             <div class="egress-probe-bar">
               <label>连通性测试目标<select id="egress-probe-target"><option value="codex">Codex · chatgpt.com</option><option value="antigravity">Antigravity · cloudcode-pa.googleapis.com</option><option value="anthropic">Anthropic · api.anthropic.com</option></select></label>
               <button id="egress-test-all" type="button" class="secondary">全部测试</button>
@@ -1408,6 +1427,90 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
             <p id="egress-message" class="form-message hidden" role="alert"></p>
             <p id="egress-runtime" class="muted" aria-live="polite">正在加载出口配置…</p>
             <div id="egress-list" class="egress-list" aria-live="polite"></div>
+          </section>
+
+          <section class="view hidden" data-section="providers" aria-labelledby="providers-title">
+            <div class="section-head"><div><h2 id="providers-title">我的供应商</h2><p>登录或导入你自己的上游账号，或添加 API Key 供应商。账号归你所有，其他成员看不到，也不能使用。</p></div><button id="providers-refresh" type="button" class="secondary">刷新</button></div>
+            <p class="callout">现阶段只做添加与管理：自用和套餐功能开放后，这些账号才会服务请求。出口默认使用全局出口，也可以在“我的出口”中添加自己的服务器后选择。</p>
+            <p id="providers-summary" class="muted" aria-live="polite">正在加载…</p>
+            <form id="provider-add-form" class="tool-block provider-add" autocomplete="off">
+              <h3>添加账号</h3>
+              <div class="provider-add-fields">
+                <label>协议<select name="provider" id="provider-add-provider"></select></label>
+                <label>出口<select name="egress_server_id" id="provider-add-egress" class="provider-egress-select"></select></label>
+              </div>
+              <div class="actions"><button type="button" id="provider-oauth-start">授权登录</button><button type="button" id="provider-import-open" class="secondary">导入凭据</button><button type="button" id="provider-supplier-open" class="secondary hidden">添加 API Key 供应商</button></div>
+              <p class="form-message hidden" role="alert"></p>
+            </form>
+            <section id="provider-oauth" class="tool-block hidden" aria-labelledby="provider-oauth-title">
+              <h3 id="provider-oauth-title">授权登录</h3>
+              <p id="provider-oauth-status" class="muted" aria-live="polite"></p>
+              <p><a id="provider-oauth-link" href="#" target="_blank" rel="noopener noreferrer">打开授权页面</a></p>
+              <form id="provider-oauth-callback-form" autocomplete="off">
+                <label>回调地址<input name="callback" type="url" spellcheck="false" placeholder="http://localhost:1455/auth/callback?code=…" required><small>授权完成后浏览器会跳到一个打不开的本地地址，把地址栏里的完整地址粘贴到这里。</small></label>
+                <div class="actions"><button type="submit">提交回调</button><button type="button" id="provider-oauth-cancel" class="secondary">取消</button></div>
+                <p class="form-message hidden" role="alert"></p>
+              </form>
+            </section>
+            <div id="providers-list" class="provider-list" aria-live="polite"></div>
+          </section>
+
+          <section class="view hidden" data-section="my-plans" aria-labelledby="my-plans-title">
+            <div class="section-head"><div><h2 id="my-plans-title">我的套餐</h2><p>用你自己的供应商发布套餐。提交审核、Owner 通过并上架后，其他成员可以在套餐商城购买；成交款按抽成比例扣除后记入你的现金余额。</p></div><div class="actions"><button id="my-plans-refresh" type="button" class="secondary">刷新</button><button id="my-plan-create" type="button">发布套餐</button></div></div>
+            <p class="callout">修改价格、额度、周期、模型、名称或说明后要重新审核，审核期间暂停销售；修改供应商范围、上架或下架不需要审核。额度用完后超出的部分由你承担，不会扣买家的现金。你看不到买家身份。</p>
+            <p id="my-plans-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <p id="my-plans-summary" class="muted" aria-live="polite">正在加载…</p>
+            <div id="my-plans-list" class="billing-plan-list" aria-live="polite"></div>
+            <article id="my-plan-usage" class="panel hidden" aria-labelledby="my-plan-usage-title">
+              <div class="panel-heading"><div><h3 id="my-plan-usage-title">套餐用量</h3><p id="my-plan-usage-summary" class="muted"></p></div><button id="my-plan-usage-close" type="button" class="secondary">收起</button></div>
+              <div class="table-wrap"><table><thead><tr><th>账号</th><th>协议</th><th>请求</th><th>输入 Token</th><th>输出 Token</th><th>扣除额度</th></tr></thead><tbody id="my-plan-usage-body"></tbody></table></div>
+            </article>
+            <article class="panel" aria-labelledby="my-sales-title">
+              <div class="panel-heading"><div><h3 id="my-sales-title">销售收入</h3><p id="my-sales-summary" class="muted"></p></div></div>
+              <div class="table-wrap"><table><thead><tr><th>时间</th><th>套餐</th><th>买家</th><th>类型</th><th>期数</th><th>成交额</th><th>抽成</th><th>到账</th></tr></thead><tbody id="my-sales-body"></tbody></table></div>
+            </article>
+          </section>
+
+          <section class="view owner-only hidden" data-section="market" aria-labelledby="market-title">
+            <div class="section-head"><div><p class="eyebrow">OWNER · MARKET</p><h2 id="market-title">商城管理</h2><p>商城开关、抽成比例与成员上限；审核成员发布的套餐，必要时强制下架；查看全部成交与抽成。</p></div><button id="market-refresh" type="button" class="secondary">刷新</button></div>
+            <p id="market-message" class="form-message hidden" role="status" aria-live="polite"></p>
+            <form id="market-settings-form" class="tool-block market-settings" autocomplete="off">
+              <h3>商城设置</h3>
+              <label class="check-label"><input name="enabled" type="checkbox"><span>开启商城：成员可以添加自己的供应商、自用、发布和购买成员套餐</span></label>
+              <div class="market-settings-fields">
+                <label>抽成比例<input name="commission_rate" inputmode="decimal" required placeholder="例如 0.1 表示 10%"><small>0–1，最多 6 位小数；成交时固化，之后修改不影响已成交的订单。</small></label>
+                <label>每人供应商上限<input name="max_accounts_per_user" type="number" min="0" max="256" step="1" required></label>
+                <label>每人套餐上限<input name="max_plans_per_user" type="number" min="0" max="100" step="1" required></label>
+                <label>每人出口服务器上限<input name="max_egress_servers_per_user" type="number" min="0" max="32" step="1" required></label>
+              </div>
+              <label class="check-label"><input name="allow_member_suppliers" type="checkbox"><span>允许成员添加 API Key 供应商（需同时开启网关的供应商功能）</span></label>
+              <p class="form-message hidden" role="alert"></p>
+              <div class="actions"><button type="submit">保存设置</button></div>
+            </form>
+            <div id="market-operations" class="hidden">
+              <article class="panel" aria-labelledby="market-reviews-title">
+                <div class="panel-heading"><div><h3 id="market-reviews-title">套餐审核</h3><p id="market-reviews-summary" class="muted"></p></div></div>
+                <div id="market-reviews-list" class="billing-plan-list" aria-live="polite"></div>
+              </article>
+              <article class="panel" aria-labelledby="market-seller-plans-title">
+                <div class="panel-heading"><div><h3 id="market-seller-plans-title">成员套餐</h3><p class="muted">强制下架后卖家不能自行上架，已售订阅照常服务。</p></div></div>
+                <div class="table-wrap"><table><thead><tr><th>套餐</th><th>卖家</th><th>状态</th><th>价格</th><th>有效订阅</th><th>处理</th></tr></thead><tbody id="market-seller-plans-body"></tbody></table></div>
+              </article>
+              <article class="panel" aria-labelledby="market-sales-title">
+                <div class="panel-heading"><div><h3 id="market-sales-title">全部成交</h3><p id="market-sales-summary" class="muted"></p></div></div>
+                <div class="table-wrap"><table><thead><tr><th>时间</th><th>套餐</th><th>卖家</th><th>买家</th><th>类型</th><th>成交额</th><th>抽成</th><th>卖家到账</th></tr></thead><tbody id="market-sales-body"></tbody></table></div>
+              </article>
+            </div>
+          </section>
+
+          <section class="view owner-only hidden" data-section="tenant-providers" aria-labelledby="tenant-providers-title">
+            <div class="section-head"><div><p class="eyebrow">OWNER · MARKET</p><h2 id="tenant-providers-title">租户供应商</h2><p>成员自己添加的上游账号与出口服务器。可以停用或恢复成员账号，也可以转移账号归属。</p></div><button id="tenant-providers-refresh" type="button" class="secondary">刷新</button></div>
+            <p class="callout">停用后成员不能自行恢复。转移归属后，账号原先绑定的出口节点若不属于新主人，会改回全局出口。</p>
+            <p id="tenant-providers-message" class="form-message hidden" role="alert"></p>
+            <div class="table-wrap"><table class="tenant-providers-table"><thead><tr><th>成员</th><th>协议</th><th>账号</th><th>状态</th><th>出口</th><th>操作</th></tr></thead><tbody id="tenant-providers-body"></tbody></table></div>
+            <h3>成员出口服务器</h3>
+            <p class="muted">成员被停用后不能自己删除节点。永久删除成员前，需要在这里删除其节点；仍被账号绑定的节点要先转移或删除这些账号。</p>
+            <div class="table-wrap"><table class="tenant-egress-table"><thead><tr><th>成员</th><th>名称</th><th>地址</th><th>协议</th><th>绑定账号</th><th>操作</th></tr></thead><tbody id="tenant-egress-body"></tbody></table></div>
           </section>
 
           <section class="view owner-only hidden" data-section="site-settings" aria-labelledby="site-settings-title">
@@ -1566,6 +1669,47 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
     </form>
   </dialog>
 
+  <dialog id="provider-import-dialog" aria-labelledby="provider-import-title">
+    <form id="provider-import-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="provider-import-title">导入凭据</h2><p>粘贴 JSON 凭据。只会提交其中的令牌；服务端用它刷新并确认账号身份。</p></div>
+      <label>凭据 JSON<textarea name="credentials" rows="8" spellcheck="false" required placeholder='{"refresh_token":"…"}'></textarea><small id="provider-import-help">Codex 需要 refresh_token；Claude 可直接粘贴含 claudeAiOauth 的凭据文件。</small></label>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">导入</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="provider-supplier-dialog" aria-labelledby="provider-supplier-title">
+    <form id="provider-supplier-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="provider-supplier-title">添加 API Key 供应商</h2><p>填写兼容所选协议的 HTTPS Base URL 与 API Key。Key 加密保存，不会回显。</p></div>
+      <label>Base URL<input name="url" type="url" required maxlength="2048" spellcheck="false" placeholder="https://api.example.com/v1"></label>
+      <label>API Key<input name="api_key" type="password" required maxlength="4096" autocomplete="new-password"></label>
+      <fieldset id="provider-supplier-models" class="hidden"><legend>供应商未提供模型列表，请选择它支持的模型</legend><div class="user-check-list" id="provider-supplier-model-list"></div></fieldset>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">验证并保存</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="owner-transfer-dialog" aria-labelledby="owner-transfer-title">
+    <form id="owner-transfer-form" autocomplete="off">
+      <div class="dialog-heading"><h2 id="owner-transfer-title">转移账号归属</h2><p id="owner-transfer-subject"></p></div>
+      <fieldset><legend>新主人</legend>
+        <label class="check-label"><input type="radio" name="target" value="member" checked>成员</label>
+        <label class="check-label"><input type="radio" name="target" value="platform">平台账号</label>
+      </fieldset>
+      <div class="user-search" id="owner-transfer-user">
+        <label for="owner-transfer-user-search">选择成员</label>
+        <div class="user-search-control">
+          <input id="owner-transfer-user-search" type="search" role="combobox" placeholder="用户名、显示名或拼音" autocomplete="off" aria-autocomplete="list" aria-expanded="false" aria-controls="owner-transfer-user-search-results" aria-describedby="owner-transfer-user-search-status" disabled>
+          <div id="owner-transfer-user-search-results" class="user-search-results hidden" role="listbox" aria-label="成员搜索结果"></div>
+        </div>
+        <small id="owner-transfer-user-search-status" role="status" aria-live="polite">正在加载用户…</small>
+      </div>
+      <p class="muted">平台账号须先移出群组账号池、专属授权和用户账号权限名单，才能转给成员。</p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="submit">确认转移</button><button type="button" class="secondary" data-close>取消</button></div>
+    </form>
+  </dialog>
+
   <dialog id="invitation-dialog" aria-labelledby="invitation-dialog-title">
     <form id="invitation-form">
       <div class="dialog-heading"><p class="eyebrow">INVITATION</p><h2 id="invitation-dialog-title">创建邀请码</h2><p>链接与邀请码仅显示一次。配置创建后固定，如需变更请撤销后重建。</p></div>
@@ -1636,6 +1780,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
       <p id="billing-purchase-minimum" class="muted"></p>
       <div id="billing-purchase-summary" class="billing-purchase-summary" aria-live="polite"></div>
       <p id="billing-purchase-warning" class="billing-purchase-warning"></p>
+      <label id="billing-purchase-third-party" class="billing-purchase-confirm hidden"><input name="acknowledge_third_party" type="checkbox"><span>该套餐可能由卖家添加的第三方 API 供应商服务。我了解对方能看到经它处理的提示词和回复。可以随时在“额度与订阅”的订阅卡片上撤回。</span></label>
       <label class="billing-purchase-confirm"><input name="confirmed" type="checkbox" required><span>我已核对金额、周期及以上权益变化，确认从本人现金余额扣款。</span></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-purchase-submit" type="submit">确认购买订阅</button></div>
@@ -1674,6 +1819,36 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
       <label>操作原因<input name="reason" required maxlength="500" autocomplete="off"></label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-submit" type="submit">创建套餐</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="seller-plan-dialog" aria-labelledby="seller-plan-dialog-title">
+    <form id="seller-plan-form">
+      <div class="dialog-heading"><p class="eyebrow">MY PLAN</p><h2 id="seller-plan-dialog-title">发布套餐</h2><p>新套餐保存为草稿，提交审核并通过后才会出现在商城。</p></div>
+      <label>套餐名称<input name="name" required maxlength="100" autocomplete="off"></label>
+      <label>套餐说明<textarea name="description" maxlength="1000" rows="3" placeholder="例如：官方 OAuth 账号，工作日白天响应快"></textarea></label>
+      <label>每周期价格（USD）<input name="price_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 10.00"></label>
+      <label>周期<select name="tier"><option value="day">日 · 24 小时</option><option value="week">周 · 7 天</option><option value="month">月 · 31 天</option><option value="custom">自定义天数</option></select></label>
+      <label>自定义周期天数<input name="period_days" type="number" min="1" max="3650" step="1" value="1"></label>
+      <div id="seller-plan-models" aria-label="套餐适用模型"></div>
+      <label>每周期额度（USD）<input name="allowance_usd" required inputmode="decimal" autocomplete="off" placeholder="例如 25.00"></label>
+      <label>最低购买周期数<input name="min_period_count" type="number" required min="1" max="99" step="1" value="1"></label>
+      <label>上架意向<select name="active"><option value="true">审核通过后上架</option><option value="false">暂不上架</option></select></label>
+      <p id="seller-plan-review-warning" class="billing-purchase-warning hidden">修改价格、额度、周期、模型、名称或说明会重新进入审核，审核期间暂停销售。已售订阅的权益不变。</p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="seller-plan-submit" type="submit">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="billing-plan-scope-dialog" aria-labelledby="billing-plan-scope-title">
+    <form id="billing-plan-scope-form">
+      <div class="dialog-heading"><p class="eyebrow">PROVIDERS</p><h2 id="billing-plan-scope-title">供应商范围</h2><p id="billing-plan-scope-plan"></p></div>
+      <label>范围<select name="mode"><option value="all">不限制：使用全部平台账号</option><option value="selected">指定：只使用下列账号</option></select></label>
+      <p class="billing-purchase-warning">修改从下一次请求起生效，已购订阅随之改变；不影响套餐版本、价格和续费。</p>
+      <div id="billing-plan-scope-accounts" class="plan-scope-accounts" aria-label="可选账号"></div>
+      <p id="billing-plan-scope-stale" class="billing-purchase-warning hidden"></p>
+      <p class="form-message hidden" role="alert"></p>
+      <div class="actions"><button type="button" class="secondary" data-close>关闭</button><button id="billing-plan-scope-submit" type="submit">保存范围</button></div>
     </form>
   </dialog>
 

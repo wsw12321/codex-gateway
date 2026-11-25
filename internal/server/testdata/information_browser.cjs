@@ -14,12 +14,18 @@ const initialState = {user: {id: "owner", username: "owner", display_name: "团�
   recently_verified: true, login_methods: {password: true}, devices: [], projects: [], api_keys: [], passkeys: []};
 const cutoff = "2026-06-24T00:00:00Z";
 const report = {retention_days: 90, cutoff,
-  delete_counts: {usage_requests: 12408, billing_ledger_entries: 12317, billing_operations: 82, billing_charge_allocations: 12408, usage_daily: 450, audit_events: 82},
+  delete_counts: {usage_requests: 12408, billing_ledger_entries: 12317, billing_operations: 82, billing_charge_allocations: 12408, usage_daily: 450, audit_events: 82, marketplace_sales: 6},
   retained_counts: {usage_requests: 2, billing_ledger_entries: 16, billing_operations: 16},
   retained_reasons: {current_balance: 12, active_subscription: 4, unsettled_request: 2}};
 const candidates = [
   {id: "user-alpha", username: "alpha", display_name: "测试成员甲", status: "active", created_at: "2026-08-12T09:00:00Z"},
   {id: "user-beta", username: "beta", display_name: "测试成员乙", status: "disabled", created_at: "2026-08-13T09:00:00Z"},
+];
+const blockedUsers = [
+  {id: "user-carol", username: "carol", display_name: "测试卖家丙", status: "disabled", created_at: "2026-08-14T09:00:00Z",
+    reasons: ["providers", "egress_servers", "seller_plans", "marketplace_sales"]},
+  {id: "user-carl", username: "carl", display_name: "测试成员丁", status: "active", created_at: "2026-08-15T09:00:00Z",
+    reasons: ["balance", "ledger"]},
 ];
 const accounts = [
   {id: "a1b2c3d4e5f60001", email_masked: "al***@example.test", status: "available", cliproxy_status: "active", gateway_manual_status: "enabled", gateway_quota_status: "available", can_manage: true, plan: "Plus", allocation_weight: 1},
@@ -70,14 +76,15 @@ async function main() {
       }
       if (url.pathname === "/admin/information/deletable-users") {
         const query = url.searchParams.get("q");
-        return send({users: users.filter((user) => !query || `${user.username} ${user.display_name}`.includes(query)), limit: 100, offset: 0});
+        const blocked = query ? blockedUsers.filter((user) => `${user.username} ${user.display_name}`.includes(query)) : [];
+        return send({users: users.filter((user) => !query || `${user.username} ${user.display_name}`.includes(query)), limit: 100, offset: 0, blocked});
       }
       if (url.pathname === "/admin/information/users/delete") {
         const body = request.postDataJSON(); deletions.push(body);
         if (blockDeletion) {
           users = [candidates[1]];
           return send({error: {code: "users_not_deletable", message: "用户状态已变化，整批取消"},
-            blockers: [{user_id: candidates[0].id, reasons: ["nonzero_balance"]}]}, 409);
+            blockers: [{user_id: candidates[0].id, reasons: ["nonzero_balance", "providers", "marketplace_sales"]}]}, 409);
         }
         users = users.filter((user) => !body.user_ids.includes(user.id));
         return send({deleted_count: body.user_ids.length, user_ids: body.user_ids});
@@ -135,7 +142,9 @@ async function main() {
     await page.locator("#information-delete-users").click();
     await page.waitForFunction(() => informationUsersReady && informationUsers.length === 1);
     assert.deepEqual(deletions[0].user_ids, ["user-alpha", "user-beta"]);
-    assert.match(await page.locator("#information-message").textContent(), /整批删除未完成.*余额不为零/);
+    assert.match(await page.locator("#information-message").textContent(), /整批删除未完成.*余额不为零、仍有供应商账号、仍有商城成交记录/);
+    await page.evaluate(() => { hide("notice"); window.scrollTo(0, 0); });
+    await page.screenshot({path: path.join(screenshots, "information-deletion-blocked-desktop.png")});
     assert.equal(await page.locator("#information-delete-users").isDisabled(), true);
     blockDeletion = false;
     await page.locator("#information-select-all").check();
@@ -153,6 +162,22 @@ async function main() {
     await page.evaluate(() => window.scrollTo(0, 0));
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     await page.screenshot({path: path.join(screenshots, "information-mobile.png"), fullPage: true});
+
+    // A search explains the matching users the candidate list leaves out.
+    await page.setViewportSize({width: 1440, height: 1100});
+    await page.locator("#information-user-search").fill("car");
+    await page.locator("#information-users-form button[type=submit]").click();
+    await page.locator("#information-blocked").waitFor({state: "visible"});
+    assert.match(await page.locator("#information-blocked-users").textContent(), /仍有出口服务器.*由 Owner 在“租户供应商”中删除/);
+    assert.equal(await page.locator("#information-blocked-users > li").count(), 2);
+    await page.locator("#information-blocked").scrollIntoViewIfNeeded();
+    await page.locator(".information-users-panel").screenshot({path: path.join(screenshots, "information-blocked-users-desktop.png")});
+    await page.setViewportSize({width: 390, height: 844});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator(".information-users-panel").screenshot({path: path.join(screenshots, "information-blocked-users-mobile.png")});
+    await page.locator("#information-user-search").fill("");
+    await page.locator("#information-users-form button[type=submit]").click();
+    await page.locator("#information-blocked").waitFor({state: "hidden"});
 
     await page.setViewportSize({width: 1440, height: 1100});
     await page.evaluate(async () => { location.hash = "upstream-accounts"; await loadUpstreamAccounts(new URLSearchParams("all=true")); });

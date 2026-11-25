@@ -23,8 +23,15 @@ const (
 	protocolAccountAccess = "upstream_account_access_v1"
 	protocolGroupScope    = "group_upstream_account_scope_v1"
 	protocolFundingLayers = "group_upstream_account_layers_v1"
+	// protocolLayerSelect: eligibility and selection are asked per funding
+	// layer, so the Gateway can admit a member's account only in the layer
+	// that pays for it.
+	protocolLayerSelect   = "layer_select_v1"
 	protocolAnthropic     = "anthropic_messages_v1"
 	protocolAccountEgress = "account_egress_v1"
+	// protocolCredentialOwnership: logins and imports honor the Gateway's
+	// refusal codes (see RegistrationRefusedError).
+	protocolCredentialOwnership = "credential_ownership_v1" // #nosec G101 -- the protocol name, not a credential
 
 	maxStatusRequestBytes = 1 << 10
 )
@@ -57,6 +64,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 			managementRoute{http.MethodGet, base, "List upstream accounts"},
 			managementRoute{http.MethodGet, base + "/capabilities", "Report the account access protocol"},
 			managementRoute{http.MethodGet, base + "/funding-layers", "Report the funding layer protocol"},
+			managementRoute{http.MethodGet, base + "/layer-select", "Report the per-layer selection protocol"},
 			managementRoute{http.MethodGet, base + "/concurrency", "Sample active conversations per account"},
 			managementRoute{http.MethodPut, base + "/status", "Enable or disable one account"},
 			managementRoute{http.MethodPut, base + "/egress", "Apply one account's egress binding"},
@@ -69,6 +77,7 @@ func (p *Plugin) managementRoutes() managementRegistration {
 	for _, provider := range facadeProviders {
 		base := managementPrefix + facadeNamespace + "/" + provider.name
 		routes = append(routes,
+			managementRoute{http.MethodGet, base + "/ownership", "Report the credential ownership protocol"},
 			managementRoute{http.MethodPost, base + "/accounts/quota", "Report one account's quota on the credential page"},
 			managementRoute{http.MethodPost, base + "/oauth", "Start a login through CPA with a fixed egress"},
 			managementRoute{http.MethodPost, base + "/oauth/callback", "Hand an authorization code to CPA"},
@@ -107,6 +116,11 @@ func (p *Plugin) facadeManagement(method, path string, query url.Values, body []
 		return managementError(http.StatusNotFound, "not_found")
 	}
 	switch {
+	case method == http.MethodGet && action == "ownership" && len(query) == 0:
+		// A plugin answering this refuses a conflicting login without
+		// touching the account it reached; the Gateway lets tenants log in
+		// only through such a plugin.
+		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolCredentialOwnership})
 	case method == http.MethodPost && action == "accounts/quota":
 		switch provider {
 		case ProviderCodex:
@@ -188,6 +202,10 @@ func (p *Plugin) Management(method, path string, query url.Values, body []byte) 
 		return p.capabilities(provider)
 	case method == http.MethodGet && action == "funding-layers":
 		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolFundingLayers})
+	case method == http.MethodGet && action == "layer-select":
+		// Its own route: Gateways decode capability replies strictly, so a
+		// new field on an existing reply would break an older Gateway.
+		return managementJSON(http.StatusOK, map[string]string{"protocol": protocolLayerSelect})
 	case method == http.MethodGet && action == "":
 		return p.listAccounts(provider)
 	case method == http.MethodGet && action == "concurrency":

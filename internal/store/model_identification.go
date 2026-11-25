@@ -159,7 +159,7 @@ func (s *Store) BeginModelIdentificationRun(ctx context.Context, accountID, mode
 			(account_id, requested_model, run_id, run_status, run_progress,
 			 run_started_at, run_stage, run_probe_index, run_updated_at, run_actor_id)
 		SELECT id, $2, $3::uuid, 'running', 0, $4, 'preflight', 0, $4, NULLIF($5, '')::uuid
-		FROM upstream_accounts WHERE id = $1
+		FROM upstream_accounts WHERE id = $1 AND owner_user_id IS NULL
 		ON CONFLICT (account_id, requested_model) DO UPDATE SET
 			conclusion = CASE WHEN model_identifications.expires_at > $4
 				THEN model_identifications.conclusion ELSE NULL END,
@@ -192,7 +192,7 @@ func (s *Store) BeginModelIdentificationRun(ctx context.Context, accountID, mode
 	if errors.Is(err, sql.ErrNoRows) {
 		var available bool
 		if lookupErr := s.db.QueryRowContext(ctx, `SELECT EXISTS (
-			SELECT 1 FROM upstream_accounts WHERE id = $1)`,
+			SELECT 1 FROM upstream_accounts WHERE id = $1 AND owner_user_id IS NULL)`,
 			accountID).Scan(&available); lookupErr != nil {
 			return ModelIdentification{}, mapDBError("check model identification account", lookupErr)
 		}

@@ -38,11 +38,12 @@ func TestManagementRoutesAreExactAndAuthenticatedOnly(t *testing.T) {
 		t.Fatalf("a menu or resource route would be served without the management key: %s", raw)
 	}
 	routes := f.plugin.managementRoutes().Routes
-	// Six per account namespace, the Codex quota query, two model
-	// identification routes, and seven credential page routes per provider
-	// (quota, login start/callback/status, import, refresh, delete).
-	if len(routes) != 42 {
-		t.Fatalf("%d routes declared, want 42", len(routes))
+	// Seven per account namespace, the Codex quota query, two model
+	// identification routes, and eight credential page routes per provider
+	// (ownership protocol, quota, login start/callback/status, import,
+	// refresh, delete).
+	if len(routes) != 48 {
+		t.Fatalf("%d routes declared, want 48", len(routes))
 	}
 	seen := map[string]bool{}
 	for _, route := range routes {
@@ -52,6 +53,19 @@ func TestManagementRoutesAreExactAndAuthenticatedOnly(t *testing.T) {
 			t.Fatalf("invalid or duplicate route %q", key)
 		}
 		seen[key] = true
+	}
+}
+
+func TestCredentialOwnershipProtocol(t *testing.T) {
+	f := newFixture(t, 1)
+	for _, provider := range []string{"codex", "antigravity", "anthropic"} {
+		status, fields, body := f.manage(http.MethodGet, managementPrefix+facadeNamespace+"/"+provider+"/ownership", nil, "")
+		if status != http.StatusOK || string(fields["protocol"]) != `"credential_ownership_v1"` || len(fields) != 1 {
+			t.Fatalf("%s: %d %s", provider, status, body)
+		}
+		if status, _, _ := f.manage(http.MethodGet, managementPrefix+facadeNamespace+"/"+provider+"/ownership", url.Values{"x": {"1"}}, ""); status != http.StatusNotFound {
+			t.Fatalf("%s: ownership with a query answered %d", provider, status)
+		}
 	}
 }
 
@@ -70,6 +84,9 @@ func TestManagementCapabilities(t *testing.T) {
 		}
 		if status, fields, _ = f.manage(http.MethodGet, managementPrefix+namespace+"/funding-layers", nil, ""); status != http.StatusOK || string(fields["protocol"]) != `"group_upstream_account_layers_v1"` || len(fields) != 1 {
 			t.Fatalf("%s funding layers: %d %v", namespace, status, fields)
+		}
+		if status, fields, _ = f.manage(http.MethodGet, managementPrefix+namespace+"/layer-select", nil, ""); status != http.StatusOK || string(fields["protocol"]) != `"layer_select_v1"` || len(fields) != 1 {
+			t.Fatalf("%s layer select: %d %v", namespace, status, fields)
 		}
 	}
 	// Without the management key the plugin cannot write a credential's proxy,

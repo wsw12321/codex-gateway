@@ -100,6 +100,78 @@ Current migrations:
   plan snapshots and ledger rows are unchanged. One
   `billing.model_families_converted` audit event records the counts.
 
+- `internal/store/migrations/0050_model_suppliers.sql` — API Key model
+  suppliers. `upstream_accounts.credential_kind` distinguishes OAuth accounts
+  from suppliers; `model_suppliers` stores the encrypted key, Base URL and
+  accepted models. Existing accounts stay `oauth`.
+- `internal/store/migrations/0051_tenant_upstream_ownership.sql` — upstream
+  account ownership for the aggregation gateway. `owner_user_id` NULL is a
+  platform account (every existing account); a tenant account can never join a
+  group pool, an exclusive grant or a per-user account scope (enforced by
+  triggers), and its owner is set once. Adds `admin_suspended`,
+  `egress_registrations.tenant_user_id` and the `marketplace_settings`
+  singleton, disabled by default. Platform selection paths ignore tenant
+  accounts; while the marketplace is enabled, accounts unknown to the Gateway
+  are not eligible.
+- `internal/store/migrations/0052_tenant_provider_lifecycle.sql` — tenant
+  providers (aggregation gateway stage 2). `credential_removed_at` marks an
+  account whose credential was deleted: it is released, no funding path uses
+  it, and the next login of it claims it (suppliers deleted earlier are
+  backfilled). Ownership is no longer write-once: the replaced
+  `guard_upstream_account_owner` trigger accepts a change only when the
+  transaction names it a `claim` or an Owner `transfer`, still keeps tenant
+  accounts out of platform-only structures, and refuses an owner whose egress
+  node differs. `egress_servers.owner_user_id` lets tenants run their own
+  nodes (immutable); triggers bind accounts and registrations only to nodes of
+  the same owner. Adds `marketplace_settings.max_egress_servers_per_user`
+  (default 5).
+- `internal/store/migrations/0053_plan_provider_scopes.sql` — plan provider
+  scopes, funding rule 5 and self-use (aggregation gateway stage 3).
+  `billing_plans.seller_user_id` (immutable; NULL is a platform plan),
+  `billing_plan_provider_scopes` (`all`/`selected`, every existing plan
+  `all`) and `billing_plan_provider_accounts` (a trigger accepts only
+  accounts of the plan's seller that still hold a credential).
+  `billing_subscriptions.source_plan_id` is the plan a subscription was bought
+  from, backfilled from `plan_id` and immutable. `billing_accounts.
+  self_use_enabled` (default true). Reservations accept funding rule 5 and a
+  layered reservation without personal sources; a rule 5 settlement may record
+  a positive cost with nothing charged and nothing uncovered, which is exactly
+  a request served by the user's own account (self-use). `billing_reservation_layers` gains `kind`
+  (`group`, `subscription`, `self`, `personal`; existing rows backfilled) and
+  the bound subscription period of a restricted subscription layer.
+- `internal/store/migrations/0054_marketplace.sql` — seller plans, review and
+  the plan marketplace (aggregation gateway stage 4). `billing_plans` gains
+  `review_status` (`draft`/`pending`/`approved`/`rejected`; every existing
+  plan is approved, and a check keeps platform plans approved and never
+  suspended), `review_note`, `reviewed_by_user_id`, `reviewed_at`,
+  `submitted_at`, `description` and `admin_suspended` (Owner takedown).
+  `marketplace_sales` records every seller plan sale or renewal once per
+  operation: gross, the commission rate in force, commission (rounded down to
+  12 decimals), the seller's net, the per-seller `buyer_number` the seller sees
+  instead of the buyer, and both ledger entries (cleared, not blocking, when
+  information cleanup removes them). The ledger accepts `plan_sale_income`,
+  the seller's credit, which also opens a cash lot.
+- `internal/store/migrations/0055_tenant_user_deletion.sql` — permanently
+  deleting a member who once held tenant resources (aggregation gateway stage
+  5). `upstream_accounts.owner_deleted_at` marks a released account whose
+  owner was deleted: it has no owner, serves nobody and is in nobody's
+  management scope, the platform's included, until a login claims it (a
+  check keeps the marker on released, ownerless rows only). The replaced
+  `guard_upstream_account_owner` trigger additionally accepts the
+  `owner_deleted` reason, only for a released account that becomes ownerless
+  and marked. Adds an index on `marketplace_sales(buyer_user_id)` for the
+  deletion blockers. Information cleanup now also removes a sale older than
+  the cutoff once both of its ledger entries are gone.
+- `internal/store/migrations/0056_third_party_consent.sql` — the buyer's
+  consent to member-run API key suppliers belongs to the subscription
+  (aggregation gateway stage 5). `billing_subscriptions.
+  third_party_acknowledged_at` is set by a purchase or renewal that
+  acknowledges third-party suppliers and by the buyer's own consent route,
+  and cleared when the buyer withdraws it. Without it, a seller plan's
+  subscription is served only by the seller's OAuth accounts, even after the
+  seller adds an API key supplier to the plan's scope. Existing subscriptions
+  start without consent (fail closed).
+
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already
 been applied.

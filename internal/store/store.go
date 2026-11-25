@@ -23,6 +23,15 @@ var (
 	ErrAPIKeyExpired          = errors.New("store: API key expired")
 	ErrModelNotAllowed        = errors.New("store: model not allowed")
 	ErrModelAccessUnavailable = errors.New("store: model access unavailable")
+	// ErrAccountOwnedElsewhere: a login or import reached an upstream account
+	// that the platform or another tenant owns.
+	ErrAccountOwnedElsewhere = errors.New("store: upstream account owned elsewhere")
+	// ErrProviderLimitReached: a tenant already has as many accounts or egress
+	// nodes as the marketplace settings allow.
+	ErrProviderLimitReached = errors.New("store: tenant provider limit reached")
+	// ErrAccountInPlatformUse: a released or platform account is still part of
+	// a group pool, an exclusive grant or a per-user account scope.
+	ErrAccountInPlatformUse = errors.New("store: upstream account in platform use")
 )
 
 // Config controls the database/sql pool. DriverName defaults to pgx. The
@@ -42,6 +51,9 @@ type Store struct {
 	db               *sql.DB
 	now              func() time.Time
 	upstreamProvider string
+	// upstreamOwner scopes account management to one tenant's accounts and
+	// egress nodes; empty means the platform's.
+	upstreamOwner string
 }
 
 const (
@@ -58,6 +70,37 @@ func (s *Store) WithUpstreamProvider(provider string) *Store {
 	clone := *s
 	clone.upstreamProvider = strings.ToLower(strings.TrimSpace(provider))
 	return &clone
+}
+
+// WithUpstreamOwner scopes upstream account and egress node management to the
+// accounts and nodes userID owns. The unscoped store manages platform ones.
+// Funding, eligibility and selection paths ignore this scope.
+func (s *Store) WithUpstreamOwner(userID string) *Store {
+	clone := *s
+	clone.upstreamOwner = strings.TrimSpace(userID)
+	return &clone
+}
+
+// UpstreamOwner reports the tenant this store is scoped to; empty for the
+// platform.
+func (s *Store) UpstreamOwner() string { return s.upstreamOwner }
+
+func (s *Store) upstreamOwnerArg() any { return valueOrNil(s.upstreamOwner) }
+
+// accountScopeSQL restricts upstream_accounts (alias may be empty) to this
+// store's owner. placeholder binds upstreamOwnerArg(). Platform management
+// keeps seeing removed platform accounts as before; a tenant sees only
+// accounts whose credential it still holds. A released account whose owner
+// was permanently deleted (migration 0055) is in no scope at all: it has no
+// owner, yet it was never a platform account.
+func accountScopeSQL(alias, placeholder string) string {
+	prefix := ""
+	if alias != "" {
+		prefix = alias + "."
+	}
+	return "(" + prefix + "owner_user_id IS NOT DISTINCT FROM " + placeholder + "::uuid AND (" +
+		placeholder + "::uuid IS NULL OR " + prefix + "credential_removed_at IS NULL) AND " +
+		prefix + "owner_deleted_at IS NULL)"
 }
 
 func (s *Store) upstreamProviderName() string {

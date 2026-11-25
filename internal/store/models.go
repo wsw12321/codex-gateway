@@ -331,7 +331,10 @@ type GlobalUsageRow struct {
 	ActualCostUSD      string
 	ChargedUSD         string
 	UncoveredUSD       string
-	LedgerTokens       int64
+	// SelfUseUSD is the cost of requests served by the user's own accounts:
+	// recorded, charged nothing and not uncovered.
+	SelfUseUSD   string
+	LedgerTokens int64
 }
 
 type GlobalPricingBreakdownRow struct {
@@ -359,6 +362,8 @@ type UpstreamAccount struct {
 	UpdatedAt        time.Time
 	AllocationWeight int
 	ConcurrentLimit  int
+	// AdminSuspended is the Owner's moderation hold on a tenant account.
+	AdminSuspended bool
 }
 
 // UpstreamAccountSnapshot is one entry in an authoritative sidecar metadata

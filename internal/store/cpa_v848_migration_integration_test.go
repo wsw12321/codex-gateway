@@ -134,13 +134,15 @@ func TestCPAV848ModelMigrationPostgresIntegration(t *testing.T) {
 	}
 	readProtected := func() map[string]string {
 		t.Helper()
+		// Later migrations run in the same Migrate call; the columns they add
+		// (0053: self_use_enabled, source_plan_id; 0056: third_party_acknowledged_at) are not part of the cutover.
 		rows, err := s.db.QueryContext(ctx, `SELECT key, value::text FROM jsonb_each(jsonb_build_object(
 			'key',(SELECT to_jsonb(k) FROM api_keys k WHERE id=$1),
-			'account',(SELECT to_jsonb(a) FROM billing_accounts a WHERE user_id=$2),
+			'account',(SELECT to_jsonb(a) - 'self_use_enabled' FROM billing_accounts a WHERE user_id=$2),
 			'usage',(SELECT to_jsonb(u) FROM usage_requests u WHERE request_id=$3),
 			'reservation',(SELECT to_jsonb(r) FROM billing_reservations r WHERE request_id=$3),
 			'ledger',(SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM billing_ledger_entries l),
-			'subscriptions',(SELECT jsonb_agg(to_jsonb(b) ORDER BY b.id) FROM billing_subscriptions b),
+			'subscriptions',(SELECT jsonb_agg(to_jsonb(b) - 'source_plan_id' - 'third_party_acknowledged_at' ORDER BY b.id) FROM billing_subscriptions b),
 			'entitlements',(SELECT jsonb_agg(to_jsonb(e) ORDER BY e.id) FROM billing_subscription_entitlements e),
 			'retired_multiplier',(SELECT to_jsonb(m) FROM billing_model_multipliers m WHERE model=$4),
 			'unchanged_default',(SELECT to_jsonb(d) FROM model_access_defaults d WHERE model=$5),

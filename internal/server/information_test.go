@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -17,6 +19,7 @@ type fakeInformationRepository struct {
 	create   store.InformationCleanupParams
 	deletion store.DeleteInformationUsersParams
 	job      store.InformationCleanupJob
+	blocked  []store.BlockedInformationUser
 }
 
 func (f *fakeInformationRepository) PreviewInformationCleanup(_ context.Context, cutoff time.Time) (store.InformationCleanupReport, error) {
@@ -44,6 +47,13 @@ func (f *fakeInformationRepository) InformationCleanedBefore(context.Context) (*
 func (f *fakeInformationRepository) ListDeletableInformationUsers(context.Context, string, int, int) ([]store.DeletableUser, error) {
 	f.calls++
 	return []store.DeletableUser{}, f.err
+}
+func (f *fakeInformationRepository) ListBlockedInformationUsers(_ context.Context, limit, offset int) ([]store.BlockedInformationUser, error) {
+	f.calls++
+	if offset >= len(f.blocked) {
+		return []store.BlockedInformationUser{}, f.err
+	}
+	return f.blocked[offset:min(offset+limit, len(f.blocked))], f.err
 }
 func (f *fakeInformationRepository) DeleteInformationUsers(_ context.Context, p store.DeleteInformationUsersParams) (store.DeleteInformationUsersResult, error) {
 	f.calls++
@@ -150,5 +160,55 @@ func TestInformationUserConflictDetailsAndCleanedBillingError(t *testing.T) {
 	s.billingStoreError(w, r, "replay", store.ErrBillingOperationCleaned)
 	if w.Code != 409 || !strings.Contains(w.Body.String(), `"billing_operation_cleaned"`) {
 		t.Fatalf("cleaned operation: %s", w.Body.String())
+	}
+}
+
+func TestInformationCandidateSearchExplainsBlockedUsers(t *testing.T) {
+	verified := time.Now()
+	s, _ := newBillingSourceTestServer(t, store.UserRoleOwner, &verified)
+	repo := &fakeInformationRepository{}
+	for i := 0; i < 130; i++ {
+		repo.blocked = append(repo.blocked, store.BlockedInformationUser{
+			DeletableUser: store.DeletableUser{ID: fmt.Sprintf("00000000-0000-4000-8000-%012d", i), Username: fmt.Sprintf("user%03d", i), DisplayName: "成员", Status: "disabled"},
+			Reasons:       []string{"egress_servers"},
+		})
+	}
+	repo.blocked = append(repo.blocked, store.BlockedInformationUser{
+		DeletableUser: store.DeletableUser{ID: "00000000-0000-4000-8000-999999999999", Username: "carol", DisplayName: "卖家丙", Status: "disabled"},
+		Reasons:       []string{"providers", "marketplace_sales"},
+	})
+	s.informationRepo = repo
+	get := func(query string) map[string]any {
+		t.Helper()
+		r := httptest.NewRequest("GET", "/admin/information/deletable-users"+query, nil)
+		addBillingSourceTestSession(t, r)
+		w := httptest.NewRecorder()
+		s.Handler().ServeHTTP(w, r)
+		if w.Code != 200 {
+			t.Fatalf("candidates %s: %d %s", query, w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	// Without a search nothing is explained, and nothing is scanned for it.
+	calls := repo.calls
+	if blocked := get("")["blocked"].([]any); len(blocked) != 0 || repo.calls != calls+1 {
+		t.Fatalf("unsearched blocked users = %v (calls %d)", blocked, repo.calls-calls)
+	}
+	// A search beyond the first page finds the user and the reasons.
+	blocked := get("?q=carol")["blocked"].([]any)
+	if len(blocked) != 1 {
+		t.Fatalf("blocked = %v", blocked)
+	}
+	carol := blocked[0].(map[string]any)
+	if carol["username"] != "carol" || carol["status"] != "disabled" || fmt.Sprint(carol["reasons"]) != "[providers marketplace_sales]" {
+		t.Fatalf("carol = %v", carol)
+	}
+	// Explanations stop at the bound.
+	if many := get("?q=user")["blocked"].([]any); len(many) != maxBlockedInformationUsers {
+		t.Fatalf("bounded explanations = %d", len(many))
 	}
 }

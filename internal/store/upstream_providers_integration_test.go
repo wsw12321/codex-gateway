@@ -260,7 +260,7 @@ func TestUpstreamProvidersIsolateUsageAndCostSummaries(t *testing.T) {
 			t.Fatal(err)
 		}
 		var expectedShare string
-		if err := repository.db.QueryRowContext(ctx, `SELECT ($1::numeric / sum(l.actual_cost_usd))::text FROM billing_ledger_entries l JOIN upstream_accounts a ON a.id=l.upstream_account_id WHERE a.provider=$2 AND l.entry_type='usage_charge' AND COALESCE(l.usage_requested_at,l.created_at)>=$3 AND COALESCE(l.usage_requested_at,l.created_at)<$4`, tc.cost, tc.store.upstreamProviderName(), at.Add(-24*time.Hour), at).Scan(&expectedShare); err != nil {
+		if err := repository.db.QueryRowContext(ctx, `SELECT ($1::numeric / sum(l.actual_cost_usd))::text FROM billing_ledger_entries l JOIN upstream_accounts a ON a.id=l.upstream_account_id WHERE a.provider=$2 AND a.owner_user_id IS NULL AND l.entry_type='usage_charge' AND COALESCE(l.usage_requested_at,l.created_at)>=$3 AND COALESCE(l.usage_requested_at,l.created_at)<$4`, tc.cost, tc.store.upstreamProviderName(), at.Add(-24*time.Hour), at).Scan(&expectedShare); err != nil {
 			t.Fatal(err)
 		}
 		found := false

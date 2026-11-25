@@ -631,6 +631,42 @@ func TestModelRoutesDashboardBehavior(t *testing.T) {
 	}
 }
 
+func TestTenantProvidersDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/tenant_providers_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("tenant providers dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
+func TestPlanScopesDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/plan_scopes_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("plan scopes dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
+func TestMarketplaceDashboardBehavior(t *testing.T) {
+	t.Parallel()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("Node.js is required for executable dashboard behavior tests")
+	}
+	command := exec.Command(node, "--test", "testdata/marketplace_ui_test.cjs")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("marketplace dashboard behavior failed: %v\n%s", err, output)
+	}
+}
+
 func TestProtocolConversionDashboardBehavior(t *testing.T) {
 	t.Parallel()
 	node, err := exec.LookPath("node")

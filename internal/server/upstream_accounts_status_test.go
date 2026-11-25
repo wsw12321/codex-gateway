@@ -336,8 +336,15 @@ func (*statusTestConn) ExecContext(context.Context, string, []driver.NamedValue)
 	return driver.RowsAffected(1), nil
 }
 func (c *statusTestConn) QueryContext(ctx context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
-	if strings.Contains(query, "SELECT EXISTS(SELECT 1 FROM upstream_accounts WHERE id=$1 AND provider<>$2)") {
-		return &upstreamAuditRows{columns: []string{"exists"}, values: []driver.Value{false}}, nil
+	// No ownership row: the account is treated as a platform account.
+	if strings.Contains(query, "credential_removed_at IS NOT NULL, credential_kind FROM upstream_accounts WHERE id=$1") {
+		return &upstreamAuditRows{columns: []string{"provider", "owner", "suspended", "removed", "kind"}, done: true}, nil
+	}
+	if strings.Contains(query, "SELECT COALESCE((SELECT ms.enabled FROM marketplace_settings") {
+		return &upstreamAuditRows{columns: []string{"enabled"}, values: []driver.Value{false}}, nil
+	}
+	if strings.Contains(query, "SELECT provider FROM upstream_accounts WHERE id=$1") {
+		return &upstreamAuditRows{columns: []string{"provider"}, values: []driver.Value{"codex"}}, nil
 	}
 	return c.query(ctx, query, args)
 }

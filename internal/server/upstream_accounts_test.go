@@ -715,7 +715,11 @@ func (*upstreamAuditConn) Begin() (driver.Tx, error) {
 	return nil, errors.New("transactions are unsupported")
 }
 
-func (c *upstreamAuditConn) QueryContext(_ context.Context, _ string, args []driver.NamedValue) (driver.Rows, error) {
+func (c *upstreamAuditConn) QueryContext(_ context.Context, query string, args []driver.NamedValue) (driver.Rows, error) {
+	// No ownership row: the account is treated as a platform account.
+	if strings.Contains(query, "credential_removed_at IS NOT NULL, credential_kind FROM upstream_accounts WHERE id=$1") {
+		return &upstreamAuditRows{columns: []string{"provider", "owner", "suspended", "removed", "kind"}, done: true}, nil
+	}
 	c.capture.record(args)
 	if len(args) != 12 {
 		return nil, errors.New("unexpected audit argument count")

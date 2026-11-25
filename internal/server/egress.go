@@ -91,7 +91,12 @@ func (s *Server) egressServersJSON(w http.ResponseWriter, r *http.Request) {
 		state, status, _ = s.syncAccountEgress(r.Context())
 	}
 	nodes := make([]egressServerDTO, 0, len(state.Nodes))
+	owner := requestTenant(r)
 	for _, n := range state.Nodes {
+		// The Owner's page lists platform nodes, a member's only their own.
+		if n.OwnerUserID != owner {
+			continue
+		}
 		dto := egressNodeDTO(n)
 		for _, b := range state.Bindings {
 			if b.NodeID == n.ID {
@@ -105,7 +110,18 @@ func (s *Server) egressServersJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		nodes = append(nodes, dto)
 	}
-	writeJSON(w, 200, map[string]any{"servers": nodes, "runtime": publicEgressStatus(status), "version": state.Version, "configured": s.config.EgressControlKey != ""})
+	runtimeStatus := publicEgressStatus(status)
+	if len(runtimeStatus.NodeRevisions) > 0 {
+		// Only the revisions of the nodes this page lists.
+		visible := make(map[string]int64, len(nodes))
+		for _, node := range nodes {
+			if revision, ok := runtimeStatus.NodeRevisions[node.ID]; ok {
+				visible[node.ID] = revision
+			}
+		}
+		runtimeStatus.NodeRevisions = visible
+	}
+	writeJSON(w, 200, map[string]any{"servers": nodes, "runtime": runtimeStatus, "version": state.Version, "configured": s.config.EgressControlKey != ""})
 }
 
 func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
@@ -135,7 +151,15 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	n := store.EgressServer{ID: id, Name: strings.TrimSpace(input.Name), Protocol: egress.NormalizeProtocol(input.Protocol), Server: strings.ToLower(strings.TrimSpace(input.Server)), Port: input.Port, Cipher: input.Cipher, Username: input.Username, UDP: input.UDP}
-	if err := store.ValidateEgressServer(n); err != nil {
+	validate := store.ValidateEgressServer
+	if requestTenant(r) != "" {
+		validate = store.ValidateTenantEgressServer
+	}
+	if err := validate(n); err != nil {
+		if requestTenant(r) != "" {
+			httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_request", "出口服务器地址须为公网 IPv4 地址，端口 1–65535")
+			return
+		}
 		egressError(w, r, err)
 		return
 	}
@@ -163,7 +187,7 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		// is not a SOCKS5 credential, and a SOCKS5 node without authentication
 		// has none. It may also predate a switch to SS2022, so check that it is
 		// a usable key. Save only if the node is still at the checked revision.
-		current, err := s.store.EgressServer(r.Context(), id)
+		current, err := s.egressStore(r).EgressServer(r.Context(), id)
 		if err != nil {
 			egressError(w, r, err)
 			return
@@ -196,7 +220,7 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		n.PasswordCiphertext = ciphertext
 	}
 	input.Password = ""
-	saved, err := s.store.SaveEgressServer(r.Context(), n, create, egressActor(r))
+	saved, err := s.egressStore(r).SaveEgressServer(r.Context(), n, create, egressActor(r))
 	if errors.Is(err, store.ErrConflict) {
 		httpx.WriteError(w, r, http.StatusConflict, "upstream_error", "egress_node_changed", "节点已被其他操作修改，请刷新后重试")
 		return
@@ -250,7 +274,7 @@ func (s *Server) testEgressServer(w http.ResponseWriter, r *http.Request) {
 	}
 	var node *store.EgressServer
 	for i := range state.Nodes {
-		if state.Nodes[i].ID == id {
+		if state.Nodes[i].ID == id && state.Nodes[i].OwnerUserID == requestTenant(r) {
 			node = &state.Nodes[i]
 		}
 	}
@@ -287,7 +311,7 @@ func (s *Server) deleteEgressServer(w http.ResponseWriter, r *http.Request) {
 	if !cpaJSON(w, r, &input, 128) {
 		return
 	}
-	if err := s.store.DeleteEgressServer(r.Context(), r.PathValue("id"), egressActor(r)); err != nil {
+	if err := s.egressStore(r).DeleteEgressServer(r.Context(), r.PathValue("id"), egressActor(r)); err != nil {
 		egressError(w, r, err)
 		return
 	}
@@ -332,7 +356,7 @@ func (s *Server) createEgressRegistration(r *http.Request, provider string, node
 	if s.config.EgressControlKey == "" || s.store == nil {
 		return store.EgressRegistration{}, errEgressUnavailable
 	}
-	return s.store.CreateEgressRegistration(r.Context(), provider, nodeID, egressActor(r))
+	return s.egressStore(r).CreateEgressRegistration(r.Context(), provider, nodeID, egressActor(r))
 }
 
 func (s *Server) egressInternalAuth(w http.ResponseWriter, r *http.Request) bool {
@@ -439,6 +463,12 @@ func egressPasswordError(w http.ResponseWriter, r *http.Request, n store.EgressS
 
 func egressError(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message := http.StatusServiceUnavailable, "egress_unavailable", "出口配置已保存但暂未应用，请稍后刷新；绑定账号不会回退全局出口"
+	// A login or import that reached someone else's account, or a tenant at
+	// its limit. The plugin decodes exactly these codes.
+	if refusal := tenantRefusalCode(err); refusal != "" {
+		writeTenantRefusal(w, r, refusal)
+		return
+	}
 	switch {
 	case errors.Is(err, store.ErrInvalid):
 		status, code, message = 400, "invalid_egress_request", "出口节点或出口绑定参数无效"

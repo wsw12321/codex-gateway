@@ -41,7 +41,12 @@ func (e *InsufficientFundsError) Error() string { return "billing: insufficient 
 
 // NoUpstreamAccountError reports funded admission where no funding source may
 // use any upstream account of the requested provider.
-type NoUpstreamAccountError struct{}
+// NoUpstreamAccountError: no funding layer had an account to serve the
+// request. EmptySubscriptionLayers names the paid subscriptions whose plans
+// had none.
+type NoUpstreamAccountError struct {
+	EmptySubscriptionLayers []EmptySubscriptionLayer
+}
 
 func (e *NoUpstreamAccountError) Error() string {
 	return "billing: no upstream account for funding sources"
@@ -134,9 +139,11 @@ type BillingLedgerEntry struct {
 	GroupChargedUSD                  *string         `json:"group_charged_usd,omitempty"`
 	PersonalChargedUSD               *string         `json:"personal_charged_usd,omitempty"`
 	UncoveredUSD                     *string         `json:"uncovered_usd,omitempty"`
-	Reason                           string          `json:"reason"`
-	ActorUserID                      *string         `json:"actor_user_id,omitempty"`
-	CreatedAt                        time.Time       `json:"created_at"`
+	// SelfUse: usage of the user's own account, recorded at no charge.
+	SelfUse     bool      `json:"self_use,omitempty"`
+	Reason      string    `json:"reason"`
+	ActorUserID *string   `json:"actor_user_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 type BillingGroupState struct {
@@ -246,13 +253,21 @@ type BillingReservation struct {
 	GroupChargedUSD                  *string                `json:"group_charged_usd,omitempty"`
 	PersonalChargedUSD               *string                `json:"personal_charged_usd,omitempty"`
 	UncoveredUSD                     *string                `json:"uncovered_usd,omitempty"`
-	CreatedAt                        time.Time              `json:"created_at"`
-	SettledAt                        *time.Time             `json:"settled_at,omitempty"`
+	// SelfUse: rule 5 settled the request on one of the user's own accounts.
+	SelfUse   bool       `json:"self_use,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+	SettledAt *time.Time `json:"settled_at,omitempty"`
 
 	// AllocationGroups is the in-memory copy of the admission funding layers,
 	// in billing order, forwarded to CPA. It is never re-read from mutable
 	// group policy afterward.
 	AllocationGroups []UpstreamAllocationGroup `json:"allocation_groups,omitempty"`
+	// AllocationLayerKinds holds the kind (FundingLayerGroup, ...) of each
+	// entry of AllocationGroups, at the same index. Alerts read it.
+	AllocationLayerKinds []string `json:"-"`
+	// EmptySubscriptionLayers are the paid, restricted subscriptions this
+	// admission dropped because their plans had no account to serve it.
+	EmptySubscriptionLayers []EmptySubscriptionLayer `json:"-"`
 }
 
 type BillingWriteParams struct {
@@ -429,7 +444,18 @@ func scanBillingReservation(row rowScanner) (BillingReservation, error) {
 	value.ActualOutputTokens = nullableInt64(outputTokens)
 	value.ActualCostUSD, value.ChargedUSD, value.UncoveredUSD = nullableString(actualCost), nullableString(charged), nullableString(uncovered)
 	value.GroupChargedUSD, value.PersonalChargedUSD = nullableString(groupCharged), nullableString(personalCharged)
+	value.SelfUse = value.State == "settled" && value.FundingRuleVersion == 5 &&
+		settledAsSelfUse(value.ActualCostUSD, value.ChargedUSD, value.UncoveredUSD)
 	return value, err
+}
+
+// settledAsSelfUse recognizes a self-use settlement from its amounts. Every
+// other settlement leaves what it does not charge uncovered, so a positive
+// cost with nothing charged and nothing uncovered is self-use exactly; the
+// reservation constraint admits it only under rule 5.
+func settledAsSelfUse(actual, charged, uncovered *string) bool {
+	return actual != nil && charged != nil && uncovered != nil && billingPositive(*actual) &&
+		!billingPositive(*charged) && !billingPositive(*uncovered)
 }
 
 const billingReservationColumns = `request_id, user_id, api_key_id, requested_model,
@@ -552,11 +578,29 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			cashCutoff = &cutoff
 		}
 	}
-	sources, err := snapshotBillingFundingTx(ctx, tx, params.UserID, params.Model, params.Now, balance, cashPriority, cashCutoff)
+	planScopes, err := planScopeSchemaTx(ctx, tx)
 	if err != nil {
 		return BillingReservation{}, err
 	}
-	if params.BillingMode != BillingModeInternalZero && len(sources) == 0 && len(groups) == 0 {
+	tenantFeatures := false
+	if planScopes {
+		if tenantFeatures, err = marketplaceEnabledTx(ctx, tx); err != nil {
+			return BillingReservation{}, err
+		}
+	}
+	sources, restricted, err := snapshotBillingFundingTx(ctx, tx, params.UserID, params.Model, params.Now, balance, cashPriority, cashCutoff, planScopes, tenantFeatures)
+	if err != nil {
+		return BillingReservation{}, err
+	}
+	// Self-use needs no funds: a user whose own accounts can serve the
+	// request is admitted on them alone.
+	var selfPool []string
+	if tenantFeatures {
+		if selfPool, err = selfUsePoolTx(ctx, tx, params.UserID, upstreamProviderOrDefault(params.UpstreamProvider)); err != nil {
+			return BillingReservation{}, err
+		}
+	}
+	if params.BillingMode != BillingModeInternalZero && len(sources) == 0 && len(groups) == 0 && len(restricted) == 0 && len(selfPool) == 0 {
 		retry, err := billingFundingRetryTx(ctx, tx, params.UserID, params.Model, params.Now)
 		if err != nil {
 			return BillingReservation{}, err
@@ -576,18 +620,22 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		}
 		return BillingReservation{}, &InsufficientFundsError{RetryAfter: retry}
 	}
-	layers, err := fundingLayersTx(ctx, tx, params, groups, len(sources) > 0)
+	layers, emptyLayers, err := fundingLayersTx(ctx, tx, params, groups, restricted, selfPool, len(sources) > 0)
 	if err != nil {
 		return BillingReservation{}, err
 	}
 	if len(layers) == 0 {
-		return BillingReservation{}, &NoUpstreamAccountError{}
+		return BillingReservation{}, &NoUpstreamAccountError{EmptySubscriptionLayers: emptyLayers}
 	}
-	// group_id is provisional under rule 4: the first group layer until
-	// settlement binds the layer whose pool served the request.
+	ruleVersion := fundingRuleVersion(layers)
+	// group_id is provisional under rules 4 and 5: the first group layer
+	// until settlement binds the layer whose pool served the request.
 	var groupID, groupPeriodID any
-	if layers[0].groupID != "" {
-		groupID, groupPeriodID = layers[0].groupID, layers[0].groupPeriodID
+	for _, layer := range layers {
+		if layer.layerKind() == FundingLayerGroup {
+			groupID, groupPeriodID = layer.groupID, layer.groupPeriodID
+			break
+		}
 	}
 	if err := snapshotModelPriceTx(ctx, tx, &params); err != nil {
 		return BillingReservation{}, err
@@ -608,7 +656,7 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 			 pricing_snapshot, cache_write_mode, requested_service_tier,
 			 day_period_id, week_period_id, month_period_id, cash_lot_cutoff, created_at, group_id, group_period_id, pricing_multiplier, funding_rule_version, ordered_funding_sources)
 		VALUES ($1,$2,$3,$4,$5::numeric,$6::numeric,$7::numeric,$8,$9,$10::date,$11,
-			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,4,$23::jsonb)
+			$12::jsonb,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::numeric,$24,$23::jsonb)
 		RETURNING `+billingReservationColumns,
 		params.RequestID, params.UserID, params.APIKeyID, params.Model,
 		valueOrNil(params.InputUSDPerMillion), valueOrNil(params.CachedInputUSDPerMillion),
@@ -616,20 +664,23 @@ func reserveBillingTx(ctx context.Context, tx *sql.Tx, params BillingReservation
 		valueOrNil(params.PricingCatalogAsOf), valueOrNil(params.PricingModel),
 		valueOrNil(string(params.PricingSnapshot)), valueOrNil(params.CacheWriteMode),
 		valueOrNil(params.RequestedServiceTier), nil, nil,
-		nil, cashCutoff, params.Now, groupID, groupPeriodID, pricingMultiplier, fundingSnapshot))
+		nil, cashCutoff, params.Now, groupID, groupPeriodID, pricingMultiplier, fundingSnapshot, ruleVersion))
 	if err != nil {
 		return BillingReservation{}, mapDBError("insert billing reservation", err)
 	}
 	if err := recordBillingFundingSourcesTx(ctx, tx, reservation); err != nil {
 		return BillingReservation{}, err
 	}
-	if err := recordFundingLayersTx(ctx, tx, reservation, layers); err != nil {
+	if err := recordFundingLayersTx(ctx, tx, reservation, layers, planScopes); err != nil {
 		return BillingReservation{}, err
 	}
 	reservation.AllocationGroups = make([]UpstreamAllocationGroup, 0, len(layers))
+	reservation.AllocationLayerKinds = make([]string, 0, len(layers))
 	for _, layer := range layers {
 		reservation.AllocationGroups = append(reservation.AllocationGroups, layer.allocationGroup())
+		reservation.AllocationLayerKinds = append(reservation.AllocationLayerKinds, layer.layerKind())
 	}
+	reservation.EmptySubscriptionLayers = emptyLayers
 	return reservation, nil
 }
 
@@ -834,6 +885,7 @@ func scanBillingLedgerEntry(row rowScanner) (BillingLedgerEntry, error) {
 	value.PricingFallbackReason = nullableString(fallbackReason)
 	value.ActualCostUSD, value.ChargedUSD, value.UncoveredUSD = nullableString(cost), nullableString(charged), nullableString(uncovered)
 	value.GroupChargedUSD, value.PersonalChargedUSD = nullableString(groupCharged), nullableString(personalCharged)
+	value.SelfUse = value.EntryType == "usage_charge" && settledAsSelfUse(value.ActualCostUSD, value.ChargedUSD, value.UncoveredUSD)
 	return value, err
 }
 
@@ -2033,8 +2085,14 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 	var layerCandidates []fundingLayer
 	var personalLayer bool
 	var layerAccount string
-	if pre.FundingRuleVersion == 4 && pre.State == "reserved" {
-		layers, err := readFundingLayersTx(ctx, tx, requestID)
+	var rule5 rule5Settlement
+	layered := pre.FundingRuleVersion == 4 || pre.FundingRuleVersion == 5
+	if layered && pre.State == "reserved" {
+		planScopes, err := planScopeSchemaTx(ctx, tx)
+		if err != nil {
+			return BillingReservation{}, err
+		}
+		layers, err := readFundingLayersTx(ctx, tx, requestID, planScopes)
 		if err != nil {
 			return BillingReservation{}, err
 		}
@@ -2044,7 +2102,16 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			return BillingReservation{}, mapDBError("read terminal usage account", err)
 		}
 		layerAccount = account.String
-		layerCandidates, personalLayer, _ = settlementLayerCandidates(layers, layerAccount)
+		if pre.FundingRuleVersion == 5 {
+			tenant, err := servingAccountIsTenantTx(ctx, tx, layers, layerAccount)
+			if err != nil {
+				return BillingReservation{}, err
+			}
+			rule5 = rule5SettlementCandidates(layers, layerAccount, tenant)
+			layerCandidates = rule5.groups
+		} else {
+			layerCandidates, personalLayer, _ = settlementLayerCandidates(layers, layerAccount)
+		}
 		locking := append([]fundingLayer(nil), layerCandidates...)
 		sort.Slice(locking, func(i, j int) bool { return locking[i].groupID < locking[j].groupID })
 		for _, layer := range locking {
@@ -2083,11 +2150,13 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 		&outputTokens, &upstreamAccountID, &cacheWrite5mTokens, &cacheWrite1hTokens, &cacheWriteTTLPresent); err != nil {
 		return BillingReservation{}, mapDBError("read terminal usage for billing", err)
 	}
-	if reservation.FundingRuleVersion == 4 {
+	if reservation.FundingRuleVersion == 4 || reservation.FundingRuleVersion == 5 {
 		if pre.State != "reserved" || upstreamAccountID.String != layerAccount {
-			return BillingReservation{}, fmt.Errorf("rule 4 settlement snapshot changed: %w", ErrConflict)
+			return BillingReservation{}, fmt.Errorf("layered settlement snapshot changed: %w", ErrConflict)
 		}
-		if err := bindSettlementLayerTx(ctx, tx, &reservation, layerCandidates, personalLayer); err != nil {
+		// Under rule 5 a request no layer pays for is left uncovered rather
+		// than refused, so binding never needs a personal fallback.
+		if err := bindSettlementLayerTx(ctx, tx, &reservation, layerCandidates, personalLayer || reservation.FundingRuleVersion == 5); err != nil {
 			return BillingReservation{}, err
 		}
 	}
@@ -2199,9 +2268,49 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 			charged = groupCharged
 		}
 	}
+	// Rule 5: restricted subscriptions that contain the serving account pay
+	// next, in billing order, each from the period bound at admission.
+	for _, layer := range rule5.subscriptions {
+		if !billingPositive(remaining) {
+			break
+		}
+		var available string
+		if err := tx.QueryRowContext(ctx, `SELECT remaining_usd::text FROM billing_subscription_periods
+			WHERE id=$1 AND subscription_id=$2 AND user_id=$3 FOR UPDATE`,
+			layer.subscriptionPeriodID, layer.subscriptionID, reservation.UserID).Scan(&available); err != nil {
+			return BillingReservation{}, mapDBError("lock bound plan subscription period", err)
+		}
+		amount, err := billingMin(available, remaining)
+		if err != nil {
+			return BillingReservation{}, err
+		}
+		if !billingPositive(amount) {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscription_periods
+			SET remaining_usd = remaining_usd - $2::numeric WHERE id = $1`, layer.subscriptionPeriodID, amount); err != nil {
+			return BillingReservation{}, mapDBError("charge bound plan subscription period", err)
+		}
+		allocationOrder++
+		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_charge_allocations
+			(request_id, allocation_order, source_type, subscription_period_id, amount_usd, created_at)
+			VALUES ($1,$2,'subscription',$3,$4::numeric,$5)`, requestID, allocationOrder, layer.subscriptionPeriodID, amount, at); err != nil {
+			return BillingReservation{}, mapDBError("record plan subscription charge allocation", err)
+		}
+		if remaining, err = billingSubtract(remaining, amount); err != nil {
+			return BillingReservation{}, err
+		}
+		if charged, err = billingAdd(charged, amount); err != nil {
+			return BillingReservation{}, err
+		}
+	}
 	sources, err := billingSettlementSources(reservation)
 	if err != nil {
 		return BillingReservation{}, err
+	}
+	if reservation.FundingRuleVersion == 5 && !rule5.personal {
+		// A member's account never draws on personal funds.
+		sources = nil
 	}
 	cashCharged := "0.000000000000"
 	for _, source := range sources {
@@ -2308,6 +2417,10 @@ func settleBillingTx(ctx context.Context, tx *sql.Tx, requestID string, at time.
 				return BillingReservation{}, err
 			}
 		}
+	}
+	if reservation.FundingRuleVersion == 5 && rule5.selfUse {
+		// The user's own account: the cost is recorded, nothing is owed.
+		remaining = "0.000000000000"
 	}
 	var balanceAfter string
 	personalCharged, err := billingSubtract(charged, groupCharged)

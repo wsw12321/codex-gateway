@@ -480,7 +480,8 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 		SELECT user_id, model, sum(ledger_tokens)::bigint ledger_tokens,
 			COALESCE(sum(actual_cost_usd), 0)::text actual_cost_usd,
 			COALESCE(sum(charged_usd), 0)::text charged_usd,
-			COALESCE(sum(uncovered_usd), 0)::text uncovered_usd
+			COALESCE(sum(uncovered_usd), 0)::text uncovered_usd,
+			COALESCE(sum(actual_cost_usd) FILTER (WHERE charged_usd = 0 AND uncovered_usd = 0), 0)::text self_use_usd
 		FROM ledger_source` + ledgerModelClause + ` GROUP BY user_id, model
 	), dimensions AS (
 		SELECT user_id, model FROM usage_totals
@@ -498,7 +499,8 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 			COALESCE(l.ledger_tokens, 0)::bigint ledger_tokens,
 			COALESCE(l.actual_cost_usd, '0') actual_cost_usd,
 			COALESCE(l.charged_usd, '0') charged_usd,
-			COALESCE(l.uncovered_usd, '0') uncovered_usd
+			COALESCE(l.uncovered_usd, '0') uncovered_usd,
+			COALESCE(l.self_use_usd, '0') self_use_usd
 		FROM dimensions d
 		LEFT JOIN usage_totals u USING (user_id, model)
 		LEFT JOIN ledger_totals l USING (user_id, model)
@@ -509,7 +511,7 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 		COALESCE(c.cache_write_5m_tokens, 0), COALESCE(c.cache_write_1h_tokens, 0),
 		COALESCE(c.output_tokens, 0), COALESCE(c.reasoning_tokens, 0),
 		COALESCE(c.actual_cost_usd, '0'), COALESCE(c.charged_usd, '0'),
-		COALESCE(c.uncovered_usd, '0'), COALESCE(c.ledger_tokens, 0)
+		COALESCE(c.uncovered_usd, '0'), COALESCE(c.ledger_tokens, 0), COALESCE(c.self_use_usd, '0')
 	FROM users u LEFT JOIN combined c ON c.user_id = u.id
 	WHERE u.status <> 'pending'
 	ORDER BY u.username, c.model`
@@ -526,7 +528,7 @@ func (s *Store) GlobalUsage(ctx context.Context, from, until time.Time, model st
 			&value.RequestCount, &value.InputTokens, &value.CachedInputTokens,
 			&value.CacheWriteTokens, &value.CacheWrite5mTokens, &value.CacheWrite1hTokens, &value.OutputTokens, &value.ReasoningTokens,
 			&value.ActualCostUSD, &value.ChargedUSD, &value.UncoveredUSD,
-			&value.LedgerTokens,
+			&value.LedgerTokens, &value.SelfUseUSD,
 		); err != nil {
 			return nil, fmt.Errorf("scan global usage: %w", err)
 		}

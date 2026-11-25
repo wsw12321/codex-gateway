@@ -288,6 +288,38 @@ Owner 可充值、调整余额、批量新增订阅以及按 ID 重开／停用�
 那些。升级时迁移 `0049` 一次性把“已包含某系当时全部模型”的范围加上该系标记。
 说明与验证见[模型全系范围](docs/model-family-scopes-validation.md)。
 
+### 聚合网关：成员供应商与套餐商城
+
+聚合网关让成员带来自己的上游账号，并把它们做成套餐卖给其他用户。整个功能由商城开关
+`marketplace_settings.enabled` 控制，默认关闭；关闭时只有 Owner 的平台账号服务请求，行为与升级前一致。
+Owner 在“管理 › 商城管理”打开商城，并设置抽成比例、每人账号／出口服务器／套餐上限和是否允许成员添加
+API Key 供应商。打开前需要已配置账号出口和支持 `credential_ownership_v1`、`layer_select_v1` 的 CPA 插件。
+
+- **我的供应商**：成员可以授权登录或导入自己的 Codex、Claude、Antigravity 账号，添加 API Key 供应商
+  （需 Owner 允许），并运行自己的出口服务器（只接受公网 IPv4）。账号归成员所有，平台资金（群组、平台
+  套餐、现金）永远不使用成员账号。登录到已归他人或平台的账号会被拒绝，原账号不受影响；删除凭据释放
+  归属；只有 Owner 能转移归属，也可以停用成员账号。见[我的供应商](docs/tenant-providers.md)。
+- **自用与扣费规则 5**：成员自己的账号最先为成员服务，不扣费（可在“额度与订阅”页关闭）。之后依次是
+  群组、受限订阅（卖家套餐，或 Owner 设为“指定账号”的平台套餐）和个人订阅与余额。插件按层询问账号资格，
+  Gateway 逐层实时判断，套餐范围的修改从下一次请求起生效。卖家套餐额度不足的部分由卖家承担，绝不扣
+  买家现金。
+- **套餐商城**：成员在“我的套餐”发布用自己供应商服务的套餐，经 Owner 审核（驳回须写原因）后上架；任何
+  用户都能在“套餐”页用现金余额购买（不能买自己的）。含成员 API Key 供应商的套餐须确认对方能看到请求
+  内容；这项确认记在订阅上，可以随时撤回，卖家售出后才加入的 API Key 供应商只为确认过的订阅服务。成交款按成交时的抽成比例（向下取整到 12 位小数）扣除后立即记入卖家的现金余额，不支持提现；
+  卖家只看到匿名的买家编号。见[套餐商城](docs/marketplace.md)。
+- **加固**：买家已付费但卖家没有可用账号时产生 `subscription_layer_empty` 告警，缺少账号归因时
+  `billing_attribution_missing` 告警说明实际结算方式；信息清理同时清理旧的成交记录；永久删除成员时，
+  仍有供应商、出口、套餐或成交的成员给出明确原因（候选搜索也列出不能删除的用户及处理方法），Owner 可以
+  删除已停用成员的出口服务器，已释放的账号清空主人且不变成平台账号。
+
+多租户的信任边界、第三方供应商与注入内容等风险见[威胁模型](docs/threat-model.md#多租户聚合网关)，升级顺序
+（备份 → 插件镜像 → 网关迁移 `0051`–`0056` → 打开开关）见
+[运维手册](docs/operations.md#聚合网关的完整升级顺序00510056)。设计与分阶段记录见
+[改造计划](docs/aggregation-gateway-plan.md)、[开发进度](docs/aggregation-gateway-progress.md)和
+阶段 [1](docs/aggregation-gateway-stage1-validation.md)、[2](docs/aggregation-gateway-stage2-validation.md)、
+[3](docs/aggregation-gateway-stage3-validation.md)、[4](docs/aggregation-gateway-stage4-validation.md)、
+[5](docs/aggregation-gateway-stage5-validation.md) 的验证记录。
+
 ### 交流群与充值说明
 
 Owner 在“站点设置”页编辑两张卡片，均默认关闭。交流群卡片显示在登录页和概览页，

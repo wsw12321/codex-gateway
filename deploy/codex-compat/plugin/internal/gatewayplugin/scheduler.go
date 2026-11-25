@@ -187,8 +187,34 @@ func (p *Plugin) allocate(ctx context.Context, provider string, trusted Trusted,
 		byID[candidate.account.ID] = candidate
 		ids = append(ids, candidate.account.ID)
 	}
-	eligible, err := p.alloc.Eligible(ctx, provider, trusted.UserID, ids)
-	if err != nil {
+	// With funding layers the Gateway judges eligibility layer by layer: a
+	// member's account is eligible only in the layer that pays for it. The
+	// union is what this request may use at all.
+	var layers []map[string]bool
+	var eligible []Eligibility
+	var err error
+	if trusted.Scope.Present && len(trusted.Scope.Layers) > 0 {
+		offered := make([]LayerCandidates, 0, len(trusted.Scope.Layers))
+		for _, layer := range trusted.Scope.Layers {
+			offered = append(offered, LayerCandidates{GroupID: layer.GroupID, AccountIDs: layerCandidates(layer, ids)})
+		}
+		perLayer, errLayers := p.alloc.EligibleLayers(ctx, provider, trusted.UserID, offered)
+		if errLayers != nil {
+			return candidateAccount{}, bindKey, ErrUnavailable
+		}
+		layers = make([]map[string]bool, len(perLayer))
+		seen := map[string]bool{}
+		for i, rows := range perLayer {
+			layers[i] = make(map[string]bool, len(rows))
+			for _, item := range rows {
+				layers[i][item.ID] = true
+				if !seen[item.ID] {
+					seen[item.ID] = true
+					eligible = append(eligible, item)
+				}
+			}
+		}
+	} else if eligible, err = p.alloc.Eligible(ctx, provider, trusted.UserID, ids); err != nil {
 		return candidateAccount{}, bindKey, ErrUnavailable
 	}
 	permitted := make([]string, 0, len(eligible))
@@ -208,6 +234,8 @@ func (p *Plugin) allocate(ctx context.Context, provider string, trusted Trusted,
 	for _, id := range admissible {
 		allowed[id] = true
 	}
+	// A conversation's binding is reused only while its account is still
+	// eligible in some layer of this request.
 	if session != "" {
 		if bound, ok := p.bindings.Get(bindKey); ok {
 			if allowed[bound] {
@@ -223,38 +251,51 @@ func (p *Plugin) allocate(ctx context.Context, provider string, trusted Trusted,
 			}
 		}
 	}
-	selected, err := p.selectLayered(ctx, provider, trusted, admissible)
+	selected, err := p.selectLayered(ctx, provider, trusted, admissible, layers)
 	if err != nil {
 		return candidateAccount{}, bindKey, err
 	}
 	return byID[selected], bindKey, nil
 }
 
+// layerCandidates is the part of ids a layer offers: all of them for the
+// personal layer, otherwise the layer's own accounts.
+func layerCandidates(layer Layer, ids []string) []string {
+	if layer.All {
+		return append([]string(nil), ids...)
+	}
+	inLayer := make(map[string]bool, len(layer.AccountIDs))
+	for _, id := range layer.AccountIDs {
+		inLayer[id] = true
+	}
+	result := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if inLayer[id] {
+			result = append(result, id)
+		}
+	}
+	return result
+}
+
 // selectLayered asks the Gateway to choose within the first funding layer that
-// still has a candidate. A 429 means that layer is exhausted, so the next one
-// is tried; it never falls back outside the admitted layers.
-func (p *Plugin) selectLayered(ctx context.Context, provider string, trusted Trusted, admissible []string) (string, error) {
+// still has a candidate eligible in that layer. A 429 means that layer is
+// exhausted, so the next one is tried; it never falls back outside the
+// admitted layers.
+func (p *Plugin) selectLayered(ctx context.Context, provider string, trusted Trusted, admissible []string, eligible []map[string]bool) (string, error) {
 	if !trusted.Scope.Present || len(trusted.Scope.Layers) == 0 {
 		return p.alloc.Select(ctx, provider, trusted.UserID, admissible)
 	}
-	for _, layer := range trusted.Scope.Layers {
-		inLayer := admissible
-		if !layer.All {
-			allowed := make(map[string]bool, len(layer.AccountIDs))
-			for _, id := range layer.AccountIDs {
-				allowed[id] = true
-			}
-			inLayer = make([]string, 0, len(admissible))
-			for _, id := range admissible {
-				if allowed[id] {
-					inLayer = append(inLayer, id)
-				}
+	for i, layer := range trusted.Scope.Layers {
+		inLayer := make([]string, 0, len(admissible))
+		for _, id := range layerCandidates(layer, admissible) {
+			if eligible[i][id] {
+				inLayer = append(inLayer, id)
 			}
 		}
 		if len(inLayer) == 0 {
 			continue
 		}
-		selected, err := p.alloc.Select(ctx, provider, trusted.UserID, inLayer)
+		selected, err := p.alloc.SelectLayer(ctx, provider, trusted.UserID, LayerCandidates{GroupID: layer.GroupID, AccountIDs: inLayer})
 		if err == nil {
 			return selected, nil
 		}

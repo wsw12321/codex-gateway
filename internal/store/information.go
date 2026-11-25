@@ -232,7 +232,23 @@ func prepareInformationCandidates(ctx context.Context, tx *sql.Tx, cutoff time.T
 			return mapDBError("prepare information cleanup candidates", err)
 		}
 	}
-	return nil
+	// A marketplace sale follows its ledger entries: it goes once both the
+	// buyer's and the seller's entry are cleaned, now or before. A replay of
+	// migrations before 0054 has no sales.
+	marketplace, err := marketplaceSchemaTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if !marketplace {
+		_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE info_sales ON COMMIT DROP AS SELECT NULL::bigint id WHERE false`)
+		return mapDBError("prepare information cleanup sales", err)
+	}
+	_, err = tx.ExecContext(ctx, `CREATE TEMP TABLE info_sales ON COMMIT DROP AS SELECT m.id FROM marketplace_sales m
+		WHERE m.created_at < $1
+		AND (m.buyer_ledger_entry_id IS NULL OR m.buyer_ledger_entry_id IN (SELECT id FROM info_ledger))
+		AND (m.seller_ledger_entry_id IS NULL OR m.seller_ledger_entry_id IN (SELECT id FROM info_ledger))
+		ORDER BY m.id LIMIT $2`, cutoff, limit)
+	return mapDBError("prepare information cleanup sales", err)
 }
 
 var informationCandidateQueries = map[string]string{
@@ -246,6 +262,7 @@ var informationCandidateQueries = map[string]string{
 	"billing_cash_credit_lots":                 `SELECT count(*) FROM info_lots`,
 	"billing_subscription_periods":             `SELECT count(*) FROM info_periods`,
 	"billing_subscriptions":                    `SELECT count(*) FROM info_subscriptions`,
+	"marketplace_sales":                        `SELECT count(*) FROM info_sales`,
 }
 
 func informationReportTx(ctx context.Context, tx *sql.Tx, cutoff time.Time, report *InformationCleanupReport) error {
@@ -267,7 +284,7 @@ func informationReportTx(ctx context.Context, tx *sql.Tx, cutoff time.Time, repo
 		}
 		report.DeleteCounts[table] = count
 	}
-	for table, query := range map[string]string{
+	retainedQueries := map[string]string{
 		"usage_requests":                           `SELECT count(*) FROM usage_requests WHERE requested_at < $1 AND request_id NOT IN (SELECT request_id FROM info_requests)`,
 		"billing_reservations":                     `SELECT count(*) FROM billing_reservations WHERE created_at < $1 AND request_id NOT IN (SELECT request_id FROM info_requests)`,
 		"quota_reservations":                       `SELECT count(*) FROM quota_reservations WHERE created_at < $1 AND request_id NOT IN (SELECT request_id FROM info_requests)`,
@@ -279,7 +296,15 @@ func informationReportTx(ctx context.Context, tx *sql.Tx, cutoff time.Time, repo
 		"billing_subscription_operation_snapshots": `SELECT count(*) FROM billing_subscription_operation_snapshots o JOIN billing_ledger_entries l ON l.id=o.ledger_entry_id WHERE l.created_at < $1 AND l.id NOT IN (SELECT id FROM info_ledger)`,
 		"billing_charge_allocations":               `SELECT count(*) FROM billing_charge_allocations a JOIN billing_reservations b USING(request_id) WHERE b.created_at < $1 AND a.request_id NOT IN (SELECT request_id FROM info_requests)`,
 		"audit_events":                             `SELECT count(*) FROM audit_events a WHERE a.occurred_at < $1 AND NOT (a.severity='info' AND a.success AND a.event_type IN ('billing.rate_updated','billing.model_multiplier_updated','billing.model_price_updated','billing.recharged','billing.adjusted','billing.subscription_updated','billing.subscription_disabled','billing.plan_create','billing.plan_update','billing.plan_delete','billing.plan_purchase','billing.plan_renewal','billing.subscription_preferences','billing.cash_preferences','billing.cash_models_updated') AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text))`,
-	} {
+	}
+	marketplace, err := marketplaceSchemaTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if marketplace {
+		retainedQueries["marketplace_sales"] = `SELECT count(*) FROM marketplace_sales WHERE created_at < $1 AND id NOT IN (SELECT id FROM info_sales)`
+	}
+	for table, query := range retainedQueries {
 		var count int64
 		if err := tx.QueryRowContext(ctx, query, cutoff).Scan(&count); err != nil {
 			return mapDBError("count retained information", err)

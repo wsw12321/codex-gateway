@@ -342,6 +342,8 @@ Codex refresh 结果不确定时不再重试，需重新授权，详见 [CPA v8 
 升级到 `v0.60.0`，修复 `CVE-2026-78669`；关联依赖由 Go 模块版本选择同步更新。
 2026-11-07 安全更新将 CPA 与 mihomo 的 `golang.org/x/net` 升级到 `v0.62.0`（`CVE-2026-78661`），
 并在 Alpine 运行镜像中显式升级 musl 到 `1.2.5-r13`（`CVE-2026-107891`），见 [验证记录](ci-musl-xnet-validation.md)。
+2026-11-25 安全更新将 mihomo 的 `github.com/insomniacslk/dhcp` 升级到修复版本（`GHSA-jp3c-6v3g-mpxv`），
+构建标识改为 `v1.19.32-gateway.4`，见 [验证记录](ci-gosec-dhcp-validation.md)。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
@@ -740,6 +742,195 @@ WHERE event_type = 'billing.model_families_converted';
 
 只回退二进制时，旧版本把 `family:*` 当作不存在的模型，不会用这些范围扣费（失败关闭）；
 需要完全回退时按常规恢复迁移前的备份。
+
+### 聚合网关的完整升级顺序（0051–0056）
+
+聚合网关（成员供应商、卖家套餐、套餐商城）分六个迁移落地，全部由商城开关控制，默认关闭；开关关闭时，
+升级前后的线上行为一致（例外：开关打开后，Gateway 没有记录的账号不再可用）。无论从哪个版本升级，都按
+同一顺序执行：
+
+1. **备份**：按[加密备份](#8-加密备份和恢复演练)做一次备份并确认可解密，记录未结算请求数。迁移是
+   forward-only 的，旧二进制遇到未知迁移会拒绝启动，回退只能恢复这份备份。
+2. **插件镜像**：先构建并重建 CPA（`./scripts/compose.sh build codex-compat` 后
+   `./scripts/compose.sh up -d codex-compat`）。新插件声明 `credential_ownership_v1`（凭据归属与拒绝码）
+   和 `layer_select_v1`（按层询问资格）；旧网关不会使用这两项，所以新插件配旧网关行为不变。
+3. **网关迁移**：再构建并重建 Gateway。`serve` 启动时依次执行 `0051`–`0056`：现有账号全部是平台账号，
+   现有套餐全部是平台套餐（范围“不限制”、审核“已通过”），已有订阅从 `plan_id` 回填来源套餐，无需
+   手工回填。网关检测到插件不支持 `layer_select_v1` 时不发送成员层，只剩成员层的请求返回 503
+   `upstream_access_protocol_unavailable`，不会改用其他账号。
+4. **打开开关**：确认平台请求、扣费和账号列表正常后，Owner 在“管理 › 商城管理”打开商城，并设置抽成
+   比例、每人账号、出口服务器、套餐上限和是否允许成员 API Key 供应商。没有配置账号出口
+   （`EGRESS_CONTROL_KEY`）时拒绝打开；插件过旧时成员登录返回 503 `tenant_providers_unavailable`。
+
+各迁移的细节和开关打开后的注意事项见下面几节。关闭开关随时可以：成员供应商、自用和卖家套餐立即停止服务，
+卖家套餐不能购买或续费，平台路径不受影响；数据全部保留，重新打开后恢复。
+
+### 我的供应商与商城开关（0051、0052）
+
+聚合网关的成员供应商由商城开关控制，默认关闭；关闭时升级前后行为一致。说明见
+[我的供应商](tenant-providers.md)。
+
+升级顺序：
+
+1. 按常规做加密备份。
+2. 先升级 CPA 插件镜像（`./scripts/compose.sh build codex-compat` 后重建容器）。新插件在登录
+   被拒绝时只删除新保存的凭据，不会停用原主人的账号；旧网关不会发出拒绝码，所以新插件配旧网关
+   行为不变。
+3. 再升级 Gateway，启动时执行 `0051`、`0052`。现有账号全部是平台账号，无需回填。
+4. 确认无误后，Owner 再通过 `PUT /admin/market/settings` 打开开关。没有配置账号出口
+   （`EGRESS_CONTROL_KEY`）时会被拒绝；插件版本过旧时，成员登录返回 503
+   `tenant_providers_unavailable`。
+
+开关打开后需要注意：
+
+- Gateway 不再根据 CPA 的账号列表自动创建账号记录。Owner 添加平台账号要通过管理台的授权
+  登录或导入；直接放进 CPA 凭据目录的文件在开关打开期间不会被使用。
+- 删除账号（Owner 或成员）会释放归属：账号不再服务请求，下一次登录同一上游账号的人可以认领。
+- 只有 Owner 能转移归属（租户供应商页或上游账号卡片上的“转给成员…”）。平台账号要先移出群组
+  账号池、专属授权和用户账号权限名单。
+
+审计事件：`tenant_provider.operation`、`upstream_account.owner_changed`、
+`upstream_account.released`、`upstream_account.suspended`、`upstream_account.unsuspended`：
+
+```sql
+SELECT occurred_at, event_type, subject_id, metadata FROM audit_events
+WHERE event_type IN ('upstream_account.owner_changed', 'upstream_account.released',
+  'upstream_account.suspended', 'upstream_account.unsuspended')
+ORDER BY occurred_at DESC LIMIT 50;
+```
+
+只回退二进制不可行：旧二进制遇到未知迁移会拒绝启动，需要恢复升级前的备份。
+
+### 套餐供应商范围、规则 5 与自用（0053）
+
+阶段 3 的行为同样只在商城开关打开后出现；开关关闭时，新请求仍按规则 4 准入和结算。说明见
+[阶段 3 验证](aggregation-gateway-stage3-validation.md)。
+
+升级顺序：
+
+1. 按常规做加密备份。
+2. 先升级 CPA 插件镜像。新插件在请求带有扣费层时按层询问资格（`layer_select_v1`，
+   单独的 `layer-select` 路由），现有网关本来就能解析这种请求，所以新插件配旧网关行为不变。
+3. 再升级 Gateway，启动时执行 `0053`。现有套餐的范围全部是“不限制”；已有订阅从
+   `plan_id` 回填来源套餐。
+4. 网关检测到插件不支持 `layer_select_v1` 时，不把自用层和卖家套餐层发给插件；只剩这些层的
+   请求返回 503 `upstream_access_protocol_unavailable`，不会改用其他账号。
+
+开关打开后需要注意：
+
+- 成员自己的账号最先为成员服务，不扣费（账务流水显示“自用”）。成员可在“额度与订阅”页关闭；
+  Owner 停用成员账号后，该账号也不再自用。
+- 平台套餐的供应商范围在套餐卡片的“供应商范围”中设置，从下一次请求起生效，不提升套餐版本，
+  也不影响续费。范围里的账号被转出或删除后自动失效，编辑器会标出并在保存时移除。
+
+### 卖家套餐、审核与商城（0054）
+
+阶段 4 只改 Gateway，不需要新的插件镜像。说明见[套餐商城](marketplace.md)和
+[阶段 4 验证](aggregation-gateway-stage4-validation.md)。
+
+升级顺序：
+
+1. 按常规做加密备份。
+2. 升级 Gateway，启动时执行 `0054`。现有套餐全部是平台套餐，审核状态为“已通过”；数据库约束
+   保证平台套餐始终为已通过、不能被强制下架。
+3. 商城开关关闭时没有任何变化；打开后成员可以发布套餐，Owner 在“商城管理”页审核、设置抽成。
+
+开关打开后需要注意：
+
+- 卖家套餐的成交款在同一事务里分账：买家现金扣全额，卖家获得一笔新的现金额度（流水类型
+  `plan_sale_income`），抽成留在平台，三者记入 `marketplace_sales`。核对某一时段的抽成：
+
+  ```sql
+  SELECT count(*), sum(gross_usd), sum(commission_usd), sum(net_usd)
+  FROM marketplace_sales WHERE created_at >= $1 AND created_at < $2;
+  ```
+
+- 关闭开关后卖家套餐不能购买或续费，已售订阅也暂停（只由卖家账号服务，而成员账号此时不服务）；
+  重新打开后恢复。平台套餐不受影响。
+- 信息维护的清理会删除旧的账务流水；早于截止时间、且买家与卖家两条流水都已清理的成交记录一并删除
+  （`0055` 起，清理报告的“商城成交”一行）。
+- 有成交记录的用户（买家或卖家）和仍有套餐的卖家不能永久删除，删除时给出原因，见
+  [成员的停用与永久删除](#成员的停用与永久删除0055)。
+- 关闭商城开关后，平台套餐的指定范围暂不生效（订阅改为个人来源），卖家套餐的订阅暂停扣费。
+
+审计事件：`billing.plan_provider_scope_changed`、`billing.self_use_changed`：
+
+```sql
+SELECT occurred_at, event_type, subject_id, metadata FROM audit_events
+WHERE event_type IN ('billing.plan_provider_scope_changed', 'billing.self_use_changed')
+ORDER BY occurred_at DESC LIMIT 50;
+```
+
+### 成员的停用与永久删除（0055）
+
+`0055` 让信息维护能够永久删除曾经拥有供应商或套餐的成员。
+
+**停用**（用户管理中把成员设为停用）立即生效：成员不能登录或发起请求；其卖家套餐停售、不能续费；其账号
+不再进入任何订阅层，买家仍有额度时触发 `subscription_layer_empty` 告警。成员的账号、出口和套餐都保留，
+重新启用后恢复。需要让买家继续使用时，Owner 可以先把成员账号转给平台或其他成员（“租户供应商”页）。
+
+**永久删除**（“信息维护 › 删除无账务用户”）仍只接受余额为零、没有任何历史的成员。下列成员不出现在候选
+列表中；如果在选择后才出现，整批删除被拒绝并列出原因：
+
+| 原因 | 含义 | 处理 |
+| --- | --- | --- |
+| 仍有供应商账号（`providers`） | 成员仍持有凭证的 OAuth 账号或 API Key 供应商 | 成员在“我的供应商”中删除；成员已停用时，Owner 在“租户供应商”中转给平台后删除 |
+| 仍有出口服务器（`egress_servers`） | 成员自建的出口服务器 | 成员在“我的出口”中删除；成员已停用时，Owner 在“租户供应商”的成员出口服务器表中删除。仍被账号绑定的节点要先转移或删除这些账号 |
+| 仍有未删除的套餐（`seller_plans`） | 草稿、审核中或在售的卖家套餐 | 成员在“我的套餐”中删除 |
+| 其套餐仍有订阅记录（`plan_subscriptions`） | 买家的订阅（含已结束、尚未清理的）仍指向该卖家的套餐 | 订阅到期并停用后，由信息清理删除 |
+| 仍有商城成交记录（`marketplace_sales`） | 作为买家或卖家出现在成交记录中 | 两条流水都被清理后，成交记录随信息清理删除 |
+
+在候选列表上方的搜索框输入用户名、显示名或拼音后，列表下方的“不能删除的匹配用户”会列出与搜索匹配、
+但不满足删除条件的用户（每次最多 20 个），以及每个原因和处理方法。
+
+删除执行时：
+
+- 成员已释放的账号（凭证已删除）保留记录和用量历史，清空主人并记录 `owner_deleted_at`。这些账号不服务
+  任何请求，不出现在 Owner 的平台账号列表和租户供应商列表中；以后有人登录同一上游账号时按认领处理，
+  记录恢复正常。审计事件 `information.users.deleted` 的 `released_account_ids` 列出这些账号。
+- 成员已删除、且不再被任何订阅或成交引用的套餐随之删除（`deleted_seller_plan_count`）。
+- 成员未完成的登录（出口登记）随用户删除。
+
+查找主人已删除的账号：
+
+```sql
+SELECT id, provider, masked_email, credential_removed_at, owner_deleted_at
+FROM upstream_accounts WHERE owner_deleted_at IS NOT NULL ORDER BY owner_deleted_at DESC;
+```
+
+### 第三方 API 供应商的确认（0056）
+
+买家对卖家 API Key 供应商的确认记在订阅上（`billing_subscriptions.third_party_acknowledged_at`）：
+
+- 购买或续费时勾选确认即记录；买家可以在“额度与订阅”的订阅卡片上随时确认或撤回
+  （`PUT /admin/billing/me/subscriptions/{id}/third-party-consent`，`{"acknowledged": true|false}`），从下一次请求起生效。
+- 没有确认的订阅只由卖家的 OAuth 账号服务。卖家在售出后加入的 API Key 供应商不会为它服务；只剩 API Key 供应商时
+  该订阅层被跳过，但不产生 `subscription_layer_empty` 告警。
+- 升级到 `0056` 时，已有订阅都没有确认记录（失败关闭）：卖家 API Key 供应商暂停为这些订阅服务，直到买家确认。
+  审计事件 `billing.third_party_consent_changed` 记录每次变更。
+
+```sql
+SELECT s.id, s.user_id, s.third_party_acknowledged_at FROM billing_subscriptions s
+JOIN billing_plans p ON p.id = s.source_plan_id WHERE p.seller_user_id IS NOT NULL AND s.enabled;
+```
+
+### 聚合网关告警
+
+两类告警只在商城开关打开后出现，在“告警”页处理：
+
+- `subscription_layer_empty`：买家的订阅仍有额度、覆盖所请求的模型，但其套餐此刻没有任何可用账号
+  （卖家停用、账号全部被停用或删除、范围不含该协议的账号）。请求跳过该层，落到后续层或返回 503。
+  每个订阅、每个协议一条，`details` 含 `plan_id`、`seller_user_id`（平台套餐为空）、`provider`、`model`。
+  处理：联系卖家恢复账号，或下架套餐并人工处理买家余额。
+- `billing_attribution_missing`：请求缺少账号归因。规则 4 的多层请求按第一层结算（去重键不变）；规则 5
+  不按自用免费，按第一个群组层、受限订阅层或个人层结算，都没有时记为未覆盖，`details.fallback_layer`
+  说明实际方式，`details.layer_kinds` 列出本次请求的扣费层。
+
+```sql
+SELECT last_occurred_at, alert_type, title, occurrence_count, details FROM alerts
+WHERE alert_type IN ('subscription_layer_empty', 'billing_attribution_missing') AND status <> 'resolved'
+ORDER BY last_occurred_at DESC LIMIT 50;
+```
 
 ### 升级到多订阅（0034）
 

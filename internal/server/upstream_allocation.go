@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	upstreamAllocationRequestBytes = 8 << 10
+	// Layered requests repeat an account in each layer that offers it.
+	upstreamAllocationRequestBytes = 64 << 10
 	upstreamWeightRequestBytes     = 256
 	// Forty characters may each arrive as a 12-byte escaped surrogate pair.
 	upstreamAliasRequestBytes = 1 << 10
@@ -88,18 +89,16 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusOK, map[string]any{"accounts": eligibilityRows(allowed)})
 			return
 		}
-		groups := make([]map[string]any, 0, len(request.Groups))
-		for _, group := range request.Groups {
-			if len(group.AccountIDs) == 0 {
-				groups = append(groups, map[string]any{"group_id": group.GroupID, "accounts": []map[string]any{}})
-				continue
-			}
-			allowed, err := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), userID, group.AccountIDs)
-			if err != nil {
-				httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
-				return
-			}
-			groups = append(groups, map[string]any{"group_id": group.GroupID, "accounts": eligibilityRows(allowed)})
+		// Each layer is judged by what its ID names for this user now: the
+		// self-use layer, a restricted subscription, or platform accounts.
+		layers, err := s.accountStore(r).LayerEligibleAccounts(r.Context(), userID, selectionLayers(request.Groups))
+		if err != nil {
+			httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
+			return
+		}
+		groups := make([]map[string]any, 0, len(layers))
+		for _, layer := range layers {
+			groups = append(groups, map[string]any{"group_id": layer.GroupID, "accounts": eligibilityRows(layer.Accounts)})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
 		return
@@ -110,23 +109,12 @@ func (s *Server) upstreamAccountSelection(w http.ResponseWriter, r *http.Request
 		// through the same permission/concurrency admission query before asking
 		// weighted allocation to choose an account. Empty or zero-weight groups
 		// naturally fall through to the next group.
-		for _, group := range request.Groups {
-			if len(group.AccountIDs) == 0 {
+		for _, layer := range selectionLayers(request.Groups) {
+			if len(layer.AccountIDs) == 0 {
 				continue
 			}
-			allowed, e := s.accountStore(r).EligibleUpstreamAccountLimits(r.Context(), userID, group.AccountIDs)
-			if e != nil {
-				httpx.WriteError(w, r, http.StatusServiceUnavailable, "server_error", "upstream_allocation_unavailable", "暂时无法查询上游账号权限")
-				return
-			}
-			candidates := make([]string, 0, len(allowed))
-			for _, account := range allowed {
-				candidates = append(candidates, account.ID)
-			}
-			if len(candidates) == 0 {
-				continue
-			}
-			id, e = s.accountStore(r).SelectUpstreamAccount(r.Context(), userID, candidates, time.Now().UTC())
+			var e error
+			id, e = s.accountStore(r).SelectLayerUpstreamAccount(r.Context(), userID, layer, time.Now().UTC())
 			if e == nil {
 				break
 			}
@@ -467,6 +455,16 @@ func validUpstreamSelectionRequest(request upstreamSelectionRequest) bool {
 		}
 	}
 	return true
+}
+
+// selectionLayers converts a request's layers for the store, which judges
+// each by its ID.
+func selectionLayers(groups []upstreamSelectionGroup) []store.UpstreamAllocationGroup {
+	layers := make([]store.UpstreamAllocationGroup, 0, len(groups))
+	for _, group := range groups {
+		layers = append(layers, store.UpstreamAllocationGroup{GroupID: group.GroupID, AccountIDs: append([]string(nil), group.AccountIDs...)})
+	}
+	return layers
 }
 
 func eligibilityRows(allowed []store.UpstreamAccountEligibility) []map[string]any {

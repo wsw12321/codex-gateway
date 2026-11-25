@@ -126,7 +126,9 @@ func (s *Server) acquireSupplier(ctx context.Context, provider, id, model, root 
 	if !runtime.slotAvailableLocked(id, root, limit, now) {
 		return store.ModelSupplier{}, false, nil
 	}
-	value, err := s.findModelSupplier(ctx, provider, id)
+	// The caller has just checked the supplier's eligibility in a layer of
+	// this request, which is what lets a member's supplier be found here.
+	value, err := s.findRoutableModelSupplier(ctx, provider, id)
 	if errors.Is(err, store.ErrNotFound) || err == nil && (!value.Enabled || !slices.Contains(value.Models, model)) {
 		return store.ModelSupplier{}, false, nil
 	}
@@ -228,13 +230,42 @@ func (s *Server) mixedClient(provider string) *gatewayproxy.Client {
 	}
 }
 
-func mixedOfficialScope(groups []gatewayproxy.AllocationGroup, account string) []gatewayproxy.AllocationGroup {
-	for _, group := range groups {
-		if !group.AllAccounts && slices.Contains(group.AccountIDs, account) {
-			return []gatewayproxy.AllocationGroup{{GroupID: group.GroupID, AccountIDs: []string{account}}}
-		}
+// mixedOfficialScope pins an official account to the layer it was selected
+// in, so CPA checks it under that layer's rules again.
+func mixedOfficialScope(groups []gatewayproxy.AllocationGroup, layer int, account string) []gatewayproxy.AllocationGroup {
+	if layer >= 0 && layer < len(groups) && !groups[layer].AllAccounts {
+		return []gatewayproxy.AllocationGroup{{GroupID: groups[layer].GroupID, AccountIDs: []string{account}, Tenant: groups[layer].Tenant}}
 	}
 	return []gatewayproxy.AllocationGroup{{GroupID: mixedDispatchScopeID, AccountIDs: []string{account}}}
+}
+
+func (s *Server) findRoutableModelSupplier(ctx context.Context, provider, id string) (store.ModelSupplier, error) {
+	values, err := s.store.WithUpstreamProvider(provider).RoutableModelSuppliers(ctx, []string{id})
+	if err != nil {
+		return store.ModelSupplier{}, err
+	}
+	for _, value := range values {
+		if value.ID == id {
+			return value, nil
+		}
+	}
+	return store.ModelSupplier{}, store.ErrNotFound
+}
+
+// memberLayerAccounts lists the accounts of the layers that hold members'
+// accounts (self-use and seller plans).
+func memberLayerAccounts(groups []gatewayproxy.AllocationGroup) []string {
+	var ids []string
+	for _, group := range groups {
+		if group.Tenant {
+			for _, id := range group.AccountIDs {
+				if !slices.Contains(ids, id) {
+					ids = append(ids, id)
+				}
+			}
+		}
+	}
+	return ids
 }
 
 func (s *Server) officialCandidates(ctx context.Context, provider string) []string {
@@ -262,28 +293,45 @@ func (s *Server) responseSupplierCatalog(ctx context.Context, user string, allow
 		return nil
 	}
 	repo := s.store.WithUpstreamProvider(store.UpstreamProviderCodex)
-	values, err := repo.ModelSuppliers(ctx)
+	// Members' suppliers count only when one of the user's member layers
+	// (self-use or a seller plan) reaches them now; any failure hides them.
+	reachable, err := repo.TenantReachableAccounts(ctx, user)
+	if err != nil {
+		reachable = nil
+	}
+	values, err := repo.RoutableModelSuppliers(ctx, reachable)
 	if err != nil {
 		return nil
 	}
-	var ids []string
+	var platform []string
 	byID := make(map[string][]string)
+	usable := make(map[string]bool)
 	for _, value := range values {
-		if value.Enabled {
-			ids = append(ids, value.ID)
-			byID[value.ID] = value.Models
+		if !value.Enabled {
+			continue
+		}
+		byID[value.ID] = value.Models
+		if slices.Contains(reachable, value.ID) {
+			usable[value.ID] = true
+		} else {
+			platform = append(platform, value.ID)
 		}
 	}
-	if len(ids) == 0 || len(ids) > store.MaxUpstreamAllocationCandidates {
+	if len(platform) > store.MaxUpstreamAllocationCandidates {
 		return nil
 	}
-	eligible, err := repo.EligibleUpstreamAccountLimits(ctx, user, ids)
-	if err != nil {
-		return nil
+	if len(platform) > 0 {
+		eligible, err := repo.EligibleUpstreamAccountLimits(ctx, user, platform)
+		if err != nil {
+			return nil
+		}
+		for _, item := range eligible {
+			usable[item.ID] = true
+		}
 	}
 	var models []string
-	for _, item := range eligible {
-		for _, model := range byID[item.ID] {
+	for id := range usable {
+		for _, model := range byID[id] {
 			if _, ok := allowed[model]; ok && !slices.Contains(models, model) {
 				models = append(models, model)
 			}
@@ -304,7 +352,7 @@ func (s *Server) forwardMixed(w http.ResponseWriter, r *http.Request, prepared p
 	}
 	ctx := r.Context()
 	repo := s.store.WithUpstreamProvider(provider)
-	values, err := repo.ModelSuppliers(ctx)
+	values, err := repo.RoutableModelSuppliers(ctx, memberLayerAccounts(options.Groups))
 	if err != nil {
 		return gatewayproxy.Result{}, mixedUnavailable(), true
 	}
@@ -327,9 +375,34 @@ func (s *Server) forwardMixed(w http.ResponseWriter, r *http.Request, prepared p
 	if len(candidates) > store.MaxUpstreamAllocationCandidates {
 		return gatewayproxy.Result{}, mixedUnavailable(), true
 	}
-	eligible, err := repo.EligibleUpstreamAccountLimits(ctx, options.UserID, candidates)
+	// Eligibility is judged per funding layer, exactly as for CPA's own
+	// accounts: a member's supplier or account only in the layer that pays.
+	groups := options.Groups
+	if len(groups) == 0 {
+		groups = []gatewayproxy.AllocationGroup{{GroupID: gatewayproxy.PersonalLayerID, AccountIDs: []string{}, AllAccounts: true}}
+	}
+	asked := make([]store.UpstreamAllocationGroup, 0, len(groups))
+	for _, group := range groups {
+		var ids []string
+		for _, candidate := range candidates {
+			if group.AllAccounts || slices.Contains(group.AccountIDs, candidate) {
+				ids = append(ids, candidate)
+			}
+		}
+		asked = append(asked, store.UpstreamAllocationGroup{GroupID: group.GroupID, AccountIDs: ids})
+	}
+	eligible, err := repo.LayerEligibleAccounts(ctx, options.UserID, asked)
 	if err != nil {
 		return gatewayproxy.Result{}, mixedUnavailable(), true
+	}
+	limits := make(map[string]int)
+	inLayer := make([]map[string]bool, len(eligible))
+	for i, layer := range eligible {
+		inLayer[i] = make(map[string]bool, len(layer.Accounts))
+		for _, item := range layer.Accounts {
+			inLayer[i][item.ID] = true
+			limits[item.ID] = item.ConcurrentLimit
+		}
 	}
 	conversation := mixedConversation(r.Header, prepared.body, options.AffinityScope)
 	root := conversation
@@ -341,21 +414,6 @@ func (s *Server) forwardMixed(w http.ResponseWriter, r *http.Request, prepared p
 	}
 	now := time.Now()
 	bound := s.supplierRuntime.binding(bindKey, now)
-	limits := make(map[string]int, len(eligible))
-	for _, group := range options.Groups {
-		for _, item := range eligible {
-			if group.AllAccounts || slices.Contains(group.AccountIDs, item.ID) {
-				limits[item.ID] = item.ConcurrentLimit
-			}
-		}
-	}
-	groups := options.Groups
-	if len(groups) == 0 {
-		groups = []gatewayproxy.AllocationGroup{{AllAccounts: true}}
-		for _, item := range eligible {
-			limits[item.ID] = item.ConcurrentLimit
-		}
-	}
 	var result gatewayproxy.Result
 	failure := mixedUnavailable()
 	for attempt := 0; attempt < 4 && len(limits) > 0 && ctx.Err() == nil; attempt++ {
@@ -370,24 +428,32 @@ func (s *Server) forwardMixed(w http.ResponseWriter, r *http.Request, prepared p
 			}
 		}
 		s.supplierRuntime.mu.Unlock()
+		layerOf := -1
 		if limits[bound] > 0 {
 			id = bound
+			for i := range inLayer {
+				if inLayer[i][bound] {
+					layerOf = i
+					break
+				}
+			}
 		} else {
-			for _, group := range groups {
+			for i, group := range groups {
 				var layer []string
 				for _, candidate := range candidates {
-					if limits[candidate] > 0 && (group.AllAccounts || slices.Contains(group.AccountIDs, candidate)) {
+					if limits[candidate] > 0 && inLayer[i][candidate] {
 						layer = append(layer, candidate)
 					}
 				}
 				if len(layer) == 0 {
 					continue
 				}
-				id, err = repo.SelectUpstreamAccount(ctx, options.UserID, layer, time.Now())
+				id, err = repo.SelectLayerUpstreamAccount(ctx, options.UserID, store.UpstreamAllocationGroup{GroupID: group.GroupID, AccountIDs: layer}, time.Now())
 				if err != nil && !errors.Is(err, store.ErrNoUpstreamAccount) {
 					return result, mixedUnavailable(), true
 				}
 				if id != "" {
+					layerOf = i
 					break
 				}
 			}
@@ -416,7 +482,7 @@ func (s *Server) forwardMixed(w http.ResponseWriter, r *http.Request, prepared p
 			}()
 		} else {
 			pinned := options
-			pinned.Groups = mixedOfficialScope(groups, id)
+			pinned.Groups = mixedOfficialScope(groups, layerOf, id)
 			result, failure = official(w, incoming, pinned)
 		}
 		if failure == nil {

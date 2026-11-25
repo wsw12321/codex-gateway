@@ -3973,6 +3973,22 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 /* Per-account Shadowsocks exits share the dashboard's responsive card layout. */
 .egress-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); gap: 1rem; }
 .egress-card { min-width: 0; }
+.provider-add, #provider-oauth { margin-top: 1rem; }
+.provider-add-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: .75rem; }
+.provider-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1rem; margin-top: 1rem; }
+.provider-card { min-width: 0; display: grid; gap: .5rem; align-content: start; }
+.provider-card .panel-heading h3 { overflow-wrap: anywhere; }
+.provider-card > p { margin: 0; }
+.tenant-providers-table + h3, [data-section="tenant-providers"] h3 { margin-top: 1.5rem; }
+.provider-card .actions { flex-wrap: wrap; }
+.provider-settings summary { cursor: pointer; color: var(--accent-text); }
+.provider-inline-form { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem; margin-top: .75rem; }
+.provider-inline-form label { flex: 1 1 12rem; min-width: 0; }
+.provider-quota:empty { display: none; }
+#provider-oauth-status[data-kind="error"] { color: var(--danger); }
+#provider-oauth-link { overflow-wrap: anywhere; }
+.tenant-providers-table td .actions { flex-wrap: wrap; }
+.upstream-owner-transfer button { justify-self: start; }
 .egress-address { overflow-wrap: anywhere; }
 .egress-probe-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .65rem 1rem; margin: 0 0 1rem; }
 .egress-probe-bar label { display: grid; gap: .35rem; flex: 0 1 22rem; min-width: min(100%, 16rem); }
@@ -4446,4 +4462,56 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 }
 @media (prefers-reduced-motion: reduce) {
   .notice, dialog[open] { animation: none; }
+}
+
+/* Aggregation gateway stage 3: plan provider scope editor and self-use. */
+.plan-scope-accounts { display: grid; gap: .75rem; max-height: 22rem; overflow-y: auto; }
+.plan-scope-accounts.muted { opacity: .6; }
+.plan-scope-provider { display: grid; gap: .35rem; margin: 0; padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.plan-scope-provider legend { padding: 0 .3rem; font-weight: 600; }
+.plan-scope-provider .check-label { overflow-wrap: anywhere; }
+.billing-plan-scope { color: var(--muted); }
+.subscription-scope { overflow-wrap: anywhere; }
+.subscription-third-party { display: grid; gap: .4rem; padding: .55rem .7rem; border: 1px solid var(--line); border-radius: 10px; }
+.subscription-third-party[data-third-party="pending"] { border-color: rgb(var(--warning-rgb) / 45%); background: rgb(var(--warning-rgb) / 8%); }
+.subscription-third-party small { overflow-wrap: anywhere; }
+.subscription-third-party button { justify-self: start; }
+
+/* Aggregation gateway stage 5: member nodes the Owner removes, and why a
+   searched user cannot be deleted. */
+.tenant-egress-owner { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.information-blocked { display: grid; gap: .5rem; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.information-blocked h4 { margin: 0; }
+.information-blocked-users { display: grid; gap: .75rem; margin: 0; padding: 0; list-style: none; }
+.information-blocked-user { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.information-blocked-reasons { display: grid; gap: .3rem; margin: .35rem 0 0; padding-left: 1.2rem; }
+.information-blocked-reasons li { display: grid; gap: .1rem; }
+.information-blocked-reasons small { color: var(--muted); overflow-wrap: anywhere; }
+.billing-self-use .check-label { margin-top: .25rem; }
+
+/* Aggregation gateway stage 4: seller plans and the marketplace. */
+.status-badge[data-status="pending"] {
+  border-color: rgb(var(--warning-rgb) / 35%);
+  color: var(--warning);
+  background: rgb(var(--warning-rgb) / 7%);
+}
+.status-badge[data-status="error"] {
+  border-color: rgb(var(--danger-rgb) / 35%);
+  color: var(--danger);
+  background: rgb(var(--danger-rgb) / 7%);
+}
+.billing-plan-card.seller-plan header { flex-wrap: wrap; justify-content: flex-start; }
+.billing-plan-card.seller-plan header h4 { margin-right: auto; }
+.billing-plan-card .seller-plan-seller { font-size: .9rem; }
+.billing-plan-card .seller-plan-description { color: var(--text, inherit); white-space: pre-line; overflow-wrap: anywhere; }
+.billing-plan-card .actions { flex-wrap: wrap; }
+.market-review .market-review-note { width: 100%; }
+.market-suspend-reason { width: min(100%, 12rem); margin-right: .5rem; }
+.market-settings { margin-bottom: 1rem; }
+.market-settings-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: .75rem; margin: .75rem 0; }
+#market-operations > .panel, [data-section="my-plans"] > .panel { margin-top: 1rem; }
+.nav-badge {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.35rem; height: 1.35rem;
+  margin-left: auto; padding: 0 .35rem; border-radius: 999px; font-size: .75rem; font-weight: 700;
+  color: #fff; background: var(--danger);
 }

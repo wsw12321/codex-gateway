@@ -59,6 +59,9 @@ type PurchaseBillingPlanParams struct {
 	UserID, PlanID                         string
 	PlanVersion, SubscriptionConfigVersion int64
 	PeriodCount                            int
+	// AcknowledgeThirdParty is the buyer's consent that a member-run API
+	// supplier may serve a seller plan and see those requests.
+	AcknowledgeThirdParty bool
 }
 
 type RenewBillingSubscriptionParams struct {
@@ -67,6 +70,7 @@ type RenewBillingSubscriptionParams struct {
 	UserID, Tier                           string
 	PlanVersion, SubscriptionConfigVersion int64
 	PeriodCount                            int
+	AcknowledgeThirdParty                  bool
 }
 
 type BillingPlanTransaction struct {
@@ -110,8 +114,19 @@ func scanBillingPlan(row rowScanner) (BillingPlan, error) {
 	return p, err
 }
 
+// ListBillingPlans lists platform plans. Seller plans are listed by the
+// marketplace and seller routes.
 func (s *Store) ListBillingPlans(ctx context.Context, includeInactive bool) ([]BillingPlan, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE deleted_at IS NULL AND (active OR $1) ORDER BY created_at,id`, includeInactive)
+	platformOnly := ""
+	var sellers bool
+	if err := s.db.QueryRowContext(ctx, `SELECT to_regclass('billing_plan_provider_scopes') IS NOT NULL`).Scan(&sellers); err != nil {
+		return nil, mapDBError("check plan seller schema", err)
+	}
+	if sellers {
+		platformOnly = ` AND seller_user_id IS NULL`
+	}
+	// #nosec G202 -- the optional predicate is a fixed literal; includeInactive is a bound parameter.
+	rows, err := s.db.QueryContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE deleted_at IS NULL AND (active OR $1)`+platformOnly+` ORDER BY created_at,id`, includeInactive)
 	if err != nil {
 		return nil, mapDBError("list billing plans", err)
 	}
@@ -159,17 +174,24 @@ func (s *Store) CreateBillingPlan(ctx context.Context, params CreateBillingPlanP
 	if params.MinPeriodCount == 0 {
 		params.MinPeriodCount = 1
 	}
-	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, true)
+	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, true, nil)
 }
 
 func (s *Store) UpdateBillingPlan(ctx context.Context, params UpdateBillingPlanParams) (BillingPlan, error) {
 	if params.PlanID == "" || params.Version < 1 {
 		return BillingPlan{}, fmt.Errorf("%w: plan and version are required", ErrInvalid)
 	}
-	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, ID: params.PlanID, Version: params.Version, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, false)
+	return s.writeBillingPlan(ctx, params.BillingWriteParams, BillingPlan{PeriodDays: params.PeriodDays, ModelIDs: params.ModelIDs, ID: params.PlanID, Version: params.Version, Name: params.Name, PriceUSD: params.PriceUSD, Tier: params.Tier, AllowanceUSD: params.AllowanceUSD, MinPeriodCount: params.MinPeriodCount, Active: params.Active}, false, nil)
 }
 
-func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams, plan BillingPlan, create bool) (BillingPlan, error) {
+// sellerPlanWrite carries the seller side of a plan write (stage 4). A nil
+// value writes a platform plan, which only ever matches platform plans.
+type sellerPlanWrite struct {
+	SellerUserID string
+	Description  string
+}
+
+func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams, plan BillingPlan, create bool, seller *sellerPlanWrite) (BillingPlan, error) {
 	var result BillingPlan
 	if err := validateBillingWrite(params); err != nil {
 		return result, err
@@ -177,14 +199,31 @@ func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams,
 	if err := normalizeBillingPlan(&plan); err != nil {
 		return result, err
 	}
+	if seller != nil {
+		description, err := normalizePlanDescription(seller.Description)
+		if err != nil || !validUUIDText(seller.SellerUserID) || seller.SellerUserID != params.ActorUserID {
+			return result, fmt.Errorf("%w: invalid seller plan", ErrInvalid)
+		}
+		seller.Description = description
+	}
 	params.At = normalizedBillingTime(params.At, s.now)
 	params.Reason = strings.TrimSpace(params.Reason)
 	opType := "plan_update"
 	if create {
 		opType = "plan_create"
 	}
-	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, params.Reason, plan.ID, strconv.FormatInt(plan.Version, 10), plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, strconv.Itoa(plan.MinPeriodCount), strconv.FormatBool(plan.Active), strconv.Itoa(plan.PeriodDays), strings.Join(plan.ModelIDs, ","))
+	fingerprintParts := []string{opType, params.ActorUserID, params.Reason, plan.ID, strconv.FormatInt(plan.Version, 10), plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, strconv.Itoa(plan.MinPeriodCount), strconv.FormatBool(plan.Active), strconv.Itoa(plan.PeriodDays), strings.Join(plan.ModelIDs, ",")}
+	if seller != nil {
+		fingerprintParts = append(fingerprintParts, "seller", seller.SellerUserID, seller.Description)
+	}
+	fingerprint := billingOperationFingerprint(fingerprintParts...)
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if seller != nil {
+			// The seller's account lock serializes the per-seller plan limit.
+			if err := lockBillingAccountTx(ctx, tx, seller.SellerUserID); err != nil {
+				return err
+			}
+		}
 		created, replayID, err := claimBillingOperationTx(ctx, tx, params, opType, "", fingerprint)
 		if err != nil {
 			return err
@@ -208,15 +247,27 @@ func (s *Store) writeBillingPlan(ctx context.Context, params BillingWriteParams,
 			return err
 		}
 		modelsJSON, _ := json.Marshal(plan.ModelIDs)
-		if create {
+		switch {
+		case create && seller != nil:
+			if err := sellerPlanCreateAllowedTx(ctx, tx, seller.SellerUserID); err != nil {
+				return err
+			}
+			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `INSERT INTO billing_plans (name,price_usd,tier,allowance_usd,min_period_count,active,created_at,updated_at,updated_by_user_id,period_days,model_ids,seller_user_id,review_status,description) VALUES ($1,$2::numeric,$3,$4::numeric,$5,$6,$7,$7,$8,$9,$10::jsonb,$8,'draft',$11) RETURNING `+billingPlanColumns, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID, plan.PeriodDays, modelsJSON, seller.Description))
+		case create:
 			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `INSERT INTO billing_plans (name,price_usd,tier,allowance_usd,min_period_count,active,created_at,updated_at,updated_by_user_id,period_days,model_ids) VALUES ($1,$2::numeric,$3,$4::numeric,$5,$6,$7,$7,$8,$9,$10::jsonb) RETURNING `+billingPlanColumns, plan.Name, plan.PriceUSD, plan.Tier, plan.AllowanceUSD, plan.MinPeriodCount, plan.Active, params.At, params.ActorUserID, plan.PeriodDays, modelsJSON))
-		} else {
+		case seller != nil:
+			result, err = updateSellerPlanTx(ctx, tx, params, plan, *seller, modelsJSON)
+		default:
 			current, readErr := scanBillingPlan(tx.QueryRowContext(ctx, `SELECT `+billingPlanColumns+` FROM billing_plans WHERE id=$1 FOR UPDATE`, plan.ID))
 			if readErr != nil {
 				return mapDBError("lock billing plan", readErr)
 			}
 			if current.DeletedAt != nil || current.Version != plan.Version {
 				return ErrBillingPlanChanged
+			}
+			// The Owner's plan routes manage platform plans only.
+			if err := requirePlatformPlanTx(ctx, tx, plan.ID); err != nil {
+				return err
 			}
 			result, err = scanBillingPlan(tx.QueryRowContext(ctx, `UPDATE billing_plans SET
 				version=version+CASE WHEN (name,price_usd,tier,allowance_usd,min_period_count,active,period_days,model_ids) IS DISTINCT FROM ($2::text,$3::numeric,$4::text,$5::numeric,$6::integer,$7::boolean,$10::integer,$11::jsonb) THEN 1 ELSE 0 END,
@@ -347,7 +398,24 @@ func reopenBillingSubscriptionTx(ctx context.Context, tx *sql.Tx, params PutSubs
 	}
 	modelJSON, _ := json.Marshal(params.ModelIDs)
 	if params.SubscriptionID == "" {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,name,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,period_days,model_ids,models_initialized) VALUES($1,$2,$3,$4,true,$5::numeric,$6,1,$7,$8,$8,$9,$10::jsonb,true)`, subscriptionID, params.UserID, params.Name, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At, params.PeriodDays, modelJSON); err != nil {
+		// A purchase records the plan it came from for good (migration 0053):
+		// the plan's provider scope keeps deciding which accounts the
+		// subscription pays for. A replayed older schema (upgrade tests) has
+		// no such column.
+		sourceColumn, sourceValue := "", ""
+		args := []any{subscriptionID, params.UserID, params.Name, params.Tier, allowance, params.PeriodCount, timeOrNil(expiresAt), params.At, params.PeriodDays, modelJSON}
+		if plan != nil {
+			scoped, err := planScopeSchemaTx(ctx, tx)
+			if err != nil {
+				return empty, err
+			}
+			if scoped {
+				sourceColumn, sourceValue = ",source_plan_id", ",$11"
+				args = append(args, plan.ID)
+			}
+		}
+		// #nosec G202 -- the optional column and placeholder are fixed SQL.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO billing_subscriptions(id,user_id,name,tier,enabled,allowance_usd,period_count,current_period_number,expires_at,created_at,updated_at,period_days,model_ids,models_initialized`+sourceColumn+`) VALUES($1,$2,$3,$4,true,$5::numeric,$6,1,$7,$8,$8,$9,$10::jsonb,true`+sourceValue+`)`, args...); err != nil {
 			return empty, mapDBError("create billing subscription", err)
 		}
 	}
@@ -458,17 +526,20 @@ func (s *Store) PurchaseBillingPlan(ctx context.Context, params PurchaseBillingP
 	if params.PlanID == "" {
 		return BillingPlanTransaction{}, fmt.Errorf("%w: plan is required", ErrInvalid)
 	}
-	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, params.PlanID, "", params.PlanVersion, 0, params.PeriodCount, false)
+	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, params.PlanID, "", params.PlanVersion, 0, params.PeriodCount, false, params.AcknowledgeThirdParty)
 }
 
 func (s *Store) RenewBillingSubscription(ctx context.Context, params RenewBillingSubscriptionParams) (BillingPlanTransaction, error) {
 	if params.SubscriptionID == "" {
 		return BillingPlanTransaction{}, fmt.Errorf("%w: subscription ID is required", ErrInvalid)
 	}
-	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, "", params.SubscriptionID, params.PlanVersion, params.SubscriptionConfigVersion, params.PeriodCount, true)
+	return s.transactBillingPlan(ctx, params.BillingWriteParams, params.UserID, "", params.SubscriptionID, params.PlanVersion, params.SubscriptionConfigVersion, params.PeriodCount, true, params.AcknowledgeThirdParty)
 }
 
-func (s *Store) transactBillingPlan(ctx context.Context, params BillingWriteParams, userID, planID, subscriptionID string, planVersion, configVersion int64, count int, renew bool) (BillingPlanTransaction, error) {
+// transactBillingPlan buys or renews a plan. A seller plan also pays its
+// seller (see recordPlanSaleTx): both billing accounts are locked in UUID
+// order before anything else, and the plan must be on sale.
+func (s *Store) transactBillingPlan(ctx context.Context, params BillingWriteParams, userID, planID, subscriptionID string, planVersion, configVersion int64, count int, renew, acknowledgeThirdParty bool) (BillingPlanTransaction, error) {
 	var result BillingPlanTransaction
 	if err := validateBillingWrite(params); err != nil {
 		return result, err
@@ -484,7 +555,17 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 	}
 	fingerprint := billingOperationFingerprint(opType, params.ActorUserID, userID, params.Reason, planID, subscriptionID, strconv.FormatInt(planVersion, 10), strconv.FormatInt(configVersion, 10), strconv.Itoa(count))
 	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
-		if err := lockBillingAccountTx(ctx, tx, userID); err != nil {
+		market, err := marketplaceSchemaTx(ctx, tx)
+		if err != nil {
+			return err
+		}
+		seller := ""
+		if market {
+			if seller, err = planSellerForTransactionTx(ctx, tx, userID, planID, subscriptionID, renew); err != nil {
+				return err
+			}
+		}
+		if err := lockBillingAccountsTx(ctx, tx, userID, seller); err != nil {
 			return err
 		}
 		created, replayID, err := claimBillingOperationTx(ctx, tx, params, opType, userID, fingerprint)
@@ -531,6 +612,30 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 		}
 		if count < plan.MinPeriodCount {
 			return fmt.Errorf("%w: quantity is below the plan minimum", ErrInvalid)
+		}
+		if market {
+			state, err := readPlanSaleStateTx(ctx, tx, plan.ID)
+			if err != nil {
+				return err
+			}
+			if state.seller != seller {
+				return ErrBillingPlanChanged
+			}
+			if seller != "" {
+				switch {
+				case seller == userID:
+					return ErrSelfPurchase
+				case !state.marketplace || state.status != PlanReviewApproved || state.suspended || !state.sellerOK:
+					return ErrPlanNotOnSale
+				}
+				thirdParty, err := planUsesThirdPartyTx(ctx, tx, plan.ID)
+				if err != nil {
+					return err
+				}
+				if thirdParty && !acknowledgeThirdParty {
+					return ErrThirdPartyAcknowledgement
+				}
+			}
 		}
 		if renew {
 			var currentConfig int64
@@ -593,6 +698,23 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 		}
 		if err := finishBillingOperationTx(ctx, tx, params.OperationID, entry.ID); err != nil {
 			return err
+		}
+		if seller != "" {
+			kind := "purchase"
+			if renew {
+				kind = "renewal"
+			}
+			if _, err := recordPlanSaleTx(ctx, tx, params, plan, seller, userID, subscription.ID, kind, count, total, entry.ID); err != nil {
+				return err
+			}
+			// The consent given here lets the seller's API key suppliers serve
+			// this subscription until the buyer withdraws it (migration 0056).
+			if acknowledgeThirdParty {
+				if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET third_party_acknowledged_at=COALESCE(third_party_acknowledged_at,$2)
+					WHERE id=$1`, subscription.ID, params.At); err != nil {
+					return mapDBError("record third-party consent", err)
+				}
+			}
 		}
 		if err := appendBillingAuditTx(ctx, tx, params, "billing."+opType, "subscription", subscription.ID, map[string]any{"operation_id": params.OperationID, "plan": billingPlanAuditMetadata(plan), "period_count": count, "total_usd": total}); err != nil {
 			return err
