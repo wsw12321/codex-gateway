@@ -4,7 +4,7 @@
 
 ## 开发分支
 
-- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。阶段 3 已完成，下一步是阶段 4。
+- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。阶段 4 已完成，下一步是阶段 5。
 - 从 `main` 的 `8386b12`（Import the full gateway model catalog in OpenCode setup）分出，第一个提交 `2a800c5` 是阶段 1。
 - 每个阶段完成后都可以单独合并。合并前先 rebase 到最新 `main`，检查迁移编号是否和 `main` 上的新迁移冲突；冲突时顺延编号，并同步修改 `TestEmbeddedMigrationsCoverRequiredSchema` 和 `migrations/README.md`。
 - 功能由 `marketplace_settings.enabled` 控制，默认关闭。关闭时，各阶段合并后的线上行为应与 `main` 一致（例外见下方阶段 1 的“行为变化”）。
@@ -75,46 +75,21 @@
 - **前端**（`5db6866`）：套餐卡片的范围与编辑器、自用开关、订阅范围、自用流水，Node 测试与截图。
 - **阶段 2 留下的衔接**：释放或转出的账号在解析时按“仍归卖家所有”过滤，编辑器标出并在保存时移除；`/v1/models` 只算未释放、未停用的成员供应商；额度保护覆盖开始服务的成员 OAuth 账号（集成测试验证）；成员出口节点只被账号绑定引用，套餐范围引用账号而非节点，节点删除沿用已有的绑定检查。
 
+### 阶段 4：卖家套餐、审核、商城、分账（已完成，提交 `86ef02d`、`0424e8d`、`1cab10b`）
+
+说明见[套餐商城](marketplace.md)，验证记录见[阶段 4 验证](aggregation-gateway-stage4-validation.md)。
+
+- **迁移 `0054_marketplace.sql`**：`billing_plans` 新增 `review_status`（现有套餐为 approved，约束保证平台套餐始终已通过且不能被下架）、`review_note`、`reviewed_by_user_id`、`reviewed_at`、`submitted_at`、`description`、`admin_suspended`；新建 `marketplace_sales`（成交额、成交时的抽成比例、抽成、净额、每个卖家各自的买家编号 `buyer_number`、两条流水引用，流水被清理时引用清空）；ledger `entry_type` 新增 `plan_sale_income`。
+- **Store**（`86ef02d`）：
+  - 卖家套餐增删改复用 `writeBillingPlan`（`sellerPlanWrite`）：新套餐为草稿，数量上限读 `max_plans_per_user`（在卖家账户锁内计数）；实质修改（名称、说明、价格、额度、周期、模型、起购期数）让已通过、已驳回、待审核的套餐回到待审核；上下架不算实质修改；被 Owner 下架的套餐不能重新上架。
+  - Owner 的平台套餐函数（`UpdateBillingPlan`、`DeleteBillingPlan`、`ListBillingPlans`）只作用于平台套餐。
+  - `SubmitSellerPlan`、`ReviewSellerPlan`（按审核时的版本，驳回必须写原因）、`SetSellerPlanSuspended`、`SetSellerPlanListing`。
+  - 分账在 `transactBillingPlan` 中：预读卖家后按 UUID 顺序锁定买卖双方账户；禁止自购；套餐须已通过、未下架、卖家正常、商城开启（续费同样）；含成员 API Key 供应商的套餐要求 `AcknowledgeThirdParty`；抽成 12 位小数向下取整（`commissionAmounts`）；卖家净额新建现金 lot 并写 `plan_sale_income`（不含买家，不记操作人）；写 `marketplace_sales`；幂等沿用 `operation_id`。
+  - 读取：`MarketPlans`、`SellerPlans`、`PendingSellerPlans`、`AllSellerPlans`、`SellerSales`（去掉买家身份）、`AllMarketplaceSales`、`SellerPlanUsage`（按账号聚合订阅扣费）。
+- **服务端**（`0424e8d`）：`/admin/me/plans`（增删改、provider-scope、submit、listing、usage）、`/admin/me/sales`，`GET /admin/market/plans`，Owner 的 `/admin/market/reviews`、`/admin/market/plans/{id}/suspend`、`/admin/market/sales`；购买与续费接受 `acknowledge_third_party`；`/admin/state` 加入每人套餐上限和 Owner 的待审数量。卖家路由只对成员开放，Owner 路由对成员 403，开关关闭时全部 404。
+- **前端**（`1cab10b`）：套餐页在开关打开时即商城（成员套餐卡片显示卖家、说明、供应商构成、第三方 API 提示，购买时额外确认）；成员“我的套餐”（发布、编辑、提交、上下架、供应商范围、用量、销售收入）；Owner“商城管理”（商城设置、审核、成员套餐处置、全部成交，导航显示待审数量）；Node 测试 `marketplace_ui_test.cjs` 与截图脚本 `marketplace_browser.cjs`。
+
 ## 剩余待完成项
-
-### 阶段 4：卖家套餐、审核、商城、分账（需求 3）
-
-阶段 3 已就绪、阶段 4 直接使用的部分：`billing_plans.seller_user_id`（只能在插入时设置，触发器禁止修改）、卖家订阅层的准入与结算（只为卖家账号付费，额度不足记未覆盖）、`SetPlanProviderScope` 的 `SellerUserID` 参数和 `PlanScopeCandidates(seller)`、卖家停用时（`users.status` 非 active）其套餐池为空、开关关闭时卖家订阅暂停扣费。
-
-- [ ] **迁移 `0054_marketplace.sql`**：
-  - `billing_plans` 新增 `review_status`（现有套餐为 approved）、`review_note`、`reviewed_by_user_id`、`reviewed_at`、`submitted_at`、`description`。
-  - 新建 `marketplace_sales`。
-  - ledger `entry_type` 新增 `plan_sale_income`；扩展 operation 类型。
-- [ ] **卖家套餐增删改**：复用 `normalizeBillingPlan` / `writeBillingPlan` / `validateBillingModelsTx`。
-  - 数量上限读 `max_plans_per_user`。
-  - 修改价格、额度、周期、模型、名称、描述：重新进入审核，期间下架，并提升 `version`。
-  - 修改供应商范围：无需审核，不提升 `version`。
-- [ ] **分账**：在 `transactBillingPlan` 中实现。
-  - 禁止自购。
-  - 按 UUID 顺序锁定买家和卖家的 `billing_accounts`。
-  - 用 `debitBillingPlanCashTx` 扣买家现金。
-  - 抽成：12 位小数向下取整，抽成比例在成交时固化。
-  - 卖家净额：新建现金 lot，并写 `plan_sale_income`。
-  - 写 `marketplace_sales`，用 `operation_id` 保证幂等。
-  - 续费同样分账。
-- [ ] **卖家被停用时**：其套餐下架，其账号不可选；已购订阅的层被跳过。
-- [ ] **路由**：
-  - 卖家：`/admin/me/plans`（含 provider-scope：复用 `SetPlanProviderScope`，`SellerUserID` 取本人；范围编辑器复用阶段 3 的对话框）、submit、listing、`/admin/me/sales`（买家匿名）、`/admin/me/plans/{id}/usage`。
-  - 商城：`GET /admin/market/plans`。购买沿用 `POST /admin/billing/me/purchases`；含第三方 API 的套餐需要 `acknowledge_third_party=true`。
-  - Owner：`/admin/market/reviews`、`/admin/market/plans/{id}/suspend`、`/admin/market/sales`。
-- [ ] **前端**：
-  - 商城：合并现有 `plans` 区块。
-  - 我的套餐。
-  - 销售收入。
-  - 套餐审核（显示待审数量）。
-  - 商城设置：阶段 1 的设置接口（阶段 2 加了 `max_egress_servers_per_user`）目前还没有界面。
-- [ ] **验证**：
-  - 金额精确；
-  - 并发重复购买只扣一次；
-  - 买家与卖家互相购买时不死锁；
-  - 余额不足时整体回滚；
-  - 成员访问审核、设置、全部成交接口得到 403；
-  - 写 `docs/marketplace.md` 和阶段 4 验证记录。
 
 ### 阶段 5：加固与文档
 
@@ -127,13 +102,17 @@
   - 成员自建出口服务器（阶段 2 只接受公网 IPv4，`docs/threat-model.md` 已补一段，阶段 5 合并进完整的多租户部分）；
   - CPA 凭据数量增长。
 - [ ] **用户删除与停用**：`upstream_accounts.owner_user_id` 和 `egress_servers.owner_user_id` 都是 `ON DELETE RESTRICT`；已释放的账号仍保留原主人。
-  - 信息管理的永久删除，要先处理该用户的供应商、出口服务器、已释放账号的历史归属和仍有有效订阅的套餐，否则给出明确错误，不能只返回数据库错误。
-  - 清理任务覆盖 `marketplace_sales`。
+  - 信息管理的永久删除，要先处理该用户的供应商、出口服务器、已释放账号的历史归属和仍有有效订阅的套餐，否则给出明确错误，不能只返回数据库错误。阶段 4 又加了两处 `RESTRICT`：发布过套餐的卖家（`billing_plans.seller_user_id`）和出现在成交记录里的买家或卖家（`marketplace_sales`）。
+  - 清理任务覆盖 `marketplace_sales`：目前流水被清理时只清空成交记录里的流水引用，成交记录本身一直保留，需要决定保留期限。
 - [ ] **告警**：
   - `subscription_layer_empty`：买家已付费，但卖家没有可用账号；
   - `billing_attribution_missing`：扩展到新的层类型。
+- [ ] **阶段 4 留下的小项**（可选，按需确认）：
+  - Owner 的平台套餐编辑器还没有“说明”字段（数据库和商城已支持，平台套餐的说明目前为空）。
+  - 卖家看不到被驳回前后的完整审核历史，只看到最近一次的备注；审计事件里有完整记录。
+  - 没有退款流程；买家与卖家的纠纷只能由 Owner 手工调整余额。
 - [ ] **文档**：
-  - `docs/operations.md` 写明升级顺序：备份 → 插件镜像 → 网关迁移 → 打开开关。
+  - `docs/operations.md` 写明升级顺序：备份 → 插件镜像 → 网关迁移 → 打开开关（阶段 2–4 各自的小节已写，阶段 5 合并成完整说明）。
   - README 完整介绍。
   - 各阶段的截图。
 
@@ -187,4 +166,6 @@
 - **插件 e2e**：没有 Docker 时，可按 `plugin.Dockerfile` 的构建阶段手工构建 CPA 与插件 `.so` 后运行 `go test -tags e2e ./e2e`，步骤见[阶段 2 验证](aggregation-gateway-stage2-validation.md#已运行检查)。
 - **截图脚本**：`internal/server/testdata/tenant_providers_browser.cjs` 只拦截成员与租户供应商接口，其他面板的请求返回 404，不影响截图。`plan_scopes_browser.cjs` 同理；它的成员页需要显式调用 `loadBillingDashboard()`（夹具不运行 `loadDashboard`）。
 - **升级测试与新列**：回放旧迁移前缀后再调用 `Migrate` 的测试会比较整行快照（如 `cpa_v848_migration_integration_test.go`），新迁移给这些表加列时，要在快照里排除新列。准入、购买、结算对 0053 之前的结构用 `planScopeSchemaTx` 判断。
+- **阶段 4 的升级测试**：购买与续费对 0054 之前的结构用 `marketplaceSchemaTx`（`to_regclass('marketplace_sales')`）判断，没有该表时按平台套餐处理；`ListBillingPlans` 和 Owner 的套餐修改对 0053 之前的结构不做卖家过滤。
+- **阶段 4 的截图脚本**：`internal/server/testdata/marketplace_browser.cjs` 覆盖成员商城与第三方确认、“我的套餐”、Owner“商城管理”。阶段 3 的 `plan_scopes_browser.cjs` 夹具不提供 `/admin/market/plans`，Owner 页面会多一条“商城套餐加载失败”的提示，不影响它的断言。
 - **插件 e2e 构建脚本**：阶段 3 的手工构建步骤与阶段 2 相同（见[阶段 2 验证](aggregation-gateway-stage2-validation.md#已运行检查)），构建约需 5 分钟。

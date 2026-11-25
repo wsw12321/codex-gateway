@@ -1,6 +1,6 @@
 # 聚合网关改造计划：用户供应商 + 卖家套餐 + 商城
 
-> 2026-11-24 确定的分阶段计划。下文“默认取舍”已全部确认：阶段 4 的两条（买家匿名、只有实质修改才重新审核）于阶段 3 完成后确认。阶段 3 开发前确认了四条默认取舍（自用层第一且可关闭、卖家套餐额度不足由卖家承担、个人层保持最后、模型权限对自用生效），实现见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
+> 2026-11-24 确定的分阶段计划。下文“默认取舍”已全部确认：阶段 4 的两条（买家匿名、只有实质修改才重新审核）于阶段 3 完成后确认，实现见[阶段 4 验证](aggregation-gateway-stage4-validation.md)。阶段 3 开发前确认了四条默认取舍（自用层第一且可关闭、卖家套餐额度不足由卖家承担、个人层保持最后、模型权限对自用生效），实现见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
 
 ## Context
 
@@ -193,7 +193,9 @@
   - Owner 套餐编辑器增加“供应商：不限制 / 指定”选择器，按协议分组，显示账号状态。
   - “额度与订阅”页增加自用开关，订阅卡片显示供应商范围。
 
-### 阶段 4：卖家套餐、审核、商城、分账（需求 3）
+### 阶段 4：卖家套餐、审核、商城、分账（需求 3，已完成）
+
+> 实际实现与下列原计划的差异：卖家看到的买家标识是每个卖家各自的买家顺序编号（`marketplace_sales.buyer_number`），无需密钥或额外的表；套餐新增 `admin_suspended` 表示 Owner 强制下架；成交记录对账务流水的引用在信息清理删除流水时清空（不阻止清理）；卖家套餐的增删改沿用 `plan_create`/`plan_update`/`plan_delete` 操作类型，提交、审核、下架只写审计事件；第三方 API 确认只针对含成员 API Key 供应商的卖家套餐（平台供应商由 Owner 运营）；续费同样要求套餐已通过审核、未被下架、卖家正常；界面把“销售收入”并入“我的套餐”，把审核、成员套餐处置、全部成交和商城设置放在 Owner 的“商城管理”一页。详见[套餐商城](marketplace.md)和[阶段 4 验证](aggregation-gateway-stage4-validation.md)。
 - **迁移** `0054_marketplace.sql`：
   - `billing_plans` 新增 `review_status`（现有套餐为 approved）、`review_note`、`reviewed_by_user_id`、`reviewed_at`、`submitted_at`、`description`。
   - 新建 `marketplace_sales`，字段：`operation_id`、`plan_id/version`、`seller`、`buyer`、`subscription_id`、`kind`、`period_count`、`gross`、`rate`、`commission`、`net`、两条 ledger 引用。
@@ -345,7 +347,7 @@ node --test internal/server/testdata/<新增>_test.cjs
 | 1 归属底座 | 已完成：迁移 `0051`、平台账号过滤、`/admin/market/settings` | `aggregation-gateway` / `2a800c5` |
 | 2 我的供应商 | 已完成：迁移 `0052`、认领/释放/转移、成员出口、`/admin/me/providers`、`/admin/tenant-providers`、插件冲突处理、界面 | `aggregation-gateway` / `daec9c6`–`00e666b` |
 | 3 套餐供应商范围、规则 5、自用 | 已完成：迁移 `0053`、规则 5 准入与结算、逐层资格（插件 `layer_select_v1`）、平台套餐范围、自用、界面 | `aggregation-gateway` / `612c9b2`–`5db6866` |
-| 4 卖家套餐、审核、商城、分账 | 未开始 | `aggregation-gateway` |
+| 4 卖家套餐、审核、商城、分账 | 已完成：迁移 `0054`、卖家套餐与审核、分账与成交记录、商城与卖家/Owner 接口、界面 | `aggregation-gateway` / `86ef02d`–`1cab10b` |
 | 5 加固与文档 | 未开始 | `aggregation-gateway` |
 
 逐项待办见[开发进度与待办](aggregation-gateway-progress.md#剩余待完成项)。

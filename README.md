@@ -303,8 +303,15 @@ Owner 可充值、调整余额、批量新增订阅以及按 ID 重开／停用�
 “额度与订阅”页关闭）；Owner 可在套餐卡片上把平台套餐的供应商范围设为“指定账号”，这类订阅
 只为所选账号付费，修改从下一次请求起生效；卖家套餐的订阅只为卖家的账号付费，额度不足的部分
 由卖家承担，绝不扣买家现金。插件按层询问账号资格，Gateway 逐层实时判断；需先升级插件、再升级
-Gateway。见[阶段 3 验证](docs/aggregation-gateway-stage3-validation.md)；开发分支
-`aggregation-gateway` 上的进度与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
+Gateway。见[阶段 3 验证](docs/aggregation-gateway-stage3-validation.md)。
+
+阶段 4 开放了套餐商城：成员在“我的套餐”发布用自己供应商服务的套餐，提交审核；Owner 在
+“商城管理”审核（驳回须写原因）、强制下架、设置抽成比例和每人上限，并查看全部成交。通过审核并上架
+的套餐出现在“套餐”页，任何用户都能用现金余额购买（不能买自己的）；含成员 API Key 供应商的套餐须
+确认对方能看到请求内容。成交款按成交时的抽成比例（向下取整到 12 位小数）扣除后立即记入卖家的现金
+余额，卖家只看到匿名的买家编号。见[套餐商城](docs/marketplace.md)和
+[阶段 4 验证](docs/aggregation-gateway-stage4-validation.md)；开发分支 `aggregation-gateway` 上的进度
+与剩余待办见[开发进度](docs/aggregation-gateway-progress.md)。
 
 ### 交流群与充值说明
 
