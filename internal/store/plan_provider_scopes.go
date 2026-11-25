@@ -248,12 +248,16 @@ func (s *Store) SetPlanProviderScope(ctx context.Context, params SetPlanProvider
 // SubscriptionProviderScope describes, for the subscriber, which accounts a
 // subscription pays for now. Restricted is true when it forms its own funding
 // layer; AccountCounts are the accounts usable now, per provider.
+// ThirdPartyAPI: the seller's scope now includes member-run API key
+// suppliers, which serve the subscription only while ThirdPartyAcknowledged.
 type SubscriptionProviderScope struct {
-	PlanID        string         `json:"plan_id"`
-	Mode          string         `json:"mode"`
-	Seller        bool           `json:"seller"`
-	Restricted    bool           `json:"restricted"`
-	AccountCounts map[string]int `json:"account_counts"`
+	PlanID                 string         `json:"plan_id"`
+	Mode                   string         `json:"mode"`
+	Seller                 bool           `json:"seller"`
+	Restricted             bool           `json:"restricted"`
+	AccountCounts          map[string]int `json:"account_counts"`
+	ThirdPartyAPI          bool           `json:"third_party_api"`
+	ThirdPartyAcknowledged bool           `json:"third_party_acknowledged"`
 }
 
 // SubscriptionProviderScopes returns the provider scope of each of the user's
@@ -263,7 +267,8 @@ func (s *Store) SubscriptionProviderScopes(ctx context.Context, userID string) (
 		return nil, fmt.Errorf("%w: invalid user", ErrInvalid)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT s.id::text, p.id::text, COALESCE(sc.mode,'all'), p.seller_user_id IS NOT NULL,
-			p.seller_user_id IS NOT NULL OR (`+marketplaceTenantSQL+` AND COALESCE(sc.mode,'all')='selected')
+			p.seller_user_id IS NOT NULL OR (`+marketplaceTenantSQL+` AND COALESCE(sc.mode,'all')='selected'),
+			s.third_party_acknowledged_at IS NOT NULL
 		FROM billing_subscriptions s
 		JOIN billing_plans p ON p.id=s.source_plan_id
 		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=p.id
@@ -275,7 +280,7 @@ func (s *Store) SubscriptionProviderScopes(ctx context.Context, userID string) (
 	for rows.Next() {
 		var id string
 		var scope SubscriptionProviderScope
-		if err := rows.Scan(&id, &scope.PlanID, &scope.Mode, &scope.Seller, &scope.Restricted); err != nil {
+		if err := rows.Scan(&id, &scope.PlanID, &scope.Mode, &scope.Seller, &scope.Restricted, &scope.ThirdPartyAcknowledged); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan subscription provider scope: %w", err)
 		}
@@ -292,19 +297,27 @@ func (s *Store) SubscriptionProviderScopes(ctx context.Context, userID string) (
 		if !scope.Restricted {
 			continue
 		}
-		for _, provider := range []string{UpstreamProviderCodex, UpstreamProviderAnthropic, UpstreamProviderAntigravity} {
-			var count int
-			err := s.withTx(ctx, &sql.TxOptions{ReadOnly: true}, func(tx *sql.Tx) error {
-				ids, err := resolvePlanPoolTx(ctx, tx, scope.PlanID, provider)
-				count = len(ids)
-				return err
-			})
-			if err != nil {
-				return nil, err
+		err := s.withTx(ctx, &sql.TxOptions{ReadOnly: true}, func(tx *sql.Tx) error {
+			if scope.Seller {
+				uses, err := planUsesThirdPartyTx(ctx, tx, scope.PlanID)
+				if err != nil {
+					return err
+				}
+				scope.ThirdPartyAPI = uses
 			}
-			if count > 0 {
-				scope.AccountCounts[provider] = count
+			for _, provider := range []string{UpstreamProviderCodex, UpstreamProviderAnthropic, UpstreamProviderAntigravity} {
+				ids, err := resolvePlanPoolTx(ctx, tx, scope.PlanID, provider, !scope.Seller || scope.ThirdPartyAcknowledged)
+				if err != nil {
+					return err
+				}
+				if len(ids) > 0 {
+					scope.AccountCounts[provider] = len(ids)
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
 		}
 		scopes[id] = scope
 	}
@@ -362,6 +375,65 @@ func (s *Store) SetSelfUse(ctx context.Context, params SetSelfUseParams) (bool, 
 			"billing.self_use_changed", "user", params.UserID, map[string]any{"enabled": params.Enabled})
 	})
 	return params.Enabled, err
+}
+
+type SetThirdPartyConsentParams struct {
+	UserID         string
+	SubscriptionID string
+	Acknowledged   bool
+	ActorSessionID string
+	RequestID      string
+	SourceIP       string
+	At             time.Time
+}
+
+// SetThirdPartyConsent records whether the buyer lets the seller's API key
+// suppliers serve one subscription of a seller plan. They see the requests
+// they serve, so without this consent the subscription's layer leaves them
+// out; the change applies from the next request. A subscription that is not
+// the user's or not of a seller plan answers ErrNotFound.
+func (s *Store) SetThirdPartyConsent(ctx context.Context, params SetThirdPartyConsentParams) (bool, error) {
+	if !validUUIDText(params.UserID) || !validUUIDText(params.SubscriptionID) {
+		return false, fmt.Errorf("%w: invalid subscription", ErrInvalid)
+	}
+	if params.At.IsZero() {
+		params.At = s.now().UTC()
+	} else {
+		params.At = params.At.UTC()
+	}
+	err := s.withTx(ctx, nil, func(tx *sql.Tx) error {
+		if err := lockBillingAccountTx(ctx, tx, params.UserID); err != nil {
+			return err
+		}
+		var previous bool
+		var planID string
+		err := tx.QueryRowContext(ctx, `SELECT s.third_party_acknowledged_at IS NOT NULL, p.id::text
+			FROM billing_subscriptions s JOIN billing_plans p ON p.id=s.source_plan_id
+			WHERE s.id=$1::uuid AND s.user_id=$2::uuid AND p.seller_user_id IS NOT NULL FOR UPDATE OF s`,
+			params.SubscriptionID, params.UserID).Scan(&previous, &planID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return mapDBError("read third-party consent", err)
+		}
+		if previous == params.Acknowledged {
+			return nil
+		}
+		var at any
+		if params.Acknowledged {
+			at = params.At
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET third_party_acknowledged_at=$2 WHERE id=$1::uuid`,
+			params.SubscriptionID, at); err != nil {
+			return mapDBError("save third-party consent", err)
+		}
+		return appendBillingAuditTx(ctx, tx, BillingWriteParams{ActorUserID: params.UserID, ActorSessionID: params.ActorSessionID,
+			RequestID: params.RequestID, SourceIP: params.SourceIP, At: params.At},
+			"billing.third_party_consent_changed", "subscription", params.SubscriptionID,
+			map[string]any{"acknowledged": params.Acknowledged, "plan_id": planID})
+	})
+	return params.Acknowledged, err
 }
 
 // PlanScopeCandidates lists the accounts a seller may put in a plan scope:

@@ -40,6 +40,9 @@ type layerSubscription struct {
 	planID string
 	seller string
 	mode   string
+	// thirdParty: the buyer consented that the seller's API key suppliers
+	// serve this subscription.
+	thirdParty bool
 }
 
 // LayerEligibleAccounts checks each layer's candidates against the layer's
@@ -80,10 +83,10 @@ func (s *Store) LayerEligibleAccounts(ctx context.Context, userID string, layers
 		if len(layer.AccountIDs) > 0 {
 			switch row.Kind {
 			case LayerEligibilitySelf:
-				row.Accounts, err = s.tenantLayerEligibility(ctx, userID, userID, "", layer.AccountIDs)
+				row.Accounts, err = s.tenantLayerEligibility(ctx, userID, userID, "", true, layer.AccountIDs)
 			case LayerEligibilitySubscription:
 				if subscription.seller != "" {
-					row.Accounts, err = s.tenantLayerEligibility(ctx, userID, subscription.seller, subscription.planID, layer.AccountIDs)
+					row.Accounts, err = s.tenantLayerEligibility(ctx, userID, subscription.seller, subscription.planID, subscription.thirdParty, layer.AccountIDs)
 				} else {
 					row.Accounts, err = s.listedPlatformEligibility(ctx, userID, subscription.planID, layer.AccountIDs)
 				}
@@ -124,7 +127,8 @@ func (s *Store) layerSubscriptions(ctx context.Context, userID string, layers []
 			s.enabled AND s.charge_enabled AND (s.expires_at IS NULL OR s.expires_at > now())
 				AND (bp.seller_user_id IS NULL OR `+marketplaceTenantSQL+`),
 			COALESCE(bp.id::text,''), COALESCE(bp.seller_user_id::text,''),
-			CASE WHEN `+marketplaceTenantSQL+` THEN COALESCE(sc.mode,'all') ELSE 'all' END
+			CASE WHEN `+marketplaceTenantSQL+` THEN COALESCE(sc.mode,'all') ELSE 'all' END,
+			s.third_party_acknowledged_at IS NOT NULL
 		FROM billing_subscriptions s
 		LEFT JOIN billing_plans bp ON bp.id=s.source_plan_id
 		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=bp.id
@@ -136,7 +140,7 @@ func (s *Store) layerSubscriptions(ctx context.Context, userID string, layers []
 	for rows.Next() {
 		var id string
 		var value layerSubscription
-		if err := rows.Scan(&id, &value.active, &value.planID, &value.seller, &value.mode); err != nil {
+		if err := rows.Scan(&id, &value.active, &value.planID, &value.seller, &value.mode, &value.thirdParty); err != nil {
 			return nil, fmt.Errorf("scan layer subscription: %w", err)
 		}
 		result[id] = value
@@ -152,17 +156,19 @@ const marketplaceTenantSQL = `COALESCE((SELECT ms.enabled FROM marketplace_setti
 // user: the user is active, the marketplace is on, the account is neither
 // suspended nor released, and the quota guard does not hold it. With planID
 // empty this is the self-use layer (owner is the user, and self-use must be
-// on); otherwise the plan's current scope must name the account and its
-// seller must be active.
-func (s *Store) tenantLayerEligibility(ctx context.Context, userID, owner, planID string, ids []string) ([]UpstreamAccountEligibility, error) {
+// on); otherwise the plan's current scope must name the account, its seller
+// must be active, and an API key supplier needs the buyer's consent
+// (thirdParty).
+func (s *Store) tenantLayerEligibility(ctx context.Context, userID, owner, planID string, thirdParty bool, ids []string) ([]UpstreamAccountEligibility, error) {
 	args, values, err := upstreamCandidateArguments(userID, ids)
 	if err != nil {
 		return nil, err
 	}
-	args = append(args, s.upstreamProviderName(), owner, valueOrNil(planID))
-	providerArg := fmt.Sprintf("$%d", len(args)-2)
-	ownerArg := fmt.Sprintf("$%d", len(args)-1)
-	planArg := fmt.Sprintf("$%d", len(args))
+	args = append(args, s.upstreamProviderName(), owner, valueOrNil(planID), thirdParty)
+	providerArg := fmt.Sprintf("$%d", len(args)-3)
+	ownerArg := fmt.Sprintf("$%d", len(args)-2)
+	planArg := fmt.Sprintf("$%d", len(args)-1)
+	thirdPartyArg := fmt.Sprintf("$%d", len(args))
 	// #nosec G202 -- fragments are fixed SQL over generated placeholder names; every value is a bound parameter.
 	query := `WITH candidates(id) AS (VALUES ` + strings.Join(values, ",") + `)
 		SELECT c.id, a.concurrent_limit FROM candidates c
@@ -174,7 +180,8 @@ func (s *Store) tenantLayerEligibility(ctx context.Context, userID, owner, planI
 		  AND ` + marketplaceTenantSQL + `
 		  AND CASE WHEN ` + planArg + `::uuid IS NULL
 			THEN COALESCE((SELECT b.self_use_enabled FROM billing_accounts b WHERE b.user_id=$1::uuid), false)
-			ELSE EXISTS(SELECT 1 FROM billing_plans p LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=p.id
+			ELSE (a.credential_kind <> 'supplier' OR ` + thirdPartyArg + `::boolean)
+				AND EXISTS(SELECT 1 FROM billing_plans p LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=p.id
 				WHERE p.id=` + planArg + `::uuid AND p.seller_user_id=` + ownerArg + `::uuid
 				  AND (COALESCE(sc.mode,'all')='all' OR EXISTS(SELECT 1 FROM billing_plan_provider_accounts pa
 					WHERE pa.plan_id=p.id AND pa.account_id=a.id)))
@@ -361,15 +368,19 @@ func (s *Store) TenantReachableAccounts(ctx context.Context, userID string) ([]s
 			return err
 		}
 		add(own)
-		plans, err := queryAccountIDsTx(ctx, tx, "read seller plans of subscriptions", `SELECT DISTINCT p.id::text
+		// A seller's API key suppliers count only for a subscription whose
+		// buyer consented to them.
+		plans, err := queryAccountIDsTx(ctx, tx, "read seller plans of subscriptions", `SELECT p.id::text || ':' ||
+				bool_or(s.third_party_acknowledged_at IS NOT NULL)::text
 			FROM billing_subscriptions s JOIN billing_plans p ON p.id=s.source_plan_id
 			WHERE s.user_id=$1::uuid AND s.enabled AND s.charge_enabled AND (s.expires_at IS NULL OR s.expires_at > now())
-			  AND p.seller_user_id IS NOT NULL`, userID)
+			  AND p.seller_user_id IS NOT NULL GROUP BY p.id ORDER BY p.id`, userID)
 		if err != nil {
 			return err
 		}
-		for _, plan := range plans {
-			pool, err := resolvePlanPoolTx(ctx, tx, plan, s.upstreamProviderName())
+		for _, entry := range plans {
+			plan, consent, _ := strings.Cut(entry, ":")
+			pool, err := resolvePlanPoolTx(ctx, tx, plan, s.upstreamProviderName(), consent == "true")
 			if err != nil {
 				return err
 			}

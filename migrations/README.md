@@ -162,6 +162,15 @@ Current migrations:
   and marked. Adds an index on `marketplace_sales(buyer_user_id)` for the
   deletion blockers. Information cleanup now also removes a sale older than
   the cutoff once both of its ledger entries are gone.
+- `internal/store/migrations/0056_third_party_consent.sql` — the buyer's
+  consent to member-run API key suppliers belongs to the subscription
+  (aggregation gateway stage 5). `billing_subscriptions.
+  third_party_acknowledged_at` is set by a purchase or renewal that
+  acknowledges third-party suppliers and by the buyer's own consent route,
+  and cleared when the buyer withdraws it. Without it, a seller plan's
+  subscription is served only by the seller's OAuth accounts, even after the
+  seller adds an API key supplier to the plan's scope. Existing subscriptions
+  start without consent (fail closed).
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

@@ -109,6 +109,9 @@ type restrictedSubscription struct {
 	source       BillingFundingSource
 	planID       string
 	sellerUserID string
+	// thirdParty: the buyer consented that the seller's API key suppliers
+	// serve this subscription.
+	thirdParty bool
 }
 
 // fundingLayersTx orders the layers of one admission: the user's own
@@ -147,7 +150,8 @@ func fundingLayersTx(ctx context.Context, tx *sql.Tx, params BillingReservationP
 		layers = append(layers, fundingLayer{kind: FundingLayerGroup, groupID: group.ID, groupPeriodID: group.PeriodID, accountIDs: ids})
 	}
 	for _, subscription := range restricted {
-		ids, err := resolvePlanPoolTx(ctx, tx, subscription.planID, provider)
+		consented := subscription.sellerUserID == "" || subscription.thirdParty
+		ids, err := resolvePlanPoolTx(ctx, tx, subscription.planID, provider, consented)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -159,8 +163,18 @@ func fundingLayersTx(ctx context.Context, tx *sql.Tx, params BillingReservationP
 			}
 		}
 		if len(ids) == 0 {
-			empty = append(empty, EmptySubscriptionLayer{SubscriptionID: subscription.source.SubscriptionID,
-				PlanID: subscription.planID, SellerUserID: subscription.sellerUserID})
+			// Only the buyer's missing consent leaves the pool empty: that is
+			// the buyer's choice, not a seller without accounts.
+			withSuppliers := ids
+			if !consented {
+				if withSuppliers, err = resolvePlanPoolTx(ctx, tx, subscription.planID, provider, true); err != nil {
+					return nil, nil, err
+				}
+			}
+			if len(withSuppliers) == 0 {
+				empty = append(empty, EmptySubscriptionLayer{SubscriptionID: subscription.source.SubscriptionID,
+					PlanID: subscription.planID, SellerUserID: subscription.sellerUserID})
+			}
 			continue
 		}
 		if len(ids) > MaxUpstreamAllocationCandidates {
@@ -235,16 +249,19 @@ func selfUsePoolTx(ctx context.Context, tx *sql.Tx, userID, provider string) ([]
 // resolvePlanPoolTx resolves a plan's provider scope as it is now: every
 // account of its seller, or the listed accounts the seller still owns. An
 // account suspended by the Owner or released serves no plan, and a seller
-// that is no longer active serves nothing.
-func resolvePlanPoolTx(ctx context.Context, tx *sql.Tx, planID, provider string) ([]string, error) {
+// that is no longer active serves nothing. A seller's API key suppliers see
+// the requests they serve, so they are in the pool only with the buyer's
+// consent (thirdParty); a platform plan's suppliers are the platform's.
+func resolvePlanPoolTx(ctx context.Context, tx *sql.Tx, planID, provider string, thirdParty bool) ([]string, error) {
 	return queryAccountIDsTx(ctx, tx, "resolve plan account pool", `SELECT a.id FROM billing_plans p
 		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=p.id
 		JOIN upstream_accounts a ON a.provider=$2 AND a.owner_user_id IS NOT DISTINCT FROM p.seller_user_id
 		WHERE p.id=$1::uuid AND NOT a.admin_suspended AND a.credential_removed_at IS NULL
+		  AND (p.seller_user_id IS NULL OR a.credential_kind <> 'supplier' OR $3)
 		  AND (p.seller_user_id IS NULL OR EXISTS(SELECT 1 FROM users u WHERE u.id=p.seller_user_id AND u.status='active'))
 		  AND (COALESCE(sc.mode,'all')='all' OR EXISTS(
 			SELECT 1 FROM billing_plan_provider_accounts pa WHERE pa.plan_id=p.id AND pa.account_id=a.id))
-		ORDER BY a.id`, planID, provider)
+		ORDER BY a.id`, planID, provider, thirdParty)
 }
 
 func queryAccountIDsTx(ctx context.Context, tx *sql.Tx, operation, query string, args ...any) ([]string, error) {

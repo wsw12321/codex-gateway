@@ -2046,7 +2046,8 @@ func billingIntegrationTenantOwnershipSchema(t *testing.T, ctx context.Context, 
 		INSERT INTO marketplace_settings(singleton) VALUES (true) ON CONFLICT DO NOTHING;
 		ALTER TABLE billing_accounts ADD COLUMN IF NOT EXISTS self_use_enabled BOOLEAN NOT NULL DEFAULT true;
 		ALTER TABLE billing_plans ADD COLUMN IF NOT EXISTS seller_user_id UUID;
-		ALTER TABLE billing_subscriptions ADD COLUMN IF NOT EXISTS source_plan_id UUID;
+		ALTER TABLE billing_subscriptions ADD COLUMN IF NOT EXISTS source_plan_id UUID,
+			ADD COLUMN IF NOT EXISTS third_party_acknowledged_at TIMESTAMPTZ;
 		CREATE TABLE IF NOT EXISTS billing_plan_provider_scopes (plan_id UUID PRIMARY KEY, mode TEXT NOT NULL);
 		CREATE TABLE IF NOT EXISTS billing_plan_provider_accounts (plan_id UUID NOT NULL, account_id TEXT NOT NULL)`); err != nil {
 		t.Fatalf("apply tenant ownership helper schema: %v", err)

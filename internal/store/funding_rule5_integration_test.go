@@ -505,6 +505,95 @@ func TestFundingRule5PostgresIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("seller API suppliers serve a subscription only with the buyer's consent", func(t *testing.T) {
+		seller := globalUsageIntegrationUser(t, ctx, s, "rule5-consent-seller-"+suffix, UserRoleMember)
+		u, d, k := billingIntegrationPrincipal(t, ctx, s, "rule5-consent-buyer-"+suffix)
+		official := account(&seller)
+		plan := sellerPlan(seller, "Consent", "3")
+		subscription := buy(u, plan)
+		credit(u, "5")
+		// The seller adds an API key supplier after the sale; the "all"
+		// scope picks it up at once.
+		supplier := account(&seller)
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET credential_kind='supplier' WHERE id=$1`, supplier); err != nil {
+			t.Fatal(err)
+		}
+		both := []string{official, supplier}
+		if official > supplier {
+			both = []string{supplier, official}
+		}
+		check := func(name string, wantPool []string, consent bool) {
+			t.Helper()
+			got := mustAdmit(u, d, k, "rule5-consent-"+name+"-"+suffix)
+			if !reflect.DeepEqual(got[0], UpstreamAllocationGroup{GroupID: subscription.ID, AccountIDs: wantPool, Tenant: true}) {
+				t.Fatalf("%s: subscription layer = %+v", name, got[0])
+			}
+			eligible, err := codex.LayerEligibleAccounts(ctx, u.ID, []UpstreamAllocationGroup{layer(subscription.ID, official, supplier)})
+			if err != nil || !reflect.DeepEqual(ids(eligible[0].Accounts), wantPool) {
+				t.Fatalf("%s: eligibility = %+v, %v", name, eligible, err)
+			}
+			reachable, err := codex.TenantReachableAccounts(ctx, u.ID)
+			if err != nil || !reflect.DeepEqual(reachable, wantPool) {
+				t.Fatalf("%s: reachable = %v, %v", name, reachable, err)
+			}
+			scopes, err := s.SubscriptionProviderScopes(ctx, u.ID)
+			scope := scopes[subscription.ID]
+			if err != nil || !scope.ThirdPartyAPI || scope.ThirdPartyAcknowledged != consent || scope.AccountCounts[UpstreamProviderCodex] != len(wantPool) {
+				t.Fatalf("%s: buyer scope view = %+v, %v", name, scope, err)
+			}
+		}
+		check("without", []string{official}, false)
+		consent := func(value bool) {
+			t.Helper()
+			got, err := s.SetThirdPartyConsent(ctx, SetThirdPartyConsentParams{UserID: u.ID, SubscriptionID: subscription.ID, Acknowledged: value, At: now})
+			if err != nil || got != value {
+				t.Fatalf("consent %v = %v, %v", value, got, err)
+			}
+		}
+		consent(true)
+		check("given", both, true)
+		consent(false)
+		check("withdrawn", []string{official}, false)
+		var audits int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM audit_events WHERE event_type='billing.third_party_consent_changed' AND subject_id=$1`, subscription.ID).Scan(&audits); err != nil || audits != 2 {
+			t.Fatalf("consent audits = %d, %v", audits, err)
+		}
+		// With only the supplier left, the missing consent drops the layer but
+		// is the buyer's choice, not a seller without accounts.
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=now() WHERE id=$1`, official); err != nil {
+			t.Fatal(err)
+		}
+		admission, err := admit(u, d, k, "rule5-consent-supplier-only-"+suffix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(admission.Billing.EmptySubscriptionLayers) != 0 || !reflect.DeepEqual(admission.Billing.AllocationLayerKinds, []string{FundingLayerPersonal}) {
+			t.Fatalf("supplier-only layers: kinds %v empty %+v", admission.Billing.AllocationLayerKinds, admission.Billing.EmptySubscriptionLayers)
+		}
+		// Consent belongs to seller plans and to the buyer's own subscriptions.
+		platform := buy(u, platformPlan("Consent platform", "1"))
+		if _, err := s.SetThirdPartyConsent(ctx, SetThirdPartyConsentParams{UserID: u.ID, SubscriptionID: platform.ID, Acknowledged: true, At: now}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("platform plan consent = %v", err)
+		}
+		if _, err := s.SetThirdPartyConsent(ctx, SetThirdPartyConsentParams{UserID: seller.ID, SubscriptionID: subscription.ID, Acknowledged: true, At: now}); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("foreign consent = %v", err)
+		}
+		// A purchase that acknowledges third-party suppliers records consent.
+		if _, err := s.db.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=NULL WHERE id=$1`, official); err != nil {
+			t.Fatal(err)
+		}
+		credit(u, "1")
+		bought, err := s.PurchaseBillingPlan(ctx, PurchaseBillingPlanParams{BillingWriteParams: billingIntegrationWrite(t, u.ID, "buy with consent", now),
+			UserID: u.ID, PlanID: plan.ID, PlanVersion: plan.Version, PeriodCount: 1, AcknowledgeThirdParty: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recorded bool
+		if err := s.db.QueryRowContext(ctx, `SELECT third_party_acknowledged_at IS NOT NULL FROM billing_subscriptions WHERE id=$1`, bought.Subscription.ID).Scan(&recorded); err != nil || !recorded {
+			t.Fatalf("purchase consent not recorded: %v", err)
+		}
+	})
+
 	t.Run("rule 4 reservations in flight settle unchanged", func(t *testing.T) {
 		marketplace(false)
 		u, d, k := billingIntegrationPrincipal(t, ctx, s, "rule5-inflight-"+suffix)

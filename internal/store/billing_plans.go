@@ -707,6 +707,14 @@ func (s *Store) transactBillingPlan(ctx context.Context, params BillingWritePara
 			if _, err := recordPlanSaleTx(ctx, tx, params, plan, seller, userID, subscription.ID, kind, count, total, entry.ID); err != nil {
 				return err
 			}
+			// The consent given here lets the seller's API key suppliers serve
+			// this subscription until the buyer withdraws it (migration 0056).
+			if acknowledgeThirdParty {
+				if _, err := tx.ExecContext(ctx, `UPDATE billing_subscriptions SET third_party_acknowledged_at=COALESCE(third_party_acknowledged_at,$2)
+					WHERE id=$1`, subscription.ID, params.At); err != nil {
+					return mapDBError("record third-party consent", err)
+				}
+			}
 		}
 		if err := appendBillingAuditTx(ctx, tx, params, "billing."+opType, "subscription", subscription.ID, map[string]any{"operation_id": params.OperationID, "plan": billingPlanAuditMetadata(plan), "period_count": count, "total_usd": total}); err != nil {
 			return err

@@ -65,10 +65,10 @@ func sortBillingFundingSources(sources []BillingFundingSource) error {
 // planScopes is false only on a schema replayed from before migration 0053
 // (upgrade tests); every subscription is then a personal source.
 func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model string, at time.Time, balance string, cashPriority int, cashCutoff *int64, planScopes, tenantFeatures bool) ([]BillingFundingSource, []restrictedSubscription, error) {
-	scopeColumns := `'','','all'`
+	scopeColumns := `'','','all',false`
 	scopeJoins := ``
 	if planScopes {
-		scopeColumns = `COALESCE(bp.id::text,''),COALESCE(bp.seller_user_id::text,''),COALESCE(sc.mode,'all')`
+		scopeColumns = `COALESCE(bp.id::text,''),COALESCE(bp.seller_user_id::text,''),COALESCE(sc.mode,'all'),s.third_party_acknowledged_at IS NOT NULL`
 		scopeJoins = ` LEFT JOIN billing_plans bp ON bp.id=s.source_plan_id
 		LEFT JOIN billing_plan_provider_scopes sc ON sc.plan_id=bp.id`
 	}
@@ -87,8 +87,9 @@ func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model str
 	for rows.Next() {
 		source := BillingFundingSource{SourceType: "subscription"}
 		var planID, sellerID, mode string
+		var thirdParty bool
 		if err := rows.Scan(&source.SubscriptionID, &source.PeriodID, &source.Priority, &source.PeriodDays, &source.RemainingUSD,
-			&planID, &sellerID, &mode); err != nil {
+			&planID, &sellerID, &mode, &thirdParty); err != nil {
 			_ = rows.Close()
 			return nil, nil, mapDBError("scan ordered billing source", err)
 		}
@@ -99,7 +100,7 @@ func snapshotBillingFundingTx(ctx context.Context, tx *sql.Tx, userID, model str
 			continue
 		case sellerID != "" || tenantFeatures && planID != "" && mode == "selected":
 			restrictedSources = append(restrictedSources, source)
-			plans[source.SubscriptionID] = restrictedSubscription{planID: planID, sellerUserID: sellerID}
+			plans[source.SubscriptionID] = restrictedSubscription{planID: planID, sellerUserID: sellerID, thirdParty: thirdParty}
 		default:
 			sources = append(sources, source)
 		}

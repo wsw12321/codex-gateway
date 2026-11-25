@@ -23,6 +23,7 @@ type planScopeRepository interface {
 	SubscriptionProviderScopes(context.Context, string) (map[string]store.SubscriptionProviderScope, error)
 	SelfUseEnabled(context.Context, string) (bool, error)
 	SetSelfUse(context.Context, store.SetSelfUseParams) (bool, error)
+	SetThirdPartyConsent(context.Context, store.SetThirdPartyConsentParams) (bool, error)
 }
 
 func (s *Server) planScopeStorage() planScopeRepository {
@@ -61,6 +62,7 @@ func (s *Server) planScopeRoutes() {
 	s.mux.Handle("GET /admin/billing/plan-provider-scopes", s.requireSession(s.ownerOnly(s.requireMarketplaceOn(http.HandlerFunc(s.platformPlanScopes)))))
 	s.mux.Handle("PUT /admin/billing/plans/{plan_id}/provider-scope", s.browserOrigin(s.requireRecentVerification(s.ownerOnly(s.requireMarketplaceOn(http.HandlerFunc(s.setPlatformPlanScope))))))
 	s.mux.Handle("PUT /admin/billing/me/self-use", s.browserOrigin(s.requireRecentVerification(s.requireMarketplaceOn(http.HandlerFunc(s.setMySelfUse)))))
+	s.mux.Handle("PUT /admin/billing/me/subscriptions/{id}/third-party-consent", s.browserOrigin(s.requireRecentVerification(s.requireMarketplaceOn(http.HandlerFunc(s.setMyThirdPartyConsent)))))
 }
 
 func (s *Server) platformPlanScopes(w http.ResponseWriter, r *http.Request) {
@@ -149,6 +151,44 @@ func (s *Server) setMySelfUse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"self_use_enabled": value})
+}
+
+// setMyThirdPartyConsent gives or withdraws the buyer's consent that the
+// seller's API key suppliers serve one subscription of a seller plan. They
+// see the requests they serve; without consent they do not serve it, even if
+// the seller adds them to the plan after the purchase.
+func (s *Server) setMyThirdPartyConsent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !validBillingResourceID(id) {
+		httpx.WriteError(w, r, http.StatusNotFound, "not_found_error", "subscription_not_found", "订阅不存在")
+		return
+	}
+	if !strictJSONRequest(r) {
+		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_third_party_consent", "确认请求必须为 JSON，且不能包含查询参数")
+		return
+	}
+	var acknowledged *bool
+	if err := decodeSingleJSONField(r, 256, "acknowledged", &acknowledged); err != nil || acknowledged == nil {
+		if err == nil {
+			err = errors.New("acknowledged is required")
+		}
+		badJSON(w, r, err)
+		return
+	}
+	user := userFrom(r.Context())
+	value, err := s.planScopeStorage().SetThirdPartyConsent(r.Context(), store.SetThirdPartyConsentParams{
+		UserID: user.ID, SubscriptionID: id, Acknowledged: *acknowledged, ActorSessionID: sessionFrom(r.Context()).ID,
+		RequestID: httpx.RequestID(r.Context()), SourceIP: safeIP(r.Context()), At: time.Now().UTC(),
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		httpx.WriteError(w, r, http.StatusNotFound, "not_found_error", "subscription_not_found", "订阅不存在或不是成员套餐的订阅")
+		return
+	}
+	if err != nil {
+		s.billingStoreError(w, r, "set third-party consent", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"subscription_id": id, "third_party_acknowledged": value})
 }
 
 // addMarketplaceBillingState adds the stage 3 view to a billing state while
