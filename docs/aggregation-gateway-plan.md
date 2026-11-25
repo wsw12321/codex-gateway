@@ -1,6 +1,6 @@
 # 聚合网关改造计划：用户供应商 + 卖家套餐 + 商城
 
-> 2026-11-24 确定的分阶段计划。下文“默认取舍”已全部确认：阶段 4 的两条（买家匿名、只有实质修改才重新审核）于阶段 3 完成后确认，实现见[阶段 4 验证](aggregation-gateway-stage4-validation.md)。阶段 3 开发前确认了四条默认取舍（自用层第一且可关闭、卖家套餐额度不足由卖家承担、个人层保持最后、模型权限对自用生效），实现见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
+> 2026-11-24 确定的分阶段计划，五个阶段已于 2026-11-25 全部完成；阶段 5 的两条取舍（已释放账号在主人被删除后清空主人并标记、成交记录跟随信息清理）于实施时确认，见[阶段 5 验证](aggregation-gateway-stage5-validation.md)。下文“默认取舍”已全部确认：阶段 4 的两条（买家匿名、只有实质修改才重新审核）于阶段 3 完成后确认，实现见[阶段 4 验证](aggregation-gateway-stage4-validation.md)。阶段 3 开发前确认了四条默认取舍（自用层第一且可关闭、卖家套餐额度不足由卖家承担、个人层保持最后、模型权限对自用生效），实现见[阶段 3 验证](aggregation-gateway-stage3-validation.md)。阶段 2 的两条用户决定（成员自建出口、归属可由 Owner 变更且删除后释放）已写入下文，实现见[阶段 2 验证](aggregation-gateway-stage2-validation.md)。开发分支为 `aggregation-gateway`；已完成的更改、剩余待完成项和开发环境说明见[开发进度与待办](aggregation-gateway-progress.md)。各阶段完成情况见文末“进度”，阶段 1 的验证记录见[聚合网关阶段 1 验证](aggregation-gateway-stage1-validation.md)。
 
 ## Context
 
@@ -231,6 +231,9 @@
   - 每个区块配 Node 测试和 Playwright 截图脚本。
 
 ### 阶段 5：加固与文档
+
+> 实际实现与下列原计划的差异：新增迁移 `0055_tenant_user_deletion.sql`。用户删除不只拒绝仍有供应商或有效订阅套餐的成员：仍有凭据的账号、出口服务器、未删除的套餐、仍被订阅引用的套餐和成交记录都给出阻止原因；已释放账号清空主人并标记 `owner_deleted_at`，已删除且无人引用的卖家套餐随成员删除。成交记录跟随信息清理。详见[阶段 5 验证](aggregation-gateway-stage5-validation.md)。
+
 - **重写 `docs/threat-model.md` 的多租户部分**：
   - 第三方 API 供应商能看到买家的提示词和回复，商城必须明示。
   - 恶意供应商可以返回注入内容，影响 Agent 客户端。
@@ -278,7 +281,7 @@
 - **Proxy**：`internal/proxy/ledger.go`、`account_access.go`、`client.go`
 - **插件**：`deploy/codex-compat/plugin/internal/gatewayplugin/{scheduler,gatewayclient,credentials,headers}.go`、e2e harness、`plugin.lock.json` 及相关锁文件
 - **前端**：`internal/server/assets/{app.js,index.html,style.css}`、`internal/server/testdata/*.cjs`
-- **迁移**：`internal/store/migrations/0051–0054`、`internal/store/store_test.go`、`migrations/README.md`
+- **迁移**：`internal/store/migrations/0051–0055`、`internal/store/store_test.go`、`migrations/README.md`
 
 ## 可复用的现有实现
 
@@ -348,6 +351,6 @@ node --test internal/server/testdata/<新增>_test.cjs
 | 2 我的供应商 | 已完成：迁移 `0052`、认领/释放/转移、成员出口、`/admin/me/providers`、`/admin/tenant-providers`、插件冲突处理、界面 | `aggregation-gateway` / `daec9c6`–`00e666b` |
 | 3 套餐供应商范围、规则 5、自用 | 已完成：迁移 `0053`、规则 5 准入与结算、逐层资格（插件 `layer_select_v1`）、平台套餐范围、自用、界面 | `aggregation-gateway` / `612c9b2`–`5db6866` |
 | 4 卖家套餐、审核、商城、分账 | 已完成：迁移 `0054`、卖家套餐与审核、分账与成交记录、商城与卖家/Owner 接口、界面 | `aggregation-gateway` / `86ef02d`–`1cab10b` |
-| 5 加固与文档 | 未开始 | `aggregation-gateway` |
+| 5 加固与文档 | 已完成：迁移 `0055`、成员永久删除的阻止原因与无主账号、成交记录清理、`subscription_layer_empty` 与规则 5 归因告警、多租户威胁模型、完整升级顺序与 README | `aggregation-gateway` / `ea0242d`–`d09f482` |
 
 逐项待办见[开发进度与待办](aggregation-gateway-progress.md#剩余待完成项)。

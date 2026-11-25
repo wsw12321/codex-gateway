@@ -4,7 +4,7 @@
 
 ## 开发分支
 
-- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。阶段 4 已完成，下一步是阶段 5。
+- 分支名 `aggregation-gateway`，是这项改造的长期开发分支，阶段 2–5 都在这里开发。五个阶段均已完成，剩下的是可选小项（见下方“剩余待完成项”）。
 - 从 `main` 的 `8386b12`（Import the full gateway model catalog in OpenCode setup）分出，第一个提交 `2a800c5` 是阶段 1。
 - 每个阶段完成后都可以单独合并。合并前先 rebase 到最新 `main`，检查迁移编号是否和 `main` 上的新迁移冲突；冲突时顺延编号，并同步修改 `TestEmbeddedMigrationsCoverRequiredSchema` 和 `migrations/README.md`。
 - 功能由 `marketplace_settings.enabled` 控制，默认关闭。关闭时，各阶段合并后的线上行为应与 `main` 一致（例外见下方阶段 1 的“行为变化”）。
@@ -89,36 +89,37 @@
 - **服务端**（`0424e8d`）：`/admin/me/plans`（增删改、provider-scope、submit、listing、usage）、`/admin/me/sales`，`GET /admin/market/plans`，Owner 的 `/admin/market/reviews`、`/admin/market/plans/{id}/suspend`、`/admin/market/sales`；购买与续费接受 `acknowledge_third_party`；`/admin/state` 加入每人套餐上限和 Owner 的待审数量。卖家路由只对成员开放，Owner 路由对成员 403，开关关闭时全部 404。
 - **前端**（`1cab10b`）：套餐页在开关打开时即商城（成员套餐卡片显示卖家、说明、供应商构成、第三方 API 提示，购买时额外确认）；成员“我的套餐”（发布、编辑、提交、上下架、供应商范围、用量、销售收入）；Owner“商城管理”（商城设置、审核、成员套餐处置、全部成交，导航显示待审数量）；Node 测试 `marketplace_ui_test.cjs` 与截图脚本 `marketplace_browser.cjs`。
 
+### 阶段 5：加固与文档（已完成，提交 `ea0242d`、`b159874`、`d09f482`）
+
+验证记录见[阶段 5 验证](aggregation-gateway-stage5-validation.md)。
+
+- **迁移 `0055_tenant_user_deletion.sql`**：`upstream_accounts.owner_deleted_at`（约束只允许出现在无主、已释放的账号上），归属触发器增加只用于已释放账号的 `owner_deleted` 理由，`marketplace_sales(buyer_user_id)` 索引。
+- **用户删除与停用**（`ea0242d`）：
+  - 新的阻止原因 `providers`、`egress_servers`、`seller_plans`、`plan_subscriptions`、`marketplace_sales`，候选列表与事务内复查共用；成员修改自己的套餐不再算管理操作关联。
+  - 删除时已释放账号清空主人并标记，不进入任何管理范围（`accountScopeSQL`、`InScope`），结算按成员账号处理，认领时清除标记；已删除且无人引用的卖家套餐随之删除；审计记录这两项。
+  - 停用沿用阶段 3、4 的规则（卖家套餐停售，账号不进入订阅层），现在另有告警。
+- **成交记录清理**（`ea0242d`）：早于截止时间、两条流水都已清理的成交记录随信息清理删除，报告计入 `marketplace_sales`。
+- **告警**（`b159874`）：准入报告解析为空的受限订阅层，Gateway 产生 `subscription_layer_empty`；`billing_attribution_missing` 按层种类说明规则 5 的结算方式。
+- **界面**（`d09f482`）：信息维护页的阻止原因、候选列表说明和“商城成交”，截图。
+- **文档**：`docs/threat-model.md` 完整的多租户一节；`docs/operations.md` 的完整升级顺序、成员停用与永久删除、聚合网关告警；README 完整介绍；`docs/tenant-providers.md`、`docs/marketplace.md`、`migrations/README.md`。
+- **2026-11-25 确认的取舍**：已释放账号在主人被永久删除后清空主人并标记（不进入平台账号列表）；成交记录跟随信息清理。
+
 ## 剩余待完成项
 
-### 阶段 5：加固与文档
+五个阶段的计划项均已完成。以下是可选小项，开工前需要向用户确认是否要做：
 
-- [ ] **重写 `docs/threat-model.md` 的多租户部分**：
-  - 单一订阅者的假设已不再成立；
-  - 第三方 API 供应商能看到买家的请求内容；
-  - 恶意供应商可以返回注入内容，影响 Agent 客户端；
-  - OAuth 归属冲突；
-  - 卖家与买家之间的数据隔离；
-  - 成员自建出口服务器（阶段 2 只接受公网 IPv4，`docs/threat-model.md` 已补一段，阶段 5 合并进完整的多租户部分）；
-  - CPA 凭据数量增长。
-- [ ] **用户删除与停用**：`upstream_accounts.owner_user_id` 和 `egress_servers.owner_user_id` 都是 `ON DELETE RESTRICT`；已释放的账号仍保留原主人。
-  - 信息管理的永久删除，要先处理该用户的供应商、出口服务器、已释放账号的历史归属和仍有有效订阅的套餐，否则给出明确错误，不能只返回数据库错误。阶段 4 又加了两处 `RESTRICT`：发布过套餐的卖家（`billing_plans.seller_user_id`）和出现在成交记录里的买家或卖家（`marketplace_sales`）。
-  - 清理任务覆盖 `marketplace_sales`：目前流水被清理时只清空成交记录里的流水引用，成交记录本身一直保留，需要决定保留期限。
-- [ ] **告警**：
-  - `subscription_layer_empty`：买家已付费，但卖家没有可用账号；
-  - `billing_attribution_missing`：扩展到新的层类型。
-- [ ] **阶段 4 留下的小项**（可选，按需确认）：
-  - Owner 的平台套餐编辑器还没有“说明”字段（数据库和商城已支持，平台套餐的说明目前为空）。
-  - 卖家看不到被驳回前后的完整审核历史，只看到最近一次的备注；审计事件里有完整记录。
-  - 没有退款流程；买家与卖家的纠纷只能由 Owner 手工调整余额。
-- [ ] **文档**：
-  - `docs/operations.md` 写明升级顺序：备份 → 插件镜像 → 网关迁移 → 打开开关（阶段 2–4 各自的小节已写，阶段 5 合并成完整说明）。
-  - README 完整介绍。
-  - 各阶段的截图。
+- [ ] Owner 的平台套餐编辑器还没有“说明”字段（数据库和商城已支持，平台套餐的说明目前为空）。
+- [ ] 卖家看不到被驳回前后的完整审核历史，只看到最近一次的备注；审计事件里有完整记录。
+- [ ] 没有退款流程；买家与卖家的纠纷只能由 Owner 手工调整余额。
+- [ ] 成员已停用时，Owner 没有删除成员出口服务器的入口（成员账号可以转给平台后删除）。
+- [ ] 删除候选列表只列出可删除的成员，不能直接查看某个成员为何不能删除。
+- [ ] 卖家可以把 API Key 供应商加进一个原本只含 OAuth 账号的套餐，买家要到续费时才再次确认（威胁模型“剩余风险”）。
+
+合并到 `main` 前：rebase 到最新 `main`，检查迁移编号（`0051`–`0055`）是否与 `main` 上的新迁移冲突。
 
 ## 待确认的默认取舍
 
-计划里的默认做法已全部确认，阶段 4、5 开工前无需再问。若实施中发现计划没有覆盖的取舍，再向用户确认。
+计划里的默认做法已全部确认。若后续工作发现计划没有覆盖的取舍，再向用户确认。
 
 已经确认的决策：
 - 购买款项按抽成比例扣除后，净额记入卖家余额，不做提现；
@@ -126,6 +127,9 @@
 - 自用免费；
 - 所有用户都可以发布套餐，上架前须经审核；
 - 整个功能由 `marketplace_settings.enabled` 控制，默认关闭；设置读取失败时，租户功能 fail closed（阶段 1–3 已按此实现，阶段 4、5 沿用）；
+- 2026-11-25 确认（阶段 5 已实现）：
+  - **已释放账号的历史归属**：永久删除成员时，其已释放账号保留记录和用量历史，清空主人并标记 `owner_deleted_at`；不进入任何人（包括平台）的管理范围，下次登录同一上游账号时按认领处理。
+  - **成交记录保留期**：跟随信息清理，买卖双方两条流水都已清理后随同一次清理删除。
 - 2026-11-24 确认（阶段 4 实施）：
   - **买家匿名**：卖家看不到买家身份。销售记录中买家只显示匿名编号，用量只按套餐和账号聚合。
   - **审核范围**：卖家修改供应商范围无需审核，不提升 `version`，不影响续费绑定（阶段 3 的 `SetPlanProviderScope` 已如此）；修改价格、额度、周期、模型、名称、描述要重新进入审核，审核期间下架，并按现有规则提升 `version`。
@@ -168,4 +172,5 @@
 - **升级测试与新列**：回放旧迁移前缀后再调用 `Migrate` 的测试会比较整行快照（如 `cpa_v848_migration_integration_test.go`），新迁移给这些表加列时，要在快照里排除新列。准入、购买、结算对 0053 之前的结构用 `planScopeSchemaTx` 判断。
 - **阶段 4 的升级测试**：购买与续费对 0054 之前的结构用 `marketplaceSchemaTx`（`to_regclass('marketplace_sales')`）判断，没有该表时按平台套餐处理；`ListBillingPlans` 和 Owner 的套餐修改对 0053 之前的结构不做卖家过滤。
 - **阶段 4 的截图脚本**：`internal/server/testdata/marketplace_browser.cjs` 覆盖成员商城与第三方确认、“我的套餐”、Owner“商城管理”。阶段 3 的 `plan_scopes_browser.cjs` 夹具不提供 `/admin/market/plans`，Owner 页面会多一条“商城套餐加载失败”的提示，不影响它的断言。
+- **阶段 5 的测试**：`TestTenantUserDeletionPostgresIntegration` 使用独立 schema（`informationIntegrationStore`），会运行信息清理，不影响其他用例；它自己创建 Owner。`information_browser.cjs` 也会重新生成 `upstream-concurrency-*` 截图，阶段 5 只提交了 `information-*` 三张。
 - **插件 e2e 构建脚本**：阶段 3 的手工构建步骤与阶段 2 相同（见[阶段 2 验证](aggregation-gateway-stage2-validation.md#已运行检查)），构建约需 5 分钟。
