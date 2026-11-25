@@ -4473,3 +4473,30 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 .billing-plan-scope { color: var(--muted); }
 .subscription-scope { overflow-wrap: anywhere; }
 .billing-self-use .check-label { margin-top: .25rem; }
+
+/* Aggregation gateway stage 4: seller plans and the marketplace. */
+.status-badge[data-status="pending"] {
+  border-color: rgb(var(--warning-rgb) / 35%);
+  color: var(--warning);
+  background: rgb(var(--warning-rgb) / 7%);
+}
+.status-badge[data-status="error"] {
+  border-color: rgb(var(--danger-rgb) / 35%);
+  color: var(--danger);
+  background: rgb(var(--danger-rgb) / 7%);
+}
+.billing-plan-card.seller-plan header { flex-wrap: wrap; justify-content: flex-start; }
+.billing-plan-card.seller-plan header h4 { margin-right: auto; }
+.billing-plan-card .seller-plan-seller { font-size: .9rem; }
+.billing-plan-card .seller-plan-description { color: var(--text, inherit); white-space: pre-line; overflow-wrap: anywhere; }
+.billing-plan-card .actions { flex-wrap: wrap; }
+.market-review .market-review-note { width: 100%; }
+.market-suspend-reason { width: min(100%, 12rem); margin-right: .5rem; }
+.market-settings { margin-bottom: 1rem; }
+.market-settings-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: .75rem; margin: .75rem 0; }
+#market-operations > .panel, [data-section="my-plans"] > .panel { margin-top: 1rem; }
+.nav-badge {
+  display: inline-flex; align-items: center; justify-content: center; min-width: 1.35rem; height: 1.35rem;
+  margin-left: auto; padding: 0 .35rem; border-radius: 999px; font-size: .75rem; font-weight: 700;
+  color: #fff; background: var(--danger);
+}
