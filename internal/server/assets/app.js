@@ -10891,7 +10891,7 @@ const informationCountLabels = {
   billing_charge_allocations: "消费分摊", billing_ledger_entries: "账务流水", billing_operations: "账务操作快照",
   billing_cash_credit_lots: "资金批次", billing_subscription_entitlements: "订阅权益", billing_subscription_periods: "订阅周期", billing_subscriptions: "订阅历史",
   usage_daily: "日汇总", usage_monthly: "月汇总", audit_events: "审计明细", concurrency_leases: "请求并发记录",
-  billing_subscription_operation_snapshots: "订阅操作快照",
+  billing_subscription_operation_snapshots: "订阅操作快照", marketplace_sales: "商城成交",
 };
 const informationReasonLabels = {
   current_balance: "支撑当前余额", active_subscription: "有效订阅", active_subscriptions: "有效订阅",
@@ -10904,6 +10904,8 @@ const informationReasonLabels = {
   balance: "余额不为零", subscriptions: "仍有订阅记录", subscription_entitlements: "仍有订阅权益记录", requests: "仍有请求历史", usage_summaries: "仍有用量汇总",
   ledger: "仍有账务流水", billing_operations: "仍有账务操作记录", cash_lots: "仍有资金批次",
   reservations: "仍有资金或额度预留", management_history: "仍有管理操作关联", not_found: "用户已不存在",
+  providers: "仍有供应商账号", egress_servers: "仍有出口服务器", seller_plans: "仍有未删除的套餐",
+  plan_subscriptions: "其套餐仍有订阅记录", marketplace_sales: "仍有商城成交记录",
 };
 
 function informationIdentityCurrent() {

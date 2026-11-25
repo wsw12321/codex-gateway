@@ -14,7 +14,7 @@ const initialState = {user: {id: "owner", username: "owner", display_name: "团�
   recently_verified: true, login_methods: {password: true}, devices: [], projects: [], api_keys: [], passkeys: []};
 const cutoff = "2026-06-24T00:00:00Z";
 const report = {retention_days: 90, cutoff,
-  delete_counts: {usage_requests: 12408, billing_ledger_entries: 12317, billing_operations: 82, billing_charge_allocations: 12408, usage_daily: 450, audit_events: 82},
+  delete_counts: {usage_requests: 12408, billing_ledger_entries: 12317, billing_operations: 82, billing_charge_allocations: 12408, usage_daily: 450, audit_events: 82, marketplace_sales: 6},
   retained_counts: {usage_requests: 2, billing_ledger_entries: 16, billing_operations: 16},
   retained_reasons: {current_balance: 12, active_subscription: 4, unsettled_request: 2}};
 const candidates = [
@@ -77,7 +77,7 @@ async function main() {
         if (blockDeletion) {
           users = [candidates[1]];
           return send({error: {code: "users_not_deletable", message: "用户状态已变化，整批取消"},
-            blockers: [{user_id: candidates[0].id, reasons: ["nonzero_balance"]}]}, 409);
+            blockers: [{user_id: candidates[0].id, reasons: ["nonzero_balance", "providers", "marketplace_sales"]}]}, 409);
         }
         users = users.filter((user) => !body.user_ids.includes(user.id));
         return send({deleted_count: body.user_ids.length, user_ids: body.user_ids});
@@ -135,7 +135,9 @@ async function main() {
     await page.locator("#information-delete-users").click();
     await page.waitForFunction(() => informationUsersReady && informationUsers.length === 1);
     assert.deepEqual(deletions[0].user_ids, ["user-alpha", "user-beta"]);
-    assert.match(await page.locator("#information-message").textContent(), /整批删除未完成.*余额不为零/);
+    assert.match(await page.locator("#information-message").textContent(), /整批删除未完成.*余额不为零、仍有供应商账号、仍有商城成交记录/);
+    await page.evaluate(() => { hide("notice"); window.scrollTo(0, 0); });
+    await page.screenshot({path: path.join(screenshots, "information-deletion-blocked-desktop.png")});
     assert.equal(await page.locator("#information-delete-users").isDisabled(), true);
     blockDeletion = false;
     await page.locator("#information-select-all").check();
