@@ -114,10 +114,30 @@ test("the scope editor lists platform accounts and saves the checked ones", asyn
   ui.run('openBillingPlanScope({id: "p1", name: "月度", version: 1})');
   assert.equal(form.elements.mode.value, "selected");
   assert.equal(ui.node("billing-plan-scope-dialog").open, true);
-  const boxes = ui.node("billing-plan-scope-accounts").querySelectorAll("input");
+  const host = ui.node("billing-plan-scope-accounts");
+  const boxes = host.querySelectorAll(".plan-scope-account");
   assert.equal(boxes.length, 2);
   assert.deepEqual(boxes.map((box) => [box.value, box.checked, box.disabled]),
     [["c000000000000003", true, false], ["d000000000000004", false, false]]);
+  // Select-all for everything and for each provider group, usable while collapsed.
+  const everything = host.querySelector(".plan-scope-all");
+  assert.deepEqual([everything.checked, everything.indeterminate], [false, true]);
+  assert.equal(host.querySelectorAll(".plan-scope-group-all").length, 2);
+  everything.checked = true;
+  everything.listeners.change();
+  assert.deepEqual(boxes.map((box) => box.checked), [true, true]);
+  assert.deepEqual(host.querySelectorAll(".plan-scope-group-all").map((box) => box.checked), [true, true]);
+  assert.match(host.textContent, /已选 1 \/ 1/);
+  const claudeAll = host.querySelectorAll(".plan-scope-group-all")[1];
+  claudeAll.checked = false;
+  claudeAll.listeners.change();
+  assert.deepEqual(boxes.map((box) => box.checked), [true, false]);
+  assert.deepEqual([everything.checked, everything.indeterminate], [false, true]);
+  form.elements.mode.value = "all";
+  ui.run("syncBillingPlanScopeForm()");
+  assert.equal(host.querySelectorAll("input").every((box) => box.disabled), true, "select-all follows the mode");
+  form.elements.mode.value = "selected";
+  ui.run("syncBillingPlanScopeForm()");
   assert.match(ui.node("billing-plan-scope-accounts").textContent, /Claude 号（已停用）/);
   assert.match(ui.node("billing-plan-scope-stale").textContent, /旧号/);
   // Checking the suspended Claude account and saving sends both, with the

@@ -308,24 +308,6 @@
               <div class="browser-handoff-entry"><span class="muted" data-browser-handoff-status>网页工作台接入未启用</span><button type="button" data-browser-handoff-open disabled>一键使用</button></div>
             </div>
 
-            <article id="guide-prepare" class="guide-client panel hidden" aria-labelledby="guide-prepare-title">
-              <div class="guide-step-body">
-                <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3 id="guide-prepare-title">公共准备</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
-                <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
-                  <div><span>当前 Gateway 站点</span><code id="guide-base-url">正在生成…</code></div>
-                  <button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button>
-                </aside>
-                <p>安装 <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">Node.js LTS</a>（包含 npm）。Windows 按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车；macOS / Linux 打开终端。安装后重新打开终端，运行 <code>node --version</code> 和 <code>npm --version</code> 确认安装成功。</p>
-                <p>为当前设备创建 API Key，并确认账号与 Key 已获得要使用的模型权限。新建 Key 可在二次验证后再次查看；项目可选，设置后会用于请求归属。</p>
-                <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
-                <div class="button-group guide-actions">
-                  <a class="button secondary" href="#resources">管理设备与项目</a>
-                  <a class="button" href="#keys">创建 API Key</a>
-                </div>
-                <p class="guide-note">配置命令会在终端提示输入 Gateway API Key，并将地址和凭据保存到当前用户配置中，修改前自动备份。Key 不包含在复制命令中，也不会写入命令历史或网页存储。配置过程使用 Node.js 读写 UTF-8 文件，支持中文及空格路径。</p>
-              </div>
-            </article>
-
             <div class="guide-switcher panel">
               <div class="guide-switcher-group">
                 <span id="guide-provider-label" class="guide-switcher-label">客户端</span>
@@ -345,6 +327,27 @@
                 </div>
               </div>
             </div>
+
+            <article id="guide-prepare" class="guide-client guide-prepare panel hidden" aria-labelledby="guide-prepare-title">
+              <div class="guide-step-body">
+                <div class="guide-step-title"><div><p class="eyebrow">PREPARE</p><h3 id="guide-prepare-title">公共准备</h3></div><span id="guide-resource-badge" class="status-badge" data-status="unknown">正在检查</span></div>
+                <aside class="guide-endpoint" aria-label="当前 Gateway 地址">
+                  <div><span>当前 Gateway 站点</span><code id="guide-base-url">正在生成…</code></div>
+                  <button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button>
+                </aside>
+                <details id="guide-prepare-details" class="guide-prepare-details collapsible">
+                  <summary>准备步骤：安装 Node.js、创建 API Key<span id="guide-prepare-meta" class="collapsible-meta"></span></summary>
+                  <p>安装 <a href="https://nodejs.org/en/download" target="_blank" rel="noopener noreferrer">Node.js LTS</a>（包含 npm）。Windows 按 <strong>Win+R</strong>，输入 <code>cmd</code> 并回车；macOS / Linux 打开终端。安装后重新打开终端，运行 <code>node --version</code> 和 <code>npm --version</code> 确认安装成功。</p>
+                  <p>为当前设备创建 API Key，并确认账号与 Key 已获得要使用的模型权限。新建 Key 可在二次验证后再次查看；项目可选，设置后会用于请求归属。</p>
+                  <div id="guide-resource-status" class="guide-resource-status" aria-live="polite"></div>
+                  <div class="button-group guide-actions">
+                    <a class="button secondary" href="#resources">管理设备与项目</a>
+                    <a class="button" href="#keys">创建 API Key</a>
+                  </div>
+                  <p class="guide-note">配置命令会在终端提示输入 Gateway API Key，并将地址和凭据保存到当前用户配置中，修改前自动备份。Key 不包含在复制命令中，也不会写入命令历史或网页存储。配置过程使用 Node.js 读写 UTF-8 文件，支持中文及空格路径。</p>
+                </details>
+              </div>
+            </article>
 
             <div id="guide-panels" class="guide-panels">
               <div id="guide-panel-opencode" class="guide-panel" role="tabpanel" aria-labelledby="guide-tab-opencode" data-guide-provider-panel="opencode">
@@ -1016,8 +1019,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                   <select name="project_id"><option value="">全部项目</option></select>
                 </label>
                 <label>模型
-                  <input name="model" placeholder="也可输入历史模型 ID" aria-label="查询模型 ID">
-                  <div id="usage-model-picker" class="usage-model-picker"></div>
+                  <span id="usage-model-picker" class="model-combo">
+                    <input name="model" placeholder="全部模型" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="usage-model-menu" aria-label="查询模型 ID，可输入历史模型" autocomplete="off" spellcheck="false">
+                    <button type="button" class="model-combo-clear" aria-label="清除模型" tabindex="-1">×</button>
+                    <span id="usage-model-menu" class="model-combo-menu hidden" role="listbox" aria-label="候选模型"></span>
+                  </span>
                 </label>
                 <label>请求状态
                   <select name="state"><option value="">全部状态</option><option value="completed">completed</option><option value="degraded">degraded（被降智）</option><option value="failed">failed</option><option value="cancelled">cancelled</option><option value="in_progress">in_progress</option></select>
@@ -1073,8 +1079,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                   <input name="until" type="date">
                 </label>
                 <label>模型
-                  <input name="model" placeholder="也可输入历史模型 ID" aria-label="查询模型 ID">
-                  <div id="global-model-picker" class="usage-model-picker"></div>
+                  <span id="global-model-picker" class="model-combo">
+                    <input name="model" placeholder="全部模型" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="global-model-menu" aria-label="查询模型 ID，可输入历史模型" autocomplete="off" spellcheck="false">
+                    <button type="button" class="model-combo-clear" aria-label="清除模型" tabindex="-1">×</button>
+                    <span id="global-model-menu" class="model-combo-menu hidden" role="listbox" aria-label="候选模型"></span>
+                  </span>
                 </label>
                 <div class="filter-actions"><button type="submit">应用筛选</button></div>
                 <p class="form-message hidden" role="alert"></p>
@@ -1652,15 +1661,34 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
     </section>
   </main>
 
-  <dialog id="egress-dialog" aria-labelledby="egress-dialog-title">
+  <dialog id="egress-dialog" class="egress-dialog" aria-labelledby="egress-dialog-title">
     <form id="egress-form" autocomplete="off">
       <div class="dialog-heading"><h2 id="egress-dialog-title">新增出口服务器</h2><p>密码和协议参数加密保存，仅在填写时可见。</p></div>
+      <details id="egress-import" class="egress-import collapsible" open>
+        <summary>快速导入 <small class="muted">分享链接或 Mihomo 节点 JSON</small></summary>
+        <div class="egress-import-body">
+          <textarea id="egress-import-text" rows="3" maxlength="24576" autocomplete="off" spellcheck="false" aria-label="分享链接或节点 JSON" placeholder="粘贴 vless:// vmess:// trojan:// ss:// hy2:// tuic:// anytls:// 链接&#10;或 Mihomo 节点 JSON，如 {&quot;type&quot;: &quot;vless&quot;, &quot;server&quot;: …}"></textarea>
+          <div class="egress-import-actions"><button id="egress-import-apply" type="button" class="secondary">解析并填入</button><small class="muted">只在本页解析并填入下方表单，核对后再保存。</small></div>
+          <p id="egress-import-result" class="egress-import-result hidden" role="status"></p>
+        </div>
+      </details>
       <label>节点名称<input name="name" required maxlength="80"></label>
-      <label>协议<select name="protocol"><option value="ss">Shadowsocks</option><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option><option value="https">HTTP CONNECT（TLS）</option><optgroup id="egress-advanced-protocols" label="其他出站协议"></optgroup></select></label>
-      <label id="egress-server-field">服务器地址<input name="server" required maxlength="253" placeholder="IPv4 或域名" spellcheck="false"></label>
-      <label id="egress-port-field">端口<input name="port" type="number" required min="1" max="65535" step="1"></label>
+      <label>协议<select name="protocol"><optgroup label="常用"><option value="ss">Shadowsocks</option><option value="socks5">SOCKS5</option><option value="http">HTTP CONNECT</option><option value="https">HTTP CONNECT（TLS）</option></optgroup><optgroup id="egress-advanced-protocols" label="其他出站协议"></optgroup></select></label>
+      <div class="egress-endpoint">
+        <label id="egress-server-field">服务器地址<input name="server" required maxlength="253" placeholder="IPv4 或域名" spellcheck="false"></label>
+        <label id="egress-port-field">端口<input name="port" type="number" required min="1" max="65535" step="1" placeholder="443"></label>
+      </div>
       <label id="egress-sni-field" class="hidden">TLS 服务器名称（可选）<input name="tls_server_name" maxlength="253" spellcheck="false" placeholder="proxy.example.com"><small>默认使用服务器地址校验证书。使用 IP 连接时，可填写证书对应的域名。</small></label>
-      <label id="egress-options-field" class="hidden">协议参数（JSON 对象）<textarea name="options" rows="5" maxlength="24576" autocomplete="off" spellcheck="false"></textarea><small id="egress-options-help"></small></label>
+      <div id="egress-options-field" class="egress-options hidden">
+        <div class="egress-options-head"><label for="egress-options-input">协议参数 <small class="muted">JSON · Mihomo 节点字段</small></label><button id="egress-options-example" type="button" class="secondary">填入示例</button></div>
+        <textarea id="egress-options-input" name="options" rows="10" maxlength="24576" autocomplete="off" spellcheck="false"></textarea>
+        <small id="egress-options-help"></small>
+        <details class="egress-options-fields collapsible">
+          <summary>格式说明与可用字段</summary>
+          <p class="muted">与 Clash.Meta / Mihomo 配置里的节点写法相同，但只写协议参数：<code>name</code>、<code>type</code>、<code>server</code>、<code>port</code> 在上方填写，不要放进 JSON。完整节点请粘贴到“快速导入”。</p>
+          <div id="egress-options-chips" class="egress-option-chips"></div>
+        </details>
+      </div>
       <label id="egress-cipher-field">加密方式<select name="cipher"><option value="aes-128-gcm">aes-128-gcm</option><option value="aes-256-gcm">aes-256-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option></select></label>
       <label id="egress-username-field" class="hidden">用户名<input name="username" maxlength="255" autocomplete="off" spellcheck="false"><small>留空表示无认证。</small></label>
       <label id="egress-password-field">密码<input name="password" type="password" maxlength="4096" autocomplete="new-password"><small id="egress-password-help">新增节点需要填写密码。</small></label>

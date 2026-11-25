@@ -122,8 +122,14 @@ async function main() {
     await page.setViewportSize({width: 1440, height: 1080});
     await page.goto(`${origin}/#billing`);
     await page.evaluate(async (value) => { bindUI(); initializeDateFilters(); renderState(value); routeFromHash(false); await loadBillingDashboard(); }, initial(member));
-    await page.locator(".billing-account-usage-card").nth(1).waitFor();
+    await page.locator(".billing-account-usage-card").nth(1).waitFor({state: "attached"});
     const research = page.locator('.billing-account-usage[data-group-id="research"]');
+    // The cards start collapsed behind a one-line status.
+    const usageSummary = research.locator(".billing-account-usage-details > summary");
+    assert.match(await usageSummary.textContent(), /2 个账号.*1 个受限或异常/);
+    assert.equal(await research.locator(".billing-account-usage-card").first().isVisible(), false);
+    await usageSummary.click();
+    await research.locator(".billing-account-usage-card").nth(1).waitFor();
     assert.equal(await page.locator('.billing-account-usage[data-group-id="engineering"]').isVisible(), false);
     assert.match(await research.textContent(), /账号用量.*刷新用量/);
     const [primary, cooling] = [research.locator(".billing-account-usage-card").nth(0), research.locator(".billing-account-usage-card").nth(1)];
