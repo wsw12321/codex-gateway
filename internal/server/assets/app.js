@@ -2,6 +2,7 @@
 
 const byId = (id) => document.getElementById(id);
 const all = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+const brandName = "百川阁";
 const sectionTitles = {
   overview: "概览",
   resources: "设备与项目",
@@ -12559,8 +12560,9 @@ function routeFromHash(focusContent = true) {
     link.classList.toggle("active", active);
     if (active) link.setAttribute("aria-current", "page"); else link.removeAttribute("aria-current");
   });
-  byId("page-title").textContent = section === "egress-servers" && !owner ? "我的出口" : sectionTitles[section];
-  document.title = `${sectionTitles[section]} · 水源喵中转站`;
+  const pageTitle = section === "egress-servers" && !owner ? "我的出口" : sectionTitles[section];
+  byId("page-title").textContent = pageTitle;
+  document.title = `${pageTitle} · ${brandName}`;
   if (focusContent || navigationDrawerOpen) {
     closeNavigationDrawer(false);
     byId("content").focus({preventScroll: true});
@@ -12666,7 +12668,7 @@ async function configureInvitationView() {
   byId("group-invitation-account").textContent = "";
   setLocalMessage(byId("group-invitation-view"));
   byId("join-eyebrow").textContent = "接受邀请";
-  byId("join-title").textContent = "加入水源喵";
+  byId("join-title").textContent = `加入${brandName}`;
   byId("join-help").textContent = "设置资料后，选择 Passkey 或密码作为首个登录方式。";
   for (const id of ["join-username", "join-display"]) {
     show(id);

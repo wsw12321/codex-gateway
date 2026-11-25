@@ -108,9 +108,9 @@ function App() {
   }, [oauth]);
 
   return <main>
-    <header className="page-header"><div><p className="eyebrow">水源喵中转站 · 站点管理</p><h1>CPA 账号管理</h1><p>维护授权、凭据与供应商额度。</p></div><a href="/">返回控制台 ↗</a></header>
+    <header className="page-header"><div><p className="eyebrow">百川阁 · 站点管理</p><h1>CPA 账号管理</h1><p>维护授权、凭据与供应商额度。</p></div><a href="/">返回控制台 ↗</a></header>
     <nav aria-label="供应商"><Button disabled={busy} variant={provider === 'codex' ? 'primary' : 'secondary'} onClick={() => setProvider('codex')}>Codex</Button><Button disabled={busy} variant={provider === 'antigravity' ? 'primary' : 'secondary'} onClick={() => setProvider('antigravity')}>Antigravity</Button><Button disabled={busy} variant={provider === 'anthropic' ? 'primary' : 'secondary'} onClick={() => setProvider('anthropic')}>Claude 账号</Button></nav>
-    <p className="notice">凭据操作需要近期身份验证。若提示验证过期，请返回控制台验证后重试。账号共享、权重、权限和计费在水源喵控制台管理。</p>
+    <p className="notice">凭据操作需要近期身份验证。若提示验证过期，请返回控制台验证后重试。账号共享、权重、权限和计费在百川阁控制台管理。</p>
     <div role="status" aria-live="polite" className="message">{message}</div>
     <Card title={`${providerName} 授权`}>
       <label htmlFor="egress">新增凭据使用的出口</label><select id="egress" disabled={busy || !!oauth || !egressReady} value={egressID} onChange={event => setEgressID(event.target.value)}>
@@ -127,7 +127,7 @@ function App() {
           finally { for (const key of Object.keys(credentials)) credentials[key] = ''; }
         });
       }}/></label></div>
-      <p className="hint">导入时验证真实身份，有刷新令牌时先刷新；同一账号重新授权保留中转站权限。{provider === 'anthropic' ? '支持 CPA OAuth 凭据和 Claude Code claudeAiOauth 格式；只提取必要令牌；仅访问令牌的账号到期后不能自动刷新，套餐无法验证时显示未知。' : '迁移旧 Keyring 请使用服务端迁移工具。'}</p>
+      <p className="hint">导入时验证真实身份，有刷新令牌时先刷新；同一账号重新授权保留本站权限。{provider === 'anthropic' ? '支持 CPA OAuth 凭据和 Claude Code claudeAiOauth 格式；只提取必要令牌；仅访问令牌的账号到期后不能自动刷新，套餐无法验证时显示未知。' : '迁移旧 Keyring 请使用服务端迁移工具。'}</p>
       {oauth && <form onSubmit={event => { event.preventDefault(); const raw = callback; setCallback(''); void run(async () => { const fields = callbackFields(raw); await api.callback(oauth.id, fields.code, fields.state); }, '已提交，正在完成授权'); }}>
         <a className="authorize" href={oauth.url} target="_blank" rel="noopener noreferrer">打开供应商授权页面 ↗</a>
         <p>登录后浏览器可能显示本地地址无法连接。复制地址栏中的完整回调 URL，在 5 分钟内提交。</p>
@@ -141,7 +141,7 @@ function App() {
     <Card title="账号" extra={<Button variant="secondary" size="sm" disabled={busy} onClick={() => run(refresh, '账号列表已更新')}>刷新列表</Button>}>
       {accounts.length === 0 && <p className="empty">暂无已登记账号</p>}
       <div className="accounts">{accounts.filter(account => account.credential_kind !== 'supplier' || account.can_manage).map(account => { const identity = accountIdentity(account); const supplier = account.credential_kind === 'supplier'; return <article key={account.id}>
-        <div><h2>{identity.title}</h2><p>{identity.details.map(detail => `${detail} · `).join('')}<code>{account.id}</code></p>{supplier ? <p>API Key 供应商 · {account.gateway_manual_status === 'enabled' ? '已启用' : '已停用'} · {account.supplier_models?.join('、')}</p> : <p>供应商：{account.cliproxy_status} · 中转站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p>}<p>出口：{account.egress_server_name || (account.egress_server_id ? '已绑定节点' : '继承全局出口')}</p></div>
+        <div><h2>{identity.title}</h2><p>{identity.details.map(detail => `${detail} · `).join('')}<code>{account.id}</code></p>{supplier ? <p>API Key 供应商 · {account.gateway_manual_status === 'enabled' ? '已启用' : '已停用'} · {account.supplier_models?.join('、')}</p> : <p>供应商：{account.cliproxy_status} · 本站：{account.gateway_manual_status} · 额度：{account.gateway_quota_status}</p>}<p>出口：{account.egress_server_name || (account.egress_server_id ? '已绑定节点' : '继承全局出口')}</p></div>
         <div className="actions">
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run(async () => { await api.status(provider, account.id, account.gateway_manual_status !== 'enabled'); await refresh(); })}>{account.gateway_manual_status === 'enabled' ? '停用' : '启用'}</Button>
           {supplier ? <Button variant="secondary" size="sm" disabled={busy} aria-expanded={rotateID === account.id} onClick={() => setRotateID(rotateID === account.id ? '' : account.id)}>更换 API Key</Button> : <>
@@ -160,7 +160,7 @@ function App() {
         return <li key={window}>{window === 'five_hour' ? '五小时窗口' : '七天窗口'}：{typeof item?.used_percent === 'number' ? `已用 ${item.used_percent}%` : '额度未知'} · 重置 {item?.reset_at || '未知'}</li>;
       })}</ul><p className="hint">刷新只读取 CPA 最新观测快照；没有新的上游响应时观测时间不会改变。</p></> : <>{!quota.quota.length && <p>未知：尚无额度观测数据。</p>}<ul>{quota.quota.map((item, index) => <li key={`${item.model}-${index}`}>{item.model}：剩余 {typeof item.remaining_fraction === 'number' ? `${(item.remaining_fraction * 100).toFixed(1)}%` : '未知'} · 重置 {item.reset_time || '未知'}</li>)}</ul></>}
     </Card>}
-    <footer>水源喵中转站 · 账号管理</footer>
+    <footer>百川阁 · 账号管理</footer>
   </main>;
 }
 

@@ -75,7 +75,7 @@ func New(repository *store.Store, config Config) (*Service, error) {
 	requireResident := true
 	web, err := webauthn.New(&webauthn.Config{
 		RPID:          config.RPID,
-		RPDisplayName: "水源喵中转站",
+		RPDisplayName: "百川阁",
 		RPOrigins:     append([]string(nil), config.RPOrigins...),
 		AuthenticatorSelection: protocol.AuthenticatorSelection{
 			RequireResidentKey: &requireResident,

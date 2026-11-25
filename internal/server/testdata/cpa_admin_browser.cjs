@@ -50,7 +50,7 @@ const csp = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-a
     });
     await page.goto(origin + "/admin/cpa/");
     await page.getByRole("heading", { name: "Codex 团队账号" }).waitFor();
-    assert.match(await page.title(), /水源喵/);
+    assert.match(await page.title(), /百川阁/);
     await page.locator('[data-theme-choice="dark"]').click();
     assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
     await page.reload();

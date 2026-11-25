@@ -47,6 +47,7 @@ async function fixture(browser, options = {}) {
     if (url.pathname === "/site/community") return send({community: null});
     if (url.pathname === "/admin/site") return send({community: null, recharge: null});
     if (url.pathname === "/admin/model-catalog") return send({models: [{id: "gpt-example"}]});
+    if (url.pathname === "/admin/model-routes") return send({routes: [], max_routes: 32});
     if (url.pathname === "/admin/state") return signedIn ? send(state) : send({error: {message: "请先登录"}}, 401);
     if (url.pathname === "/auth/password/login") { writes.push(request.postDataJSON()); signedIn = true; return send({ok: true}); }
     if (url.pathname === "/admin/billing/me") return send(billing);
@@ -84,8 +85,8 @@ async function main() {
     const {context, page, errors, writes} = await fixture(browser);
     await page.goto(origin);
     await page.locator("#oidc-login").waitFor({state: "visible"});
-    assert.match(await page.title(), /水源喵/);
-    assert.match(await page.locator("#auth").textContent(), /水源喵/);
+    assert.match(await page.title(), /百川阁/);
+    assert.match(await page.locator("#auth").textContent(), /百川阁[\s\S]*众源成流，[\s\S]*聚流成渊/);
     assert.equal(await currentTheme(page), "light");
     assert.equal(await choice(page, "system").getAttribute("aria-pressed"), "true");
     assert.equal(await page.evaluate(() => localStorage.length), 0, "system default does not write storage");
@@ -137,7 +138,7 @@ async function main() {
     await settled(page);
     assert.equal(writes.length, 1);
     assert.equal(await currentTheme(page), "dark");
-    assert.match(await page.locator("#sidebar .brand").textContent(), /水源喵/);
+    assert.match(await page.locator("#sidebar .brand").textContent(), /百川阁\s*众源成流，聚流成渊/);
     assert.match(await page.locator("#overview-cash").textContent(), /12\.345678/);
     for (const theme of ["dark", "light"]) {
       await select(page, theme);

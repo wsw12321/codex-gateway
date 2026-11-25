@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="水源喵中转站，在一处连接 AI 模型，管理你的凭证、用量与额度。">
+  <meta name="description" content="百川阁：众源成流，聚流成渊。在一处连接 AI 模型，管理你的凭证、用量与额度。">
   <meta name="theme-color" content="#f4f8f7">
-  <title>水源喵 · AI 中转站</title>
+  <title>百川阁 · 众源成流，聚流成渊</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
   <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/style.css">
@@ -19,9 +19,9 @@
   <main id="main-content" tabindex="-1">
     <section id="auth" class="auth-page" aria-label="身份验证">
       <header class="auth-header">
-        <a class="auth-brand" href="/" aria-label="水源喵中转站首页">
+        <a class="auth-brand" href="/" aria-label="百川阁首页">
           <img src="/static/favicon.svg" width="42" height="42" alt="">
-          <span><strong>水源喵</strong><small>SHUIYUAN MIAO</small></span>
+          <span><strong>百川阁</strong><small>BAICHUAN GE</small></span>
         </a>
         <div class="auth-header-actions">
           <a class="account-center-link" href="https://auth.water555.com" target="_blank" rel="noopener noreferrer">吾水阁账号中心 ↗</a>
@@ -34,17 +34,17 @@
       </header>
       <div class="auth-layout">
         <div class="brand-story">
-          <p class="eyebrow">SHUIYUAN MIAO · AI RELAY</p>
-          <h2>让每一次灵感，<br><span>都有回应。</span></h2>
-          <p class="story-intro">连接模型，也连接你的好奇心。<br>从一行代码到一个新想法，水源喵陪你继续探索。</p>
+          <p class="eyebrow">BAICHUAN GE · AI GATEWAY</p>
+          <h2>众源成流，<br><span>聚流成渊。</span></h2>
+          <p class="story-intro">连接模型，也连接你的好奇心。<br>从一行代码到一个新想法，百川阁陪你继续探索。</p>
           <img class="brand-logo" src="/static/favicon.svg#logo" width="238" height="248" alt="WaterMiao 正式标志：水滴与代码符号">
           <div class="story-caption"><span>一处接入 · 自在创作</span><span>CODEX / ANTIGRAVITY</span></div>
         </div>
         <div class="auth-forms">
       <section id="login-view" class="panel auth-card hidden">
         <p class="eyebrow">WELCOME BACK</p>
-        <h1>欢迎回到水源喵</h1>
-        <p class="auth-intro">登录中转站，开始今天的创作。</p>
+        <h1>欢迎回到百川阁</h1>
+        <p class="auth-intro">登录后，开始今天的创作。</p>
         <p id="login-error" class="form-message hidden" role="alert"></p>
         <form id="password-login-form" class="auth-method-form">
           <label>用户名
@@ -67,7 +67,7 @@
 
       <section id="join-view" class="panel auth-card hidden">
         <p class="eyebrow" id="join-eyebrow">接受邀请</p>
-        <h1 id="join-title">加入水源喵</h1>
+        <h1 id="join-title">加入百川阁</h1>
         <p id="join-help">设置资料后，选择 Passkey 或密码作为首个登录方式。</p>
         <form id="join-form">
           <label id="join-username">用户名
@@ -143,15 +143,15 @@
       <aside id="auth-community" class="panel site-community-card site-community-auth hidden" aria-label="交流群"></aside>
         </div>
       </div>
-      <footer class="auth-footer"><span>水源喵中转站 · 灵感在此汇流</span><span>由吾水阁连接彼此</span></footer>
+      <footer class="auth-footer"><span>百川阁 · 众源成流，聚流成渊</span><span>由吾水阁连接彼此</span></footer>
     </section>
 
-    <section id="dashboard" class="app hidden" aria-label="水源喵中转站控制台">
+    <section id="dashboard" class="app hidden" aria-label="百川阁控制台">
       <button id="navigation-backdrop" class="navigation-backdrop" type="button" tabindex="-1" aria-label="关闭导航菜单" hidden></button>
       <aside id="sidebar" aria-label="主导航">
         <div class="brand">
           <img src="/static/favicon.svg" width="40" height="40" alt="">
-          <div><strong>水源喵</strong><small>AI 中转站</small></div>
+          <div><strong>百川阁</strong><small>众源成流，聚流成渊</small></div>
         </div>
         <button id="navigation-close" class="secondary navigation-close" type="button"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>关闭菜单</button>
         <nav aria-label="控制台分区">
@@ -204,7 +204,7 @@
         <header class="workspace-header">
           <button id="navigation-toggle" class="secondary navigation-toggle" type="button" aria-controls="sidebar" aria-expanded="false" aria-label="打开导航菜单"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>菜单</button>
           <div class="workspace-heading">
-            <p class="workspace-eyebrow">水源喵 / 控制台</p>
+            <p class="workspace-eyebrow">百川阁 / 控制台</p>
             <h1 id="page-title">概览</h1>
           </div>
           <div class="workspace-tools">
@@ -545,11 +545,11 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                         </div>
                         <p>重新打开终端，运行 <code>claude --version</code> 确认客户端可用。管理员需先配置 Claude 账号、模型价格与权限。</p>
                       </li>
-                      <li><h4>2. 保存 Gateway 地址、Key 和模型</h4><p>执行下面的一整行命令，在终端输入 Gateway Key，再从中转站模型目录选择精确模型 ID。Key 不会出现在命令历史中。</p>
+                      <li><h4>2. 保存 Gateway 地址、Key 和模型</h4><p>执行下面的一整行命令，在终端输入 Gateway Key，再从本站模型目录选择精确模型 ID。Key 不会出现在命令历史中。</p>
                         <div class="code-card"><div class="code-toolbar"><span>Windows CMD / macOS / Linux</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-configure-code">复制配置命令</button></div><pre><code id="guide-claude-configure-code">正在生成…</code></pre></div>
                         <p class="guide-note" data-guide-os="windows">配置器备份并原子合并用户级 <code>%USERPROFILE%\.claude\settings.json</code>（已设置 <code>CLAUDE_CONFIG_DIR</code> 时使用该目录），保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p>
                         <p class="guide-note hidden" data-guide-os="macos linux">配置器备份并原子合并用户级 <code>~/.claude/settings.json</code>（已设置 <code>CLAUDE_CONFIG_DIR</code> 时使用该目录），保存 <code>ANTHROPIC_BASE_URL</code>（当前站点 origin，不加 <code>/v1</code>）、<code>ANTHROPIC_AUTH_TOKEN</code> 和模型 ID，保留其他设置。存在其他认证或云提供方设置时会先提示冲突。</p></li>
-                      <li><h4>3. 启动验证</h4><p>退出已有 Claude Code 会话，重新运行以下命令并发送“请回复 OK”。在“使用统计”查看请求及缓存账单。更换模型时从中转站目录选择已授权的精确 ID。</p>
+                      <li><h4>3. 启动验证</h4><p>退出已有 Claude Code 会话，重新运行以下命令并发送“请回复 OK”。在“使用统计”查看请求及缓存账单。更换模型时从本站模型目录选择已授权的精确 ID。</p>
                         <div class="code-card compact-code">
                           <div class="code-toolbar"><span>启动 Claude Code</span><button type="button" class="secondary copy-button" data-copy-target="guide-claude-start-code">复制启动命令</button></div>
                           <pre><code id="guide-claude-start-code">claude</code></pre>
@@ -568,7 +568,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                         <dl class="guide-fields">
                           <div><dt>请求地址</dt><dd>当前 Gateway 站点（不加 <code>/v1</code>）<button type="button" class="secondary copy-button" data-copy-target="guide-base-url">复制地址</button></dd></div>
                           <div><dt>API Key</dt><dd>本站签发的 Gateway Key，可在 <a href="#keys">API Keys</a> 中创建或查看。</dd></div>
-                          <div><dt>模型</dt><dd>中转站模型目录中已授权的 <code>claude-*</code> 精确模型 ID。</dd></div>
+                          <div><dt>模型</dt><dd>本站模型目录中已授权的 <code>claude-*</code> 精确模型 ID。</dd></div>
                         </dl></li>
                       <li><h4>3. 启用并验证</h4><p>在 CC Switch 中启用该配置，重新打开 Claude 客户端并发送“请回复 OK”，再到“使用统计”确认请求。</p></li>
                     </ol>
@@ -660,7 +660,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           </section>
 
           <section class="view hidden" data-section="plans" aria-labelledby="plans-title">
-            <div class="section-head"><div><h2 id="plans-title">套餐</h2><p>选购独立订阅。已有订阅可在额度与订阅页面续费。</p></div><a href="#billing" class="button secondary">额度与订阅</a></div>
+            <div class="section-head"><div><h2 id="plans-title">套餐</h2><p class="page-slogan" data-page-role="buyer">一处接入，百家模型</p><p>选购独立订阅。已有订阅可在额度与订阅页面续费。</p></div><a href="#billing" class="button secondary">额度与订阅</a></div>
             <article id="billing-plans-panel" class="panel billing-plans-panel" aria-labelledby="billing-plans-title">
               <div class="panel-heading"><div><h3 id="billing-plans-title">套餐目录</h3><p>使用现金余额购买。周期为日／周／月或自定义 1–3650 天，每周期额度不结转。购买始终新增独立订阅。</p></div><div class="actions"><button id="billing-plans-refresh" type="button" class="secondary">刷新套餐</button><button id="billing-plan-create" type="button" class="owner-only hidden">创建套餐</button></div></div>
               <p id="billing-plan-message" class="form-message hidden" role="status" aria-live="polite"></p>
@@ -1425,7 +1425,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           </section>
 
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
-            <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p>为上游账号选择出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
+            <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p class="page-slogan member-market hidden" data-page-role="seller">你出水源，我来汇流</p><p>为上游账号选择出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
             <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址，不支持域名。</p>
             <div class="egress-probe-bar">
@@ -1439,7 +1439,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           </section>
 
           <section class="view hidden" data-section="providers" aria-labelledby="providers-title">
-            <div class="section-head"><div><h2 id="providers-title">我的供应商</h2><p>登录或导入你自己的上游账号，或添加 API Key 供应商。账号归你所有，其他成员看不到，也不能使用。</p></div><button id="providers-refresh" type="button" class="secondary">刷新</button></div>
+            <div class="section-head"><div><h2 id="providers-title">我的供应商</h2><p class="page-slogan" data-page-role="seller">你出水源，我来汇流</p><p>登录或导入你自己的上游账号，或添加 API Key 供应商。账号归你所有，其他成员看不到，也不能使用。</p></div><button id="providers-refresh" type="button" class="secondary">刷新</button></div>
             <p class="callout">现阶段只做添加与管理：自用和套餐功能开放后，这些账号才会服务请求。出口默认使用全局出口，也可以在“我的出口”中添加自己的服务器后选择。</p>
             <p id="providers-summary" class="muted" aria-live="polite">正在加载…</p>
             <form id="provider-add-form" class="tool-block provider-add" autocomplete="off">
@@ -1465,7 +1465,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           </section>
 
           <section class="view hidden" data-section="my-plans" aria-labelledby="my-plans-title">
-            <div class="section-head"><div><h2 id="my-plans-title">我的套餐</h2><p>用你自己的供应商发布套餐。提交审核、Owner 通过并上架后，其他成员可以在套餐商城购买；成交款按抽成比例扣除后记入你的现金余额。</p></div><div class="actions"><button id="my-plans-refresh" type="button" class="secondary">刷新</button><button id="my-plan-create" type="button">发布套餐</button></div></div>
+            <div class="section-head"><div><h2 id="my-plans-title">我的套餐</h2><p class="page-slogan" data-page-role="seller">你出水源，我来汇流</p><p>用你自己的供应商发布套餐。提交审核、Owner 通过并上架后，其他成员可以在套餐商城购买；成交款按抽成比例扣除后记入你的现金余额。</p></div><div class="actions"><button id="my-plans-refresh" type="button" class="secondary">刷新</button><button id="my-plan-create" type="button">发布套餐</button></div></div>
             <p class="callout">修改价格、额度、周期、模型、名称或说明后要重新审核，审核期间暂停销售；修改供应商范围、上架或下架不需要审核。额度用完后超出的部分由你承担，不会扣买家的现金。你看不到买家身份。</p>
             <p id="my-plans-message" class="form-message hidden" role="status" aria-live="polite"></p>
             <p id="my-plans-summary" class="muted" aria-live="polite">正在加载…</p>
@@ -1540,7 +1540,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
                 <legend>充值</legend>
                 <label class="check-label"><input name="recharge_enabled" type="checkbox">在额度与订阅页显示充值卡片</label>
                 <p class="muted">卡片固定提示三点：付款备注填写用户名；管理员确认后到账；建议先在交流群联系客服确认。收款码仅向已登录用户显示。</p>
-                <label>客服联系方式（可选）<input name="recharge_contact" maxlength="80" placeholder="例如：群主 @水源喵"></label>
+                <label>客服联系方式（可选）<input name="recharge_contact" maxlength="80" placeholder="例如：群主 @百川阁"></label>
                 <label>补充说明（可选）<textarea name="recharge_note" maxlength="1000" rows="4" placeholder="例如：最低充值 10 元，通常 24 小时内到账"></textarea></label>
               </fieldset>
               <p class="form-message hidden" role="alert"></p>
@@ -1889,7 +1889,7 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
         <input name="slug" required maxlength="64" pattern="[a-z0-9_-]+" autocomplete="off" placeholder="gateway">
       </label>
       <label>名称
-        <input name="name" required maxlength="120" autocomplete="off" placeholder="水源喵">
+        <input name="name" required maxlength="120" autocomplete="off" placeholder="百川阁">
       </label>
       <p class="form-message hidden" role="alert"></p>
       <div class="actions"><button type="button" class="secondary" data-close>取消</button><button type="submit">添加项目</button></div>
