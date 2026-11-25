@@ -151,6 +151,17 @@ Current migrations:
   instead of the buyer, and both ledger entries (cleared, not blocking, when
   information cleanup removes them). The ledger accepts `plan_sale_income`,
   the seller's credit, which also opens a cash lot.
+- `internal/store/migrations/0055_tenant_user_deletion.sql` — permanently
+  deleting a member who once held tenant resources (aggregation gateway stage
+  5). `upstream_accounts.owner_deleted_at` marks a released account whose
+  owner was deleted: it has no owner, serves nobody and is in nobody's
+  management scope, the platform's included, until a login claims it (a
+  check keeps the marker on released, ownerless rows only). The replaced
+  `guard_upstream_account_owner` trigger additionally accepts the
+  `owner_deleted` reason, only for a released account that becomes ownerless
+  and marked. Adds an index on `marketplace_sales(buyer_user_id)` for the
+  deletion blockers. Information cleanup now also removes a sale older than
+  the cutoff once both of its ledger entries are gone.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

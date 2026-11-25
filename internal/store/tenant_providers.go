@@ -30,18 +30,21 @@ type UpstreamAccountOwnership struct {
 	OwnerUserID       string
 	AdminSuspended    bool
 	CredentialRemoved bool
-	CredentialKind    string
+	// OwnerDeleted: a released account whose owner was permanently deleted.
+	// It belongs to no one, the platform included.
+	OwnerDeleted   bool
+	CredentialKind string
 }
 
 // InScope reports whether a store scoped to owner (empty: platform) may manage
 // the account. An account the Gateway has no row for counts as a platform
 // account, as before ownership existed. A tenant never manages a released
-// account.
+// account, and nobody manages one whose owner was deleted.
 func (o UpstreamAccountOwnership) InScope(owner string) bool {
 	if !o.Exists {
 		return owner == ""
 	}
-	if o.OwnerUserID != owner {
+	if o.OwnerDeleted || o.OwnerUserID != owner {
 		return false
 	}
 	return owner == "" || !o.CredentialRemoved
@@ -52,9 +55,9 @@ func (s *Store) UpstreamAccountOwnership(ctx context.Context, id string) (Upstre
 		return UpstreamAccountOwnership{}, fmt.Errorf("%w: invalid upstream account id", ErrInvalid)
 	}
 	var value UpstreamAccountOwnership
-	err := s.db.QueryRowContext(ctx, `SELECT provider, COALESCE(owner_user_id::text,''), admin_suspended,
+	err := s.db.QueryRowContext(ctx, `SELECT provider, COALESCE(owner_user_id::text,''), admin_suspended, owner_deleted_at IS NOT NULL,
 		credential_removed_at IS NOT NULL, credential_kind FROM upstream_accounts WHERE id=$1`, id).Scan(
-		&value.Provider, &value.OwnerUserID, &value.AdminSuspended, &value.CredentialRemoved, &value.CredentialKind)
+		&value.Provider, &value.OwnerUserID, &value.AdminSuspended, &value.OwnerDeleted, &value.CredentialRemoved, &value.CredentialKind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return UpstreamAccountOwnership{}, nil
 	}
@@ -157,7 +160,8 @@ func changeUpstreamOwnerTx(ctx context.Context, tx *sql.Tx, accountID, provider,
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.upstream_owner_change', $1, true)`, reason); err != nil {
 		return nil, mapDBError("mark owner change", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=$2::uuid WHERE id=$1`, accountID, valueOrNil(newOwner)); err != nil {
+	// A claimed account whose previous owner was deleted has an owner again.
+	if _, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET owner_user_id=$2::uuid, owner_deleted_at=NULL WHERE id=$1`, accountID, valueOrNil(newOwner)); err != nil {
 		return nil, mapDBError("change upstream account owner", err)
 	}
 	if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.upstream_owner_change', '', true)`); err != nil {
@@ -235,7 +239,7 @@ func claimRegistrationAccountTx(ctx context.Context, tx *sql.Tx, registration Eg
 				return err
 			}
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=NULL WHERE id=$1`, accountID)
+		_, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=NULL, owner_deleted_at=NULL WHERE id=$1`, accountID)
 		return mapDBError("restore released account", err)
 	case currentOwner == owner:
 		return nil

@@ -47,6 +47,14 @@ type DeleteInformationUsersResult struct {
 
 // Use the same predicates for the candidate list and the final transactional
 // recheck. An automatically-created, empty billing account is not history.
+//
+// Tenant resources (aggregation gateway): an account whose credential the
+// user still holds, an egress node, a plan that is not deleted, a plan that
+// any subscription still names, and any marketplace sale block deletion, so
+// that the Owner sees a reason instead of a foreign key error. What the user
+// no longer controls is settled by the deletion itself: released accounts
+// lose their owner (owner_deleted_at) and deleted plans that nothing names
+// any more are removed.
 const informationUserBlockers = `array_remove(ARRAY[
 	CASE WHEN u.role <> 'member' THEN 'owner' END,
 	CASE WHEN u.status = 'pending' THEN 'pending_approval' END,
@@ -66,7 +74,15 @@ const informationUserBlockers = `array_remove(ARRAY[
 		OR EXISTS(SELECT 1 FROM billing_settings b WHERE b.updated_by_user_id=u.id)
 		OR EXISTS(SELECT 1 FROM billing_model_multipliers m WHERE m.updated_by_user_id=u.id)
 		OR EXISTS(SELECT 1 FROM billing_model_prices m WHERE m.updated_by_user_id=u.id)
-		OR EXISTS(SELECT 1 FROM billing_plans p WHERE p.updated_by_user_id=u.id) THEN 'management_history' END
+		OR EXISTS(SELECT 1 FROM billing_plans p WHERE p.updated_by_user_id=u.id AND p.seller_user_id IS DISTINCT FROM u.id) THEN 'management_history' END,
+	CASE WHEN EXISTS(SELECT 1 FROM upstream_accounts a WHERE a.owner_user_id=u.id AND a.credential_removed_at IS NULL) THEN 'providers' END,
+	CASE WHEN EXISTS(SELECT 1 FROM egress_servers n WHERE n.owner_user_id=u.id) THEN 'egress_servers' END,
+	CASE WHEN EXISTS(SELECT 1 FROM billing_plans p WHERE p.seller_user_id=u.id AND p.deleted_at IS NULL) THEN 'seller_plans' END,
+	CASE WHEN EXISTS(SELECT 1 FROM billing_plans p WHERE p.seller_user_id=u.id AND (
+		EXISTS(SELECT 1 FROM billing_subscriptions s WHERE s.source_plan_id=p.id)
+		OR EXISTS(SELECT 1 FROM billing_subscriptions s WHERE s.plan_id=p.id))) THEN 'plan_subscriptions' END,
+	CASE WHEN EXISTS(SELECT 1 FROM marketplace_sales m WHERE m.seller_user_id=u.id)
+		OR EXISTS(SELECT 1 FROM marketplace_sales m WHERE m.buyer_user_id=u.id) THEN 'marketplace_sales' END
 ]::text[],NULL)`
 
 func (s *Store) ListDeletableInformationUsers(ctx context.Context, search string, limit, offset int) ([]DeletableUser, error) {
@@ -173,6 +189,13 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 			(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded)); err != nil {
 			return err
 		}
+		// A login that is restoring one of these users' released accounts
+		// waits here, so the provider check below sees its outcome. New
+		// accounts, nodes and plans of these users wait on the user locks.
+		if _, err := tx.ExecContext(ctx, `SELECT id FROM upstream_accounts WHERE owner_user_id IN
+			(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) ORDER BY id FOR UPDATE`, string(encoded)); err != nil {
+			return mapDBError("lock tenant accounts for deletion", err)
+		}
 		// Keep invitations and approved application snapshots when deleting a
 		// former member. Pending group applications release their slots. Lock in
 		// the same order as join/review before changing application ownership.
@@ -217,6 +240,47 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 		if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.user_deletion_operation',$1,true)`, params.OperationID); err != nil {
 			return err
 		}
+		// Released accounts keep their usage history but lose their owner; the
+		// trigger accepts this change only for released accounts.
+		var orphaned []string
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.upstream_owner_change','owner_deleted',true)`); err != nil {
+			return mapDBError("mark released account owner deletion", err)
+		}
+		rows, err := tx.QueryContext(ctx, `UPDATE upstream_accounts SET owner_user_id=NULL, owner_deleted_at=$2
+			WHERE owner_user_id IN (SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb))
+			AND credential_removed_at IS NOT NULL RETURNING id`, string(encoded), params.At)
+		if err != nil {
+			return mapDBError("release deleted owner accounts", err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return fmt.Errorf("scan released account: %w", err)
+			}
+			orphaned = append(orphaned, id)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `SELECT set_config('gateway.upstream_owner_change','',true)`); err != nil {
+			return mapDBError("clear released account owner deletion", err)
+		}
+		sort.Strings(orphaned)
+		// Every remaining plan of these sellers is deleted and named by no
+		// subscription or sale (blockers above); its scope cascades.
+		plansResult, err := tx.ExecContext(ctx, `DELETE FROM billing_plans WHERE seller_user_id IN
+			(SELECT value::uuid FROM jsonb_array_elements_text($1::jsonb)) AND deleted_at IS NOT NULL`, string(encoded))
+		if err != nil {
+			return mapDBError("delete deleted seller plans", err)
+		}
+		deletedPlans, err := plansResult.RowsAffected()
+		if err != nil {
+			return err
+		}
 		// Preserve audit identities before removing their live foreign keys.
 		queries := []string{
 			`UPDATE audit_events SET actor_user_id_snapshot=COALESCE(actor_user_id_snapshot,actor_user_id::text),
@@ -254,7 +318,14 @@ func (s *Store) DeleteInformationUsers(ctx context.Context, params DeleteInforma
 		for i, id := range ids {
 			auditIDs[i] = id
 		}
-		if err := appendBillingAuditTx(ctx, tx, params.BillingWriteParams, "information.users.deleted", "information_operation", params.OperationID, map[string]any{"user_ids": auditIDs, "deleted_count": len(ids), "operation_id": params.OperationID}); err != nil {
+		orphanedIDs := make([]any, len(orphaned))
+		for i, id := range orphaned {
+			orphanedIDs[i] = id
+		}
+		if err := appendBillingAuditTx(ctx, tx, params.BillingWriteParams, "information.users.deleted", "information_operation", params.OperationID, map[string]any{
+			"user_ids": auditIDs, "deleted_count": len(ids), "operation_id": params.OperationID,
+			"released_account_ids": orphanedIDs, "deleted_seller_plan_count": deletedPlans,
+		}); err != nil {
 			return err
 		}
 		_, err = tx.ExecContext(ctx, `UPDATE information_user_deletions SET completed_at=$2 WHERE operation_id=$1`, params.OperationID, params.At)

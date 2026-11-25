@@ -90,14 +90,17 @@ func (s *Store) upstreamOwnerArg() any { return valueOrNil(s.upstreamOwner) }
 // accountScopeSQL restricts upstream_accounts (alias may be empty) to this
 // store's owner. placeholder binds upstreamOwnerArg(). Platform management
 // keeps seeing removed platform accounts as before; a tenant sees only
-// accounts whose credential it still holds.
+// accounts whose credential it still holds. A released account whose owner
+// was permanently deleted (migration 0055) is in no scope at all: it has no
+// owner, yet it was never a platform account.
 func accountScopeSQL(alias, placeholder string) string {
 	prefix := ""
 	if alias != "" {
 		prefix = alias + "."
 	}
 	return "(" + prefix + "owner_user_id IS NOT DISTINCT FROM " + placeholder + "::uuid AND (" +
-		placeholder + "::uuid IS NULL OR " + prefix + "credential_removed_at IS NULL))"
+		placeholder + "::uuid IS NULL OR " + prefix + "credential_removed_at IS NULL) AND " +
+		prefix + "owner_deleted_at IS NULL)"
 }
 
 func (s *Store) upstreamProviderName() string {

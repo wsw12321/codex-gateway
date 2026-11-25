@@ -2038,7 +2038,8 @@ func billingIntegrationTenantOwnershipSchema(t *testing.T, ctx context.Context, 
 	if _, err := repository.db.ExecContext(ctx, `ALTER TABLE upstream_accounts
 			ADD COLUMN IF NOT EXISTS owner_user_id UUID,
 			ADD COLUMN IF NOT EXISTS admin_suspended BOOLEAN NOT NULL DEFAULT false,
-			ADD COLUMN IF NOT EXISTS credential_removed_at TIMESTAMPTZ;
+			ADD COLUMN IF NOT EXISTS credential_removed_at TIMESTAMPTZ,
+			ADD COLUMN IF NOT EXISTS owner_deleted_at TIMESTAMPTZ;
 		CREATE TABLE IF NOT EXISTS marketplace_settings (
 			singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK (singleton),
 			enabled BOOLEAN NOT NULL DEFAULT false);

@@ -53,7 +53,8 @@ func (s *Store) RunInformationCleanupBatch(ctx context.Context, limit int) (*Inf
 		}
 		var candidateCount int64
 		if err := tx.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM info_requests)+(SELECT count(*) FROM info_lots)+
-			(SELECT count(*) FROM info_ledger)+(SELECT count(*) FROM info_periods)+(SELECT count(*) FROM info_subscriptions)`).Scan(&candidateCount); err != nil {
+			(SELECT count(*) FROM info_ledger)+(SELECT count(*) FROM info_periods)+(SELECT count(*) FROM info_subscriptions)+
+			(SELECT count(*) FROM info_sales)`).Scan(&candidateCount); err != nil {
 			return err
 		}
 		if candidateCount > 0 {
@@ -140,6 +141,17 @@ func deleteInformationCandidates(ctx context.Context, tx *sql.Tx, job *Informati
 		AND EXISTS (SELECT 1 FROM billing_operations o JOIN info_ledger l ON l.id=o.result_ledger_entry_id WHERE a.metadata->>'operation_id'=o.operation_id::text)`, job.Cutoff); err != nil {
 		return err
 	}
+	// Sales go before their ledger entries, whose removal would otherwise
+	// only clear the sales' references.
+	marketplace, err := marketplaceSchemaTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	if marketplace {
+		if err := informationDelete(ctx, tx, &job.Report, "marketplace_sales", `DELETE FROM marketplace_sales WHERE id IN (SELECT id FROM info_sales)`); err != nil {
+			return err
+		}
+	}
 	for _, statement := range []struct{ table, query string }{
 		{"billing_charge_allocations", `DELETE FROM billing_charge_allocations WHERE request_id IN (SELECT request_id FROM info_requests)`},
 		{"billing_reservations", `DELETE FROM billing_reservations WHERE request_id IN (SELECT request_id FROM info_requests)`},
@@ -165,7 +177,7 @@ func deleteInformationCandidates(ctx context.Context, tx *sql.Tx, job *Informati
 	if err := informationDelete(ctx, tx, &job.Report, "billing_subscriptions", `DELETE FROM billing_subscriptions WHERE id IN (SELECT id FROM info_subscriptions)`); err != nil {
 		return err
 	}
-	_, err := tx.ExecContext(ctx, `DELETE FROM information_cleanup_authorizations WHERE transaction_id=txid_current()`)
+	_, err = tx.ExecContext(ctx, `DELETE FROM information_cleanup_authorizations WHERE transaction_id=txid_current()`)
 	return mapDBError("close information deletion authorization", err)
 }
 

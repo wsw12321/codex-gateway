@@ -458,7 +458,8 @@ func servingAccountIsTenantTx(ctx context.Context, tx *sql.Tx, layers []fundingL
 		}
 	}
 	var platform bool
-	err := tx.QueryRowContext(ctx, `SELECT owner_user_id IS NULL FROM upstream_accounts WHERE id=$1`, accountID).Scan(&platform)
+	// A released account whose owner was deleted was never the platform's.
+	err := tx.QueryRowContext(ctx, `SELECT owner_user_id IS NULL AND owner_deleted_at IS NULL FROM upstream_accounts WHERE id=$1`, accountID).Scan(&platform)
 	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
 	}
