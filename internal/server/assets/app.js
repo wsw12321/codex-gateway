@@ -279,11 +279,67 @@ function billingModelText(ids) {
   return [...families.map((family) => family.label), ...exact, ...unknown].join("、");
 }
 
+// Antigravity serves these, but CPA excludes them until the Gateway reviews
+// their price (oauth-excluded-models in deploy/codex-compat/plugin-entrypoint.sh).
+// Selectors list them as pending and never let them be chosen.
+const modelsPendingPricing = ["gemini-4-neon-xhigh", "gemini-4-hydrogen-xhigh", "gemini-4-carbon-high", "gemini-3.8-flash-tiered"];
+
+// Dated snapshot IDs (claude-haiku-4-5-20251001) stay billable and can still
+// be typed in full; selectors leave them out unless already chosen.
+function modelHiddenFromPickers(id) {
+  return /-\d{8}$/.test(id);
+}
+
+const modelNameWords = {xhigh: "XHigh"};
+const modelTierRank = {fable: 0, opus: 1, sonnet: 2, haiku: 3, astra: 0, sol: 1, terra: 2, luna: 3, mini: 5};
+
+// Splits an ID into family, x.x version and tier words; unknown IDs return null.
+function modelNameParts(id) {
+  let match = /^claude-([a-z]+)-(\d+)-(\d+)(?:-\d{8})?$/.exec(id);
+  if (match) return {family: "Claude", major: Number(match[2]), minor: Number(match[3]), words: [match[1]]};
+  match = /^(gpt|gemini)-(\d+)(?:\.(\d+))?((?:-[a-z0-9]+)*)$/.exec(id);
+  if (match) return {family: match[1] === "gpt" ? "GPT" : "Gemini", major: Number(match[2]), minor: Number(match[3] || 0),
+    words: match[4] ? match[4].slice(1).split("-") : []};
+  return null;
+}
+
+// A display name with every version as x.x; the ID itself never changes.
+function modelDisplayName(id) {
+  const parts = modelNameParts(id);
+  if (!parts) return id;
+  const version = `${parts.major}.${parts.minor}`;
+  const words = parts.words.map((word) => modelNameWords[word] || word.charAt(0).toUpperCase() + word.slice(1));
+  if (parts.family === "Claude") return `Claude ${words.join(" ")} ${version}`;
+  return [parts.family === "GPT" ? `GPT-${version}` : `Gemini ${version}`, ...words].join(" ");
+}
+
+// The brand group the catalog assigns (config.ModelFamilyGroup).
+function modelFamilyGroupOf(id) {
+  return id.startsWith("claude-") ? "Claude" : id.startsWith("gemini-") ? "Gemini" : "GPT";
+}
+
+// Newest version first; within a version the larger tier first, then by ID.
+function compareModels(a, b) {
+  const x = modelNameParts(a), y = modelNameParts(b);
+  if (!x || !y) return x ? -1 : y ? 1 : a.localeCompare(b);
+  const rank = (parts) => parts.words.reduce((best, word) => Math.min(best, modelTierRank[word] ?? 4), 4);
+  return y.major - x.major || y.minor - x.minor || rank(x) - rank(y) || a.localeCompare(b);
+}
+
+// The visible name with the real ID beside it when they differ.
+function modelChoiceText(id) {
+  const name = modelDisplayName(id);
+  return name === id ? [element("span", {className: "model-name", text: id})]
+    : [element("span", {className: "model-name", text: name}), element("code", {className: "model-id", text: id})];
+}
+
 function renderModelPicker(host, candidates, options = {}) {
   const single = options.single === true;
   const familyMode = options.families === true && !single;
+  const chosen = new Set(options.selected || []);
   const models = [...new Map(candidates.filter((item) => item && typeof item.id === "string" && item.id)
-    .map((item) => [item.id, item])).values()];
+    .map((item) => [item.id, item])).values()]
+    .filter((item) => !modelHiddenFromPickers(item.id) || chosen.has(item.id));
   const available = new Set(models.map((item) => item.id));
   const selected = new Set((options.selected || []).filter((id) => available.has(id)).slice(0, single ? 1 : undefined));
   const families = new Set(familyMode ? (options.selected || []).filter((id) => modelFamilyScopes.some((family) => family.token === id)) : []);
@@ -294,7 +350,7 @@ function renderModelPicker(host, candidates, options = {}) {
   const count = element("small", {className: "model-picker-count", attributes: {"aria-live": "polite"}});
   const clear = element("button", {type: "button", className: "secondary", text: single ? "清除选择" : "清空"});
   const selectAll = element("input", {type: "checkbox", attributes: {"aria-label": "全选当前目录模型"}});
-  const rows = [], groups = [];
+  const rows = [], groups = [], pendingRows = [];
   const brandOf = new Map();
   const isCovered = (id) => selected.has(id) || familyCovers(brandOf.get(id));
   const values = () => [
@@ -319,6 +375,8 @@ function renderModelPicker(host, candidates, options = {}) {
       group.toggle.indeterminate = n > 0 && n < group.ids.length;
       group.toggle.disabled = group.ids.length === 0 || familyCovers(group.brand);
       group.toggle.setAttribute("aria-checked", group.toggle.indeterminate ? "mixed" : String(group.toggle.checked));
+      group.meta.textContent = familyCovers(group.brand) ? `全系 · ${group.ids.length} 个`
+        : single ? `${group.ids.length} 个${n ? " · 已选" : ""}` : `已选 ${n} / ${group.ids.length}`;
       if (group.family) {
         group.family.checked = familyCovers(group.brand);
         group.family.setAttribute("aria-checked", String(group.family.checked));
@@ -333,29 +391,44 @@ function renderModelPicker(host, candidates, options = {}) {
   const groupNames = ["GPT", "Gemini", "Claude"];
   if (models.some((item) => !groupNames.includes(item.group))) groupNames.push("其他");
   const sections = groupNames.map((brand) => {
-    const members = models.filter((item) => (groupNames.includes(item.group) ? item.group : "其他") === brand);
+    // Display order only; saved values keep the catalog order.
+    const members = models.filter((item) => (groupNames.includes(item.group) ? item.group : "其他") === brand)
+      .sort((a, b) => compareModels(a.id, b.id));
     members.forEach((item) => brandOf.set(item.id, brand));
     const toggle = element("input", {type: "checkbox", attributes: {"aria-label": `全选 ${brand} 模型`}});
     const family = familyMode ? familyOf(brand) : null;
     const familyToggle = family ? element("input", {type: "checkbox", attributes: {"aria-label": family.label, value: family.token}}) : null;
     const children = members.map((item) => {
       const input = element("input", {type: single ? "radio" : "checkbox", className: "model-picker-checkbox", attributes: {value: item.id, ...(single ? {name} : {})}});
-      const label = element("label", {className: "model-picker-choice", dataset: {model: item.id}}, input, element("span", {text: item.id}));
+      const label = element("label", {className: "model-picker-choice", dataset: {model: item.id}}, input,
+        element("span", {className: "model-picker-label"}, ...modelChoiceText(item.id)));
       input.addEventListener("change", () => {
         if (single) selected.clear();
         if (input.checked) selected.add(item.id); else selected.delete(item.id);
         changed();
       });
-      rows.push({id: item.id, input, label, brand});
+      rows.push({id: item.id, name: modelDisplayName(item.id), input, label, brand});
       return label;
     });
+    const pending = modelsPendingPricing.filter((id) => !available.has(id) && modelFamilyGroupOf(id) === brand).sort(compareModels).map((id) => {
+      const label = element("label", {className: "model-picker-choice model-picker-pending", dataset: {model: id}, attributes: {title: "上游已提供，待 Gateway 定价后可选"}},
+        element("input", {type: single ? "radio" : "checkbox", attributes: {disabled: "", "aria-disabled": "true", tabindex: "-1"}}),
+        element("span", {className: "model-picker-label"}, ...modelChoiceText(id), element("small", {className: "model-pending-badge", text: "待定价"})));
+      pendingRows.push({id, name: modelDisplayName(id), label, brand});
+      return label;
+    });
+    const meta = element("span", {className: "collapsible-meta"});
+    // The group's select-all sits in the summary, so a collapsed group can be
+    // selected whole; a label is its own activation target and never toggles the group.
     const section = element("details", {className: "model-picker-brand", dataset: {brand}},
-      element("summary", {text: `${brand} · ${members.length}`}),
+      element("summary", {}, element("span", {className: "model-picker-brand-name", text: brand}),
+        single ? null : element("label", {className: "model-picker-select-all model-picker-brand-all"}, toggle, element("span", {text: "全选"})),
+        meta),
       familyToggle ? element("label", {className: "model-picker-select-all model-picker-family"}, familyToggle,
         element("span", {text: `${family.label}（自动包含以后新增的 ${brand} 模型）`})) : null,
-      single ? null : element("label", {className: "model-picker-select-all"}, toggle, element("span", {text: `${brand} 全选`})),
-      element("div", {className: "model-picker-options", attributes: {role: single ? "radiogroup" : "group", "aria-label": `${brand} 模型`}}, ...children));
-    section.open = members.length > 0 || familyCovers(brand);
+      element("div", {className: "model-picker-options", attributes: {role: single ? "radiogroup" : "group", "aria-label": `${brand} 模型`}}, ...children, ...pending));
+    // Groups start closed so long catalogs stay short; the summary shows what is selected.
+    section.open = false;
     toggle.addEventListener("change", () => { members.forEach((item) => { if (toggle.checked) selected.add(item.id); else selected.delete(item.id); }); changed(); });
     // Leaving a family keeps today's models selected one by one, so the scope
     // never shrinks by surprise; the Owner removes models explicitly.
@@ -364,14 +437,15 @@ function renderModelPicker(host, candidates, options = {}) {
       else { families.delete(family.token); members.forEach((item) => selected.add(item.id)); }
       changed();
     });
-    groups.push({ids: members.map((item) => item.id), toggle, section, brand, family: familyToggle});
+    groups.push({ids: members.map((item) => item.id), toggle, section, brand, family: familyToggle, meta});
     return section;
   });
   search.addEventListener("input", () => {
     const query = search.value.trim().toLowerCase();
-    rows.forEach((row) => { row.label.hidden = !row.id.toLowerCase().includes(query) && !row.brand.toLowerCase().includes(query); });
+    const matches = (row) => [row.id, row.name, row.brand].some((text) => text.toLowerCase().includes(query));
+    [...rows, ...pendingRows].forEach((row) => { row.label.hidden = !matches(row); });
     groups.forEach((group) => {
-      group.section.hidden = Boolean(query) && !rows.some((row) => row.brand === group.brand && !row.label.hidden);
+      group.section.hidden = Boolean(query) && ![...rows, ...pendingRows].some((row) => row.brand === group.brand && !row.label.hidden);
       if (query && !group.section.hidden) group.section.open = true;
     });
   });
@@ -443,9 +517,111 @@ function syncKeyModelScope() {
 function loadUsageModelPickers() {
   for (const [id, formID, scope] of [["usage-model-picker", "usage-filter", "usage"], ["global-model-picker", "global-filter", "global_usage"]]) {
     if (scope === "global_usage" && state?.user?.role !== "owner") continue;
-    const input = byId(formID).elements.model;
-    loadFormModelPicker(id, scope, input.value ? [input.value] : [], {single: true, onChange: (models) => { input.value = models[0] || ""; updateCSVLink(); }});
+    const host = byId(id);
+    if (!host) continue;
+    bindModelCombobox(host, byId(formID).elements.model, updateCSVLink);
+    host.comboModels = [];
+    host.comboError = "";
+    modelCatalog(scope).then((models) => { host.comboModels = models; host.comboRender?.(); })
+      .catch((error) => { host.comboError = friendlyError(error); host.comboRender?.(); });
   }
+}
+
+// A filter field for one model: it suggests catalog models by brand as the
+// user types and still accepts any historical model ID typed in full.
+function bindModelCombobox(host, input, onChange) {
+  if (host.dataset.bound === "true") return;
+  host.dataset.bound = "true";
+  const menu = host.querySelector(".model-combo-menu");
+  const clear = host.querySelector(".model-combo-clear");
+  let options = [], active = -1;
+  const isOpen = () => !menu.classList.contains("hidden");
+  const highlight = (index) => {
+    active = index;
+    options.forEach((option, i) => option.classList.toggle("active", i === index));
+    if (options[index]) {
+      input.setAttribute("aria-activedescendant", options[index].id);
+      options[index].scrollIntoView?.({block: "nearest"});
+    } else input.removeAttribute("aria-activedescendant");
+  };
+  const render = () => {
+    const value = input.value.trim();
+    const models = (host.comboModels || []).filter((item) => !modelHiddenFromPickers(item.id) || item.id === value)
+      .sort((a, b) => compareModels(a.id, b.id));
+    // An exact catalog match shows the whole list so the choice can be changed.
+    const query = models.some((item) => item.id === value) ? "" : value.toLowerCase();
+    const brands = ["GPT", "Gemini", "Claude"];
+    const brandOf = (item) => brands.includes(item.group) ? item.group : "其他";
+    const matchesQuery = (id, brand) => !query || [id, modelDisplayName(id), brand].some((text) => text.toLowerCase().includes(query));
+    const matches = models.filter((item) => matchesQuery(item.id, brandOf(item)));
+    const option = (id, label) => {
+      const node = element("button", {type: "button", className: "model-combo-option",
+        attributes: {role: "option", tabindex: "-1", id: `${menu.id}-${options.length}`, "aria-selected": String(id === value)}, dataset: {value: id}},
+        ...(id ? modelChoiceText(id) : [element("span", {className: "model-name", text: label})]));
+      node.addEventListener("click", () => choose(id));
+      options.push(node);
+      return node;
+    };
+    options = [];
+    const children = query ? [] : [option("", "全部模型")];
+    let pendingShown = 0;
+    for (const brand of [...brands, "其他"]) {
+      const members = matches.filter((item) => brandOf(item) === brand);
+      const known = new Set(models.map((item) => item.id));
+      const pending = modelsPendingPricing.filter((id) => !known.has(id) && modelFamilyGroupOf(id) === brand && matchesQuery(id, brand)).sort(compareModels);
+      pendingShown += pending.length;
+      if (!members.length && !pending.length) continue;
+      children.push(element("span", {className: "model-combo-group", text: `${brand} · ${members.length}`, attributes: {role: "presentation"}}),
+        ...members.map((item) => option(item.id, item.id)),
+        ...pending.map((id) => element("span", {className: "model-combo-option model-combo-pending", attributes: {role: "option", "aria-disabled": "true", title: "上游已提供，待 Gateway 定价后可选"}},
+          ...modelChoiceText(id), element("small", {className: "model-pending-badge", text: "待定价"}))));
+    }
+    const note = host.comboError ? `模型目录加载失败：${host.comboError}。仍可直接输入模型 ID。`
+      : !models.length ? "正在加载模型…" : query && !matches.length && !pendingShown ? "目录中没有匹配的模型，将按输入的 ID 查询（适合已下线的历史模型）。" : "";
+    if (note) children.push(element("span", {className: "model-combo-empty", text: note}));
+    menu.replaceChildren(...children);
+    highlight(-1);
+  };
+  const open = () => {
+    render();
+    menu.classList.remove("hidden");
+    input.setAttribute("aria-expanded", "true");
+    menu.querySelector('[aria-selected="true"]')?.scrollIntoView?.({block: "nearest"});
+  };
+  const close = () => {
+    menu.classList.add("hidden");
+    input.setAttribute("aria-expanded", "false");
+    highlight(-1);
+  };
+  const choose = (id) => {
+    input.value = id;
+    close();
+    onChange(id);
+  };
+  host.comboRender = () => { if (isOpen()) render(); };
+  // Keep focus in the input while the pointer is on the menu.
+  menu.addEventListener("mousedown", (event) => event.preventDefault());
+  input.addEventListener("focus", open);
+  input.addEventListener("click", () => { if (!isOpen()) open(); });
+  input.addEventListener("input", () => { open(); onChange(input.value.trim()); });
+  input.addEventListener("blur", close);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!isOpen()) open();
+      const step = event.key === "ArrowDown" ? 1 : -1;
+      highlight(options.length ? (active + step + options.length) % options.length : -1);
+    } else if (event.key === "Enter" && isOpen() && active >= 0) {
+      event.preventDefault();
+      choose(options[active].dataset.value);
+    } else if (event.key === "Escape" && isOpen()) {
+      event.preventDefault();
+      close();
+    }
+  });
+  clear.addEventListener("mousedown", (event) => event.preventDefault());
+  clear.addEventListener("click", () => { choose(""); input.focus(); });
+  host.modelPicker = {values: () => (input.value.trim() ? [input.value.trim()] : []), set: (ids) => { input.value = ids[0] || ""; }};
 }
 
 function show(target) {
@@ -2615,6 +2791,10 @@ function renderGuide() {
   const badge = byId("guide-resource-badge");
   badge.textContent = ready ? "可以开始配置" : "需要准备资源";
   badge.dataset.status = ready ? "active" : "in_progress";
+  // Setup steps start open only while a device or key is still missing.
+  const steps = byId("guide-prepare-details");
+  if (steps && steps.dataset.userToggled !== "true") steps.open = !ready;
+  byId("guide-prepare-meta").textContent = ready ? "已就绪，可跳过" : "还缺设备或 API Key";
   byId("guide-resource-status").replaceChildren(
     summaryItem("活跃设备", formatInteger(activeDevices)),
     summaryItem("活跃项目（可选）", formatInteger(activeProjects)),
@@ -5805,16 +5985,46 @@ function openBillingPlanScope(plan, seller = false) {
     if (!groups.has(account.provider)) groups.set(account.provider, []);
     groups.get(account.provider).push(account);
   }
-  const fieldsets = [...groups.entries()].map(([provider, accounts]) => element("fieldset", {className: "plan-scope-provider"},
-    element("legend", {text: billingProviderNames[provider] || provider}),
-    ...accounts.map((account) => {
+  // One collapsed group per provider; its summary keeps the selection visible
+  // and offers select-all for the group without expanding it.
+  const counters = [];
+  const fieldsets = [...groups.entries()].map(([provider, accounts]) => {
+    const meta = element("span", {className: "collapsible-meta"});
+    const inputs = accounts.map((account) => {
       const input = element("input", {type: "checkbox", className: "plan-scope-account", dataset: {scopeAccount: account.id}});
       input.name = "account_ids";
       input.value = account.id;
       input.checked = listed.has(account.id);
-      return element("label", {className: "check-label"}, input, `${account.label}${account.usable ? "" : "（已停用）"}`);
-    })));
-  byId("billing-plan-scope-accounts").replaceChildren(...(fieldsets.length ? fieldsets : [element("p", {className: "muted", text: seller ? "你还没有可用的供应商账号。" : "还没有平台账号。"})]));
+      return input;
+    });
+    const name = billingProviderNames[provider] || provider;
+    const all = element("input", {type: "checkbox", className: "plan-scope-group-all", attributes: {"aria-label": `全选 ${name} 账号`}});
+    const count = () => {
+      const n = inputs.filter((input) => input.checked).length;
+      meta.textContent = `已选 ${n} / ${inputs.length}`;
+      all.checked = n > 0 && n === inputs.length;
+      all.indeterminate = n > 0 && n < inputs.length;
+    };
+    inputs.forEach((input) => input.addEventListener("change", () => { count(); syncPlanScopeSelectAll(); }));
+    all.addEventListener("change", () => { inputs.forEach((input) => { input.checked = all.checked; }); count(); syncPlanScopeSelectAll(); });
+    count();
+    counters.push(count);
+    return element("details", {className: "plan-scope-provider collapsible"},
+      element("summary", {}, element("span", {text: name}),
+        element("label", {className: "check-label plan-scope-group-label"}, all, element("span", {text: "全选"})), meta),
+      element("div", {className: "plan-scope-provider-accounts"}, ...inputs.map((input, index) =>
+        element("label", {className: "check-label"}, input, `${accounts[index].label}${accounts[index].usable ? "" : "（已停用）"}`))));
+  });
+  const everything = element("input", {type: "checkbox", className: "plan-scope-all", attributes: {"aria-label": "全选所有账号"}});
+  everything.addEventListener("change", () => {
+    all(".plan-scope-account", byId("billing-plan-scope-accounts")).forEach((input) => { input.checked = everything.checked; });
+    counters.forEach((count) => count());
+    syncPlanScopeSelectAll();
+  });
+  byId("billing-plan-scope-accounts").replaceChildren(...(fieldsets.length
+    ? [element("label", {className: "check-label plan-scope-all-label"}, everything, element("span", {text: "全选所有账号"})), ...fieldsets]
+    : [element("p", {className: "muted", text: seller ? "你还没有可用的供应商账号。" : "还没有平台账号。"})]));
+  syncPlanScopeSelectAll();
   const stale = (scope.accounts || []).filter((account) => !candidates.has(account.id));
   byId("billing-plan-scope-stale").textContent = stale.length
     ? `以下账号已不属于${seller ? "你" : "平台"}或已删除，保存时将移出范围：${stale.map((account) => account.label).join("、")}` : "";
@@ -5824,10 +6034,21 @@ function openBillingPlanScope(plan, seller = false) {
   byId("billing-plan-scope-dialog").showModal();
 }
 
+function syncPlanScopeSelectAll() {
+  const host = byId("billing-plan-scope-accounts");
+  const everything = host?.querySelector(".plan-scope-all");
+  if (!everything) return;
+  const inputs = all(".plan-scope-account", host);
+  const n = inputs.filter((input) => input.checked).length;
+  everything.checked = n > 0 && n === inputs.length;
+  everything.indeterminate = n > 0 && n < inputs.length;
+}
+
 function syncBillingPlanScopeForm() {
   const form = byId("billing-plan-scope-form");
   const selected = form?.elements.mode.value === "selected";
-  all(".plan-scope-account", byId("billing-plan-scope-accounts")).forEach((input) => { input.disabled = !selected; });
+  [".plan-scope-account", ".plan-scope-group-all", ".plan-scope-all"].flatMap((selector) => all(selector, byId("billing-plan-scope-accounts")))
+    .forEach((input) => { input.disabled = !selected; });
   byId("billing-plan-scope-accounts")?.classList.toggle("muted", !selected);
 }
 
@@ -7087,6 +7308,9 @@ function usageModelCharge(model) {
   return decimalUnits(model?.charged_usd) == null ? "0" : String(model.charged_usd);
 }
 
+const usageModelsVisible = 5;
+let usageModelsExpanded = false;
+
 function renderUsageModels(result, receivedAt = new Date()) {
   const models = (Array.isArray(result?.models) ? result.models : []).filter((model) => model && typeof model === "object");
   const total = result?.total || {};
@@ -7108,7 +7332,7 @@ function renderUsageModels(result, receivedAt = new Date()) {
     tbody.replaceChildren(tableMessage(5, "最近 24 小时没有请求记录。"));
     return;
   }
-  tbody.replaceChildren(...models.map((model) => {
+  const rows = models.map((model) => {
     const charge = usageModelCharge(model);
     const share = scale > 0 ? Math.min(100, Number(charge) / scale * 100) : 0;
     const notes = [model.errors ? `${formatInteger(model.errors)} 个失败` : "", model.in_progress ? `${formatInteger(model.in_progress)} 个进行中` : ""].filter(Boolean).join(" · ");
@@ -7120,7 +7344,22 @@ function renderUsageModels(result, receivedAt = new Date()) {
       element("td", {}, element("span", {text: formatInteger(model.requests)}), notes ? element("small", {text: notes}) : null),
       element("td", {text: formatInteger(model.tokens ?? Number(model.input_tokens || 0) + Number(model.output_tokens || 0))}),
     );
-  }));
+  });
+  // Rows come sorted by charge; past the first few, the long tail waits behind a toggle.
+  const extra = rows.slice(usageModelsVisible);
+  if (!extra.length) {
+    tbody.replaceChildren(...rows);
+    return;
+  }
+  const toggle = element("button", {type: "button", className: "secondary usage-models-more-button"});
+  const sync = () => {
+    extra.forEach((row) => { row.hidden = !usageModelsExpanded; });
+    toggle.textContent = usageModelsExpanded ? "收起" : `展开其余 ${formatInteger(extra.length)} 个模型`;
+    toggle.setAttribute("aria-expanded", String(usageModelsExpanded));
+  };
+  toggle.addEventListener("click", () => { usageModelsExpanded = !usageModelsExpanded; sync(); });
+  sync();
+  tbody.replaceChildren(...rows, element("tr", {className: "usage-models-more"}, element("td", {attributes: {colspan: "5"}}, toggle)));
 }
 
 async function loadUsageModels() {
@@ -7668,13 +7907,21 @@ function renderMemberAccountUsage(errorMessage = "") {
     section.classList.toggle("hidden", !accounts.length);
     if (!accounts.length) { section.replaceChildren(); continue; }
     shown++;
+    // The cards start collapsed behind a one-line status; a refresh keeps the user's choice.
+    const wasOpen = section.querySelector(".billing-account-usage-details")?.open === true;
+    const issues = accounts.filter((account) => account.error_code || account.limited).length;
+    const details = element("details", {className: "billing-account-usage-details collapsible"},
+      element("summary", {}, element("span", {text: `${accounts.length} 个账号`}),
+        element("span", {className: "collapsible-meta", text: issues ? `${issues} 个受限或异常` : "全部正常", dataset: {issues: String(issues > 0)}})),
+      element("div", {className: "billing-account-usage-list"}, ...accounts.map((account) => memberAccountUsageCard(account, accounts))),
+      element("p", {className: "muted billing-account-usage-note", text: "群组管理员开启后可见。Codex 为实时查询，约 1 分钟内复用结果；Claude 为最近一次请求时观测到的快照，没有新请求时不会更新。"}));
+    details.open = wasOpen;
     section.replaceChildren(
       element("div", {className: "billing-account-usage-head"},
         element("h5", {text: "账号用量"}),
         quotaFreshness({at: new Date(usage.receivedAt), onRefresh: () => loadMemberAccountUsage(true), refreshLabel: "刷新用量", subject: "账号用量"})),
       ...(errorMessage ? [element("p", {className: "form-message", text: errorMessage, dataset: {kind: "error"}, attributes: {role: "alert"}})] : []),
-      element("div", {className: "billing-account-usage-list"}, ...accounts.map((account) => memberAccountUsageCard(account, accounts))),
-      element("p", {className: "muted billing-account-usage-note", text: "群组管理员开启后可见。Codex 为实时查询，约 1 分钟内复用结果；Claude 为最近一次请求时观测到的快照，没有新请求时不会更新。"}),
+      details,
     );
   }
   const status = host.querySelector(".billing-account-usage-status");
@@ -9722,11 +9969,346 @@ function egressProtocolSummary(node) {
   return label;
 }
 
+// Share links and Mihomo proxy objects are parsed here, in the page, into
+// the form. Option keys are Mihomo proxy keys; the Gateway accepts only its
+// list per protocol (internal/egress/outbound.go), so anything else is shown
+// to the user as ignored instead of being sent.
+const egressSSCiphers = ["aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", egressSS2022Cipher];
+const egressNestedOptionFields = {
+  "reality-opts": ["public-key", "short-id"],
+  "ws-opts": ["path", "headers", "max-early-data", "early-data-header-name"],
+  "grpc-opts": ["grpc-service-name", "grpc-user-agent"],
+  "h2-opts": ["host", "path"],
+  "http-opts": ["method", "path", "headers"],
+  "xhttp-opts": ["path", "host", "mode", "headers"],
+  "obfs-opts": ["mode", "host"],
+};
+const egressOptionExamples = {
+  vless: {uuid: "<UUID>", flow: "xtls-rprx-vision", tls: true, servername: "www.example.com", "client-fingerprint": "chrome", "reality-opts": {"public-key": "<公钥>", "short-id": "<short id>"}},
+  vmess: {uuid: "<UUID>", alterId: 0, cipher: "auto", tls: true, servername: "cdn.example.com", network: "ws", "ws-opts": {path: "/ws", headers: {Host: "cdn.example.com"}}},
+  trojan: {password: "<密码>", sni: "proxy.example.com", alpn: ["h2", "http/1.1"], "client-fingerprint": "chrome"},
+  hysteria2: {password: "<密码>", sni: "proxy.example.com", obfs: "salamander", "obfs-password": "<混淆密码>"},
+  hysteria: {"auth-str": "<认证>", up: "30 Mbps", down: "200 Mbps", sni: "proxy.example.com", protocol: "udp"},
+  tuic: {uuid: "<UUID>", password: "<密码>", sni: "proxy.example.com", alpn: ["h3"], "congestion-controller": "bbr", "udp-relay-mode": "native"},
+  anytls: {password: "<密码>", sni: "proxy.example.com", "client-fingerprint": "chrome"},
+  wireguard: {ip: "172.16.0.2", "private-key": "<私钥>", "public-key": "<对端公钥>", "allowed-ips": ["0.0.0.0/0"]},
+  ssr: {cipher: "aes-256-cfb", password: "<密码>", protocol: "origin", obfs: "plain"},
+  snell: {psk: "<PSK>", version: 3, "obfs-opts": {mode: "tls", host: "www.example.com"}},
+  ssh: {username: "root", password: "<密码>"},
+};
+
+function egressBase64(value) {
+  const text = String(value || "").replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
+  if (!text || !/^[A-Za-z0-9+/]+$/.test(text) || text.length % 4 === 1) return null;
+  try {
+    const binary = atob(text + "=".repeat((4 - text.length % 4) % 4));
+    return new TextDecoder("utf-8", {fatal: true}).decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
+  } catch { return null; }
+}
+
+function egressURIDecode(value) {
+  try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function egressList(value) {
+  return String(value || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+// Drops empty values so a link's blank parameters never become options.
+function egressCompact(object) {
+  const out = {};
+  for (const [key, value] of Object.entries(object)) {
+    if (value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length)) continue;
+    if (typeof value === "object" && !Array.isArray(value)) {
+      const inner = egressCompact(value);
+      if (Object.keys(inner).length) out[key] = inner;
+    } else out[key] = value;
+  }
+  return out;
+}
+
+function egressSplitLink(text) {
+  const match = /^([a-z][a-z0-9+.-]*):\/\/([^#]*)(?:#(.*))?$/is.exec(text);
+  if (!match) return null;
+  const [, scheme, rest, fragment = ""] = match;
+  const q = rest.indexOf("?");
+  const main = q >= 0 ? rest.slice(0, q) : rest;
+  const at = main.lastIndexOf("@");
+  const authority = (at >= 0 ? main.slice(at + 1) : main).replace(/\/.*$/, "");
+  const endpoint = /^\[([0-9a-f:.]+)\]:(\d{1,5})$/i.exec(authority) || /^([^:[\]/]+):(\d{1,5})$/.exec(authority);
+  const params = new URLSearchParams(q >= 0 ? rest.slice(q + 1) : "");
+  const used = new Set();
+  // get() records each parameter it reads; the rest are reported as ignored.
+  const get = (...keys) => {
+    for (const key of keys) {
+      used.add(key);
+      const value = params.get(key);
+      if (value) return value.trim();
+    }
+    return "";
+  };
+  const unused = () => [...new Set(params.keys())].filter((key) => !used.has(key) && params.get(key) && !["0", "false"].includes(params.get(key)));
+  return {scheme: scheme.toLowerCase(), main, userinfo: at >= 0 ? main.slice(0, at) : "", host: endpoint?.[1] || "", port: endpoint ? Number(endpoint[2]) : 0,
+    name: egressURIDecode(fragment.trim()), get, unused};
+}
+
+// The v2rayN/Xray transport parameters, mapped as Mihomo's own link converter does.
+function egressLinkTransport(options, get) {
+  let network = get("type").toLowerCase() || "tcp";
+  const header = get("headerType").toLowerCase();
+  const host = get("host"), path = get("path");
+  if (network === "raw") network = "tcp";
+  if (network === "tcp" && header === "http") network = "http";
+  else if (network === "http") network = "h2";
+  if (network === "splithttp") network = "xhttp";
+  if (network === "ws") {
+    const early = Number(get("ed"));
+    options["ws-opts"] = {path: path || "/", headers: host ? {Host: host} : undefined,
+      "max-early-data": early > 0 ? early : undefined, "early-data-header-name": early > 0 ? get("eh") || "Sec-WebSocket-Protocol" : undefined};
+  } else if (network === "grpc") options["grpc-opts"] = {"grpc-service-name": get("serviceName")};
+  else if (network === "h2") options["h2-opts"] = {host: egressList(host), path};
+  else if (network === "http") options["http-opts"] = {method: get("method"), path: path ? [path] : undefined, headers: host ? {Host: egressList(host)} : undefined};
+  else if (network === "xhttp") options["xhttp-opts"] = {path, host, mode: get("mode")};
+  else if (network !== "tcp") throw new Error(`暂不支持 ${network} 传输方式。`);
+  if (network !== "tcp") options.network = network;
+}
+
+function egressLinkSecurity(options, get, {tlsKey, sniKey}) {
+  const security = get("security").toLowerCase();
+  const sni = get("sni", "peer", "servername"), fp = get("fp"), alpn = egressList(get("alpn"));
+  if (security && !["tls", "reality", "none", "xtls"].includes(security)) throw new Error(`暂不支持 ${security} 安全类型。`);
+  const tls = tlsKey ? ["tls", "reality", "xtls"].includes(security) : security !== "none";
+  if (tlsKey && tls) options[tlsKey] = true;
+  if (!tls) return;
+  Object.assign(options, {[sniKey]: sni, "client-fingerprint": fp, alpn});
+  if (security === "reality") options["reality-opts"] = {"public-key": get("pbk"), "short-id": get("sid")};
+  get("spx");
+}
+
+function egressLinkCredential(userinfo) {
+  const raw = egressURIDecode(userinfo);
+  const text = raw.includes(":") ? raw : egressBase64(userinfo) ?? raw;
+  const split = text.indexOf(":");
+  return split < 0 ? [text, ""] : [text.slice(0, split), text.slice(split + 1)];
+}
+
+function egressImportLink(text) {
+  const link = egressSplitLink(text);
+  if (!link) throw new Error("无法识别的链接，请粘贴以 vless://、vmess://、trojan://、ss://、hy2://、tuic://、anytls:// 等开头的分享链接。");
+  const {get} = link;
+  const result = {name: link.name, server: link.host, port: link.port, dropped: []};
+  switch (link.scheme) {
+  case "vless": {
+    const encryption = get("encryption");
+    result.protocol = "vless";
+    result.options = {uuid: egressURIDecode(link.userinfo), flow: get("flow"), encryption: encryption === "none" ? "" : encryption, "packet-encoding": get("packetEncoding")};
+    egressLinkTransport(result.options, get);
+    egressLinkSecurity(result.options, get, {tlsKey: "tls", sniKey: "servername"});
+    break;
+  }
+  case "vmess": {
+    const json = egressBase64(link.main);
+    let v2 = null;
+    try { v2 = json && JSON.parse(json); } catch { v2 = null; }
+    result.protocol = "vmess";
+    if (v2 && typeof v2 === "object" && !Array.isArray(v2)) {
+      // v2rayN form: the whole node is base64 JSON.
+      const net = String(v2.net || "tcp").toLowerCase();
+      const synthetic = egressSplitLink(`vmess://x@h:1?${new URLSearchParams(egressCompact({
+        type: net, headerType: v2.type, host: v2.host, path: v2.path, serviceName: net === "grpc" ? v2.path : "",
+        security: String(v2.tls || "").toLowerCase() === "tls" ? "tls" : "none", sni: v2.sni, fp: v2.fp, alpn: v2.alpn,
+      }))}`);
+      Object.assign(result, {name: String(v2.ps || ""), server: String(v2.add || "").trim(), port: Number(v2.port) || 0});
+      result.options = {uuid: String(v2.id || ""), alterId: Number(v2.aid) || 0, cipher: String(v2.scy || "auto")};
+      egressLinkTransport(result.options, synthetic.get);
+      egressLinkSecurity(result.options, synthetic.get, {tlsKey: "tls", sniKey: "servername"});
+      break;
+    }
+    result.options = {uuid: egressURIDecode(link.userinfo), alterId: Number(get("aid", "alterId")) || 0, cipher: get("encryption", "scy") || "auto"};
+    egressLinkTransport(result.options, get);
+    egressLinkSecurity(result.options, get, {tlsKey: "tls", sniKey: "servername"});
+    break;
+  }
+  case "trojan":
+    result.protocol = "trojan";
+    result.options = {password: egressURIDecode(link.userinfo)};
+    egressLinkTransport(result.options, get);
+    egressLinkSecurity(result.options, get, {sniKey: "sni"});
+    break;
+  case "ss": {
+    let method, password;
+    if (link.userinfo) {
+      [method, password] = egressLinkCredential(link.userinfo);
+    } else {
+      // Legacy form: ss://base64(method:password@host:port)
+      const legacy = /^([^:]+):(.*)@\[?([^@\]]+?)\]?:(\d{1,5})$/s.exec(egressBase64(link.main.replace(/\/$/, "")) || "");
+      if (!legacy) throw new Error("无法解析这条 SS 链接。");
+      [, method, password] = legacy;
+      Object.assign(result, {server: legacy[3], port: Number(legacy[4])});
+    }
+    if (get("plugin")) throw new Error("暂不支持带插件（plugin）的 SS 节点。");
+    if (!egressSSCiphers.includes(method)) throw new Error(`不支持加密方式 ${method || "（空）"}，可用：${egressSSCiphers.join("、")}。`);
+    Object.assign(result, {protocol: "ss", cipher: method, password});
+    break;
+  }
+  case "hysteria2": case "hy2":
+    result.protocol = "hysteria2";
+    result.options = {password: egressURIDecode(link.userinfo), sni: get("sni", "peer"), obfs: get("obfs"), "obfs-password": get("obfs-password"),
+      alpn: egressList(get("alpn")), up: get("up", "upmbps"), down: get("down", "downmbps")};
+    break;
+  case "tuic": {
+    const [uuid, password] = egressLinkCredential(link.userinfo);
+    result.protocol = "tuic";
+    result.options = {uuid, password, sni: get("sni"), alpn: egressList(get("alpn")),
+      "congestion-controller": get("congestion_control", "congestion-controller"), "udp-relay-mode": get("udp_relay_mode", "udp-relay-mode")};
+    break;
+  }
+  case "anytls":
+    result.protocol = "anytls";
+    result.options = {password: egressURIDecode(link.userinfo), sni: get("sni", "peer"), "client-fingerprint": get("fp"), alpn: egressList(get("alpn"))};
+    break;
+  case "socks": case "socks5": case "http": case "https": {
+    const [username, password] = link.userinfo ? egressLinkCredential(link.userinfo) : ["", ""];
+    Object.assign(result, {protocol: link.scheme.startsWith("socks") ? "socks5" : link.scheme, username, password});
+    if (link.scheme === "https") result.tls_server_name = get("sni", "peer");
+    break;
+  }
+  default:
+    throw new Error(`暂不支持 ${link.scheme}:// 链接。`);
+  }
+  if (result.options) result.options = egressCompact(result.options);
+  result.dropped.push(...link.unused());
+  return result;
+}
+
+// A Mihomo proxy object: endpoint and name go to their own fields. An object
+// without "type" holds only the options for the protocol already chosen.
+function egressImportObject(object, currentProtocol) {
+  if (object.type === undefined) return {protocol: currentProtocol, options: object, optionsOnly: true, dropped: []};
+  const {name, type, server, port, udp, ...rest} = object;
+  let protocol = String(type || "").toLowerCase();
+  const result = {name: name == null ? "" : String(name), server: server == null ? "" : String(server).trim(), port: Number(port) || 0, dropped: []};
+  if (typeof udp === "boolean") result.udp = udp;
+  const take = (...keys) => {
+    for (const key of keys) delete rest[key];
+    result.dropped.push(...Object.keys(rest));
+  };
+  if (protocol === "ss") {
+    if (rest.plugin) throw new Error("暂不支持带插件（plugin）的 SS 节点。");
+    if (!egressSSCiphers.includes(rest.cipher)) throw new Error(`不支持加密方式 ${rest.cipher || "（空）"}，可用：${egressSSCiphers.join("、")}。`);
+    Object.assign(result, {cipher: rest.cipher, password: String(rest.password ?? "")});
+    take("cipher", "password");
+  } else if (protocol === "socks5" || protocol === "http") {
+    if (protocol === "http" && rest.tls === true) {
+      protocol = "https";
+      result.tls_server_name = String(rest.sni || "");
+    }
+    Object.assign(result, {username: String(rest.username ?? ""), password: String(rest.password ?? "")});
+    take("username", "password", ...(protocol === "https" ? ["tls", "sni"] : []));
+  } else {
+    result.options = rest;
+  }
+  result.protocol = protocol;
+  return result;
+}
+
+// Splits options into what the protocol accepts and the keys it does not.
+function egressSplitOptions(options, allowed) {
+  const kept = {}, dropped = [];
+  for (const [key, value] of Object.entries(options || {})) {
+    if (!allowed.includes(key)) { dropped.push(key); continue; }
+    const nested = egressNestedOptionFields[key];
+    if (nested && value && typeof value === "object" && !Array.isArray(value)) {
+      const inner = {};
+      for (const [child, v] of Object.entries(value)) {
+        if (nested.includes(child)) inner[child] = v; else dropped.push(`${key}.${child}`);
+      }
+      kept[key] = inner;
+    } else kept[key] = value;
+  }
+  return {kept, dropped};
+}
+
+function parseEgressImport(input, currentProtocol = "") {
+  const text = String(input || "").trim();
+  if (!text) throw new Error("请先粘贴分享链接或节点 JSON。");
+  let result;
+  if (text.startsWith("{")) {
+    let object;
+    try { object = JSON.parse(text); } catch { throw new Error("JSON 格式无效，请检查引号、逗号和括号是否成对。"); }
+    if (!object || typeof object !== "object" || Array.isArray(object)) throw new Error("请粘贴单个节点的 JSON 对象。");
+    result = egressImportObject(object, currentProtocol);
+  } else {
+    const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    result = egressImportLink(lines[0]);
+    if (lines.length > 1) result.note = `检测到 ${lines.length} 条链接，只导入了第一条。`;
+  }
+  const basic = ["ss", "socks5", "http", "https"].includes(result.protocol);
+  if (!basic) {
+    const allowed = egressListing?.protocol_fields?.[result.protocol];
+    if (!allowed) throw new Error(`当前不支持 ${egressProtocolLabel(result.protocol)} 协议。`);
+    const {kept, dropped} = egressSplitOptions(result.options, allowed);
+    // Dropping a transport would leave a node that cannot connect.
+    const fatal = dropped.filter((key) => key === "network" || /-opts$/.test(key));
+    if (fatal.length) throw new Error(`${egressProtocolLabel(result.protocol)} 不支持该传输方式（${fatal.join("、")}）。`);
+    result.options = kept;
+    result.dropped.push(...dropped);
+  }
+  if (!result.optionsOnly && !egressMesh(result.protocol) && (!result.server || !(result.port >= 1 && result.port <= 65535))) {
+    throw new Error("没有找到服务器地址或端口（不支持端口跳跃）。");
+  }
+  return result;
+}
+
+function egressMesh(protocol) {
+  return ["tailscale", "zerotier", "easytier"].includes(protocol);
+}
+
+function applyEgressImport(form) {
+  const source = byId("egress-import-text");
+  const output = byId("egress-import-result");
+  const show = (text, kind) => {
+    if (!output) return;
+    output.textContent = text;
+    output.dataset.kind = kind;
+    output.classList.remove("hidden");
+  };
+  let result;
+  try { result = parseEgressImport(source?.value, egressFormProtocol(form)); } catch (error) { show(error.message, "error"); return null; }
+  form.elements.protocol.value = result.protocol;
+  if (form.elements.protocol.value !== result.protocol) { show(`当前不支持 ${egressProtocolLabel(result.protocol)} 协议。`, "error"); return null; }
+  if (result.name) form.elements.name.value = result.name.slice(0, 80);
+  if (!result.optionsOnly && !egressMesh(result.protocol)) {
+    form.elements.server.value = result.server;
+    form.elements.port.value = String(result.port);
+  }
+  if (result.cipher) form.elements.cipher.value = result.cipher;
+  if (form.elements.username) form.elements.username.value = result.username || "";
+  syncEgressProtocolFields(form);
+  if (result.password !== undefined && !form.elements.password.disabled) form.elements.password.value = result.password;
+  if (result.options) form.elements.options.value = JSON.stringify(result.options, null, 2);
+  if (result.tls_server_name !== undefined && form.elements.tls_server_name) form.elements.tls_server_name.value = result.tls_server_name;
+  if (typeof result.udp === "boolean" && form.elements.udp) form.elements.udp.checked = result.udp;
+  const warnings = [];
+  if (result.dropped.length) warnings.push(`以下参数不受支持，已忽略：${result.dropped.join("、")}。`);
+  if (result.note) warnings.push(result.note);
+  if (state?.user?.role !== "owner" && result.server && !/^(\d{1,3}\.){3}\d{1,3}$/.test(result.server)) {
+    warnings.push("你的节点须使用公网 IPv4 地址，请把服务器地址的域名换成服务器 IP。");
+  }
+  const where = result.optionsOnly ? " 协议参数" : result.server ? ` · ${result.server}:${result.port}` : "";
+  show([`已识别 ${egressProtocolLabel(result.protocol)}${where}，请核对后保存。`, ...warnings].join("\n"), warnings.length ? "warn" : "ok");
+  return result;
+}
+
 function openEgressEditor(node = null) {
   if (loggingOut || !egressAllowed() || egressOperation) return;
   const form = byId("egress-form");
   form.reset();
   egressDraftID = node?.id || "";
+  const importer = byId("egress-import");
+  if (importer) importer.open = !node;
+  byId("egress-import-result")?.classList.add("hidden");
+  form.elements.server.placeholder = state?.user?.role === "owner" ? "IPv4 或域名" : "公网 IPv4，例如 203.0.113.10";
   for (const name of ["name", "server", "port", "username"]) form.elements[name].value = node?.[name] ?? "";
   byId("egress-advanced-protocols").replaceChildren(...Object.keys(egressListing?.protocol_fields || {}).sort().map(protocol =>
     element("option", {text: egressProtocolLabel(protocol), attributes: {value: protocol}})));
@@ -9751,7 +10333,7 @@ function syncEgressProtocolFields(form) {
   const protocol = egressFormProtocol(form);
   const basic = protocol === "socks5" || egressHTTP(protocol);
   const advanced = protocol !== "ss" && !basic;
-  const mesh = ["tailscale", "zerotier", "easytier"].includes(protocol);
+  const mesh = egressMesh(protocol);
   byId("egress-cipher-field")?.classList.toggle("hidden", protocol !== "ss");
   byId("egress-username-field")?.classList.toggle("hidden", !basic);
   byId("egress-sni-field")?.classList.toggle("hidden", protocol !== "https");
@@ -9765,8 +10347,15 @@ function syncEgressProtocolFields(form) {
   if (form.elements.options) {
     const retained = Boolean(egressDraftID) && form.dataset.savedProtocol === protocol;
     form.elements.options.required = advanced && !retained;
-    if (advanced) byId("egress-options-help").textContent =
-      (retained ? "留空保留已保存的参数。 " : "") + "可用字段：" + (egressListing?.protocol_fields?.[protocol] || []).join("、");
+    if (advanced) {
+      const help = byId("egress-options-help");
+      if (help) help.textContent = retained ? "留空保留已保存的参数；填写后整体替换。" : "填写 JSON 对象，例如下方灰色示例；也可以用上方“快速导入”自动生成。";
+      const example = egressOptionExamples[protocol];
+      form.elements.options.placeholder = example ? JSON.stringify(example, null, 2) : '{\n  "字段": "值"\n}';
+      byId("egress-options-example")?.classList.toggle("hidden", !example);
+      byId("egress-options-chips")?.replaceChildren(...(egressListing?.protocol_fields?.[protocol] || []).map((field) =>
+        element("code", {text: egressNestedOptionFields[field] ? `${field} { ${egressNestedOptionFields[field].join(", ")} }` : field})));
+    }
   }
   syncEgressPasswordHelp(form);
 }
@@ -9860,6 +10449,13 @@ async function saveEgressServer(event) {
     try { payload.options = JSON.parse(form.elements.options.value); }
     catch { throw new Error("协议参数必须是有效的 JSON 对象。"); }
     if (!payload.options || typeof payload.options !== "object" || Array.isArray(payload.options)) throw new Error("协议参数必须是 JSON 对象。");
+    const allowed = egressListing?.protocol_fields?.[protocol];
+    const unknown = allowed ? egressSplitOptions(payload.options, allowed).dropped : [];
+    if (unknown.length) {
+      const whole = ["name", "type", "server", "port"].some((key) => Object.hasOwn(payload.options, key));
+      throw new Error(`协议参数含有 ${egressProtocolLabel(protocol)} 不支持的字段：${unknown.join("、")}。` +
+        (whole ? "完整节点请粘贴到上方“快速导入”，它会自动拆分。" : "字段写法与 Mihomo（Clash.Meta）节点相同，可展开“格式说明与可用字段”查看。"));
+    }
   }
   if (protocol === "https" && form.elements.tls_server_name.value.trim()) payload.tls_server_name = form.elements.tls_server_name.value.trim();
   if (egressHTTP(protocol) && username.includes(":")) throw new Error("HTTP 代理用户名不能含冒号。");
@@ -12574,6 +13170,15 @@ function bindUI() {
     syncEgressProtocolFields(form);
   });
   byId("egress-form").elements.username.addEventListener("input", () => syncEgressPasswordHelp(byId("egress-form")));
+  byId("egress-import-apply").addEventListener("click", () => {
+    if (applyEgressImport(byId("egress-form"))) byId("egress-import-text").value = "";
+  });
+  byId("egress-options-example").addEventListener("click", () => {
+    const form = byId("egress-form");
+    const example = egressOptionExamples[egressFormProtocol(form)];
+    if (example) form.elements.options.value = JSON.stringify(example, null, 2);
+    form.elements.options.focus();
+  });
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
   bindAsync("providers-refresh", "click", () => loadMyProviders(), "刷新中…", providersIdentityCurrent);
   byId("provider-add-provider").addEventListener("change", () => { if (myProviders) renderMyProviders(); });
@@ -12595,7 +13200,7 @@ function bindUI() {
   for (const radio of byId("owner-transfer-form").elements.target) radio.addEventListener("change", syncOwnerTransferTarget);
   bindAsync("owner-transfer-form", "submit", submitOwnerTransfer, "转移中…", tenantProvidersIdentityCurrent);
   byId("egress-dialog").addEventListener("close", () => {
-    byId("egress-form").elements.options.value = byId("egress-form").elements.password.value = "";
+    byId("egress-form").elements.options.value = byId("egress-form").elements.password.value = byId("egress-import-text").value = "";
     egressDraftID = null;
   });
   bindUserUpstreamAccess();
@@ -12797,6 +13402,8 @@ function bindUI() {
       tab.addEventListener("keydown", (event) => moveGuideTab(event, selector, key, select));
     });
   }
+  // Once the user opens or closes the setup steps, renderGuide stops choosing for them.
+  byId("guide-prepare-details")?.querySelector("summary")?.addEventListener("click", () => { byId("guide-prepare-details").dataset.userToggled = "true"; });
   bindOpenCodeSetup();
   all("[data-usage-tab]").forEach((button) => button.addEventListener("click", () => {
     location.hash = "usage";

@@ -32,6 +32,11 @@ async function main() {
     const errors = [], writes = [], committed = new Map(); let loseResponse = false;
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("dialog", (dialog) => dialog.accept());
+    // Model groups start collapsed; expand them before working with single models.
+    const pickerReady = async (selector) => {
+      await page.waitForSelector(`${selector} .model-picker-choice`, {state: "attached"});
+      await page.locator(`${selector} .model-picker-brand`).evaluateAll((groups) => groups.forEach((group) => { group.open = true; }));
+    };
     await page.route("**/*", async (route) => {
       const request = route.request(), url = new URL(request.url());
       const send = (value, type = "application/json") => route.fulfill({status: 200, contentType: type, body: typeof value === "string" ? value : JSON.stringify(value)});
@@ -123,7 +128,7 @@ async function main() {
 
     // Catalog metadata, partial checkbox state, keyboard, search and exact ranges.
     await page.locator('[data-billing-plan-edit="plan-one"]').first().click();
-    await page.waitForSelector("#billing-plan-models .model-picker-choice");
+    await pickerReady("#billing-plan-models");
     assert.match(await page.locator("#billing-plan-edit-warning").textContent(), /保留已有绑定/);
     // Saved family scopes load as families; the models they cover are locked.
     assert.equal(await page.locator("#billing-plan-models").getByLabel("GPT 全系", {exact: true}).isChecked(), true);
@@ -144,7 +149,7 @@ async function main() {
     assert.deepEqual(writes.at(-1).body.model_ids, ["family:claude", "gpt-example", "gemini-example"]); assert.equal(writes.at(-1).body.period_days, 10);
 
     await page.evaluate(() => { location.hash = "billing"; }); await page.waitForSelector('[data-section="billing"]:visible');
-    await page.locator("#billing-subscription-create").click(); await page.waitForSelector("#billing-subscription-models .model-picker-choice");
+    await page.locator("#billing-subscription-create").click(); await pickerReady("#billing-subscription-models");
     await page.locator('#billing-subscription-form [name="name"]').fill("补充十日额度");
     await page.locator('#billing-subscription-form [name="tier"]').selectOption("custom");
     await page.locator('#billing-subscription-form [name="period_days"]').fill("10");
@@ -157,14 +162,14 @@ async function main() {
     assert.deepEqual(writes.at(-1).body.model_ids, ["family:gpt", "claude-example"]);
     await page.locator('[data-subscription-manage="sub-one"]').click();
     assert.match(await page.locator("#billing-subscription-replace").textContent(), /当前权益.*全部待生效权益.*解除套餐绑定/);
-    await page.waitForSelector("#billing-subscription-models .model-picker-choice");
+    await pickerReady("#billing-subscription-models");
     await snapshot("admin-reopen-entitlements-desktop");
     await page.locator('#billing-subscription-dialog [data-close]').click();
 
     // Explicit API Key restriction never silently falls back to unrestricted.
     await page.evaluate(() => openDialog("key-dialog"));
     await page.locator('#key-form [name="name"]').fill("限定模型");
-    await page.locator("#key-model-scope").selectOption("restricted"); await page.waitForSelector("#key-model-picker .model-picker-choice");
+    await page.locator("#key-model-scope").selectOption("restricted"); await pickerReady("#key-model-picker");
     const before = writes.length;
     await page.locator('#key-form [type="submit"]').click();
     assert.equal(writes.length, before); assert.match(await page.locator("#key-form .form-message").textContent(), /至少选择一个/);
@@ -177,16 +182,22 @@ async function main() {
     await page.evaluate(() => { location.hash = "usage"; loadUsageModelPickers(); });
     // The request filters sit behind "展开请求明细" since the page opens on per-model usage.
     await page.locator("#usage-details-toggle").click();
-    await page.waitForSelector('#usage-model-picker [value="gpt-example"]:visible');
-    await page.locator('#usage-model-picker [value="gpt-example"]').check();
-    await page.locator('#usage-model-picker [value="gpt-example"]').press("ArrowDown");
-    assert.equal(await page.locator('#usage-filter [name="model"]').inputValue(), "gpt-extra");
-    assert.equal(await page.locator('#usage-model-picker input[type="radio"]:checked').count(), 1);
-    await page.locator('#usage-filter [name="model"]').fill("retired-history-model");
+    // The usage model filter is one field whose menu suggests catalog models.
+    const usageModel = page.locator('#usage-filter [name="model"]');
+    await usageModel.click();
+    await page.waitForSelector('#usage-model-menu [data-value="gpt-example"]:visible');
+    await usageModel.fill("gpt-ex");
+    await usageModel.press("ArrowDown");
+    await usageModel.press("ArrowDown");
+    await usageModel.press("Enter");
+    assert.equal(await usageModel.inputValue(), "gpt-extra");
+    assert.equal(await page.locator("#usage-model-menu").isVisible(), false);
+    await usageModel.fill("retired-history-model");
     assert.equal(await page.evaluate(() => queryFromForm(byId("usage-filter")).get("model")), "retired-history-model");
     await page.evaluate(() => { location.hash = "model-identification"; });
     await page.waitForSelector('#model-identification-account:enabled');
     await page.locator('#model-identification-account').selectOption("account");
+    await pickerReady("#identification-model-picker");
     await page.waitForSelector('#identification-model-picker [value="gpt-example"]:visible');
     await page.locator('#identification-model-picker [value="gpt-example"]').check();
     await page.locator('#identification-model-picker [value="gpt-example"]').press("ArrowDown");
@@ -196,9 +207,12 @@ async function main() {
     await page.setViewportSize({width: 390, height: 844});
     await page.evaluate(() => { window.scrollTo(0, 0); }); await snapshot("subscriptions-mobile");
     await page.locator('[data-subscription-id="sub-one"]').evaluate((card) => window.scrollTo(0, card.getBoundingClientRect().top + window.scrollY - 85)); await snapshot("subscription-cards-mobile");
-    await page.evaluate(() => openBillingPlanEditor(billingPlans[0])); await page.waitForSelector("#billing-plan-models .model-picker-choice");
+    await page.evaluate(() => openBillingPlanEditor(billingPlans[0])); await pickerReady("#billing-plan-models");
     await page.locator('#billing-plan-models input[type="search"]').fill("gemini");
-    assert.equal(await page.locator('#billing-plan-models .model-picker-choice:visible').count(), 1);
+    assert.equal(await page.locator('#billing-plan-models .model-picker-choice:not(.model-picker-pending):visible').count(), 1);
+    // Unpriced Gemini models are listed but cannot be chosen.
+    assert.equal(await page.locator('#billing-plan-models .model-picker-pending:visible').count(), 4);
+    assert.equal(await page.locator('#billing-plan-models .model-picker-pending input:enabled').count(), 0);
     await snapshot("model-picker-mobile"); await page.locator('#billing-plan-dialog [data-close]').click();
     await page.evaluate(async (user) => { await selectBillingUser(user); }, other);
     assert.equal(await page.locator('[data-billing-source]:visible').count(), 0);

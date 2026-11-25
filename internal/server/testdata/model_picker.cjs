@@ -170,3 +170,67 @@ test("late API Key creation cannot expose a key to a replacement identity", asyn
   resolve({api_key: "synthetic-secret"}); await pending;
   assert.equal(shown, 0);
 });
+
+test("groups start collapsed and each summary carries the group's select-all and count", () => {
+  const ui = dashboard(); ui.context.candidates = candidates;
+  ui.run('renderModelPicker(byId("picker"), candidates, {selected: ["opaque-one"]})');
+  const host = ui.node("picker");
+  const groups = descendants(host).filter((node) => node.className === "model-picker-brand");
+  assert.deepEqual(groups.map((group) => group.open), [false, false, false]);
+  const summaries = groups.map((group) => group.children.find((child) => child.tagName === "summary"));
+  const gpt = find(summaries[0], "全选 GPT 模型");
+  assert.ok(gpt, "GPT select-all is in the summary");
+  assert.match(summaries[0].textContent, /已选 1 \/ 2/);
+  change(gpt, true);
+  assert.deepEqual(ui.values(), ["opaque-one", "opaque-two"]);
+  assert.match(summaries[0].textContent, /已选 2 \/ 2/);
+  assert.equal(groups[0].open, false, "selecting a whole group leaves it collapsed");
+});
+
+const repo = path.join(__dirname, "../../..");
+const pricedModels = Object.keys(JSON.parse(fs.readFileSync(path.join(repo, "internal/config/data/pricing.json"), "utf8")).models)
+  .filter((id) => id !== "codex-auto-review");
+const group = (id) => id.startsWith("claude-") ? "Claude" : id.startsWith("gemini-") ? "Gemini" : "GPT";
+
+test("display names use x.x versions and the catalog sorts newest first by tier", () => {
+  const ui = dashboard();
+  const name = (id) => ui.run(`modelDisplayName(${JSON.stringify(id)})`);
+  assert.deepEqual(["claude-opus-5-5", "claude-haiku-4-5-20251001", "gpt-6-astra", "gpt-6.2-sol", "gpt-5.4-mini", "gemini-3-flash", "gemini-4-neon-xhigh", "opaque-one"].map(name),
+    ["Claude Opus 5.5", "Claude Haiku 4.5", "GPT-6.0 Astra", "GPT-6.2 Sol", "GPT-5.4 Mini", "Gemini 3.0 Flash", "Gemini 4.0 Neon XHigh", "opaque-one"]);
+  ui.context.ids = pricedModels;
+  const sorted = JSON.parse(ui.run("JSON.stringify([...ids].sort(compareModels))"));
+  const byGroup = (brand) => sorted.filter((id) => group(id) === brand);
+  assert.deepEqual(byGroup("GPT"), ["gpt-6.2-astra", "gpt-6.2-sol", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.4", "gpt-5.4-mini"]);
+  assert.deepEqual(byGroup("Claude"), ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-2", "claude-fable-5-1", "claude-haiku-4-5-20251001"]);
+  assert.deepEqual(byGroup("Gemini"), ["gemini-4-argon-high", "gemini-3.8-flash-high", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash"]);
+});
+
+test("pickers hide dated snapshots unless chosen and list unpriced Gemini models as unselectable", () => {
+  const ui = dashboard();
+  ui.context.catalog = pricedModels.map((id) => ({id, group: group(id)}));
+  ui.run('renderModelPicker(byId("picker"), catalog, {})');
+  const host = ui.node("picker");
+  const choice = (id) => descendants(host).find((node) => node.dataset?.model === id);
+  assert.equal(choice("claude-haiku-4-5-20251001"), undefined, "dated snapshot hidden");
+  const pending = choice("gemini-4-neon-xhigh");
+  assert.ok(pending, "pending model listed");
+  assert.match(pending.className, /model-picker-pending/);
+  assert.match(pending.textContent, /Gemini 4\.0 Neon XHigh.*gemini-4-neon-xhigh.*待定价/);
+  assert.equal(pending.children[0].attributes.disabled, "");
+  change(find(host, "全选 Gemini 模型"), true);
+  assert.deepEqual(ui.values().sort(), pricedModels.filter((id) => group(id) === "Gemini").sort(), "select-all never picks pending models");
+  ui.run('renderModelPicker(byId("picker"), catalog, {selected: ["claude-haiku-4-5-20251001"]})');
+  assert.ok(choice("claude-haiku-4-5-20251001"), "a chosen snapshot stays visible so saving keeps it");
+  assert.deepEqual(ui.values(), ["claude-haiku-4-5-20251001"]);
+});
+
+test("pending models are exactly unpriced models that CPA still excludes", () => {
+  const ui = dashboard();
+  const pending = JSON.parse(ui.run("JSON.stringify(modelsPendingPricing)"));
+  const entrypoint = fs.readFileSync(path.join(repo, "deploy/codex-compat/plugin-entrypoint.sh"), "utf8");
+  for (const id of pending) {
+    assert.ok(entrypoint.includes(`- "${id}"`), `${id} is no longer excluded by CPA; remove it from modelsPendingPricing`);
+    assert.equal(pricedModels.includes(id), false, `${id} now has a price; remove it from modelsPendingPricing`);
+  }
+});

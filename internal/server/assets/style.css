@@ -4465,10 +4465,11 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
 }
 
 /* Aggregation gateway stage 3: plan provider scope editor and self-use. */
-.plan-scope-accounts { display: grid; gap: .75rem; max-height: 22rem; overflow-y: auto; }
+.plan-scope-accounts { display: grid; gap: .5rem; max-height: 26rem; overflow-y: auto; }
 .plan-scope-accounts.muted { opacity: .6; }
-.plan-scope-provider { display: grid; gap: .35rem; margin: 0; padding: .6rem .8rem; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
-.plan-scope-provider legend { padding: 0 .3rem; font-weight: 600; }
+.plan-scope-provider { margin: 0; padding: .35rem .8rem; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.plan-scope-provider > summary { font-weight: 600; }
+.plan-scope-provider-accounts { display: grid; gap: .35rem; padding: .35rem 0 .45rem; }
 .plan-scope-provider .check-label { overflow-wrap: anywhere; }
 .billing-plan-scope { color: var(--muted); }
 .subscription-scope { overflow-wrap: anywhere; }
@@ -4515,3 +4516,121 @@ button.share-bar-key:hover, .share-bar-key[aria-pressed="true"] { background: va
   margin-left: auto; padding: 0 .35rem; border-radius: 999px; font-size: .75rem; font-weight: 700;
   color: #fff; background: var(--danger);
 }
+
+/* Shared disclosure: a chevron summary for lists that start collapsed. */
+details.collapsible > summary,
+.model-picker-brand > summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; min-height: 36px;
+  cursor: pointer; list-style: none;
+}
+details.collapsible > summary::-webkit-details-marker,
+.model-picker-brand > summary::-webkit-details-marker { display: none; }
+details.collapsible > summary::before,
+.model-picker-brand > summary::before {
+  content: ""; flex: 0 0 auto; width: .45rem; height: .45rem; margin: 0 .15rem;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg); transition: transform .15s ease;
+}
+details.collapsible[open] > summary::before,
+.model-picker-brand[open] > summary::before { transform: rotate(45deg); }
+.collapsible-meta { margin-left: auto; color: var(--muted); font-size: .82rem; font-weight: 500; }
+@media (prefers-reduced-motion: reduce) {
+  details.collapsible > summary::before, .model-picker-brand > summary::before { transition: none; }
+}
+
+/* Egress editor: import first, then the node fields. */
+#egress-dialog { width: min(44rem, calc(100% - 2rem)); }
+.egress-import { border: 1px solid var(--line); border-radius: .75rem; background: rgb(var(--accent-rgb) / 5%); }
+.egress-import > summary { padding: .55rem .85rem; color: var(--text); font-weight: 650; }
+.egress-import > summary small { font-weight: 400; }
+.egress-import[open] > summary { border-bottom: 1px solid var(--line); }
+.egress-import-body { display: grid; gap: .6rem; padding: .75rem .85rem .85rem; }
+.egress-import textarea, .egress-options textarea { width: 100%; font-family: var(--mono); font-size: .84rem; line-height: 1.5; resize: vertical; }
+.egress-import-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem .8rem; }
+.egress-import-result { margin: 0; padding: .5rem .7rem; border-left: 3px solid var(--line); border-radius: .4rem; background: var(--surface); font-size: .86rem; white-space: pre-line; overflow-wrap: anywhere; }
+.egress-import-result[data-kind="ok"] { border-left-color: var(--success); }
+.egress-import-result[data-kind="warn"] { border-left-color: var(--warning); background: rgb(var(--warning-rgb) / 8%); }
+.egress-import-result[data-kind="error"] { border-left-color: var(--danger); color: var(--danger); background: rgb(var(--danger-rgb) / 7%); }
+.egress-endpoint { display: grid; grid-template-columns: minmax(0, 1fr) 8.5rem; gap: 1rem; }
+.egress-endpoint:not(:has(> label:not(.hidden))) { display: none; }
+.egress-options { display: grid; gap: .45rem; min-width: 0; }
+.egress-options-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .4rem; }
+.egress-options-head label small { font-weight: 400; }
+.egress-options-head button { min-height: 0; padding: .3rem .75rem; font-size: .84rem; }
+.egress-options > small { color: var(--muted); font-size: .8rem; }
+.egress-options-fields > summary { color: var(--muted); font-size: .86rem; font-weight: 600; }
+.egress-options-fields p { margin: .35rem 0 .55rem; font-size: .84rem; }
+.egress-option-chips { display: flex; flex-wrap: wrap; gap: .35rem; }
+.egress-option-chips code { padding: .12rem .5rem; border: 1px solid var(--line); border-radius: 999px; font-size: .76rem; overflow-wrap: anywhere; }
+@media (max-width: 520px) { .egress-endpoint { grid-template-columns: minmax(0, 1fr); } }
+
+/* Guide: the setup card sits under the client tabs, so switching tabs never moves them. */
+.guide-prepare { margin-top: 1rem; }
+.guide-prepare .guide-endpoint { margin-bottom: .75rem; }
+.guide-prepare-details > summary { color: var(--text); font-weight: 650; }
+.guide-prepare-details > p { margin: .6rem 0 1rem; }
+
+/* Account usage: one status line until expanded. */
+.billing-account-usage-details > summary { font-size: .9rem; font-weight: 600; }
+.billing-account-usage-details > .billing-account-usage-list { margin-top: .5rem; }
+.billing-account-usage-details .collapsible-meta[data-issues="true"] { color: var(--warning); }
+.usage-models-more td { padding-top: .5rem; padding-bottom: .5rem; text-align: center; }
+.usage-models-more-button { padding: .35rem .9rem; font-size: .86rem; }
+.usage-models-table tr[hidden] { display: none; }
+
+/* Select-all controls that stay usable while their group is collapsed. */
+.model-picker-brand-name { font-weight: 600; }
+.model-picker-brand > summary .model-picker-brand-all,
+.plan-scope-provider > summary .plan-scope-group-label {
+  display: inline-flex; align-items: center; gap: 5px; min-height: 0; margin: 0; padding: 2px 9px;
+  border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .8rem; font-weight: 500; line-height: 1.4;
+}
+.model-picker-brand > summary .model-picker-brand-all input,
+.plan-scope-provider > summary .plan-scope-group-label input { width: 14px; height: 14px; min-width: 14px; min-height: 0; margin: 0; padding: 0; }
+.plan-scope-all-label { font-weight: 600; }
+
+/* Usage filters: one model field the same height as its neighbours, with suggestions. */
+.model-combo { position: relative; display: block; margin-top: .35rem; }
+.model-combo input { width: 100%; margin: 0; padding-right: 2.2rem; }
+.model-combo .model-combo-clear {
+  position: absolute; top: 50%; right: .4rem; transform: translateY(-50%);
+  display: grid; place-items: center; width: 1.6rem; height: 1.6rem; min-width: 0; min-height: 0; padding: 0;
+  border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 1.05rem; line-height: 1; box-shadow: none;
+}
+.model-combo .model-combo-clear:hover { background: rgb(var(--accent-rgb) / 12%); color: var(--text); }
+.model-combo input:placeholder-shown ~ .model-combo-clear { display: none; }
+.model-combo-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 40;
+  display: block; min-width: 100%; width: max-content; max-width: min(24rem, calc(100vw - 2rem)); max-height: 19rem; overflow-y: auto;
+  padding: .3rem; border: 1px solid var(--line-strong); border-radius: .7rem; background: var(--surface); box-shadow: var(--shadow-md);
+}
+.model-combo-group { display: block; padding: .5rem .6rem .2rem; color: var(--muted); font-size: .72rem; font-weight: 700; letter-spacing: .03em; }
+.model-combo .model-combo-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; min-height: 0; margin: 0;
+  padding: .42rem .6rem; border: 0; border-radius: .45rem; background: transparent; box-shadow: none;
+  color: var(--text); font: inherit; font-size: .86rem; font-weight: 500; text-align: left; cursor: pointer;
+}
+.model-combo .model-combo-option:hover, .model-combo .model-combo-option.active { background: rgb(var(--accent-rgb) / 11%); }
+.model-combo .model-combo-option[aria-selected="true"] { color: var(--accent-text); font-weight: 650; }
+.model-combo .model-combo-option[aria-selected="true"]::after { content: "✓"; }
+.model-combo-empty { display: block; padding: .55rem .6rem; color: var(--muted); font-size: .82rem; font-weight: 500; white-space: normal; }
+
+/* Model names: a unified display name with the real ID beside it. */
+.model-picker-label { display: flex; flex-direction: column; gap: .05rem; min-width: 0; line-height: 1.3; }
+.model-picker-label .model-id { overflow-wrap: anywhere; }
+.model-picker-label .model-name { color: var(--text); font-weight: 600; }
+.model-picker-label .model-id, .model-combo-option .model-id {
+  padding: 0; border: 0; background: transparent; color: var(--muted); font-family: var(--mono); font-size: .74rem; font-weight: 400;
+}
+.model-picker-pending { cursor: default; opacity: .62; }
+.model-picker-pending .model-pending-badge { align-self: flex-start; margin-top: .2rem; }
+.model-pending-badge {
+  flex: 0 0 auto; padding: .05rem .45rem; border: 1px solid rgb(var(--warning-rgb) / 45%); border-radius: 999px;
+  background: rgb(var(--warning-rgb) / 10%); color: var(--warning); font-size: .7rem; font-weight: 600; white-space: nowrap;
+}
+.model-combo .model-combo-option .model-name { flex: 1 1 auto; }
+.model-combo .model-combo-option .model-id { margin-left: .75rem; }
+.model-combo .model-combo-option[aria-selected="true"]::after { margin-left: .5rem; }
+.model-combo .model-combo-pending { cursor: default; opacity: .6; }
+.model-combo .model-combo-pending:hover { background: transparent; }
+.model-combo .model-combo-pending .model-pending-badge { margin-left: .6rem; }

@@ -7,7 +7,7 @@
 | HTTP CONNECT、HTTP CONNECT（TLS） | 服务器、端口，可选用户名和密码。TLS 模式使用系统信任根校验代理证书。使用 IP 连接时，可填写证书域名作为 TLS 服务器名称。两种模式均承载 TCP 隧道。 |
 | Shadowsocks | 服务器、端口、密码及加密方式。支持 `aes-128-gcm`、`aes-256-gcm`、`chacha20-ietf-poly1305`、`2022-blake3-aes-128-gcm`。 |
 | SOCKS5 | 服务器、端口，可选 RFC 1929 用户名和密码，各不超过 255 字节。 |
-| SSR、VMess、VLESS、Snell、Trojan、Hysteria、Hysteria2、WireGuard、TUIC、ShadowQUIC、GOST Relay、SSH、Mieru、AnyTLS、Sudoku、MASQUE、TrustTunnel、OpenVPN | 填写服务器和端口，在“协议参数”粘贴该协议的 JSON 对象。编辑器列出可用字段。 |
+| SSR、VMess、VLESS、Snell、Trojan、Hysteria、Hysteria2、WireGuard、TUIC、ShadowQUIC、GOST Relay、SSH、Mieru、AnyTLS、Sudoku、MASQUE、TrustTunnel、OpenVPN | 用“快速导入”粘贴分享链接或 Mihomo 节点 JSON；也可以手动填写服务器和端口，在“协议参数”填写该协议的 JSON 对象。编辑器给出示例和可用字段。 |
 | Tailscale、ZeroTier、EasyTier | Owner 在平台节点中配置组网参数。这三种协议通过组网发现对端，成员节点沿用公网 IPv4 单一地址约束。 |
 
 ### HTTP CONNECT 与 TLS
@@ -16,7 +16,18 @@
 
 ![HTTP CONNECT 的 TLS 节点表单](screenshots/egress-https-dialog.png)
 
+### 快速导入
+
+新增节点对话框顶部的“快速导入”接受一条分享链接或一个 Mihomo 节点 JSON，在页面内解析后填入表单，核对后再保存；原始链接不会单独上传。
+
+- 分享链接：`vless://`、`vmess://`（v2rayN Base64 JSON 或 URI 形式）、`trojan://`、`ss://`（SIP002 与旧式 Base64）、`hysteria2://` / `hy2://`、`tuic://`、`anytls://`、`socks5://`、`http(s)://`。传输方式支持 tcp、ws、grpc、h2、http 与 xhttp，安全类型支持 tls 与 reality。
+- 节点 JSON：与 Clash.Meta / Mihomo 配置中的单个节点相同，例如 `{"name":"jp","type":"vless","server":"203.0.113.7","port":443,"uuid":"…","tls":true}`。`name`、`type`、`server`、`port`、`udp` 填入对应表单项，其余字段作为协议参数。没有 `type` 的对象视为当前协议的参数。
+- 不在白名单内的参数（如 `skip-cert-verify`、`allowInsecure`、`spider-x`）会列出并忽略。若忽略的是传输配置（`network` 或 `*-opts`），导入直接报错，避免保存一个连不上的节点。SS 插件、端口跳跃、httpupgrade 传输和不支持的 SS 加密方式同样报错。
+- 成员节点仍须使用公网 IPv4。链接里的服务器是域名时，导入结果会提示改成服务器 IP。
+
 ### 协议参数
+
+协议参数是 Mihomo（Clash.Meta）节点字段组成的 JSON 对象，不含 `name`、`type`、`server`、`port`。编辑器按协议显示示例，可一键“填入示例”，并在“格式说明与可用字段”中列出该协议接受的字段。保存前页面先检查字段，含有不支持的字段时直接指出字段名。
 
 例如，Trojan 的参数可以是 `{"password":"示例密码","sni":"proxy.example.com"}`。名称、协议、地址和端口由表单单独填写。API 的 `options` 接受一个最多 24 KiB 的 JSON 对象。SSH 私钥使用内联 PEM；WireGuard 的单个对端使用表单的服务器和端口。运行时为组网节点的每个生效版本分配独立的 tmpfs 状态目录。容器重建后应使用可重新入网的凭据。
 

@@ -17,7 +17,7 @@ function dashboard(handler) {
   const context = vm.createContext({
     document: {getElementById: id => nodes.get(id), querySelectorAll: () => []},
     window: {setTimeout, clearTimeout}, location: {hash: "#upstream-accounts"},
-    DOMException, URLSearchParams, handler,
+    DOMException, URLSearchParams, atob, TextDecoder, handler,
   });
   const source = readFileSync(path.join(__dirname, "../assets/app.js"), "utf8");
   vm.runInContext(source.slice(0, source.lastIndexOf("\nstart().catch")), context);
@@ -330,4 +330,115 @@ test("HTTPS sends SNI with credentials and advanced protocols send only their op
   form.elements.options.value = '{"password":"sample"}';
   await ui.run("saveEgressServer(event)");
   assert.deepEqual(calls[1], {name: "node", protocol: "trojan", server: "192.0.2.1", port: 443, udp: false, options: {password:"sample"}});
+});
+
+// Field lists copied from internal/egress/outbound.go; imports must stay inside them.
+const protocolFields = {
+  vless: "uuid flow encryption tls servername network alpn client-fingerprint ws-opts grpc-opts h2-opts http-opts xhttp-opts reality-opts packet-encoding",
+  vmess: "uuid alterId cipher tls servername network alpn client-fingerprint ws-opts grpc-opts h2-opts http-opts reality-opts packet-encoding",
+  trojan: "password network sni alpn client-fingerprint ws-opts grpc-opts reality-opts",
+  hysteria2: "password up down obfs obfs-password sni alpn",
+  tuic: "uuid password token sni alpn reduce-rtt udp-relay-mode congestion-controller",
+  anytls: "password sni alpn client-fingerprint",
+};
+
+function importer(role = "owner") {
+  const ui = dashboard(async () => ({}));
+  ui.context.fields = Object.fromEntries(Object.entries(protocolFields).map(([key, value]) => [key, value.split(" ")]));
+  ui.run(`egressListing = {protocol_fields: fields}; state = {user: {id: "u", role: "${role}"}};`);
+  const parse = (text, current = "") => {
+    ui.context.input = text;
+    return JSON.parse(ui.run(`JSON.stringify(parseEgressImport(input, ${JSON.stringify(current)}))`));
+  };
+  const fails = (text, pattern) => {
+    ui.context.input = text;
+    assert.throws(() => ui.run("parseEgressImport(input)"), pattern);
+  };
+  return {ui, parse, fails};
+}
+
+const b64 = (text) => Buffer.from(text).toString("base64");
+
+test("VLESS Reality and WebSocket links become Mihomo options", () => {
+  const {parse} = importer();
+  const reality = parse("vless://1b2c3d4e-0000-4000-8000-000000000001@203.0.113.10:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.example.com&fp=chrome&pbk=PUBkey_-1&sid=6ba85179&spx=%2F&type=tcp&headerType=none#%E9%A6%99%E6%B8%AF%2001");
+  assert.deepEqual(reality, {name: "香港 01", server: "203.0.113.10", port: 443, dropped: [], protocol: "vless", options: {
+    uuid: "1b2c3d4e-0000-4000-8000-000000000001", flow: "xtls-rprx-vision", tls: true, servername: "www.example.com",
+    "client-fingerprint": "chrome", "reality-opts": {"public-key": "PUBkey_-1", "short-id": "6ba85179"}}});
+  const ws = parse("vless://u-1@cdn.example.com:443?type=ws&security=tls&path=%2Fray&host=cdn.example.com&sni=cdn.example.com&alpn=h2%2Chttp%2F1.1&allowInsecure=1#ws");
+  assert.deepEqual(ws.options, {uuid: "u-1", "ws-opts": {path: "/ray", headers: {Host: "cdn.example.com"}}, network: "ws", tls: true,
+    servername: "cdn.example.com", alpn: ["h2", "http/1.1"]});
+  assert.deepEqual(ws.dropped, ["allowInsecure"]);
+  for (const result of [reality, ws]) for (const key of Object.keys(result.options)) assert.ok(protocolFields.vless.split(" ").includes(key), key);
+});
+
+test("VMess base64 JSON, Trojan, Hysteria2 and TUIC links parse", () => {
+  const {parse} = importer();
+  const vmess = parse("vmess://" + b64(JSON.stringify({v: "2", ps: "节点", add: "203.0.113.1", port: "8443", id: "uuid-v", aid: "0", scy: "auto", net: "grpc", path: "svc", tls: "tls", sni: "g.example.com"})));
+  assert.deepEqual(vmess, {name: "节点", server: "203.0.113.1", port: 8443, dropped: [], protocol: "vmess", options: {
+    uuid: "uuid-v", alterId: 0, cipher: "auto", "grpc-opts": {"grpc-service-name": "svc"}, network: "grpc", tls: true, servername: "g.example.com"}});
+  const trojan = parse("trojan://p%40ss@203.0.113.2:443?security=tls&type=ws&path=%2Ft&sni=t.example.com#t");
+  assert.deepEqual(trojan.options, {password: "p@ss", "ws-opts": {path: "/t"}, network: "ws", sni: "t.example.com"});
+  const hy2 = parse("hy2://secret@203.0.113.5:8443/?sni=h.example.com&obfs=salamander&obfs-password=x&insecure=1#h");
+  assert.equal(hy2.protocol, "hysteria2");
+  assert.deepEqual(hy2.options, {password: "secret", sni: "h.example.com", obfs: "salamander", "obfs-password": "x"});
+  assert.deepEqual(hy2.dropped, ["insecure"]);
+  const tuic = parse("tuic://uuid-t:pw@203.0.113.6:443?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=x.example.com");
+  assert.deepEqual(tuic.options, {uuid: "uuid-t", password: "pw", sni: "x.example.com", alpn: ["h3"], "congestion-controller": "bbr", "udp-relay-mode": "native"});
+});
+
+test("Shadowsocks links fill cipher and password and refuse what the runtime lacks", () => {
+  const {parse, fails} = importer();
+  assert.deepEqual(parse(`ss://${b64("aes-256-gcm:pa ss").replace(/=+$/, "")}@203.0.113.3:8388#ss`),
+    {name: "ss", server: "203.0.113.3", port: 8388, dropped: [], protocol: "ss", cipher: "aes-256-gcm", password: "pa ss"});
+  const key = "AAAAAAAAAAAAAAAAAAAAAA==";
+  assert.equal(parse(`ss://2022-blake3-aes-128-gcm:${encodeURIComponent(key)}@203.0.113.3:443`).password, key);
+  const legacy = parse(`ss://${b64("chacha20-ietf-poly1305:pw@203.0.113.4:8388")}#old`);
+  assert.deepEqual([legacy.cipher, legacy.password, legacy.server, legacy.port], ["chacha20-ietf-poly1305", "pw", "203.0.113.4", 8388]);
+  fails(`ss://${b64("rc4-md5:pw")}@203.0.113.3:8388`, /不支持加密方式 rc4-md5/);
+  fails(`ss://${b64("aes-128-gcm:pw")}@203.0.113.3:8388/?plugin=obfs-local`, /插件/);
+});
+
+test("Mihomo JSON splits endpoint fields and reports ignored keys", () => {
+  const {parse, fails} = importer();
+  const node = parse(JSON.stringify({name: "jp", type: "vless", server: "203.0.113.7", port: 443, udp: true, uuid: "u", tls: true,
+    servername: "s.example.com", "skip-cert-verify": true, "reality-opts": {"public-key": "k", "short-id": "1", "spider-x": "/"}}));
+  assert.deepEqual(node, {name: "jp", server: "203.0.113.7", port: 443, dropped: ["skip-cert-verify", "reality-opts.spider-x"], udp: true,
+    options: {uuid: "u", tls: true, servername: "s.example.com", "reality-opts": {"public-key": "k", "short-id": "1"}}, protocol: "vless"});
+  const http = parse(JSON.stringify({name: "h", type: "http", server: "203.0.113.8", port: 443, tls: true, sni: "p.example.com", username: "a", password: "b"}));
+  assert.deepEqual([http.protocol, http.tls_server_name, http.username, http.password], ["https", "p.example.com", "a", "b"]);
+  const only = parse('{"password": "x", "sni": "t.example.com"}', "trojan");
+  assert.deepEqual([only.protocol, only.optionsOnly, only.options], ["trojan", true, {password: "x", sni: "t.example.com"}]);
+  fails("{bad", /JSON 格式无效/);
+  fails("hello", /无法识别/);
+  fails("vless://u@host-without-port", /服务器地址或端口/);
+  fails("trojan://p@203.0.113.2:443?type=xhttp&path=%2Fx", /不支持该传输方式/);
+  fails(JSON.stringify({type: "wireguard", server: "203.0.113.9", port: 51820}), /当前不支持 WIREGUARD/);
+});
+
+test("importing fills the form and saving rejects keys the protocol lacks", async () => {
+  const calls = [];
+  const ui = dashboard(async (_url, request) => { calls.push(JSON.parse(request.body)); return {}; });
+  ui.context.fields = Object.fromEntries(Object.entries(protocolFields).map(([key, value]) => [key, value.split(" ")]));
+  ui.run('egressListing = {protocol_fields: fields}; state = {user: {id: "m", role: "member"}, recently_verified: true, marketplace: {enabled: true}}; egressDraftID = ""; loadEgressServers = async () => {};');
+  const {form} = egressForm({name: "", protocol: "ss", server: "", port: "", cipher: "aes-128-gcm", username: "", password: "", udp: "", tls_server_name: "", options: ""});
+  const result = {classList: {remove() {}, add() {}}, dataset: {}, textContent: ""};
+  ui.nodes.set("egress-form", form);
+  ui.nodes.set("egress-import-text", {value: "trojan://pw@proxy.example.com:443?sni=proxy.example.com#东京"});
+  ui.nodes.set("egress-import-result", result);
+  ui.nodes.set("egress-dialog", {close() {}});
+  ui.run("applyEgressImport(byId('egress-form'))");
+  assert.deepEqual([form.elements.protocol.value, form.elements.name.value, form.elements.server.value, form.elements.port.value], ["trojan", "东京", "proxy.example.com", "443"]);
+  assert.deepEqual(JSON.parse(form.elements.options.value), {password: "pw", sni: "proxy.example.com"});
+  assert.equal(result.dataset.kind, "warn");
+  assert.match(result.textContent, /公网 IPv4/);
+
+  ui.context.event = {currentTarget: form};
+  form.elements.server.value = "203.0.113.2";
+  form.elements.options.value = '{"name": "x", "password": "pw"}';
+  await assert.rejects(ui.run("saveEgressServer(event)"), /不支持的字段：name.*快速导入/);
+  assert.equal(calls.length, 0);
+  form.elements.options.value = '{"password": "pw"}';
+  await ui.run("saveEgressServer(event)");
+  assert.deepEqual(calls[0].options, {password: "pw"});
 });

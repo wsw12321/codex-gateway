@@ -67,6 +67,8 @@ async function main() {
     const userCheck = (id) => page.locator(`#model-access-user-rows input[value="${id}"]`);
     const ready = () => page.waitForFunction(() => byId("model-access-user-rows").closest("table").parentElement.getAttribute("aria-busy") === "false");
     await userCheck("user-1").check();
+    // Model groups start collapsed; expand them before picking single models.
+    await page.locator("#model-access-model-select .model-picker-brand").evaluateAll((groups) => groups.forEach((group) => { group.open = true; }));
     await page.locator('#model-access-model-select .model-picker-checkbox[value="gpt-beta"]').check(); await ready();
     assert.equal(await userCheck("user-1").isChecked(), true, "model changes preserve users");
     assert.match(await row("user-1").textContent(), /部分启用/);
