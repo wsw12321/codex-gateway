@@ -741,9 +741,9 @@ WHERE event_type = 'billing.model_families_converted';
 只回退二进制时，旧版本把 `family:*` 当作不存在的模型，不会用这些范围扣费（失败关闭）；
 需要完全回退时按常规恢复迁移前的备份。
 
-### 聚合网关的完整升级顺序（0051–0055）
+### 聚合网关的完整升级顺序（0051–0056）
 
-聚合网关（成员供应商、卖家套餐、套餐商城）分五个迁移落地，全部由商城开关控制，默认关闭；开关关闭时，
+聚合网关（成员供应商、卖家套餐、套餐商城）分六个迁移落地，全部由商城开关控制，默认关闭；开关关闭时，
 升级前后的线上行为一致（例外：开关打开后，Gateway 没有记录的账号不再可用）。无论从哪个版本升级，都按
 同一顺序执行：
 
@@ -752,7 +752,7 @@ WHERE event_type = 'billing.model_families_converted';
 2. **插件镜像**：先构建并重建 CPA（`./scripts/compose.sh build codex-compat` 后
    `./scripts/compose.sh up -d codex-compat`）。新插件声明 `credential_ownership_v1`（凭据归属与拒绝码）
    和 `layer_select_v1`（按层询问资格）；旧网关不会使用这两项，所以新插件配旧网关行为不变。
-3. **网关迁移**：再构建并重建 Gateway。`serve` 启动时依次执行 `0051`–`0055`：现有账号全部是平台账号，
+3. **网关迁移**：再构建并重建 Gateway。`serve` 启动时依次执行 `0051`–`0056`：现有账号全部是平台账号，
    现有套餐全部是平台套餐（范围“不限制”、审核“已通过”），已有订阅从 `plan_id` 回填来源套餐，无需
    手工回填。网关检测到插件不支持 `layer_select_v1` 时不发送成员层，只剩成员层的请求返回 503
    `upstream_access_protocol_unavailable`，不会改用其他账号。
@@ -873,10 +873,13 @@ ORDER BY occurred_at DESC LIMIT 50;
 | 原因 | 含义 | 处理 |
 | --- | --- | --- |
 | 仍有供应商账号（`providers`） | 成员仍持有凭证的 OAuth 账号或 API Key 供应商 | 成员在“我的供应商”中删除；成员已停用时，Owner 在“租户供应商”中转给平台后删除 |
-| 仍有出口服务器（`egress_servers`） | 成员自建的出口服务器 | 成员在“我的出口”中删除（节点被账号绑定时要先改绑） |
+| 仍有出口服务器（`egress_servers`） | 成员自建的出口服务器 | 成员在“我的出口”中删除；成员已停用时，Owner 在“租户供应商”的成员出口服务器表中删除。仍被账号绑定的节点要先转移或删除这些账号 |
 | 仍有未删除的套餐（`seller_plans`） | 草稿、审核中或在售的卖家套餐 | 成员在“我的套餐”中删除 |
 | 其套餐仍有订阅记录（`plan_subscriptions`） | 买家的订阅（含已结束、尚未清理的）仍指向该卖家的套餐 | 订阅到期并停用后，由信息清理删除 |
 | 仍有商城成交记录（`marketplace_sales`） | 作为买家或卖家出现在成交记录中 | 两条流水都被清理后，成交记录随信息清理删除 |
+
+在候选列表上方的搜索框输入用户名、显示名或拼音后，列表下方的“不能删除的匹配用户”会列出与搜索匹配、
+但不满足删除条件的用户（每次最多 20 个），以及每个原因和处理方法。
 
 删除执行时：
 
@@ -891,6 +894,22 @@ ORDER BY occurred_at DESC LIMIT 50;
 ```sql
 SELECT id, provider, masked_email, credential_removed_at, owner_deleted_at
 FROM upstream_accounts WHERE owner_deleted_at IS NOT NULL ORDER BY owner_deleted_at DESC;
+```
+
+### 第三方 API 供应商的确认（0056）
+
+买家对卖家 API Key 供应商的确认记在订阅上（`billing_subscriptions.third_party_acknowledged_at`）：
+
+- 购买或续费时勾选确认即记录；买家可以在“额度与订阅”的订阅卡片上随时确认或撤回
+  （`PUT /admin/billing/me/subscriptions/{id}/third-party-consent`，`{"acknowledged": true|false}`），从下一次请求起生效。
+- 没有确认的订阅只由卖家的 OAuth 账号服务。卖家在售出后加入的 API Key 供应商不会为它服务；只剩 API Key 供应商时
+  该订阅层被跳过，但不产生 `subscription_layer_empty` 告警。
+- 升级到 `0056` 时，已有订阅都没有确认记录（失败关闭）：卖家 API Key 供应商暂停为这些订阅服务，直到买家确认。
+  审计事件 `billing.third_party_consent_changed` 记录每次变更。
+
+```sql
+SELECT s.id, s.user_id, s.third_party_acknowledged_at FROM billing_subscriptions s
+JOIN billing_plans p ON p.id = s.source_plan_id WHERE p.seller_user_id IS NOT NULL AND s.enabled;
 ```
 
 ### 聚合网关告警

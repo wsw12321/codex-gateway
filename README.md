@@ -305,15 +305,16 @@ API Key 供应商。打开前需要已配置账号出口和支持 `credential_ow
   买家现金。
 - **套餐商城**：成员在“我的套餐”发布用自己供应商服务的套餐，经 Owner 审核（驳回须写原因）后上架；任何
   用户都能在“套餐”页用现金余额购买（不能买自己的）。含成员 API Key 供应商的套餐须确认对方能看到请求
-  内容。成交款按成交时的抽成比例（向下取整到 12 位小数）扣除后立即记入卖家的现金余额，不支持提现；
+  内容；这项确认记在订阅上，可以随时撤回，卖家售出后才加入的 API Key 供应商只为确认过的订阅服务。成交款按成交时的抽成比例（向下取整到 12 位小数）扣除后立即记入卖家的现金余额，不支持提现；
   卖家只看到匿名的买家编号。见[套餐商城](docs/marketplace.md)。
 - **加固**：买家已付费但卖家没有可用账号时产生 `subscription_layer_empty` 告警，缺少账号归因时
   `billing_attribution_missing` 告警说明实际结算方式；信息清理同时清理旧的成交记录；永久删除成员时，
-  仍有供应商、出口、套餐或成交的成员给出明确原因，已释放的账号清空主人且不变成平台账号。
+  仍有供应商、出口、套餐或成交的成员给出明确原因（候选搜索也列出不能删除的用户及处理方法），Owner 可以
+  删除已停用成员的出口服务器，已释放的账号清空主人且不变成平台账号。
 
 多租户的信任边界、第三方供应商与注入内容等风险见[威胁模型](docs/threat-model.md#多租户聚合网关)，升级顺序
-（备份 → 插件镜像 → 网关迁移 `0051`–`0055` → 打开开关）见
-[运维手册](docs/operations.md#聚合网关的完整升级顺序00510055)。设计与分阶段记录见
+（备份 → 插件镜像 → 网关迁移 `0051`–`0056` → 打开开关）见
+[运维手册](docs/operations.md#聚合网关的完整升级顺序00510056)。设计与分阶段记录见
 [改造计划](docs/aggregation-gateway-plan.md)、[开发进度](docs/aggregation-gateway-progress.md)和
 阶段 [1](docs/aggregation-gateway-stage1-validation.md)、[2](docs/aggregation-gateway-stage2-validation.md)、
 [3](docs/aggregation-gateway-stage3-validation.md)、[4](docs/aggregation-gateway-stage4-validation.md)、

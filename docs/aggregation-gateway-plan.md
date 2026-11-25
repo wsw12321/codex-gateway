@@ -281,7 +281,7 @@
 - **Proxy**：`internal/proxy/ledger.go`、`account_access.go`、`client.go`
 - **插件**：`deploy/codex-compat/plugin/internal/gatewayplugin/{scheduler,gatewayclient,credentials,headers}.go`、e2e harness、`plugin.lock.json` 及相关锁文件
 - **前端**：`internal/server/assets/{app.js,index.html,style.css}`、`internal/server/testdata/*.cjs`
-- **迁移**：`internal/store/migrations/0051–0055`、`internal/store/store_test.go`、`migrations/README.md`
+- **迁移**：`internal/store/migrations/0051–0056`、`internal/store/store_test.go`、`migrations/README.md`
 
 ## 可复用的现有实现
 
@@ -351,6 +351,6 @@ node --test internal/server/testdata/<新增>_test.cjs
 | 2 我的供应商 | 已完成：迁移 `0052`、认领/释放/转移、成员出口、`/admin/me/providers`、`/admin/tenant-providers`、插件冲突处理、界面 | `aggregation-gateway` / `daec9c6`–`00e666b` |
 | 3 套餐供应商范围、规则 5、自用 | 已完成：迁移 `0053`、规则 5 准入与结算、逐层资格（插件 `layer_select_v1`）、平台套餐范围、自用、界面 | `aggregation-gateway` / `612c9b2`–`5db6866` |
 | 4 卖家套餐、审核、商城、分账 | 已完成：迁移 `0054`、卖家套餐与审核、分账与成交记录、商城与卖家/Owner 接口、界面 | `aggregation-gateway` / `86ef02d`–`1cab10b` |
-| 5 加固与文档 | 已完成：迁移 `0055`、成员永久删除的阻止原因与无主账号、成交记录清理、`subscription_layer_empty` 与规则 5 归因告警、多租户威胁模型、完整升级顺序与 README | `aggregation-gateway` / `ea0242d`–`d09f482` |
+| 5 加固与文档 | 已完成：迁移 `0055`、`0056`，成员永久删除的阻止原因与无主账号、成交记录清理、`subscription_layer_empty` 与规则 5 归因告警、多租户威胁模型、完整升级顺序与 README；补充：订阅级第三方 API 确认、Owner 删除成员节点、不能删除的原因 | `aggregation-gateway` / `ea0242d`–`d09f482`、`279037d`–`aeefd50` |
 
 逐项待办见[开发进度与待办](aggregation-gateway-progress.md#剩余待完成项)。

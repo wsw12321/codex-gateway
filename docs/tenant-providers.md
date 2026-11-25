@@ -57,6 +57,7 @@
 
 - **租户供应商**页面（`GET /admin/tenant-providers`）：列出全部成员账号（成员、协议、状态、出口）和成员出口服务器。
 - **停用 / 恢复**（`PUT /admin/tenant-providers/{id}/suspension`，`{"suspended": true}`）：Owner 的审核停用，成员不能解除。
+- **删除成员出口服务器**（`DELETE /admin/tenant-providers/egress-servers/{id}`，请求体 `{}`）：用于成员已停用、不能自己删除，或永久删除成员之前。规则与成员自己删除相同：仍被账号绑定、或被 24 小时内未完成的登录选择的节点返回 409 `tenant_egress_in_use`，平台节点返回 404。列表标出已停用的成员。
 - **转移归属**（`PUT /admin/{upstream|antigravity|anthropic}-accounts/{id}/owner`，`{"owner_user_id": "<成员 ID>" 或 null, "expected_owner_user_id": "<当前主人 ID>" 或 null}`）：
   - 只有 Owner 能修改归属；目标必须是正常状态的成员，`null` 表示转为平台账号。
   - `expected_owner_user_id` 与当前主人不符时返回 409，防止旧页面覆盖。

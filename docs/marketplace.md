@@ -44,6 +44,7 @@
 
 - 不能购买自己发布的套餐。
 - 标有“含第三方 API 供应商”的套餐，购买（和续费）时须勾选确认：对方能看到经它处理的提示词和回复。
+- 确认记在这份订阅上，可以在“额度与订阅”的订阅卡片上随时撤回或重新确认，从下一次请求起生效。卖家的 API Key 供应商只为确认过的订阅服务：卖家售出后才把它加进范围时，卡片会提示，你确认之前它不处理你的请求，订阅只由卖家的官方账号服务。
 - 价格、周期、额度、起购期数和续费规则与平台套餐相同；每次购买新增一份独立订阅。
 - 买到的订阅在扣费时单独成为一层，排在个人余额之前，只为卖家的账号付费（见[阶段 3 验证](aggregation-gateway-stage3-validation.md)的规则 5）。
 
@@ -86,6 +87,7 @@ Owner 可据此联系卖家或下架套餐、人工处理买家余额。见[运�
 | `GET /admin/me/sales?limit=&offset=` | 销售收入（买家匿名） | 成员 |
 | `POST /admin/billing/me/purchases` | 购买，可带 `acknowledge_third_party` | 已登录，近期验证 |
 | `POST /admin/billing/me/subscriptions/{id}/renewals` | 续费，可带 `acknowledge_third_party` | 已登录，近期验证 |
+| `PUT /admin/billing/me/subscriptions/{id}/third-party-consent` | `{"acknowledged": bool}`，确认或撤回卖家 API Key 供应商（只接受本人的成员套餐订阅） | 已登录，近期验证 |
 | `GET /admin/market/reviews` | 待审核与全部成员套餐 | Owner |
 | `POST /admin/market/reviews/{id}` | `{"decision": "approve"|"reject", "note", "version"}` | Owner，近期验证 |
 | `PUT /admin/market/plans/{id}/suspend` | `{"suspended": bool, "reason"}` | Owner，近期验证 |
@@ -101,3 +103,4 @@ Owner 可据此联系卖家或下架套餐、人工处理买家余额。见[运�
 - `marketplace.plan_submitted`、`marketplace.plan_reviewed`（决定与备注）、`marketplace.plan_suspended`（原因）。
 - `marketplace.plan_sold`：每笔成交，含买家、卖家、成交额、抽成比例、抽成与到账。
 - `billing.plan_purchase` / `billing.plan_renewal`：买家一侧的购买与续费。
+- `billing.third_party_consent_changed`：买家确认或撤回第三方 API 供应商（含套餐 ID）。
