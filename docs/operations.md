@@ -344,6 +344,8 @@ Codex refresh 结果不确定时不再重试，需重新授权，详见 [CPA v8 
 并在 Alpine 运行镜像中显式升级 musl 到 `1.2.5-r13`（`CVE-2026-107891`），见 [验证记录](ci-musl-xnet-validation.md)。
 2026-11-25 安全更新将 mihomo 的 `github.com/insomniacslk/dhcp` 升级到修复版本（`GHSA-jp3c-6v3g-mpxv`），
 构建标识改为 `v1.19.32-gateway.4`，见 [验证记录](ci-gosec-dhcp-validation.md)。
+2026-11-26 安全更新在 Alpine 运行镜像中显式升级 OpenSSL 的 `libcrypto3`、`libssl3` 到 `3.5.9-r2`
+（`CVE-2026-124709`），见 [验证记录](ci-openssl-validation.md)。
 `CLIPROXY_RUNTIME_IMAGE` 独立锁定兼容层的 Debian slim；`RUNTIME_IMAGE` 继续锁定 Gateway 的 Alpine。
 
 ## 3. 服务密钥
