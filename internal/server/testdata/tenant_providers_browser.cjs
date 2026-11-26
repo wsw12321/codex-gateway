@@ -88,12 +88,17 @@ function memberAPI(writes) {
       await page.getByRole("button", {name: "授权登录", exact: true}).click();
       await page.locator("#provider-oauth").waitFor({state: "visible"});
       assert.deepEqual(writes[0], {path: "/admin/me/providers/codex/oauth", method: "POST", body: {}});
+      // Seller pages carry the seller sub-slogan.
+      assert.equal(await page.locator('[data-section="providers"] .page-slogan').textContent(), "你出水源，我来汇流");
+      assert.ok(await page.locator('[data-section="providers"] .page-slogan').isVisible());
       await page.screenshot({path: path.join(output, `tenant-providers-member-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.evaluate(() => {location.hash = "egress-servers";});
       await page.getByRole("heading", {name: node.name}).waitFor();
       assert.equal(await page.locator("#page-title").textContent(), "我的出口");
       await page.locator("#egress-member-note").waitFor({state: "visible"});
+      assert.ok(await page.locator('[data-section="egress-servers"] .page-slogan').isVisible(), "member egress is a seller page");
+      assert.equal(await page.title(), "我的出口 · 百川阁");
       if (name === "desktop") await page.screenshot({path: path.join(output, "tenant-providers-member-egress-desktop.png"), fullPage: true});
       // The Owner's sections stay closed to a member.
       await page.evaluate(() => {location.hash = "tenant-providers";});
@@ -118,6 +123,8 @@ function memberAPI(writes) {
       });
       await page.locator("#tenant-providers-body tr", {hasText: "Alice"}).waitFor();
       assert.equal(await page.locator("#tenant-providers-body tr").count(), 2);
+      // The Owner shares the egress view for platform nodes; it is not a seller page.
+      assert.ok(await page.locator('[data-section="egress-servers"] .page-slogan').evaluate((node) => node.classList.contains("hidden")));
       await page.screenshot({path: path.join(output, `tenant-providers-owner-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (name === "desktop") {

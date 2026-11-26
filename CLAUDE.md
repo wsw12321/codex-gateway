@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A Go gateway ("水源喵中转站") that sits between AI CLI clients (Codex, agy/Gemini, Claude Code) and a version-pinned CLIProxyAPI ("CPA", service `codex-compat`) running unmodified with the Gateway plugin. The gateway owns identity (Passkey/password/OIDC), per-device API keys, quotas, billing, usage metadata, and upstream account allocation. CPA holds the upstream OAuth credentials and performs the model calls. The gateway never stores prompts or responses. The README, `docs/`, the dashboard UI, and user-facing error messages are in Chinese. Code, comments, and most commit subjects are in English.
+A Go gateway ("百川阁", formerly "水源喵中转站") that sits between AI CLI clients (Codex, agy/Gemini, Claude Code) and a version-pinned CLIProxyAPI ("CPA", service `codex-compat`) running unmodified with the Gateway plugin. The gateway owns identity (Passkey/password/OIDC), per-device API keys, quotas, billing, usage metadata, and upstream account allocation. CPA holds the upstream OAuth credentials and performs the model calls. The gateway never stores prompts or responses. The README, `docs/`, the dashboard UI, and user-facing error messages are in Chinese. Code, comments, and most commit subjects are in English.
 
 ## Commands
 

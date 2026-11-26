@@ -422,7 +422,7 @@ async function main() {
     // Callback appearance shares the preference without retaining OAuth data.
     state = initial(); signedIn = true; completeMode = "confirm";
     await goCallback(); await preview();
-    assert.match(await page.title(), /水源喵/);
+    assert.match(await page.title(), /百川阁/);
     for (const theme of ["dark", "light"]) {
       await page.locator(`[data-theme-choice="${theme}"]`).click();
       assert.equal(await page.locator("html").getAttribute("data-theme"), theme);

@@ -3706,6 +3706,8 @@ body:has(#auth:not(.hidden)) #site-footer { border: 0; padding-top: 0; font-size
 .overview-welcome h2 { font-family: var(--serif); font-size: clamp(1.4rem, 2.3vw, 1.85rem); font-weight: 500; letter-spacing: 1px; }
 .overview-welcome p:last-child { font-size: .8rem; margin: .5rem 0 0; }
 .overview-welcome > a { flex-shrink: 0; font-size: .8rem; border-color: var(--line-strong); }
+/* Page sub-slogans: the seller pages and the buyer (plans) page each carry one. */
+.view > .section-head .page-slogan { margin: 0 0 .35rem; color: var(--accent-text); font-family: var(--serif); font-size: 1.1rem; font-weight: 500; letter-spacing: 2px; }
 .overview-scope > p { font-size: .8rem; font-weight: 500; }
 .metrics article { box-shadow: none; }
 .metrics article strong { font-weight: 600; letter-spacing: -.4px; }

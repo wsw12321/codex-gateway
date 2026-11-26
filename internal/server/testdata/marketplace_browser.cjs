@@ -105,6 +105,10 @@ async function dashboard(browser, viewport, user, hash, handler) {
       await page.evaluate(() => loadBillingDashboard());
       await page.locator(".billing-plan-card", {hasText: "卖家：Bob"}).waitFor();
       await page.locator(".billing-plan-card", {hasText: "含第三方 API 供应商"}).waitFor();
+      // The buyer page carries the buyer sub-slogan.
+      assert.equal(await page.locator('[data-section="plans"] .page-slogan').textContent(), "一处接入，百家模型");
+      assert.ok(await page.locator('[data-section="plans"] .page-slogan').isVisible());
+      assert.equal(await page.title(), "套餐 · 百川阁");
       await page.screenshot({path: path.join(output, `marketplace-member-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       await page.locator(".billing-plan-card", {hasText: "Bob 的 GPT 日卡"}).getByRole("button", {name: "购买订阅"}).click();
@@ -141,6 +145,9 @@ async function dashboard(browser, viewport, user, hash, handler) {
       await page.locator(".billing-plan-card", {hasText: "Alice 的 Claude 周卡"}).getByRole("button", {name: "查看用量"}).click();
       await page.locator("#my-plan-usage-body", {hasText: "Claude Max 主号"}).waitFor();
       assert.equal(await page.locator("#my-sales-body", {hasText: "Carol"}).count(), 0);
+      // Seller pages carry the seller sub-slogan.
+      assert.equal(await page.locator('[data-section="my-plans"] .page-slogan').textContent(), "你出水源，我来汇流");
+      assert.ok(await page.locator('[data-section="my-plans"] .page-slogan').isVisible());
       await page.screenshot({path: path.join(output, `marketplace-my-plans-${name}.png`), fullPage: true});
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (name === "desktop") {
