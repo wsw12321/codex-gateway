@@ -231,8 +231,7 @@ func (p *Plugin) observeCodexQuota(query url.Values, body []byte) (quotaRPCRespo
 	if err != nil {
 		return quotaRPCResponse{}, http.StatusBadGateway, "quota_credential_unavailable"
 	}
-	chatgptAccount, ok := codexIdentity(document)
-	if !ok || chatgptAccount == "" || CodexAccountIndex(chatgptAccount) != account.ID {
+	if p.inventory.codexSeats.index(account.Name, document, false) != account.ID {
 		return quotaRPCResponse{}, http.StatusBadGateway, "quota_account_identity_unavailable"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

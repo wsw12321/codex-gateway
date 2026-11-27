@@ -10574,8 +10574,8 @@ function renderMyProviders() {
   const full = result.account_count >= result.max_accounts_per_user;
   for (const id of ["provider-oauth-start", "provider-import-open", "provider-supplier-open"]) {
     const button = byId(id);
-    button.disabled = full || !result.providers.length;
-    button.title = full ? "已达到可添加的数量上限" : "";
+    button.disabled = !result.providers.length || (full && id === "provider-supplier-open");
+    button.title = full && id === "provider-supplier-open" ? "已达到可添加的数量上限" : "";
   }
   byId("provider-supplier-open").classList.toggle("hidden", !result.member_suppliers);
   syncProviderImportAvailability();
@@ -10776,7 +10776,7 @@ async function pollProviderOAuth(session) {
   }
   if (result?.status === "ok") {
     stopProviderOAuth();
-    notice("账号已添加。", "ok");
+    notice(providerCredentialMessage(result, false), "ok");
     await loadMyProviders();
     return;
   }
@@ -10832,6 +10832,12 @@ function openProviderImport() {
   openDialog("provider-import-dialog");
 }
 
+function providerCredentialMessage(result, imported) {
+  if (result?.already_present === true) return imported ? "该账号已存在，凭据已更新。" : "该账号已存在，已重新授权。";
+  if (result?.already_present === false) return "账号已添加。";
+  return imported ? "凭据已导入。" : "授权已完成。";
+}
+
 async function submitProviderImport(event) {
   const form = event.currentTarget;
   const provider = form.dataset.provider;
@@ -10839,15 +10845,16 @@ async function submitProviderImport(event) {
   const payload = providerImportFields(form.elements.credentials.value, provider);
   if (egress) payload.egress_server_id = egress;
   const current = providersIdentityCurrent();
+  let result;
   try {
-    await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/credentials`, {method: "POST", body: JSON.stringify(payload)}, current), current);
+    result = await sensitiveAction(() => api(`/admin/me/providers/${encodeURIComponent(provider)}/credentials`, {method: "POST", body: JSON.stringify(payload)}, current), current);
   } finally {
     for (const key of Object.keys(payload)) delete payload[key];
   }
   if (!current()) return;
   form.reset();
   byId("provider-import-dialog").close();
-  notice("凭据已导入，账号已添加。", "ok");
+  notice(providerCredentialMessage(result, true), "ok");
   await loadMyProviders();
 }
 

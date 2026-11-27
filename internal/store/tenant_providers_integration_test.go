@@ -82,6 +82,7 @@ func TestTenantProviderLifecyclePostgresIntegration(t *testing.T) {
 	setMarketplace(true)
 
 	accountID := func(name string) string { return upstreamIntegrationAccountID(name + "-" + suffix) }
+	var lastResult EgressRegistration
 	login := func(scope *Store, actor EgressActor, node *string, id string) error {
 		t.Helper()
 		registration, err := scope.CreateEgressRegistration(ctx, UpstreamProviderCodex, node, actor)
@@ -94,7 +95,7 @@ func TestTenantProviderLifecyclePostgresIntegration(t *testing.T) {
 		if _, err := s.PrepareEgressRegistration(ctx, registration.ID, UpstreamProviderCodex, id); err != nil {
 			return err
 		}
-		_, err = s.CommitEgressRegistration(ctx, registration.ID, UpstreamProviderCodex, id)
+		lastResult, err = s.CommitEgressRegistration(ctx, registration.ID, UpstreamProviderCodex, id)
 		return err
 	}
 	ownership := func(id string) UpstreamAccountOwnership {
@@ -106,11 +107,24 @@ func TestTenantProviderLifecyclePostgresIntegration(t *testing.T) {
 		return value
 	}
 
+	checkAlreadyPresent := func(want bool) {
+		t.Helper()
+		stored, err := s.EgressRegistration(ctx, lastResult.ID)
+		if err != nil || stored.AlreadyPresent != want || stored.State != "committed" {
+			t.Fatalf("registration result %+v, want already_present=%v, err=%v", stored, want, err)
+		}
+		replayed, err := s.CommitEgressRegistration(ctx, stored.ID, stored.Provider, stored.AccountID)
+		if err != nil || replayed.AlreadyPresent != want {
+			t.Fatalf("replayed result %+v, err=%v", replayed, err)
+		}
+	}
+
 	// A tenant login creates the account for the tenant.
 	shared := accountID("shared")
 	if err := login(aliceStore, aliceActor, nil, shared); err != nil {
 		t.Fatalf("alice login: %v", err)
 	}
+	checkAlreadyPresent(false)
 	if got := ownership(shared); !got.Exists || got.OwnerUserID != alice.ID || got.CredentialRemoved {
 		t.Fatalf("shared ownership=%+v", got)
 	}
@@ -118,6 +132,7 @@ func TestTenantProviderLifecyclePostgresIntegration(t *testing.T) {
 	if err := login(aliceStore, aliceActor, nil, shared); err != nil {
 		t.Fatalf("alice re-login: %v", err)
 	}
+	checkAlreadyPresent(true)
 	if err := login(bobStore, bobActor, nil, shared); !errors.Is(err, ErrAccountOwnedElsewhere) {
 		t.Fatalf("bob login of alice's account err=%v", err)
 	}
@@ -140,6 +155,11 @@ func TestTenantProviderLifecyclePostgresIntegration(t *testing.T) {
 	if err := login(aliceStore, aliceActor, nil, second); err != nil {
 		t.Fatalf("alice second login: %v", err)
 	}
+	checkAlreadyPresent(false)
+	if err := login(aliceStore, aliceActor, nil, shared); err != nil {
+		t.Fatal(err)
+	}
+	checkAlreadyPresent(true)
 	if err := login(aliceStore, aliceActor, nil, accountID("third")); !errors.Is(err, ErrProviderLimitReached) {
 		t.Fatalf("alice over limit err=%v", err)
 	}

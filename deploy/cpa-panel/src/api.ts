@@ -34,18 +34,24 @@ async function request<T>(path: string, method = 'GET', data?: unknown): Promise
   return response.json();
 }
 
+export function credentialMessage(present: boolean | undefined, imported = false): string {
+  if (present === true) return imported ? '该账号已存在，凭据已更新。' : '该账号已存在，已重新授权。';
+  if (present === false) return '账号已添加。';
+  return imported ? '凭据已导入。' : '授权完成';
+}
+
 export const api = {
   accounts: (provider: Provider) => request<{ accounts: Account[]; sync_warning?: string; suppliers_enabled?: boolean }>(`${provider}/accounts?all=true`),
   saveSupplier: (provider: Provider, id: string, payload: { url?: string; api_key: string; models?: string[]; egress_server_id?: string }) =>
     request<{status: 'ok' | 'models_required'; models: string[]}>(`${provider}/suppliers${id ? `/${id}` : ''}`, id ? 'PUT' : 'POST', payload),
   status: (provider: Provider, id: string, enabled: boolean) => request(`${provider}/accounts/${id}/status`, 'PUT', { enabled }),
   begin: async (provider: Provider, egressID?: string) => { const oauth = await request<OAuth>(`${provider}/oauth`, 'POST', egressID === undefined ? {} : {egress_server_id: egressID}); authorizationURL(oauth.url, provider); return oauth; },
-  poll: (id: string) => request<{ status: 'ok' | 'wait' | 'error' }>(`oauth/${id}/status`),
+  poll: (id: string) => request<{ status: 'ok' | 'wait' | 'error'; already_present?: boolean; error?: string }>(`oauth/${id}/status`),
   callback: (id: string, code: string, state: string) => request(`oauth/${id}/callback`, 'POST', { code, state }),
   refresh: (provider: Provider, id: string) => request(`${provider}/accounts/${id}/refresh`, 'POST', {}),
   quota: (provider: Provider, id: string) => request<QuotaSnapshot>(`${provider}/accounts/${id}/quota`, 'POST', {}),
   remove: (provider: Provider, id: string) => request(`${provider}/accounts/${id}`, 'DELETE', {}),
-  import: (provider: Provider, credentials: Record<string, string>, egressID?: string) => request(`${provider}/credentials`, 'POST', {...credentials, ...(egressID === undefined ? {} : {egress_server_id: egressID})}),
+  import: (provider: Provider, credentials: Record<string, string>, egressID?: string) => request<{already_present?: boolean}>(`${provider}/credentials`, 'POST', {...credentials, ...(egressID === undefined ? {} : {egress_server_id: egressID})}),
   egressServers: async (): Promise<EgressServer[]> => {
     const response = await fetch('/admin/egress-servers', {credentials: 'same-origin', redirect: 'error'});
     if (!response.ok) throw new Error('出口服务器列表加载失败，请刷新后重试');

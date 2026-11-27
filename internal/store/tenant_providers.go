@@ -198,7 +198,7 @@ func changeUpstreamOwnerTx(ctx context.Context, tx *sql.Tx, accountID, provider,
 //   - A platform row that metadata synchronization created while this login
 //     was running, and that nothing platform-only uses yet, is claimed.
 //   - Anything else belongs to someone else: ErrAccountOwnedElsewhere.
-func claimRegistrationAccountTx(ctx context.Context, tx *sql.Tx, registration EgressRegistration, accountID string) error {
+func claimRegistrationAccountTx(ctx context.Context, tx *sql.Tx, registration EgressRegistration, accountID string) (bool, error) {
 	owner := registration.TenantUserID
 	actor := EgressActor{UserID: registration.ActorUserID, SessionID: registration.ActorSessionID}
 	var provider, currentOwner, kind string
@@ -210,39 +210,47 @@ func claimRegistrationAccountTx(ctx context.Context, tx *sql.Tx, registration Eg
 	if errors.Is(err, sql.ErrNoRows) {
 		if owner != "" {
 			if err := checkTenantAccountLimitTx(ctx, tx, owner); err != nil {
-				return err
+				return false, err
 			}
 		}
 		_, err = tx.ExecContext(ctx, `INSERT INTO upstream_accounts(id,masked_email,plan,status,provider,created_at,updated_at,owner_user_id)
 			VALUES($1,'','unknown','unavailable',$2,now(),now(),$3::uuid)`, accountID, registration.Provider, valueOrNil(owner))
-		return mapDBError("ensure registration account", err)
+		return false, mapDBError("ensure registration account", err)
 	}
 	if err != nil {
-		return mapDBError("find registration account", err)
+		return false, mapDBError("find registration account", err)
 	}
 	if provider != registration.Provider {
-		return ErrNotFound
+		return false, ErrNotFound
 	}
 	if kind != "oauth" {
-		return ErrConflict
+		return false, ErrConflict
 	}
 	switch {
 	case removed:
 		// A released account is not counted, so reviving it takes a slot.
 		if owner != "" {
 			if err := checkTenantAccountLimitTx(ctx, tx, owner); err != nil {
-				return err
+				return false, err
 			}
 		}
 		if currentOwner != owner {
 			if _, err := changeUpstreamOwnerTx(ctx, tx, accountID, provider, currentOwner, owner, ownerChangeClaim, actor); err != nil {
-				return err
+				return false, err
 			}
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE upstream_accounts SET credential_removed_at=NULL, owner_deleted_at=NULL WHERE id=$1`, accountID)
-		return mapDBError("restore released account", err)
+		return false, mapDBError("restore released account", err)
 	case currentOwner == owner:
-		return nil
+		// Metadata sync can discover a new platform credential between OAuth
+		// start and prepare. Only a separate registration makes that a relogin.
+		if owner == "" && !createdAt.Before(registration.CreatedAt) {
+			var registered bool
+			err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM egress_registrations
+				WHERE account_id=$1 AND id<>$2::uuid AND state IN ('prepared','committed'))`, accountID, registration.ID).Scan(&registered)
+			return registered, mapDBError("check previous credential registration", err)
+		}
+		return true, nil
 	case currentOwner == "" && owner != "" && !createdAt.Before(registration.CreatedAt):
 		var claimable bool
 		if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS(SELECT 1 FROM upstream_account_egress WHERE account_id=$1)
@@ -250,18 +258,18 @@ func claimRegistrationAccountTx(ctx context.Context, tx *sql.Tx, registration Eg
 			AND NOT EXISTS(SELECT 1 FROM group_upstream_accounts WHERE upstream_account_id=$1)
 			AND NOT EXISTS(SELECT 1 FROM upstream_account_users WHERE upstream_account_id=$1)
 			AND NOT EXISTS(SELECT 1 FROM user_upstream_access_accounts WHERE upstream_account_id=$1)`, accountID).Scan(&claimable); err != nil {
-			return mapDBError("check claimable account", err)
+			return false, mapDBError("check claimable account", err)
 		}
 		if !claimable {
-			return ErrAccountOwnedElsewhere
+			return false, ErrAccountOwnedElsewhere
 		}
 		if err := checkTenantAccountLimitTx(ctx, tx, owner); err != nil {
-			return err
+			return false, err
 		}
 		_, err := changeUpstreamOwnerTx(ctx, tx, accountID, provider, currentOwner, owner, ownerChangeClaim, actor)
-		return err
+		return false, err
 	default:
-		return ErrAccountOwnedElsewhere
+		return false, ErrAccountOwnedElsewhere
 	}
 }
 

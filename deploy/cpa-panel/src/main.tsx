@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Button } from '../upstream/Button';
 import { Card } from '../upstream/Card';
-import { accountIdentity, api, callbackFields, importFields, type Account, type EgressServer, type OAuth, type Provider, type QuotaSnapshot } from './api';
+import { credentialMessage, accountIdentity, api, callbackFields, importFields, type Account, type EgressServer, type OAuth, type Provider, type QuotaSnapshot } from './api';
 import './panel.css';
 
 function SupplierForm({provider, id = '', egressID, disabled, onSaved, onError}: {
@@ -73,7 +73,7 @@ function App() {
 
   async function run(operation: () => Promise<unknown>, success = '操作完成') {
     setBusy(true); setMessage('');
-    try { await operation(); setMessage(success); }
+    try { const result = await operation(); setMessage(typeof result === 'string' ? result : success); }
     catch (error) { setMessage(error instanceof Error ? error.message : '操作未完成'); }
     finally { setBusy(false); }
   }
@@ -100,8 +100,8 @@ function App() {
       api.poll(oauth.id).then(result => {
         if (!active || result.status === 'wait') return;
         setOAuth(null); setCallback('');
-        if (result.status === 'ok') { setMessage('授权完成'); void refresh(); }
-        else setMessage('授权未完成，请重新授权');
+        if (result.status === 'ok') { setMessage(credentialMessage(result.already_present)); void refresh(); }
+        else setMessage(result.error === 'account_owned_elsewhere' ? '该账号已归其他用户所有。' : '授权未完成，请重新授权');
       }).catch(() => { if (active) { setOAuth(null); setMessage('授权流程已过期，请重新授权'); } });
     }, 2000);
     return () => { active = false; clearInterval(id); };
@@ -123,8 +123,11 @@ function App() {
         void run(async () => {
           if (file.size > 128 * 1024) throw new Error('凭据文件过大');
           const credentials = importFields(await file.text(), provider);
-          try { await api.import(provider, credentials, selectedEgress); await refresh(); }
-          finally { for (const key of Object.keys(credentials)) credentials[key] = ''; }
+          try {
+            const result = await api.import(provider, credentials, selectedEgress);
+            await refresh();
+            return credentialMessage(result.already_present, true);
+          } finally { for (const key of Object.keys(credentials)) credentials[key] = ''; }
         });
       }}/></label></div>
       <p className="hint">导入时验证真实身份，有刷新令牌时先刷新；同一账号重新授权保留本站权限。{provider === 'anthropic' ? '支持 CPA OAuth 凭据和 Claude Code claudeAiOauth 格式；只提取必要令牌；仅访问令牌的账号到期后不能自动刷新，套餐无法验证时显示未知。' : '迁移旧 Keyring 请使用服务端迁移工具。'}</p>

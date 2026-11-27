@@ -336,7 +336,7 @@ func (s *Server) cpaOAuthBegin(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteError(w, r, http.StatusTooManyRequests, "rate_limit_error", "provider_oauth_busy", "最多同时进行两个授权流程，请先完成或等待过期")
 			return
 		}
-		if !s.requireTenantCredentialOwnership(w, r, provider) || !s.tenantAccountSlotAvailable(w, r) {
+		if !s.requireTenantCredentialOwnership(w, r, provider) {
 			return
 		}
 	}
@@ -469,18 +469,39 @@ func (s *Server) cpaOAuthCallback(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "submitted"})
 }
 
+type credentialResult struct {
+	Status         string `json:"status"`
+	AccountID      string `json:"account_id,omitempty"`
+	Error          string `json:"error,omitempty"`
+	AlreadyPresent *bool  `json:"already_present,omitempty"`
+}
+
+func (s *Server) setCredentialOutcome(ctx context.Context, registration, provider string, result *credentialResult) error {
+	result.AlreadyPresent = nil
+	if result.Status != "ok" || registration == "" {
+		return nil
+	}
+	if !validUpstreamAccountID(result.AccountID) {
+		return errors.New("missing credential account")
+	}
+	record, err := s.store.EgressRegistration(ctx, registration)
+	if err != nil {
+		return err
+	}
+	if record.Provider != provider || record.AccountID != result.AccountID || record.State != "committed" {
+		return errors.New("credential registration incomplete")
+	}
+	result.AlreadyPresent = &record.AlreadyPresent
+	return nil
+}
+
 func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	a, ok := s.cpaAdmin.oauthAttempt(r, r.PathValue("id"), false, time.Now())
 	if !ok || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
 		return
 	}
-	var result struct {
-		Status    string `json:"status"`
-		AccountID string `json:"account_id,omitempty"`
-		// Error is a refusal code: the account is not the caller's.
-		Error string `json:"error,omitempty"`
-	}
+	var result credentialResult
 	if err := s.cpaCall(r.Context(), http.MethodPost, a.Provider+"/oauth/status", map[string]string{"state": a.State}, &result); err != nil {
 		cpaError(w, r)
 		return
@@ -495,6 +516,10 @@ func (s *Server) cpaOAuthStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if result.Status != "error" || !knownTenantRefusal(result.Error) {
 		result.Error = ""
+	}
+	if err := s.setCredentialOutcome(r.Context(), a.RegistrationID, a.Provider, &result); err != nil {
+		cpaError(w, r)
+		return
 	}
 	if result.Status != "wait" {
 		s.cpaAdmin.finish(r.PathValue("id"))
@@ -523,7 +548,13 @@ func (s *Server) prepareCPAEgress(r *http.Request, provider string, nodeID *stri
 		if nodeID != nil && *nodeID != "" {
 			return "", "", errors.New("egress unavailable")
 		}
-		return "", "", nil
+		// Without account egress the Owner can still log in. Use a local
+		// registration to classify the result, preserving any existing binding.
+		if s.store == nil {
+			return "", "", nil
+		}
+		registration, err := s.store.CreateEgressRegistration(r.Context(), provider, nil, egressActor(r))
+		return registration.ID, "", err
 	}
 	registration, err := s.createEgressRegistration(r, provider, nodeID)
 	if err != nil {
@@ -572,7 +603,7 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, r, http.StatusBadRequest, "invalid_request_error", "invalid_cpa_credential", "必须提供可刷新的 OAuth 凭据")
 		return
 	}
-	if !s.requireTenantCredentialOwnership(w, r, provider) || !s.tenantAccountSlotAvailable(w, r) {
+	if !s.requireTenantCredentialOwnership(w, r, provider) {
 		return
 	}
 	registrationID, proxyURL, err := s.prepareCPAEgress(r, provider, input.EgressServerID)
@@ -600,10 +631,7 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 	if proxyURL != "" {
 		wire["egress_proxy_url"] = proxyURL
 	}
-	var result struct {
-		Status    string `json:"status"`
-		AccountID string `json:"account_id,omitempty"`
-	}
+	var result credentialResult
 	if err := s.cpaCall(r.Context(), http.MethodPost, provider+"/credentials", wire, &result); err != nil {
 		if code := cpaRefusal(err); code != "" {
 			writeTenantRefusal(w, r, code)
@@ -613,6 +641,11 @@ func (s *Server) cpaImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Status != "ok" || result.AccountID != "" && !validUpstreamAccountID(result.AccountID) {
+		cpaError(w, r)
+		return
+	}
+	result.Error = ""
+	if err := s.setCredentialOutcome(r.Context(), registrationID, provider, &result); err != nil {
 		cpaError(w, r)
 		return
 	}

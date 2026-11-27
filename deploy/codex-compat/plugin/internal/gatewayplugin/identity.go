@@ -250,44 +250,40 @@ func CodexAccountIndex(accountID string) string {
 	return hex.EncodeToString(outer[:8])
 }
 
-// codexTokenAccountID reads chatgpt_account_id from an ID token. present is
-// false when the claim is absent; valid is false when the token is malformed.
-func codexTokenAccountID(token string) (accountID string, present, valid bool) {
-	token = strings.TrimSpace(token)
+// codexTokenIdentity reads identifiers from the ID token stored by CPA after
+// exchange or refresh. An absent member claim is possible on older grants.
+func codexTokenIdentity(token string) (workspace, user string, valid bool) {
 	if token == "" {
-		return "", false, true
+		return "", "", true
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return "", false, false
+		return "", "", false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		if payload, err = base64.URLEncoding.DecodeString(parts[1]); err != nil {
-			return "", false, false
+			return "", "", false
 		}
 	}
-	var claims map[string]json.RawMessage
+	var claims struct {
+		Auth map[string]json.RawMessage `json:"https://api.openai.com/auth"`
+	}
 	if json.Unmarshal(payload, &claims) != nil {
-		return "", false, false
+		return "", "", false
 	}
-	rawAuth, ok := claims["https://api.openai.com/auth"]
-	if !ok {
-		return "", false, true
+	for key, dest := range map[string]*string{"chatgpt_account_id": &workspace, "chatgpt_user_id": &user} {
+		if raw, ok := claims.Auth[key]; ok {
+			if json.Unmarshal(raw, dest) != nil {
+				return "", "", false
+			}
+			*dest = strings.TrimSpace(*dest)
+			if !validCodexAccountID(*dest) {
+				return "", "", false
+			}
+		}
 	}
-	var authClaims map[string]json.RawMessage
-	if json.Unmarshal(rawAuth, &authClaims) != nil {
-		return "", false, false
-	}
-	rawID, ok := authClaims["chatgpt_account_id"]
-	if !ok {
-		return "", false, true
-	}
-	if json.Unmarshal(rawID, &accountID) != nil {
-		return "", true, false
-	}
-	accountID = strings.TrimSpace(accountID)
-	return accountID, true, validCodexAccountID(accountID)
+	return workspace, user, true
 }
 
 // codexTokenPlan reads the subscription plan claim from an ID token. Only the
@@ -318,46 +314,28 @@ func codexTokenPlan(token string) string {
 	return "unknown"
 }
 
-// codexIdentity resolves a Codex credential's account id from the top-level
-// field and the ID-token claim. Conflicting or malformed values quarantine the
-// credential; so does a missing identity, since an unattributed account can be
-// neither authorized nor billed.
-func codexIdentity(document map[string]json.RawMessage) (string, bool) {
-	var identities []string
-	if raw, ok := document["account_id"]; ok {
-		var top string
-		if json.Unmarshal(raw, &top) != nil {
-			return "", false
-		}
-		if top = strings.TrimSpace(top); top != "" {
-			if !validCodexAccountID(top) {
-				return "", false
-			}
-			identities = append(identities, top)
-		}
+// codexIdentity requires the persisted workspace and token to agree. The
+// member identifier is accepted only from the provider's token.
+func codexIdentity(document map[string]json.RawMessage) (workspace, user string, valid bool) {
+	var token, top string
+	if raw, ok := document["account_id"]; ok && json.Unmarshal(raw, &top) != nil {
+		return "", "", false
 	}
-	if raw, ok := document["id_token"]; ok {
-		var token string
-		if json.Unmarshal(raw, &token) != nil {
-			return "", false
-		}
-		claim, present, valid := codexTokenAccountID(token)
-		if !valid {
-			return "", false
-		}
-		if present {
-			identities = append(identities, claim)
-		}
+	if raw, ok := document["id_token"]; ok && json.Unmarshal(raw, &token) != nil {
+		return "", "", false
 	}
-	if len(identities) == 0 {
-		return "", false
+	workspace, user, valid = codexTokenIdentity(strings.TrimSpace(token))
+	top = strings.TrimSpace(top)
+	if !valid || top != "" && workspace != "" && top != workspace {
+		return "", "", false
 	}
-	for _, identity := range identities[1:] {
-		if identity != identities[0] {
-			return "", false
-		}
+	if workspace == "" {
+		workspace = top
 	}
-	return identities[0], true
+	if !validCodexAccountID(workspace) {
+		return "", "", false
+	}
+	return workspace, user, true
 }
 
 func stringField(document map[string]json.RawMessage, name string) string {
@@ -378,6 +356,7 @@ func boolField(document map[string]json.RawMessage, name string) bool {
 // documents are read through the host only when a file changed, and only the
 // derived identity is kept: no token is retained in this plugin's memory.
 type Inventory struct {
+	codexSeats       *codexSeats
 	host             Host
 	antigravity      *identityRegistry
 	antigravityEmail *identityRegistry
@@ -414,8 +393,12 @@ func NewInventory(host Host, authDir string) (*Inventory, error) {
 	if err != nil {
 		return nil, err
 	}
+	seats, err := loadCodexSeats(authDir)
+	if err != nil {
+		return nil, err
+	}
 	return &Inventory{
-		host: host, antigravity: antigravity, antigravityEmail: antigravityEmail, anthropic: anthropic,
+		codexSeats: seats, host: host, antigravity: antigravity, antigravityEmail: antigravityEmail, anthropic: anthropic,
 		now: time.Now, maxAge: 15 * time.Second,
 		byAuthID: map[string]*Account{}, fingerprint: map[string]string{}, identity: map[string]resolvedIdentity{},
 	}, nil
@@ -550,7 +533,7 @@ func (inv *Inventory) refreshLocked(now time.Time) error {
 			if errGet != nil {
 				return errGet
 			}
-			identity = inv.identify(provider, raw)
+			identity = inv.identify(provider, entry.Name, raw)
 		}
 		fingerprints[entry.ID] = fingerprint
 		identities[entry.ID] = identity
@@ -571,7 +554,7 @@ func (inv *Inventory) refreshLocked(now time.Time) error {
 
 // identify derives the stable index of one credential document. An empty id
 // means the credential is quarantined.
-func (inv *Inventory) identify(provider string, raw json.RawMessage) resolvedIdentity {
+func (inv *Inventory) identify(provider, name string, raw json.RawMessage) resolvedIdentity {
 	var document map[string]json.RawMessage
 	if json.Unmarshal(raw, &document) != nil {
 		return resolvedIdentity{}
@@ -579,11 +562,7 @@ func (inv *Inventory) identify(provider string, raw json.RawMessage) resolvedIde
 	identity := resolvedIdentity{email: stringField(document, "email"), proxy: stringField(document, "proxy_url")}
 	switch provider {
 	case ProviderCodex:
-		accountID, ok := codexIdentity(document)
-		if !ok {
-			return resolvedIdentity{}
-		}
-		identity.id = CodexAccountIndex(accountID)
+		identity.id = inv.codexSeats.index(name, document, false)
 		identity.plan = codexTokenPlan(stringField(document, "id_token"))
 	case ProviderAntigravity:
 		registry, subject := inv.antigravitySubject(document)
@@ -636,7 +615,7 @@ func anthropicDocumentSubject(document map[string]json.RawMessage) (string, bool
 // and returns its stable index. Only the Owner's login or import calls it;
 // a credential that merely appears in the store is never registered. The
 // identity comes from the fields CPA stored, nothing else.
-func (inv *Inventory) Register(provider string, raw json.RawMessage) (string, error) {
+func (inv *Inventory) Register(provider, name string, raw json.RawMessage) (string, error) {
 	var document map[string]json.RawMessage
 	if json.Unmarshal(raw, &document) != nil {
 		return "", ErrAccountNotFound
@@ -645,11 +624,10 @@ func (inv *Inventory) Register(provider string, raw json.RawMessage) (string, er
 	var err error
 	switch provider {
 	case ProviderCodex:
-		accountID, ok := codexIdentity(document)
-		if !ok {
+		id = inv.codexSeats.index(name, document, true)
+		if id == "" {
 			return "", ErrAccountNotFound
 		}
-		id = CodexAccountIndex(accountID)
 	case ProviderClaude:
 		subject, ok := anthropicDocumentSubject(document)
 		if !ok {
@@ -670,10 +648,14 @@ func (inv *Inventory) Register(provider string, raw json.RawMessage) (string, er
 	}
 	// Identities are cached per file version; a new registration changes the
 	// answer for an unchanged file, so the next lookup reads every file again.
-	inv.mu.Lock()
-	inv.identity, inv.fingerprint, inv.loadedAt = map[string]resolvedIdentity{}, map[string]string{}, time.Time{}
-	inv.mu.Unlock()
+	inv.invalidate()
 	return id, nil
+}
+
+func (inv *Inventory) invalidate() {
+	inv.mu.Lock()
+	defer inv.mu.Unlock()
+	inv.identity, inv.fingerprint, inv.loadedAt = map[string]resolvedIdentity{}, map[string]string{}, time.Time{}
 }
 
 // markDuplicates keeps one credential per real account. Codex prefers the most

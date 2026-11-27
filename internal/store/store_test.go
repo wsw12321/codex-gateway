@@ -24,8 +24,8 @@ func TestEmbeddedMigrationsCoverRequiredSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EmbeddedMigrations: %v", err)
 	}
-	if len(migrations) != 57 {
-		t.Fatalf("migration count = %d, want 57", len(migrations))
+	if len(migrations) != 58 {
+		t.Fatalf("migration count = %d, want 58", len(migrations))
 	}
 	var sql string
 	for _, migration := range migrations {

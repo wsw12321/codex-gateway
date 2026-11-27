@@ -578,8 +578,12 @@ func serveCodexToken(r *http.Request, form url.Values, w http.ResponseWriter) {
 		_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
 		return
 	}
+	token := fakeJWT("acct-" + name)
+	if name == "seat-a" || name == "seat-b" {
+		token = fakeSeatJWT("shared-workspace", name, "team")
+	}
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"access_token": "at-" + name, "refresh_token": "rt2-" + name, "id_token": fakeJWT("acct-" + name),
+		"access_token": "at-" + name, "refresh_token": "rt2-" + name, "id_token": token,
 		"token_type": "Bearer", "expires_in": 3600,
 	})
 }
@@ -736,9 +740,13 @@ func requireEnv(t *testing.T, name string) string {
 }
 
 func fakeJWT(accountID string) string {
+	return fakeSeatJWT(accountID, accountID, "plus")
+}
+
+func fakeSeatJWT(accountID, member, plan string) string {
 	payload, _ := json.Marshal(map[string]any{
-		"email": accountID + "@example.com", "exp": time.Now().Add(30 * 24 * time.Hour).Unix(),
-		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": accountID, "chatgpt_plan_type": "plus", "chatgpt_user_id": "user-" + accountID},
+		"email": member + "@example.com", "exp": time.Now().Add(30 * 24 * time.Hour).Unix(),
+		"https://api.openai.com/auth": map[string]any{"chatgpt_account_id": accountID, "chatgpt_plan_type": plan, "chatgpt_user_id": "user-" + member},
 	})
 	return base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`)) + "." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }

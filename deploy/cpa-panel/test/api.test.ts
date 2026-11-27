@@ -1,5 +1,5 @@
 import {describe, expect, test} from 'bun:test';
-import {accountIdentity, authorizationURL, callbackFields, importFields} from '../src/api';
+import { credentialMessage,accountIdentity, authorizationURL, callbackFields, importFields} from '../src/api';
 
 describe('Anthropic account credential boundary', () => {
   test('accepts only the exact HTTPS authorization host', () => {
@@ -35,4 +35,11 @@ describe('account identity', () => {
     expect(accountIdentity({id: 'acct-1', email_masked: 'te***@example.test'})).toEqual({title: 'te***@example.test', details: []});
     expect(accountIdentity({id: 'acct-1', email_masked: ''})).toEqual({title: 'acct-1', details: []});
   });
+});
+
+test('credential messages distinguish a new account and reauthorization', () => {
+  expect(credentialMessage(false)).toBe('账号已添加。');
+  expect(credentialMessage(true)).toBe('该账号已存在，已重新授权。');
+  expect(credentialMessage(true, true)).toBe('该账号已存在，凭据已更新。');
+  expect(credentialMessage(undefined)).toBe('授权完成');
 });
