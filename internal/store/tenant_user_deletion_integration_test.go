@@ -218,7 +218,8 @@ func TestTenantUserDeletionPostgresIntegration(t *testing.T) {
 		}
 		// The next login of the same upstream account claims it.
 		err = s.withTx(ctx, nil, func(tx *sql.Tx) error {
-			return claimRegistrationAccountTx(ctx, tx, EgressRegistration{TenantUserID: claimer.ID, Provider: UpstreamProviderCodex, CreatedAt: now}, released)
+			_, err := claimRegistrationAccountTx(ctx, tx, EgressRegistration{TenantUserID: claimer.ID, Provider: UpstreamProviderCodex, CreatedAt: now}, released)
+			return err
 		})
 		if err != nil {
 			t.Fatalf("claim of an orphaned account: %v", err)

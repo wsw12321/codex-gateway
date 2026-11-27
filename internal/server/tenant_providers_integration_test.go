@@ -21,10 +21,11 @@ import (
 // fakeTenantCPA plays CPA with the Gateway plugin for the member routes:
 // account listing and control, the ownership protocol and credential deletion.
 type fakeTenantCPA struct {
-	mu        sync.Mutex
-	ownership string
-	accounts  []string
-	deleted   []string
+	mu             sync.Mutex
+	registerImport func(registration, account string) *httptest.ResponseRecorder
+	ownership      string
+	accounts       []string
+	deleted        []string
 }
 
 func (c *fakeTenantCPA) serve(w http.ResponseWriter, r *http.Request) {
@@ -58,6 +59,24 @@ func (c *fakeTenantCPA) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"protocol": c.ownership})
+	case r.Method == http.MethodPost && route == "gateway-management/codex/credentials":
+		var body struct {
+			Registration string `json:"registration_id"`
+			Account      string `json:"refresh_token"` // synthetic grant identifies its fixture account
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil || c.registerImport == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		response := c.registerImport(body.Registration, body.Account)
+		if response.Code != http.StatusOK {
+			var result struct{ Error struct{ Code string } }
+			_ = json.Unmarshal(response.Body.Bytes(), &result)
+			w.WriteHeader(response.Code)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "error", "error": result.Error.Code})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "account_id": body.Account})
 	case r.Method == http.MethodDelete && route == "gateway-management/codex/accounts":
 		id := r.URL.Query().Get("id")
 		c.deleted = append(c.deleted, id)
@@ -84,6 +103,26 @@ func TestTenantProvidersHTTPPostgresIntegration(t *testing.T) {
 	f.s.config.APIKeyEncryptionKey = []byte(strings.Repeat("e", 32))
 	f.s.upstream = withManagement(gatewayproxy.New(base, "sidecar-secret"))
 	f.s.anthropic, f.s.antigravity = nil, nil
+
+	cpa.registerImport = func(registration, account string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/internal/upstream-accounts/register-egress", strings.NewReader(
+			`{"registration_id":"`+registration+`","provider":"codex","account_id":"`+account+`"}`))
+		req.Header.Set("Authorization", "Bearer sidecar-secret")
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		f.s.Handler().ServeHTTP(w, req)
+		return w
+	}
+
+	// The platform-only configuration also reports the result, without a
+	// separate egress service.
+	platformGrant := map[string]any{"refresh_token": "c000000000000003"}
+	for _, want := range []bool{false, true} {
+		result := invitationResponse(t, f.send(t, "POST", "/admin/cpa/api/codex/credentials", platformGrant, f.cookie, 200))
+		if result["already_present"] != want {
+			t.Fatalf("platform registration result %v", result)
+		}
+	}
 
 	// The switch is off: the member routes do not exist, and the Owner never
 	// uses them.
@@ -219,8 +258,17 @@ func TestTenantProvidersHTTPPostgresIntegration(t *testing.T) {
 	f.send(t, "DELETE", "/admin/tenant-providers/egress-servers/"+nodeID, map[string]any{}, aliceCookie, 403)
 	f.send(t, "PUT", "/admin/upstream-accounts/"+platformAccount+"/egress", map[string]any{"egress_server_id": nodeID}, f.cookie, 404)
 
-	// Logins check the plugin and the limit before they start.
-	importBody := map[string]any{"refresh_token": "rt-secret"}
+	// Credentials are identified before enforcing the limit. A member with
+	// two accounts can reauthorize either, but cannot add a third.
+	importPath := "/admin/me/providers/codex/credentials"
+	newSeat := map[string]any{"refresh_token": "d000000000000004"}
+	if result := invitationResponse(t, f.send(t, "POST", importPath, newSeat, bobCookie, 200)); result["already_present"] != false {
+		t.Fatal(result)
+	}
+	if result := invitationResponse(t, f.send(t, "POST", importPath, map[string]any{"refresh_token": bobAccount}, aliceCookie, 200)); result["already_present"] != true {
+		t.Fatal(result)
+	}
+	importBody := map[string]any{"refresh_token": "f000000000000006"}
 	f.send(t, "POST", "/admin/me/providers/codex/credentials", importBody, aliceCookie, 409)
 	cpa.mu.Lock()
 	cpa.ownership = ""

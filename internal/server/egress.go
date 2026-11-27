@@ -428,7 +428,7 @@ func (s *Server) resolveEgress(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) registerEgress(w http.ResponseWriter, r *http.Request) {
-	if !s.egressInternalAuth(w, r) || !s.egressEnabled(w, r) {
+	if !s.egressInternalAuth(w, r) {
 		return
 	}
 	var input struct {
@@ -442,6 +442,15 @@ func (s *Server) registerEgress(w http.ResponseWriter, r *http.Request) {
 	if s.store == nil {
 		egressError(w, r, errEgressUnavailable)
 		return
+	}
+	// Without an egress service the Owner still registers credentials. Only
+	// platform registrations preserving the current binding can use this path.
+	if s.config.EgressControlKey == "" {
+		record, err := s.store.EgressRegistration(r.Context(), input.RegistrationID)
+		if err != nil || !record.Preserve || record.NodeID != "" || record.TenantUserID != "" {
+			egressError(w, r, errEgressUnavailable)
+			return
+		}
 	}
 	registration, err := s.store.PrepareEgressRegistration(r.Context(), input.RegistrationID, input.Provider, input.AccountID)
 	if err != nil {

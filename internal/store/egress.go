@@ -41,6 +41,7 @@ type EgressBinding struct {
 }
 
 type EgressRegistration struct {
+	AlreadyPresent          bool
 	ID                      string
 	Provider                string
 	NodeID                  string
@@ -328,11 +329,11 @@ func (s *Store) SetEgressBinding(ctx context.Context, accountID, nodeID string, 
 	return result, err
 }
 
-const egressRegistrationColumns = `id::text,provider,COALESCE(node_id::text,''),preserve_binding,COALESCE(account_id,''),state,revision,COALESCE(actor_user_id::text,''),COALESCE(actor_session_id::text,''),created_at,baseline_binding_revision,COALESCE(tenant_user_id::text,'')`
+const egressRegistrationColumns = `id::text,provider,COALESCE(node_id::text,''),preserve_binding,COALESCE(account_id,''),state,revision,COALESCE(actor_user_id::text,''),COALESCE(actor_session_id::text,''),created_at,baseline_binding_revision,COALESCE(tenant_user_id::text,''),already_present`
 
 func scanEgressRegistration(row rowScanner) (EgressRegistration, error) {
 	var v EgressRegistration
-	err := row.Scan(&v.ID, &v.Provider, &v.NodeID, &v.Preserve, &v.AccountID, &v.State, &v.Revision, &v.ActorUserID, &v.ActorSessionID, &v.CreatedAt, &v.BaselineBindingRevision, &v.TenantUserID)
+	err := row.Scan(&v.ID, &v.Provider, &v.NodeID, &v.Preserve, &v.AccountID, &v.State, &v.Revision, &v.ActorUserID, &v.ActorSessionID, &v.CreatedAt, &v.BaselineBindingRevision, &v.TenantUserID, &v.AlreadyPresent)
 	return v, err
 }
 
@@ -429,7 +430,8 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 		// The account row is created or claimed for the registration's owner
 		// before any binding: from here on it is never a platform account by
 		// accident.
-		if err = claimRegistrationAccountTx(ctx, tx, registration, accountID); err != nil {
+		alreadyPresent, err := claimRegistrationAccountTx(ctx, tx, registration, accountID)
+		if err != nil {
 			return err
 		}
 		var currentBindingRevision int64
@@ -441,6 +443,7 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 				return ErrConflict
 			}
 			registration.BaselineBindingRevision = currentBindingRevision
+			registration.AlreadyPresent = alreadyPresent
 		}
 		if commit && !registration.Preserve {
 			if registration.BaselineBindingRevision != currentBindingRevision {
@@ -463,7 +466,7 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 		if commit {
 			phase = "committed"
 		}
-		result, err = scanEgressRegistration(tx.QueryRowContext(ctx, `UPDATE egress_registrations SET account_id=$2,state=$3,baseline_binding_revision=$4 WHERE id=$1::uuid RETURNING `+egressRegistrationColumns, id, accountID, phase, registration.BaselineBindingRevision))
+		result, err = scanEgressRegistration(tx.QueryRowContext(ctx, `UPDATE egress_registrations SET account_id=$2,state=$3,baseline_binding_revision=$4,already_present=$5 WHERE id=$1::uuid RETURNING `+egressRegistrationColumns, id, accountID, phase, registration.BaselineBindingRevision, registration.AlreadyPresent))
 		if err != nil {
 			return mapDBError("commit egress registration", err)
 		}
@@ -473,6 +476,12 @@ func (s *Store) transitionEgressRegistration(ctx context.Context, id, provider, 
 		return egressAudit(ctx, tx, EgressActor{UserID: registration.ActorUserID, SessionID: registration.ActorSessionID}, "upstream_account.egress_registered", accountID, map[string]any{"provider": provider, "registration_id": id, "preserved": registration.Preserve, "node_id": registration.NodeID})
 	})
 	return result, err
+}
+
+// EgressRegistration returns the ownership claim and result of one login.
+func (s *Store) EgressRegistration(ctx context.Context, id string) (EgressRegistration, error) {
+	registration, err := scanEgressRegistration(s.db.QueryRowContext(ctx, `SELECT `+egressRegistrationColumns+` FROM egress_registrations WHERE id=$1::uuid`, id))
+	return registration, mapDBError("read credential registration", err)
 }
 
 func (s *Store) EgressSnapshot(ctx context.Context) (EgressState, error) {

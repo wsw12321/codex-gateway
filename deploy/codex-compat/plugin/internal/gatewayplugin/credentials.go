@@ -455,9 +455,11 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 	if err != nil {
 		return "", ErrUnavailable
 	}
-	id, err := p.inventory.Register(provider, raw)
+	id, err := p.inventory.Register(provider, entry.Name, raw)
 	if errors.Is(err, ErrAccountNotFound) {
-		p.removeCredentialFile(ctx, entry.Name)
+		if !existing[entry.ID] && !existing[entry.Name] {
+			p.removeCredentialFile(ctx, entry.Name)
+		}
 		return "", errCredentialIdentity
 	}
 	if err != nil {
@@ -475,7 +477,7 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 			if errOther != nil {
 				return "", ErrUnavailable
 			}
-			if p.inventory.identify(provider, otherRaw).id == id {
+			if p.inventory.identify(provider, other.Name, otherRaw).id == id {
 				p.removeCredentialFile(ctx, entry.Name)
 				return "", errCredentialConflict
 			}
@@ -485,6 +487,9 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 		if err = p.alloc.RegisterEgress(ctx, provider, registrationID, id); err != nil {
 			var refused *RegistrationRefusedError
 			if errors.As(err, &refused) {
+				if provider == ProviderCodex && (existing[entry.ID] || existing[entry.Name]) && p.inventory.identify(provider, entry.Name, raw).id == "" {
+					return "", &credentialRefusal{code: refused.Code}
+				}
 				p.refuseCredential(ctx, provider, *entry, id, existing)
 				return "", &credentialRefusal{code: refused.Code}
 			}
@@ -495,6 +500,15 @@ func (p *Plugin) completeCredential(ctx context.Context, provider, authID, regis
 				logf("account %s could not be disabled after a failed egress registration: %T", id, errDisable)
 			}
 			return "", errCredentialEgress
+		}
+	}
+	if provider == ProviderCodex {
+		changed, err := p.inventory.codexSeats.confirm(entry.Name, raw, id)
+		if err != nil {
+			return "", err
+		}
+		if changed {
+			p.inventory.invalidate()
 		}
 	}
 	account, found, err := p.inventory.Find(provider, id)
@@ -580,9 +594,13 @@ func (p *Plugin) importCredential(provider string, body []byte) []byte {
 	cpaType := cpaOAuthProviders[provider].name
 	name := cpaType + "-import-" + hex.EncodeToString(random[:]) + ".json"
 	document := map[string]string{"type": cpaType, "refresh_token": fields["refresh_token"], "proxy_url": proxyURL}
-	for _, field := range []string{"access_token", "id_token"} {
-		if value := fields[field]; value != "" {
-			document[field] = value
+	// A Codex import becomes identifiable only after CPA refreshes the grant.
+	// A client-supplied ID token must never appear in the routable inventory.
+	if provider != ProviderCodex {
+		for _, field := range []string{"access_token", "id_token"} {
+			if value := fields[field]; value != "" {
+				document[field] = value
+			}
 		}
 	}
 	payload, _ := json.Marshal(document)

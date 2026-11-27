@@ -93,7 +93,7 @@ func TestCredentialOperations(t *testing.T) {
 
 	// Import: the tokens are stored with the chosen egress and CPA refreshes
 	// them through it.
-	importID := stableIndex("acct-imp")
+	importID := seatIndex("acct-imp", "user-acct-imp")
 	h.resetObservations()
 	status, body := h.management(http.MethodPost, credentialPage+"/credentials", managementKey,
 		`{"refresh_token":"rt-imp","registration_id":"`+importRegistration+`","egress_proxy_url":"`+importRoute+`"}`)
@@ -188,7 +188,7 @@ func TestCredentialOperations(t *testing.T) {
 	if status, body = h.management(http.MethodPost, credentialPage+"/oauth/callback", managementKey, `{"state":"`+started.State+`","code":"code-login"}`); status != http.StatusOK {
 		t.Fatalf("callback: %d %s", status, body)
 	}
-	loginID := stableIndex("acct-login")
+	loginID := seatIndex("acct-login", "user-acct-login")
 	h.eventually("the login completes", func() bool {
 		status, body = poll()
 		return body == `{"account_id":"`+loginID+`","status":"ok"}`
@@ -263,4 +263,48 @@ func TestCredentialOwnershipConflict(t *testing.T) {
 	if got := h.do(call{}); got.status != http.StatusOK {
 		t.Fatalf("the owner's account stopped serving: %d %s", got.status, got.body)
 	}
+}
+
+// Exercise CPA's real file naming, callback, runtime inventory and a grant
+// refresh for two members of one workspace.
+func TestCodexWorkspaceSeats(t *testing.T) {
+	h := newHarness(t)
+	h.addAccount("a", nil)
+	h.start()
+	login := func(member string) {
+		t.Helper()
+		status, body := h.management(http.MethodPost, credentialPage+"/oauth", managementKey, "{}")
+		var session struct{ State string }
+		if status != 200 || json.Unmarshal([]byte(body), &session) != nil || session.State == "" {
+			t.Fatalf("begin: %d %s", status, body)
+		}
+		callback, _ := json.Marshal(map[string]string{"state": session.State, "code": "code-" + member})
+		if status, body := h.management(http.MethodPost, credentialPage+"/oauth/callback", managementKey, string(callback)); status != 200 {
+			t.Fatalf("callback: %d %s", status, body)
+		}
+		want := seatIndex("shared-workspace", "user-"+member)
+		h.eventually("login of "+member, func() bool {
+			_, body := h.management(http.MethodPost, credentialPage+"/oauth/status", managementKey, `{"state":"`+session.State+`"}`)
+			return body == `{"account_id":"`+want+`","status":"ok"}`
+		})
+	}
+	login("seat-a")
+	login("seat-b")
+	login("seat-a")
+	first, second := seatIndex("shared-workspace", "user-seat-a"), seatIndex("shared-workspace", "user-seat-b")
+	if status, body := h.management(http.MethodPost, credentialPage+"/accounts/refresh?id="+first, managementKey, "{}"); status != 200 {
+		t.Fatalf("refresh: %d %s", status, body)
+	}
+	h.eventually("both independent seats after refresh", func() bool {
+		_, body := h.management(http.MethodGet, "/v0/management/gateway/upstream-accounts", managementKey, "")
+		var list struct{ Accounts []struct{ ID string } }
+		if json.Unmarshal([]byte(body), &list) != nil || len(list.Accounts) != 3 {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, account := range list.Accounts {
+			seen[account.ID] = true
+		}
+		return seen[first] && seen[second]
+	})
 }

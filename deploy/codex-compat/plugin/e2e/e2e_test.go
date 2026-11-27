@@ -23,6 +23,11 @@ func stableIndex(accountID string) string {
 	return hex.EncodeToString(outer[:8])
 }
 
+func seatIndex(workspace, user string) string {
+	sum := sha256.Sum256([]byte("codex-gateway-seat:v1\x00" + workspace + "\x00" + user))
+	return hex.EncodeToString(sum[:8])
+}
+
 func groups(layers ...string) string { return "[" + strings.Join(layers, ",") + "]" }
 
 func groupLayer(id string, accounts ...string) string {

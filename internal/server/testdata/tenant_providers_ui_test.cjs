@@ -107,11 +107,12 @@ test("the provider list shows the member's accounts, limits and suppliers switch
   assert.match(cards[0].textContent, /主力/);
   assert.equal(ui.node("provider-add-provider").children.map((option) => option.attributes.value).join(","), "codex,anthropic");
   assert.equal(ui.node("provider-supplier-open").classList.contains("hidden"), true);
-  // At the limit every add button is disabled.
+  // Reauthorization is possible at the limit. The server checks new seats on registration.
   ui.responses.push({...listing, account_count: 2});
   await ui.run("loadMyProviders()");
-  assert.equal(ui.node("provider-oauth-start").disabled, true);
-  assert.equal(ui.node("provider-import-open").disabled, true);
+  assert.equal(ui.node("provider-oauth-start").disabled, false);
+  assert.equal(ui.node("provider-import-open").disabled, false);
+  assert.equal(ui.node("provider-supplier-open").disabled, true);
 });
 
 test("a suspended account cannot be re-enabled by its member", async () => {
@@ -143,16 +144,18 @@ test("logins start with the chosen egress, poll, and explain a refusal", async (
   await assert.rejects(ui.run("startProviderOAuth()"), /授权地址无效/);
 });
 
-test("a completed login reloads the list", async () => {
+for (const [present, message] of [[true, "该账号已存在，已重新授权。"], [false, "账号已添加。"]]) test(`a completed login reports ${message}`, async () => {
   const ui = dashboard();
   ui.form("provider-add-form", {provider: "anthropic", egress_server_id: ""});
   ui.responses.push({id: "flow", url: "https://claude.ai/oauth/authorize?state=s", expires_in: 300});
   await ui.run("startProviderOAuth()");
   assert.deepEqual(ui.calls[0].body, {});
-  ui.responses.push({status: "ok", account_id: "a000000000000001"}, listing);
+  ui.run("notice = (text) => { globalThis.lastNotice = text; };");
+  ui.responses.push({status: "ok", account_id: "a000000000000001", already_present: present}, listing);
   await ui.run("pollProviderOAuth(providerOAuth)");
   assert.equal(ui.calls.at(-1).path, "/admin/me/providers");
   assert.equal(ui.run("providerOAuth"), null);
+  assert.equal(ui.run("lastNotice"), message);
 });
 
 test("callback addresses must be the local redirect with one code and state", () => {

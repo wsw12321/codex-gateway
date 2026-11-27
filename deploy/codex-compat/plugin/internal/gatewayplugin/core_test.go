@@ -280,7 +280,7 @@ func TestCodexIdentity(t *testing.T) {
 			if err := json.Unmarshal([]byte(tc.doc), &document); err != nil {
 				t.Fatal(err)
 			}
-			got, ok := codexIdentity(document)
+			got, _, ok := codexIdentity(document)
 			if got != tc.want || ok != tc.ok {
 				t.Fatalf("got %q, %v; want %q, %v", got, ok, tc.want, tc.ok)
 			}

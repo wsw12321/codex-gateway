@@ -481,7 +481,7 @@ func TestLoginFailuresFailClosed(t *testing.T) {
 		cpa := start(t, f, "anthropic")
 		identity := map[string]any{"type": "claude", "account_uuid": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "organization_uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "refresh_token": "r"}
 		f.host.addEntry("claude-old", ProviderClaude, identity, f.clock)
-		if _, err := f.plugin.inventory.Register(ProviderClaude, mustJSON(identity)); err != nil {
+		if _, err := f.plugin.inventory.Register(ProviderClaude, "fixture.json", mustJSON(identity)); err != nil {
 			t.Fatal(err)
 		}
 		f.host.addEntry("claude-new", ProviderClaude, identity, f.clock)
@@ -505,26 +505,26 @@ func TestCPAStoredIdentities(t *testing.T) {
 	// Claude: CPA's account and organization UUIDs; a subject the patched
 	// image recorded must agree with them.
 	claude := map[string]any{"type": "claude", "account_uuid": "AAAAAAAA-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "organization_uuid": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}
-	id, err := f.plugin.inventory.Register(ProviderClaude, mustJSON(claude))
+	id, err := f.plugin.inventory.Register(ProviderClaude, "fixture.json", mustJSON(claude))
 	if err != nil || !validAccountID(id) {
 		t.Fatalf("claude: %q %v", id, err)
 	}
 	claude["gateway_anthropic_subject"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	if again, errAgain := f.plugin.inventory.Register(ProviderClaude, mustJSON(claude)); errAgain != nil || again != id {
+	if again, errAgain := f.plugin.inventory.Register(ProviderClaude, "fixture.json", mustJSON(claude)); errAgain != nil || again != id {
 		t.Fatalf("a recorded subject changed the account: %q %v", again, errAgain)
 	}
 	claude["gateway_anthropic_subject"] = "cccccccc-cccc-4ccc-8ccc-cccccccccccc:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	if _, err = f.plugin.inventory.Register(ProviderClaude, mustJSON(claude)); !errors.Is(err, ErrAccountNotFound) {
+	if _, err = f.plugin.inventory.Register(ProviderClaude, "fixture.json", mustJSON(claude)); !errors.Is(err, ErrAccountNotFound) {
 		t.Fatalf("a conflicting recorded subject was accepted: %v", err)
 	}
 
 	// Antigravity: the patched image's Google subject when present, otherwise
 	// the e-mail address CPA recorded, kept in its own registry file.
-	byEmail, err := f.plugin.inventory.Register(ProviderAntigravity, mustJSON(map[string]any{"type": "antigravity", "email": " Someone@Example.COM "}))
+	byEmail, err := f.plugin.inventory.Register(ProviderAntigravity, "fixture.json", mustJSON(map[string]any{"type": "antigravity", "email": " Someone@Example.COM "}))
 	if err != nil || !validAccountID(byEmail) {
 		t.Fatalf("antigravity by e-mail: %q %v", byEmail, err)
 	}
-	if again, _ := f.plugin.inventory.Register(ProviderAntigravity, mustJSON(map[string]any{"email": "someone@example.com"})); again != byEmail {
+	if again, _ := f.plugin.inventory.Register(ProviderAntigravity, "fixture.json", mustJSON(map[string]any{"email": "someone@example.com"})); again != byEmail {
 		t.Fatalf("the same address got another account: %q", again)
 	}
 	raw, err := os.ReadFile(filepath.Join(f.dir, AntigravityEmailIdentityFile))
@@ -534,7 +534,7 @@ func TestCPAStoredIdentities(t *testing.T) {
 	if _, err = os.Stat(filepath.Join(f.dir, AntigravityIdentityFile)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("an e-mail key reached the subject registry the patched image reads: %v", err)
 	}
-	bySubject, err := f.plugin.inventory.Register(ProviderAntigravity, mustJSON(map[string]any{"google_subject": "109876543210", "email": "someone@example.com"}))
+	bySubject, err := f.plugin.inventory.Register(ProviderAntigravity, "fixture.json", mustJSON(map[string]any{"google_subject": "109876543210", "email": "someone@example.com"}))
 	if err != nil || bySubject == byEmail {
 		t.Fatalf("antigravity by subject: %q %v", bySubject, err)
 	}
@@ -545,7 +545,7 @@ func TestCPAStoredIdentities(t *testing.T) {
 		"address with space": {"email": "a b@example.com"},
 		"no domain dot":      {"email": "a@localhost"},
 	} {
-		if _, err = f.plugin.inventory.Register(ProviderAntigravity, mustJSON(document)); !errors.Is(err, ErrAccountNotFound) {
+		if _, err = f.plugin.inventory.Register(ProviderAntigravity, "fixture.json", mustJSON(document)); !errors.Is(err, ErrAccountNotFound) {
 			t.Fatalf("%s was registered: %v", name, err)
 		}
 	}
@@ -558,7 +558,7 @@ func TestCPAStoredIdentities(t *testing.T) {
 
 func mustRegister(t *testing.T, f *fixture, email string) string {
 	t.Helper()
-	id, err := f.plugin.inventory.Register(ProviderAntigravity, mustJSON(map[string]any{"email": email}))
+	id, err := f.plugin.inventory.Register(ProviderAntigravity, "fixture.json", mustJSON(map[string]any{"email": email}))
 	if err != nil {
 		t.Fatal(err)
 	}
