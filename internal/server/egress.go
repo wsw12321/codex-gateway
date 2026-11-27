@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +25,8 @@ func (s *Server) egressRoutes() {
 	s.mux.Handle("POST /admin/egress-servers", write(s.saveEgressServer))
 	s.mux.Handle("PUT /admin/egress-servers/{id}", write(s.saveEgressServer))
 	s.mux.Handle("DELETE /admin/egress-servers/{id}", write(s.deleteEgressServer))
+	s.mux.Handle("GET /admin/egress-allowed-domains", read(s.egressAllowedDomainsJSON))
+	s.mux.Handle("PUT /admin/egress-allowed-domains", write(s.replaceEgressAllowedDomains))
 	// A connectivity test changes nothing, so it needs a session and the
 	// Origin check but not the five-minute re-verification of writes.
 	s.mux.Handle("POST /admin/egress-servers/{id}/test", s.browserOrigin(s.requireSession(s.ownerOnly(http.HandlerFunc(s.testEgressServer)))))
@@ -124,7 +127,70 @@ func (s *Server) egressServersJSON(w http.ResponseWriter, r *http.Request) {
 		}
 		runtimeStatus.NodeRevisions = visible
 	}
-	writeJSON(w, 200, map[string]any{"servers": nodes, "protocol_fields": egress.ProtocolFields(owner == ""), "runtime": runtimeStatus, "version": state.Version, "configured": s.config.EgressControlKey != ""})
+	response := map[string]any{"servers": nodes, "protocol_fields": egress.ProtocolFields(owner == ""), "runtime": runtimeStatus, "version": state.Version, "configured": s.config.EgressControlKey != ""}
+	// Members never see the allowlist; saving a node tells them whether its
+	// host name is allowed.
+	if owner == "" {
+		allowedDomains, err := s.store.EgressAllowedDomains(r.Context())
+		if err != nil {
+			egressError(w, r, err)
+			return
+		}
+		response["allowed_domains"], response["max_allowed_domains"] = allowedDomains, egress.MaxAllowedDomains
+	}
+	writeJSON(w, 200, response)
+}
+
+func (s *Server) egressAllowedDomainsJSON(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		egressError(w, r, errEgressUnavailable)
+		return
+	}
+	domains, err := s.store.EgressAllowedDomains(r.Context())
+	if err != nil {
+		egressError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"domains": domains, "max_domains": egress.MaxAllowedDomains})
+}
+
+// replaceEgressAllowedDomains sets the host names member egress servers may
+// use. Each entry is an exact name or a "*." subdomain wildcard and covers
+// every port.
+func (s *Server) replaceEgressAllowedDomains(w http.ResponseWriter, r *http.Request) {
+	if s.store == nil {
+		egressError(w, r, errEgressUnavailable)
+		return
+	}
+	var input struct {
+		Domains []string `json:"domains"`
+	}
+	if !cpaJSON(w, r, &input, 64<<10, "domains") {
+		return
+	}
+	if input.Domains == nil {
+		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_domain", "请提供域名列表")
+		return
+	}
+	if _, err := store.NormalizeEgressAllowedDomains(input.Domains); err != nil {
+		httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_domain", fmt.Sprintf("域名格式无效或超过 %d 条。每行一个公网域名，可用 *.example.com 允许全部子域名，不含协议、端口或路径", egress.MaxAllowedDomains))
+		return
+	}
+	domains, err := s.store.ReplaceEgressAllowedDomains(r.Context(), input.Domains, egressActor(r))
+	var inUse *store.EgressDomainInUseError
+	if errors.As(err, &inUse) {
+		httpx.WriteError(w, r, http.StatusConflict, "upstream_error", "egress_domain_in_use", "以下域名仍被成员出口节点使用，请先让成员修改或删除这些节点："+strings.Join(inUse.Hosts, "、"))
+		return
+	}
+	if err != nil {
+		egressError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"domains": domains, "max_domains": egress.MaxAllowedDomains})
+}
+
+func tenantEgressDomainRefused(w http.ResponseWriter, r *http.Request) {
+	httpx.WriteError(w, r, 400, "invalid_request_error", "egress_domain_not_allowed", "该域名不被允许用作出口服务器地址，请改用公网 IPv4 地址或联系管理员")
 }
 
 func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
@@ -162,11 +228,24 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validate(n); err != nil {
 		if requestTenant(r) != "" {
-			httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_request", "出口服务器地址须为公网 IPv4 地址，端口 1–65535")
+			httpx.WriteError(w, r, 400, "invalid_request_error", "invalid_egress_request", "出口服务器地址须为公网 IPv4 地址或管理员允许的域名，端口 1–65535")
 			return
 		}
 		egressError(w, r, err)
 		return
+	}
+	if requestTenant(r) != "" && egress.IsHostName(n.Server) {
+		// Checked again inside the save transaction; this early refusal keeps
+		// a name off the allowlist from reaching the runtime's validator.
+		allowed, err := s.store.EgressAllowedDomains(r.Context())
+		if err != nil {
+			egressError(w, r, err)
+			return
+		}
+		if !egress.DomainAllowed(allowed, n.Server) {
+			tenantEgressDomainRefused(w, r)
+			return
+		}
 	}
 	advanced := egress.AdvancedProtocol(n.Protocol)
 	if advanced && input.Password != "" || !advanced && len(input.Options) != 0 {
@@ -256,6 +335,10 @@ func (s *Server) saveEgressServer(w http.ResponseWriter, r *http.Request) {
 		n.PasswordCiphertext = ciphertext
 	}
 	saved, err := s.egressStore(r).SaveEgressServer(r.Context(), n, create, egressActor(r))
+	if errors.Is(err, store.ErrEgressDomainNotAllowed) {
+		tenantEgressDomainRefused(w, r)
+		return
+	}
 	if errors.Is(err, store.ErrConflict) {
 		httpx.WriteError(w, r, http.StatusConflict, "upstream_error", "egress_node_changed", "节点已被其他操作修改，请刷新后重试")
 		return

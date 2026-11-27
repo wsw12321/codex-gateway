@@ -5,8 +5,7 @@ const all = (selector, root = document) => Array.from(root.querySelectorAll(sele
 const brandName = "百川阁";
 const sectionTitles = {
   overview: "概览",
-  resources: "设备与项目",
-  keys: "API Keys",
+  resources: "设备与 API Keys",
   guide: "使用指导",
   billing: "额度与订阅",
   plans: "套餐",
@@ -31,6 +30,8 @@ const sectionTitles = {
   "my-plans": "我的套餐",
   market: "商城管理",
 };
+// API Keys now live at the bottom of the devices page; old #keys links land there.
+const sectionAliases = {keys: {section: "resources", anchor: "resources-keys"}};
 const ownerOnlySections = new Set(["upstream-accounts"]);
 ownerOnlySections.add("egress-servers");
 ownerOnlySections.add("site-settings");
@@ -173,6 +174,8 @@ let egressDraftID = null;
 let egressOperation = null;
 let egressPollTimer = 0;
 let egressListing = null;
+// The Owner's unsaved allowlist edit survives the page's five-second refresh.
+let egressDomainsDirty = false;
 // Connectivity results live only in this page, keyed by node ID and tied to
 // the node revision that was tested.
 const egressProbes = new Map();
@@ -1857,7 +1860,8 @@ async function submitReauthentication(event) {
     const result = await beginOIDCReauthentication(current);
     requireCurrentRequest(current);
     oidcPendingReauthentication = new URL(result.authorization_url).searchParams.get("state") || "";
-    const section = location.hash.slice(1);
+    const fragment = location.hash.slice(1);
+    const section = Object.hasOwn(sectionAliases, fragment) ? sectionAliases[fragment].section : fragment;
     // Save navigation only. Never persist a pending mutation or authorization credential.
     try { sessionStorage.setItem(oidcReturnKey, JSON.stringify({section: Object.hasOwn(sectionTitles, section) ? section : "security"})); } catch (_) { /* The callback safely falls back to account security. */ }
     cancelReauthentication();
@@ -2347,7 +2351,7 @@ function renderAPIKeys() {
     container.replaceChildren(emptyState(
       hasDevice ? "还没有 API Key。新 Key 可在二次验证后查看。" : "还没有 API Key，且当前没有活跃设备。",
       hasDevice ? "创建 API Key" : "先建设备",
-      () => hasDevice ? openDialog("key-dialog") : (location.hash = "resources"),
+      () => openDialog(hasDevice ? "key-dialog" : "device-dialog"),
     ));
     return;
   }
@@ -2436,7 +2440,7 @@ function renderSelects() {
     hide("key-guidance");
   } else {
     byId("new-key").setAttribute("aria-describedby", "key-guidance");
-    byId("key-guidance").textContent = "创建 API Key 前，请先在“资源”中添加一台活跃设备。";
+    byId("key-guidance").textContent = "创建 API Key 前，请先在上方“设备”中添加一台活跃设备。";
     show("key-guidance");
   }
 
@@ -9823,7 +9827,12 @@ function resetEgressServers() {
   egressOperation = null;
   egressDraftID = null;
   egressListing = null;
+  egressDomainsDirty = false;
   egressProbes.clear();
+  const domainsInput = byId("egress-domains-input");
+  if (domainsInput) domainsInput.value = "";
+  const domainsPanel = byId("egress-domains");
+  if (domainsPanel) domainsPanel.open = false;
   const form = byId("egress-form");
   if (form) form.reset();
   const dialog = byId("egress-dialog");
@@ -9854,6 +9863,7 @@ async function loadEgressServers() {
   egressListing = result;
   for (const id of egressProbes.keys()) if (!egressServers.some((node) => node.id === id)) egressProbes.delete(id);
   renderEgressServers(result);
+  renderEgressAllowedDomains(result);
   for (const select of all(".upstream-egress-select, .provider-egress-select")) populateEgressSelect(select, select.value);
   syncUpstreamAccountControls();
   window.clearTimeout(egressPollTimer);
@@ -9862,6 +9872,45 @@ async function loadEgressServers() {
       if (currentIdentity()) loadEgressServers().catch((error) => { if (currentIdentity()) egressMessage(friendlyError(error)); });
     }, 5000);
   }
+}
+
+function egressAllowedDomainList(result = egressListing) {
+  return Array.isArray(result?.allowed_domains) ? result.allowed_domains.filter((item) => typeof item === "string") : [];
+}
+
+function egressDomainLines(value) {
+  return String(value || "").split(/[\s,，、]+/).map((item) => item.trim()).filter(Boolean);
+}
+
+function syncEgressDomainsCount() {
+  const count = egressDomainLines(byId("egress-domains-input")?.value).length;
+  const max = egressListing?.max_allowed_domains || 256;
+  const host = byId("egress-domains-count");
+  if (host) host.textContent = `${count} / ${max} 条${egressDomainsDirty ? " · 未保存" : ""}`;
+}
+
+function renderEgressAllowedDomains(result = egressListing) {
+  const domains = egressAllowedDomainList(result);
+  const input = byId("egress-domains-input");
+  if (input && state?.user?.role === "owner" && !egressDomainsDirty) input.value = domains.join("\n");
+  const badge = byId("egress-domains-summary");
+  if (badge) {
+    badge.textContent = domains.length ? `已允许 ${domains.length} 个` : "未设置";
+    badge.dataset.empty = String(!domains.length);
+  }
+  syncEgressDomainsCount();
+}
+
+async function saveEgressAllowedDomains() {
+  if (state?.user?.role !== "owner") return;
+  const domains = egressDomainLines(byId("egress-domains-input").value);
+  const currentIdentity = egressIdentityCurrent();
+  const result = await sensitiveAction(() => api("/admin/egress-allowed-domains", {method: "PUT", body: JSON.stringify({domains})}, currentIdentity), currentIdentity);
+  requireCurrentRequest(currentIdentity);
+  egressDomainsDirty = false;
+  if (egressListing) egressListing = {...egressListing, allowed_domains: result.domains};
+  renderEgressAllowedDomains(egressListing || {allowed_domains: result.domains});
+  notice(result.domains.length ? `已保存 ${result.domains.length} 个允许的出口域名。` : "已清空出口域名白名单，成员节点只能使用公网 IPv4。", "ok");
 }
 
 function egressNodeApplied(node, result = egressListing) {
@@ -10294,7 +10343,8 @@ function applyEgressImport(form) {
   if (result.dropped.length) warnings.push(`以下参数不受支持，已忽略：${result.dropped.join("、")}。`);
   if (result.note) warnings.push(result.note);
   if (state?.user?.role !== "owner" && result.server && !/^(\d{1,3}\.){3}\d{1,3}$/.test(result.server)) {
-    warnings.push("你的节点须使用公网 IPv4 地址，请把服务器地址的域名换成服务器 IP。");
+    // Members do not see the allowlist; the save tells them the outcome.
+    warnings.push("服务器地址是域名：保存时会检查该域名是否被允许，不允许时请换成服务器的公网 IPv4 地址。");
   }
   const where = result.optionsOnly ? " 协议参数" : result.server ? ` · ${result.server}:${result.port}` : "";
   show([`已识别 ${egressProtocolLabel(result.protocol)}${where}，请核对后保存。`, ...warnings].join("\n"), warnings.length ? "warn" : "ok");
@@ -12549,11 +12599,13 @@ function routeFromHash(focusContent = true) {
   if (!state) return;
   billingUserSearch?.close();
   globalUserSearch?.close();
-  const requested = location.hash.slice(1);
+  const fragment = location.hash.slice(1);
+  const alias = Object.hasOwn(sectionAliases, fragment) ? sectionAliases[fragment] : null;
+  const requested = alias ? alias.section : fragment;
   const known = Object.prototype.hasOwnProperty.call(sectionTitles, requested);
   const owner = state.user.role === "owner";
   const section = known && sectionAllowed(requested) ? requested : "overview";
-  if (requested !== section) history.replaceState(null, "", `#${section}`);
+  if (fragment !== section) history.replaceState(null, "", `#${section}`);
   all(".view").forEach((view) => view.classList.toggle("hidden", view.dataset.section !== section));
   all("#sidebar [data-view]").forEach((link) => {
     const active = link.dataset.view === section || (link.dataset.view === "upstream-accounts" && ["antigravity-accounts", "anthropic-accounts"].includes(section));
@@ -12567,6 +12619,7 @@ function routeFromHash(focusContent = true) {
     closeNavigationDrawer(false);
     byId("content").focus({preventScroll: true});
   }
+  if (alias && section === alias.section) byId(alias.anchor)?.scrollIntoView({block: "start"});
   const providerChanged = selectUpstreamAccountProvider(section);
   if (providerChanged || (["upstream-accounts", "antigravity-accounts", "anthropic-accounts"].includes(section) && !upstreamAccounts.length && !upstreamAccountListLoading)) {
     loadUpstreamAccounts(upstreamAccountQueryFromForm()).catch((error) => {
@@ -13182,6 +13235,8 @@ function bindUI() {
     form.elements.options.focus();
   });
   bindAsync("egress-form", "submit", saveEgressServer, "保存中…", egressIdentityCurrent);
+  bindAsync("egress-domains-form", "submit", saveEgressAllowedDomains, "保存中…", egressIdentityCurrent);
+  byId("egress-domains-input")?.addEventListener("input", () => { egressDomainsDirty = true; syncEgressDomainsCount(); });
   bindAsync("providers-refresh", "click", () => loadMyProviders(), "刷新中…", providersIdentityCurrent);
   byId("provider-add-provider").addEventListener("change", () => { if (myProviders) renderMyProviders(); });
   bindAsync("provider-oauth-start", "click", startProviderOAuth, "正在开始…", providersIdentityCurrent);

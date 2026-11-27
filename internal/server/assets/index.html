@@ -158,8 +158,7 @@
           <div class="nav-group" aria-labelledby="nav-workspace">
           <p id="nav-workspace" class="nav-group-title">工作台</p>
           <a href="#overview" data-view="overview"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>概览</a>
-          <a href="#resources" data-view="resources"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>设备与项目</a>
-          <a href="#keys" data-view="keys"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="8" r="5"/><path d="m11.5 11.5 9 9m-3-3 3-3m-6 0 3-3"/></svg>API Keys</a>
+          <a href="#resources" data-view="resources"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8m-4-4v4"/></svg>设备与 API Keys</a>
           <a href="#guide" data-view="guide"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5Q7 2 3 4v15q5-2 9 1 4-3 9-1V4q-4-2-9 1Zm0 0v15"/></svg>使用指导</a>
           </div>
           <div class="nav-group" aria-labelledby="nav-billing">
@@ -254,12 +253,12 @@
               <ol id="onboarding" class="checklist"></ol>
               <div id="onboarding-complete" class="overview-complete hidden"><span>接入已完成</span><a href="#guide" class="subtle-link">查看使用指导</a></div>
             </article>
-            <details class="overview-resources"><summary>设备与凭证 · <span id="metric-active-keys">—</span> 个活跃 API Keys</summary><div id="resource-summary" class="summary-list" aria-live="polite" aria-busy="true">正在加载资源…</div><a href="#resources" class="subtle-link">管理设备与项目</a></details>
+            <details class="overview-resources"><summary>设备与凭证 · <span id="metric-active-keys">—</span> 个活跃 API Keys</summary><div id="resource-summary" class="summary-list" aria-live="polite" aria-busy="true">正在加载资源…</div><a href="#resources" class="subtle-link">管理设备与 API Keys</a></details>
           </section>
 
           <section class="view hidden" data-section="resources" aria-labelledby="resources-title">
             <div class="section-head">
-              <div><p class="eyebrow">BOUNDARIES</p><h2 id="resources-title">设备与项目</h2><p>把凭证绑定到明确的设备和工作范围。</p></div>
+              <div><p class="eyebrow">BOUNDARIES</p><h2 id="resources-title">设备与 API Keys</h2><p>把凭证绑定到明确的设备和工作范围，并在下方管理 API Keys。</p></div>
               <div class="button-group">
                 <button type="button" data-open="device-dialog">新增设备</button>
                 <button type="button" class="secondary" data-open="project-dialog">新增项目</button>
@@ -275,31 +274,30 @@
                 <div id="projects" class="list loading" aria-live="polite" aria-busy="true">正在加载项目…</div>
               </article>
             </div>
-          </section>
-
-          <section class="view hidden" data-section="keys" aria-labelledby="keys-title">
-            <div class="section-head">
-              <div><p class="eyebrow">CREDENTIALS</p><h2 id="keys-title">API Keys</h2><p>每个 Key 绑定设备；新 Key 可在二次验证后安全查看。</p></div>
-              <button id="new-key" type="button" data-open="key-dialog">创建 API Key</button>
-            </div>
-            <p id="key-guidance" class="callout hidden" role="status"></p>
-            <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
-            <form id="model-routes-form" class="panel model-routes" aria-labelledby="model-routes-title" novalidate>
-              <div class="model-routes-head">
-                <div>
-                  <h3 id="model-routes-title">模型路由</h3>
-                  <p>把客户端请求的模型转到另一个模型，适用于你所有的 API Key。权限、Key 模型限制和计费都按目标模型；协议转换由 CPA 完成。Messages 接口只能路由到 Claude 模型，<code>/v1/responses/compact</code> 只能路由到 Codex 模型。</p>
+            <div id="resources-keys" class="resources-keys" role="group" aria-labelledby="keys-title">
+              <div class="section-head subsection-head">
+                <div><h3 id="keys-title">API Keys</h3><p>每个 Key 绑定设备；新 Key 可在二次验证后安全查看。</p></div>
+                <button id="new-key" type="button" data-open="key-dialog">创建 API Key</button>
+              </div>
+              <p id="key-guidance" class="callout hidden" role="status"></p>
+              <div id="keys" class="list panel loading" aria-live="polite" aria-busy="true">正在加载 API Keys…</div>
+              <form id="model-routes-form" class="panel model-routes" aria-labelledby="model-routes-title" novalidate>
+                <div class="model-routes-head">
+                  <div>
+                    <h3 id="model-routes-title">模型路由</h3>
+                    <p>把客户端请求的模型转到另一个模型，适用于你所有的 API Key。权限、Key 模型限制和计费都按目标模型；协议转换由 CPA 完成。Messages 接口只能路由到 Claude 模型，<code>/v1/responses/compact</code> 只能路由到 Codex 模型。</p>
+                  </div>
+                  <button id="model-route-add" type="button" class="secondary">添加规则</button>
                 </div>
-                <button id="model-route-add" type="button" class="secondary">添加规则</button>
-              </div>
-              <p id="model-routes-conversion-note" class="callout hidden" role="note">管理员当前未开启模型协议转换：通过 <code>/v1/responses</code> 命中目标为 Claude 模型的规则会被拒绝。</p>
-              <div id="model-routes" class="model-route-list" aria-live="polite" aria-busy="true">正在加载模型路由…</div>
-              <p class="form-message hidden" aria-live="polite"></p>
-              <div class="model-routes-actions">
-                <small id="model-routes-count" aria-live="polite"></small>
-                <button id="model-routes-save" type="submit">保存路由</button>
-              </div>
-            </form>
+                <p id="model-routes-conversion-note" class="callout hidden" role="note">管理员当前未开启模型协议转换：通过 <code>/v1/responses</code> 命中目标为 Claude 模型的规则会被拒绝。</p>
+                <div id="model-routes" class="model-route-list" aria-live="polite" aria-busy="true">正在加载模型路由…</div>
+                <p class="form-message hidden" aria-live="polite"></p>
+                <div class="model-routes-actions">
+                  <small id="model-routes-count" aria-live="polite"></small>
+                  <button id="model-routes-save" type="submit">保存路由</button>
+                </div>
+              </form>
+            </div>
           </section>
 
           <section class="view hidden" data-section="guide" aria-labelledby="guide-title">
@@ -1427,7 +1425,29 @@ powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File .\configure-openco
           <section class="view owner-only hidden" data-section="egress-servers" aria-labelledby="egress-title">
             <div class="section-head"><div><h2 id="egress-title">出口服务器</h2><p class="page-slogan member-market hidden" data-page-role="seller">你出水源，我来汇流</p><p>为上游账号选择出口，多个账号可以共用节点。</p></div><div class="actions"><button id="egress-refresh" type="button" class="secondary">刷新状态</button><button id="egress-create" type="button">新增节点</button></div></div>
             <p class="callout">未绑定的账号沿用全局出口。绑定节点故障时不会回退直连，可按现有调度规则换账号重试。</p>
-            <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址，不支持域名。</p>
+            <p class="callout member-market hidden" id="egress-member-note">这里只显示你自己的出口服务器，只能绑定你自己的供应商账号。服务器地址须为公网 IPv4 地址；使用域名时，保存时会告知该域名是否被允许。</p>
+            <details id="egress-domains" class="panel egress-domains collapsible owner-only hidden">
+              <summary>
+                <span class="egress-domains-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg></span>
+                <span class="egress-domains-heading"><strong id="egress-domains-title">成员节点域名白名单</strong><small>允许成员用这些域名代替公网 IPv4，端口不限；仅管理员可见</small></span>
+                <span id="egress-domains-summary" class="status-badge egress-domains-badge" data-empty="true">未设置</span>
+              </summary>
+              <form id="egress-domains-form" class="egress-domains-body" aria-labelledby="egress-domains-title" novalidate>
+                <div class="egress-domains-rules" role="list" aria-label="填写规则">
+                  <div role="listitem"><code>proxy.example.com</code><span>仅允许该域名</span></div>
+                  <div role="listitem"><code>*.example.com</code><span>允许全部子域名，不含 example.com 本身</span></div>
+                </div>
+                <label class="egress-domains-field"><span class="egress-domains-label">允许的域名<small>每行一个，也可用逗号分隔</small></span>
+                  <textarea id="egress-domains-input" name="domains" rows="6" spellcheck="false" autocomplete="off" placeholder="proxy.example.com&#10;*.nodes.example.net"></textarea>
+                </label>
+                <p class="egress-domains-warning" role="note">域名在出口服务拨号时才解析。加入白名单即表示信任它始终指向公网节点，只加入你能控制或信任的域名。仍有成员节点在用的域名无法移除。</p>
+                <p class="form-message hidden" aria-live="polite"></p>
+                <div class="egress-domains-actions">
+                  <small id="egress-domains-count" aria-live="polite"></small>
+                  <button id="egress-domains-save" type="submit">保存白名单</button>
+                </div>
+              </form>
+            </details>
             <div class="egress-probe-bar">
               <label>连通性测试目标<select id="egress-probe-target"><option value="codex">Codex · chatgpt.com</option><option value="antigravity">Antigravity · cloudcode-pa.googleapis.com</option><option value="anthropic">Anthropic · api.anthropic.com</option></select></label>
               <button id="egress-test-all" type="button" class="secondary">全部测试</button>

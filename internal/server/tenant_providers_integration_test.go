@@ -202,6 +202,23 @@ func TestTenantProvidersHTTPPostgresIntegration(t *testing.T) {
 	created := invitationResponse(t, f.send(t, "POST", "/admin/me/egress-servers", node("8.8.8.8"), aliceCookie, 201))["server"].(map[string]any)
 	nodeID := created["id"].(string)
 	f.send(t, "POST", "/admin/me/egress-servers", node("8.8.4.4"), aliceCookie, 409)
+	// Only the Owner reads or changes the domain allowlist; a member's listing
+	// never carries it, and a refused name does not reveal the list.
+	f.send(t, "GET", "/admin/egress-allowed-domains", nil, aliceCookie, 403)
+	f.send(t, "PUT", "/admin/egress-allowed-domains", map[string]any{"domains": []string{"proxy.example.com"}}, aliceCookie, 403)
+	if listing := invitationResponse(t, f.send(t, "GET", "/admin/me/egress-servers", nil, aliceCookie, 200)); listing["allowed_domains"] != nil || listing["max_allowed_domains"] != nil {
+		t.Fatalf("member listing exposes the allowlist: %v", listing)
+	}
+	if _, ok := invitationResponse(t, f.send(t, "GET", "/admin/egress-allowed-domains", nil, f.cookie, 200))["domains"].([]any); !ok {
+		t.Fatal("owner allowlist response has no domain list")
+	}
+	if _, ok := invitationResponse(t, f.send(t, "GET", "/admin/egress-servers", nil, f.cookie, 200))["allowed_domains"].([]any); !ok {
+		t.Fatal("owner egress listing has no allowlist")
+	}
+	f.send(t, "PUT", "/admin/egress-allowed-domains", map[string]any{"domains": []string{"localhost"}}, f.cookie, 400)
+	if refused := f.send(t, "POST", "/admin/me/egress-servers", node("refused.example.com"), aliceCookie, 400); !strings.Contains(refused.Body.String(), "egress_domain_not_allowed") || strings.Contains(refused.Body.String(), "example.com") {
+		t.Fatalf("refused name body %s", refused.Body.String())
+	}
 	if servers := invitationResponse(t, f.send(t, "GET", "/admin/me/egress-servers", nil, bobCookie, 200))["servers"].([]any); len(servers) != 0 {
 		t.Fatalf("bob sees nodes %v", servers)
 	}
