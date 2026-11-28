@@ -23,7 +23,17 @@
 - 分享链接：`vless://`、`vmess://`（v2rayN Base64 JSON 或 URI 形式）、`trojan://`、`ss://`（SIP002 与旧式 Base64）、`hysteria2://` / `hy2://`、`tuic://`、`anytls://`、`socks5://`、`http(s)://`。传输方式支持 tcp、ws、grpc、h2、http 与 xhttp，安全类型支持 tls 与 reality。
 - 节点 JSON：与 Clash.Meta / Mihomo 配置中的单个节点相同，例如 `{"name":"jp","type":"vless","server":"203.0.113.7","port":443,"uuid":"…","tls":true}`。`name`、`type`、`server`、`port`、`udp` 填入对应表单项，其余字段作为协议参数。没有 `type` 的对象视为当前协议的参数。
 - 不在白名单内的参数（如 `skip-cert-verify`、`allowInsecure`、`spider-x`）会列出并忽略。若忽略的是传输配置（`network` 或 `*-opts`），导入直接报错，避免保存一个连不上的节点。SS 插件、端口跳跃、httpupgrade 传输和不支持的 SS 加密方式同样报错。
-- 成员节点仍须使用公网 IPv4。链接里的服务器是域名时，导入结果会提示改成服务器 IP。
+- 成员节点须使用公网 IPv4，或 Owner 允许的域名。链接里的服务器是域名时，导入结果会提示：保存时才检查该域名是否被允许，不允许时请改成服务器 IP。
+
+### 成员节点域名白名单
+
+Owner 在“出口服务器”页的“成员节点域名白名单”里每行填写一个域名，保存时需要近期验证：
+
+- `proxy.example.com` 只允许这一个域名；`*.example.com` 允许它的全部子域名，不含 `example.com` 本身。
+- 白名单不限端口，最多 256 条；不接受协议、端口、路径、IP、`localhost`、`.local`、`.internal` 等内部后缀。
+- 白名单只有 Owner 能读取（`GET/PUT /admin/egress-allowed-domains`）。成员页面不显示白名单，成员保存节点时才得知该域名是否被允许。
+- 仍有成员节点使用的域名不能移除，保存会返回 409 并列出这些域名；先让成员修改或删除节点，或由 Owner 在“租户供应商”中删除未绑定的节点。
+- 域名在出口服务拨号时解析。只加入你能控制或信任的域名，见[威胁模型](threat-model.md)。
 
 ### 协议参数
 

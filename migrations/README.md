@@ -173,6 +173,7 @@ Current migrations:
   start without consent (fail closed).
 
 - `internal/store/migrations/0057_mihomo_outbounds.sql` adds HTTP CONNECT, its TLS server name and the remaining remote Mihomo adapters. Advanced nodes keep their protocol-specific parameters in the encrypted credential column. Mesh nodes use peer discovery instead of a host and port. Existing SS and SOCKS5 rows retain their constraints and bindings.
+- `internal/store/migrations/0058_egress_domain_allowlist.sql` adds `egress_allowed_domains`, the Owner-managed host names (exact or `*.` subdomain wildcard, every port) that member egress servers may use instead of a public IPv4 literal.
 
 Run migrations through `store.Migrate`; do not execute copied, out-of-band SQL.
 The runner verifies the SHA-256 checksum of every migration that has already

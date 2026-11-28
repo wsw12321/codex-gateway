@@ -107,15 +107,23 @@ func scanEgressServer(row rowScanner) (EgressServer, error) {
 }
 
 // ValidateTenantEgressServer adds the rule for a node a tenant runs: the
-// address must be a public IPv4 literal. A name could resolve, now or later,
-// to an address inside the deployment's or the host's networks.
+// address must be a public IPv4 literal or a public DNS name. A name could
+// resolve, now or later, to an address inside the deployment's or the host's
+// networks, so SaveEgressServer accepts one only when it is on the Owner's
+// allowlist (egress_allowed_domains); this function checks the form alone.
 func ValidateTenantEgressServer(n EgressServer) error {
 	if err := ValidateEgressServer(n); err != nil {
 		return err
 	}
+	if egress.IsHostName(n.Server) {
+		if !egress.ValidSupplierHost(n.Server) {
+			return fmt.Errorf("%w: tenant egress host must be a public DNS name", ErrInvalid)
+		}
+		return nil
+	}
 	addr, err := netip.ParseAddr(n.Server)
 	if err != nil || !addr.Is4() || !egress.PublicSupplierIP(addr) {
-		return fmt.Errorf("%w: tenant egress host must be a public IPv4 address", ErrInvalid)
+		return fmt.Errorf("%w: tenant egress host must be a public IPv4 address or an allowed domain", ErrInvalid)
 	}
 	return nil
 }
@@ -173,6 +181,11 @@ func (s *Store) SaveEgressServer(ctx context.Context, n EgressServer, create boo
 		v, err := nextEgressVersion(ctx, tx)
 		if err != nil {
 			return err
+		}
+		if s.upstreamOwner != "" {
+			if err := checkTenantEgressHostTx(ctx, tx, n.Server); err != nil {
+				return err
+			}
 		}
 		if create {
 			if s.upstreamOwner != "" {

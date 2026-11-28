@@ -4636,3 +4636,47 @@ details.collapsible[open] > summary::before,
 .model-combo .model-combo-pending { cursor: default; opacity: .6; }
 .model-combo .model-combo-pending:hover { background: transparent; }
 .model-combo .model-combo-pending .model-pending-badge { margin-left: .6rem; }
+
+/* API Keys sit below devices and projects on the merged page. */
+.resources-keys { margin-top: 2rem; }
+.resources-keys > .subsection-head { margin-bottom: 1rem; }
+.resources-keys > .subsection-head h3 { margin: 0; }
+
+/* Owner allowlist of host names for member egress servers; starts collapsed. */
+.egress-domains { margin: 0 0 1rem; padding: 0; overflow: hidden; }
+.egress-domains > summary { padding: .9rem 1.1rem; gap: .9rem; flex-wrap: nowrap; border-radius: inherit; transition: background-color .15s ease; }
+.egress-domains > summary:hover { background: var(--hover); }
+.egress-domains > summary:focus-visible { outline: none; box-shadow: inset var(--ring); }
+.egress-domains[open] > summary { border-bottom: 1px solid var(--line); border-radius: inherit; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.egress-domains-icon { flex: 0 0 auto; display: grid; place-items: center; width: 2.25rem; height: 2.25rem; border-radius: var(--radius-sm); color: var(--accent-text); background: var(--selected); }
+.egress-domains-icon svg { width: 1.2rem; height: 1.2rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.egress-domains-heading { display: grid; gap: .15rem; min-width: 0; }
+.egress-domains-heading strong { font-size: 1rem; }
+.egress-domains-heading small { color: var(--muted); font-size: .82rem; }
+.egress-domains-badge { margin-left: auto; flex: 0 0 auto; white-space: nowrap; color: var(--accent-text); background: var(--selected); border-color: transparent; }
+.egress-domains-badge[data-empty="true"] { color: var(--muted); background: var(--surface-soft); }
+.egress-domains-body { display: grid; gap: 1rem; padding: 1.1rem; }
+.egress-domains-rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .6rem; }
+.egress-domains-rules > div { display: grid; gap: .25rem; padding: .65rem .8rem; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-soft); }
+.egress-domains-rules code { font-size: .86rem; color: var(--accent-text); background: none; padding: 0; }
+.egress-domains-rules span { color: var(--muted); font-size: .82rem; }
+.egress-domains-field { display: grid; gap: .4rem; font-weight: 600; }
+.egress-domains-label { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .6rem; }
+.egress-domains-label small { color: var(--muted); font-size: .8rem; font-weight: 400; }
+.egress-domains textarea {
+  width: 100%; min-height: 8.5rem; padding: .7rem .85rem; resize: vertical;
+  font-family: var(--mono); font-size: .88rem; line-height: 1.6; font-weight: 400;
+  color: var(--text); background: var(--surface-soft); border: 1px solid var(--line-strong); border-radius: var(--radius-sm);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.egress-domains textarea:focus { outline: none; border-color: var(--accent); box-shadow: var(--ring); }
+.egress-domains textarea::placeholder { color: var(--faint); }
+.egress-domains-warning { margin: 0; padding: .6rem .8rem; border-left: 3px solid var(--warning); border-radius: 0 var(--radius-sm) var(--radius-sm) 0; color: var(--text); background: rgb(var(--warning-rgb) / 8%); font-size: .85rem; line-height: 1.55; }
+.egress-domains-actions { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.egress-domains-actions small { color: var(--muted); }
+@media (max-width: 640px) {
+  .egress-domains-rules { grid-template-columns: 1fr; }
+  .egress-domains-heading small { display: none; }
+  .egress-domains-actions { flex-direction: column-reverse; align-items: stretch; }
+}
+@media (prefers-reduced-motion: reduce) { .egress-domains > summary { transition: none; } }

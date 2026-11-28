@@ -8,13 +8,22 @@ ARG RUNTIME_IMAGE=docker.io/library/debian:bookworm-20260824-slim@sha256:8820086
 FROM ${RUNTIME_IMAGE} AS runtime-base
 # Keep the reviewed glibc runtime: the plugin is a cgo shared library loaded by
 # a cgo host. Netcat powers the probes without placing a key in process
-# arguments. Explicitly upgrade perl-base (DLA-4821-1) and APT (CVE-2026-109518,
-# fixed in bookworm-security 2.6.2): the pinned base predates both updates.
+# arguments. Explicitly upgrade perl-base (DLA-4821-1), APT (CVE-2026-109518,
+# fixed in bookworm-security 2.6.2), Linux-PAM (CVE-2025-6020, fixed in
+# bookworm-security 1.5.2-6+deb12u3) and zstd (CVE-2026-124851, fixed in
+# bookworm-security 1.5.4+dfsg2-5+deb12u1): the pinned base predates these
+# updates.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libpcre2-8-0 netcat-openbsd perl-base util-linux apt libapt-pkg6.0 \
+        libpam0g libpam-modules libpam-modules-bin libpam-runtime libzstd1 \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' perl-base)" ge '5.36.0-7+deb12u4' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge '2.6.2' \
     && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libapt-pkg6.0)" ge '2.6.2' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpam0g)" ge '1.5.2-6+deb12u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpam-modules)" ge '1.5.2-6+deb12u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpam-modules-bin)" ge '1.5.2-6+deb12u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libpam-runtime)" ge '1.5.2-6+deb12u3' \
+    && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libzstd1)" ge '1.5.4+dfsg2-5+deb12u1' \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 cliproxy \
     && useradd --system --no-create-home --uid 10001 --gid 10001 --shell /usr/sbin/nologin cliproxy \
