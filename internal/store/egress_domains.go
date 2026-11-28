@@ -112,7 +112,7 @@ func (s *Store) ReplaceEgressAllowedDomains(ctx context.Context, raw []string, a
 		for rows.Next() {
 			var server string
 			if err := rows.Scan(&server); err != nil {
-				rows.Close()
+				_ = rows.Close()
 				return mapDBError("scan member egress host", err)
 			}
 			if egress.IsHostName(server) && !egress.DomainAllowed(domains, server) {
